@@ -9,7 +9,12 @@
         <Description>F# test impact analysis — AST-based dependency graph, symbol diffing, and test selection</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
     </PropertyGroup>
+
+    <ItemGroup>
+        <None Include="../../README.md" Pack="true" PackagePath="\" />
+    </ItemGroup>
 
     <ItemGroup>
         <Compile Include="AstAnalyzer.fs" />

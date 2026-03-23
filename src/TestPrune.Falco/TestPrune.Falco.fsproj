@@ -8,7 +8,12 @@
     <Description>Falco route-based integration test filtering extension for TestPrune</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <Compile Include="FalcoRouteAnalysis.fs" />
