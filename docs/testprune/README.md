@@ -122,8 +122,8 @@ type ITestPruneExtension =
         db: Database -> changedFiles: string list -> repoRoot: string -> AffectedTest list
 ```
 
-[`TestPrune.Falco`](src/TestPrune.Falco/) is a built-in extension for
-Falco web apps that maps URL routes to integration tests.
+[`TestPrune.Falco`](src/TestPrune.Falco/) is an extension for Falco
+web apps that maps URL routes to integration tests.
 
 ## Packages
 
