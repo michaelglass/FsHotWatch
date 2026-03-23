@@ -38,9 +38,7 @@ let getAssemblySearchPaths (dllPath: string) =
             Directory.GetDirectories(sdkDir)
             |> Array.sortDescending
             |> Array.truncate 1
-            |> Array.collect (fun sdkVersion ->
-                [| sdkVersion
-                   Path.Combine(sdkVersion, "FSharp") |])
+            |> Array.collect (fun sdkVersion -> [| sdkVersion; Path.Combine(sdkVersion, "FSharp") |])
             |> Array.toList
         else
             []
@@ -113,10 +111,7 @@ let rec formatTypeName (t: Type) =
     if t.IsGenericType then
         let baseName = t.Name.Substring(0, t.Name.IndexOf('`'))
 
-        let args =
-            t.GetGenericArguments()
-            |> Array.map formatTypeName
-            |> String.concat ", "
+        let args = t.GetGenericArguments() |> Array.map formatTypeName |> String.concat ", "
 
         sprintf "%s<%s>" baseName args
     elif t.IsArray then

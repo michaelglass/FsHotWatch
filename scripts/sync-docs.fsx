@@ -93,14 +93,13 @@ let sync (check: bool) : int =
                     eprintfn "Error: %s is out of sync with %s" indexPath readmePath
                     eprintfn "Run 'dotnet fsi scripts/sync-docs.fsx' to update"
                     1
+            else if updatedIndex = indexContent then
+                printfn "Already in sync, no changes needed"
+                0
             else
-                if updatedIndex = indexContent then
-                    printfn "Already in sync, no changes needed"
-                    0
-                else
-                    File.WriteAllText(indexPath, updatedIndex)
-                    printfn "Updated %s" indexPath
-                    0
+                File.WriteAllText(indexPath, updatedIndex)
+                printfn "Updated %s" indexPath
+                0
 
 // ============================================================================
 // Entry Point

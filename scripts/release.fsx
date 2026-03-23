@@ -12,8 +12,26 @@ open System.Text.RegularExpressions
 // Configuration
 // ============================================================================
 
-let fsproj = "src/TestPrune.Core/TestPrune.Core.fsproj"
-let dllPath = "src/TestPrune.Core/bin/Release/net10.0/TestPrune.Core.dll"
+type PackageConfig =
+    { Name: string
+      Fsproj: string
+      DllPath: string
+      TagPrefix: string }
+
+let packages =
+    Map.ofList
+        [ "core",
+          { Name = "TestPrune.Core"
+            Fsproj = "src/TestPrune.Core/TestPrune.Core.fsproj"
+            DllPath = "src/TestPrune.Core/bin/Release/net10.0/TestPrune.Core.dll"
+            TagPrefix = "core-v" }
+          "falco",
+          { Name = "TestPrune.Falco"
+            Fsproj = "src/TestPrune.Falco/TestPrune.Falco.fsproj"
+            DllPath = "src/TestPrune.Falco/bin/Release/net10.0/TestPrune.Falco.dll"
+            TagPrefix = "falco-v" } ]
+
+let mutable activePackage = packages.["core"]
 let repoUrl = "https://github.com/michaelglass/TestPrune"
 
 // ============================================================================
@@ -137,7 +155,8 @@ module Version =
         | PreRelease(RC n) -> sprintf "%s-rc.%d" base' n
         | Stable -> base'
 
-    let toTag (v: Version) : string = sprintf "v%s" (format v)
+    let toTag (v: Version) : string =
+        sprintf "%s%s" activePackage.TagPrefix (format v)
 
     let firstAlpha =
         { Major = 0
@@ -210,19 +229,21 @@ module Api =
 
     let extractCurrent () : ApiSignature list =
         Shell.runOrFail "dotnet" "build -c Release --verbosity quiet" |> ignore
-        extractFromDll (Path.GetFullPath dllPath)
+        extractFromDll (Path.GetFullPath activePackage.DllPath)
 
     let extractFromTag (tag: string) : ApiSignature list =
         // Use a jj workspace to checkout the tag without affecting working copy
-        let tempDir = Path.Combine(Path.GetTempPath(), sprintf "api-check-%s" (Guid.NewGuid().ToString("N").[..7]))
+        let tempDir =
+            Path.Combine(Path.GetTempPath(), sprintf "api-check-%s" (Guid.NewGuid().ToString("N").[..7]))
 
         try
             Shell.runOrFail "jj" (sprintf "workspace add %s -r %s" tempDir tag) |> ignore
 
             // Build in the temp directory
-            Shell.runOrFail "dotnet" (sprintf "build %s/%s -c Release --verbosity quiet" tempDir fsproj) |> ignore
+            Shell.runOrFail "dotnet" (sprintf "build %s/%s -c Release --verbosity quiet" tempDir activePackage.Fsproj)
+            |> ignore
 
-            let tempDllPath = Path.Combine(tempDir, dllPath)
+            let tempDllPath = Path.Combine(tempDir, activePackage.DllPath)
             let api = extractFromDll tempDllPath
 
             // Cleanup
@@ -236,7 +257,10 @@ module Api =
             Shell.runSilent "jj" (sprintf "workspace forget %s" tempDir) |> ignore
 
             if Directory.Exists(tempDir) then
-                try Directory.Delete(tempDir, true) with _ -> ()
+                try
+                    Directory.Delete(tempDir, true)
+                with _ ->
+                    ()
 
             printfn "Warning: Failed to extract API from tag %s: %s" tag ex.Message
             []
@@ -259,7 +283,11 @@ module Api =
 module Bump =
     type BumpResult = { NewVersion: Version; Reason: string }
 
-    let private isApiChanged = function Breaking _ | Addition _ -> true | NoChange -> false
+    let private isApiChanged =
+        function
+        | Breaking _
+        | Addition _ -> true
+        | NoChange -> false
 
     let fromApiChange (current: Version) (change: ApiChange) : BumpResult =
         match current.Stage with
@@ -300,7 +328,9 @@ module Bump =
 
     /// For alpha/beta: just bump the prerelease number, skip API comparison
     let private bumpPreRelease (v: Version) (pre: PreRelease) : BumpResult =
-        { NewVersion = { v with Stage = PreRelease(Version.bumpPreRelease pre) }
+        { NewVersion =
+            { v with
+                Stage = PreRelease(Version.bumpPreRelease pre) }
           Reason =
             match pre with
             | Alpha n -> sprintf "alpha.%d (API changes ignored in alpha)" (n + 1)
@@ -357,25 +387,29 @@ module VCS =
         | Failure _ -> false
 
     let getLatestTag () =
-        match Shell.run "jj" "tag list v*" with
+        let prefix = activePackage.TagPrefix
+
+        match Shell.run "jj" (sprintf "tag list %s*" prefix) with
         | Success output when output <> "" ->
             output.Split('\n')
             |> Array.map (fun line -> line.Split(':').[0].Trim())
-            |> Array.filter (fun t -> t.StartsWith("v"))
-            |> Array.sortByDescending (fun t -> Version.sortKey (Version.parse t))
+            |> Array.filter (fun t -> t.StartsWith(prefix))
+            |> Array.sortByDescending (fun t -> Version.sortKey (Version.parse (t.Substring(prefix.Length))))
             |> Array.tryHead
         | _ -> None
 
     let getReleaseState () : ReleaseState =
         match getLatestTag () with
-        | Some tag -> HasPreviousRelease(tag, Version.parse tag)
+        | Some tag -> HasPreviousRelease(tag, Version.parse (tag.Substring(activePackage.TagPrefix.Length)))
         | None -> FirstRelease
 
     let commitAndTag (version: Version) =
         let versionStr = Version.format version
         let tag = Version.toTag version
 
-        Shell.runOrFail "jj" (sprintf "commit -m \"Release %s\"" versionStr) |> ignore
+        Shell.runOrFail "jj" (sprintf "commit -m \"Release %s %s\"" activePackage.Name versionStr)
+        |> ignore
+
         Shell.runOrFail "jj" "bookmark set main -r @-" |> ignore
         Shell.runOrFail "jj" (sprintf "tag set %s -r @-" tag) |> ignore
 
@@ -388,7 +422,9 @@ module VCS =
     let push tag =
         Shell.runOrFail "jj" "git push --all" |> ignore
         Shell.runOrFail "jj" "git export" |> ignore
-        Shell.runOrFail "git" (sprintf "--git-dir=%s push origin %s" (gitDir ()) tag) |> ignore
+
+        Shell.runOrFail "git" (sprintf "--git-dir=%s push origin %s" (gitDir ()) tag)
+        |> ignore
 
 // ============================================================================
 // NuGet Operations
@@ -403,9 +439,7 @@ module NuGet =
 
         Directory.CreateDirectory(artifactsDir) |> ignore
 
-        Shell.runOrFail
-            "dotnet"
-            (sprintf "pack %s -c Release -o %s" fsproj artifactsDir)
+        Shell.runOrFail "dotnet" (sprintf "pack %s -c Release -o %s" activePackage.Fsproj artifactsDir)
         |> ignore
 
         Directory.GetFiles(artifactsDir, "*.nupkg")
@@ -419,7 +453,10 @@ module NuGet =
         let pushArgs =
             match apiKey with
             | Some key ->
-                sprintf "nuget push %s --api-key %s --source https://api.nuget.org/v3/index.json --skip-duplicate" nupkgPath key
+                sprintf
+                    "nuget push %s --api-key %s --source https://api.nuget.org/v3/index.json --skip-duplicate"
+                    nupkgPath
+                    key
             | None ->
                 printfn "No NUGET_API_KEY found, trying with stored credentials..."
                 printfn "(To set up: get key from https://www.nuget.org/account/apikeys)"
@@ -433,12 +470,12 @@ module NuGet =
 
 module Project =
     let updateVersion (version: Version) =
-        let content = File.ReadAllText(fsproj)
+        let content = File.ReadAllText(activePackage.Fsproj)
 
         let newContent =
             Regex.Replace(content, @"<Version>.*</Version>", sprintf "<Version>%s</Version>" (Version.format version))
 
-        File.WriteAllText(fsproj, newContent)
+        File.WriteAllText(activePackage.Fsproj, newContent)
 
 // ============================================================================
 // User Interaction
@@ -447,6 +484,7 @@ module Project =
 module UI =
     let promptYesNo message =
         printf "%s [y/N] " message
+
         match Console.ReadLine() with
         | null -> false
         | s -> s.ToLower() = "y"
@@ -474,12 +512,13 @@ module UI =
         | NoChange -> printfn "\nNo API changes detected."
 
     let showHelp () =
-        printfn "Usage: script/release.fsx [command] [--publish]"
+        printfn "Usage: scripts/release.fsx [command] [--package core|falco] [--publish]"
         printfn ""
-        printfn "Versioning:"
-        printfn "  alpha/beta  - just bump prerelease number (no API check)"
-        printfn "  rc/stable   - bump based on API changes:"
-        printfn "                MAJOR (breaking) / MINOR (additions) / PATCH (none)"
+        printfn "Packages:"
+        printfn "  --package core   - TestPrune.Core (default)"
+        printfn "  --package falco  - TestPrune.Falco"
+        printfn ""
+        printfn "Tags: core-v1.0.0 / falco-v1.0.0"
         printfn ""
         printfn "Commands:"
         printfn "  (none)  - auto-bump: alpha.N+1 or API-based for rc/stable"
@@ -490,11 +529,6 @@ module UI =
         printfn ""
         printfn "Options:"
         printfn "  --publish  - publish to NuGet locally instead of pushing to GitHub"
-        printfn ""
-        printfn "For --publish, set NUGET_API_KEY environment variable:"
-        printfn "  1. Get key from https://www.nuget.org/account/apikeys"
-        printfn "  2. export NUGET_API_KEY=\"your-key\"  (add to ~/.zshrc)"
-        printfn "  Or: NUGET_API_KEY=\"key\" mise run release --publish"
 
 // ============================================================================
 // Command Parsing
@@ -515,9 +549,23 @@ let parseArgs (argv: string array) : ReleaseCommand * PublishMode =
     let args = argv |> Array.toList
     let hasPublish = args |> List.contains "--publish"
 
+    // Parse --package flag
+    let rec findPackage =
+        function
+        | "--package" :: pkg :: _ ->
+            match packages |> Map.tryFind pkg with
+            | Some config -> activePackage <- config
+            | None -> failwithf "Unknown package: %s (use 'core' or 'falco')" pkg
+        | _ :: rest -> findPackage rest
+        | [] -> ()
+
+    findPackage args
+
     let cmdArgs =
         args
         |> List.filter (fun a -> a <> "--publish")
+        |> List.filter (fun a -> a <> "--package")
+        |> List.filter (fun a -> not (packages |> Map.containsKey a))
         |> List.tryHead
         |> Option.defaultValue ""
 
@@ -610,7 +658,9 @@ let release (cmd: ReleaseCommand) (mode: PublishMode) : ReleaseOutcome =
                             VCS.push tag
                             printfn "Pushed tag %s" tag
                     else
-                        printfn "\nTo publish later: dotnet nuget push %s --source https://api.nuget.org/v3/index.json" nupkgPath
+                        printfn
+                            "\nTo publish later: dotnet nuget push %s --source https://api.nuget.org/v3/index.json"
+                            nupkgPath
 
                 | GitHubActions ->
                     if UI.promptYesNo "\nPush to trigger release?" then

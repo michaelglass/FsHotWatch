@@ -102,8 +102,11 @@ let parseCoverageReport (xmlPath: string) : FileCoverage list =
     doc.Root.Descendants(ns + "class")
     |> Seq.choose (fun classEl ->
         let fn = classEl.Attribute(XName.Get("filename"))
-        if isNull fn || not (isIncluded fn.Value) then None
-        else Some(fn.Value, classEl))
+
+        if isNull fn || not (isIncluded fn.Value) then
+            None
+        else
+            Some(fn.Value, classEl))
     |> Seq.toList
     |> List.groupBy fst
     |> List.map (fun (fileName, items) ->

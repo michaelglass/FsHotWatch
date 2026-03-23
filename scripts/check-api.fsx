@@ -49,10 +49,7 @@ let run (cmd: string) (args: string) =
     let error = p.StandardError.ReadToEnd()
     p.WaitForExit()
 
-    if p.ExitCode = 0 then
-        Ok(output.Trim())
-    else
-        Error error
+    if p.ExitCode = 0 then Ok(output.Trim()) else Error error
 
 let runOrFail cmd args =
     match run cmd args with
@@ -80,8 +77,13 @@ let extractApiFromTag (tag: string) : string list =
 
     try
         let repoPath = Directory.GetCurrentDirectory()
-        runOrFail "git" (sprintf "clone --depth 1 --branch %s file://%s %s" tag repoPath tempDir) |> ignore
-        runOrFail "dotnet" (sprintf "build %s/%s -c Release --verbosity quiet" tempDir fsproj) |> ignore
+
+        runOrFail "git" (sprintf "clone --depth 1 --branch %s file://%s %s" tag repoPath tempDir)
+        |> ignore
+
+        runOrFail "dotnet" (sprintf "build %s/%s -c Release --verbosity quiet" tempDir fsproj)
+        |> ignore
+
         let tempDllPath = Path.Combine(tempDir, dllPath)
         let api = extractApi tempDllPath
         Directory.Delete(tempDir, true)

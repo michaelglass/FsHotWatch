@@ -1,8 +1,10 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/SampleLib/SampleLib.fsproj" />
+    <Project Path="src/SampleWeb/SampleWeb.fsproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/SampleLib.Tests/SampleLib.Tests.fsproj" />
+    <Project Path="tests/SampleWeb.IntegrationTests/SampleWeb.IntegrationTests.fsproj" />
   </Folder>
 </Solution>

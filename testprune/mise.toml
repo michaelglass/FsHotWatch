@@ -86,6 +86,9 @@ description = "Run all CI checks (no auto-fix)"
 depends = ["format-check", "lint", "coverage-check", "sync-docs-check", "docs", "example-build"]
 
 [tasks.pack]
-description = "Create NuGet package"
-run = "dotnet pack src/TestPrune.Core/TestPrune.Core.fsproj -c Release"
+description = "Create NuGet packages"
+run = """
+dotnet pack src/TestPrune.Core/TestPrune.Core.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune.Falco/TestPrune.Falco.fsproj -c Release -o artifacts
+"""
 depends = ["build"]

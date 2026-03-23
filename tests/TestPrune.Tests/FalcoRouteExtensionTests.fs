@@ -42,12 +42,10 @@ let private withTestSetup
             for (fileName, content) in testFiles do
                 File.WriteAllText(Path.Combine(testDir, fileName), content)
 
-        let extension =
-            FalcoRouteExtension(integrationTestProject, integrationTestSubDir)
+        let extension = FalcoRouteExtension(integrationTestProject, integrationTestSubDir)
 
         let result =
-            (extension :> ITestPruneExtension)
-                .FindAffectedTests db changedFiles tempDir
+            (extension :> ITestPruneExtension).FindAffectedTests db changedFiles tempDir
 
         f result
     finally
@@ -78,16 +76,26 @@ module ``debug db roundtrip`` =
             // Now test the extension end-to-end
             let testDir = Path.Combine(tempDir, "tests/IntTests")
             Directory.CreateDirectory(testDir) |> ignore
-            let testContent = "type UsersTests(output: obj) =\n    member _.GetUser() =\n        let url = \"/api/users/123\"\n        ()\n"
+
+            let testContent =
+                "type UsersTests(output: obj) =\n    member _.GetUser() =\n        let url = \"/api/users/123\"\n        ()\n"
+
             File.WriteAllText(Path.Combine(testDir, "UsersTests.fs"), testContent)
 
             // Verify the file exists at the expected location
             let expectedDir = Path.Combine(tempDir, "tests/IntTests")
-            let files = Directory.GetFiles(expectedDir, "*.fs", SearchOption.AllDirectories) |> Array.toList
+
+            let files =
+                Directory.GetFiles(expectedDir, "*.fs", SearchOption.AllDirectories)
+                |> Array.toList
+
             test <@ files.Length = 1 @>
 
             let extension = FalcoRouteExtension("IntTests", "tests/IntTests")
-            let result = (extension :> ITestPruneExtension).FindAffectedTests db ["src/Handlers/Users.fs"] tempDir
+
+            let result =
+                (extension :> ITestPruneExtension).FindAffectedTests db [ "src/Handlers/Users.fs" ] tempDir
+
             test <@ result.Length = 1 @>
         finally
             cleanupDir tempDir
@@ -126,8 +134,10 @@ module ``changed handler file returns affected test classes`` =
             [ "src/Handlers/Users.fs" ]
             (fun result ->
                 test
-                    <@ result = [ { TestProject = "IntTests"
-                                    TestClass = "UsersTests" } ] @>)
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "UsersTests" } ]
+                    @>)
 
 module ``changed handler with module-style test file`` =
 
@@ -146,8 +156,10 @@ module ``changed handler with module-style test file`` =
             [ "src/Handlers/Users.fs" ]
             (fun result ->
                 test
-                    <@ result = [ { TestProject = "IntTests"
-                                    TestClass = "UsersTests" } ] @>)
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "UsersTests" } ]
+                    @>)
 
 module ``no matching URL in test files returns empty`` =
 
@@ -197,5 +209,7 @@ module ``URL pattern with path parameters matches correctly`` =
             [ "src/Handlers/UserPosts.fs" ]
             (fun result ->
                 test
-                    <@ result = [ { TestProject = "IntTests"
-                                    TestClass = "UserPostsTests" } ] @>)
+                    <@
+                        result = [ { TestProject = "IntTests"
+                                     TestClass = "UserPostsTests" } ]
+                    @>)
