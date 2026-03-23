@@ -26,12 +26,15 @@ let excludedDirs = [| "/tests/" |]
 /// When adding/improving tests, ratchet these thresholds UP toward 100.
 let overrides =
     Map.ofList
-        [ // AstAnalyzer.fs: Exception handlers for InvalidOperationException in classifySymbol
+        [ // FalcoRouteAnalysis.fs: Compiler-generated branches in for-loop iteration and
+          // regex matching closures. Line gap from obj/bin filter path in findTestFiles.
+          "FalcoRouteAnalysis.fs", (97.0, 85.0)
+          // AstAnalyzer.fs: Exception handlers for InvalidOperationException in classifySymbol
           // (lines 78, 97, 102) are impossible to trigger in unit tests — they guard against
           // faulty FCS symbols. classifyDependency default arm (line 111) requires non-standard
           // FSharp symbol types. Compiler-generated branches for type-test patterns and
           // for-loop iteration add uncoverable IL branches.
-          "AstAnalyzer.fs", (89.0, 70.0)
+          "AstAnalyzer.fs", (90.0, 74.0)
           // Database.fs: Compiler-generated branches in while-loop readers, for-loop iteration,
           // and transaction try/with rollback paths. Route handler code now tested.
           "Database.fs", (82.0, 66.0)
@@ -49,7 +52,7 @@ let overrides =
           // TestRunner.fs: Pure functions (buildFilterArgs, normalizeExitCode, findTestDll),
           // DI variants (runAllTestsWith, runFilteredTestsWith), and discoverTestProjects
           // (including exception handler) all tested. Remaining: runProcess (actual process exec).
-          "TestRunner.fs", (62.0, 50.0) ]
+          "TestRunner.fs", (63.0, 50.0) ]
 
 // ============================================================================
 // Types
