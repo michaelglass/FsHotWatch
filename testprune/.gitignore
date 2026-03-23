@@ -1,0 +1,9 @@
+bin/
+obj/
+.test-prune.db*
+.ionide/
+.idea/
+*.user
+*.suo
+TestResults/
+coverage/

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <NoWarn>$(NoWarn);NU1608;NETSDK1188</NoWarn>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="AstAnalyzer.fs" />
+        <Compile Include="Database.fs" />
+        <Compile Include="DiffParser.fs" />
+        <Compile Include="SymbolDiff.fs" />
+        <Compile Include="ImpactAnalysis.fs" />
+        <Compile Include="DeadCode.fs" />
+        <Compile Include="Extensions.fs" />
+        <Compile Include="TestRunner.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="FSharp.Compiler.Service" Version="43.12.201" />
+        <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.5" />
+    </ItemGroup>
+
+</Project>

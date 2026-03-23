@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <NoWarn>$(NoWarn);NU1608;NETSDK1188</NoWarn>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="FcsTests.fs" />
+    <Compile Include="AstAnalyzerTests.fs" />
+    <Compile Include="DatabaseTests.fs" />
+    <Compile Include="DiffParserTests.fs" />
+    <Compile Include="SymbolDiffTests.fs" />
+    <Compile Include="ImpactAnalysisTests.fs" />
+    <Compile Include="DeadCodeTests.fs" />
+    <Compile Include="IntegrationTests.fs" />
+    <Compile Include="ProgramTests.fs" />
+  </ItemGroup>
+
+  <!-- xUnit runner configuration -->
+  <ItemGroup>
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/TestPrune.Core/TestPrune.Core.fsproj" />
+    <ProjectReference Include="../../src/TestPrune/TestPrune.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Unquote" Version="7.0.1" />
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="xunit.v3.mtp-v2" Version="3.2.2" />
+    <PackageReference Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.5.2" />
+  </ItemGroup>
+
+</Project>
