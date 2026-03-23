@@ -11,8 +11,13 @@ open TestPrune.Extensions
 type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: string) =
 
     let urlPatternToRegex (urlPattern: string) : Regex =
-        let escaped = Regex.Escape(urlPattern)
-        let pattern = Regex.Replace(escaped, @"\\\{[^}]+\\\}", "[^/]+")
+        // Replace {param} placeholders with a sentinel before escaping,
+        // so we don't depend on Regex.Escape's treatment of braces
+        // (which changed in .NET 9+).
+        let placeholder = "__PARAM__"
+        let withPlaceholders = Regex.Replace(urlPattern, @"\{[^}]+\}", placeholder)
+        let escaped = Regex.Escape(withPlaceholders)
+        let pattern = escaped.Replace(placeholder, "[^/]+")
         Regex($"(?:^|[\"'/])%s{pattern}(?:[\"'?#\\s]|$)", RegexOptions.Compiled)
 
     let findTestClassesInFiles (testFiles: string list) (regexes: Regex list) : string list =
