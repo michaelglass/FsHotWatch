@@ -69,7 +69,7 @@ run = "dotnet fsi scripts/sync-docs.fsx --check"
 
 [tasks.docs]
 description = "Generate API documentation"
-run = "dotnet fsdocs build --output output/docs --clean"
+run = "dotnet fsdocs build --output output/docs --clean --parameters root /TestPrune/"
 depends = ["build", "tool-restore"]
 
 [tasks.docs-watch]
