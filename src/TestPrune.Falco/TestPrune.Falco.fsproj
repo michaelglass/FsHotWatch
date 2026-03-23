@@ -8,7 +8,11 @@
     <Description>Falco route-based integration test filtering extension for TestPrune</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
+    <PackageTags>fsharp;testing;falco;routing;test-impact-analysis</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeSymbols>true</IncludeSymbols>
   </PropertyGroup>
 
   <ItemGroup>
