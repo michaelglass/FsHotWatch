@@ -35,6 +35,13 @@ let allPackages =
 
 let repoUrl = "https://github.com/michaelglass/TestPrune"
 
+/// Versions that were accidentally published to NuGet and cannot be reused.
+/// The script will skip these and bump to the next patch version.
+let reservedVersions =
+    set
+        [ "TestPrune.Core", "1.0.0"
+          "TestPrune.Falco", "1.0.0" ]
+
 // ============================================================================
 // Domain Types
 // ============================================================================
@@ -596,9 +603,20 @@ let release (cmd: ReleaseCommand) (mode: PublishMode) : int =
         Shell.runOrFail "dotnet" "build -c Release --verbosity quiet" |> ignore
 
         // Determine which packages need releasing
+        let skipReserved (pkg: PackageConfig) (bump: Bump.BumpResult) =
+            let ver = Version.format bump.NewVersion
+            if reservedVersions |> Set.contains (pkg.Name, ver) then
+                let patched = Version.bumpPatch bump.NewVersion
+                printfn "  Skipping reserved version %s -> %s" ver (Version.format patched)
+                { bump with NewVersion = patched; Reason = sprintf "%s (skipped reserved %s)" bump.Reason ver }
+            else
+                bump
+
         let bumps =
             allPackages
-            |> List.choose (fun pkg -> determineBump pkg cmd |> Option.map (fun bump -> pkg, bump))
+            |> List.choose (fun pkg ->
+                determineBump pkg cmd
+                |> Option.map (fun bump -> pkg, skipReserved pkg bump))
 
         if bumps.IsEmpty then
             printfn "\nNo packages to release."
