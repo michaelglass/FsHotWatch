@@ -96,6 +96,7 @@ let private openConnection (dbPath: string) =
 
     conn
 
+/// SQLite-backed dependency graph storage.
 type Database(dbPath: string) =
 
     do
@@ -104,8 +105,10 @@ type Database(dbPath: string) =
         cmd.CommandText <- schema
         cmd.ExecuteNonQuery() |> ignore
 
+    /// Create a Database instance, initializing the schema if needed.
     static member create(dbPath: string) = Database(dbPath)
 
+    /// Clear and re-insert symbols, dependencies, and test methods for files in a project.
     member _.RebuildForProject(_projectName: string, result: AnalysisResult) =
         let sourceFiles =
             result.Symbols |> List.map (fun s -> s.SourceFile) |> List.distinct
@@ -209,6 +212,7 @@ type Database(dbPath: string) =
             txn.Rollback()
             raise ex
 
+    /// Find test methods transitively depending on the given changed symbol names.
     member _.QueryAffectedTests(changedSymbolNames: string list) : TestMethodInfo list =
         if changedSymbolNames.IsEmpty then
             []
@@ -249,6 +253,7 @@ type Database(dbPath: string) =
                   TestClass = r.GetString(2)
                   TestMethod = r.GetString(3) })
 
+    /// Return all symbols stored for a given source file path.
     member _.GetSymbolsInFile(sourceFile: string) : SymbolInfo list =
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()
@@ -271,6 +276,7 @@ type Database(dbPath: string) =
               LineStart = r.GetInt32(3)
               LineEnd = r.GetInt32(4) })
 
+    /// Return the set of all symbol full names.
     member _.GetAllSymbolNames() : Set<string> =
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()
@@ -279,6 +285,7 @@ type Database(dbPath: string) =
         use reader = cmd.ExecuteReader()
         readAll reader (fun r -> r.GetString(0)) |> Set.ofList
 
+    /// Return all symbols ordered by file and line.
     member _.GetAllSymbols() : SymbolInfo list =
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()
@@ -298,6 +305,7 @@ type Database(dbPath: string) =
               LineStart = r.GetInt32(3)
               LineEnd = r.GetInt32(4) })
 
+    /// Return the set of symbol names that are test methods.
     member _.GetTestMethodSymbolNames() : Set<string> =
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()

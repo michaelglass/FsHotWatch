@@ -2,6 +2,7 @@ module TestPrune.SymbolDiff
 
 open TestPrune.AstAnalyzer
 
+/// A change detected between stored and current symbols (Modified, Added, or Removed).
 type SymbolChange =
     | Modified of symbolName: string
     | Added of symbolName: string

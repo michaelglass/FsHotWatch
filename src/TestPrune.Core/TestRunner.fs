@@ -4,6 +4,7 @@ open System
 open System.Diagnostics
 open System.IO
 
+/// Result of running a test process, containing exit code and combined stdout/stderr output.
 type TestResult = { ExitCode: int; Output: string }
 
 /// Type alias for process runner functions.

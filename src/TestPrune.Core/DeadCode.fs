@@ -4,6 +4,7 @@ open System
 open TestPrune.AstAnalyzer
 open TestPrune.Database
 
+/// Result of dead code analysis containing total, reachable, and unreachable symbol counts.
 type DeadCodeResult =
     { TotalSymbols: int
       ReachableSymbols: int

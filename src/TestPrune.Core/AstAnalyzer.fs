@@ -6,6 +6,7 @@ open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 
+/// Discriminated union for kinds of F# symbols (function, type, DU case, etc.).
 type SymbolKind =
     | Function
     | Type
@@ -14,6 +15,7 @@ type SymbolKind =
     | Value
     | Property
 
+/// A symbol's fully-qualified name, kind, source file, and line span.
 type SymbolInfo =
     { FullName: string
       Kind: SymbolKind
@@ -21,22 +23,26 @@ type SymbolInfo =
       LineStart: int
       LineEnd: int }
 
+/// The kind of edge in a dependency graph (calls, uses type, pattern match, etc.).
 type DependencyKind =
     | Calls
     | UsesType
     | PatternMatches
     | References
 
+/// A directed dependency from one symbol to another, with its kind.
 type Dependency =
     { FromSymbol: string
       ToSymbol: string
       Kind: DependencyKind }
 
+/// Maps an HTTP route (method + URL pattern) to its handler's source file.
 type RouteHandlerEntry =
     { UrlPattern: string
       HttpMethod: string
       HandlerSourceFile: string }
 
+/// Describes a test method's fully-qualified name, project, class, and method name.
 type TestMethodInfo =
     { SymbolFullName: string
       TestProject: string
@@ -50,6 +56,7 @@ let normalizeSymbolPaths (repoRoot: string) (symbols: SymbolInfo list) =
         { s with
             SourceFile = System.IO.Path.GetRelativePath(repoRoot, s.SourceFile) })
 
+/// The combined output of analyzing a source file: symbols, dependencies, and test methods.
 type AnalysisResult =
     { Symbols: SymbolInfo list
       Dependencies: Dependency list

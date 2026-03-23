@@ -4,6 +4,7 @@ open TestPrune.AstAnalyzer
 open TestPrune.Database
 open TestPrune.SymbolDiff
 
+/// Result of test impact analysis: either a subset of affected tests or run-all with a reason.
 type TestSelection =
     | RunSubset of TestMethodInfo list
     | RunAll of reason: string
