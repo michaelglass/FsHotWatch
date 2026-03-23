@@ -118,8 +118,14 @@ let findProjectFiles (repoRoot: string) : string list =
         not (n.Contains("/obj/", StringComparison.Ordinal))
         && not (n.Contains("/bin/", StringComparison.Ordinal)))
 
-/// Run the index command: build projects, then parse with real project options.
-let runIndex (repoRoot: string) : int =
+/// Builds the solution. Returns exit code (0 = success).
+type BuildRunner = string -> int
+
+/// Gets FSharpProjectOptions for a project file.
+type ProjectOptionsProvider = FSharpChecker -> string -> FSharpProjectOptions
+
+/// Run the index command with injectable build runner and project options provider.
+let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider) (repoRoot: string) : int =
     let dbPath = Path.Combine(repoRoot, ".test-prune.db")
     let db = Database.create dbPath
 
@@ -134,27 +140,10 @@ let runIndex (repoRoot: string) : int =
     let projectFiles = findProjectFiles repoRoot
     eprintfn $"Found %d{projectFiles.Length} projects"
 
-    // Build all projects first so output dirs have reference DLLs
     eprintfn "Building projects..."
-    let slnFiles = Directory.GetFiles(repoRoot, "*.sln")
+    let buildExitCode = buildRunner repoRoot
 
-    let slnPath =
-        if slnFiles.Length > 0 then
-            slnFiles.[0]
-        else
-            repoRoot
-
-    let buildPsi = ProcessStartInfo("dotnet", $"build \"%s{slnPath}\" -v quiet")
-
-    buildPsi.UseShellExecute <- false
-    buildPsi.RedirectStandardOutput <- true
-    buildPsi.RedirectStandardError <- true
-    use buildProc = Process.Start(buildPsi)
-    buildProc.StandardOutput.ReadToEnd() |> ignore
-    buildProc.StandardError.ReadToEnd() |> ignore
-    buildProc.WaitForExit()
-
-    if buildProc.ExitCode <> 0 then
+    if buildExitCode <> 0 then
         eprintfn "Build failed — cannot index"
         1
     else
@@ -166,7 +155,7 @@ let runIndex (repoRoot: string) : int =
             let projName = Path.GetFileNameWithoutExtension(fsprojPath)
 
             try
-                let projOptions = getProjectOptions checker fsprojPath
+                let projOptions = getOptions checker fsprojPath
                 let compileFiles, _ = parseProjectFile fsprojPath
 
                 let mutable allSymbols = []
@@ -207,34 +196,61 @@ let runIndex (repoRoot: string) : int =
 
         0
 
+/// Default build runner: runs `dotnet build` on the solution.
+let dotnetBuildRunner: BuildRunner =
+    fun (repoRoot: string) ->
+        let slnFiles =
+            [| "*.slnx"; "*.sln" |]
+            |> Array.collect (fun pattern -> Directory.GetFiles(repoRoot, pattern))
+
+        let slnPath = if slnFiles.Length > 0 then slnFiles.[0] else repoRoot
+
+        let buildPsi = ProcessStartInfo("dotnet", $"build \"%s{slnPath}\" -v quiet")
+        buildPsi.UseShellExecute <- false
+        buildPsi.RedirectStandardOutput <- true
+        buildPsi.RedirectStandardError <- true
+        use buildProc = Process.Start(buildPsi)
+        buildProc.StandardOutput.ReadToEnd() |> ignore
+        buildProc.StandardError.ReadToEnd() |> ignore
+        buildProc.WaitForExit()
+        buildProc.ExitCode
+
+/// Run the index command: build projects, then parse with real project options.
+let runIndex (repoRoot: string) : int =
+    runIndexWith dotnetBuildRunner getProjectOptions repoRoot
+
+type DiffProvider = unit -> Result<string, string>
+
 /// Get jj diff output.
-let private getJjDiff () : Result<string, string> =
-    try
-        let psi = ProcessStartInfo("jj", "diff --git")
-        psi.RedirectStandardOutput <- true
-        psi.RedirectStandardError <- true
-        psi.UseShellExecute <- false
-        psi.CreateNoWindow <- true
+let jjDiffProvider: DiffProvider =
+    fun () ->
+        try
+            let psi = ProcessStartInfo("jj", "diff --git")
+            psi.RedirectStandardOutput <- true
+            psi.RedirectStandardError <- true
+            psi.UseShellExecute <- false
+            psi.CreateNoWindow <- true
 
-        use proc = Process.Start(psi)
-        let output = proc.StandardOutput.ReadToEnd()
-        let _stderr = proc.StandardError.ReadToEnd()
-        proc.WaitForExit()
+            use proc = Process.Start(psi)
+            let output = proc.StandardOutput.ReadToEnd()
+            let _stderr = proc.StandardError.ReadToEnd()
+            proc.WaitForExit()
 
-        if proc.ExitCode = 0 then
-            Ok output
-        else
-            Error "jj diff failed — is this a jj repository?"
-    with ex ->
-        Error $"Failed to run jj: %s{ex.Message}"
+            if proc.ExitCode = 0 then
+                Ok output
+            else
+                Error "jj diff failed — is this a jj repository?"
+        with ex ->
+            Error $"Failed to run jj: %s{ex.Message}"
 
 /// Determine test selection from current jj diff.
-let private analyzeChanges
+let analyzeChanges
+    (getDiff: DiffProvider)
     (repoRoot: string)
     (db: Database)
     (checker: FSharpChecker)
     : Result<TestSelection * string list, string> =
-    match getJjDiff () with
+    match getDiff () with
     | Error msg -> Error msg
     | Ok diffText ->
         let changedFiles = parseChangedFiles diffText
@@ -262,8 +278,8 @@ let private analyzeChanges
             let selection = selectTests db changedFiles currentSymbolsByFile
             Ok(selection, changedFiles)
 
-/// Run the status command: show what would run without executing.
-let runStatus (repoRoot: string) : int =
+/// Run the status command with an injectable diff provider.
+let runStatusWith (getDiff: DiffProvider) (repoRoot: string) : int =
     let dbPath = Path.Combine(repoRoot, ".test-prune.db")
 
     if not (File.Exists(dbPath)) then
@@ -273,7 +289,7 @@ let runStatus (repoRoot: string) : int =
         let db = Database.create dbPath
         let checker = FSharpChecker.Create()
 
-        match analyzeChanges repoRoot db checker with
+        match analyzeChanges getDiff repoRoot db checker with
         | Error msg ->
             eprintfn $"Error: %s{msg}"
             1
@@ -308,8 +324,11 @@ let runStatus (repoRoot: string) : int =
                 printfn $"Would run ALL tests (reason: %s{reason})"
                 0
 
-/// Run the run command: determine and execute affected tests.
-let runRun (repoRoot: string) : int =
+/// Run the status command: show what would run without executing.
+let runStatus (repoRoot: string) : int = runStatusWith jjDiffProvider repoRoot
+
+/// Run the run command with an injectable diff provider.
+let runRunWith (getDiff: DiffProvider) (repoRoot: string) : int =
     let dbPath = Path.Combine(repoRoot, ".test-prune.db")
 
     if not (File.Exists(dbPath)) then
@@ -319,7 +338,7 @@ let runRun (repoRoot: string) : int =
         let db = Database.create dbPath
         let checker = FSharpChecker.Create()
 
-        match analyzeChanges repoRoot db checker with
+        match analyzeChanges getDiff repoRoot db checker with
         | Error msg ->
             eprintfn $"Error: %s{msg}"
             1
@@ -366,6 +385,9 @@ let runRun (repoRoot: string) : int =
                     | None -> eprintfn $"WARNING: project %s{projName} not found"
 
                 exitCode
+
+/// Run the run command: determine and execute affected tests.
+let runRun (repoRoot: string) : int = runRunWith jjDiffProvider repoRoot
 
 /// Run the dead-code command: detect unreachable symbols from entry points.
 let runDeadCode (repoRoot: string) (entryPatterns: string list) : int =

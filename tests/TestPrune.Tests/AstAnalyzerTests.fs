@@ -415,3 +415,104 @@ let routeHandler (x: int) : int =
         let endLine = r.EndLine
         test <@ startLine <= 4 @>
         test <@ endLine >= 8 @>
+
+module ``Enum type extraction`` =
+
+    [<Fact>]
+    let ``extracts enum type as a Type symbol`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Color =
+    | Red = 0
+    | Green = 1
+    | Blue = 2
+"""
+
+        let enumSym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Color", StringComparison.Ordinal) && s.Kind = Type)
+
+        test <@ enumSym.IsSome @>
+
+module ``Type abbreviation extraction`` =
+
+    [<Fact>]
+    let ``source with type abbreviation compiles and produces module symbol`` () =
+        // FCS does not emit FSharpEntity definition uses for type abbreviations via
+        // GetAllUsesOfAllSymbolsInFile; it resolves them to the underlying type.
+        // This test verifies that source containing a type abbreviation is analyzed
+        // without error and that the enclosing module is still captured as a symbol.
+        let result =
+            analyze
+                """
+module M
+
+type UserId = int
+type Name = string
+"""
+
+        let modSym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("M", StringComparison.Ordinal) && s.Kind = Module)
+
+        test <@ modSym.IsSome @>
+
+    [<Fact>]
+    let ``type abbreviation of user-defined record is analyzed without error`` () =
+        // When a function uses a type abbreviation of a user-defined type, analysis
+        // completes successfully and the underlying record is captured as a Type symbol.
+        let result =
+            analyze
+                """
+module M
+
+type Point = { X: float; Y: float }
+type Coord = Point
+
+let makePoint x y : Point = { X = x; Y = y }
+"""
+
+        let pointSym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Point", StringComparison.Ordinal) && s.Kind = Type)
+
+        test <@ pointSym.IsSome @>
+
+module ``Class type extraction`` =
+
+    [<Fact>]
+    let ``extracts class type as a Type symbol`` () =
+        let result =
+            analyze
+                """
+module M
+
+type MyClass() =
+    member _.Value = 42
+"""
+
+        let classSym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("MyClass", StringComparison.Ordinal) && s.Kind = Type)
+
+        test <@ classSym.IsSome @>
+
+    [<Fact>]
+    let ``extracts property member as a Property symbol`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Counter() =
+    member _.Prop = 42
+"""
+
+        let propSym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Prop", StringComparison.Ordinal) && s.Kind = Property)
+
+        test <@ propSym.IsSome @>

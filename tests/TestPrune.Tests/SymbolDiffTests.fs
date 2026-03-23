@@ -20,7 +20,7 @@ module ``No changes`` =
             [ mkSymbol "Mod.funcA" Function 1 5; mkSymbol "Mod.funcB" Function 7 12 ]
 
         let changes = detectChanges symbols symbols
-        test <@ changes = [] @>
+        test <@ changes |> List.isEmpty @>
 
 module ``Function body changed`` =
 
@@ -106,7 +106,7 @@ module ``Only whitespace changes`` =
             [ mkSymbol "Mod.funcA" Function 1 5; mkSymbol "Mod.funcB" Function 7 12 ]
 
         let changes = detectChanges current stored
-        test <@ changes = [] @>
+        test <@ changes |> List.isEmpty @>
 
 module ``changedSymbolNames extracts names`` =
 

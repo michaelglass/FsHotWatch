@@ -5,7 +5,8 @@ open Swensen.Unquote
 open TestPrune.DiffParser
 
 [<Fact>]
-let ``empty diff returns empty list`` () = test <@ parseChangedFiles "" = [] @>
+let ``empty diff returns empty list`` () =
+    test <@ parseChangedFiles "" |> List.isEmpty @>
 
 [<Fact>]
 let ``single modified file`` () =

@@ -136,7 +136,7 @@ module ``Changed symbol with no dependent tests`` =
             let result = selectTests db [ "src/Other.fs" ] currentSymbols
 
             match result with
-            | RunSubset tests -> test <@ tests = [] @>
+            | RunSubset tests -> test <@ tests |> List.isEmpty @>
             | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{reason}")
 
 module ``Multiple changed symbols`` =
@@ -220,7 +220,7 @@ module ``No changes`` =
             let result = selectTests db [] Map.empty
 
             match result with
-            | RunSubset tests -> test <@ tests = [] @>
+            | RunSubset tests -> test <@ tests |> List.isEmpty @>
             | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{reason}")
 
 module ``New file not indexed`` =
@@ -266,5 +266,39 @@ module ``Empty changed files`` =
             let result = selectTests db [] Map.empty
 
             match result with
-            | RunSubset tests -> test <@ tests = [] @>
+            | RunSubset tests -> test <@ tests |> List.isEmpty @>
+            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{reason}")
+
+module ``File with no stored symbols and no current symbols`` =
+
+    [<Fact>]
+    let ``both stored and current symbols empty returns empty subset`` () =
+        withDb (fun db ->
+            db.RebuildForProject("proj", standardGraph)
+
+            // "src/Empty.fs" was never indexed (no stored symbols) and has no current symbols either
+            let currentSymbols = Map.ofList [ "src/Empty.fs", [] ]
+
+            let result = selectTests db [ "src/Empty.fs" ] currentSymbols
+
+            match result with
+            | RunSubset tests -> test <@ tests |> List.isEmpty @>
+            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{reason}")
+
+module ``File that had symbols but now has none`` =
+
+    [<Fact>]
+    let ``all symbols removed from file detects removals and returns affected tests`` () =
+        withDb (fun db ->
+            db.RebuildForProject("proj", standardGraph)
+
+            // src/Lib.fs has stored symbols (Lib.funcB) but current symbols list is empty — all removed
+            let currentSymbols = Map.ofList [ "src/Lib.fs", [] ]
+
+            let result = selectTests db [ "src/Lib.fs" ] currentSymbols
+
+            match result with
+            | RunSubset tests ->
+                test <@ tests.Length = 1 @>
+                test <@ tests[0].TestMethod = "testA" @>
             | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{reason}")

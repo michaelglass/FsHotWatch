@@ -57,7 +57,7 @@ module ``All symbols reachable`` =
 
             let result = findDeadCode db [ "*.Program.main" ]
 
-            test <@ result.UnreachableSymbols = [] @>
+            test <@ result.UnreachableSymbols |> List.isEmpty @>
             test <@ result.TotalSymbols = 2 @>
             test <@ result.ReachableSymbols = 2 @>)
 
@@ -139,7 +139,7 @@ module ``Transitive reachability`` =
 
             let result = findDeadCode db [ "*.Program.main" ]
 
-            test <@ result.UnreachableSymbols = [] @>
+            test <@ result.UnreachableSymbols |> List.isEmpty @>
             test <@ result.ReachableSymbols = 4 @>)
 
 module ``Test methods excluded`` =
@@ -171,7 +171,7 @@ module ``Test methods excluded`` =
             let result = findDeadCode db [ "*.Program.main" ]
 
             // Test method is unreachable from production entry but should be excluded
-            test <@ result.UnreachableSymbols = [] @>)
+            test <@ result.UnreachableSymbols |> List.isEmpty @>)
 
 module ``Module symbols excluded`` =
 
@@ -231,4 +231,168 @@ module ``Test file symbols excluded`` =
             let result = findDeadCode db [ "*.Program.main" ]
 
             // TestHelpers.setup is in tests/ directory, should be excluded
-            test <@ result.UnreachableSymbols = [] @>)
+            test <@ result.UnreachableSymbols |> List.isEmpty @>)
+
+module ``matchesPattern — both wildcards (true, true)`` =
+
+    [<Fact>]
+    let ``*Route* matches symbol whose name contains Route`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.MyRouteHandler"
+                        Kind = Function
+                        SourceFile = "src/App/Routes.fs"
+                        LineStart = 1
+                        LineEnd = 5 }
+                      { FullName = "App.Unrelated"
+                        Kind = Function
+                        SourceFile = "src/App/Other.fs"
+                        LineStart = 1
+                        LineEnd = 5 } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildForProject("App", graph)
+
+            // *Route* should match App.MyRouteHandler and make it reachable
+            let result = findDeadCode db [ "*Route*" ]
+
+            let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
+            test <@ names = [ "App.Unrelated" ] @>)
+
+    [<Fact>]
+    let ``*Route* does not match symbol whose name lacks Route`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.MyRouteHandler"
+                        Kind = Function
+                        SourceFile = "src/App/Routes.fs"
+                        LineStart = 1
+                        LineEnd = 5 }
+                      { FullName = "App.Unrelated"
+                        Kind = Function
+                        SourceFile = "src/App/Other.fs"
+                        LineStart = 1
+                        LineEnd = 5 } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildForProject("App", graph)
+
+            // *Route* must not match App.Unrelated
+            let result = findDeadCode db [ "*Route*" ]
+
+            let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
+            test <@ names |> List.contains "App.Unrelated" @>)
+
+module ``matchesPattern — start wildcard only (true, false)`` =
+
+    [<Fact>]
+    let ``*.main matches symbol ending with .main`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "Program.main"
+                        Kind = Function
+                        SourceFile = "src/App/Program.fs"
+                        LineStart = 1
+                        LineEnd = 5 }
+                      { FullName = "App.Lib.helper"
+                        Kind = Function
+                        SourceFile = "src/App/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5 } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildForProject("App", graph)
+
+            // *.main matches Program.main, making it the sole entry point
+            let result = findDeadCode db [ "*.main" ]
+
+            let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
+            test <@ names = [ "App.Lib.helper" ] @>)
+
+    [<Fact>]
+    let ``*.main does not match symbol that does not end with .main`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "Program.main"
+                        Kind = Function
+                        SourceFile = "src/App/Program.fs"
+                        LineStart = 1
+                        LineEnd = 5 }
+                      { FullName = "App.Lib.helper"
+                        Kind = Function
+                        SourceFile = "src/App/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5 } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildForProject("App", graph)
+
+            // *.main must not match App.Lib.helper
+            let result = findDeadCode db [ "*.main" ]
+
+            let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
+            test <@ names |> List.contains "App.Lib.helper" @>)
+
+module ``matchesPattern — end wildcard only (false, true)`` =
+
+    [<Fact>]
+    let ``App.* does not match symbol outside the App namespace`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Program.main"
+                        Kind = Function
+                        SourceFile = "src/App/Program.fs"
+                        LineStart = 1
+                        LineEnd = 5 }
+                      { FullName = "Other.Lib.helper"
+                        Kind = Function
+                        SourceFile = "src/Other/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5 } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildForProject("App", graph)
+
+            // App.* must not match Other.Lib.helper
+            let result = findDeadCode db [ "App.*" ]
+
+            let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
+            test <@ names |> List.contains "Other.Lib.helper" @>)
+
+module ``matchesPattern — exact match (false, false)`` =
+
+    [<Fact>]
+    let ``exact pattern does not match a different symbol name`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Program.main"
+                        Kind = Function
+                        SourceFile = "src/App/Program.fs"
+                        LineStart = 1
+                        LineEnd = 5 }
+                      { FullName = "App.Lib.helper"
+                        Kind = Function
+                        SourceFile = "src/App/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5 } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildForProject("App", graph)
+
+            // Exact pattern must not match App.Lib.helper
+            let result = findDeadCode db [ "App.Program.main" ]
+
+            let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
+            test <@ names |> List.contains "App.Lib.helper" @>)

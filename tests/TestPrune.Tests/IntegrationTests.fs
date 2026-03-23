@@ -328,5 +328,5 @@ let f x = x
             let result = selectTests db [] Map.empty
 
             match result with
-            | RunSubset tests -> test <@ tests = [] @>
+            | RunSubset tests -> test <@ tests |> List.isEmpty @>
             | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{reason}")

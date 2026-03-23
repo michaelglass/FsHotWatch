@@ -6,6 +6,9 @@ open System.IO
 
 type TestResult = { ExitCode: int; Output: string }
 
+/// Type alias for process runner functions.
+type ProcessRunner = string -> string -> TestResult
+
 /// Default target framework moniker — update when upgrading .NET SDK.
 let defaultTfm = "net10.0"
 
@@ -30,22 +33,34 @@ let private runProcess (fileName: string) (arguments: string) : TestResult =
     { ExitCode = proc.ExitCode
       Output = stdout + stderr }
 
+/// Build the filter arguments string from a list of test class names.
+let buildFilterArgs (testClasses: string list) : string =
+    testClasses
+    |> List.map (fun cls -> $"--filter-class \"%s{cls}\"")
+    |> String.concat " "
+
+/// Normalize exit codes: xUnit v3 returns 8 when zero tests match — treat as success.
+let normalizeExitCode (exitCode: int) : int = if exitCode = 8 then 0 else exitCode
+
+/// Run all tests in a project using the given process runner.
+let runAllTestsWith (runner: ProcessRunner) (projectDll: string) : TestResult =
+    runner "dotnet" $"exec \"%s{projectDll}\""
+
 /// Run all tests in a project.
-let runAllTests (projectDll: string) : TestResult =
-    runProcess "dotnet" $"exec \"%s{projectDll}\""
+let runAllTests (projectDll: string) : TestResult = runAllTestsWith runProcess projectDll
+
+/// Run only tests in the specified classes using the given process runner.
+let runFilteredTestsWith (runner: ProcessRunner) (projectDll: string) (testClasses: string list) : TestResult =
+    let filterArgs = buildFilterArgs testClasses
+    let result = runner "dotnet" $"exec \"%s{projectDll}\" %s{filterArgs}"
+
+    { result with
+        ExitCode = normalizeExitCode result.ExitCode }
 
 /// Run only tests in the specified classes.
 /// Uses multiple --filter-class flags (ORed by xUnit v3 MTP).
 let runFilteredTests (projectDll: string) (testClasses: string list) : TestResult =
-    let filterArgs =
-        testClasses
-        |> List.map (fun cls -> $"--filter-class \"%s{cls}\"")
-        |> String.concat " "
-
-    let result = runProcess "dotnet" $"exec \"%s{projectDll}\" %s{filterArgs}"
-    // xUnit v3 returns exit code 8 when zero tests match the filter — treat as success
-    let exitCode = if result.ExitCode = 8 then 0 else result.ExitCode
-    { result with ExitCode = exitCode }
+    runFilteredTestsWith runProcess projectDll testClasses
 
 /// Discover test projects by scanning for .fsproj files with xunit references.
 /// Only scans tests/ directory to avoid .devenv/ symlink issues.

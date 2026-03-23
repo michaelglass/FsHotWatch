@@ -1,7 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <NoWarn>$(NoWarn);NU1608;NETSDK1188</NoWarn>
+    <NoWarn>$(NoWarn);NU1605;MSB3277;NETSDK1188</NoWarn>
+    <PackageId>TestPrune.Falco</PackageId>
+    <Authors>Michael Glass</Authors>
+    <Description>Falco route-based integration test filtering extension for TestPrune</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
   </PropertyGroup>
 
   <ItemGroup>

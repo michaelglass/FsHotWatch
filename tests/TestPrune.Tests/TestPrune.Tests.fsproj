@@ -3,7 +3,7 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <OutputType>Exe</OutputType>
-    <NoWarn>$(NoWarn);NU1608;NETSDK1188</NoWarn>
+    <NoWarn>$(NoWarn);NU1605;MSB3277;NETSDK1188</NoWarn>
     <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
     <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
     <IsPackable>false</IsPackable>
@@ -19,6 +19,8 @@
     <Compile Include="DeadCodeTests.fs" />
     <Compile Include="IntegrationTests.fs" />
     <Compile Include="ProgramTests.fs" />
+    <Compile Include="TestRunnerTests.fs" />
+    <Compile Include="ProjectLoaderTests.fs" />
   </ItemGroup>
 
   <!-- xUnit runner configuration -->
@@ -32,6 +34,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Update="FSharp.Core" Version="10.1.*" />
     <PackageReference Include="Unquote" Version="7.0.1" />
     <PackageReference Include="xunit.v3" Version="3.2.2" />
     <PackageReference Include="xunit.v3.mtp-v2" Version="3.2.2" />
