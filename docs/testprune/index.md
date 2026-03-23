@@ -1,9 +1,11 @@
 <!-- sync:intro -->
 # TestPrune
 
-F# test impact analysis. Uses FSharp.Compiler.Service to build a symbol
-dependency graph, then determines which tests are affected by a code change.
-Only affected tests run — unchanged code is skipped.
+Only run the tests affected by your change.
+
+TestPrune analyzes your F# code to figure out which functions depend on
+which, then uses that to skip tests that couldn't possibly be affected
+by what you changed.
 <!-- sync:intro:end -->
 
 ## Installation
