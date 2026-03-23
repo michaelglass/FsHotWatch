@@ -2,6 +2,7 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <NoWarn>$(NoWarn);NU1605;MSB3277;NETSDK1188</NoWarn>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>TestPrune.Falco</PackageId>
     <Authors>Michael Glass</Authors>
     <Description>Falco route-based integration test filtering extension for TestPrune</Description>

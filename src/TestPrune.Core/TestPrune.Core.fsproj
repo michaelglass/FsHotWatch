@@ -3,6 +3,7 @@
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
         <NoWarn>$(NoWarn);NU1605;MSB3277;NETSDK1188</NoWarn>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
         <PackageId>TestPrune.Core</PackageId>
         <Authors>Michael Glass</Authors>
         <Description>F# test impact analysis — AST-based dependency graph, symbol diffing, and test selection</Description>
