@@ -21,21 +21,21 @@ type PackageConfig =
     { Name: string
       Fsproj: string
       DllPath: string
-      TagPrefix: string }
+      TagPrefix: string
+      /// Additional fsproj files that should get the same version (e.g. CLI follows Core).
+      ExtraFsprojs: string list }
 
 let allPackages =
     [ { Name = "TestPrune.Core"
         Fsproj = "src/TestPrune.Core/TestPrune.Core.fsproj"
         DllPath = "src/TestPrune.Core/bin/Release/net10.0/TestPrune.Core.dll"
-        TagPrefix = "core-v" }
+        TagPrefix = "core-v"
+        ExtraFsprojs = [ "src/TestPrune/TestPrune.fsproj" ] }
       { Name = "TestPrune.Falco"
         Fsproj = "src/TestPrune.Falco/TestPrune.Falco.fsproj"
         DllPath = "src/TestPrune.Falco/bin/Release/net10.0/TestPrune.Falco.dll"
-        TagPrefix = "falco-v" }
-      { Name = "TestPrune"
-        Fsproj = "src/TestPrune/TestPrune.fsproj"
-        DllPath = "src/TestPrune/bin/Release/net10.0/TestPrune.dll"
-        TagPrefix = "cli-v" } ]
+        TagPrefix = "falco-v"
+        ExtraFsprojs = [] } ]
 
 let repoUrl = "https://github.com/michaelglass/TestPrune"
 
@@ -44,8 +44,7 @@ let repoUrl = "https://github.com/michaelglass/TestPrune"
 let reservedVersions =
     set
         [ "TestPrune.Core", "1.0.0"
-          "TestPrune.Falco", "1.0.0"
-          "TestPrune", "1.0.0" ]
+          "TestPrune.Falco", "1.0.0" ]
 
 // ============================================================================
 // Domain Types
@@ -464,13 +463,19 @@ module NuGet =
         Shell.runOrFail "dotnet" pushArgs |> ignore
 
 module Project =
-    let updateVersion (pkg: PackageConfig) (version: Version) =
-        let content = File.ReadAllText(pkg.Fsproj)
+    let private updateFsprojVersion (fsproj: string) (version: Version) =
+        let content = File.ReadAllText(fsproj)
 
         let newContent =
             Regex.Replace(content, @"<Version>.*</Version>", sprintf "<Version>%s</Version>" (Version.format version))
 
-        File.WriteAllText(pkg.Fsproj, newContent)
+        File.WriteAllText(fsproj, newContent)
+
+    let updateVersion (pkg: PackageConfig) (version: Version) =
+        updateFsprojVersion pkg.Fsproj version
+
+        for extra in pkg.ExtraFsprojs do
+            updateFsprojVersion extra version
 
 // ============================================================================
 // User Interaction
@@ -511,9 +516,8 @@ module UI =
         printfn ""
         printfn "Automatically detects which packages have API changes and releases them."
         printfn "Each package gets its own version and tag:"
-        printfn "  core-v1.0.0   TestPrune.Core"
+        printfn "  core-v1.0.0   TestPrune.Core + TestPrune CLI (same version)"
         printfn "  falco-v1.0.0  TestPrune.Falco"
-        printfn "  cli-v1.0.0    TestPrune (CLI tool)"
         printfn ""
         printfn "Commands:"
         printfn "  (none)  - auto-detect changes, bump based on API diff"
