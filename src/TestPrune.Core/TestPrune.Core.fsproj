@@ -13,7 +13,9 @@
         <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
         <PackageTags>fsharp;testing;test-impact-analysis;ast;dependency-graph;symbol-diff</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
+        <Version>0.1.0-alpha.1</Version>
         <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     </PropertyGroup>
 
     <ItemGroup>
