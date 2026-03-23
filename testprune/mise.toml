@@ -90,5 +90,6 @@ description = "Create NuGet packages"
 run = """
 dotnet pack src/TestPrune.Core/TestPrune.Core.fsproj -c Release -o artifacts
 dotnet pack src/TestPrune.Falco/TestPrune.Falco.fsproj -c Release -o artifacts
+dotnet pack src/TestPrune/TestPrune.fsproj -c Release -o artifacts
 """
 depends = ["build"]

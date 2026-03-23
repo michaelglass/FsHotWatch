@@ -31,7 +31,11 @@ let allPackages =
       { Name = "TestPrune.Falco"
         Fsproj = "src/TestPrune.Falco/TestPrune.Falco.fsproj"
         DllPath = "src/TestPrune.Falco/bin/Release/net10.0/TestPrune.Falco.dll"
-        TagPrefix = "falco-v" } ]
+        TagPrefix = "falco-v" }
+      { Name = "TestPrune"
+        Fsproj = "src/TestPrune/TestPrune.fsproj"
+        DllPath = "src/TestPrune/bin/Release/net10.0/TestPrune.dll"
+        TagPrefix = "cli-v" } ]
 
 let repoUrl = "https://github.com/michaelglass/TestPrune"
 
@@ -40,7 +44,8 @@ let repoUrl = "https://github.com/michaelglass/TestPrune"
 let reservedVersions =
     set
         [ "TestPrune.Core", "1.0.0"
-          "TestPrune.Falco", "1.0.0" ]
+          "TestPrune.Falco", "1.0.0"
+          "TestPrune", "1.0.0" ]
 
 // ============================================================================
 // Domain Types
