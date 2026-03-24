@@ -170,7 +170,7 @@ let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider)
 
     let checker =
         FSharpChecker.Create(
-            projectCacheSize = 25,
+            projectCacheSize = 200,
             keepAssemblyContents = true,
             keepAllBackgroundResolutions = true,
             parallelReferenceResolution = true
@@ -193,24 +193,68 @@ let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider)
         let mutable skippedProjects = 0
         let mutable skippedFiles = 0
 
-        for fsprojPath in projectFiles do
+        // Parse all projects upfront to get dependency order and cross-project refs
+        let projectInfos =
+            projectFiles
+            |> List.choose (fun fsprojPath ->
+                try
+                    let compileFiles, projectRefs = parseProjectFile fsprojPath
+                    Some(fsprojPath, compileFiles, projectRefs)
+                with ex ->
+                    eprintfn $"  Error parsing %s{fsprojPath}: %s{ex.Message}"
+                    None)
+
+        // Track which projects were re-indexed so dependents can invalidate
+        let reindexedProjects = System.Collections.Generic.HashSet<string>()
+
+        // Sort projects: process dependencies before dependents
+        let projectsByPath = projectInfos |> List.map (fun (p, _, _) -> Path.GetFullPath(p)) |> Set.ofList
+
+        let rec topoSort (remaining: (string * string list * string list) list) (sorted: (string * string list * string list) list) =
+            if remaining.IsEmpty then
+                sorted |> List.rev
+            else
+                let ready, blocked =
+                    remaining
+                    |> List.partition (fun (_, _, refs) ->
+                        refs
+                        |> List.filter (fun r -> projectsByPath.Contains(Path.GetFullPath(r)))
+                        |> List.forall (fun r ->
+                            sorted |> List.exists (fun (p, _, _) -> Path.GetFullPath(p) = Path.GetFullPath(r))))
+
+                if ready.IsEmpty then
+                    // Cycle or external refs — process remaining as-is
+                    (remaining |> List.rev) @ sorted |> List.rev
+                else
+                    topoSort blocked (ready @ sorted)
+
+        let sortedProjects = topoSort projectInfos []
+
+        for (fsprojPath, compileFiles, projectRefs) in sortedProjects do
             let projName = Path.GetFileNameWithoutExtension(fsprojPath)
 
             try
-                let compileFiles, _ = parseProjectFile fsprojPath
                 let hash = computeProjectHash compileFiles
 
+                // Check if any dependency was re-indexed — if so, invalidate this project
+                let depReindexed =
+                    projectRefs
+                    |> List.exists (fun r ->
+                        reindexedProjects.Contains(Path.GetFileNameWithoutExtension(r)))
+
                 match db.GetProjectKey(projName) with
-                | Some stored when stored = hash ->
+                | Some stored when stored = hash && not depReindexed ->
                     skippedProjects <- skippedProjects + 1
                     eprintfn $"  %s{projName}: unchanged, skipping"
                 | _ ->
                     let projOptions = lazy (getOptions checker fsprojPath)
                     let mutable analyzedFiles = 0
+                    // Track if any file in this project was re-analyzed (for compilation-order invalidation)
+                    let mutable firstChangedIndex = None
 
                     let results =
                         compileFiles
-                        |> List.choose (fun sourceFile ->
+                        |> List.mapi (fun idx sourceFile ->
                             if not (File.Exists(sourceFile)) then
                                 None
                             else
@@ -219,15 +263,26 @@ let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider)
 
                                 let fileKey = computeFileKey sourceFile
 
-                                match db.GetFileKey(relPath) with
-                                | Some stored when stored = fileKey ->
+                                // Force re-analysis if a file earlier in compilation order changed
+                                let forcedByCompilationOrder =
+                                    match firstChangedIndex with
+                                    | Some firstIdx when idx > firstIdx -> true
+                                    | _ -> false
+
+                                let cached =
+                                    not forcedByCompilationOrder
+                                    && match db.GetFileKey(relPath) with
+                                       | Some stored when stored = fileKey -> true
+                                       | _ -> false
+
+                                if cached then
                                     skippedFiles <- skippedFiles + 1
 
                                     Some
                                         {| Symbols = db.GetSymbolsInFile(relPath)
                                            Dependencies = db.GetDependenciesFromFile(relPath)
                                            TestMethods = db.GetTestMethodsInFile(relPath) |}
-                                | _ ->
+                                else
                                     let source = File.ReadAllText(sourceFile)
 
                                     match
@@ -236,6 +291,10 @@ let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider)
                                     with
                                     | Ok result ->
                                         analyzedFiles <- analyzedFiles + 1
+
+                                        if firstChangedIndex.IsNone then
+                                            firstChangedIndex <- Some idx
+
                                         db.SetFileKey(relPath, fileKey)
 
                                         Some
@@ -247,6 +306,7 @@ let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider)
                                     | Error msg ->
                                         eprintfn $"  Warning: %s{sourceFile}: %s{msg}"
                                         None)
+                        |> List.choose id
 
                     let combined =
                         { Symbols = results |> List.collect (fun r -> r.Symbols)
@@ -255,6 +315,7 @@ let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider)
 
                     db.RebuildForProject(projName, combined)
                     db.SetProjectKey(projName, hash)
+                    reindexedProjects.Add(projName) |> ignore
                     totalSymbols <- totalSymbols + combined.Symbols.Length
                     totalDeps <- totalDeps + combined.Dependencies.Length
                     totalTests <- totalTests + combined.TestMethods.Length
