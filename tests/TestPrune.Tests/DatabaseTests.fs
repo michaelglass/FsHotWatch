@@ -635,3 +635,131 @@ module ``RebuildForProjectIfChanged`` =
             let symbols = db.GetSymbolsInFile "src/Mod.fs"
             test <@ symbols[0].FullName = "Mod.newFunc" @>
             test <@ db.GetProjectKey "MyProject" = Some "hash-2" @>)
+
+module ``File key storage`` =
+
+    [<Fact>]
+    let ``GetFileKey returns None when no key stored`` () =
+        withDb (fun db ->
+            let key = db.GetFileKey "src/Mod.fs"
+            test <@ key = None @>)
+
+    [<Fact>]
+    let ``SetFileKey then GetFileKey round-trips`` () =
+        withDb (fun db ->
+            db.SetFileKey("src/Mod.fs", "abc123")
+            test <@ db.GetFileKey "src/Mod.fs" = Some "abc123" @>)
+
+    [<Fact>]
+    let ``SetFileKey overwrites previous key`` () =
+        withDb (fun db ->
+            db.SetFileKey("src/Mod.fs", "old")
+            db.SetFileKey("src/Mod.fs", "new")
+            test <@ db.GetFileKey "src/Mod.fs" = Some "new" @>)
+
+    [<Fact>]
+    let ``keys are per-file`` () =
+        withDb (fun db ->
+            db.SetFileKey("src/A.fs", "key-a")
+            db.SetFileKey("src/B.fs", "key-b")
+            test <@ db.GetFileKey "src/A.fs" = Some "key-a" @>
+            test <@ db.GetFileKey "src/B.fs" = Some "key-b" @>)
+
+module ``GetDependenciesFromFile`` =
+
+    [<Fact>]
+    let ``returns dependencies originating from the given file`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5 }
+                      { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5 } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Lib.funcB"
+                        Kind = Calls } ]
+                  TestMethods = [] }
+
+            db.RebuildForProject("MyProject", result)
+
+            let deps = db.GetDependenciesFromFile "tests/Tests.fs"
+            test <@ deps.Length = 1 @>
+            test <@ deps[0].FromSymbol = "Tests.testA" @>
+            test <@ deps[0].ToSymbol = "Lib.funcB" @>
+            test <@ deps[0].Kind = Calls @>)
+
+    [<Fact>]
+    let ``returns empty for file with no outgoing dependencies`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5 } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildForProject("MyProject", result)
+
+            let deps = db.GetDependenciesFromFile "src/Lib.fs"
+            test <@ deps |> List.isEmpty @>)
+
+module ``GetTestMethodsInFile`` =
+
+    [<Fact>]
+    let ``returns test methods defined in the given file`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5 }
+                      { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5 } ]
+                  Dependencies = []
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.testA"
+                        TestProject = "MyTests"
+                        TestClass = "Tests"
+                        TestMethod = "testA" } ] }
+
+            db.RebuildForProject("MyProject", result)
+
+            let tests = db.GetTestMethodsInFile "tests/Tests.fs"
+            test <@ tests.Length = 1 @>
+            test <@ tests[0].TestMethod = "testA" @>
+            test <@ tests[0].TestClass = "Tests" @>
+            test <@ tests[0].TestProject = "MyTests" @>)
+
+    [<Fact>]
+    let ``returns empty for non-test file`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5 } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildForProject("MyProject", result)
+
+            let tests = db.GetTestMethodsInFile "src/Lib.fs"
+            test <@ tests |> List.isEmpty @>)

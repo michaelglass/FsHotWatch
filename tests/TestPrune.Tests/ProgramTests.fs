@@ -541,6 +541,63 @@ module ``runIndexWith`` =
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)
 
+    [<Fact>]
+    let ``skips unchanged files when project hash changes`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let srcDir = Path.Combine(tmpDir, "src", "Lib")
+        Directory.CreateDirectory(srcDir) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(srcDir, "Lib.fsproj"),
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+</Project>"""
+        )
+
+        File.WriteAllText(Path.Combine(srcDir, "Lib.fs"), "module Lib\nlet add x y = x + y\n")
+
+        let sw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(sw)
+
+        try
+            // First index: analyzes Lib.fs
+            runIndexWith successBuild scriptOptions tmpDir |> ignore
+
+            let dbPath = Path.Combine(tmpDir, ".test-prune.db")
+            let db = Database.create dbPath
+            let relPath = Path.GetRelativePath(tmpDir, Path.Combine(srcDir, "Lib.fs")).Replace('\\', '/')
+            let originalFileKey = db.GetFileKey(relPath)
+            test <@ originalFileKey.IsSome @>
+
+            // Add a second file to change the project hash, but don't touch Lib.fs
+            File.WriteAllText(
+                Path.Combine(srcDir, "Lib.fsproj"),
+                """<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+    <Compile Include="Lib2.fs" />
+  </ItemGroup>
+</Project>"""
+            )
+
+            File.WriteAllText(Path.Combine(srcDir, "Lib2.fs"), "module Lib2\nlet mul x y = x * y\n")
+
+            // Second index: project hash changed (new file), but Lib.fs unchanged
+            runIndexWith successBuild scriptOptions tmpDir |> ignore
+
+            // Lib.fs file key should be unchanged (it was loaded from cache, not re-analyzed)
+            test <@ db.GetFileKey(relPath) = originalFileKey @>
+
+            // Lib.fs should still have symbols
+            let symbols = db.GetSymbolsInFile(relPath)
+            test <@ symbols |> List.isEmpty |> not @>
+        finally
+            Console.SetError(oldErr)
+            Directory.Delete(tmpDir, true)
+
 module ``Example solution integration`` =
 
     /// Fake build runner that always succeeds.

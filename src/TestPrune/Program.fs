@@ -142,6 +142,12 @@ type BuildRunner = string -> int
 /// Gets FSharpProjectOptions for a project file.
 type ProjectOptionsProvider = FSharpChecker -> string -> FSharpProjectOptions
 
+/// Compute a cache key for a single source file based on path, size, and modification time.
+let computeFileKey (filePath: string) : string =
+    let info = FileInfo(filePath)
+    let mtime = info.LastWriteTimeUtc.ToString("o")
+    $"%s{filePath}:%d{info.Length}:%s{mtime}"
+
 /// Compute a fingerprint for a project's source files based on paths, sizes, and modification times.
 let computeProjectHash (sourceFiles: string list) : string =
     let entries =
@@ -185,6 +191,7 @@ let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider)
         let mutable totalTests = 0
 
         let mutable skippedProjects = 0
+        let mutable skippedFiles = 0
 
         for fsprojPath in projectFiles do
             let projName = Path.GetFileNameWithoutExtension(fsprojPath)
@@ -198,27 +205,48 @@ let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider)
                     skippedProjects <- skippedProjects + 1
                     eprintfn $"  %s{projName}: unchanged, skipping"
                 | _ ->
-                    let projOptions = getOptions checker fsprojPath
+                    let projOptions = lazy (getOptions checker fsprojPath)
+                    let mutable analyzedFiles = 0
 
                     let results =
                         compileFiles
                         |> List.choose (fun sourceFile ->
-                            if File.Exists(sourceFile) then
-                                let source = File.ReadAllText(sourceFile)
-
-                                match analyzeSource checker sourceFile source projOptions |> Async.RunSynchronously with
-                                | Ok result ->
-                                    Some
-                                        {| Symbols = normalizeSymbolPaths repoRoot result.Symbols
-                                           Dependencies = result.Dependencies
-                                           TestMethods =
-                                            result.TestMethods
-                                            |> List.map (fun t -> { t with TestProject = projName }) |}
-                                | Error msg ->
-                                    eprintfn $"  Warning: %s{sourceFile}: %s{msg}"
-                                    None
+                            if not (File.Exists(sourceFile)) then
+                                None
                             else
-                                None)
+                                let relPath =
+                                    Path.GetRelativePath(repoRoot, sourceFile).Replace('\\', '/')
+
+                                let fileKey = computeFileKey sourceFile
+
+                                match db.GetFileKey(relPath) with
+                                | Some stored when stored = fileKey ->
+                                    skippedFiles <- skippedFiles + 1
+
+                                    Some
+                                        {| Symbols = db.GetSymbolsInFile(relPath)
+                                           Dependencies = db.GetDependenciesFromFile(relPath)
+                                           TestMethods = db.GetTestMethodsInFile(relPath) |}
+                                | _ ->
+                                    let source = File.ReadAllText(sourceFile)
+
+                                    match
+                                        analyzeSource checker sourceFile source (projOptions.Force())
+                                        |> Async.RunSynchronously
+                                    with
+                                    | Ok result ->
+                                        analyzedFiles <- analyzedFiles + 1
+                                        db.SetFileKey(relPath, fileKey)
+
+                                        Some
+                                            {| Symbols = normalizeSymbolPaths repoRoot result.Symbols
+                                               Dependencies = result.Dependencies
+                                               TestMethods =
+                                                result.TestMethods
+                                                |> List.map (fun t -> { t with TestProject = projName }) |}
+                                    | Error msg ->
+                                        eprintfn $"  Warning: %s{sourceFile}: %s{msg}"
+                                        None)
 
                     let combined =
                         { Symbols = results |> List.collect (fun r -> r.Symbols)
@@ -231,8 +259,10 @@ let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider)
                     totalDeps <- totalDeps + combined.Dependencies.Length
                     totalTests <- totalTests + combined.TestMethods.Length
 
+                    let fileCount = compileFiles.Length
+
                     eprintfn
-                        $"  %s{projName}: %d{combined.Symbols.Length} symbols, %d{combined.Dependencies.Length} deps, %d{combined.TestMethods.Length} tests"
+                        $"  %s{projName}: %d{combined.Symbols.Length} symbols, %d{combined.Dependencies.Length} deps, %d{combined.TestMethods.Length} tests (%d{analyzedFiles}/%d{fileCount} files analyzed)"
             with ex ->
                 eprintfn $"  Error processing %s{projName}: %s{ex.Message}"
 
@@ -240,6 +270,9 @@ let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider)
 
         if skippedProjects > 0 then
             eprintfn $"Skipped %d{skippedProjects} unchanged project(s)"
+
+        if skippedFiles > 0 then
+            eprintfn $"Skipped %d{skippedFiles} unchanged file(s)"
 
         0
 

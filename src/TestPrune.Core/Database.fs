@@ -42,6 +42,11 @@ let private schema =
         key TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS file_keys (
+        source_file TEXT PRIMARY KEY,
+        key TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_symbols_by_file ON symbols (source_file);
     CREATE INDEX IF NOT EXISTS idx_deps_to ON dependencies (to_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_deps_from ON dependencies (from_symbol_id);
@@ -463,3 +468,75 @@ type Database(dbPath: string) =
             this.RebuildForProject(projectName, result)
             this.SetProjectKey(projectName, key)
             true
+
+    /// Get the stored cache key for a source file, or None if not yet indexed.
+    member _.GetFileKey(sourceFile: string) : string option =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- "SELECT key FROM file_keys WHERE source_file = @sourceFile"
+        cmd.Parameters.AddWithValue("@sourceFile", sourceFile) |> ignore
+
+        use reader = cmd.ExecuteReader()
+
+        if reader.Read() then
+            Some(reader.GetString(0))
+        else
+            None
+
+    /// Store a cache key for a source file (insert or update).
+    member _.SetFileKey(sourceFile: string, key: string) =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            "INSERT OR REPLACE INTO file_keys (source_file, key) VALUES (@sourceFile, @key)"
+
+        cmd.Parameters.AddWithValue("@sourceFile", sourceFile) |> ignore
+        cmd.Parameters.AddWithValue("@key", key) |> ignore
+        cmd.ExecuteNonQuery() |> ignore
+
+    /// Get dependencies originating from symbols defined in the given source file.
+    member _.GetDependenciesFromFile(sourceFile: string) : Dependency list =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            """
+            SELECT f.full_name, t.full_name, d.dep_kind
+            FROM dependencies d
+            JOIN symbols f ON f.id = d.from_symbol_id
+            JOIN symbols t ON t.id = d.to_symbol_id
+            WHERE f.source_file = @sourceFile
+            """
+
+        cmd.Parameters.AddWithValue("@sourceFile", sourceFile) |> ignore
+
+        use reader = cmd.ExecuteReader()
+
+        readAll reader (fun r ->
+            { FromSymbol = r.GetString(0)
+              ToSymbol = r.GetString(1)
+              Kind = stringToDepKind (r.GetString(2)) })
+
+    /// Get test methods whose symbol is defined in the given source file.
+    member _.GetTestMethodsInFile(sourceFile: string) : TestMethodInfo list =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            """
+            SELECT s.full_name, tm.test_project, tm.test_class, tm.test_method
+            FROM test_methods tm
+            JOIN symbols s ON s.id = tm.symbol_id
+            WHERE s.source_file = @sourceFile
+            """
+
+        cmd.Parameters.AddWithValue("@sourceFile", sourceFile) |> ignore
+
+        use reader = cmd.ExecuteReader()
+
+        readAll reader (fun r ->
+            { SymbolFullName = r.GetString(0)
+              TestProject = r.GetString(1)
+              TestClass = r.GetString(2)
+              TestMethod = r.GetString(3) })
