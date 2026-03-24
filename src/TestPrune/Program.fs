@@ -193,7 +193,7 @@ let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider)
                 let compileFiles, _ = parseProjectFile fsprojPath
                 let hash = computeProjectHash compileFiles
 
-                match db.GetProjectHash(projName) with
+                match db.GetProjectKey(projName) with
                 | Some stored when stored = hash ->
                     skippedProjects <- skippedProjects + 1
                     eprintfn $"  %s{projName}: unchanged, skipping"
@@ -226,7 +226,7 @@ let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider)
                           TestMethods = results |> List.collect (fun r -> r.TestMethods) }
 
                     db.RebuildForProject(projName, combined)
-                    db.SetProjectHash(projName, hash)
+                    db.SetProjectKey(projName, hash)
                     totalSymbols <- totalSymbols + combined.Symbols.Length
                     totalDeps <- totalDeps + combined.Dependencies.Length
                     totalTests <- totalTests + combined.TestMethods.Length

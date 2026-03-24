@@ -37,9 +37,9 @@ let private schema =
         PRIMARY KEY (url_pattern, http_method)
     );
 
-    CREATE TABLE IF NOT EXISTS project_hashes (
+    CREATE TABLE IF NOT EXISTS project_keys (
         project_name TEXT PRIMARY KEY,
-        hash TEXT NOT NULL
+        key TEXT NOT NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_symbols_by_file ON symbols (source_file);
@@ -429,11 +429,11 @@ type Database(dbPath: string) =
               HttpMethod = r.GetString(1)
               HandlerSourceFile = r.GetString(2) })
 
-    /// Get the stored hash for a project, or None if not yet indexed.
-    member _.GetProjectHash(projectName: string) : string option =
+    /// Get the stored cache key for a project, or None if not yet indexed.
+    member _.GetProjectKey(projectName: string) : string option =
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()
-        cmd.CommandText <- "SELECT hash FROM project_hashes WHERE project_name = @projectName"
+        cmd.CommandText <- "SELECT key FROM project_keys WHERE project_name = @projectName"
         cmd.Parameters.AddWithValue("@projectName", projectName) |> ignore
 
         use reader = cmd.ExecuteReader()
@@ -443,23 +443,23 @@ type Database(dbPath: string) =
         else
             None
 
-    /// Store a hash for a project (insert or update).
-    member _.SetProjectHash(projectName: string, hash: string) =
+    /// Store a cache key for a project (insert or update).
+    member _.SetProjectKey(projectName: string, key: string) =
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()
 
         cmd.CommandText <-
-            "INSERT OR REPLACE INTO project_hashes (project_name, hash) VALUES (@projectName, @hash)"
+            "INSERT OR REPLACE INTO project_keys (project_name, key) VALUES (@projectName, @key)"
 
         cmd.Parameters.AddWithValue("@projectName", projectName) |> ignore
-        cmd.Parameters.AddWithValue("@hash", hash) |> ignore
+        cmd.Parameters.AddWithValue("@key", key) |> ignore
         cmd.ExecuteNonQuery() |> ignore
 
-    /// Rebuild only if the project hash has changed. Returns true if rebuild occurred.
-    member this.RebuildForProjectIfChanged(projectName: string, hash: string, result: AnalysisResult) : bool =
-        match this.GetProjectHash(projectName) with
-        | Some stored when stored = hash -> false
+    /// Rebuild only if the project's cache key has changed. Returns true if rebuild occurred.
+    member this.RebuildForProjectIfChanged(projectName: string, key: string, result: AnalysisResult) : bool =
+        match this.GetProjectKey(projectName) with
+        | Some stored when stored = key -> false
         | _ ->
             this.RebuildForProject(projectName, result)
-            this.SetProjectHash(projectName, hash)
+            this.SetProjectKey(projectName, key)
             true

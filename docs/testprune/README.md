@@ -67,18 +67,19 @@ match analyzeSource checker fileName source projOptions |> Async.RunSynchronousl
 | Error msg -> eprintfn $"Failed: %s{msg}"
 ```
 
-To skip re-indexing unchanged projects, pass a hash of the source files:
+To skip re-indexing unchanged projects, pass a cache key:
 
 ```fsharp
-// RebuildForProjectIfChanged compares the hash against the stored value
+// RebuildForProjectIfChanged compares the key against the stored value
 // and skips the rebuild entirely if nothing changed.
-let changed = db.RebuildForProjectIfChanged("MyProject", projectHash, result)
+let changed = db.RebuildForProjectIfChanged("MyProject", cacheKey, result)
 // changed = false means the project was already up-to-date
 ```
 
-The hash can be anything that changes when source files change — a
-checksum of file sizes and timestamps, a VCS tree hash, etc. The CLI
-uses file metadata (path + size + mtime) by default.
+The key can be anything that changes when source files change — a
+checksum of file sizes and timestamps, a VCS tree hash, a version
+string, etc. The CLI uses file metadata (path + size + mtime) by
+default.
 
 ### 2. Find affected tests
 

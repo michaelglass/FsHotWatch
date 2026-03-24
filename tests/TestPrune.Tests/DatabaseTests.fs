@@ -518,36 +518,36 @@ module ``stringToDepKind fallback`` =
             if File.Exists(path + "-shm") then
                 File.Delete(path + "-shm")
 
-module ``Project hash storage`` =
+module ``Project key storage`` =
 
     [<Fact>]
-    let ``GetProjectHash returns None when no hash stored`` () =
+    let ``GetProjectKey returns None when no hash stored`` () =
         withDb (fun db ->
-            let hash = db.GetProjectHash "MyProject"
+            let hash = db.GetProjectKey "MyProject"
             test <@ hash = None @>)
 
     [<Fact>]
-    let ``SetProjectHash then GetProjectHash round-trips`` () =
+    let ``SetProjectKey then GetProjectKey round-trips`` () =
         withDb (fun db ->
-            db.SetProjectHash("MyProject", "abc123")
-            let hash = db.GetProjectHash "MyProject"
+            db.SetProjectKey("MyProject", "abc123")
+            let hash = db.GetProjectKey "MyProject"
             test <@ hash = Some "abc123" @>)
 
     [<Fact>]
-    let ``SetProjectHash overwrites previous hash`` () =
+    let ``SetProjectKey overwrites previous hash`` () =
         withDb (fun db ->
-            db.SetProjectHash("MyProject", "old-hash")
-            db.SetProjectHash("MyProject", "new-hash")
-            let hash = db.GetProjectHash "MyProject"
+            db.SetProjectKey("MyProject", "old-hash")
+            db.SetProjectKey("MyProject", "new-hash")
+            let hash = db.GetProjectKey "MyProject"
             test <@ hash = Some "new-hash" @>)
 
     [<Fact>]
     let ``hashes are per-project`` () =
         withDb (fun db ->
-            db.SetProjectHash("ProjectA", "hash-a")
-            db.SetProjectHash("ProjectB", "hash-b")
-            test <@ db.GetProjectHash "ProjectA" = Some "hash-a" @>
-            test <@ db.GetProjectHash "ProjectB" = Some "hash-b" @>)
+            db.SetProjectKey("ProjectA", "hash-a")
+            db.SetProjectKey("ProjectB", "hash-b")
+            test <@ db.GetProjectKey "ProjectA" = Some "hash-a" @>
+            test <@ db.GetProjectKey "ProjectB" = Some "hash-b" @>)
 
 module ``RebuildForProjectIfChanged`` =
 
@@ -569,7 +569,7 @@ module ``RebuildForProjectIfChanged`` =
 
             let symbols = db.GetSymbolsInFile "src/Mod.fs"
             test <@ symbols.Length = 1 @>
-            test <@ db.GetProjectHash "MyProject" = Some "hash-1" @>)
+            test <@ db.GetProjectKey "MyProject" = Some "hash-1" @>)
 
     [<Fact>]
     let ``skips rebuild when hash matches`` () =
@@ -634,4 +634,4 @@ module ``RebuildForProjectIfChanged`` =
 
             let symbols = db.GetSymbolsInFile "src/Mod.fs"
             test <@ symbols[0].FullName = "Mod.newFunc" @>
-            test <@ db.GetProjectHash "MyProject" = Some "hash-2" @>)
+            test <@ db.GetProjectKey "MyProject" = Some "hash-2" @>)
