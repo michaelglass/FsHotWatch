@@ -50,6 +50,47 @@ module ``Create initializes schema`` =
             let affected = db.QueryAffectedTests []
             test <@ affected |> List.isEmpty @>)
 
+    [<Fact>]
+    let ``recreates database when schema changes`` () =
+        let path = tempDbPath ()
+
+        try
+            // Create a DB and insert data
+            let db = Database.create path
+
+            let result =
+                { Symbols =
+                    [ { FullName = "Mod.func"
+                        Kind = Function
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 5 } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildForProject("MyProject", result)
+            test <@ db.GetAllSymbolNames() |> Set.isEmpty |> not @>
+
+            // Tamper with the stored schema version to simulate a schema change
+            use conn = openRawConnection path
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "UPDATE schema_version SET version = 'stale'"
+            cmd.ExecuteNonQuery() |> ignore
+            conn.Close()
+
+            // Re-open — should nuke and recreate
+            let db2 = Database.create path
+            test <@ db2.GetAllSymbolNames() = Set.empty @>
+        finally
+            if File.Exists path then
+                File.Delete path
+
+            if File.Exists(path + "-wal") then
+                File.Delete(path + "-wal")
+
+            if File.Exists(path + "-shm") then
+                File.Delete(path + "-shm")
+
 module ``Store and retrieve symbols`` =
 
     [<Fact>]
