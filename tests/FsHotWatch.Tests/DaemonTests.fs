@@ -229,3 +229,138 @@ let ``daemon handles SolutionChanged events`` () =
     finally
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``daemon Run completes when cancellation is immediate`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+    let cts = new CancellationTokenSource()
+
+    try
+        let daemon = Daemon.createWith nullChecker tmpDir
+        // Cancel immediately
+        cts.Cancel()
+        let task = Async.StartAsTask(daemon.Run(cts.Token))
+
+        try
+            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+        with :? AggregateException ->
+            ()
+
+        test <@ task.IsCompleted @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``Daemon.create creates a working daemon with real checker`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-create-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+    let cts = new CancellationTokenSource()
+
+    try
+        // Exercise the Daemon.create path (not createWith) which creates its own FSharpChecker
+        let daemon = Daemon.create tmpDir
+        let task = Async.StartAsTask(daemon.Run(cts.Token))
+        Thread.Sleep(500)
+        cts.Cancel()
+
+        try
+            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+        with :? AggregateException ->
+            ()
+
+        test <@ task.IsCompleted @>
+        test <@ daemon.RepoRoot = tmpDir @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``daemon RunWithIpc starts and stops cleanly`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-ipc-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+    let cts = new CancellationTokenSource()
+    let pipeName = $"fshw-test-{Guid.NewGuid():N}"
+
+    try
+        let daemon = Daemon.createWith nullChecker tmpDir
+        let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts.Token))
+        Thread.Sleep(500)
+        cts.Cancel()
+
+        try
+            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+        with :? AggregateException ->
+            ()
+
+        test <@ task.IsCompleted @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``daemon RunWithIpc responds to IPC queries`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-ipc-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+    let cts = new CancellationTokenSource()
+    let pipeName = $"fshw-test-{Guid.NewGuid():N}"
+
+    try
+        let daemon = Daemon.createWith nullChecker tmpDir
+
+        let plugin =
+            { new IFsHotWatchPlugin with
+                member _.Name = "ipc-test"
+                member _.Initialize(ctx) = ctx.ReportStatus(Idle)
+                member _.Dispose() = () }
+
+        daemon.Register(plugin)
+
+        let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts.Token))
+        Thread.Sleep(500)
+
+        let result = FsHotWatch.Ipc.IpcClient.getStatus pipeName |> Async.RunSynchronously
+        test <@ result.Contains("ipc-test") @>
+
+        cts.Cancel()
+
+        try
+            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+        with :? AggregateException ->
+            ()
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``daemon RegisterProject stores options in pipeline`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+    try
+        let checker =
+            FSharp.Compiler.CodeAnalysis.FSharpChecker.Create(projectCacheSize = 10)
+
+        let daemon = Daemon.createWith checker tmpDir
+
+        let sourceFile = Path.Combine(tmpDir, "src", "Lib.fs")
+        File.WriteAllText(sourceFile, "module Lib\nlet x = 42\n")
+
+        let absSource = Path.GetFullPath(sourceFile)
+
+        let options, _ =
+            checker.GetProjectOptionsFromScript(
+                absSource,
+                FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText absSource)
+            )
+            |> Async.RunSynchronously
+
+        daemon.RegisterProject("/tmp/Test.fsproj", options)
+
+        // Verify by checking a file through the pipeline
+        let result = daemon.Pipeline.CheckFile(absSource) |> Async.RunSynchronously
+        test <@ result.IsSome @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
