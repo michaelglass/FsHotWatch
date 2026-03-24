@@ -212,45 +212,43 @@ let runIndexWith
                     eprintfn $"  Error parsing %s{fsprojPath}: %s{ex.Message}"
                     None)
 
-        let reindexedProjects = System.Collections.Generic.HashSet<string>()
+        let reindexedProjects = System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
 
         let projectPathSet = projectInfos |> List.map (fun (p, _, _) -> p) |> Set.ofList
 
-        let rec topoSort remaining sorted (sortedSet: Set<string>) =
+        let rec topoLevels remaining (processedSet: Set<string>) =
             if remaining |> List.isEmpty then
-                sorted |> List.rev
+                []
             else
                 let ready, blocked =
                     remaining
                     |> List.partition (fun (_, _, refs) ->
                         refs
                         |> List.filter projectPathSet.Contains
-                        |> List.forall sortedSet.Contains)
+                        |> List.forall processedSet.Contains)
 
                 if ready.IsEmpty then
-                    List.rev sorted @ remaining
+                    [ remaining ]
                 else
-                    let newSorted = ready @ sorted
-
                     let newSet =
-                        ready |> List.fold (fun s (p, _, _) -> Set.add p s) sortedSet
+                        ready |> List.fold (fun s (p, _, _) -> Set.add p s) processedSet
 
-                    topoSort blocked newSorted newSet
+                    ready :: topoLevels blocked newSet
 
-        let sortedProjects = topoSort projectInfos [] Set.empty
+        let levels = topoLevels projectInfos Set.empty
 
-        for (fsprojPath, compileFiles, projectRefs) in sortedProjects do
+        let indexProject (fsprojPath: string, compileFiles, projectRefs) =
             let projName = Path.GetFileNameWithoutExtension(fsprojPath)
 
             try
                 let hash = computeProjectHash compileFiles
 
                 let depReindexed =
-                    projectRefs |> List.exists reindexedProjects.Contains
+                    projectRefs |> List.exists (fun r -> reindexedProjects.ContainsKey(r))
 
                 match db.GetProjectKey(projName) with
                 | Some stored when stored = hash && not depReindexed ->
-                    skippedProjects <- skippedProjects + 1
+                    Threading.Interlocked.Increment(&skippedProjects) |> ignore
                     eprintfn $"  %s{projName}: unchanged, skipping"
                 | _ ->
                     let projOptions = lazy (getOptions checker fsprojPath)
@@ -280,7 +278,7 @@ let runIndexWith
                                        | _ -> false
 
                                 if cached then
-                                    skippedFiles <- skippedFiles + 1
+                                    Threading.Interlocked.Increment(&skippedFiles) |> ignore
 
                                     Some
                                         {| Symbols = db.GetSymbolsInFile(relPath)
@@ -321,10 +319,10 @@ let runIndexWith
                         db.RebuildForProject(projName, combined)
 
                     db.SetProjectKey(projName, hash)
-                    reindexedProjects.Add(fsprojPath) |> ignore
-                    totalSymbols <- totalSymbols + combined.Symbols.Length
-                    totalDeps <- totalDeps + combined.Dependencies.Length
-                    totalTests <- totalTests + combined.TestMethods.Length
+                    reindexedProjects.TryAdd(fsprojPath, true) |> ignore
+                    Threading.Interlocked.Add(&totalSymbols, combined.Symbols.Length) |> ignore
+                    Threading.Interlocked.Add(&totalDeps, combined.Dependencies.Length) |> ignore
+                    Threading.Interlocked.Add(&totalTests, combined.TestMethods.Length) |> ignore
 
                     let fileCount = compileFiles.Length
 
@@ -332,6 +330,16 @@ let runIndexWith
                         $"  %s{projName}: %d{combined.Symbols.Length} symbols, %d{combined.Dependencies.Length} deps, %d{combined.TestMethods.Length} tests (%d{analyzedFiles}/%d{fileCount} files analyzed)"
             with ex ->
                 eprintfn $"  Error processing %s{projName}: %s{ex.Message}"
+
+        for level in levels do
+            if level.Length = 1 then
+                indexProject level.Head
+            else
+                level
+                |> List.map (fun proj -> async { indexProject proj })
+                |> Async.Parallel
+                |> Async.RunSynchronously
+                |> ignore
 
         eprintfn $"Indexed %d{totalSymbols} symbols, %d{totalDeps} dependencies, %d{totalTests} test methods"
 
