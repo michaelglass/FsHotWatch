@@ -48,6 +48,7 @@
 
   <ItemGroup>
     <Compile Include="Events.fs" />
+    <Compile Include="Plugin.fs" />
     <Compile Include="Watcher.fs" />
   </ItemGroup>
 
