@@ -65,6 +65,11 @@ depends = ["format", "sync-docs", "lint", "coverage-check", "docs"]
 description = "Run all CI checks (no auto-fix)"
 depends = ["format-check", "lint", "coverage-check", "sync-docs-check", "docs"]
 
+[tasks.run]
+description = "Run the CLI"
+run = "dotnet run --project src/FsHotWatch.Cli --"
+depends = ["build"]
+
 [tasks.pack]
 description = "Create NuGet package"
 run = "dotnet pack src/FsHotWatch/FsHotWatch.fsproj -c Release"
