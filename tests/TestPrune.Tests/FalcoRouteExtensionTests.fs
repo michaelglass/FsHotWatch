@@ -192,6 +192,61 @@ module ``missing test directory returns empty`` =
             [ "src/Handlers/Users.fs" ]
             (fun result -> test <@ result |> List.isEmpty @>)
 
+module ``multiple test classes in one file`` =
+
+    [<Fact>]
+    let ``both classes are returned when URL matches`` () =
+        let testContent =
+            """type UsersTests(output: ITestOutputHelper) =
+    member _.GetUser() =
+        let url = "/api/users/123"
+        ()
+
+type AdminUsersTests(output: ITestOutputHelper) =
+    member _.GetAdmin() =
+        let url = "/api/users/admin"
+        ()
+"""
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs" } ]
+            [ ("UsersTests.fs", testContent) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs" ]
+            (fun result ->
+                test <@ result.Length = 2 @>
+                let classes = result |> List.map (fun r -> r.TestClass) |> Set.ofList
+                test <@ classes = set [ "UsersTests"; "AdminUsersTests" ] @>)
+
+module ``multiple handlers affecting different test files`` =
+
+    [<Fact>]
+    let ``returns tests from all affected files`` () =
+        let usersTest =
+            "type UsersTests() =\n    member _.Get() =\n        let url = \"/api/users/1\"\n        ()\n"
+
+        let ordersTest =
+            "type OrdersTests() =\n    member _.Get() =\n        let url = \"/api/orders/1\"\n        ()\n"
+
+        withTestSetup
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Users.fs" }
+              { UrlPattern = "/api/orders/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Orders.fs" } ]
+            [ ("UsersTests.fs", usersTest); ("OrdersTests.fs", ordersTest) ]
+            "IntTests"
+            "tests/IntTests"
+            [ "src/Handlers/Users.fs"; "src/Handlers/Orders.fs" ]
+            (fun result ->
+                test <@ result.Length = 2 @>
+                let classes = result |> List.map (fun r -> r.TestClass) |> Set.ofList
+                test <@ classes = set [ "UsersTests"; "OrdersTests" ] @>)
+
 module ``URL pattern with path parameters matches correctly`` =
 
     [<Fact>]
