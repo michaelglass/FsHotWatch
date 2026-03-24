@@ -501,6 +501,46 @@ module ``runIndexWith`` =
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)
 
+    [<Fact>]
+    let ``skips getOptions for unchanged projects`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let srcDir = Path.Combine(tmpDir, "src", "Lib")
+        Directory.CreateDirectory(srcDir) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(srcDir, "Lib.fsproj"),
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+</Project>"""
+        )
+
+        File.WriteAllText(Path.Combine(srcDir, "Lib.fs"), "module Lib\nlet add x y = x + y\n")
+
+        let sw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(sw)
+
+        try
+            // First index populates the hash
+            runIndexWith successBuild scriptOptions tmpDir |> ignore
+
+            // Second index with a getOptions that would fail if called
+            let mutable getOptionsCalled = false
+
+            let trackingOptions: ProjectOptionsProvider =
+                fun checker fsprojPath ->
+                    getOptionsCalled <- true
+                    scriptOptions checker fsprojPath
+
+            let exitCode = runIndexWith successBuild trackingOptions tmpDir
+            test <@ exitCode = 0 @>
+            test <@ getOptionsCalled = false @>
+        finally
+            Console.SetError(oldErr)
+            Directory.Delete(tmpDir, true)
+
 module ``Example solution integration`` =
 
     /// Fake build runner that always succeeds.

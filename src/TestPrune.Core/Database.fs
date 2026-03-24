@@ -123,7 +123,7 @@ type Database(dbPath: string) =
         use txn = conn.BeginTransaction()
 
         try
-            // Delete existing data for these source files (cascade deletes deps and test_methods)
+            // Delete existing data for these source files (explicit deletes before symbols to avoid FK issues)
             for file in sourceFiles do
                 use delCmd = conn.CreateCommand()
                 delCmd.Transaction <- txn

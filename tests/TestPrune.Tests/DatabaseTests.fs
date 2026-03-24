@@ -31,6 +31,11 @@ let private withDb (f: Database -> unit) =
         if File.Exists shmPath then
             File.Delete shmPath
 
+let private openRawConnection (dbPath: string) =
+    let conn = new SqliteConnection($"Data Source=%s{dbPath}")
+    conn.Open()
+    conn
+
 module ``Create initializes schema`` =
 
     [<Fact>]
@@ -419,11 +424,6 @@ module ``Route handler round-trip`` =
 
 module ``stringToSymbolKind fallback`` =
 
-    let private openRawConnection (dbPath: string) =
-        let conn = new SqliteConnection($"Data Source=%s{dbPath}")
-        conn.Open()
-        conn
-
     [<Fact>]
     let ``unknown kind string falls back to Value`` () =
         let path = tempDbPath ()
@@ -458,11 +458,6 @@ module ``stringToSymbolKind fallback`` =
                 File.Delete(path + "-shm")
 
 module ``stringToDepKind fallback`` =
-
-    let private openRawConnection (dbPath: string) =
-        let conn = new SqliteConnection($"Data Source=%s{dbPath}")
-        conn.Open()
-        conn
 
     [<Fact>]
     let ``unknown dep kind string falls back to References`` () =

@@ -190,9 +190,7 @@ let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider)
             let projName = Path.GetFileNameWithoutExtension(fsprojPath)
 
             try
-                let projOptions = getOptions checker fsprojPath
                 let compileFiles, _ = parseProjectFile fsprojPath
-
                 let hash = computeProjectHash compileFiles
 
                 match db.GetProjectHash(projName) with
@@ -200,38 +198,41 @@ let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider)
                     skippedProjects <- skippedProjects + 1
                     eprintfn $"  %s{projName}: unchanged, skipping"
                 | _ ->
-                    let mutable allSymbols = []
-                    let mutable allDeps = []
-                    let mutable allTests = []
+                    let projOptions = getOptions checker fsprojPath
 
-                    for sourceFile in compileFiles do
-                        if File.Exists(sourceFile) then
-                            let source = File.ReadAllText(sourceFile)
+                    let results =
+                        compileFiles
+                        |> List.choose (fun sourceFile ->
+                            if File.Exists(sourceFile) then
+                                let source = File.ReadAllText(sourceFile)
 
-                            match analyzeSource checker sourceFile source projOptions |> Async.RunSynchronously with
-                            | Ok result ->
-                                allSymbols <- allSymbols @ (normalizeSymbolPaths repoRoot result.Symbols)
-                                allDeps <- allDeps @ result.Dependencies
-
-                                let tests =
-                                    result.TestMethods |> List.map (fun t -> { t with TestProject = projName })
-
-                                allTests <- allTests @ tests
-                            | Error msg -> eprintfn $"  Warning: %s{sourceFile}: %s{msg}"
+                                match analyzeSource checker sourceFile source projOptions |> Async.RunSynchronously with
+                                | Ok result ->
+                                    Some
+                                        {| Symbols = normalizeSymbolPaths repoRoot result.Symbols
+                                           Dependencies = result.Dependencies
+                                           TestMethods =
+                                            result.TestMethods
+                                            |> List.map (fun t -> { t with TestProject = projName }) |}
+                                | Error msg ->
+                                    eprintfn $"  Warning: %s{sourceFile}: %s{msg}"
+                                    None
+                            else
+                                None)
 
                     let combined =
-                        { Symbols = allSymbols
-                          Dependencies = allDeps
-                          TestMethods = allTests }
+                        { Symbols = results |> List.collect (fun r -> r.Symbols)
+                          Dependencies = results |> List.collect (fun r -> r.Dependencies)
+                          TestMethods = results |> List.collect (fun r -> r.TestMethods) }
 
                     db.RebuildForProject(projName, combined)
                     db.SetProjectHash(projName, hash)
-                    totalSymbols <- totalSymbols + allSymbols.Length
-                    totalDeps <- totalDeps + allDeps.Length
-                    totalTests <- totalTests + allTests.Length
+                    totalSymbols <- totalSymbols + combined.Symbols.Length
+                    totalDeps <- totalDeps + combined.Dependencies.Length
+                    totalTests <- totalTests + combined.TestMethods.Length
 
                     eprintfn
-                        $"  %s{projName}: %d{allSymbols.Length} symbols, %d{allDeps.Length} deps, %d{allTests.Length} tests"
+                        $"  %s{projName}: %d{combined.Symbols.Length} symbols, %d{combined.Dependencies.Length} deps, %d{combined.TestMethods.Length} tests"
             with ex ->
                 eprintfn $"  Error processing %s{projName}: %s{ex.Message}"
 
