@@ -42,6 +42,7 @@ type CheckPipeline(checker: FSharpChecker) =
                     return
                         Some
                             { File = absPath
+                              Source = source
                               ParseResults = parseResults
                               CheckResults = checkResults }
                 | FSharpCheckFileAnswer.Aborted -> return None

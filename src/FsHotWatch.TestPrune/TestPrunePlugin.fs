@@ -28,31 +28,14 @@ type TestPrunePlugin(dbPath: string, repoRoot: string) =
                     let relPath =
                         Path.GetRelativePath(repoRoot, result.File).Replace('\\', '/')
 
-                    let source =
-                        if File.Exists(result.File) then
-                            File.ReadAllText(result.File)
-                        else
-                            ""
-
-                    // Extract symbols from check results (same as analyzeSource but
-                    // using the already-checked results from the warm checker)
-                    let allUses =
-                        result.CheckResults.GetAllUsesOfAllSymbolsInFile() |> Seq.toList
-
                     // For now, just track which files changed for impact analysis
                     if not (lastChangedFiles |> List.contains relPath) then
                         lastChangedFiles <- relPath :: lastChangedFiles
 
-                    // Get current symbols and compare with stored
-                    let currentSymbols = db.GetSymbolsInFile(relPath)
-
-                    if not currentSymbols.IsEmpty then
-                        let storedSymbols = db.GetSymbolsInFile(relPath)
-                        let changes = detectChanges currentSymbols storedSymbols
-                        let changedNames = changedSymbolNames changes
-
-                        if not changedNames.IsEmpty then
-                            lastAffectedTests <- db.QueryAffectedTests(changedNames)
+                    // Compare stored symbols to detect changes
+                    let storedSymbols = db.GetSymbolsInFile(relPath)
+                    // TODO: extract currentSymbols from allUses via analyzeSource extraction
+                    // For now, we track changed files but symbol diffing needs proper implementation
 
                     ctx.ReportStatus(Completed(box lastAffectedTests, DateTime.UtcNow))
                 with ex ->

@@ -9,33 +9,26 @@ open StreamJsonRpc
 open FsHotWatch.PluginHost
 open FsHotWatch.Events
 
+let private formatStatus (status: PluginStatus) =
+    match status with
+    | Idle -> "Idle"
+    | Running since -> $"Running since {since:O}"
+    | Completed(_, at) -> $"Completed at {at:O}"
+    | Failed(error, at) -> $"Failed at {at:O}: {error}"
+
 /// RPC target object exposed to clients via StreamJsonRpc.
 type DaemonRpcTarget(host: PluginHost) =
 
     /// Returns a JSON string of all plugin statuses.
     member _.GetStatus() : string =
         let statuses = host.GetAllStatuses()
-
-        let entries =
-            statuses
-            |> Map.map (fun _name status ->
-                match status with
-                | Idle -> "Idle"
-                | Running since -> $"Running since {since:O}"
-                | Completed(_, at) -> $"Completed at {at:O}"
-                | Failed(error, at) -> $"Failed at {at:O}: {error}")
-
+        let entries = statuses |> Map.map (fun _name status -> formatStatus status)
         JsonSerializer.Serialize(entries)
 
     /// Returns a single plugin's status or "not found".
     member _.GetPluginStatus(pluginName: string) : string =
         match host.GetStatus(pluginName) with
-        | Some status ->
-            match status with
-            | Idle -> "Idle"
-            | Running since -> $"Running since {since:O}"
-            | Completed(_, at) -> $"Completed at {at:O}"
-            | Failed(error, at) -> $"Failed at {at:O}: {error}"
+        | Some status -> formatStatus status
         | None -> "not found"
 
     /// Runs a registered command by name and returns the result or "unknown command".

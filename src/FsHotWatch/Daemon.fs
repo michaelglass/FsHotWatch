@@ -84,34 +84,23 @@ module Daemon =
                 changes.Add(item)
 
             if changes.Count > 0 then
-                // Merge all SourceChanged files into one batch
-                let allSourceFiles =
-                    changes
-                    |> Seq.collect (fun c ->
-                        match c with
-                        | SourceChanged files -> files
-                        | _ -> [])
-                    |> Seq.distinct
-                    |> Seq.toList
+                let mutable sourceFiles = []
+                let mutable projFiles = []
+                let mutable hasSolution = false
 
-                let hasProjectChange =
-                    changes |> Seq.exists (fun c -> match c with ProjectChanged _ -> true | _ -> false)
+                for c in changes do
+                    match c with
+                    | SourceChanged files -> sourceFiles <- files @ sourceFiles
+                    | ProjectChanged files -> projFiles <- files @ projFiles
+                    | SolutionChanged -> hasSolution <- true
 
-                let hasSolutionChange =
-                    changes |> Seq.exists (fun c -> match c with SolutionChanged -> true | _ -> false)
+                let allSourceFiles = sourceFiles |> List.distinct
 
-                // Emit batched events
-                if hasSolutionChange then
+                if hasSolution then
                     host.EmitFileChanged(SolutionChanged)
 
-                if hasProjectChange then
-                    let projFiles =
-                        changes
-                        |> Seq.collect (fun c ->
-                            match c with ProjectChanged f -> f | _ -> [])
-                        |> Seq.distinct
-                        |> Seq.toList
-                    host.EmitFileChanged(ProjectChanged projFiles)
+                if not projFiles.IsEmpty then
+                    host.EmitFileChanged(ProjectChanged (projFiles |> List.distinct))
 
                 if not allSourceFiles.IsEmpty then
                     host.EmitFileChanged(SourceChanged allSourceFiles)
