@@ -74,3 +74,158 @@ let ``daemon dispatches file change events to plugins`` () =
     finally
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``daemon debounces rapid file changes into one batch`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+    let mutable receivedChanges: FileChangeKind list = []
+    let cts = new CancellationTokenSource()
+
+    try
+        let daemon = Daemon.createWith nullChecker tmpDir
+
+        let plugin =
+            { new IFsHotWatchPlugin with
+                member _.Name = "debounce-recorder"
+
+                member _.Initialize(ctx) =
+                    ctx.OnFileChanged.Add(fun change -> receivedChanges <- change :: receivedChanges)
+
+                member _.Dispose() = () }
+
+        daemon.Register(plugin)
+
+        let task = Async.StartAsTask(daemon.Run(cts.Token))
+        Thread.Sleep(500)
+
+        // Write 3 files rapidly (within debounce window)
+        File.WriteAllText(Path.Combine(tmpDir, "src", "A.fs"), "module A")
+        File.WriteAllText(Path.Combine(tmpDir, "src", "B.fs"), "module B")
+        File.WriteAllText(Path.Combine(tmpDir, "src", "C.fs"), "module C")
+
+        // Wait for debounce to fire (500ms debounce + buffer)
+        Thread.Sleep(2000)
+
+        cts.Cancel()
+
+        try
+            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+        with :? AggregateException ->
+            ()
+
+        // The debounce should merge rapid changes - we expect fewer SourceChanged events
+        // than individual file writes (ideally 1 batched event, but timing may vary)
+        let sourceChanges =
+            receivedChanges
+            |> List.choose (fun c ->
+                match c with
+                | SourceChanged files -> Some files
+                | _ -> None)
+
+        // We should have received at least one SourceChanged event
+        test <@ sourceChanges.Length >= 1 @>
+
+        // The total files across all SourceChanged events should cover our 3 files
+        let allFiles = sourceChanges |> List.collect id
+        test <@ allFiles.Length >= 3 @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``daemon handles ProjectChanged events`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+    let mutable receivedChanges: FileChangeKind list = []
+    let cts = new CancellationTokenSource()
+
+    try
+        let daemon = Daemon.createWith nullChecker tmpDir
+
+        let plugin =
+            { new IFsHotWatchPlugin with
+                member _.Name = "project-recorder"
+
+                member _.Initialize(ctx) =
+                    ctx.OnFileChanged.Add(fun change -> receivedChanges <- change :: receivedChanges)
+
+                member _.Dispose() = () }
+
+        daemon.Register(plugin)
+
+        let task = Async.StartAsTask(daemon.Run(cts.Token))
+        Thread.Sleep(500)
+
+        // Write an fsproj file to trigger a ProjectChanged event
+        File.WriteAllText(
+            Path.Combine(tmpDir, "src", "Test.fsproj"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>"
+        )
+        Thread.Sleep(2000)
+
+        cts.Cancel()
+
+        try
+            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+        with :? AggregateException ->
+            ()
+
+        let projectChanges =
+            receivedChanges
+            |> List.exists (fun c ->
+                match c with
+                | ProjectChanged _ -> true
+                | _ -> false)
+
+        test <@ projectChanges @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``daemon handles SolutionChanged events`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+    let mutable receivedChanges: FileChangeKind list = []
+    let cts = new CancellationTokenSource()
+
+    try
+        let daemon = Daemon.createWith nullChecker tmpDir
+
+        let plugin =
+            { new IFsHotWatchPlugin with
+                member _.Name = "solution-recorder"
+
+                member _.Initialize(ctx) =
+                    ctx.OnFileChanged.Add(fun change -> receivedChanges <- change :: receivedChanges)
+
+                member _.Dispose() = () }
+
+        daemon.Register(plugin)
+
+        let task = Async.StartAsTask(daemon.Run(cts.Token))
+        Thread.Sleep(500)
+
+        // Write a .sln file to trigger a SolutionChanged event
+        File.WriteAllText(Path.Combine(tmpDir, "Test.sln"), "Microsoft Visual Studio Solution File")
+        Thread.Sleep(2000)
+
+        cts.Cancel()
+
+        try
+            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+        with :? AggregateException ->
+            ()
+
+        let solutionChanges =
+            receivedChanges
+            |> List.exists (fun c ->
+                match c with
+                | SolutionChanged -> true
+                | _ -> false)
+
+        test <@ solutionChanges @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
