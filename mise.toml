@@ -1,0 +1,81 @@
+[tools]
+dotnet = "10.0"
+
+[tasks.restore]
+description = "Restore dependencies"
+run = "dotnet restore"
+
+[tasks.tool-restore]
+description = "Restore local dotnet tools"
+run = "dotnet tool restore"
+
+[tasks.build]
+description = "Build the solution"
+run = "dotnet build"
+depends = ["restore"]
+
+[tasks.test]
+description = "Run tests with coverage"
+run = """
+dotnet test \
+  --coverage \
+  --coverage-output-format cobertura \
+  --coverage-output "$PWD/coverage/coverage.cobertura.xml"
+"""
+depends = ["build"]
+
+[tasks.format]
+description = "Format code with Fantomas"
+run = "dotnet fantomas src/ tests/"
+depends = ["tool-restore"]
+
+[tasks.format-check]
+description = "Check formatting without making changes"
+run = "dotnet fantomas src/ tests/ --check"
+depends = ["tool-restore"]
+
+[tasks.lint]
+description = "Run FSharpLint"
+run = "dotnet fsharplint lint FsHotWatch.slnx"
+depends = ["build", "tool-restore"]
+
+[tasks.coverage-check]
+description = "Check per-file coverage meets minimum threshold (50%)"
+run = "dotnet fsi scripts/check-coverage.fsx"
+depends = ["test"]
+
+[tasks.check-api]
+description = "Check API changes since last release"
+run = "dotnet fsi scripts/check-api.fsx"
+depends = ["build"]
+
+[tasks.sync-docs]
+description = "Sync README.md content to docs/index.md"
+run = "dotnet fsi scripts/sync-docs.fsx"
+
+[tasks.sync-docs-check]
+description = "Check if docs/index.md is in sync with README.md"
+run = "dotnet fsi scripts/sync-docs.fsx --check"
+
+[tasks.check]
+description = "Run all checks with auto-fix (format, sync-docs, then verify)"
+depends = ["format", "sync-docs", "lint", "coverage-check", "docs"]
+
+[tasks.ci]
+description = "Run all CI checks (no auto-fix)"
+depends = ["format-check", "lint", "coverage-check", "sync-docs-check", "docs"]
+
+[tasks.pack]
+description = "Create NuGet package"
+run = "dotnet pack src/FsHotWatch/FsHotWatch.fsproj -c Release"
+depends = ["build"]
+
+[tasks.docs]
+description = "Generate API documentation"
+run = "dotnet fsdocs build --output output/docs --clean"
+depends = ["build", "tool-restore"]
+
+[tasks.docs-watch]
+description = "Watch and serve documentation locally"
+run = "dotnet fsdocs watch"
+depends = ["build", "tool-restore"]

@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/FsHotWatch/FsHotWatch.fsproj" />
+  <Project Path="tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj" />
+</Solution>

@@ -1,0 +1,64 @@
+# Claude
+.claude/settings.local.json
+CLAUDE.md
+
+# Build results
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Ll]og/
+[Ll]ogs/
+
+# .NET
+*.user
+*.rsuser
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+.nuget-api-key
+
+# Visual Studio
+.vs/
+*.vsconfig
+
+# JetBrains Rider
+.idea/
+*.sln.iml
+
+# VS Code
+.vscode/
+
+# Test results
+TestResults/
+*.trx
+
+# Coverage
+coverage/
+*.coverage
+*.coveragexml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Mise
+.mise.local.toml
+
+# Generated docs
+output/
+.fsdocs/
+
+# Temp
+tmp/
+
+.fake
+
+# Project
+TODO.md
