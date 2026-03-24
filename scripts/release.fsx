@@ -1,7 +1,12 @@
 #!/usr/bin/env dotnet fsi
 
 /// Release script with automatic semantic versioning based on API changes.
-/// API baseline is automatically extracted from the previous release tag.
+/// Detects which packages have API changes and releases them independently.
+///
+/// Usage:
+///   dotnet fsi scripts/release.fsx              # auto-detect changed packages
+///   dotnet fsi scripts/release.fsx alpha         # start first alpha for changed packages
+///   dotnet fsi scripts/release.fsx --publish     # publish locally instead of pushing
 
 open System
 open System.Diagnostics
@@ -12,9 +17,46 @@ open System.Text.RegularExpressions
 // Configuration
 // ============================================================================
 
-let fsproj = "src/FsHotWatch/FsHotWatch.fsproj"
-let dllPath = "src/FsHotWatch/bin/Release/net10.0/FsHotWatch.dll"
+type PackageConfig =
+    { Name: string
+      Fsproj: string
+      DllPath: string
+      TagPrefix: string
+      /// Additional fsproj files that should get the same version (e.g. CLI follows Core).
+      ExtraFsprojs: string list }
+
+let allPackages =
+    [ { Name = "FsHotWatch"
+        Fsproj = "src/FsHotWatch/FsHotWatch.fsproj"
+        DllPath = "src/FsHotWatch/bin/Release/net10.0/FsHotWatch.dll"
+        TagPrefix = "core-v"
+        ExtraFsprojs = [ "src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj" ] }
+      { Name = "FsHotWatch.TestPrune"
+        Fsproj = "src/FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj"
+        DllPath = "src/FsHotWatch.TestPrune/bin/Release/net10.0/FsHotWatch.TestPrune.dll"
+        TagPrefix = "testprune-v"
+        ExtraFsprojs = [] }
+      { Name = "FsHotWatch.Analyzers"
+        Fsproj = "src/FsHotWatch.Analyzers/FsHotWatch.Analyzers.fsproj"
+        DllPath = "src/FsHotWatch.Analyzers/bin/Release/net10.0/FsHotWatch.Analyzers.dll"
+        TagPrefix = "analyzers-v"
+        ExtraFsprojs = [] }
+      { Name = "FsHotWatch.Lint"
+        Fsproj = "src/FsHotWatch.Lint/FsHotWatch.Lint.fsproj"
+        DllPath = "src/FsHotWatch.Lint/bin/Release/net10.0/FsHotWatch.Lint.dll"
+        TagPrefix = "lint-v"
+        ExtraFsprojs = [] }
+      { Name = "FsHotWatch.Fantomas"
+        Fsproj = "src/FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj"
+        DllPath = "src/FsHotWatch.Fantomas/bin/Release/net10.0/FsHotWatch.Fantomas.dll"
+        TagPrefix = "fantomas-v"
+        ExtraFsprojs = [] } ]
+
 let repoUrl = "https://github.com/michaelglass/FsHotWatch"
+
+/// Versions that were accidentally published to NuGet and cannot be reused.
+/// The script will skip these and bump to the next patch version.
+let reservedVersions = set []
 
 // ============================================================================
 // Domain Types
@@ -51,8 +93,8 @@ type ReleaseCommand =
     | ShowHelp
 
 type PublishMode =
-    | GitHubActions // Push tag to trigger CI/CD
-    | LocalPublish // Publish to NuGet directly
+    | GitHubActions
+    | LocalPublish
 
 type ReleaseState =
     | FirstRelease
@@ -137,7 +179,7 @@ module Version =
         | PreRelease(RC n) -> sprintf "%s-rc.%d" base' n
         | Stable -> base'
 
-    let toTag (v: Version) : string = sprintf "v%s" (format v)
+    let toTag (pkg: PackageConfig) (v: Version) : string = sprintf "%s%s" pkg.TagPrefix (format v)
 
     let firstAlpha =
         { Major = 0
@@ -178,8 +220,6 @@ module Version =
           Patch = 0
           Stage = Stable }
 
-    /// Returns a tuple suitable for descending sort with proper SemVer precedence:
-    /// alpha < beta < rc < stable, then by prerelease number within each stage.
     let sortKey (v: Version) =
         let stageOrder, stageNum =
             match v.Stage with
@@ -197,7 +237,6 @@ module Version =
 module Api =
     let private extractApiScript = "scripts/extract-api.fsx"
 
-    /// Run API extraction in a subprocess to avoid assembly loading conflicts
     let private extractFromDll (dllPath: string) : ApiSignature list =
         match Shell.run "dotnet" (sprintf "fsi %s %s" extractApiScript dllPath) with
         | Success output ->
@@ -208,24 +247,23 @@ module Api =
             printfn "Warning: Failed to extract API from %s: %s" dllPath error
             []
 
-    let extractCurrent () : ApiSignature list =
+    let extractCurrent (pkg: PackageConfig) : ApiSignature list =
         Shell.runOrFail "dotnet" "build -c Release --verbosity quiet" |> ignore
-        extractFromDll (Path.GetFullPath dllPath)
+        extractFromDll (Path.GetFullPath pkg.DllPath)
 
-    let extractFromTag (tag: string) : ApiSignature list =
-        // Use a jj workspace to checkout the tag without affecting working copy
-        let tempDir = Path.Combine(Path.GetTempPath(), sprintf "fshotwatch-api-check-%s" (Guid.NewGuid().ToString("N").[..7]))
+    let extractFromTag (pkg: PackageConfig) (tag: string) : ApiSignature list =
+        let tempDir =
+            Path.Combine(Path.GetTempPath(), sprintf "api-check-%s" (Guid.NewGuid().ToString("N").[..7]))
 
         try
             Shell.runOrFail "jj" (sprintf "workspace add %s -r %s" tempDir tag) |> ignore
 
-            // Build in the temp directory
-            Shell.runOrFail "dotnet" (sprintf "build %s/src/FsHotWatch/FsHotWatch.fsproj -c Release --verbosity quiet" tempDir) |> ignore
+            Shell.runOrFail "dotnet" (sprintf "build %s/%s -c Release --verbosity quiet" tempDir pkg.Fsproj)
+            |> ignore
 
-            let tempDllPath = Path.Combine(tempDir, "src/FsHotWatch/bin/Release/net10.0/FsHotWatch.dll")
+            let tempDllPath = Path.Combine(tempDir, pkg.DllPath)
             let api = extractFromDll tempDllPath
 
-            // Cleanup
             Shell.runSilent "jj" (sprintf "workspace forget %s" tempDir) |> ignore
 
             if Directory.Exists(tempDir) then
@@ -236,7 +274,10 @@ module Api =
             Shell.runSilent "jj" (sprintf "workspace forget %s" tempDir) |> ignore
 
             if Directory.Exists(tempDir) then
-                try Directory.Delete(tempDir, true) with _ -> ()
+                try
+                    Directory.Delete(tempDir, true)
+                with _ ->
+                    ()
 
             printfn "Warning: Failed to extract API from tag %s: %s" tag ex.Message
             []
@@ -259,7 +300,11 @@ module Api =
 module Bump =
     type BumpResult = { NewVersion: Version; Reason: string }
 
-    let private isApiChanged = function Breaking _ | Addition _ -> true | NoChange -> false
+    let private isApiChanged =
+        function
+        | Breaking _
+        | Addition _ -> true
+        | NoChange -> false
 
     let fromApiChange (current: Version) (change: ApiChange) : BumpResult =
         match current.Stage with
@@ -298,9 +343,10 @@ module Bump =
                 { NewVersion = Version.bumpPatch current
                   Reason = "PATCH (no API changes)" }
 
-    /// For alpha/beta: just bump the prerelease number, skip API comparison
     let private bumpPreRelease (v: Version) (pre: PreRelease) : BumpResult =
-        { NewVersion = { v with Stage = PreRelease(Version.bumpPreRelease pre) }
+        { NewVersion =
+            { v with
+                Stage = PreRelease(Version.bumpPreRelease pre) }
           Reason =
             match pre with
             | Alpha n -> sprintf "alpha.%d (API changes ignored in alpha)" (n + 1)
@@ -330,19 +376,17 @@ module Bump =
             Some
                 { NewVersion = Version.toStable v
                   Reason = "promoting to stable" }
-        | Auto, FirstRelease -> None // Need explicit alpha command for first release
+        | Auto, FirstRelease -> None
         | Auto, HasPreviousRelease(_, v) ->
             match v.Stage with
-            // Alpha/beta: just bump prerelease number, no API comparison needed
             | PreRelease(Alpha _ as pre)
             | PreRelease(Beta _ as pre) -> Some(bumpPreRelease v pre)
-            // RC/stable: compare APIs to determine version bump
             | PreRelease(RC _)
-            | Stable -> None // Signal that API comparison is needed
-        | _, FirstRelease -> None // Can't promote if no previous release
+            | Stable -> None
+        | _, FirstRelease -> None
 
 // ============================================================================
-// Version Control Operations (jj only, no colocated git)
+// Version Control Operations (jj only)
 // ============================================================================
 
 module VCS =
@@ -356,39 +400,43 @@ module VCS =
         | Success output -> output.Contains(tag)
         | Failure _ -> false
 
-    let getLatestTag () =
-        match Shell.run "jj" "tag list v*" with
+    let getLatestTag (pkg: PackageConfig) =
+        match Shell.run "jj" (sprintf "tag list %s*" pkg.TagPrefix) with
         | Success output when output <> "" ->
             output.Split('\n')
             |> Array.map (fun line -> line.Split(':').[0].Trim())
-            |> Array.filter (fun t -> t.StartsWith("v"))
-            |> Array.sortByDescending (fun t -> Version.sortKey (Version.parse t))
+            |> Array.filter (fun t -> t.StartsWith(pkg.TagPrefix))
+            |> Array.sortByDescending (fun t -> Version.sortKey (Version.parse (t.Substring(pkg.TagPrefix.Length))))
             |> Array.tryHead
         | _ -> None
 
-    let getReleaseState () : ReleaseState =
-        match getLatestTag () with
-        | Some tag -> HasPreviousRelease(tag, Version.parse tag)
+    let getReleaseState (pkg: PackageConfig) : ReleaseState =
+        match getLatestTag pkg with
+        | Some tag -> HasPreviousRelease(tag, Version.parse (tag.Substring(pkg.TagPrefix.Length)))
         | None -> FirstRelease
 
-    let commitAndTag (version: Version) =
+    let commitAndTag (pkg: PackageConfig) (version: Version) =
         let versionStr = Version.format version
-        let tag = Version.toTag version
+        let tag = Version.toTag pkg version
 
-        Shell.runOrFail "jj" (sprintf "commit -m \"Release %s\"" versionStr) |> ignore
+        Shell.runOrFail "jj" (sprintf "commit -m \"Release %s %s\"" pkg.Name versionStr)
+        |> ignore
+
         Shell.runOrFail "jj" "bookmark set main -r @-" |> ignore
         Shell.runOrFail "jj" (sprintf "tag set %s -r @-" tag) |> ignore
-
         tag
 
     let private gitDir () =
         let root = Shell.runOrFail "jj" "root"
         Path.Combine(root, ".jj/repo/store/git")
 
-    let push tag =
+    let pushTags (tags: string list) =
         Shell.runOrFail "jj" "git push --all" |> ignore
         Shell.runOrFail "jj" "git export" |> ignore
-        Shell.runOrFail "git" (sprintf "--git-dir=%s push origin %s" (gitDir ()) tag) |> ignore
+        let gd = gitDir ()
+
+        for tag in tags do
+            Shell.runOrFail "git" (sprintf "--git-dir=%s push origin %s" gd tag) |> ignore
 
 // ============================================================================
 // NuGet Operations
@@ -397,15 +445,13 @@ module VCS =
 module NuGet =
     let artifactsDir = "artifacts"
 
-    let pack () =
+    let pack (pkg: PackageConfig) =
         if Directory.Exists(artifactsDir) then
             Directory.Delete(artifactsDir, true)
 
         Directory.CreateDirectory(artifactsDir) |> ignore
 
-        Shell.runOrFail
-            "dotnet"
-            (sprintf "pack %s -c Release -o %s" fsproj artifactsDir)
+        Shell.runOrFail "dotnet" (sprintf "pack %s -c Release -o %s" pkg.Fsproj artifactsDir)
         |> ignore
 
         Directory.GetFiles(artifactsDir, "*.nupkg")
@@ -413,32 +459,35 @@ module NuGet =
         |> Option.defaultWith (fun () -> failwith "No .nupkg file found after pack")
 
     let publish (nupkgPath: string) =
-        // Try NUGET_API_KEY first, then try without (relies on stored credentials)
         let apiKey = Environment.GetEnvironmentVariable("NUGET_API_KEY") |> Option.ofObj
 
         let pushArgs =
             match apiKey with
             | Some key ->
-                sprintf "nuget push %s --api-key %s --source https://api.nuget.org/v3/index.json --skip-duplicate" nupkgPath key
+                sprintf
+                    "nuget push %s --api-key %s --source https://api.nuget.org/v3/index.json --skip-duplicate"
+                    nupkgPath
+                    key
             | None ->
                 printfn "No NUGET_API_KEY found, trying with stored credentials..."
-                printfn "(To set up: get key from https://www.nuget.org/account/apikeys)"
                 sprintf "nuget push %s --source https://api.nuget.org/v3/index.json --skip-duplicate" nupkgPath
 
         Shell.runOrFail "dotnet" pushArgs |> ignore
 
-// ============================================================================
-// File Operations
-// ============================================================================
-
 module Project =
-    let updateVersion (version: Version) =
+    let private updateFsprojVersion (fsproj: string) (version: Version) =
         let content = File.ReadAllText(fsproj)
 
         let newContent =
             Regex.Replace(content, @"<Version>.*</Version>", sprintf "<Version>%s</Version>" (Version.format version))
 
         File.WriteAllText(fsproj, newContent)
+
+    let updateVersion (pkg: PackageConfig) (version: Version) =
+        updateFsprojVersion pkg.Fsproj version
+
+        for extra in pkg.ExtraFsprojs do
+            updateFsprojVersion extra version
 
 // ============================================================================
 // User Interaction
@@ -447,6 +496,7 @@ module Project =
 module UI =
     let promptYesNo message =
         printf "%s [y/N] " message
+
         match Console.ReadLine() with
         | null -> false
         | s -> s.ToLower() = "y"
@@ -454,47 +504,45 @@ module UI =
     let printApiChanges =
         function
         | Breaking removed ->
-            printfn "\nBREAKING API changes:"
+            printfn "  BREAKING API changes:"
 
             removed
             |> List.truncate 10
-            |> List.iter (fun (ApiSignature s) -> printfn "  - %s" s)
+            |> List.iter (fun (ApiSignature s) -> printfn "    - %s" s)
 
             if removed.Length > 10 then
-                printfn "  ... and %d more" (removed.Length - 10)
+                printfn "    ... and %d more" (removed.Length - 10)
         | Addition added ->
-            printfn "\nNew APIs:"
+            printfn "  New APIs:"
 
             added
             |> List.truncate 10
-            |> List.iter (fun (ApiSignature s) -> printfn "  + %s" s)
+            |> List.iter (fun (ApiSignature s) -> printfn "    + %s" s)
 
             if added.Length > 10 then
-                printfn "  ... and %d more" (added.Length - 10)
-        | NoChange -> printfn "\nNo API changes detected."
+                printfn "    ... and %d more" (added.Length - 10)
+        | NoChange -> printfn "  No API changes."
 
     let showHelp () =
-        printfn "Usage: script/release.fsx [command] [--publish]"
+        printfn "Usage: scripts/release.fsx [command] [--publish]"
         printfn ""
-        printfn "Versioning:"
-        printfn "  alpha/beta  - just bump prerelease number (no API check)"
-        printfn "  rc/stable   - bump based on API changes:"
-        printfn "                MAJOR (breaking) / MINOR (additions) / PATCH (none)"
+        printfn "Automatically detects which packages have API changes and releases them."
+        printfn "Each package gets its own version and tag:"
+        printfn "  core-v1.0.0      FsHotWatch + FsHotWatch.Cli (same version)"
+        printfn "  testprune-v1.0.0 FsHotWatch.TestPrune"
+        printfn "  analyzers-v1.0.0 FsHotWatch.Analyzers"
+        printfn "  lint-v1.0.0      FsHotWatch.Lint"
+        printfn "  fantomas-v1.0.0  FsHotWatch.Fantomas"
         printfn ""
         printfn "Commands:"
-        printfn "  (none)  - auto-bump: alpha.N+1 or API-based for rc/stable"
-        printfn "  alpha   - start first alpha or new alpha cycle"
-        printfn "  beta    - promote to beta"
+        printfn "  (none)  - auto-detect changes, bump based on API diff"
+        printfn "  alpha   - start first alpha for all packages (or new cycle)"
+        printfn "  beta    - promote all packages to beta"
         printfn "  rc      - promote to release candidate"
         printfn "  stable  - promote to stable release"
         printfn ""
         printfn "Options:"
         printfn "  --publish  - publish to NuGet locally instead of pushing to GitHub"
-        printfn ""
-        printfn "For --publish, set NUGET_API_KEY environment variable:"
-        printfn "  1. Get key from https://www.nuget.org/account/apikeys"
-        printfn "  2. export NUGET_API_KEY=\"your-key\"  (add to ~/.zshrc)"
-        printfn "  Or: NUGET_API_KEY=\"key\" mise run release --publish"
 
 // ============================================================================
 // Command Parsing
@@ -526,114 +574,136 @@ let parseArgs (argv: string array) : ReleaseCommand * PublishMode =
     (cmd, mode)
 
 // ============================================================================
+// Per-Package Release Logic
+// ============================================================================
+
+type PackageRelease =
+    { Package: PackageConfig
+      Bump: Bump.BumpResult
+      Tag: string }
+
+/// Determine bump for a single package. Returns None if no release needed.
+let determineBump (pkg: PackageConfig) (cmd: ReleaseCommand) : Bump.BumpResult option =
+    let state = VCS.getReleaseState pkg
+
+    printfn
+        "\n%s: %s"
+        pkg.Name
+        (match state with
+         | FirstRelease -> "(no previous release)"
+         | HasPreviousRelease(_, v) -> Version.format v)
+
+    match Bump.forCommand state cmd with
+    | Some b -> Some b
+    | None ->
+        match cmd, state with
+        | Auto, HasPreviousRelease(tag, v) ->
+            printfn "  Comparing API against %s..." tag
+            let baseline = Api.extractFromTag pkg tag
+            let current = Api.extractCurrent pkg
+            let change = Api.compare baseline current
+            UI.printApiChanges change
+
+            if change = NoChange then
+                printfn "  Skipping (no changes)."
+                None
+            else
+                Some(Bump.fromApiChange v change)
+        | Auto, FirstRelease ->
+            printfn "  Skipping (no previous release — use 'alpha' for first release)."
+            None
+        | _ -> None
+
+// ============================================================================
 // Main
 // ============================================================================
 
-type ReleaseOutcome =
-    | Released of tag: string
-    | Aborted
-    | NeedsExplicitCommand of message: string
-    | HelpShown
-
-let release (cmd: ReleaseCommand) (mode: PublishMode) : ReleaseOutcome =
+let release (cmd: ReleaseCommand) (mode: PublishMode) : int =
     match cmd with
     | ShowHelp ->
         UI.showHelp ()
-        HelpShown
+        0
     | _ ->
         if VCS.hasUncommittedChanges () then
             failwith "You have uncommitted changes. Please commit or stash them first."
 
-        let state = VCS.getReleaseState ()
+        Shell.runOrFail "dotnet" "build -c Release --verbosity quiet" |> ignore
 
-        printfn
-            "Current version: %s"
-            (match state with
-             | FirstRelease -> "(none)"
-             | HasPreviousRelease(_, v) -> Version.format v)
+        // Determine which packages need releasing
+        let skipReserved (pkg: PackageConfig) (bump: Bump.BumpResult) =
+            let ver = Version.format bump.NewVersion
 
-        // Try to get bump without API comparison first (works for alpha/beta and explicit commands)
-        let bump =
-            match Bump.forCommand state cmd with
-            | Some b -> Some b
-            | None ->
-                // API comparison needed (RC/stable Auto, or first release)
-                match cmd, state with
-                | Auto, HasPreviousRelease(tag, v) ->
-                    printfn "\nComparing API against %s..." tag
-                    let baseline = Api.extractFromTag tag
-                    printfn "Building current version..."
-                    let current = Api.extractCurrent ()
-                    let change = Api.compare baseline current
-                    UI.printApiChanges change
-                    Some(Bump.fromApiChange v change)
-                | Auto, FirstRelease -> None
-                | _ ->
-                    printfn "Building current version..."
-                    Api.extractCurrent () |> ignore
-                    None
+            if reservedVersions |> Set.contains (pkg.Name, ver) then
+                let patched = Version.bumpPatch bump.NewVersion
+                printfn "  Skipping reserved version %s -> %s" ver (Version.format patched)
 
-        match bump with
-        | None -> NeedsExplicitCommand "No previous releases. Use 'script/release.fsx alpha' for first release."
-        | Some bump ->
-            let newTag = Version.toTag bump.NewVersion
+                { bump with
+                    NewVersion = patched
+                    Reason = sprintf "%s (skipped reserved %s)" bump.Reason ver }
+            else
+                bump
 
-            if VCS.tagExists newTag then
-                failwithf "Tag %s already exists" newTag
+        let bumps =
+            allPackages
+            |> List.choose (fun pkg ->
+                determineBump pkg cmd
+                |> Option.map (fun bump -> pkg, skipReserved pkg bump))
 
-            printfn "\nVersion bump: %s" bump.Reason
-            printfn "New version: %s" (Version.format bump.NewVersion)
+        if bumps.IsEmpty then
+            printfn "\nNo packages to release."
+            0
+        else
+            printfn "\nPackages to release:"
+
+            for (pkg, bump) in bumps do
+                let tag = Version.toTag pkg bump.NewVersion
+                printfn "  %s: %s -> %s (%s)" pkg.Name (tag) (Version.format bump.NewVersion) bump.Reason
 
             match mode with
-            | LocalPublish -> printfn "Mode: local publish to NuGet"
+            | LocalPublish -> printfn "\nMode: local publish to NuGet"
             | GitHubActions -> printfn "Mode: push to GitHub Actions"
 
-            if not (UI.promptYesNo "Continue?") then
-                Aborted
+            if not (UI.promptYesNo "\nContinue?") then
+                printfn "Aborted."
+                0
             else
-                Project.updateVersion bump.NewVersion
-                let tag = VCS.commitAndTag bump.NewVersion
-                printfn "Created tag %s" tag
+                let mutable tags = []
+
+                for (pkg, bump) in bumps do
+                    Project.updateVersion pkg bump.NewVersion
+                    let tag = VCS.commitAndTag pkg bump.NewVersion
+                    tags <- tag :: tags
+                    printfn "Created tag %s" tag
 
                 match mode with
                 | LocalPublish ->
-                    printfn "\nPacking..."
-                    let nupkgPath = NuGet.pack ()
-                    printfn "Created %s" nupkgPath
+                    for (pkg, _bump) in bumps do
+                        printfn "\nPacking %s..." pkg.Name
+                        let nupkgPath = NuGet.pack pkg
+                        printfn "Created %s" nupkgPath
 
-                    if UI.promptYesNo "\nPublish to NuGet.org?" then
-                        printfn "Publishing..."
-                        NuGet.publish nupkgPath
-                        printfn "\nPublished to NuGet.org!"
+                        if UI.promptYesNo (sprintf "Publish %s to NuGet.org?" pkg.Name) then
+                            printfn "Publishing..."
+                            NuGet.publish nupkgPath
+                            printfn "Published!"
 
-                        if UI.promptYesNo "Also push tag to GitHub?" then
-                            VCS.push tag
-                            printfn "Pushed tag %s" tag
-                    else
-                        printfn "\nTo publish later: dotnet nuget push %s --source https://api.nuget.org/v3/index.json" nupkgPath
+                    if UI.promptYesNo "\nPush tags to GitHub?" then
+                        VCS.pushTags (tags |> List.rev)
+                        printfn "Pushed!"
 
                 | GitHubActions ->
-                    if UI.promptYesNo "\nPush to trigger release?" then
-                        VCS.push tag
+                    if UI.promptYesNo "\nPush to trigger releases?" then
+                        VCS.pushTags (tags |> List.rev)
                         printfn "\nPushed! %s/actions" repoUrl
                     else
                         printfn "\nTo push: jj git push --all"
 
-                Released tag
+                0
 
 let main (argv: string array) =
     try
         let (cmd, mode) = parseArgs argv
-
-        match release cmd mode with
-        | Released _ -> 0
-        | Aborted ->
-            printfn "Aborted."
-            0
-        | NeedsExplicitCommand msg ->
-            printfn "%s" msg
-            0
-        | HelpShown -> 0
+        release cmd mode
     with ex ->
         eprintfn "Error: %s" ex.Message
         1
