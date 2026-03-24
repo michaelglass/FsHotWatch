@@ -110,3 +110,96 @@ let ``GetAllStatuses returns all plugin statuses`` () =
     test <@ all.Count = 2 @>
     test <@ all |> Map.containsKey "a" @>
     test <@ all |> Map.containsKey "b" @>
+
+[<Fact>]
+let ``EmitBuildCompleted reaches plugins`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let mutable receivedBuild: BuildResult option = None
+
+    let plugin =
+        { new IFsHotWatchPlugin with
+            member _.Name = "build-listener"
+
+            member _.Initialize(ctx) =
+                ctx.OnBuildCompleted.Add(fun result -> receivedBuild <- Some result)
+
+            member _.Dispose() = () }
+
+    host.Register(plugin)
+    host.EmitBuildCompleted(BuildSucceeded)
+    test <@ receivedBuild = Some BuildSucceeded @>
+
+[<Fact>]
+let ``EmitBuildCompleted with failure reaches plugins`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let mutable receivedBuild: BuildResult option = None
+
+    let plugin =
+        { new IFsHotWatchPlugin with
+            member _.Name = "build-fail-listener"
+
+            member _.Initialize(ctx) =
+                ctx.OnBuildCompleted.Add(fun result -> receivedBuild <- Some result)
+
+            member _.Dispose() = () }
+
+    host.Register(plugin)
+    let errors = [ "error CS0001: Something broke" ]
+    host.EmitBuildCompleted(BuildFailed errors)
+
+    test
+        <@
+            match receivedBuild with
+            | Some(BuildFailed _) -> true
+            | _ -> false
+        @>
+
+[<Fact>]
+let ``EmitProjectChecked reaches plugins`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let mutable receivedProject: ProjectCheckResult option = None
+
+    let plugin =
+        { new IFsHotWatchPlugin with
+            member _.Name = "project-check-listener"
+
+            member _.Initialize(ctx) =
+                ctx.OnProjectChecked.Add(fun result -> receivedProject <- Some result)
+
+            member _.Dispose() = () }
+
+    host.Register(plugin)
+
+    let result =
+        { Project = "/tmp/test/Test.fsproj"
+          FileResults = Map.empty }
+
+    host.EmitProjectChecked(result)
+    test <@ receivedProject.IsSome @>
+    test <@ receivedProject.Value.Project = "/tmp/test/Test.fsproj" @>
+
+[<Fact>]
+let ``multiple plugins receive the same event`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let mutable received1 = false
+    let mutable received2 = false
+    let mutable received3 = false
+
+    let makePlugin name (setter: unit -> unit) =
+        { new IFsHotWatchPlugin with
+            member _.Name = name
+
+            member _.Initialize(ctx) =
+                ctx.OnFileChanged.Add(fun _ -> setter ())
+
+            member _.Dispose() = () }
+
+    host.Register(makePlugin "p1" (fun () -> received1 <- true))
+    host.Register(makePlugin "p2" (fun () -> received2 <- true))
+    host.Register(makePlugin "p3" (fun () -> received3 <- true))
+
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    test <@ received1 @>
+    test <@ received2 @>
+    test <@ received3 @>
