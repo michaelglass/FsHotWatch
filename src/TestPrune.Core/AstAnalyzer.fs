@@ -1,10 +1,15 @@
 module TestPrune.AstAnalyzer
 
 open System
+open System.IO
+open System.Threading.Tasks
 open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.CodeAnalysis.ProjectSnapshot
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
+
+#nowarn "57" // Experimental snapshot API
 
 /// Discriminated union for kinds of F# symbols (function, type, DU case, etc.).
 type SymbolKind =
@@ -214,7 +219,102 @@ let private hashSourceLines (source: string) (startLine: int) (endLine: int) : s
     let bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content))
     System.Convert.ToHexStringLower(bytes)
 
-/// Parse and analyze a single F# source string using script-style project options.
+let private extractResults
+    (sourceFileName: string)
+    (source: string)
+    (parseResults: FSharpParseFileResults)
+    (checkAnswer: FSharpCheckFileAnswer)
+    : Result<AnalysisResult, string> =
+    if parseResults.ParseHadErrors then
+        let errors =
+            parseResults.Diagnostics |> Array.map (fun d -> d.Message) |> String.concat "; "
+
+        Error $"Parse errors: %s{errors}"
+    else
+        match checkAnswer with
+        | FSharpCheckFileAnswer.Aborted -> Error "Type checking aborted"
+        | FSharpCheckFileAnswer.Succeeded checkResults ->
+            let allUses = checkResults.GetAllUsesOfAllSymbolsInFile() |> Seq.toList
+
+            let definitions =
+                allUses
+                |> List.choose (fun u ->
+                    if u.IsFromDefinition then
+                        classifySymbol u.Symbol
+                        |> Option.map (fun (kind, fullName) ->
+                            { FullName = fullName
+                              Kind = kind
+                              SourceFile = sourceFileName
+                              LineStart = u.Range.StartLine
+                              LineEnd = u.Range.EndLine
+                              ContentHash = hashSourceLines source u.Range.StartLine u.Range.EndLine },
+                            u)
+                    else
+                        None)
+
+            let symbols = definitions |> List.map fst
+
+            let moduleBindingRanges = collectModuleBindingRanges parseResults.ParseTree
+
+            let findEnclosing (useRange: range) =
+                let candidates =
+                    moduleBindingRanges
+                    |> List.filter (fun (_, bindingRange) ->
+                        useRange.StartLine >= bindingRange.StartLine
+                        && useRange.EndLine <= bindingRange.EndLine)
+                    |> List.sortByDescending (fun (_, r) -> r.StartLine)
+
+                match candidates |> List.tryHead with
+                | None -> None
+                | Some(name, _) ->
+                    definitions
+                    |> List.tryFind (fun (si, _) -> si.FullName.EndsWith(name, StringComparison.Ordinal))
+                    |> Option.map fst
+
+            let dependencies =
+                allUses
+                |> List.choose (fun u ->
+                    if u.IsFromDefinition then
+                        None
+                    else
+                        match classifySymbol u.Symbol with
+                        | None -> None
+                        | Some(_, usedFullName) ->
+                            match findEnclosing u.Range with
+                            | None -> None
+                            | Some enclosingSi ->
+                                if enclosingSi.FullName = usedFullName then
+                                    None
+                                else
+                                    Some
+                                        { FromSymbol = enclosingSi.FullName
+                                          ToSymbol = usedFullName
+                                          Kind = classifyDependency u.Symbol })
+                |> List.distinct
+
+            let testMethods =
+                allUses
+                |> List.choose (fun u ->
+                    if u.IsFromDefinition then
+                        match u.Symbol with
+                        | :? FSharpMemberOrFunctionOrValue as mfv when isTestAttribute mfv ->
+                            let testClass, testMethod = extractTestClass mfv.FullName
+
+                            Some
+                                { SymbolFullName = mfv.FullName
+                                  TestProject = ""
+                                  TestClass = testClass
+                                  TestMethod = testMethod }
+                        | _ -> None
+                    else
+                        None)
+
+            Ok
+                { Symbols = symbols
+                  Dependencies = dependencies
+                  TestMethods = testMethods }
+
+/// Parse and analyze a single F# source string using project options.
 let analyzeSource
     (checker: FSharpChecker)
     (sourceFileName: string)
@@ -227,104 +327,50 @@ let analyzeSource
         let! parseResults, checkAnswer =
             checker.ParseAndCheckFileInProject(sourceFileName, 0, sourceText, projectOptions)
 
-        if parseResults.ParseHadErrors then
-            let errors =
-                parseResults.Diagnostics |> Array.map (fun d -> d.Message) |> String.concat "; "
-
-            return Error $"Parse errors: %s{errors}"
-        else
-            match checkAnswer with
-            | FSharpCheckFileAnswer.Aborted -> return Error "Type checking aborted"
-            | FSharpCheckFileAnswer.Succeeded checkResults ->
-                let allUses = checkResults.GetAllUsesOfAllSymbolsInFile() |> Seq.toList
-
-                // Collect definitions
-                let definitions =
-                    allUses
-                    |> List.choose (fun u ->
-                        if u.IsFromDefinition then
-                            classifySymbol u.Symbol
-                            |> Option.map (fun (kind, fullName) ->
-                                { FullName = fullName
-                                  Kind = kind
-                                  SourceFile = sourceFileName
-                                  LineStart = u.Range.StartLine
-                                  LineEnd = u.Range.EndLine
-                                  ContentHash = hashSourceLines source u.Range.StartLine u.Range.EndLine },
-                                u)
-                        else
-                            None)
-
-                let symbols = definitions |> List.map fst
-
-                // Use the parsed AST to build proper scope ranges for module-level bindings.
-                // Each SynBinding's range covers from `let` to end of body, so nested
-                // local `let` bindings are contained within their parent's range.
-                let moduleBindingRanges = collectModuleBindingRanges parseResults.ParseTree
-
-                let findEnclosing (useRange: range) =
-                    // Find the innermost module-level binding whose range contains this use
-                    let candidates =
-                        moduleBindingRanges
-                        |> List.filter (fun (_, bindingRange) ->
-                            useRange.StartLine >= bindingRange.StartLine
-                            && useRange.EndLine <= bindingRange.EndLine)
-                        |> List.sortByDescending (fun (_, r) -> r.StartLine) // innermost = largest start line
-
-                    match candidates |> List.tryHead with
-                    | None -> None
-                    | Some(name, _) ->
-                        // Find the corresponding symbol definition
-                        definitions
-                        |> List.tryFind (fun (si, _) -> si.FullName.EndsWith(name, StringComparison.Ordinal))
-                        |> Option.map fst
-
-                // For each non-definition use, find the enclosing definition
-                let dependencies =
-                    allUses
-                    |> List.choose (fun u ->
-                        if u.IsFromDefinition then
-                            None
-                        else
-                            match classifySymbol u.Symbol with
-                            | None -> None
-                            | Some(_, usedFullName) ->
-                                match findEnclosing u.Range with
-                                | None -> None
-                                | Some enclosingSi ->
-                                    if enclosingSi.FullName = usedFullName then
-                                        None // self-reference
-                                    else
-                                        Some
-                                            { FromSymbol = enclosingSi.FullName
-                                              ToSymbol = usedFullName
-                                              Kind = classifyDependency u.Symbol })
-                    |> List.distinct
-
-                // Detect test methods
-                let testMethods =
-                    allUses
-                    |> List.choose (fun u ->
-                        if u.IsFromDefinition then
-                            match u.Symbol with
-                            | :? FSharpMemberOrFunctionOrValue as mfv when isTestAttribute mfv ->
-                                let testClass, testMethod = extractTestClass mfv.FullName
-
-                                Some
-                                    { SymbolFullName = mfv.FullName
-                                      TestProject = ""
-                                      TestClass = testClass
-                                      TestMethod = testMethod }
-                            | _ -> None
-                        else
-                            None)
-
-                return
-                    Ok
-                        { Symbols = symbols
-                          Dependencies = dependencies
-                          TestMethods = testMethods }
+        return extractResults sourceFileName source parseResults checkAnswer
     }
+
+/// Parse and analyze a single F# source file using a project snapshot.
+/// FCS internally caches results for files with unchanged version strings.
+let analyzeSourceWithSnapshot
+    (checker: FSharpChecker)
+    (sourceFileName: string)
+    (source: string)
+    (projectSnapshot: FSharpProjectSnapshot)
+    =
+    async {
+        let! parseResults, checkAnswer =
+            checker.ParseAndCheckFileInProject(sourceFileName, projectSnapshot)
+
+        return extractResults sourceFileName source parseResults checkAnswer
+    }
+
+/// Create a project snapshot from project options, using file modification times as version keys.
+/// FCS uses version strings to skip re-checking files that haven't changed.
+let createProjectSnapshot (projectOptions: FSharpProjectOptions) =
+    let getFileSnapshot (_opts: FSharpProjectOptions) (fileName: string) =
+        async {
+            let version =
+                if File.Exists(fileName) then
+                    File.GetLastWriteTimeUtc(fileName).Ticks |> string
+                else
+                    "0"
+
+            let getSource () =
+                task {
+                    let text =
+                        if File.Exists(fileName) then
+                            File.ReadAllText(fileName)
+                        else
+                            ""
+
+                    return SourceTextNew.ofString text
+                }
+
+            return FSharpFileSnapshot.Create(fileName, version, getSource)
+        }
+
+    FSharpProjectSnapshot.FromOptions(projectOptions, getFileSnapshot)
 
 /// Convenience: create project options from a script source string.
 let getScriptOptions (checker: FSharpChecker) (sourceFileName: string) (source: string) =

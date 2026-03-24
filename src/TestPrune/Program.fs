@@ -252,6 +252,12 @@ let runIndexWith
                     eprintfn $"  %s{projName}: unchanged, skipping"
                 | _ ->
                     let projOptions = lazy (getOptions checker fsprojPath)
+
+                    let projSnapshot =
+                        lazy
+                            (createProjectSnapshot (projOptions.Force())
+                             |> Async.RunSynchronously)
+
                     let mutable analyzedFiles = 0
                     let mutable firstChangedIndex = None
 
@@ -288,7 +294,11 @@ let runIndexWith
                                     let source = File.ReadAllText(sourceFile)
 
                                     match
-                                        analyzeSource checker sourceFile source (projOptions.Force())
+                                        analyzeSourceWithSnapshot
+                                            checker
+                                            sourceFile
+                                            source
+                                            (projSnapshot.Force())
                                         |> Async.RunSynchronously
                                     with
                                     | Ok result ->
