@@ -71,8 +71,15 @@ run = "dotnet run --project src/FsHotWatch.Cli --"
 depends = ["build"]
 
 [tasks.pack]
-description = "Create NuGet package"
-run = "dotnet pack src/FsHotWatch/FsHotWatch.fsproj -c Release"
+description = "Create NuGet packages"
+run = """
+dotnet pack src/FsHotWatch/FsHotWatch.fsproj -c Release -o artifacts
+dotnet pack src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj -c Release -o artifacts
+dotnet pack src/FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj -c Release -o artifacts
+dotnet pack src/FsHotWatch.Analyzers/FsHotWatch.Analyzers.fsproj -c Release -o artifacts
+dotnet pack src/FsHotWatch.Lint/FsHotWatch.Lint.fsproj -c Release -o artifacts
+dotnet pack src/FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj -c Release -o artifacts
+"""
 depends = ["build"]
 
 [tasks.docs]
