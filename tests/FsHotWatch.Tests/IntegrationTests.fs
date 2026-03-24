@@ -95,7 +95,34 @@ let ``all plugins receive events when checking a file`` () =
     host.EmitFileChanged(SourceChanged [ sourceFile ])
     test <@ host.GetStatus("format-check").IsSome @>
 
-    // Cleanup
+    // Run the "diagnostics" command on the analyzers plugin
+    let diagResult = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
+    test <@ diagResult.IsSome @>
+    test <@ diagResult.Value.Contains("analyzers") @>
+    test <@ diagResult.Value.Contains("files") @>
+    test <@ diagResult.Value.Contains("diagnostics") @>
+
+    // Run the "warnings" command on the lint plugin
+    let warnResult = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
+    test <@ warnResult.IsSome @>
+    test <@ warnResult.Value.Contains("files") @>
+    test <@ warnResult.Value.Contains("warnings") @>
+
+    // Run the "unformatted" command on the format-check plugin
+    let fmtResult = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
+    test <@ fmtResult.IsSome @>
+    test <@ fmtResult.Value.Contains("count") @>
+
+    // Run the "affected-tests" command on the test-prune plugin
+    let testsResult = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
+    test <@ testsResult.IsSome @>
+    test <@ testsResult.Value.StartsWith("[") @>
+
+    // Run the "changed-files" command on the test-prune plugin
+    let filesResult = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
+    test <@ filesResult.IsSome @>
+    test <@ filesResult.Value.StartsWith("[") @>
+
     try
         File.Delete(dbPath)
     with _ ->

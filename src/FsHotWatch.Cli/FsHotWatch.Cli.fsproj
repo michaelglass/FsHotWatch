@@ -10,6 +10,8 @@
         <Description>CLI for FsHotWatch — F# file watcher daemon</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <NoWarn>$(NoWarn);NU1605;MSB3277;NETSDK1188</NoWarn>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     </PropertyGroup>
 
     <ItemGroup>

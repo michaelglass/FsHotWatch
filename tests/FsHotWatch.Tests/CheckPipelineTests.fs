@@ -68,3 +68,40 @@ let ``CheckFile returns None for unregistered file even when other projects exis
 
     let result = pipeline.CheckFile("/tmp/NotRegistered.fs") |> Async.RunSynchronously
     test <@ result = None @>
+
+[<Fact>]
+let ``CheckProject returns None for unregistered project`` () =
+    let pipeline = CheckPipeline(nullChecker)
+    let result = pipeline.CheckProject("/tmp/NoSuchProject.fsproj") |> Async.RunSynchronously
+    test <@ result = None @>
+
+[<Fact>]
+let ``CheckProject returns results for all registered source files`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-checkproj-{System.Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let checker =
+            FSharpChecker.Create(projectCacheSize = 10)
+
+        let pipeline = CheckPipeline(checker)
+
+        let sourceFile = Path.Combine(tmpDir, "Lib.fs")
+        File.WriteAllText(sourceFile, "module Lib\nlet x = 42\n")
+
+        let absSource = Path.GetFullPath(sourceFile)
+
+        let options, _diagnostics =
+            checker.GetProjectOptionsFromScript(absSource, FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText absSource))
+            |> Async.RunSynchronously
+
+        let projectPath = "/tmp/CheckProject.fsproj"
+        pipeline.RegisterProject(projectPath, options)
+
+        let result = pipeline.CheckProject(projectPath) |> Async.RunSynchronously
+        test <@ result.IsSome @>
+        test <@ result.Value.Project = projectPath @>
+        test <@ result.Value.FileResults.Count > 0 @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
