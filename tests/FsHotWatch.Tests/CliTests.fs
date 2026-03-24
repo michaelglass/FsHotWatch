@@ -1,9 +1,16 @@
 module FsHotWatch.Tests.CliTests
 
+open System
 open System.IO
+open System.Threading
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Cli.Program
+open FsHotWatch.Daemon
+open FsHotWatch.Ipc
+open FsHotWatch.Plugin
+open FsHotWatch.Events
+open FsHotWatch.PluginHost
 
 // --- parseCommand tests ---
 
@@ -114,3 +121,103 @@ let ``computePipeName has expected length`` () =
     let name = computePipeName "/test"
     // "fs-hot-watch-" is 13 chars + 12 hex chars = 25
     test <@ name.Length = 25 @>
+
+// --- CLI integration tests (real daemon + IPC) ---
+
+[<Fact>]
+let ``CLI status query works against running daemon`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"cli-inttest-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+    let pipeName = computePipeName tmpDir
+    let cts = new CancellationTokenSource()
+
+    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir
+
+    let plugin =
+        { new IFsHotWatchPlugin with
+            member _.Name = "test-plugin"
+            member _.Initialize(ctx) = ctx.ReportStatus(Idle)
+            member _.Dispose() = () }
+
+    daemon.Register(plugin)
+    let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts.Token))
+    Thread.Sleep(500)
+
+    try
+        let result = IpcClient.getStatus pipeName |> Async.RunSynchronously
+        test <@ result.Contains("test-plugin") @>
+        test <@ result.Contains("Idle") @>
+    finally
+        cts.Cancel()
+        try task.Wait(TimeSpan.FromSeconds(3.0)) |> ignore with _ -> ()
+        if Directory.Exists tmpDir then Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``CLI plugin status query works against running daemon`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"cli-inttest-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+    let pipeName = computePipeName tmpDir
+    let cts = new CancellationTokenSource()
+
+    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir
+
+    let plugin =
+        { new IFsHotWatchPlugin with
+            member _.Name = "my-lint"
+            member _.Initialize(ctx) = ctx.ReportStatus(Running(since = DateTime.UtcNow))
+            member _.Dispose() = () }
+
+    daemon.Register(plugin)
+    let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts.Token))
+    Thread.Sleep(500)
+
+    try
+        let result = IpcClient.getPluginStatus pipeName "my-lint" |> Async.RunSynchronously
+        test <@ result.Contains("Running") @>
+
+        let notFound = IpcClient.getPluginStatus pipeName "nonexistent" |> Async.RunSynchronously
+        test <@ notFound = "not found" @>
+    finally
+        cts.Cancel()
+        try task.Wait(TimeSpan.FromSeconds(3.0)) |> ignore with _ -> ()
+        if Directory.Exists tmpDir then Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``CLI command proxying works against running daemon`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"cli-inttest-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+    let pipeName = computePipeName tmpDir
+    let cts = new CancellationTokenSource()
+
+    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir
+
+    let plugin =
+        { new IFsHotWatchPlugin with
+            member _.Name = "greeter"
+
+            member _.Initialize(ctx) =
+                ctx.RegisterCommand(
+                    "greet",
+                    fun args ->
+                        async {
+                            let name = if args.Length > 0 then args.[0] else "world"
+                            return $"hello {name}"
+                        }
+                )
+
+            member _.Dispose() = () }
+
+    daemon.Register(plugin)
+    let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts.Token))
+    Thread.Sleep(500)
+
+    try
+        let result = IpcClient.runCommand pipeName "greet" "Claude" |> Async.RunSynchronously
+        test <@ result.Contains("hello Claude") @>
+
+        let unknown = IpcClient.runCommand pipeName "bogus" "" |> Async.RunSynchronously
+        test <@ unknown = "unknown command" @>
+    finally
+        cts.Cancel()
+        try task.Wait(TimeSpan.FromSeconds(3.0)) |> ignore with _ -> ()
+        if Directory.Exists tmpDir then Directory.Delete(tmpDir, true)
