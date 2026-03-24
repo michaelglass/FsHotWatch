@@ -123,7 +123,6 @@ let private ensureVersionTable (conn: SqliteConnection) =
     cmd.ExecuteNonQuery() |> ignore
 
 let private resetAndCreateSchema (conn: SqliteConnection) =
-    // Drop everything except schema_version
     use dropCmd = conn.CreateCommand()
 
     dropCmd.CommandText <-
@@ -144,13 +143,12 @@ let private resetAndCreateSchema (conn: SqliteConnection) =
     schemaCmd.ExecuteNonQuery() |> ignore
 
     use versionCmd = conn.CreateCommand()
-    versionCmd.CommandText <- "DELETE FROM schema_version; INSERT INTO schema_version (version) VALUES (@version)"
+    versionCmd.CommandText <- "INSERT INTO schema_version (version) VALUES (@version)"
     versionCmd.Parameters.AddWithValue("@version", schemaVersion) |> ignore
     versionCmd.ExecuteNonQuery() |> ignore
 
 let private initializeSchema (dbPath: string) =
     use conn = openConnection dbPath
-    ensureVersionTable conn
 
     match getStoredSchemaVersion conn with
     | Some v when v = schemaVersion -> ()
