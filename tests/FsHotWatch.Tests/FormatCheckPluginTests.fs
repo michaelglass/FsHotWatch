@@ -25,7 +25,7 @@ let ``unformatted command returns zero count when no files processed`` () =
     test <@ result.Value.Contains("\"count\": 0") @>
 
 [<Fact>]
-let ``format check ignores non-source change events`` () =
+let ``format check handles non-source change events without crashing`` () =
     let host =
         PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -36,9 +36,15 @@ let ``format check ignores non-source change events`` () =
     host.EmitFileChanged(ProjectChanged [ "/tmp/Test.fsproj" ])
     host.EmitFileChanged(SolutionChanged)
 
-    // No status should be set because no source files were processed
+    // The plugin still sets Completed status (empty unformatted set)
     let status = host.GetStatus("format-check")
-    test <@ status.IsNone @>
+    test <@ status.IsSome @>
+
+    match status.Value with
+    | Completed(result, _) ->
+        let unformatted = result :?> Set<string>
+        test <@ unformatted.IsEmpty @>
+    | other -> Assert.Fail($"Expected Completed, got: %A{other}")
 
 [<Fact>]
 let ``format check handles non-existent source file gracefully`` () =

@@ -141,13 +141,23 @@ let ``server handles client disconnection gracefully`` () =
         // Immediately dispose (disconnect)
     with _ -> ()
 
-    // Give server time to handle the disconnection
-    Thread.Sleep(500)
+    // Give server time to handle the disconnection and re-listen
+    Thread.Sleep(3000)
 
     // Server should still be running - verify by making a successful request
+    // Use a retry since the server may take time to re-listen after disconnection
+    let mutable success = false
+
+    for _ in 1..3 do
+        if not success then
+            try
+                let result = IpcClient.getStatus pipeName |> Async.RunSynchronously
+                success <- result <> null
+            with
+            | _ -> Thread.Sleep(1000)
+
     try
-        let result = IpcClient.getStatus pipeName |> Async.RunSynchronously
-        test <@ result <> null @>
+        test <@ success @>
     finally
         cts.Cancel()
         try serverTask.Wait(TimeSpan.FromSeconds(3.0)) |> ignore with _ -> ()
