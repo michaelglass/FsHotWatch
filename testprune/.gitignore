@@ -59,5 +59,6 @@ tmp/
 
 # TestPrune
 .test-prune.db*
+TODO.md
 .ionide/
 .fake
