@@ -21,10 +21,12 @@
     <Compile Include="LintPluginTests.fs" />
     <Compile Include="FormatCheckPluginTests.fs" />
     <Compile Include="CheckPipelineTests.fs" />
+    <Compile Include="CliTests.fs" />
     <Compile Include="IntegrationTests.fs" />
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../../src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch/FsHotWatch.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch.Analyzers/FsHotWatch.Analyzers.fsproj" />

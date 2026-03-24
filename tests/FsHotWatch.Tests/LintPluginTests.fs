@@ -27,7 +27,6 @@ let ``warnings command returns zeroes when no files checked`` () =
 
 [<Fact>]
 let ``LintPlugin with configPath sets up lint params`` () =
-    // Exercise the Some path branch in LintPlugin constructor
     let plugin = LintPlugin(configPath = "/tmp/nonexistent-config.json") :> IFsHotWatchPlugin
     test <@ plugin.Name = "lint" @>
 
@@ -39,7 +38,6 @@ let ``lint error path sets Failed status on null check results`` () =
     let plugin = LintPlugin()
     host.Register(plugin)
 
-    // Emit a FileCheckResult with null ParseResults to trigger the catch block
     let fakeResult: FileCheckResult =
         { File = "/tmp/nonexistent/Fake.fs"
           Source = ""
@@ -55,6 +53,52 @@ let ``lint error path sets Failed status on null check results`` () =
     test <@ status.IsSome @>
 
     match status.Value with
-    | Failed _ -> () // Expected: the error path was exercised
-    | Running _ -> () // Also acceptable: status set to Running before error
+    | Failed _ -> ()
+    | Running _ -> ()
+    | other -> Assert.Fail($"Expected Failed or Running, got: %A{other}")
+
+[<Fact>]
+let ``warnings command with args passes through`` () =
+    let host =
+        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let plugin = LintPlugin()
+    host.Register(plugin)
+
+    // The warnings command ignores args, but verify it handles non-empty args
+    let result = host.RunCommand("warnings", [| "--verbose" |]) |> Async.RunSynchronously
+    test <@ result.IsSome @>
+    test <@ result.Value.Contains("\"files\": 0") @>
+
+[<Fact>]
+let ``dispose is callable`` () =
+    let plugin = LintPlugin() :> IFsHotWatchPlugin
+    plugin.Dispose()
+
+[<Fact>]
+let ``lint error path with empty source triggers failure`` () =
+    let host =
+        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let plugin = LintPlugin()
+    host.Register(plugin)
+
+    // Provide a source string but null ParseResults — the Ast access will throw
+    let fakeResult: FileCheckResult =
+        { File = "/tmp/test/Empty.fs"
+          Source = "module Empty"
+          ParseResults = Unchecked.defaultof<_>
+          CheckResults = Unchecked.defaultof<_> }
+
+    try
+        host.EmitFileChecked(fakeResult)
+    with
+    | _ -> ()
+
+    let status = host.GetStatus("lint")
+    test <@ status.IsSome @>
+
+    match status.Value with
+    | Failed _ -> ()
+    | Running _ -> ()
     | other -> Assert.Fail($"Expected Failed or Running, got: %A{other}")
