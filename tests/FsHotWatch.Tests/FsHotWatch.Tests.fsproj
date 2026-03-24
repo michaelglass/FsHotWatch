@@ -5,7 +5,7 @@
     <IsPackable>false</IsPackable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <!-- FS0988: existing suppression; FS3511: state machine not statically compilable; NETSDK1188: harmless locale warnings from Microsoft.Testing.Platform -->
-    <NoWarn>$(NoWarn);FS0988;3511;NETSDK1188;NU1605</NoWarn>
+    <NoWarn>$(NoWarn);FS0988;3511;NETSDK1188;NU1605;NU1608</NoWarn>
     <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
   </PropertyGroup>
 
@@ -16,13 +16,22 @@
     <Compile Include="WatcherTests.fs" />
     <Compile Include="DaemonTests.fs" />
     <Compile Include="IpcTests.fs" />
+    <Compile Include="TestPrunePluginTests.fs" />
+    <Compile Include="AnalyzersPluginTests.fs" />
+    <Compile Include="LintPluginTests.fs" />
+    <Compile Include="FormatCheckPluginTests.fs" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="../../src/FsHotWatch/FsHotWatch.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.Analyzers/FsHotWatch.Analyzers.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.Lint/FsHotWatch.Lint.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj" />
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Update="FSharp.Core" Version="10.1.*" />
     <PackageReference Include="xunit.v3" Version="3.2.2" />
     <PackageReference Include="xunit.v3.mtp-v2" Version="3.2.2" />
     <PackageReference Include="Unquote" Version="7.0.1" />

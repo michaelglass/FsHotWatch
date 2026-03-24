@@ -51,11 +51,12 @@
     <Compile Include="Plugin.fs" />
     <Compile Include="PluginHost.fs" />
     <Compile Include="Watcher.fs" />
-    <Compile Include="Daemon.fs" />
     <Compile Include="Ipc.fs" />
+    <Compile Include="Daemon.fs" />
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Update="FSharp.Core" Version="10.1.*" />
     <PackageReference Include="FSharp.Data.Adaptive" Version="1.2.16" />
     <PackageReference Include="StreamJsonRpc" Version="2.24.84" />
     <PackageReference Include="TestPrune.Core" Version="0.1.0-alpha.2" />

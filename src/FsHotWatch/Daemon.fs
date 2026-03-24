@@ -2,6 +2,7 @@ module FsHotWatch.Daemon
 
 open System.Threading
 open FSharp.Compiler.CodeAnalysis
+open FsHotWatch.Ipc
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
 open FsHotWatch.Watcher
@@ -30,6 +31,28 @@ type Daemon =
                 cancellationToken.Register(fun () -> tcs.TrySetResult() |> ignore)
 
             do! tcs.Task |> Async.AwaitTask
+        }
+
+    /// Run the daemon with IPC server on the given pipe name.
+    member this.RunWithIpc(pipeName: string, cancellationToken: CancellationToken) =
+        async {
+            use _ = this.Watcher :> System.IDisposable
+
+            let ipcTask =
+                Async.StartAsTask(IpcServer.start pipeName this.Host cancellationToken)
+
+            let tcs =
+                System.Threading.Tasks.TaskCompletionSource<unit>()
+
+            use _reg =
+                cancellationToken.Register(fun () -> tcs.TrySetResult() |> ignore)
+
+            do! tcs.Task |> Async.AwaitTask
+
+            try
+                ipcTask.Wait(System.TimeSpan.FromSeconds(1.0)) |> ignore
+            with
+            | _ -> ()
         }
 
 /// Functions for creating and managing daemons.

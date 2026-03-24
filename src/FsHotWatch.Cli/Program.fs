@@ -67,7 +67,7 @@ let main args =
             cts.Cancel())
 
         try
-            Async.RunSynchronously(daemon.Run(cts.Token))
+            Async.RunSynchronously(daemon.RunWithIpc(pipeName, cts.Token))
         with :? OperationCanceledException ->
             ()
 

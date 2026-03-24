@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <NoWarn>NU1605;NU1607;NU1608;NU1107;MSB3277;NETSDK1188</NoWarn>
+
+    <!-- Package metadata -->
+    <PackageId>FsHotWatch.Analyzers</PackageId>
+    <Version>0.1.0-alpha.1</Version>
+    <Authors>Michael Glass</Authors>
+    <Description>FsHotWatch plugin for F# Analyzers SDK integration</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="AnalyzersPlugin.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../FsHotWatch/FsHotWatch.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="FSharp.Core" Version="10.1.*" />
+    <PackageReference Include="FSharp.Analyzers.SDK" Version="0.36.0" />
+    <PackageReference Include="FSharp.Compiler.Service" Version="43.12.201" />
+  </ItemGroup>
+</Project>
