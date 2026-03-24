@@ -67,19 +67,39 @@ match analyzeSource checker fileName source projOptions |> Async.RunSynchronousl
 | Error msg -> eprintfn $"Failed: %s{msg}"
 ```
 
-To skip re-indexing unchanged projects, pass a cache key:
+Caching works at two levels — project and file — to skip expensive
+re-analysis for unchanged code:
 
 ```fsharp
-// RebuildForProjectIfChanged compares the key against the stored value
-// and skips the rebuild entirely if nothing changed.
-let changed = db.RebuildForProjectIfChanged("MyProject", cacheKey, result)
-// changed = false means the project was already up-to-date
+// Project-level: skip the entire project if nothing changed
+match db.GetProjectKey("MyProject") with
+| Some key when key = currentKey -> () // skip
+| _ ->
+    // File-level: skip individual files within a changed project
+    match db.GetFileKey("src/Lib.fs") with
+    | Some key when key = currentFileKey ->
+        // Load cached results from DB instead of re-analyzing
+        let symbols = db.GetSymbolsInFile("src/Lib.fs")
+        let deps = db.GetDependenciesFromFile("src/Lib.fs")
+        let tests = db.GetTestMethodsInFile("src/Lib.fs")
+        // ... use cached data
+    | _ ->
+        // File changed — run FCS analysis
+        // ... analyzeSource, then db.SetFileKey(...)
+
+    db.RebuildForProject("MyProject", combined)
+    db.SetProjectKey("MyProject", currentKey)
 ```
 
-The key can be anything that changes when source files change — a
-checksum of file sizes and timestamps, a VCS tree hash, a version
-string, etc. The CLI uses file metadata (path + size + mtime) by
-default.
+Cache keys can be anything that changes when source files change.
+Good options:
+
+- **VCS tree hash** (recommended) — `jj log -r @ -T commit_id` or
+  `git rev-parse HEAD` gives a content-addressed hash that changes
+  exactly when files change. Fast and correct across branch switches.
+- **File metadata** — path + size + mtime. The CLI uses this by default.
+  Simple but can be wrong after `git checkout` (mtime updates even if
+  content is identical).
 
 ### 2. Find affected tests
 
