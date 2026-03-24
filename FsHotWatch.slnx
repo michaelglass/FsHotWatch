@@ -6,4 +6,5 @@
   <Project Path="src/FsHotWatch.Lint/FsHotWatch.Lint.fsproj" />
   <Project Path="src/FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj" />
   <Project Path="tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj" />
+  <Project Path="examples/ExampleAnalyzer/ExampleAnalyzer.fsproj" />
 </Solution>
