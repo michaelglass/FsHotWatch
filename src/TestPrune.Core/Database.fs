@@ -1,8 +1,6 @@
 module TestPrune.Database
 
 open System
-open System.Security.Cryptography
-open System.Text
 open Microsoft.Data.Sqlite
 open TestPrune.AstAnalyzer
 
@@ -103,61 +101,14 @@ let private openConnection (dbPath: string) =
 
     conn
 
-let private schemaVersion =
-    let bytes = SHA256.HashData(Encoding.UTF8.GetBytes(schema))
-    Convert.ToHexStringLower(bytes)
-
-let private getStoredSchemaVersion (conn: SqliteConnection) =
-    try
-        use cmd = conn.CreateCommand()
-        cmd.CommandText <- "SELECT version FROM schema_version LIMIT 1"
-        use reader = cmd.ExecuteReader()
-
-        if reader.Read() then Some(reader.GetString(0)) else None
-    with
-    | _ -> None
-
-let private ensureVersionTable (conn: SqliteConnection) =
-    use cmd = conn.CreateCommand()
-    cmd.CommandText <- "CREATE TABLE IF NOT EXISTS schema_version (version TEXT NOT NULL)"
-    cmd.ExecuteNonQuery() |> ignore
-
-let private resetAndCreateSchema (conn: SqliteConnection) =
-    use dropCmd = conn.CreateCommand()
-
-    dropCmd.CommandText <-
-        """
-        PRAGMA writable_schema = ON;
-        DELETE FROM sqlite_master;
-        PRAGMA writable_schema = OFF;
-        VACUUM;
-        PRAGMA integrity_check;
-        """
-
-    dropCmd.ExecuteNonQuery() |> ignore
-
-    ensureVersionTable conn
-
-    use schemaCmd = conn.CreateCommand()
-    schemaCmd.CommandText <- schema
-    schemaCmd.ExecuteNonQuery() |> ignore
-
-    use versionCmd = conn.CreateCommand()
-    versionCmd.CommandText <- "INSERT INTO schema_version (version) VALUES (@version)"
-    versionCmd.Parameters.AddWithValue("@version", schemaVersion) |> ignore
-    versionCmd.ExecuteNonQuery() |> ignore
-
-let private initializeSchema (dbPath: string) =
-    use conn = openConnection dbPath
-
-    match getStoredSchemaVersion conn with
-    | Some v when v = schemaVersion -> ()
-    | _ -> resetAndCreateSchema conn
-
 /// SQLite-backed dependency graph storage.
 type Database(dbPath: string) =
 
-    do initializeSchema dbPath
+    do
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- schema
+        cmd.ExecuteNonQuery() |> ignore
 
     /// Create a Database instance, initializing the schema if needed.
     static member create(dbPath: string) = Database(dbPath)
