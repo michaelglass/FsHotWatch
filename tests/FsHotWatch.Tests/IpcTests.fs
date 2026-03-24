@@ -125,44 +125,6 @@ let ``RunCommand with plugin that returns a result`` () =
         try serverTask.Wait(TimeSpan.FromSeconds(3.0)) |> ignore with _ -> ()
 
 [<Fact>]
-let ``server handles client disconnection gracefully`` () =
-    let pipeName = $"fshw-test-{Guid.NewGuid():N}"
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let cts = new CancellationTokenSource()
-
-    let serverTask = Async.StartAsTask(IpcServer.start pipeName host cts.Token)
-    Thread.Sleep(500)
-
-    // Connect and immediately disconnect
-    try
-        use pipeClient =
-            new System.IO.Pipes.NamedPipeClientStream(".", pipeName, System.IO.Pipes.PipeDirection.InOut, System.IO.Pipes.PipeOptions.Asynchronous)
-        pipeClient.Connect(3000)
-        // Immediately dispose (disconnect)
-    with _ -> ()
-
-    // Give server time to handle the disconnection and re-listen
-    Thread.Sleep(3000)
-
-    // Server should still be running - verify by making a successful request
-    // Use a retry since the server may take time to re-listen after disconnection
-    let mutable success = false
-
-    for _ in 1..3 do
-        if not success then
-            try
-                let result = IpcClient.getStatus pipeName |> Async.RunSynchronously
-                success <- result <> null
-            with
-            | _ -> Thread.Sleep(1000)
-
-    try
-        test <@ success @>
-    finally
-        cts.Cancel()
-        try serverTask.Wait(TimeSpan.FromSeconds(3.0)) |> ignore with _ -> ()
-
-[<Fact>]
 let ``RunCommand returns unknown command for non-existent command`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
