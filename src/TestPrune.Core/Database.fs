@@ -48,10 +48,6 @@ let private schema =
     CREATE INDEX IF NOT EXISTS idx_deps_to ON dependencies (to_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_deps_from ON dependencies (from_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_route_handlers_source ON route_handlers (handler_source_file);
-
-    CREATE TABLE IF NOT EXISTS schema_version (
-        version TEXT NOT NULL
-    );
     """
 
 let private symbolKindToString (kind: SymbolKind) =
@@ -121,7 +117,13 @@ let private getStoredSchemaVersion (conn: SqliteConnection) =
     with
     | _ -> None
 
+let private ensureVersionTable (conn: SqliteConnection) =
+    use cmd = conn.CreateCommand()
+    cmd.CommandText <- "CREATE TABLE IF NOT EXISTS schema_version (version TEXT NOT NULL)"
+    cmd.ExecuteNonQuery() |> ignore
+
 let private resetAndCreateSchema (conn: SqliteConnection) =
+    // Drop everything except schema_version
     use dropCmd = conn.CreateCommand()
 
     dropCmd.CommandText <-
@@ -135,17 +137,20 @@ let private resetAndCreateSchema (conn: SqliteConnection) =
 
     dropCmd.ExecuteNonQuery() |> ignore
 
+    ensureVersionTable conn
+
     use schemaCmd = conn.CreateCommand()
     schemaCmd.CommandText <- schema
     schemaCmd.ExecuteNonQuery() |> ignore
 
     use versionCmd = conn.CreateCommand()
-    versionCmd.CommandText <- "INSERT INTO schema_version (version) VALUES (@version)"
+    versionCmd.CommandText <- "DELETE FROM schema_version; INSERT INTO schema_version (version) VALUES (@version)"
     versionCmd.Parameters.AddWithValue("@version", schemaVersion) |> ignore
     versionCmd.ExecuteNonQuery() |> ignore
 
 let private initializeSchema (dbPath: string) =
     use conn = openConnection dbPath
+    ensureVersionTable conn
 
     match getStoredSchemaVersion conn with
     | Some v when v = schemaVersion -> ()
