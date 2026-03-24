@@ -8,7 +8,14 @@ open System.Threading
 open FsHotWatch.Daemon
 open FsHotWatch.Ipc
 
-let private findRepoRoot (startDir: string) =
+type Command =
+    | Start
+    | Stop
+    | Status of pluginName: string option
+    | PluginCommand of name: string * args: string
+    | Help
+
+let findRepoRoot (startDir: string) =
     let rec walk (dir: string) =
         if
             Directory.Exists(Path.Combine(dir, ".jj"))
@@ -21,10 +28,24 @@ let private findRepoRoot (startDir: string) =
 
     walk startDir
 
-let private computePipeName (repoRoot: string) =
+let computePipeName (repoRoot: string) =
     let hash = SHA256.HashData(Encoding.UTF8.GetBytes(repoRoot))
     let short = Convert.ToHexStringLower(hash).Substring(0, 12)
     $"fs-hot-watch-{short}"
+
+let parseCommand (args: string list) : Command =
+    match args with
+    | []
+    | [ "help" ]
+    | [ "--help" ]
+    | [ "-h" ] -> Help
+    | [ "start" ] -> Start
+    | [ "stop" ] -> Stop
+    | [ "status" ] -> Status None
+    | [ "status"; pluginName ] -> Status(Some pluginName)
+    | cmd :: rest ->
+        let argsStr = if rest.IsEmpty then "" else String.concat " " rest
+        PluginCommand(cmd, argsStr)
 
 let private showHelp () =
     printfn "FsHotWatch — F# file watcher daemon"
@@ -49,14 +70,11 @@ let main args =
 
     let pipeName = computePipeName repoRoot
 
-    match args |> Array.toList with
-    | []
-    | [ "help" ]
-    | [ "--help" ]
-    | [ "-h" ] ->
+    match parseCommand (args |> Array.toList) with
+    | Help ->
         showHelp ()
         0
-    | [ "start" ] ->
+    | Start ->
         eprintfn $"Starting FsHotWatch daemon for %s{repoRoot}"
         eprintfn $"Pipe: %s{pipeName}"
         let daemon = Daemon.create repoRoot
@@ -73,10 +91,10 @@ let main args =
 
         eprintfn "Daemon stopped."
         0
-    | [ "stop" ] ->
+    | Stop ->
         eprintfn "Stop not yet implemented (kill the daemon process)"
         1
-    | [ "status" ] ->
+    | Status None ->
         try
             let result = IpcClient.getStatus pipeName |> Async.RunSynchronously
             printfn "%s" result
@@ -84,7 +102,7 @@ let main args =
         with ex ->
             eprintfn $"Could not connect to daemon: %s{ex.Message}"
             1
-    | [ "status"; pluginName ] ->
+    | Status(Some pluginName) ->
         try
             let result = IpcClient.getPluginStatus pipeName pluginName |> Async.RunSynchronously
 
@@ -93,10 +111,8 @@ let main args =
         with ex ->
             eprintfn $"Could not connect to daemon: %s{ex.Message}"
             1
-    | cmd :: rest ->
+    | PluginCommand(cmd, argsJson) ->
         try
-            let argsJson = if rest.IsEmpty then "" else String.concat " " rest
-
             let result = IpcClient.runCommand pipeName cmd argsJson |> Async.RunSynchronously
 
             printfn "%s" result

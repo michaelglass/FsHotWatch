@@ -34,10 +34,6 @@ let ``analyzer error path sets Failed status`` () =
     let plugin = AnalyzersPlugin([])
     host.Register(plugin)
 
-    // Emit a FileCheckResult with a non-existent file to trigger the error path.
-    // The AnalyzersPlugin tries to create a CliContext via reflection, which will
-    // fail because the analyzer client has no loaded analyzers and the reflection
-    // call may throw on invalid inputs. We use Unchecked.defaultof to force an error.
     let fakeResult: FileCheckResult =
         { File = "/tmp/nonexistent/Fake.fs"
           Source = ""
@@ -53,6 +49,55 @@ let ``analyzer error path sets Failed status`` () =
     test <@ status.IsSome @>
 
     match status.Value with
-    | Failed _ -> () // Expected: the error path was exercised
-    | Running _ -> () // Also acceptable: status set to Running before error
+    | Failed _ -> ()
+    | Running _ -> ()
     | other -> Assert.Fail($"Expected Failed or Running, got: %A{other}")
+
+[<Fact>]
+let ``analyzer with non-existent path skips loading`` () =
+    // Exercise the Directory.Exists false branch
+    let host =
+        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let plugin = AnalyzersPlugin([ "/tmp/no-such-analyzer-dir-12345" ])
+    host.Register(plugin)
+
+    // No analyzers should be loaded — diagnostics command shows 0 analyzers
+    let result = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
+    test <@ result.IsSome @>
+    test <@ result.Value.Contains("\"analyzers\": 0") @>
+
+[<Fact>]
+let ``analyzer with mix of valid and invalid paths`` () =
+    // Create a real empty dir that exists, paired with one that does not
+    let emptyDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"az-empty-{System.Guid.NewGuid():N}")
+
+    System.IO.Directory.CreateDirectory(emptyDir) |> ignore
+
+    try
+        let host =
+            PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+        let plugin =
+            AnalyzersPlugin(
+                [ emptyDir // exists but no analyzer DLLs
+                  "/tmp/nonexistent-path-xyz-99999" ] // does not exist
+            )
+
+        host.Register(plugin)
+
+        let result = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
+        test <@ result.IsSome @>
+        test <@ result.Value.Contains("\"analyzers\": 0") @>
+    finally
+        try
+            System.IO.Directory.Delete(emptyDir, true)
+        with _ ->
+            ()
+
+[<Fact>]
+let ``analyzer dispose is callable`` () =
+    let plugin = AnalyzersPlugin([]) :> IFsHotWatchPlugin
+    // Dispose should not throw
+    plugin.Dispose()
