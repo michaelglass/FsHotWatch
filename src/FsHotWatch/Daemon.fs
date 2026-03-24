@@ -64,25 +64,81 @@ type Daemon =
 
 /// Functions for creating and managing daemons.
 module Daemon =
+    let private defaultDebounceMs = 500
+
     /// Create a daemon with the given checker (internal, for testing).
     let internal createWith (checker: FSharpChecker) (repoRoot: string) =
         let host = PluginHost.create checker repoRoot
         let pipeline = CheckPipeline(checker)
 
+        // Debounce: accumulate changes, dispatch after quiet period
+        let pendingChanges = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
+        let mutable debounceTimer: System.Threading.Timer option = None
+        let debounceLock = obj ()
+
+        let processChanges (_state: obj) =
+            let changes = System.Collections.Generic.List<FileChangeKind>()
+            let mutable item = Unchecked.defaultof<_>
+
+            while pendingChanges.TryTake(&item) do
+                changes.Add(item)
+
+            if changes.Count > 0 then
+                // Merge all SourceChanged files into one batch
+                let allSourceFiles =
+                    changes
+                    |> Seq.collect (fun c ->
+                        match c with
+                        | SourceChanged files -> files
+                        | _ -> [])
+                    |> Seq.distinct
+                    |> Seq.toList
+
+                let hasProjectChange =
+                    changes |> Seq.exists (fun c -> match c with ProjectChanged _ -> true | _ -> false)
+
+                let hasSolutionChange =
+                    changes |> Seq.exists (fun c -> match c with SolutionChanged -> true | _ -> false)
+
+                // Emit batched events
+                if hasSolutionChange then
+                    host.EmitFileChanged(SolutionChanged)
+
+                if hasProjectChange then
+                    let projFiles =
+                        changes
+                        |> Seq.collect (fun c ->
+                            match c with ProjectChanged f -> f | _ -> [])
+                        |> Seq.distinct
+                        |> Seq.toList
+                    host.EmitFileChanged(ProjectChanged projFiles)
+
+                if not allSourceFiles.IsEmpty then
+                    host.EmitFileChanged(SourceChanged allSourceFiles)
+
+                    for file in allSourceFiles do
+                        let result = pipeline.CheckFile(file) |> Async.RunSynchronously
+
+                        match result with
+                        | Some checkResult -> host.EmitFileChecked(checkResult)
+                        | None -> ()
+
         let onChange change =
-            host.EmitFileChanged(change)
+            pendingChanges.Add(change)
 
-            // Check changed files and emit FileChecked events
-            match change with
-            | SourceChanged files ->
-                for file in files do
-                    let result = pipeline.CheckFile(file) |> Async.RunSynchronously
-
-                    match result with
-                    | Some checkResult -> host.EmitFileChecked(checkResult)
-                    | None -> ()
-            | ProjectChanged _
-            | SolutionChanged -> ()
+            lock debounceLock (fun () ->
+                match debounceTimer with
+                | Some timer -> timer.Change(defaultDebounceMs, System.Threading.Timeout.Infinite) |> ignore
+                | None ->
+                    debounceTimer <-
+                        Some(
+                            new System.Threading.Timer(
+                                System.Threading.TimerCallback(processChanges),
+                                null,
+                                defaultDebounceMs,
+                                System.Threading.Timeout.Infinite
+                            )
+                        ))
 
         let watcher = FileWatcher.create repoRoot onChange
 
