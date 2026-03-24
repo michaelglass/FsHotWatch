@@ -2,22 +2,29 @@ module FsHotWatch.Daemon
 
 open System.Threading
 open FSharp.Compiler.CodeAnalysis
+open FsHotWatch.CheckPipeline
+open FsHotWatch.Events
 open FsHotWatch.Ipc
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
 open FsHotWatch.Watcher
 
-/// The daemon ties together a warm FSharpChecker, file watcher, and plugin host.
+/// The daemon ties together a warm FSharpChecker, file watcher, check pipeline, and plugin host.
 /// It runs until the provided CancellationToken is cancelled.
 [<NoComparison; NoEquality>]
 type Daemon =
     { Host: PluginHost
       Watcher: FileWatcher
       Checker: FSharpChecker
+      Pipeline: CheckPipeline
       RepoRoot: string }
 
     /// Register a plugin with the daemon's plugin host.
     member this.Register(plugin: IFsHotWatchPlugin) = this.Host.Register(plugin)
+
+    /// Register a project's options so its files can be checked incrementally.
+    member this.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
+        this.Pipeline.RegisterProject(projectPath, options)
 
     /// Run the daemon until cancellation is requested.
     member this.Run(cancellationToken: CancellationToken) =
@@ -60,11 +67,29 @@ module Daemon =
     /// Create a daemon with the given checker (internal, for testing).
     let internal createWith (checker: FSharpChecker) (repoRoot: string) =
         let host = PluginHost.create checker repoRoot
-        let watcher = FileWatcher.create repoRoot host.EmitFileChanged
+        let pipeline = CheckPipeline(checker)
+
+        let onChange change =
+            host.EmitFileChanged(change)
+
+            // Check changed files and emit FileChecked events
+            match change with
+            | SourceChanged files ->
+                for file in files do
+                    let result = pipeline.CheckFile(file) |> Async.RunSynchronously
+
+                    match result with
+                    | Some checkResult -> host.EmitFileChecked(checkResult)
+                    | None -> ()
+            | ProjectChanged _
+            | SolutionChanged -> ()
+
+        let watcher = FileWatcher.create repoRoot onChange
 
         { Host = host
           Watcher = watcher
           Checker = checker
+          Pipeline = pipeline
           RepoRoot = repoRoot }
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
