@@ -79,14 +79,24 @@ let extractApiFromTag (tag: string) : string list =
         Path.Combine(Path.GetTempPath(), sprintf "api-check-%s" (Guid.NewGuid().ToString("N").[..7]))
 
     try
-        let repoPath = Directory.GetCurrentDirectory()
-        runOrFail "git" (sprintf "clone --depth 1 --branch %s file://%s %s" tag repoPath tempDir) |> ignore
+        runOrFail "jj" (sprintf "workspace add %s -r %s" tempDir tag) |> ignore
         runOrFail "dotnet" (sprintf "build %s/%s -c Release --verbosity quiet" tempDir fsproj) |> ignore
         let tempDllPath = Path.Combine(tempDir, dllPath)
         let api = extractApi tempDllPath
-        Directory.Delete(tempDir, true)
+
+        match run "jj" (sprintf "workspace forget %s" tempDir) with
+        | Ok _ -> ()
+        | Error _ -> ()
+
+        if Directory.Exists(tempDir) then
+            Directory.Delete(tempDir, true)
+
         api
     with ex ->
+        match run "jj" (sprintf "workspace forget %s" tempDir) with
+        | Ok _ -> ()
+        | Error _ -> ()
+
         if Directory.Exists(tempDir) then
             try
                 Directory.Delete(tempDir, true)
@@ -123,12 +133,24 @@ let getVersionBump (majorVersion: int) =
     | NoChange -> Patch
 
 // ============================================================================
-// Git Operations
+// VCS Operations (jj)
 // ============================================================================
 
 let getLatestTag () =
-    match run "git" "tag -l v* --sort=-v:refname" with
-    | Ok output when output <> "" -> Some(output.Split('\n').[0])
+    match run "jj" "tag list core-v*" with
+    | Ok output when output <> "" ->
+        output.Split('\n')
+        |> Array.map (fun line -> line.Split(':').[0].Trim())
+        |> Array.filter (fun t -> t.StartsWith("core-v"))
+        |> Array.sortByDescending (fun t ->
+            let v = t.Substring("core-v".Length)
+            let parts = v.Split('-')
+            let baseParts = parts.[0].Split('.')
+            let major = if baseParts.Length > 0 then int baseParts.[0] else 0
+            let minor = if baseParts.Length > 1 then int baseParts.[1] else 0
+            let patch = if baseParts.Length > 2 then int baseParts.[2] else 0
+            (major, minor, patch))
+        |> Array.tryHead
     | _ -> None
 
 // ============================================================================
