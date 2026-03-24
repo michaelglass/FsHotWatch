@@ -1,41 +1,76 @@
 module FsHotWatch.Analyzers.AnalyzersPlugin
 
 open System
+open System.IO
+open FSharp.Analyzers.SDK
+open FSharp.Compiler.Text
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 
-/// F# analyzer host plugin.
-///
-/// BLOCKED: FSharp.Analyzers.SDK 0.36.0 is compiled against FCS 43.10.101.
-/// Our warm checker uses FCS 43.12.201. The CliContext constructor expects
-/// FSharpParseFileResults/FSharpCheckFileResults from 43.10 — passing our
-/// 43.12 types fails with "No constructors available" because they're
-/// different assembly versions of the same types.
-///
-/// Resolution options:
-/// 1. Wait for FSharp.Analyzers.SDK to release against FCS 43.12
-/// 2. Build the SDK from source against our FCS version
-/// 3. Use type forwarding / assembly binding redirects at runtime
-///
-/// Until resolved, this plugin tracks file changes but cannot run analyzers.
+/// Hosts F# analyzers in-process using the warm checker's results.
+/// Uses reflection to construct CliContext, bypassing the FCS 43.10 vs 43.12
+/// type mismatch at compile time (the types are structurally identical).
 type AnalyzersPlugin(analyzerPaths: string list) =
-    let mutable checkedFiles: Set<string> = Set.empty
+    let mutable diagnosticsByFile: Map<string, AnalysisResult list> = Map.empty
+    let client = Client<CliAnalyzerAttribute, CliContext>()
+    let mutable loadedCount = 0
+
+    let createCliContext fileName sourceText parseResults checkResults =
+        let ctor = typeof<CliContext>.GetConstructors().[0]
+
+        ctor.Invoke(
+            [| fileName
+               sourceText
+               parseResults
+               checkResults
+               box None // typedTree
+               null // checkProjectResults
+               null // projectOptions
+               box (Map.empty: Map<string, (Set<int> * Set<int>)>) |]
+        )
+        :?> CliContext
 
     interface IFsHotWatchPlugin with
         member _.Name = "analyzers"
 
         member _.Initialize(ctx) =
+            for path in analyzerPaths do
+                if Directory.Exists(path) then
+                    let stats = client.LoadAnalyzers(path)
+                    loadedCount <- loadedCount + stats.Analyzers
+
             ctx.OnFileChecked.Add(fun result ->
                 ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                checkedFiles <- checkedFiles |> Set.add result.File
-                ctx.ReportStatus(Completed(box checkedFiles, DateTime.UtcNow)))
+
+                try
+                    let sourceText =
+                        if File.Exists(result.File) then
+                            File.ReadAllText(result.File) |> SourceText.ofString
+                        else
+                            SourceText.ofString ""
+
+                    let context =
+                        createCliContext result.File sourceText result.ParseResults result.CheckResults
+
+                    let messages =
+                        client.RunAnalyzersSafely(context) |> Async.RunSynchronously
+
+                    diagnosticsByFile <- diagnosticsByFile |> Map.add result.File messages
+                    ctx.ReportStatus(Completed(box diagnosticsByFile, DateTime.UtcNow))
+                with ex ->
+                    ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow)))
 
             ctx.RegisterCommand(
                 "diagnostics",
                 fun _args ->
                     async {
+                        let totalDiags =
+                            diagnosticsByFile
+                            |> Map.toList
+                            |> List.sumBy (fun (_, msgs) -> msgs.Length)
+
                         return
-                            $"{{\"status\": \"blocked — SDK requires FCS 43.10, we have 43.12\", \"analyzer_paths\": %d{analyzerPaths.Length}, \"checked_files\": %d{checkedFiles.Count}}}"
+                            $"{{\"analyzers\": %d{loadedCount}, \"files\": %d{diagnosticsByFile.Count}, \"diagnostics\": %d{totalDiags}}}"
                     }
             )
 
