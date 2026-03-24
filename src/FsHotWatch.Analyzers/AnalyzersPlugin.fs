@@ -4,15 +4,22 @@ open System
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 
-/// Hosts F# analyzers in-process using FSharp.Analyzers.SDK.
-/// Loads analyzer DLLs from configured directory paths and runs them
-/// on FileChecked events with check results from the warm checker.
+/// F# analyzer host plugin.
 ///
-/// TODO: CliContext construction requires understanding the SDK's internal
-/// factory methods. The context needs ParseFileResults + CheckFileResults
-/// from the warm FSharpChecker, which we have from FileChecked events.
+/// BLOCKED: FSharp.Analyzers.SDK 0.36.0 is compiled against FCS 43.10.101.
+/// Our warm checker uses FCS 43.12.201. The CliContext constructor expects
+/// FSharpParseFileResults/FSharpCheckFileResults from 43.10 — passing our
+/// 43.12 types fails with "No constructors available" because they're
+/// different assembly versions of the same types.
+///
+/// Resolution options:
+/// 1. Wait for FSharp.Analyzers.SDK to release against FCS 43.12
+/// 2. Build the SDK from source against our FCS version
+/// 3. Use type forwarding / assembly binding redirects at runtime
+///
+/// Until resolved, this plugin tracks file changes but cannot run analyzers.
 type AnalyzersPlugin(analyzerPaths: string list) =
-    let mutable diagnosticsByFile: Map<string, string list> = Map.empty
+    let mutable checkedFiles: Set<string> = Set.empty
 
     interface IFsHotWatchPlugin with
         member _.Name = "analyzers"
@@ -20,29 +27,15 @@ type AnalyzersPlugin(analyzerPaths: string list) =
         member _.Initialize(ctx) =
             ctx.OnFileChecked.Add(fun result ->
                 ctx.ReportStatus(Running(since = DateTime.UtcNow))
-
-                try
-                    // TODO: Load analyzer DLLs from analyzerPaths via
-                    // FSharp.Analyzers.SDK.Client<CliAnalyzerAttribute, CliContext>
-                    // and construct CliContext from result.ParseResults + result.CheckResults.
-                    // The SDK's CliContext construction API needs investigation —
-                    // it may require FSharpCheckProjectResults which we don't have per-file.
-                    diagnosticsByFile <- diagnosticsByFile |> Map.add result.File []
-                    ctx.ReportStatus(Completed(box diagnosticsByFile, DateTime.UtcNow))
-                with ex ->
-                    ctx.ReportStatus(Failed(ex.Message, DateTime.UtcNow)))
+                checkedFiles <- checkedFiles |> Set.add result.File
+                ctx.ReportStatus(Completed(box checkedFiles, DateTime.UtcNow)))
 
             ctx.RegisterCommand(
                 "diagnostics",
                 fun _args ->
                     async {
-                        let totalDiags =
-                            diagnosticsByFile
-                            |> Map.toList
-                            |> List.sumBy (fun (_, msgs) -> msgs.Length)
-
                         return
-                            $"{{\"analyzers_paths\": %d{analyzerPaths.Length}, \"files\": %d{diagnosticsByFile.Count}, \"diagnostics\": %d{totalDiags}}}"
+                            $"{{\"status\": \"blocked — SDK requires FCS 43.10, we have 43.12\", \"analyzer_paths\": %d{analyzerPaths.Length}, \"checked_files\": %d{checkedFiles.Count}}}"
                     }
             )
 

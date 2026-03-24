@@ -7,5 +7,5 @@ open FsHotWatch.TestPrune.TestPrunePlugin
 
 [<Fact>]
 let ``plugin has correct name`` () =
-    let plugin = TestPrunePlugin(":memory:") :> IFsHotWatchPlugin
+    let plugin = TestPrunePlugin(":memory:", "/tmp") :> IFsHotWatchPlugin
     test <@ plugin.Name = "test-prune" @>
