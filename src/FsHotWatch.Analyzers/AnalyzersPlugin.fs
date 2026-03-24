@@ -43,11 +43,7 @@ type AnalyzersPlugin(analyzerPaths: string list) =
                 ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
                 try
-                    let sourceText =
-                        if File.Exists(result.File) then
-                            File.ReadAllText(result.File) |> SourceText.ofString
-                        else
-                            SourceText.ofString ""
+                    let sourceText = result.Source |> SourceText.ofString
 
                     let context =
                         createCliContext result.File sourceText result.ParseResults result.CheckResults

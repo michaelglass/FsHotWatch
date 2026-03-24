@@ -13,27 +13,30 @@ type FormatCheckPlugin() =
 
         member _.Initialize(ctx) =
             ctx.OnFileChanged.Add(fun change ->
-                let files =
-                    match change with
-                    | SourceChanged files -> files
-                    | _ -> []
+                try
+                    let files =
+                        match change with
+                        | SourceChanged files -> files
+                        | _ -> []
 
-                for file in files do
-                    if File.Exists(file) then
-                        ctx.ReportStatus(Running(since = System.DateTime.UtcNow))
-                        let source = File.ReadAllText(file)
-                        let isSignature = file.EndsWith(".fsi")
+                    for file in files do
+                        if File.Exists(file) then
+                            ctx.ReportStatus(Running(since = System.DateTime.UtcNow))
+                            let source = File.ReadAllText(file)
+                            let isSignature = file.EndsWith(".fsi")
 
-                        let formatted =
-                            CodeFormatter.FormatDocumentAsync(isSignature, source)
-                            |> Async.RunSynchronously
+                            let formatted =
+                                CodeFormatter.FormatDocumentAsync(isSignature, source)
+                                |> Async.RunSynchronously
 
-                        if formatted.Code <> source then
-                            unformatted <- unformatted |> Set.add file
-                        else
-                            unformatted <- unformatted |> Set.remove file
+                            if formatted.Code <> source then
+                                unformatted <- unformatted |> Set.add file
+                            else
+                                unformatted <- unformatted |> Set.remove file
 
-                ctx.ReportStatus(Completed(box unformatted, System.DateTime.UtcNow)))
+                    ctx.ReportStatus(Completed(box unformatted, System.DateTime.UtcNow))
+                with ex ->
+                    ctx.ReportStatus(PluginStatus.Failed(ex.Message, System.DateTime.UtcNow)))
 
             ctx.RegisterCommand(
                 "unformatted",

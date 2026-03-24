@@ -14,6 +14,7 @@ type BuildResult =
 [<NoComparison>]
 type FileCheckResult =
     { File: string
+      Source: string
       ParseResults: FSharpParseFileResults
       CheckResults: FSharpCheckFileResults }
 

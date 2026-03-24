@@ -42,6 +42,7 @@ let ``lint error path sets Failed status on null check results`` () =
     // Emit a FileCheckResult with null ParseResults to trigger the catch block
     let fakeResult: FileCheckResult =
         { File = "/tmp/nonexistent/Fake.fs"
+          Source = ""
           ParseResults = Unchecked.defaultof<_>
           CheckResults = Unchecked.defaultof<_> }
 

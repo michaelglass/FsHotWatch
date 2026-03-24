@@ -40,6 +40,7 @@ let ``analyzer error path sets Failed status`` () =
     // call may throw on invalid inputs. We use Unchecked.defaultof to force an error.
     let fakeResult: FileCheckResult =
         { File = "/tmp/nonexistent/Fake.fs"
+          Source = ""
           ParseResults = Unchecked.defaultof<_>
           CheckResults = Unchecked.defaultof<_> }
 

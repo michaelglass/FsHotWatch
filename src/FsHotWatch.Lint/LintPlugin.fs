@@ -1,6 +1,5 @@
 module FsHotWatch.Lint.LintPlugin
 
-open System.IO
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FSharpLint.Application
@@ -26,15 +25,9 @@ type LintPlugin(?configPath: string) =
                 ctx.ReportStatus(Running(since = System.DateTime.UtcNow))
 
                 try
-                    let source =
-                        if File.Exists(result.File) then
-                            File.ReadAllText(result.File)
-                        else
-                            ""
-
                     let parsedInfo: Lint.ParsedFileInformation =
                         { Ast = result.ParseResults.ParseTree
-                          Source = source
+                          Source = result.Source
                           TypeCheckResults = Some result.CheckResults }
 
                     match Lint.lintParsedSource lintParams parsedInfo with

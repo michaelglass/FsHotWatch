@@ -47,6 +47,7 @@ let ``test-prune error path sets Failed status on null check results`` () =
     // Emit a FileCheckResult with null CheckResults to trigger the catch block
     let fakeResult: FileCheckResult =
         { File = "/tmp/nonexistent/Fake.fs"
+          Source = ""
           ParseResults = Unchecked.defaultof<_>
           CheckResults = Unchecked.defaultof<_> }
 
