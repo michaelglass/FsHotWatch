@@ -71,7 +71,6 @@ module Daemon =
         let host = PluginHost.create checker repoRoot
         let pipeline = CheckPipeline(checker)
 
-        // Debounce: accumulate changes, dispatch after quiet period
         let pendingChanges = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
         let mutable debounceTimer: System.Threading.Timer option = None
         let debounceLock = obj ()
