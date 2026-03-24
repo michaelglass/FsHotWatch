@@ -12,6 +12,7 @@
   <ItemGroup>
     <Compile Include="EventTests.fs" />
     <Compile Include="PluginTests.fs" />
+    <Compile Include="PluginHostTests.fs" />
     <Compile Include="WatcherTests.fs" />
   </ItemGroup>
 
