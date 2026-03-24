@@ -37,22 +37,26 @@ let private standardGraph =
             Kind = Function
             SourceFile = "tests/Tests.fs"
             LineStart = 1
-            LineEnd = 5 }
+            LineEnd = 5
+            ContentHash = "" }
           { FullName = "Lib.funcB"
             Kind = Function
             SourceFile = "src/Lib.fs"
             LineStart = 1
-            LineEnd = 5 }
+            LineEnd = 5
+            ContentHash = "" }
           { FullName = "Domain.TypeC"
             Kind = Type
             SourceFile = "src/Domain.fs"
             LineStart = 1
-            LineEnd = 3 }
+            LineEnd = 3
+            ContentHash = "" }
           { FullName = "Other.unrelated"
             Kind = Function
             SourceFile = "src/Other.fs"
             LineStart = 1
-            LineEnd = 5 } ]
+            LineEnd = 5
+            ContentHash = "" } ]
       Dependencies =
         [ { FromSymbol = "Tests.testA"
             ToSymbol = "Lib.funcB"
@@ -73,7 +77,7 @@ module ``Changed symbol with dependent test`` =
         withDb (fun db ->
             db.RebuildForProject("proj", standardGraph)
 
-            // funcB changed (line range shifted)
+            // funcB changed
             let currentSymbols =
                 Map.ofList
                     [ "src/Lib.fs",
@@ -81,7 +85,8 @@ module ``Changed symbol with dependent test`` =
                           Kind = Function
                           SourceFile = "src/Lib.fs"
                           LineStart = 1
-                          LineEnd = 10 } ] ]
+                          LineEnd = 10
+                          ContentHash = "changed" } ] ]
 
             let result = selectTests db [ "src/Lib.fs" ] currentSymbols
 
@@ -98,7 +103,7 @@ module ``Changed symbol with transitive dependent test`` =
         withDb (fun db ->
             db.RebuildForProject("proj", standardGraph)
 
-            // TypeC changed (line range shifted)
+            // TypeC changed
             let currentSymbols =
                 Map.ofList
                     [ "src/Domain.fs",
@@ -106,7 +111,8 @@ module ``Changed symbol with transitive dependent test`` =
                           Kind = Type
                           SourceFile = "src/Domain.fs"
                           LineStart = 1
-                          LineEnd = 8 } ] ]
+                          LineEnd = 8
+                          ContentHash = "changed" } ] ]
 
             let result = selectTests db [ "src/Domain.fs" ] currentSymbols
 
@@ -131,7 +137,8 @@ module ``Changed symbol with no dependent tests`` =
                           Kind = Function
                           SourceFile = "src/Other.fs"
                           LineStart = 1
-                          LineEnd = 10 } ] ]
+                          LineEnd = 10
+                          ContentHash = "changed" } ] ]
 
             let result = selectTests db [ "src/Other.fs" ] currentSymbols
 
@@ -150,22 +157,26 @@ module ``Multiple changed symbols`` =
                         Kind = Function
                         SourceFile = "tests/Tests.fs"
                         LineStart = 1
-                        LineEnd = 3 }
+                        LineEnd = 3
+                        ContentHash = "" }
                       { FullName = "Tests.test2"
                         Kind = Function
                         SourceFile = "tests/Tests.fs"
                         LineStart = 5
-                        LineEnd = 8 }
+                        LineEnd = 8
+                        ContentHash = "" }
                       { FullName = "Lib.funcA"
                         Kind = Function
                         SourceFile = "src/Lib.fs"
                         LineStart = 1
-                        LineEnd = 5 }
+                        LineEnd = 5
+                        ContentHash = "" }
                       { FullName = "Lib.funcB"
                         Kind = Function
                         SourceFile = "src/Lib.fs"
                         LineStart = 7
-                        LineEnd = 12 } ]
+                        LineEnd = 12
+                        ContentHash = "" } ]
                   Dependencies =
                     [ { FromSymbol = "Tests.test1"
                         ToSymbol = "Lib.funcA"
@@ -193,12 +204,14 @@ module ``Multiple changed symbols`` =
                           Kind = Function
                           SourceFile = "src/Lib.fs"
                           LineStart = 1
-                          LineEnd = 8 }
+                          LineEnd = 8
+                          ContentHash = "changed-a" }
                         { FullName = "Lib.funcB"
                           Kind = Function
                           SourceFile = "src/Lib.fs"
                           LineStart = 10
-                          LineEnd = 18 } ] ]
+                          LineEnd = 18
+                          ContentHash = "changed-b" } ] ]
 
             let result = selectTests db [ "src/Lib.fs" ] currentSymbols
 
@@ -238,7 +251,8 @@ module ``New file not indexed`` =
                           Kind = Function
                           SourceFile = "src/NewModule.fs"
                           LineStart = 1
-                          LineEnd = 5 } ] ]
+                          LineEnd = 5
+                          ContentHash = "" } ] ]
 
             let result = selectTests db [ "src/NewModule.fs" ] currentSymbols
 

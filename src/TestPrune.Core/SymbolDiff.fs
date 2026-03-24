@@ -10,7 +10,7 @@ type SymbolChange =
 
 /// Compare current symbols (from re-parsing) against stored symbols (from DB).
 /// A symbol is "changed" if:
-/// - It exists in both but line range differs (Modified)
+/// - It exists in both but content hash differs (Modified)
 /// - Only in current (Added)
 /// - Only in stored (Removed)
 let detectChanges (currentSymbols: SymbolInfo list) (storedSymbols: SymbolInfo list) : SymbolChange list =
@@ -34,7 +34,7 @@ let detectChanges (currentSymbols: SymbolInfo list) (storedSymbols: SymbolInfo l
             let curr = currentByName[name]
             let stored = storedByName[name]
 
-            if curr.LineStart <> stored.LineStart || curr.LineEnd <> stored.LineEnd then
+            if curr.ContentHash <> stored.ContentHash then
                 Some(Modified name)
             else
                 None)

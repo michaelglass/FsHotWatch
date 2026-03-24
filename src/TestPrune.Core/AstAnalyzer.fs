@@ -21,7 +21,8 @@ type SymbolInfo =
       Kind: SymbolKind
       SourceFile: string
       LineStart: int
-      LineEnd: int }
+      LineEnd: int
+      ContentHash: string }
 
 /// The kind of edge in a dependency graph (calls, uses type, pattern match, etc.).
 type DependencyKind =
@@ -202,6 +203,17 @@ let collectModuleBindingRanges (tree: ParsedInput) : (string * range) list =
 
     results |> Seq.toList
 
+/// Hash the source lines between startLine and endLine (1-based, inclusive).
+let private hashSourceLines (source: string) (startLine: int) (endLine: int) : string =
+    let lines = source.Split('\n')
+
+    let start = max 0 (startLine - 1)
+    let end' = min lines.Length endLine
+    let slice = lines[start .. end' - 1]
+    let content = String.concat "\n" slice
+    let bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content))
+    System.Convert.ToHexStringLower(bytes)
+
 /// Parse and analyze a single F# source string using script-style project options.
 let analyzeSource
     (checker: FSharpChecker)
@@ -237,7 +249,8 @@ let analyzeSource
                                   Kind = kind
                                   SourceFile = sourceFileName
                                   LineStart = u.Range.StartLine
-                                  LineEnd = u.Range.EndLine },
+                                  LineEnd = u.Range.EndLine
+                                  ContentHash = hashSourceLines source u.Range.StartLine u.Range.EndLine },
                                 u)
                         else
                             None)

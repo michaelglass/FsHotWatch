@@ -125,7 +125,7 @@ let ``counter starts at zero`` () =
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("add", StringComparison.Ordinal) then
-                        { s with LineEnd = s.LineEnd + 5 }
+                        { s with ContentHash = "modified" }
                     else
                         s)
 
@@ -186,7 +186,7 @@ let testMethod () = helperFunc 5 |> ignore
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("baseFunc", StringComparison.Ordinal) then
-                        { s with LineEnd = s.LineEnd + 3 }
+                        { s with ContentHash = "modified" }
                     else
                         s)
 
@@ -250,7 +250,7 @@ let testDescribe () = describe (Circle 1.0) |> ignore
                 storedSymbols
                 |> List.map (fun s ->
                     if s.FullName.EndsWith("Shape", StringComparison.Ordinal) && s.Kind = Type then
-                        { s with LineEnd = s.LineEnd + 2 }
+                        { s with ContentHash = "modified" }
                     else
                         s)
 
@@ -297,7 +297,8 @@ let f x = x
                           Kind = Function
                           SourceFile = "src/NewModule.fs"
                           LineStart = 1
-                          LineEnd = 5 } ] ]
+                          LineEnd = 5
+                          ContentHash = "" } ] ]
 
             let result = selectTests db [ "src/NewModule.fs" ] currentSymbols
 

@@ -13,6 +13,7 @@ let private schema =
         source_file TEXT NOT NULL,
         line_start INTEGER NOT NULL,
         line_end INTEGER NOT NULL,
+        content_hash TEXT NOT NULL DEFAULT '',
         indexed_at TEXT NOT NULL
     );
 
@@ -152,8 +153,8 @@ type Database(dbPath: string) =
 
             insCmd.CommandText <-
                 """
-                INSERT OR REPLACE INTO symbols (full_name, kind, source_file, line_start, line_end, indexed_at)
-                VALUES (@fullName, @kind, @sourceFile, @lineStart, @lineEnd, @indexedAt)
+                INSERT OR REPLACE INTO symbols (full_name, kind, source_file, line_start, line_end, content_hash, indexed_at)
+                VALUES (@fullName, @kind, @sourceFile, @lineStart, @lineEnd, @contentHash, @indexedAt)
                 """
 
             let pFullName = insCmd.Parameters.Add("@fullName", SqliteType.Text)
@@ -161,6 +162,7 @@ type Database(dbPath: string) =
             let pSourceFile = insCmd.Parameters.Add("@sourceFile", SqliteType.Text)
             let pLineStart = insCmd.Parameters.Add("@lineStart", SqliteType.Integer)
             let pLineEnd = insCmd.Parameters.Add("@lineEnd", SqliteType.Integer)
+            let pContentHash = insCmd.Parameters.Add("@contentHash", SqliteType.Text)
             let pIndexedAt = insCmd.Parameters.Add("@indexedAt", SqliteType.Text)
 
             for sym in result.Symbols do
@@ -169,6 +171,7 @@ type Database(dbPath: string) =
                 pSourceFile.Value <- sym.SourceFile
                 pLineStart.Value <- sym.LineStart
                 pLineEnd.Value <- sym.LineEnd
+                pContentHash.Value <- sym.ContentHash
                 pIndexedAt.Value <- now
                 insCmd.ExecuteNonQuery() |> ignore
 
@@ -270,7 +273,7 @@ type Database(dbPath: string) =
 
         cmd.CommandText <-
             """
-            SELECT full_name, kind, source_file, line_start, line_end
+            SELECT full_name, kind, source_file, line_start, line_end, content_hash
             FROM symbols WHERE source_file = @sourceFile
             ORDER BY line_start
             """
@@ -284,7 +287,8 @@ type Database(dbPath: string) =
               Kind = stringToSymbolKind (r.GetString(1))
               SourceFile = r.GetString(2)
               LineStart = r.GetInt32(3)
-              LineEnd = r.GetInt32(4) })
+              LineEnd = r.GetInt32(4)
+              ContentHash = r.GetString(5) })
 
     /// Return the set of all symbol full names.
     member _.GetAllSymbolNames() : Set<string> =
@@ -302,7 +306,7 @@ type Database(dbPath: string) =
 
         cmd.CommandText <-
             """
-            SELECT full_name, kind, source_file, line_start, line_end
+            SELECT full_name, kind, source_file, line_start, line_end, content_hash
             FROM symbols ORDER BY source_file, line_start
             """
 
@@ -313,7 +317,8 @@ type Database(dbPath: string) =
               Kind = stringToSymbolKind (r.GetString(1))
               SourceFile = r.GetString(2)
               LineStart = r.GetInt32(3)
-              LineEnd = r.GetInt32(4) })
+              LineEnd = r.GetInt32(4)
+              ContentHash = r.GetString(5) })
 
     /// Return the set of symbol names that are test methods.
     member _.GetTestMethodSymbolNames() : Set<string> =

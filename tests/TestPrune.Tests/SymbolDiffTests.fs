@@ -10,7 +10,16 @@ let private mkSymbol name kind lineStart lineEnd =
       Kind = kind
       SourceFile = "src/Test.fs"
       LineStart = lineStart
-      LineEnd = lineEnd }
+      LineEnd = lineEnd
+      ContentHash = $"%s{name}:%d{lineStart}-%d{lineEnd}" }
+
+let private mkSymbolWithHash name kind lineStart lineEnd hash =
+    { FullName = name
+      Kind = kind
+      SourceFile = "src/Test.fs"
+      LineStart = lineStart
+      LineEnd = lineEnd
+      ContentHash = hash }
 
 module ``No changes`` =
 
@@ -107,6 +116,24 @@ module ``Only whitespace changes`` =
 
         let changes = detectChanges current stored
         test <@ changes |> List.isEmpty @>
+
+module ``Comment shift does not produce false Modified`` =
+
+    [<Fact>]
+    let ``same content hash with different line ranges is not Modified`` () =
+        let current = [ mkSymbolWithHash "Mod.funcA" Function 5 10 "hash-a" ]
+        let stored = [ mkSymbolWithHash "Mod.funcA" Function 1 6 "hash-a" ]
+
+        let changes = detectChanges current stored
+        test <@ changes |> List.isEmpty @>
+
+    [<Fact>]
+    let ``different content hash is Modified even with same line ranges`` () =
+        let current = [ mkSymbolWithHash "Mod.funcA" Function 1 5 "hash-new" ]
+        let stored = [ mkSymbolWithHash "Mod.funcA" Function 1 5 "hash-old" ]
+
+        let changes = detectChanges current stored
+        test <@ changes = [ Modified "Mod.funcA" ] @>
 
 module ``changedSymbolNames extracts names`` =
 
