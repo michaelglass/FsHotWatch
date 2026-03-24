@@ -406,6 +406,8 @@ module ``runRunWith`` =
 
 module ``runIndexWith`` =
 
+    let private testChecker = createChecker ()
+
     /// Fake build runner that always succeeds.
     let successBuild: BuildRunner = fun _ -> 0
 
@@ -445,7 +447,7 @@ module ``runIndexWith`` =
         Console.SetError(sw)
 
         try
-            test <@ runIndexWith failBuild scriptOptions tmpDir = 1 @>
+            test <@ runIndexWith failBuild scriptOptions tmpDir testChecker = 1 @>
         finally
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)
@@ -475,7 +477,7 @@ module ``runIndexWith`` =
         Console.SetError(sw)
 
         try
-            let exitCode = runIndexWith successBuild scriptOptions tmpDir
+            let exitCode = runIndexWith successBuild scriptOptions tmpDir testChecker
             test <@ exitCode = 0 @>
 
             // Verify the DB was populated
@@ -496,7 +498,7 @@ module ``runIndexWith`` =
         Console.SetError(sw)
 
         try
-            test <@ runIndexWith successBuild scriptOptions tmpDir = 0 @>
+            test <@ runIndexWith successBuild scriptOptions tmpDir testChecker = 0 @>
         finally
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)
@@ -524,7 +526,7 @@ module ``runIndexWith`` =
 
         try
             // First index populates the hash
-            runIndexWith successBuild scriptOptions tmpDir |> ignore
+            runIndexWith successBuild scriptOptions tmpDir testChecker |> ignore
 
             // Second index with a getOptions that would fail if called
             let mutable getOptionsCalled = false
@@ -534,7 +536,7 @@ module ``runIndexWith`` =
                     getOptionsCalled <- true
                     scriptOptions checker fsprojPath
 
-            let exitCode = runIndexWith successBuild trackingOptions tmpDir
+            let exitCode = runIndexWith successBuild trackingOptions tmpDir testChecker
             test <@ exitCode = 0 @>
             test <@ getOptionsCalled = false @>
         finally
@@ -564,7 +566,7 @@ module ``runIndexWith`` =
 
         try
             // First index: analyzes Lib.fs
-            runIndexWith successBuild scriptOptions tmpDir |> ignore
+            runIndexWith successBuild scriptOptions tmpDir testChecker |> ignore
 
             let dbPath = Path.Combine(tmpDir, ".test-prune.db")
             let db = Database.create dbPath
@@ -586,7 +588,7 @@ module ``runIndexWith`` =
             File.WriteAllText(Path.Combine(srcDir, "Lib2.fs"), "module Lib2\nlet mul x y = x * y\n")
 
             // Second index: project hash changed (new file), but Lib.fs unchanged
-            runIndexWith successBuild scriptOptions tmpDir |> ignore
+            runIndexWith successBuild scriptOptions tmpDir testChecker |> ignore
 
             // Lib.fs file key should be unchanged (it was loaded from cache, not re-analyzed)
             test <@ db.GetFileKey(relPath) = originalFileKey @>
@@ -599,6 +601,8 @@ module ``runIndexWith`` =
             Directory.Delete(tmpDir, true)
 
 module ``Example solution integration`` =
+
+    let private exampleChecker = createChecker ()
 
     /// Fake build runner that always succeeds.
     let private successBuild: BuildRunner = fun _ -> 0
@@ -672,13 +676,14 @@ module ``Example solution integration`` =
             Console.SetError(oldErr)
 
     let private indexExample (root: string) =
-        suppressError (fun () -> runIndexWith successBuild scriptOptions root) |> ignore
+        suppressError (fun () -> runIndexWith successBuild scriptOptions root exampleChecker)
+        |> ignore
 
     [<Fact>]
     let ``runIndexWith indexes the example solution`` () =
         withExampleCopy (fun root ->
             let exitCode =
-                suppressError (fun () -> runIndexWith successBuild scriptOptions root)
+                suppressError (fun () -> runIndexWith successBuild scriptOptions root exampleChecker)
 
             test <@ exitCode = 0 @>
 

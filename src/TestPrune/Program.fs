@@ -163,18 +163,26 @@ let computeProjectHash (sourceFiles: string list) : string =
     let bytes = SHA256.HashData(Encoding.UTF8.GetBytes(combined))
     Convert.ToHexStringLower(bytes)
 
+/// Create an FSharpChecker configured for TestPrune indexing.
+/// Callers can reuse a single instance across multiple index runs to benefit
+/// from FCS's internal IncrementalBuilder caches.
+let createChecker () =
+    FSharpChecker.Create(
+        projectCacheSize = 200,
+        keepAssemblyContents = true,
+        keepAllBackgroundResolutions = true,
+        parallelReferenceResolution = true
+    )
+
 /// Run the index command with injectable build runner and project options provider.
-let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider) (repoRoot: string) : int =
+let runIndexWith
+    (buildRunner: BuildRunner)
+    (getOptions: ProjectOptionsProvider)
+    (repoRoot: string)
+    (checker: FSharpChecker)
+    : int =
     let dbPath = Path.Combine(repoRoot, ".test-prune.db")
     let db = Database.create dbPath
-
-    let checker =
-        FSharpChecker.Create(
-            projectCacheSize = 200,
-            keepAssemblyContents = true,
-            keepAllBackgroundResolutions = true,
-            parallelReferenceResolution = true
-        )
 
     let projectFiles = findProjectFiles repoRoot
     eprintfn $"Found %d{projectFiles.Length} projects"
@@ -356,7 +364,8 @@ let dotnetBuildRunner: BuildRunner =
 
 /// Run the index command: build projects, then parse with real project options.
 let runIndex (repoRoot: string) : int =
-    runIndexWith dotnetBuildRunner getProjectOptions repoRoot
+    let checker = createChecker ()
+    runIndexWith dotnetBuildRunner getProjectOptions repoRoot checker
 
 type DiffProvider = unit -> Result<string, string>
 
