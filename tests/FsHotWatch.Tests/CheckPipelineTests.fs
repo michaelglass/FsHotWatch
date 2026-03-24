@@ -1,0 +1,70 @@
+module FsHotWatch.Tests.CheckPipelineTests
+
+open System.IO
+open Xunit
+open Swensen.Unquote
+open FSharp.Compiler.CodeAnalysis
+open FsHotWatch.CheckPipeline
+
+/// A null checker suffices for tests that only exercise state management
+/// (RegisterProject / lookup) without performing actual compilation.
+let private nullChecker =
+    Unchecked.defaultof<FSharpChecker>
+
+[<Fact>]
+let ``CheckFile returns None when no project registered for the file`` () =
+    let pipeline = CheckPipeline(nullChecker)
+    let result = pipeline.CheckFile("/tmp/nonexistent/Lib.fs") |> Async.RunSynchronously
+    test <@ result = None @>
+
+[<Fact>]
+let ``RegisterProject makes CheckFile find the project for its source files`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-pipeline-{System.Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let checker =
+            FSharpChecker.Create(projectCacheSize = 10)
+
+        let pipeline = CheckPipeline(checker)
+
+        let sourceFile = Path.Combine(tmpDir, "Lib.fs")
+        File.WriteAllText(sourceFile, "module Lib\nlet x = 42\n")
+
+        let absSource = Path.GetFullPath(sourceFile)
+
+        // Use GetProjectOptionsFromScript to build minimal project options
+        let options, _diagnostics =
+            checker.GetProjectOptionsFromScript(absSource, FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText absSource))
+            |> Async.RunSynchronously
+
+        pipeline.RegisterProject("/tmp/Test.fsproj", options)
+
+        let result = pipeline.CheckFile(absSource) |> Async.RunSynchronously
+        test <@ result.IsSome @>
+        test <@ result.Value.File = absSource @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``CheckFile returns None for unregistered file even when other projects exist`` () =
+    let pipeline = CheckPipeline(nullChecker)
+
+    let options =
+        { ProjectFileName = "/tmp/Other.fsproj"
+          ProjectId = None
+          SourceFiles = [| "/tmp/Other.fs" |]
+          OtherOptions = [||]
+          ReferencedProjects = [||]
+          IsIncompleteTypeCheckEnvironment = false
+          UseScriptResolutionRules = false
+          LoadTime = System.DateTime.UtcNow
+          UnresolvedReferences = None
+          OriginalLoadReferences = []
+          Stamp = None }
+
+    pipeline.RegisterProject("/tmp/Other.fsproj", options)
+
+    let result = pipeline.CheckFile("/tmp/NotRegistered.fs") |> Async.RunSynchronously
+    test <@ result = None @>
