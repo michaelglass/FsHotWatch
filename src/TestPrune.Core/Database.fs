@@ -37,6 +37,11 @@ let private schema =
         PRIMARY KEY (url_pattern, http_method)
     );
 
+    CREATE TABLE IF NOT EXISTS project_hashes (
+        project_name TEXT PRIMARY KEY,
+        hash TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_symbols_by_file ON symbols (source_file);
     CREATE INDEX IF NOT EXISTS idx_deps_to ON dependencies (to_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_deps_from ON dependencies (from_symbol_id);
@@ -423,3 +428,38 @@ type Database(dbPath: string) =
             { UrlPattern = r.GetString(0)
               HttpMethod = r.GetString(1)
               HandlerSourceFile = r.GetString(2) })
+
+    /// Get the stored hash for a project, or None if not yet indexed.
+    member _.GetProjectHash(projectName: string) : string option =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- "SELECT hash FROM project_hashes WHERE project_name = @projectName"
+        cmd.Parameters.AddWithValue("@projectName", projectName) |> ignore
+
+        use reader = cmd.ExecuteReader()
+
+        if reader.Read() then
+            Some(reader.GetString(0))
+        else
+            None
+
+    /// Store a hash for a project (insert or update).
+    member _.SetProjectHash(projectName: string, hash: string) =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            "INSERT OR REPLACE INTO project_hashes (project_name, hash) VALUES (@projectName, @hash)"
+
+        cmd.Parameters.AddWithValue("@projectName", projectName) |> ignore
+        cmd.Parameters.AddWithValue("@hash", hash) |> ignore
+        cmd.ExecuteNonQuery() |> ignore
+
+    /// Rebuild only if the project hash has changed. Returns true if rebuild occurred.
+    member this.RebuildForProjectIfChanged(projectName: string, hash: string, result: AnalysisResult) : bool =
+        match this.GetProjectHash(projectName) with
+        | Some stored when stored = hash -> false
+        | _ ->
+            this.RebuildForProject(projectName, result)
+            this.SetProjectHash(projectName, hash)
+            true

@@ -67,8 +67,18 @@ match analyzeSource checker fileName source projOptions |> Async.RunSynchronousl
 | Error msg -> eprintfn $"Failed: %s{msg}"
 ```
 
-You only need to re-index when the structure of your code changes
-(new files, renamed functions, etc.) — not on every test run.
+To skip re-indexing unchanged projects, pass a hash of the source files:
+
+```fsharp
+// RebuildForProjectIfChanged compares the hash against the stored value
+// and skips the rebuild entirely if nothing changed.
+let changed = db.RebuildForProjectIfChanged("MyProject", projectHash, result)
+// changed = false means the project was already up-to-date
+```
+
+The hash can be anything that changes when source files change — a
+checksum of file sizes and timestamps, a VCS tree hash, etc. The CLI
+uses file metadata (path + size + mtime) by default.
 
 ### 2. Find affected tests
 

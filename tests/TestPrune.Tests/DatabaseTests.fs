@@ -522,3 +522,121 @@ module ``stringToDepKind fallback`` =
 
             if File.Exists(path + "-shm") then
                 File.Delete(path + "-shm")
+
+module ``Project hash storage`` =
+
+    [<Fact>]
+    let ``GetProjectHash returns None when no hash stored`` () =
+        withDb (fun db ->
+            let hash = db.GetProjectHash "MyProject"
+            test <@ hash = None @>)
+
+    [<Fact>]
+    let ``SetProjectHash then GetProjectHash round-trips`` () =
+        withDb (fun db ->
+            db.SetProjectHash("MyProject", "abc123")
+            let hash = db.GetProjectHash "MyProject"
+            test <@ hash = Some "abc123" @>)
+
+    [<Fact>]
+    let ``SetProjectHash overwrites previous hash`` () =
+        withDb (fun db ->
+            db.SetProjectHash("MyProject", "old-hash")
+            db.SetProjectHash("MyProject", "new-hash")
+            let hash = db.GetProjectHash "MyProject"
+            test <@ hash = Some "new-hash" @>)
+
+    [<Fact>]
+    let ``hashes are per-project`` () =
+        withDb (fun db ->
+            db.SetProjectHash("ProjectA", "hash-a")
+            db.SetProjectHash("ProjectB", "hash-b")
+            test <@ db.GetProjectHash "ProjectA" = Some "hash-a" @>
+            test <@ db.GetProjectHash "ProjectB" = Some "hash-b" @>)
+
+module ``RebuildForProjectIfChanged`` =
+
+    [<Fact>]
+    let ``rebuilds when no previous hash exists`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Mod.func"
+                        Kind = Function
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 5 } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            let rebuilt = db.RebuildForProjectIfChanged("MyProject", "hash-1", result)
+            test <@ rebuilt = true @>
+
+            let symbols = db.GetSymbolsInFile "src/Mod.fs"
+            test <@ symbols.Length = 1 @>
+            test <@ db.GetProjectHash "MyProject" = Some "hash-1" @>)
+
+    [<Fact>]
+    let ``skips rebuild when hash matches`` () =
+        withDb (fun db ->
+            let result1 =
+                { Symbols =
+                    [ { FullName = "Mod.func"
+                        Kind = Function
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 5 } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildForProjectIfChanged("MyProject", "same-hash", result1) |> ignore
+
+            // Second call with same hash but different data — should skip
+            let result2 =
+                { Symbols =
+                    [ { FullName = "Mod.differentFunc"
+                        Kind = Function
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 5 } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            let rebuilt = db.RebuildForProjectIfChanged("MyProject", "same-hash", result2)
+            test <@ rebuilt = false @>
+
+            // Original data should still be there
+            let symbols = db.GetSymbolsInFile "src/Mod.fs"
+            test <@ symbols[0].FullName = "Mod.func" @>)
+
+    [<Fact>]
+    let ``rebuilds when hash differs`` () =
+        withDb (fun db ->
+            let result1 =
+                { Symbols =
+                    [ { FullName = "Mod.func"
+                        Kind = Function
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 5 } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildForProjectIfChanged("MyProject", "hash-1", result1) |> ignore
+
+            let result2 =
+                { Symbols =
+                    [ { FullName = "Mod.newFunc"
+                        Kind = Function
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 5 } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            let rebuilt = db.RebuildForProjectIfChanged("MyProject", "hash-2", result2)
+            test <@ rebuilt = true @>
+
+            let symbols = db.GetSymbolsInFile "src/Mod.fs"
+            test <@ symbols[0].FullName = "Mod.newFunc" @>
+            test <@ db.GetProjectHash "MyProject" = Some "hash-2" @>)
