@@ -397,7 +397,8 @@ let analyzeChanges
         if changedFiles.IsEmpty then
             Ok(RunSubset [], [])
         else
-            // Re-parse changed .fs files to get current symbols
+            let mutable parseFailures = []
+
             let currentSymbolsByFile =
                 changedFiles
                 |> List.filter (fun f ->
@@ -409,13 +410,20 @@ let analyzeChanges
                     if File.Exists(fullPath) then
                         match parseFile checker fullPath with
                         | Ok result -> Some(relPath, normalizeSymbolPaths repoRoot result.Symbols)
-                        | Error _ -> Some(relPath, [])
+                        | Error msg ->
+                            eprintfn $"  Warning: could not parse %s{relPath}: %s{msg}"
+                            parseFailures <- relPath :: parseFailures
+                            None
                     else
                         None)
                 |> Map.ofList
 
-            let selection = selectTests db changedFiles currentSymbolsByFile
-            Ok(selection, changedFiles)
+            if not parseFailures.IsEmpty then
+                let failedFiles = parseFailures |> List.rev |> String.concat ", "
+                Ok(RunAll $"could not parse: %s{failedFiles}", changedFiles)
+            else
+                let selection = selectTests db changedFiles currentSymbolsByFile
+                Ok(selection, changedFiles)
 
 /// Run the status command with an injectable diff provider.
 let runStatusWith (getDiff: DiffProvider) (repoRoot: string) : int =
