@@ -1,5 +1,9 @@
 <Solution>
   <Project Path="src/FsHotWatch/FsHotWatch.fsproj" />
   <Project Path="src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj" />
+  <Project Path="src/FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj" />
+  <Project Path="src/FsHotWatch.Analyzers/FsHotWatch.Analyzers.fsproj" />
+  <Project Path="src/FsHotWatch.Lint/FsHotWatch.Lint.fsproj" />
+  <Project Path="src/FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj" />
   <Project Path="tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj" />
 </Solution>
