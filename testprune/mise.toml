@@ -26,7 +26,7 @@ depends = ["build"]
 
 [tasks.example]
 description = "Run test-prune against the example solution"
-run = "dotnet run --project src/TestPrune -- index --solution examples/SampleSolution/SampleSolution.slnx"
+run = "dotnet run --project src/TestPrune -- --repo examples/SampleSolution index"
 depends = ["build"]
 
 [tasks.example-build]

@@ -3,6 +3,8 @@ module TestPrune.Program
 open System
 open System.Diagnostics
 open System.IO
+open System.Security.Cryptography
+open System.Text
 open FSharp.Compiler.CodeAnalysis
 open TestPrune.AstAnalyzer
 open TestPrune.Database
@@ -28,26 +30,42 @@ let rec private parseEntryFlags (args: string list) (acc: string list) =
     | [] -> Ok(acc |> List.rev)
     | unknown :: _ -> Error $"Unknown flag: %s{unknown}"
 
-let parseArgs (args: string array) : Result<Command, string> =
-    match args |> Array.toList with
-    | [] -> Ok Help
-    | [ "index" ] -> Ok Index
-    | [ "run" ] -> Ok Run
-    | [ "status" ] -> Ok Status
-    | "dead-code" :: rest ->
-        match parseEntryFlags rest [] with
-        | Ok [] -> Ok(DeadCodeCmd defaultEntryPatterns)
-        | Ok patterns -> Ok(DeadCodeCmd patterns)
-        | Error msg -> Error msg
-    | [ "help" ]
-    | [ "--help" ]
-    | [ "-h" ] -> Ok Help
-    | unknown :: _ -> Error $"Unknown command: %s{unknown}"
+type ParsedCommand = { Command: Command; RepoRoot: string option }
+
+let rec private parseGlobalFlags (args: string list) (repoRoot: string option) : Result<string list * string option, string> =
+    match args with
+    | "--repo" :: path :: rest -> parseGlobalFlags rest (Some path)
+    | _ -> Ok(args, repoRoot)
+
+let parseArgs (args: string array) : Result<ParsedCommand, string> =
+    match parseGlobalFlags (args |> Array.toList) None with
+    | Error msg -> Error msg
+    | Ok(commandArgs, repoRoot) ->
+        let cmdResult =
+            match commandArgs with
+            | [] -> Ok Help
+            | [ "index" ] -> Ok Index
+            | [ "run" ] -> Ok Run
+            | [ "status" ] -> Ok Status
+            | "dead-code" :: rest ->
+                match parseEntryFlags rest [] with
+                | Ok [] -> Ok(DeadCodeCmd defaultEntryPatterns)
+                | Ok patterns -> Ok(DeadCodeCmd patterns)
+                | Error msg -> Error msg
+            | [ "help" ]
+            | [ "--help" ]
+            | [ "-h" ] -> Ok Help
+            | unknown :: _ -> Error $"Unknown command: %s{unknown}"
+
+        cmdResult |> Result.map (fun cmd -> { Command = cmd; RepoRoot = repoRoot })
 
 let showHelp () =
     printfn "TestPrune - Test impact analysis tool"
     printfn ""
-    printfn "Usage: test-prune <command>"
+    printfn "Usage: test-prune [--repo <path>] <command>"
+    printfn ""
+    printfn "Global options:"
+    printfn "  --repo <path>  Use <path> as the repo root (default: auto-detect from cwd)"
     printfn ""
     printfn "Commands:"
     printfn "  index      Build the dependency graph from source"
@@ -124,6 +142,21 @@ type BuildRunner = string -> int
 /// Gets FSharpProjectOptions for a project file.
 type ProjectOptionsProvider = FSharpChecker -> string -> FSharpProjectOptions
 
+/// Compute a fingerprint for a project's source files based on paths, sizes, and modification times.
+let computeProjectHash (sourceFiles: string list) : string =
+    let entries =
+        sourceFiles
+        |> List.filter File.Exists
+        |> List.sort
+        |> List.map (fun path ->
+            let info = FileInfo(path)
+            let mtime = info.LastWriteTimeUtc.ToString("o")
+            $"%s{path}:%d{info.Length}:%s{mtime}")
+
+    let combined = String.concat "\n" entries
+    let bytes = SHA256.HashData(Encoding.UTF8.GetBytes(combined))
+    Convert.ToHexStringLower(bytes)
+
 /// Run the index command with injectable build runner and project options provider.
 let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider) (repoRoot: string) : int =
     let dbPath = Path.Combine(repoRoot, ".test-prune.db")
@@ -151,6 +184,8 @@ let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider)
         let mutable totalDeps = 0
         let mutable totalTests = 0
 
+        let mutable skippedProjects = 0
+
         for fsprojPath in projectFiles do
             let projName = Path.GetFileNameWithoutExtension(fsprojPath)
 
@@ -158,41 +193,52 @@ let runIndexWith (buildRunner: BuildRunner) (getOptions: ProjectOptionsProvider)
                 let projOptions = getOptions checker fsprojPath
                 let compileFiles, _ = parseProjectFile fsprojPath
 
-                let mutable allSymbols = []
-                let mutable allDeps = []
-                let mutable allTests = []
+                let hash = computeProjectHash compileFiles
 
-                for sourceFile in compileFiles do
-                    if File.Exists(sourceFile) then
-                        let source = File.ReadAllText(sourceFile)
+                match db.GetProjectHash(projName) with
+                | Some stored when stored = hash ->
+                    skippedProjects <- skippedProjects + 1
+                    eprintfn $"  %s{projName}: unchanged, skipping"
+                | _ ->
+                    let mutable allSymbols = []
+                    let mutable allDeps = []
+                    let mutable allTests = []
 
-                        match analyzeSource checker sourceFile source projOptions |> Async.RunSynchronously with
-                        | Ok result ->
-                            allSymbols <- allSymbols @ (normalizeSymbolPaths repoRoot result.Symbols)
-                            allDeps <- allDeps @ result.Dependencies
+                    for sourceFile in compileFiles do
+                        if File.Exists(sourceFile) then
+                            let source = File.ReadAllText(sourceFile)
 
-                            let tests =
-                                result.TestMethods |> List.map (fun t -> { t with TestProject = projName })
+                            match analyzeSource checker sourceFile source projOptions |> Async.RunSynchronously with
+                            | Ok result ->
+                                allSymbols <- allSymbols @ (normalizeSymbolPaths repoRoot result.Symbols)
+                                allDeps <- allDeps @ result.Dependencies
 
-                            allTests <- allTests @ tests
-                        | Error msg -> eprintfn $"  Warning: %s{sourceFile}: %s{msg}"
+                                let tests =
+                                    result.TestMethods |> List.map (fun t -> { t with TestProject = projName })
 
-                let combined =
-                    { Symbols = allSymbols
-                      Dependencies = allDeps
-                      TestMethods = allTests }
+                                allTests <- allTests @ tests
+                            | Error msg -> eprintfn $"  Warning: %s{sourceFile}: %s{msg}"
 
-                db.RebuildForProject(projName, combined)
-                totalSymbols <- totalSymbols + allSymbols.Length
-                totalDeps <- totalDeps + allDeps.Length
-                totalTests <- totalTests + allTests.Length
+                    let combined =
+                        { Symbols = allSymbols
+                          Dependencies = allDeps
+                          TestMethods = allTests }
 
-                eprintfn
-                    $"  %s{projName}: %d{allSymbols.Length} symbols, %d{allDeps.Length} deps, %d{allTests.Length} tests"
+                    db.RebuildForProject(projName, combined)
+                    db.SetProjectHash(projName, hash)
+                    totalSymbols <- totalSymbols + allSymbols.Length
+                    totalDeps <- totalDeps + allDeps.Length
+                    totalTests <- totalTests + allTests.Length
+
+                    eprintfn
+                        $"  %s{projName}: %d{allSymbols.Length} symbols, %d{allDeps.Length} deps, %d{allTests.Length} tests"
             with ex ->
                 eprintfn $"  Error processing %s{projName}: %s{ex.Message}"
 
         eprintfn $"Indexed %d{totalSymbols} symbols, %d{totalDeps} dependencies, %d{totalTests} test methods"
+
+        if skippedProjects > 0 then
+            eprintfn $"Skipped %d{skippedProjects} unchanged project(s)"
 
         0
 
@@ -421,16 +467,19 @@ let runDeadCode (repoRoot: string) (entryPatterns: string list) : int =
 
         0
 
-let runCommand (command: Command) : int =
+let runCommand (parsed: ParsedCommand) : int =
     let repoRoot =
-        match findRepoRoot (Directory.GetCurrentDirectory()) with
-        | Some root -> root
+        match parsed.RepoRoot with
+        | Some path -> Path.GetFullPath(path)
         | None ->
-            eprintfn "Error: not in a jj or git repository"
-            Environment.Exit(1)
-            "" // unreachable
+            match findRepoRoot (Directory.GetCurrentDirectory()) with
+            | Some root -> root
+            | None ->
+                eprintfn "Error: not in a jj or git repository"
+                Environment.Exit(1)
+                "" // unreachable
 
-    match command with
+    match parsed.Command with
     | Index -> runIndex repoRoot
     | Run -> runRun repoRoot
     | Status -> runStatus repoRoot
@@ -442,7 +491,7 @@ let runCommand (command: Command) : int =
 [<EntryPoint>]
 let main args =
     match parseArgs args with
-    | Ok command -> runCommand command
+    | Ok parsed -> runCommand parsed
     | Error message ->
         eprintfn $"Error: %s{message}"
         showHelp ()

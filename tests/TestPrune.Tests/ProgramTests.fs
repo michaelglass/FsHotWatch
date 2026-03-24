@@ -14,53 +14,68 @@ open FSharp.Compiler.CodeAnalysis
 
 module ``parseArgs`` =
 
+    let private cmd args =
+        parseArgs args |> Result.map (fun p -> p.Command)
+
+    let private repoRoot args =
+        parseArgs args |> Result.map (fun p -> p.RepoRoot)
+
     [<Fact>]
-    let ``empty args returns Help`` () = test <@ parseArgs [||] = Ok Help @>
+    let ``empty args returns Help`` () = test <@ cmd [||] = Ok Help @>
 
     [<Fact>]
     let ``index command`` () =
-        test <@ parseArgs [| "index" |] = Ok Index @>
+        test <@ cmd [| "index" |] = Ok Index @>
 
     [<Fact>]
     let ``run command`` () =
-        test <@ parseArgs [| "run" |] = Ok Run @>
+        test <@ cmd [| "run" |] = Ok Run @>
 
     [<Fact>]
     let ``status command`` () =
-        test <@ parseArgs [| "status" |] = Ok Status @>
+        test <@ cmd [| "status" |] = Ok Status @>
 
     [<Fact>]
     let ``help command`` () =
-        test <@ parseArgs [| "help" |] = Ok Help @>
+        test <@ cmd [| "help" |] = Ok Help @>
 
     [<Fact>]
     let ``--help flag`` () =
-        test <@ parseArgs [| "--help" |] = Ok Help @>
+        test <@ cmd [| "--help" |] = Ok Help @>
 
     [<Fact>]
     let ``-h flag`` () =
-        test <@ parseArgs [| "-h" |] = Ok Help @>
+        test <@ cmd [| "-h" |] = Ok Help @>
 
     [<Fact>]
     let ``dead-code command with defaults`` () =
-        test <@ parseArgs [| "dead-code" |] = Ok(DeadCodeCmd defaultEntryPatterns) @>
+        test <@ cmd [| "dead-code" |] = Ok(DeadCodeCmd defaultEntryPatterns) @>
 
     [<Fact>]
     let ``dead-code command with custom entry patterns`` () =
         let result =
-            parseArgs [| "dead-code"; "--entry"; "*.main"; "--entry"; "*.Routes.*" |]
+            cmd [| "dead-code"; "--entry"; "*.main"; "--entry"; "*.Routes.*" |]
 
         test <@ result = Ok(DeadCodeCmd [ "*.main"; "*.Routes.*" ]) @>
 
     [<Fact>]
     let ``dead-code command with unknown flag returns Error`` () =
-        let result = parseArgs [| "dead-code"; "--bogus" |]
+        let result = cmd [| "dead-code"; "--bogus" |]
         test <@ Result.isError result @>
 
     [<Fact>]
     let ``unknown command returns Error`` () =
-        let result = parseArgs [| "bogus" |]
+        let result = cmd [| "bogus" |]
         test <@ Result.isError result @>
+
+    [<Fact>]
+    let ``--repo flag sets RepoRoot`` () =
+        let result = parseArgs [| "--repo"; "/some/path"; "index" |]
+        test <@ result = Ok { Command = Index; RepoRoot = Some "/some/path" } @>
+
+    [<Fact>]
+    let ``no --repo flag leaves RepoRoot as None`` () =
+        test <@ repoRoot [| "index" |] = Ok None @>
 
 module ``findRepoRoot`` =
 
