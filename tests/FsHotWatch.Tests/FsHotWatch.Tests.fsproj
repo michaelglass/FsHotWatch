@@ -15,6 +15,7 @@
     <Compile Include="PluginHostTests.fs" />
     <Compile Include="WatcherTests.fs" />
     <Compile Include="DaemonTests.fs" />
+    <Compile Include="IpcTests.fs" />
   </ItemGroup>
 
   <ItemGroup>
