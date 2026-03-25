@@ -62,6 +62,7 @@ type AnalyzersPlugin(analyzerPaths: string list) =
                     Volatile.Write(&diagnosticsByFile, current |> Map.add result.File messages)
                     ctx.ReportStatus(Completed(box (Volatile.Read(&diagnosticsByFile)), DateTime.UtcNow))
                 with ex ->
+                    eprintfn "  [analyzers] Error analyzing %s: %s" result.File ex.Message
                     ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow)))
 
             ctx.RegisterCommand(

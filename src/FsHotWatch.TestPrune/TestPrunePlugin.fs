@@ -148,9 +148,12 @@ type TestPrunePlugin
             // Subscribe to build completion for test execution
             match testConfigs with
             | Some configs when not configs.IsEmpty ->
+                eprintfn "  [test-prune] Subscribing to OnBuildCompleted with %d test configs" configs.Length
+
                 ctx.OnBuildCompleted.Add(fun result ->
                     match result with
                     | BuildSucceeded ->
+                        eprintfn "  [test-prune] BuildSucceeded received, running %d test configs" configs.Length
                         ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
                         try

@@ -20,13 +20,16 @@ type BuildPlugin(?command: string, ?args: string) =
                 match change with
                 | SourceChanged _
                 | ProjectChanged _ ->
+                    eprintfn "  [build] Received FileChanged, running: %s %s" buildCommand buildArgs
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
                     try
                         let (success, output) = runProcess buildCommand buildArgs ctx.RepoRoot []
                         Volatile.Write(&lastResult, Some(success, output))
+                        eprintfn "  [build] Build %s" (if success then "succeeded" else "FAILED")
 
                         if success then
+                            eprintfn "  [build] Emitting BuildCompleted(BuildSucceeded)"
                             ctx.EmitBuildCompleted(BuildSucceeded)
                             ctx.ReportStatus(Completed(box (Volatile.Read(&lastResult)), DateTime.UtcNow))
                         else

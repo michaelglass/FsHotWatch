@@ -107,25 +107,36 @@ type CoveragePlugin(coverageDir: string, ?thresholdsFile: string, ?afterCheck: u
 
                     lastResults <- results
 
-                    let allPass = results |> List.forall (fun r -> r.MeetsThreshold)
-
-                    match afterCheck with
-                    | Some hook -> hook ()
-                    | None -> ()
-
-                    if allPass then
-                        ctx.ReportStatus(Completed(box results, DateTime.UtcNow))
-                    else
-                        let failures =
-                            results
-                            |> List.filter (fun r -> not r.MeetsThreshold)
-                            |> List.map (fun r ->
-                                $"%s{r.Project}: line=%.1f{r.LineRate}%% branch=%.1f{r.BranchRate}%%")
-                            |> String.concat "; "
-
+                    if coverageFiles.IsEmpty then
                         ctx.ReportStatus(
-                            PluginStatus.Failed($"Coverage below threshold: %s{failures}", DateTime.UtcNow)
+                            PluginStatus.Failed(
+                                $"No coverage files found in %s{coverageDir}",
+                                DateTime.UtcNow
+                            )
                         )
+                    else
+                        let allPass = results |> List.forall (fun r -> r.MeetsThreshold)
+
+                        match afterCheck with
+                        | Some hook -> hook ()
+                        | None -> ()
+
+                        if allPass then
+                            ctx.ReportStatus(Completed(box results, DateTime.UtcNow))
+                        else
+                            let failures =
+                                results
+                                |> List.filter (fun r -> not r.MeetsThreshold)
+                                |> List.map (fun r ->
+                                    $"%s{r.Project}: line=%.1f{r.LineRate}%% branch=%.1f{r.BranchRate}%%")
+                                |> String.concat "; "
+
+                            ctx.ReportStatus(
+                                PluginStatus.Failed(
+                                    $"Coverage below threshold: %s{failures}",
+                                    DateTime.UtcNow
+                                )
+                            )
                 with ex ->
                     ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow)))
 
