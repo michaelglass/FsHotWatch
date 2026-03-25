@@ -9,6 +9,7 @@ open FsHotWatch.Events
 open FsHotWatch.Ipc
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
+open FsHotWatch.ProjectGraph
 open FsHotWatch.Watcher
 
 /// The daemon ties together a warm FSharpChecker, file watcher, check pipeline, and plugin host.
@@ -19,6 +20,7 @@ type Daemon =
       Watcher: FileWatcher
       Checker: FSharpChecker
       Pipeline: CheckPipeline
+      Graph: ProjectGraph
       RepoRoot: string
       mutable ScanState: ScanState
       ScanSemaphore: SemaphoreSlim
@@ -89,7 +91,7 @@ type Daemon =
         }
 
     /// Discover .fsproj files in src/ and tests/ and register them with the pipeline.
-    /// Uses script-style options (no MSBuild) for lightweight project loading.
+    /// Builds the project dependency graph and loads script-style FCS options.
     member this.DiscoverAndRegisterProjects() =
         async {
             let searchDirs =
@@ -106,21 +108,20 @@ type Daemon =
                     let n = f.Replace('\\', '/')
                     not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
 
+            // First pass: register all projects in the graph (for dependency tracking)
             for fsproj in fsprojFiles do
                 try
+                    this.Graph.RegisterFromFsproj(fsproj) |> ignore
+                with ex ->
+                    eprintfn $"  Warning: could not parse %s{fsproj}: %s{ex.Message}"
+
+            // Second pass: load FCS options in topological order (deps first)
+            let ordered = this.Graph.GetTopologicalOrder()
+
+            for fsproj in ordered do
+                try
                     let sourceFiles =
-                        let doc = System.Xml.Linq.XDocument.Load(fsproj)
-                        let projDir = Path.GetDirectoryName(Path.GetFullPath(fsproj))
-
-                        doc.Descendants(System.Xml.Linq.XName.Get "Compile")
-                        |> Seq.choose (fun el ->
-                            let inc = el.Attribute(System.Xml.Linq.XName.Get "Include")
-
-                            if inc <> null then
-                                Some(Path.GetFullPath(Path.Combine(projDir, inc.Value)))
-                            else
-                                None)
-                        |> Seq.toArray
+                        this.Graph.GetSourceFiles(fsproj) |> List.toArray
 
                     if sourceFiles.Length > 0 then
                         let firstFile = sourceFiles.[0]
@@ -199,6 +200,7 @@ module Daemon =
     let internal createWith (checker: FSharpChecker) (repoRoot: string) =
         let host = PluginHost.create checker repoRoot
         let pipeline = CheckPipeline(checker)
+        let graph = ProjectGraph()
 
         let pendingChanges = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
         let mutable debounceTimer: System.Threading.Timer option = None
@@ -243,15 +245,25 @@ module Daemon =
                     host.EmitFileChanged(ProjectChanged(projFiles |> List.distinct))
 
                 if not allSourceFiles.IsEmpty then
-                    // Run preprocessors (e.g., formatter) before dispatching events
                     let modifiedByPreprocessors = host.RunPreprocessors(allSourceFiles)
 
                     for file in modifiedByPreprocessors do
                         suppressedFiles.TryAdd(file, true) |> ignore
 
-                    host.EmitFileChanged(SourceChanged allSourceFiles)
+                    // Find all affected projects (including transitive dependents)
+                    let affectedProjects = graph.GetAffectedProjects(allSourceFiles)
 
-                    for file in allSourceFiles do
+                    // Collect all files to check: changed files + files in dependent projects
+                    let allFilesToCheck =
+                        let dependentFiles =
+                            affectedProjects
+                            |> List.collect (fun proj -> graph.GetSourceFiles(proj))
+
+                        (allSourceFiles @ dependentFiles) |> List.distinct
+
+                    host.EmitFileChanged(SourceChanged allFilesToCheck)
+
+                    for file in allFilesToCheck do
                         let result = pipeline.CheckFile(file) |> Async.RunSynchronously
 
                         match result with
@@ -302,6 +314,7 @@ module Daemon =
           Watcher = watcher
           Checker = checker
           Pipeline = pipeline
+          Graph = graph
           RepoRoot = repoRoot
           ScanState = ScanIdle
           ScanSemaphore = new SemaphoreSlim(1, 1)
