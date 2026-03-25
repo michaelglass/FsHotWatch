@@ -48,8 +48,10 @@ type Daemon =
             do! this.ScanSemaphore.WaitAsync(ct) |> Async.AwaitTask
 
             try
+                let registeredProjects = this.Pipeline.GetRegisteredProjects()
                 let files = this.Pipeline.GetAllRegisteredFiles()
                 let total = files.Length
+                eprintfn "  [scan] %d projects, %d files registered" registeredProjects.Length total
                 let sw = System.Diagnostics.Stopwatch.StartNew()
                 this.ScanState <- Scanning(total, 0, System.DateTime.UtcNow)
 
@@ -59,15 +61,23 @@ type Daemon =
                     this.Host.EmitFileChanged(SourceChanged files)
                     let mutable completed = 0
 
+                    let mutable checkedCount = 0
+                    let mutable skippedCount = 0
+
                     for file in files do
                         let! result = this.Pipeline.CheckFile(file)
 
                         match result with
-                        | Some checkResult -> this.Host.EmitFileChecked(checkResult)
-                        | None -> ()
+                        | Some checkResult ->
+                            checkedCount <- checkedCount + 1
+                            this.Host.EmitFileChecked(checkResult)
+                        | None ->
+                            skippedCount <- skippedCount + 1
 
                         completed <- completed + 1
                         this.ScanState <- Scanning(total, completed, System.DateTime.UtcNow)
+
+                    eprintfn "  [scan] Checked %d files, skipped %d" checkedCount skippedCount
 
                 sw.Stop()
                 this.ScanState <- ScanComplete(total, sw.Elapsed)
@@ -144,8 +154,9 @@ type Daemon =
                                     SourceFiles = sourceFiles }
 
                             this.Pipeline.RegisterProject(fsproj, opts)
+                            eprintfn "  [discover] Registered %s (%d files)" (Path.GetFileName fsproj) sourceFiles.Length
                 with ex ->
-                    eprintfn $"  Warning: could not load %s{fsproj}: %s{ex.Message}"
+                    eprintfn "  [discover] Failed to load %s: %s" (Path.GetFileName fsproj) ex.Message
         }
 
     /// Format scan state as a human-readable string.
