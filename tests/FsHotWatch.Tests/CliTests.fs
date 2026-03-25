@@ -47,6 +47,14 @@ let ``parseCommand status with plugin returns Status Some`` () =
     test <@ parseCommand [ "status"; "lint" ] = Status(Some "lint") @>
 
 [<Fact>]
+let ``parseCommand scan returns Scan`` () =
+    test <@ parseCommand [ "scan" ] = Scan @>
+
+[<Fact>]
+let ``parseCommand scan-status returns ScanStatus`` () =
+    test <@ parseCommand [ "scan-status" ] = ScanStatus @>
+
+[<Fact>]
 let ``parseCommand unknown command returns PluginCommand`` () =
     test <@ parseCommand [ "warnings" ] = PluginCommand("warnings", "") @>
 
@@ -310,6 +318,61 @@ let ``executeCommand Scan calls scan IPC`` () =
     let result = executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Scan
     test <@ result = 0 @>
     test <@ called @>
+
+[<Fact>]
+let ``executeCommand ScanStatus calls scanStatus IPC`` () =
+    let mutable called = false
+
+    let ipc =
+        { fakeIpc () with
+            ScanStatus = fun _ ->
+                async {
+                    called <- true
+                    return "idle"
+                } }
+
+    let result = executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" ScanStatus
+    test <@ result = 0 @>
+    test <@ called @>
+
+[<Fact>]
+let ``executeCommand Status with plugin name calls getPluginStatus`` () =
+    let mutable calledWith = ""
+
+    let ipc =
+        { fakeIpc () with
+            GetPluginStatus = fun _ name ->
+                async {
+                    calledWith <- name
+                    return "Running"
+                } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status(Some "lint"))
+
+    test <@ result = 0 @>
+    test <@ calledWith = "lint" @>
+
+[<Fact>]
+let ``executeCommand Start with fake daemon throws on null daemon`` () =
+    // A defaultof Daemon has null fields, so RunWithIpc will throw.
+    // This verifies the createDaemon parameter is actually called and used.
+    let mutable createCalled = false
+    let fakeDaemon = Unchecked.defaultof<Daemon>
+
+    let createDaemon _ =
+        createCalled <- true
+        fakeDaemon
+
+    let threw =
+        try
+            executeCommand createDaemon (fakeIpc ()) "/tmp" "pipe" Start |> ignore
+            false
+        with _ ->
+            true
+
+    test <@ createCalled @>
+    test <@ threw @>
 
 [<Fact>]
 let ``executeCommand returns 1 when IPC fails`` () =

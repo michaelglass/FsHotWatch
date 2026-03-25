@@ -7,12 +7,18 @@ open System.Xml.Linq
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 
+/// Line and branch coverage thresholds for a project.
 type CoverageThreshold = { Line: float; Branch: float }
 
+/// Coverage result for a single project.
 type CoverageResult =
-    { Project: string
+    { /// The project name derived from the coverage report directory.
+      Project: string
+      /// Line coverage percentage (0-100).
       LineRate: float
+      /// Branch coverage percentage (0-100).
       BranchRate: float
+      /// Whether both line and branch rates meet the configured threshold.
       MeetsThreshold: bool }
 
 /// Checks coverage thresholds after tests complete.
@@ -65,8 +71,10 @@ type CoveragePlugin(coverageDir: string, ?thresholdsFile: string, ?afterCheck: u
             None
 
     interface IFsHotWatchPlugin with
+        /// Returns "coverage".
         member _.Name = "coverage"
 
+        /// Subscribe to test completion and check coverage thresholds; registers the "coverage" command.
         member _.Initialize(ctx) =
             ctx.OnTestCompleted.Add(fun testResults ->
                 if testResults.Results.IsEmpty then
@@ -158,4 +166,5 @@ type CoveragePlugin(coverageDir: string, ?thresholdsFile: string, ?afterCheck: u
                     }
             )
 
+        /// No resources to dispose.
         member _.Dispose() = ()

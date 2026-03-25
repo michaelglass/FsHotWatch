@@ -15,8 +15,10 @@ type BuildPlugin(?command: string, ?args: string) =
     let mutable building = false
 
     interface IFsHotWatchPlugin with
+        /// Returns "build".
         member _.Name = "build"
 
+        /// Subscribe to file changes and run builds; registers the "build-status" command.
         member _.Initialize(ctx) =
             let doBuild () =
                 if not building then
@@ -62,4 +64,5 @@ type BuildPlugin(?command: string, ?args: string) =
                     }
             )
 
+        /// No resources to dispose.
         member _.Dispose() = ()

@@ -45,8 +45,15 @@ type CheckPipeline(checker: FSharpChecker) =
                 let sourceText = SourceText.ofString source
 
                 try
+                    let sw = System.Diagnostics.Stopwatch.StartNew()
+
                     let! parseResults, checkAnswer =
                         checker.ParseAndCheckFileInProject(absPath, 0, sourceText, options)
+
+                    sw.Stop()
+
+                    if sw.Elapsed.TotalSeconds > 2.0 then
+                        eprintfn $"  [check] SLOW: %s{Path.GetFileName(absPath)} took %.1f{sw.Elapsed.TotalSeconds}s"
 
                     match checkAnswer with
                     | FSharpCheckFileAnswer.Succeeded checkResults ->
@@ -57,7 +64,6 @@ type CheckPipeline(checker: FSharpChecker) =
                                   ParseResults = parseResults
                                   CheckResults = checkResults }
                     | FSharpCheckFileAnswer.Aborted ->
-                        eprintfn "  [check] Type check aborted for: %s" absPath
                         // Still emit with parse results — lint can use the AST even without type info
                         return
                             Some

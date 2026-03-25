@@ -4,6 +4,7 @@ open System
 open System.IO
 open FsHotWatch.Events
 
+/// Holds a set of FileSystemWatchers monitoring a repository for F# file changes.
 [<NoComparison; NoEquality>]
 type FileWatcher =
     { Watchers: FileSystemWatcher list }
@@ -13,6 +14,7 @@ type FileWatcher =
             for w in this.Watchers do
                 w.Dispose()
 
+/// Returns true if the file path has a relevant extension and is not in obj/ or bin/.
 let private isRelevantFile (path: string) =
     let normalized = path.Replace('\\', '/')
     let ext = Path.GetExtension(path).ToLowerInvariant()
@@ -34,6 +36,7 @@ let private isRelevantFile (path: string) =
 
         isRelevantExt && not isExcluded
 
+/// Classify a file path as a solution, project, or source change.
 let private classifyChange (path: string) =
     let ext = Path.GetExtension(path).ToLowerInvariant()
     let fileName = Path.GetFileName(path)
@@ -44,7 +47,9 @@ let private classifyChange (path: string) =
     else
         SourceChanged [ path ]
 
+/// Functions for creating file watchers.
 module FileWatcher =
+    /// Create a FileWatcher that monitors src/ and tests/ for F#-relevant file changes.
     let create (repoRoot: string) (onChange: FileChangeKind -> unit) : FileWatcher =
         let createWatcher (dir: string) =
             if Directory.Exists(dir) then

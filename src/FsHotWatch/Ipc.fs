@@ -69,7 +69,42 @@ type DaemonRpcTarget
 /// IPC server that listens on a named pipe and exposes plugin host methods via StreamJsonRpc.
 module IpcServer =
 
-    /// Start the IPC server. Accepts concurrent connections until cancelled.
+    /// Accept a single connection, handle it, and clean up when done.
+    let private acceptOne
+        (pipeName: string)
+        (target: DaemonRpcTarget)
+        (ct: CancellationToken)
+        : Async<unit> =
+        async {
+            let pipeServer =
+                new NamedPipeServerStream(
+                    pipeName,
+                    PipeDirection.InOut,
+                    NamedPipeServerStream.MaxAllowedServerInstances,
+                    PipeTransmissionMode.Byte,
+                    PipeOptions.Asynchronous
+                )
+
+            try
+                do! pipeServer.WaitForConnectionAsync(ct) |> Async.AwaitTask
+
+                let handler =
+                    new HeaderDelimitedMessageHandler(pipeServer :> System.IO.Stream)
+
+                let rpc = new JsonRpc(handler, target)
+                rpc.StartListening()
+
+                rpc.Completion.ContinueWith(fun _ ->
+                    rpc.Dispose()
+                    pipeServer.Dispose())
+                |> ignore
+            with
+            | :? OperationCanceledException -> pipeServer.Dispose()
+            | _ -> pipeServer.Dispose()
+        }
+
+    /// Start the IPC server. Keeps multiple accept tasks running concurrently
+    /// so clients don't have to wait for the accept loop to cycle.
     let start
         (pipeName: string)
         (host: PluginHost)
@@ -81,34 +116,28 @@ module IpcServer =
             let target =
                 DaemonRpcTarget(host, (fun () -> cts.Cancel()), onScan, getScanStatus)
 
+            // Keep 3 accept tasks running at all times so clients can connect immediately
+            let mutable acceptTasks: Task list = []
+
+            let startAccept () =
+                Async.StartAsTask(acceptOne pipeName target cts.Token) :> Task
+
+            // Seed with 3 concurrent acceptors
+            acceptTasks <- [ startAccept (); startAccept (); startAccept () ]
+
             while not cts.Token.IsCancellationRequested do
-                let pipeServer =
-                    new NamedPipeServerStream(
-                        pipeName,
-                        PipeDirection.InOut,
-                        NamedPipeServerStream.MaxAllowedServerInstances,
-                        PipeTransmissionMode.Byte,
-                        PipeOptions.Asynchronous
-                    )
-
                 try
-                    do!
-                        pipeServer.WaitForConnectionAsync(cts.Token)
-                        |> Async.AwaitTask
+                    // Wait for any accept to complete
+                    let! completed =
+                        Task.WhenAny(acceptTasks |> List.toArray) |> Async.AwaitTask
 
-                    let handler =
-                        new HeaderDelimitedMessageHandler(pipeServer :> System.IO.Stream)
-
-                    let rpc = new JsonRpc(handler, target)
-                    rpc.StartListening()
-
-                    rpc.Completion.ContinueWith(fun _ ->
-                        rpc.Dispose()
-                        pipeServer.Dispose())
-                    |> ignore
+                    // Replace completed task with a new accept
+                    acceptTasks <-
+                        acceptTasks
+                        |> List.map (fun t -> if Object.ReferenceEquals(t, completed) then startAccept () else t)
                 with
-                | :? OperationCanceledException -> pipeServer.Dispose()
-                | _ -> pipeServer.Dispose()
+                | :? OperationCanceledException -> ()
+                | _ -> ()
         }
 
 /// IPC client that connects to the daemon's named pipe and calls methods via StreamJsonRpc.
@@ -147,10 +176,10 @@ module IpcClient =
     let shutdown (pipeName: string) : Async<string> =
         invoke pipeName "Shutdown" [||]
 
-    /// Trigger a full scan (blocks until complete).
+    /// Trigger a full scan of all registered files.
     let scan (pipeName: string) : Async<string> =
         invoke pipeName "Scan" [||]
 
-    /// Get current scan progress without blocking.
+    /// Get current scan progress.
     let scanStatus (pipeName: string) : Async<string> =
         invoke pipeName "ScanStatus" [||]
