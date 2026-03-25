@@ -19,7 +19,9 @@ type Daemon =
       Watcher: FileWatcher
       Checker: FSharpChecker
       Pipeline: CheckPipeline
-      RepoRoot: string }
+      RepoRoot: string
+      mutable ScanState: ScanState
+      ScanLock: obj }
 
     /// Register a plugin with the daemon's plugin host.
     member this.Register(plugin: IFsHotWatchPlugin) = this.Host.Register(plugin)
@@ -28,21 +30,43 @@ type Daemon =
     member this.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
         this.Pipeline.RegisterProject(projectPath, options)
 
+    /// Get current scan state.
+    member this.GetScanState() = this.ScanState
+
     /// Scan all registered files — check each one and emit events to plugins.
-    /// Use on startup or on-demand to establish a full baseline.
+    /// Blocks until complete. If a scan is already running, waits for it.
     member this.ScanAll() =
         async {
-            let files = this.Pipeline.GetAllRegisteredFiles()
+            let acquired = System.Threading.Monitor.TryEnter(this.ScanLock)
 
-            if not files.IsEmpty then
-                this.Host.EmitFileChanged(SourceChanged files)
+            if not acquired then
+                // Another scan is running — wait for it
+                lock this.ScanLock (fun () -> ())
+            else
+                try
+                    let files = this.Pipeline.GetAllRegisteredFiles()
+                    let total = files.Length
+                    let sw = System.Diagnostics.Stopwatch.StartNew()
+                    this.ScanState <- Scanning(total, 0, System.DateTime.UtcNow)
 
-                for file in files do
-                    let! result = this.Pipeline.CheckFile(file)
+                    if not files.IsEmpty then
+                        this.Host.EmitFileChanged(SourceChanged files)
+                        let mutable completed = 0
 
-                    match result with
-                    | Some checkResult -> this.Host.EmitFileChecked(checkResult)
-                    | None -> ()
+                        for file in files do
+                            let! result = this.Pipeline.CheckFile(file)
+
+                            match result with
+                            | Some checkResult -> this.Host.EmitFileChecked(checkResult)
+                            | None -> ()
+
+                            completed <- completed + 1
+                            this.ScanState <- Scanning(total, completed, System.DateTime.UtcNow)
+
+                    sw.Stop()
+                    this.ScanState <- ScanComplete(total, sw.Elapsed)
+                finally
+                    System.Threading.Monitor.Exit(this.ScanLock)
         }
 
     /// Run the daemon until cancellation is requested.
@@ -116,6 +140,16 @@ type Daemon =
                     eprintfn $"  Warning: could not load %s{fsproj}: %s{ex.Message}"
         }
 
+    /// Format scan state as a human-readable string.
+    member this.FormatScanStatus() =
+        match this.ScanState with
+        | ScanIdle -> "idle"
+        | Scanning(total, completed, _) ->
+            let pct = if total > 0 then completed * 100 / total else 0
+            $"scanning: %d{completed}/%d{total} files (%d{pct}%%)"
+        | ScanComplete(total, elapsed) ->
+            $"complete: %d{total} files checked in %.1f{elapsed.TotalSeconds}s"
+
     /// Run the daemon with IPC server on the given pipe name.
     /// Discovers projects, performs initial scan, then watches for changes.
     member this.RunWithIpc(pipeName: string, cts: CancellationTokenSource) =
@@ -123,10 +157,15 @@ type Daemon =
             use _ = this.Watcher :> System.IDisposable
 
             let onScan () =
-                Async.StartAsTask(this.ScanAll()) |> ignore
+                async {
+                    do! this.ScanAll()
+                    return this.FormatScanStatus()
+                }
 
             let ipcTask =
-                Async.StartAsTask(IpcServer.start pipeName this.Host cts onScan)
+                Async.StartAsTask(
+                    IpcServer.start pipeName this.Host cts onScan this.FormatScanStatus
+                )
 
             // Discover projects and perform initial full scan
             do! this.DiscoverAndRegisterProjects()
@@ -218,7 +257,9 @@ module Daemon =
           Watcher = watcher
           Checker = checker
           Pipeline = pipeline
-          RepoRoot = repoRoot }
+          RepoRoot = repoRoot
+          ScanState = ScanIdle
+          ScanLock = obj () }
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     let create (repoRoot: string) =

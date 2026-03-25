@@ -17,7 +17,13 @@ let private formatStatus (status: PluginStatus) =
     | Failed(error, at) -> $"Failed at {at:O}: {error}"
 
 /// RPC target object exposed to clients via StreamJsonRpc.
-type DaemonRpcTarget(host: PluginHost, requestShutdown: unit -> unit, requestScan: unit -> unit) =
+type DaemonRpcTarget
+    (
+        host: PluginHost,
+        requestShutdown: unit -> unit,
+        requestScan: unit -> Async<string>,
+        getScanStatus: unit -> string
+    ) =
 
     /// Returns a JSON string of all plugin statuses.
     member _.GetStatus() : string =
@@ -52,10 +58,15 @@ type DaemonRpcTarget(host: PluginHost, requestShutdown: unit -> unit, requestSca
         requestShutdown ()
         "shutting down"
 
-    /// Scan all registered files (full baseline check).
-    member _.Scan() : string =
-        requestScan ()
-        "scan started"
+    /// Scan all registered files (blocking — returns when complete).
+    member _.Scan() : Task<string> =
+        task {
+            let! result = requestScan () |> Async.StartAsTask
+            return result
+        }
+
+    /// Get current scan progress without blocking.
+    member _.ScanStatus() : string = getScanStatus ()
 
 /// IPC server that listens on a named pipe and exposes plugin host methods via StreamJsonRpc.
 module IpcServer =
@@ -65,10 +76,12 @@ module IpcServer =
         (pipeName: string)
         (host: PluginHost)
         (cts: CancellationTokenSource)
-        (onScan: unit -> unit)
+        (onScan: unit -> Async<string>)
+        (getScanStatus: unit -> string)
         : Async<unit> =
         async {
-            let target = DaemonRpcTarget(host, (fun () -> cts.Cancel()), onScan)
+            let target =
+                DaemonRpcTarget(host, (fun () -> cts.Cancel()), onScan, getScanStatus)
 
             while not cts.Token.IsCancellationRequested do
                 let pipeServer =
@@ -132,6 +145,10 @@ module IpcClient =
     let shutdown (pipeName: string) : Async<string> =
         invoke pipeName "Shutdown" [||]
 
-    /// Trigger a full scan of all registered files.
+    /// Trigger a full scan (blocks until complete).
     let scan (pipeName: string) : Async<string> =
         invoke pipeName "Scan" [||]
+
+    /// Get current scan progress without blocking.
+    let scanStatus (pipeName: string) : Async<string> =
+        invoke pipeName "ScanStatus" [||]
