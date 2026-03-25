@@ -27,6 +27,10 @@ type Daemon =
     /// Register a plugin with the daemon's plugin host.
     member this.Register(plugin: IFsHotWatchPlugin) = this.Host.Register(plugin)
 
+    /// Register a preprocessor (e.g., formatter) that runs before events are dispatched.
+    member this.RegisterPreprocessor(preprocessor: IFsHotWatchPreprocessor) =
+        this.Host.RegisterPreprocessor(preprocessor)
+
     /// Register a project's options so its files can be checked incrementally.
     member this.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
         this.Pipeline.RegisterProject(projectPath, options)
@@ -199,6 +203,7 @@ module Daemon =
         let pendingChanges = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
         let mutable debounceTimer: System.Threading.Timer option = None
         let debounceLock = obj ()
+        let suppressedFiles = System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
 
         let processChanges (_state: obj) =
             let changes = System.Collections.Generic.List<FileChangeKind>()
@@ -218,7 +223,14 @@ module Daemon =
                     | ProjectChanged files -> projFiles <- files @ projFiles
                     | SolutionChanged -> hasSolution <- true
 
-                let allSourceFiles = sourceFiles |> List.distinct
+                // Filter out files written by preprocessors (suppress re-trigger)
+                let allSourceFiles =
+                    sourceFiles
+                    |> List.distinct
+                    |> List.filter (fun f ->
+                        match suppressedFiles.TryRemove(f) with
+                        | true, _ -> false
+                        | false, _ -> true)
 
                 if hasSolution then
                     host.EmitFileChanged(SolutionChanged)
@@ -231,6 +243,12 @@ module Daemon =
                     host.EmitFileChanged(ProjectChanged(projFiles |> List.distinct))
 
                 if not allSourceFiles.IsEmpty then
+                    // Run preprocessors (e.g., formatter) before dispatching events
+                    let modifiedByPreprocessors = host.RunPreprocessors(allSourceFiles)
+
+                    for file in modifiedByPreprocessors do
+                        suppressedFiles.TryAdd(file, true) |> ignore
+
                     host.EmitFileChanged(SourceChanged allSourceFiles)
 
                     for file in allSourceFiles do
