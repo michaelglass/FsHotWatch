@@ -6,6 +6,7 @@ open System.IO
 open System.Threading
 open FsHotWatch.Events
 open FsHotWatch.Plugin
+open FsHotWatch.ProcessHelper
 open TestPrune.AstAnalyzer
 open TestPrune.Database
 open TestPrune.ImpactAnalysis
@@ -34,28 +35,6 @@ type TestPrunePlugin
     let mutable lastAffectedTests: TestMethodInfo list = []
     let mutable lastChangedFiles: string list = []
     let mutable lastTestResults: TestResults option = None
-
-    let runProcess (cmd: string) (args: string) (workDir: string) (env: (string * string) list) =
-        let psi = ProcessStartInfo(cmd, args)
-        psi.RedirectStandardOutput <- true
-        psi.RedirectStandardError <- true
-        psi.UseShellExecute <- false
-        psi.WorkingDirectory <- workDir
-
-        for (key, value) in env do
-            psi.Environment[key] <- value
-
-        use proc = Process.Start(psi)
-
-        let stdout =
-            proc.StandardOutput.ReadToEndAsync() |> Async.AwaitTask |> Async.RunSynchronously
-
-        let stderr =
-            proc.StandardError.ReadToEndAsync() |> Async.AwaitTask |> Async.RunSynchronously
-
-        proc.WaitForExit()
-        let output = $"%s{stdout}\n%s{stderr}".Trim()
-        (proc.ExitCode = 0, output)
 
     let runTests (ctx: PluginContext) (configs: TestConfig list) =
         let sw = Stopwatch.StartNew()
