@@ -9,6 +9,15 @@ open FsHotWatch.Daemon
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 
+// macOS kqueue-based FileSystemWatcher is unreliable — use polling watcher
+do
+    if
+        System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+            System.Runtime.InteropServices.OSPlatform.OSX
+        )
+    then
+        Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "1")
+
 /// A null checker is fine for tests that don't perform actual compilation.
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
@@ -74,13 +83,15 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
         daemon.Register(plugin)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
-        Thread.Sleep(500)
+        Thread.Sleep(2000)
 
         // Write a file — the preprocessor will claim it modified it, so the daemon
         // should suppress re-trigger when the preprocessor's write fires the watcher again
         let testFile = Path.Combine(srcDir, "Fmt.fs")
         File.WriteAllText(testFile, "module Fmt\nlet x = 1\n")
-        Thread.Sleep(2000)
+        Thread.Sleep(500)
+        File.SetLastWriteTimeUtc(testFile, DateTime.UtcNow)
+        Thread.Sleep(5000)
 
         // First write triggers: preprocessor runs, file is dispatched, but marked as suppressed.
         // When the preprocessor "rewrites" the file, the watcher fires again — but the second
@@ -89,7 +100,9 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
 
         // Write the same file again to simulate the preprocessor's rewrite triggering the watcher
         File.WriteAllText(testFile, "module Fmt\nlet x = 2\n")
-        Thread.Sleep(2000)
+        Thread.Sleep(500)
+        File.SetLastWriteTimeUtc(testFile, DateTime.UtcNow)
+        Thread.Sleep(5000)
 
         cts.Cancel()
 
@@ -131,11 +144,14 @@ let ``daemon dispatches file change events to plugins`` () =
         daemon.Register(plugin)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
-        Thread.Sleep(500)
+        Thread.Sleep(2000)
 
         // Write a file to trigger the watcher
-        File.WriteAllText(Path.Combine(tmpDir, "src", "New.fs"), "module New")
-        Thread.Sleep(1500)
+        let newFile = Path.Combine(tmpDir, "src", "New.fs")
+        File.WriteAllText(newFile, "module New")
+        Thread.Sleep(500)
+        File.SetLastWriteTimeUtc(newFile, DateTime.UtcNow)
+        Thread.Sleep(5000)
 
         cts.Cancel()
 
@@ -171,15 +187,23 @@ let ``daemon debounces rapid file changes into one batch`` () =
         daemon.Register(plugin)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
-        Thread.Sleep(500)
+        Thread.Sleep(2000)
 
         // Write 3 files rapidly (within debounce window)
-        File.WriteAllText(Path.Combine(tmpDir, "src", "A.fs"), "module A")
-        File.WriteAllText(Path.Combine(tmpDir, "src", "B.fs"), "module B")
-        File.WriteAllText(Path.Combine(tmpDir, "src", "C.fs"), "module C")
+        let fileA = Path.Combine(tmpDir, "src", "A.fs")
+        let fileB = Path.Combine(tmpDir, "src", "B.fs")
+        let fileC = Path.Combine(tmpDir, "src", "C.fs")
+        File.WriteAllText(fileA, "module A")
+        File.WriteAllText(fileB, "module B")
+        File.WriteAllText(fileC, "module C")
+        // Touch files to ensure watcher sees them (macOS kqueue)
+        Thread.Sleep(500)
+        File.SetLastWriteTimeUtc(fileA, DateTime.UtcNow)
+        File.SetLastWriteTimeUtc(fileB, DateTime.UtcNow)
+        File.SetLastWriteTimeUtc(fileC, DateTime.UtcNow)
 
         // Wait for debounce to fire (500ms debounce + buffer)
-        Thread.Sleep(2000)
+        Thread.Sleep(5000)
 
         cts.Cancel()
 
@@ -229,14 +253,14 @@ let ``daemon handles ProjectChanged events`` () =
         daemon.Register(plugin)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
-        Thread.Sleep(500)
+        Thread.Sleep(2000)
 
         // Write an fsproj file to trigger a ProjectChanged event
-        File.WriteAllText(
-            Path.Combine(tmpDir, "src", "Test.fsproj"),
-            "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>"
-        )
-        Thread.Sleep(2000)
+        let projFile = Path.Combine(tmpDir, "src", "Test.fsproj")
+        File.WriteAllText(projFile, "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>")
+        Thread.Sleep(500)
+        File.SetLastWriteTimeUtc(projFile, DateTime.UtcNow)
+        Thread.Sleep(5000)
 
         cts.Cancel()
 
@@ -279,11 +303,14 @@ let ``daemon handles SolutionChanged events`` () =
         daemon.Register(plugin)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
-        Thread.Sleep(500)
+        Thread.Sleep(2000)
 
         // Write a .sln file to trigger a SolutionChanged event
-        File.WriteAllText(Path.Combine(tmpDir, "Test.sln"), "Microsoft Visual Studio Solution File")
-        Thread.Sleep(2000)
+        let slnFile = Path.Combine(tmpDir, "Test.sln")
+        File.WriteAllText(slnFile, "Microsoft Visual Studio Solution File")
+        Thread.Sleep(500)
+        File.SetLastWriteTimeUtc(slnFile, DateTime.UtcNow)
+        Thread.Sleep(5000)
 
         cts.Cancel()
 
