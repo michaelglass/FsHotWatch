@@ -18,6 +18,12 @@ type AnalyzersPlugin(analyzerPaths: string list) =
 
     let createCliContext fileName sourceText parseResults checkResults =
         let ctor = typeof<CliContext>.GetConstructors().[0]
+        let ignoreRangesParam = ctor.GetParameters().[7].ParameterType
+        let keyType = ignoreRangesParam.GetGenericArguments().[0]
+        let valueType = ignoreRangesParam.GetGenericArguments().[1]
+
+        let emptyIgnoreRanges =
+            typedefof<Map<_, _>>.MakeGenericType(keyType, valueType).GetProperty("Empty").GetValue(null)
 
         ctor.Invoke(
             [| fileName
@@ -27,7 +33,7 @@ type AnalyzersPlugin(analyzerPaths: string list) =
                box None // typedTree
                null // checkProjectResults
                null // projectOptions
-               box (Map.empty: Map<string, (Set<int> * Set<int>)>) |]
+               emptyIgnoreRanges |]
         )
         :?> CliContext
 
@@ -38,7 +44,7 @@ type AnalyzersPlugin(analyzerPaths: string list) =
             for path in analyzerPaths do
                 if Directory.Exists(path) then
                     let stats = client.LoadAnalyzers(path)
-                    Interlocked.Exchange(&loadedCount, loadedCount + stats.Analyzers) |> ignore
+                    Interlocked.Add(&loadedCount, stats.Analyzers) |> ignore
 
             ctx.OnFileChecked.Add(fun result ->
                 ctx.ReportStatus(Running(since = DateTime.UtcNow))
