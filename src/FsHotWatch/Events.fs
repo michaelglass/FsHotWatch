@@ -35,6 +35,14 @@ type PluginResult =
     { PluginName: string
       Status: PluginStatus }
 
+type TestResult =
+    | TestsPassed of output: string
+    | TestsFailed of output: string
+
+type TestResults =
+    { Results: Map<string, TestResult>
+      Elapsed: System.TimeSpan }
+
 type ScanState =
     | ScanIdle
     | Scanning of total: int * completed: int * startedAt: System.DateTime

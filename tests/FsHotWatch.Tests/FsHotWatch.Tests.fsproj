@@ -23,6 +23,9 @@
     <Compile Include="ProjectGraphTests.fs" />
     <Compile Include="CheckPipelineTests.fs" />
     <Compile Include="CliTests.fs" />
+    <Compile Include="BuildPluginTests.fs" />
+    <Compile Include="CoveragePluginTests.fs" />
+    <Compile Include="FileCommandPluginTests.fs" />
     <Compile Include="IntegrationTests.fs" />
   </ItemGroup>
 
@@ -33,6 +36,9 @@
     <ProjectReference Include="../../src/FsHotWatch.Analyzers/FsHotWatch.Analyzers.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch.Lint/FsHotWatch.Lint.fsproj" />
     <ProjectReference Include="../../src/FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.Build/FsHotWatch.Build.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.Coverage/FsHotWatch.Coverage.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj" />
   </ItemGroup>
 
   <ItemGroup>

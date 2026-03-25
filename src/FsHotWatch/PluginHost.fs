@@ -11,6 +11,7 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
     let buildCompleted = Event<BuildResult>()
     let fileChecked = Event<FileCheckResult>()
     let projectChecked = Event<ProjectCheckResult>()
+    let testCompleted = Event<TestResults>()
 
     let commands = ConcurrentDictionary<string, CommandHandler>()
     let statuses = ConcurrentDictionary<string, PluginStatus>()
@@ -25,8 +26,11 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
               OnBuildCompleted = buildCompleted.Publish
               OnFileChecked = fileChecked.Publish
               OnProjectChecked = projectChecked.Publish
+              OnTestCompleted = testCompleted.Publish
               ReportStatus = fun status -> statuses[plugin.Name] <- status
-              RegisterCommand = fun (name, handler) -> commands[name] <- handler }
+              RegisterCommand = fun (name, handler) -> commands[name] <- handler
+              EmitBuildCompleted = fun result -> buildCompleted.Trigger(result)
+              EmitTestCompleted = fun results -> testCompleted.Trigger(results) }
 
         statuses[plugin.Name] <- Idle
         plugin.Initialize(ctx)
@@ -63,6 +67,9 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
 
     /// Emit a project checked event to all registered plugins.
     member _.EmitProjectChecked(result: ProjectCheckResult) = projectChecked.Trigger(result)
+
+    /// Emit a test completed event to all registered plugins.
+    member _.EmitTestCompleted(results: TestResults) = testCompleted.Trigger(results)
 
     /// Run a registered command by name. Returns None if the command is unknown.
     member _.RunCommand(name: string, args: string array) : Async<string option> =
