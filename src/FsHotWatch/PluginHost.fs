@@ -27,8 +27,8 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
               ReportStatus = fun status -> statuses[plugin.Name] <- status
               RegisterCommand = fun (name, handler) -> commands[name] <- handler }
 
+        statuses[plugin.Name] <- Idle
         plugin.Initialize(ctx)
-        statuses.TryAdd(plugin.Name, Idle) |> ignore
 
     /// Emit a file change event to all registered plugins.
     member _.EmitFileChanged(change: FileChangeKind) = fileChanged.Trigger(change)
