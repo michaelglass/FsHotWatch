@@ -11,6 +11,7 @@ open FsHotWatch.Ipc
 type Command =
     | Start
     | Stop
+    | Scan
     | Status of pluginName: string option
     | PluginCommand of name: string * args: string
     | Help
@@ -41,6 +42,7 @@ let parseCommand (args: string list) : Command =
     | [ "-h" ] -> Help
     | [ "start" ] -> Start
     | [ "stop" ] -> Stop
+    | [ "scan" ] -> Scan
     | [ "status" ] -> Status None
     | [ "status"; pluginName ] -> Status(Some pluginName)
     | cmd :: rest ->
@@ -53,8 +55,9 @@ let private showHelp () =
     printfn "Usage: fs-hot-watch <command>"
     printfn ""
     printfn "Commands:"
-    printfn "  start              Start daemon in foreground"
+    printfn "  start              Start daemon in foreground (auto-scans on boot)"
     printfn "  stop               Stop running daemon"
+    printfn "  scan               Re-scan all registered files"
     printfn "  status [plugin]    Show plugin statuses"
     printfn "  <command> [args]   Run a plugin-registered command"
 
@@ -94,6 +97,14 @@ let main args =
     | Stop ->
         try
             let result = IpcClient.shutdown pipeName |> Async.RunSynchronously
+            printfn "%s" result
+            0
+        with ex ->
+            eprintfn $"Could not connect to daemon: %s{ex.Message}"
+            1
+    | Scan ->
+        try
+            let result = IpcClient.scan pipeName |> Async.RunSynchronously
             printfn "%s" result
             0
         with ex ->

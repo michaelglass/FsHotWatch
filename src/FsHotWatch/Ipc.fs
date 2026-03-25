@@ -17,7 +17,7 @@ let private formatStatus (status: PluginStatus) =
     | Failed(error, at) -> $"Failed at {at:O}: {error}"
 
 /// RPC target object exposed to clients via StreamJsonRpc.
-type DaemonRpcTarget(host: PluginHost, requestShutdown: unit -> unit) =
+type DaemonRpcTarget(host: PluginHost, requestShutdown: unit -> unit, requestScan: unit -> unit) =
 
     /// Returns a JSON string of all plugin statuses.
     member _.GetStatus() : string =
@@ -52,6 +52,11 @@ type DaemonRpcTarget(host: PluginHost, requestShutdown: unit -> unit) =
         requestShutdown ()
         "shutting down"
 
+    /// Scan all registered files (full baseline check).
+    member _.Scan() : string =
+        requestScan ()
+        "scan started"
+
 /// IPC server that listens on a named pipe and exposes plugin host methods via StreamJsonRpc.
 module IpcServer =
 
@@ -60,9 +65,10 @@ module IpcServer =
         (pipeName: string)
         (host: PluginHost)
         (cts: CancellationTokenSource)
+        (onScan: unit -> unit)
         : Async<unit> =
         async {
-            let target = DaemonRpcTarget(host, fun () -> cts.Cancel())
+            let target = DaemonRpcTarget(host, (fun () -> cts.Cancel()), onScan)
 
             while not cts.Token.IsCancellationRequested do
                 let pipeServer =
@@ -125,3 +131,7 @@ module IpcClient =
     /// Shut down the daemon gracefully.
     let shutdown (pipeName: string) : Async<string> =
         invoke pipeName "Shutdown" [||]
+
+    /// Trigger a full scan of all registered files.
+    let scan (pipeName: string) : Async<string> =
+        invoke pipeName "Scan" [||]

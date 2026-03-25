@@ -18,6 +18,14 @@ type CheckPipeline(checker: FSharpChecker) =
         for sourceFile in options.SourceFiles do
             projectOptionsByFile[sourceFile] <- options
 
+    /// Get all registered project paths.
+    member _.GetRegisteredProjects() : string list =
+        projectOptionsByProject.Keys |> Seq.toList
+
+    /// Get all registered source files across all projects.
+    member _.GetAllRegisteredFiles() : string list =
+        projectOptionsByFile.Keys |> Seq.toList
+
     /// Check a single file using the warm checker. Returns FileCheckResult if successful.
     member _.CheckFile(filePath: string) : Async<FileCheckResult option> =
         async {
