@@ -21,7 +21,7 @@ type DaemonRpcTarget
     (
         host: PluginHost,
         requestShutdown: unit -> unit,
-        requestScan: unit -> Async<string>,
+        requestScan: unit -> unit,
         getScanStatus: unit -> string
     ) =
 
@@ -58,12 +58,10 @@ type DaemonRpcTarget
         requestShutdown ()
         "shutting down"
 
-    /// Scan all registered files (blocking — returns when complete).
-    member _.Scan() : Task<string> =
-        task {
-            let! result = requestScan () |> Async.StartAsTask
-            return result
-        }
+    /// Trigger a full scan (returns immediately, poll ScanStatus for progress).
+    member _.Scan() : string =
+        requestScan ()
+        "scan started"
 
     /// Get current scan progress without blocking.
     member _.ScanStatus() : string = getScanStatus ()
@@ -71,12 +69,12 @@ type DaemonRpcTarget
 /// IPC server that listens on a named pipe and exposes plugin host methods via StreamJsonRpc.
 module IpcServer =
 
-    /// Start the IPC server. Accepts one connection at a time until cancelled.
+    /// Start the IPC server. Accepts concurrent connections until cancelled.
     let start
         (pipeName: string)
         (host: PluginHost)
         (cts: CancellationTokenSource)
-        (onScan: unit -> Async<string>)
+        (onScan: unit -> unit)
         (getScanStatus: unit -> string)
         : Async<unit> =
         async {
@@ -88,7 +86,7 @@ module IpcServer =
                     new NamedPipeServerStream(
                         pipeName,
                         PipeDirection.InOut,
-                        1,
+                        NamedPipeServerStream.MaxAllowedServerInstances,
                         PipeTransmissionMode.Byte,
                         PipeOptions.Asynchronous
                     )
@@ -101,9 +99,13 @@ module IpcServer =
                     let handler =
                         new HeaderDelimitedMessageHandler(pipeServer :> System.IO.Stream)
 
-                    use rpc = new JsonRpc(handler, target)
+                    let rpc = new JsonRpc(handler, target)
                     rpc.StartListening()
-                    do! rpc.Completion |> Async.AwaitTask
+
+                    rpc.Completion.ContinueWith(fun _ ->
+                        rpc.Dispose()
+                        pipeServer.Dispose())
+                    |> ignore
                 with
                 | :? OperationCanceledException -> pipeServer.Dispose()
                 | _ -> pipeServer.Dispose()
