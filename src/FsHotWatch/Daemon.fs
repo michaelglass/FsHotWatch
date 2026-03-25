@@ -21,7 +21,8 @@ type Daemon =
       Pipeline: CheckPipeline
       RepoRoot: string
       mutable ScanState: ScanState
-      ScanSemaphore: SemaphoreSlim }
+      ScanSemaphore: SemaphoreSlim
+      DisposeDebounceTimer: unit -> unit }
 
     /// Register a plugin with the daemon's plugin host.
     member this.Register(plugin: IFsHotWatchPlugin) = this.Host.Register(plugin)
@@ -71,13 +72,16 @@ type Daemon =
         async {
             use _ = this.Watcher :> System.IDisposable
 
-            let tcs =
-                System.Threading.Tasks.TaskCompletionSource<unit>()
+            try
+                let tcs =
+                    System.Threading.Tasks.TaskCompletionSource<unit>()
 
-            use _reg =
-                cancellationToken.Register(fun () -> tcs.TrySetResult() |> ignore)
+                use _reg =
+                    cancellationToken.Register(fun () -> tcs.TrySetResult() |> ignore)
 
-            do! tcs.Task |> Async.AwaitTask
+                do! tcs.Task |> Async.AwaitTask
+            finally
+                this.DisposeDebounceTimer()
         }
 
     /// Discover .fsproj files in src/ and tests/ and register them with the pipeline.
@@ -153,35 +157,39 @@ type Daemon =
         async {
             use _ = this.Watcher :> System.IDisposable
 
-            let onScan () =
-                Async.StartAsTask(this.ScanAll()) |> ignore
-
-            let ipcTask =
-                Async.StartAsTask(
-                    IpcServer.start pipeName this.Host cts onScan this.FormatScanStatus
-                )
-
-            // Discover projects and perform initial full scan
-            do! this.DiscoverAndRegisterProjects()
-            do! this.ScanAll()
-
-            let tcs =
-                System.Threading.Tasks.TaskCompletionSource<unit>()
-
-            use _reg =
-                cts.Token.Register(fun () -> tcs.TrySetResult() |> ignore)
-
-            do! tcs.Task |> Async.AwaitTask
-
             try
-                ipcTask.Wait(System.TimeSpan.FromSeconds(1.0)) |> ignore
-            with
-            | _ -> ()
+                let onScan () =
+                    Async.StartAsTask(this.ScanAll()) |> ignore
+
+                let ipcTask =
+                    Async.StartAsTask(
+                        IpcServer.start pipeName this.Host cts onScan this.FormatScanStatus
+                    )
+
+                // Discover projects and perform initial full scan
+                do! this.DiscoverAndRegisterProjects()
+                do! this.ScanAll()
+
+                let tcs =
+                    System.Threading.Tasks.TaskCompletionSource<unit>()
+
+                use _reg =
+                    cts.Token.Register(fun () -> tcs.TrySetResult() |> ignore)
+
+                do! tcs.Task |> Async.AwaitTask
+
+                try
+                    ipcTask.Wait(System.TimeSpan.FromSeconds(1.0)) |> ignore
+                with
+                | _ -> ()
+            finally
+                this.DisposeDebounceTimer()
         }
 
 /// Functions for creating and managing daemons.
 module Daemon =
-    let private defaultDebounceMs = 500
+    let private sourceDebounceMs = 500
+    let private projectDebounceMs = 200
 
     /// Create a daemon with the given checker (internal, for testing).
     let internal createWith (checker: FSharpChecker) (repoRoot: string) =
@@ -216,7 +224,12 @@ module Daemon =
                     host.EmitFileChanged(SolutionChanged)
 
                 if not projFiles.IsEmpty then
-                    host.EmitFileChanged(ProjectChanged (projFiles |> List.distinct))
+                    // Clear FCS caches so stale type environments are rebuilt
+                    if not (isNull (box checker)) then
+                        checker.InvalidateAll()
+                        checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
+
+                    host.EmitFileChanged(ProjectChanged(projFiles |> List.distinct))
 
                 if not allSourceFiles.IsEmpty then
                     host.EmitFileChanged(SourceChanged allSourceFiles)
@@ -231,21 +244,35 @@ module Daemon =
         let onChange change =
             pendingChanges.Add(change)
 
+            let delayMs =
+                match change with
+                | ProjectChanged _
+                | SolutionChanged -> projectDebounceMs
+                | SourceChanged _ -> sourceDebounceMs
+
             lock debounceLock (fun () ->
                 match debounceTimer with
-                | Some timer -> timer.Change(defaultDebounceMs, System.Threading.Timeout.Infinite) |> ignore
+                | Some timer -> timer.Change(delayMs, System.Threading.Timeout.Infinite) |> ignore
                 | None ->
                     debounceTimer <-
                         Some(
                             new System.Threading.Timer(
                                 System.Threading.TimerCallback(processChanges),
                                 null,
-                                defaultDebounceMs,
+                                delayMs,
                                 System.Threading.Timeout.Infinite
                             )
                         ))
 
         let watcher = FileWatcher.create repoRoot onChange
+
+        let disposeDebounceTimer () =
+            lock debounceLock (fun () ->
+                match debounceTimer with
+                | Some timer ->
+                    timer.Dispose()
+                    debounceTimer <- None
+                | None -> ())
 
         { Host = host
           Watcher = watcher
@@ -253,7 +280,8 @@ module Daemon =
           Pipeline = pipeline
           RepoRoot = repoRoot
           ScanState = ScanIdle
-          ScanSemaphore = new SemaphoreSlim(1, 1) }
+          ScanSemaphore = new SemaphoreSlim(1, 1)
+          DisposeDebounceTimer = disposeDebounceTimer }
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     let create (repoRoot: string) =

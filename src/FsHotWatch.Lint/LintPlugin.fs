@@ -1,5 +1,6 @@
 module FsHotWatch.Lint.LintPlugin
 
+open System.Threading
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FSharpLint.Application
@@ -34,8 +35,9 @@ type LintPlugin(?configPath: string) =
                     match Lint.lintParsedSource lintParams parsedInfo with
                     | Lint.LintResult.Success warnings ->
                         let msgs = warnings |> List.map (fun w -> w.Details.Message)
-                        warningsByFile <- warningsByFile |> Map.add result.File msgs
-                        ctx.ReportStatus(Completed(box warningsByFile, System.DateTime.UtcNow))
+                        let current = Volatile.Read(&warningsByFile)
+                        Volatile.Write(&warningsByFile, current |> Map.add result.File msgs)
+                        ctx.ReportStatus(Completed(box (Volatile.Read(&warningsByFile)), System.DateTime.UtcNow))
                     | Lint.LintResult.Failure failure ->
                         let msg = $"Lint failed for %s{result.File}: %A{failure}"
                         ctx.ReportStatus(PluginStatus.Failed(msg, System.DateTime.UtcNow))
@@ -46,10 +48,12 @@ type LintPlugin(?configPath: string) =
                 "warnings",
                 fun _args ->
                     async {
-                        let count =
-                            warningsByFile |> Map.toList |> List.sumBy (fun (_, w) -> w.Length)
+                        let current = Volatile.Read(&warningsByFile)
 
-                        return $"{{\"files\": %d{warningsByFile.Count}, \"warnings\": %d{count}}}"
+                        let count =
+                            current |> Map.toList |> List.sumBy (fun (_, w) -> w.Length)
+
+                        return $"{{\"files\": %d{current.Count}, \"warnings\": %d{count}}}"
                     }
             )
 

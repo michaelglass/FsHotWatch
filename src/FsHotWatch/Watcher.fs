@@ -16,25 +16,33 @@ type FileWatcher =
 let private isRelevantFile (path: string) =
     let normalized = path.Replace('\\', '/')
     let ext = Path.GetExtension(path).ToLowerInvariant()
+    let fileName = Path.GetFileName(path)
 
-    let isRelevantExt =
-        ext = ".fs"
-        || ext = ".fsx"
-        || ext = ".fsproj"
-        || ext = ".sln"
-        || ext = ".slnx"
+    // Project infrastructure files (allowed even in obj/)
+    if fileName = "project.assets.json" || ext = ".props" then
+        true
+    else
+        let isRelevantExt =
+            ext = ".fs"
+            || ext = ".fsx"
+            || ext = ".fsproj"
+            || ext = ".sln"
+            || ext = ".slnx"
 
-    let isExcluded =
-        normalized.Contains("/obj/") || normalized.Contains("/bin/")
+        let isExcluded =
+            normalized.Contains("/obj/") || normalized.Contains("/bin/")
 
-    isRelevantExt && not isExcluded
+        isRelevantExt && not isExcluded
 
 let private classifyChange (path: string) =
     let ext = Path.GetExtension(path).ToLowerInvariant()
+    let fileName = Path.GetFileName(path)
 
     if ext = ".sln" || ext = ".slnx" then SolutionChanged
-    elif ext = ".fsproj" then ProjectChanged [ path ]
-    else SourceChanged [ path ]
+    elif ext = ".fsproj" || ext = ".props" || fileName = "project.assets.json" then
+        ProjectChanged [ path ]
+    else
+        SourceChanged [ path ]
 
 module FileWatcher =
     let create (repoRoot: string) (onChange: FileChangeKind -> unit) : FileWatcher =
@@ -47,6 +55,8 @@ module FileWatcher =
                 w.Filters.Add("*.fs")
                 w.Filters.Add("*.fsx")
                 w.Filters.Add("*.fsproj")
+                w.Filters.Add("*.props")
+                w.Filters.Add("project.assets.json")
 
                 let handle (e: FileSystemEventArgs) =
                     if isRelevantFile e.FullPath then
@@ -54,6 +64,7 @@ module FileWatcher =
 
                 w.Changed.Add(handle)
                 w.Created.Add(handle)
+                w.Deleted.Add(handle)
                 w.Renamed.Add(fun e -> handle e)
                 w.EnableRaisingEvents <- true
                 Some w

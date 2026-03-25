@@ -2,6 +2,7 @@ module FsHotWatch.TestPrune.TestPrunePlugin
 
 open System
 open System.IO
+open System.Threading
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open TestPrune.AstAnalyzer
@@ -29,15 +30,17 @@ type TestPrunePlugin(dbPath: string, repoRoot: string) =
                         Path.GetRelativePath(repoRoot, result.File).Replace('\\', '/')
 
                     // For now, just track which files changed for impact analysis
-                    if not (lastChangedFiles |> List.contains relPath) then
-                        lastChangedFiles <- relPath :: lastChangedFiles
+                    let currentFiles = Volatile.Read(&lastChangedFiles)
+
+                    if not (currentFiles |> List.contains relPath) then
+                        Volatile.Write(&lastChangedFiles, relPath :: currentFiles)
 
                     // Compare stored symbols to detect changes
                     let storedSymbols = db.GetSymbolsInFile(relPath)
                     // TODO: extract currentSymbols from allUses via analyzeSource extraction
                     // For now, we track changed files but symbol diffing needs proper implementation
 
-                    ctx.ReportStatus(Completed(box lastAffectedTests, DateTime.UtcNow))
+                    ctx.ReportStatus(Completed(box (Volatile.Read(&lastAffectedTests)), DateTime.UtcNow))
                 with ex ->
                     ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow)))
 
@@ -46,8 +49,10 @@ type TestPrunePlugin(dbPath: string, repoRoot: string) =
                 "affected-tests",
                 fun _args ->
                     async {
+                        let currentTests = Volatile.Read(&lastAffectedTests)
+
                         let tests =
-                            lastAffectedTests
+                            currentTests
                             |> List.map (fun t ->
                                 $"{{\"project\": \"%s{t.TestProject}\", \"class\": \"%s{t.TestClass}\", \"method\": \"%s{t.TestMethod}\"}}")
                             |> String.concat ", "
@@ -61,7 +66,8 @@ type TestPrunePlugin(dbPath: string, repoRoot: string) =
                 "changed-files",
                 fun _args ->
                     async {
-                        let files = lastChangedFiles |> String.concat ", "
+                        let currentFiles = Volatile.Read(&lastChangedFiles)
+                        let files = currentFiles |> String.concat ", "
                         return $"[%s{files}]"
                     }
             )
