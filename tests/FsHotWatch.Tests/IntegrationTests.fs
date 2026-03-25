@@ -361,9 +361,9 @@ let ``plugin status reflects running to completed lifecycle`` () =
         let fantomas = FormatCheckPlugin()
         host.Register(fantomas)
 
-        // Before any event, plugin has no status (Idle equivalent — None)
+        // Before any event, plugin status is Idle (initialized on register)
         let beforeStatus = host.GetStatus("format-check")
-        test <@ beforeStatus.IsNone @>
+        test <@ beforeStatus = Some Idle @>
 
         // Trigger an event
         host.EmitFileChanged(SourceChanged [ filePath ])

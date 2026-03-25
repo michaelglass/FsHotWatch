@@ -28,7 +28,8 @@ type LintPlugin(?configPath: string) =
                     let parsedInfo: Lint.ParsedFileInformation =
                         { Ast = result.ParseResults.ParseTree
                           Source = result.Source
-                          TypeCheckResults = Some result.CheckResults }
+                          TypeCheckResults = Some result.CheckResults
+                          ProjectCheckResults = None }
 
                     match Lint.lintParsedSource lintParams parsedInfo with
                     | Lint.LintResult.Success warnings ->
