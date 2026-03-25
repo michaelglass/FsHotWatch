@@ -55,16 +55,19 @@ type AnalyzersPlugin(analyzerPaths: string list) =
                     processedCount <- processedCount + 1
 
                     try
-                        let sourceText = result.Source |> SourceText.ofString
+                        if isNull (box result.CheckResults) then
+                            eprintfn "  [analyzers] Skipping %s — no type check results" result.File
+                        else
+                            let sourceText = result.Source |> SourceText.ofString
 
-                        let context =
-                            createCliContext result.File sourceText result.ParseResults result.CheckResults
+                            let context =
+                                createCliContext result.File sourceText result.ParseResults result.CheckResults
 
-                        let messages =
-                            client.RunAnalyzersSafely(context) |> Async.RunSynchronously
+                            let messages =
+                                client.RunAnalyzersSafely(context) |> Async.RunSynchronously
 
-                        let current = Volatile.Read(&diagnosticsByFile)
-                        Volatile.Write(&diagnosticsByFile, current |> Map.add result.File messages)
+                            let current = Volatile.Read(&diagnosticsByFile)
+                            Volatile.Write(&diagnosticsByFile, current |> Map.add result.File messages)
                     with ex ->
                         errorCount <- errorCount + 1
                         eprintfn "  [analyzers] Error analyzing %s: %s" result.File ex.Message
