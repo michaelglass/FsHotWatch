@@ -224,7 +224,6 @@ module Daemon =
                     host.EmitFileChanged(SolutionChanged)
 
                 if not projFiles.IsEmpty then
-                    // Clear FCS caches so stale type environments are rebuilt
                     if not (isNull (box checker)) then
                         checker.InvalidateAll()
                         checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
@@ -241,6 +240,8 @@ module Daemon =
                         | Some checkResult -> host.EmitFileChecked(checkResult)
                         | None -> ()
 
+        let mutable pendingDelayMs = 0
+
         let onChange change =
             pendingChanges.Add(change)
 
@@ -251,15 +252,20 @@ module Daemon =
                 | SourceChanged _ -> sourceDebounceMs
 
             lock debounceLock (fun () ->
+                pendingDelayMs <- max pendingDelayMs delayMs
+
                 match debounceTimer with
-                | Some timer -> timer.Change(delayMs, System.Threading.Timeout.Infinite) |> ignore
+                | Some timer ->
+                    timer.Change(pendingDelayMs, System.Threading.Timeout.Infinite) |> ignore
                 | None ->
                     debounceTimer <-
                         Some(
                             new System.Threading.Timer(
-                                System.Threading.TimerCallback(processChanges),
+                                System.Threading.TimerCallback(fun state ->
+                                    lock debounceLock (fun () -> pendingDelayMs <- 0)
+                                    processChanges state),
                                 null,
-                                delayMs,
+                                pendingDelayMs,
                                 System.Threading.Timeout.Infinite
                             )
                         ))
