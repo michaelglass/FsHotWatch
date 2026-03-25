@@ -37,6 +37,7 @@ type TestPrunePlugin
     let mutable lastTestResults: TestResults option = None
 
     let mutable testsRunning = false
+    let hasTestConfigs = testConfigs |> Option.map (List.isEmpty >> not) |> Option.defaultValue false
 
     let runTests (ctx: PluginContext) (configs: TestConfig list) =
         eprintfn "  [test-prune] runTests starting with %d configs" configs.Length
@@ -139,7 +140,6 @@ type TestPrunePlugin
 
         member _.Initialize(ctx) =
             ctx.OnFileChecked.Add(fun result ->
-                // Don't overwrite status while tests are running
                 if not testsRunning then
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
@@ -154,7 +154,10 @@ type TestPrunePlugin
 
                     let storedSymbols = db.GetSymbolsInFile(relPath)
 
-                    if not testsRunning then
+                    // When testConfigs is provided, don't report Completed after analysis —
+                    // stay Running until tests finish. Otherwise a consumer polling status
+                    // sees a brief Completed window before tests start.
+                    if not testsRunning && not hasTestConfigs then
                         ctx.ReportStatus(Completed(box (Volatile.Read(&lastAffectedTests)), DateTime.UtcNow))
                 with ex ->
                     if not testsRunning then
