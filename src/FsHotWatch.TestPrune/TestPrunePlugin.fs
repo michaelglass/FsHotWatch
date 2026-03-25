@@ -36,11 +36,18 @@ type TestPrunePlugin
     let mutable lastChangedFiles: string list = []
     let mutable lastTestResults: TestResults option = None
 
+    let mutable testsRunning = false
+
     let runTests (ctx: PluginContext) (configs: TestConfig list) =
+        eprintfn "  [test-prune] runTests starting with %d configs" configs.Length
+        testsRunning <- true
         let sw = Stopwatch.StartNew()
 
         match beforeRun with
-        | Some setup -> setup ()
+        | Some setup ->
+            eprintfn "  [test-prune] Running beforeRun setup..."
+            setup ()
+            eprintfn "  [test-prune] beforeRun complete"
         | None -> ()
 
         let affectedClasses =
@@ -75,7 +82,9 @@ type TestPrunePlugin
                             | Some covFn -> covFn config.Project baseArgs
                             | None -> baseArgs
 
+                        eprintfn "  [test-prune] Running: %s %s" config.Command finalArgs
                         let (success, output) = runProcess config.Command finalArgs repoRoot config.Environment
+                        eprintfn "  [test-prune] %s: %s" config.Project (if success then "PASSED" else "FAILED")
 
                         let result =
                             if success then
@@ -104,6 +113,8 @@ type TestPrunePlugin
         | Some hook -> hook testResults
         | None -> ()
 
+        testsRunning <- false
+        eprintfn "  [test-prune] Tests complete: %d projects, %.1fs" testResults.Results.Count testResults.Elapsed.TotalSeconds
         ctx.EmitTestCompleted(testResults)
 
         let allPassed =
@@ -128,7 +139,9 @@ type TestPrunePlugin
 
         member _.Initialize(ctx) =
             ctx.OnFileChecked.Add(fun result ->
-                ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                // Don't overwrite status while tests are running
+                if not testsRunning then
+                    ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
                 try
                     let relPath =
@@ -141,9 +154,11 @@ type TestPrunePlugin
 
                     let storedSymbols = db.GetSymbolsInFile(relPath)
 
-                    ctx.ReportStatus(Completed(box (Volatile.Read(&lastAffectedTests)), DateTime.UtcNow))
+                    if not testsRunning then
+                        ctx.ReportStatus(Completed(box (Volatile.Read(&lastAffectedTests)), DateTime.UtcNow))
                 with ex ->
-                    ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow)))
+                    if not testsRunning then
+                        ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow)))
 
             // Subscribe to build completion for test execution
             match testConfigs with
@@ -159,6 +174,8 @@ type TestPrunePlugin
                         try
                             runTests ctx configs
                         with ex ->
+                            testsRunning <- false
+                            eprintfn "  [test-prune] runTests failed: %s" ex.Message
                             ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                     | BuildFailed _ -> ())
             | _ -> ()
