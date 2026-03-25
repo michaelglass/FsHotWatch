@@ -239,3 +239,83 @@ let ``CLI command proxying works against running daemon`` () =
         cts.Cancel()
         try task.Wait(TimeSpan.FromSeconds(3.0)) |> ignore with _ -> ()
         if Directory.Exists tmpDir then Directory.Delete(tmpDir, true)
+
+// --- executeCommand with fake IPC tests ---
+
+let private fakeIpc () : IpcOps =
+    { Shutdown = fun _ -> async { return "shutting down" }
+      Scan = fun _ -> async { return "scan started" }
+      ScanStatus = fun _ -> async { return "idle" }
+      GetStatus = fun _ -> async { return "{}" }
+      GetPluginStatus = fun _ _ -> async { return "not found" }
+      RunCommand = fun _ _ _ -> async { return "unknown command" } }
+
+[<Fact>]
+let ``executeCommand Help returns 0`` () =
+    let result = executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" Help
+    test <@ result = 0 @>
+
+[<Fact>]
+let ``executeCommand Stop calls shutdown`` () =
+    let mutable called = false
+
+    let ipc =
+        { fakeIpc () with
+            Shutdown = fun _ ->
+                async {
+                    called <- true
+                    return "shutting down"
+                } }
+
+    let result = executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Stop
+    test <@ result = 0 @>
+    test <@ called @>
+
+[<Fact>]
+let ``executeCommand Status returns 0`` () =
+    let result = executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" (Status None)
+    test <@ result = 0 @>
+
+[<Fact>]
+let ``executeCommand PluginCommand proxies to IPC`` () =
+    let mutable cmdName = ""
+
+    let ipc =
+        { fakeIpc () with
+            RunCommand =
+                fun _ cmd _ ->
+                    async {
+                        cmdName <- cmd
+                        return "result"
+                    } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (PluginCommand("warnings", ""))
+
+    test <@ result = 0 @>
+    test <@ cmdName = "warnings" @>
+
+[<Fact>]
+let ``executeCommand Scan calls scan IPC`` () =
+    let mutable called = false
+
+    let ipc =
+        { fakeIpc () with
+            Scan = fun _ ->
+                async {
+                    called <- true
+                    return "scan started"
+                } }
+
+    let result = executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Scan
+    test <@ result = 0 @>
+    test <@ called @>
+
+[<Fact>]
+let ``executeCommand returns 1 when IPC fails`` () =
+    let ipc =
+        { fakeIpc () with
+            GetStatus = fun _ -> async { return failwith "connection refused" } }
+
+    let result = executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status None)
+    test <@ result = 1 @>
