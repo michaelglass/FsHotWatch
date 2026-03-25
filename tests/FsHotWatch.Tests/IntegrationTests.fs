@@ -1,6 +1,7 @@
 module FsHotWatch.Tests.IntegrationTests
 
 open System
+open System.Diagnostics
 open System.IO
 open System.Reflection
 open Xunit
@@ -436,3 +437,111 @@ let ``multiple file changes are debounced into one batch by SourceChanged`` () =
             Directory.Delete(dir, true)
         with _ ->
             ()
+
+[<Fact>]
+let ``PROFILE: startup phases timing`` () =
+    let repoRoot = findRepoRoot ()
+    let sw = Stopwatch()
+
+    sw.Restart()
+
+    let checker =
+        FSharpChecker.Create(
+            projectCacheSize = 200,
+            keepAssemblyContents = true,
+            keepAllBackgroundResolutions = true,
+            parallelReferenceResolution = true
+        )
+
+    sw.Stop()
+    let phase1 = sw.ElapsedMilliseconds
+
+    sw.Restart()
+
+    let searchDirs =
+        [ Path.Combine(repoRoot, "src"); Path.Combine(repoRoot, "tests") ]
+        |> List.filter Directory.Exists
+
+    let fsprojFiles =
+        searchDirs
+        |> List.collect (fun dir ->
+            Directory.GetFiles(dir, "*.fsproj", SearchOption.AllDirectories)
+            |> Array.toList)
+        |> List.filter (fun f ->
+            let n = f.Replace('\\', '/')
+            not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
+
+    sw.Stop()
+    let phase2 = sw.ElapsedMilliseconds
+
+    sw.Restart()
+    let pipeline = CheckPipeline(checker)
+    let mutable totalFiles = 0
+
+    for fsproj in fsprojFiles do
+        try
+            let doc = System.Xml.Linq.XDocument.Load(fsproj)
+            let projDir = Path.GetDirectoryName(Path.GetFullPath(fsproj))
+
+            let sourceFiles =
+                doc.Descendants(System.Xml.Linq.XName.Get "Compile")
+                |> Seq.choose (fun el ->
+                    let inc = el.Attribute(System.Xml.Linq.XName.Get "Include")
+
+                    if inc <> null then
+                        Some(Path.GetFullPath(Path.Combine(projDir, inc.Value)))
+                    else
+                        None)
+                |> Seq.toArray
+
+            if sourceFiles.Length > 0 && File.Exists(sourceFiles.[0]) then
+                let source = File.ReadAllText(sourceFiles.[0])
+                let sourceText = SourceText.ofString source
+
+                let projOptions, _ =
+                    checker.GetProjectOptionsFromScript(
+                        sourceFiles.[0],
+                        sourceText,
+                        assumeDotNetFramework = false
+                    )
+                    |> Async.RunSynchronously
+
+                pipeline.RegisterProject(fsproj, { projOptions with SourceFiles = sourceFiles })
+                totalFiles <- totalFiles + sourceFiles.Length
+        with _ ->
+            ()
+
+    sw.Stop()
+    let phase3 = sw.ElapsedMilliseconds
+
+    sw.Restart()
+    let allFiles = pipeline.GetAllRegisteredFiles()
+    let mutable checkedCount = 0
+
+    for file in allFiles do
+        match pipeline.CheckFile(file) |> Async.RunSynchronously with
+        | Some _ -> checkedCount <- checkedCount + 1
+        | None -> ()
+
+    sw.Stop()
+    let phase4 = sw.ElapsedMilliseconds
+    let total = phase1 + phase2 + phase3 + phase4
+
+    let profilePath =
+        Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "profile.txt")
+
+    let lines =
+        [ ""
+          "=== STARTUP PROFILE ==="
+          $"Phase 1 — Create FSharpChecker: %d{phase1}ms"
+          $"Phase 2 — Discover %d{fsprojFiles.Length} projects: %d{phase2}ms"
+          $"Phase 3 — Load options (%d{totalFiles} files): %d{phase3}ms"
+          $"Phase 4 — Check %d{checkedCount}/%d{allFiles.Length} files: %d{phase4}ms"
+          $"TOTAL: %d{total}ms"
+          $"Serializing would save Phases 2-3: %d{phase2 + phase3}ms (%d{if total > 0L then (phase2 + phase3) * 100L / total else 0L}%% of total)"
+          $"Phase 4 (FCS warm-up) is unavoidable: %d{phase4}ms (%d{if total > 0L then phase4 * 100L / total else 0L}%% of total)"
+          "===" ]
+
+    File.WriteAllLines(profilePath, lines)
+
+    test <@ checkedCount >= 0 @>
