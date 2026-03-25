@@ -250,16 +250,21 @@ module Daemon =
                     for file in modifiedByPreprocessors do
                         suppressedFiles.TryAdd(file, true) |> ignore
 
-                    // Find all affected projects (including transitive dependents)
-                    let affectedProjects = graph.GetAffectedProjects(allSourceFiles)
+                    let changedProjects =
+                        allSourceFiles
+                        |> List.choose (fun f -> graph.GetProjectForFile(f))
+                        |> List.distinct
 
-                    // Collect all files to check: changed files + files in dependent projects
+                    // Files in dependent projects (not the changed project itself)
+                    let dependentProjectFiles =
+                        changedProjects
+                        |> List.collect (fun p -> graph.GetTransitiveDependents(p))
+                        |> List.distinct
+                        |> List.filter (fun p -> not (changedProjects |> List.contains p))
+                        |> List.collect (fun proj -> graph.GetSourceFiles(proj))
+
                     let allFilesToCheck =
-                        let dependentFiles =
-                            affectedProjects
-                            |> List.collect (fun proj -> graph.GetSourceFiles(proj))
-
-                        (allSourceFiles @ dependentFiles) |> List.distinct
+                        (allSourceFiles @ dependentProjectFiles) |> List.distinct
 
                     host.EmitFileChanged(SourceChanged allFilesToCheck)
 
