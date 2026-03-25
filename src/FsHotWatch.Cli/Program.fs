@@ -64,6 +64,15 @@ let private showHelp () =
     printfn "  status [plugin]    Show plugin statuses"
     printfn "  <command> [args]   Run a plugin-registered command"
 
+let private runIpc (action: Async<string>) : int =
+    try
+        let result = action |> Async.RunSynchronously
+        printfn "%s" result
+        0
+    with ex ->
+        eprintfn $"Could not connect to daemon: %s{ex.Message}"
+        1
+
 [<EntryPoint>]
 let main args =
     let repoRoot =
@@ -97,53 +106,9 @@ let main args =
 
         eprintfn "Daemon stopped."
         0
-    | Stop ->
-        try
-            let result = IpcClient.shutdown pipeName |> Async.RunSynchronously
-            printfn "%s" result
-            0
-        with ex ->
-            eprintfn $"Could not connect to daemon: %s{ex.Message}"
-            1
-    | Scan ->
-        try
-            let result = IpcClient.scan pipeName |> Async.RunSynchronously
-            printfn "%s" result
-            0
-        with ex ->
-            eprintfn $"Could not connect to daemon: %s{ex.Message}"
-            1
-    | ScanStatus ->
-        try
-            let result = IpcClient.scanStatus pipeName |> Async.RunSynchronously
-            printfn "%s" result
-            0
-        with ex ->
-            eprintfn $"Could not connect to daemon: %s{ex.Message}"
-            1
-    | Status None ->
-        try
-            let result = IpcClient.getStatus pipeName |> Async.RunSynchronously
-            printfn "%s" result
-            0
-        with ex ->
-            eprintfn $"Could not connect to daemon: %s{ex.Message}"
-            1
-    | Status(Some pluginName) ->
-        try
-            let result = IpcClient.getPluginStatus pipeName pluginName |> Async.RunSynchronously
-
-            printfn "%s" result
-            0
-        with ex ->
-            eprintfn $"Could not connect to daemon: %s{ex.Message}"
-            1
-    | PluginCommand(cmd, argsJson) ->
-        try
-            let result = IpcClient.runCommand pipeName cmd argsJson |> Async.RunSynchronously
-
-            printfn "%s" result
-            0
-        with ex ->
-            eprintfn $"Could not connect to daemon: %s{ex.Message}"
-            1
+    | Stop -> runIpc (IpcClient.shutdown pipeName)
+    | Scan -> runIpc (IpcClient.scan pipeName)
+    | ScanStatus -> runIpc (IpcClient.scanStatus pipeName)
+    | Status None -> runIpc (IpcClient.getStatus pipeName)
+    | Status(Some pluginName) -> runIpc (IpcClient.getPluginStatus pipeName pluginName)
+    | PluginCommand(cmd, argsJson) -> runIpc (IpcClient.runCommand pipeName cmd argsJson)

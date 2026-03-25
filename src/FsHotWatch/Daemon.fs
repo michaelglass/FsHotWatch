@@ -21,7 +21,7 @@ type Daemon =
       Pipeline: CheckPipeline
       RepoRoot: string
       mutable ScanState: ScanState
-      ScanLock: obj }
+      ScanSemaphore: SemaphoreSlim }
 
     /// Register a plugin with the daemon's plugin host.
     member this.Register(plugin: IFsHotWatchPlugin) = this.Host.Register(plugin)
@@ -34,39 +34,36 @@ type Daemon =
     member this.GetScanState() = this.ScanState
 
     /// Scan all registered files — check each one and emit events to plugins.
-    /// Blocks until complete. If a scan is already running, waits for it.
+    /// Blocks until complete. If a scan is already running, waits for it to finish.
     member this.ScanAll() =
         async {
-            let acquired = System.Threading.Monitor.TryEnter(this.ScanLock)
+            let! ct = Async.CancellationToken
+            do! this.ScanSemaphore.WaitAsync(ct) |> Async.AwaitTask
 
-            if not acquired then
-                // Another scan is running — wait for it
-                lock this.ScanLock (fun () -> ())
-            else
-                try
-                    let files = this.Pipeline.GetAllRegisteredFiles()
-                    let total = files.Length
-                    let sw = System.Diagnostics.Stopwatch.StartNew()
-                    this.ScanState <- Scanning(total, 0, System.DateTime.UtcNow)
+            try
+                let files = this.Pipeline.GetAllRegisteredFiles()
+                let total = files.Length
+                let sw = System.Diagnostics.Stopwatch.StartNew()
+                this.ScanState <- Scanning(total, 0, System.DateTime.UtcNow)
 
-                    if not files.IsEmpty then
-                        this.Host.EmitFileChanged(SourceChanged files)
-                        let mutable completed = 0
+                if not files.IsEmpty then
+                    this.Host.EmitFileChanged(SourceChanged files)
+                    let mutable completed = 0
 
-                        for file in files do
-                            let! result = this.Pipeline.CheckFile(file)
+                    for file in files do
+                        let! result = this.Pipeline.CheckFile(file)
 
-                            match result with
-                            | Some checkResult -> this.Host.EmitFileChecked(checkResult)
-                            | None -> ()
+                        match result with
+                        | Some checkResult -> this.Host.EmitFileChecked(checkResult)
+                        | None -> ()
 
-                            completed <- completed + 1
-                            this.ScanState <- Scanning(total, completed, System.DateTime.UtcNow)
+                        completed <- completed + 1
+                        this.ScanState <- Scanning(total, completed, System.DateTime.UtcNow)
 
-                    sw.Stop()
-                    this.ScanState <- ScanComplete(total, sw.Elapsed)
-                finally
-                    System.Threading.Monitor.Exit(this.ScanLock)
+                sw.Stop()
+                this.ScanState <- ScanComplete(total, sw.Elapsed)
+            finally
+                this.ScanSemaphore.Release() |> ignore
         }
 
     /// Run the daemon until cancellation is requested.
@@ -259,7 +256,7 @@ module Daemon =
           Pipeline = pipeline
           RepoRoot = repoRoot
           ScanState = ScanIdle
-          ScanLock = obj () }
+          ScanSemaphore = new SemaphoreSlim(1, 1) }
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     let create (repoRoot: string) =
