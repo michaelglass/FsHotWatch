@@ -17,7 +17,7 @@ let private formatStatus (status: PluginStatus) =
     | Failed(error, at) -> $"Failed at {at:O}: {error}"
 
 /// RPC target object exposed to clients via StreamJsonRpc.
-type DaemonRpcTarget(host: PluginHost) =
+type DaemonRpcTarget(host: PluginHost, cts: CancellationTokenSource) =
 
     /// Returns a JSON string of all plugin statuses.
     member _.GetStatus() : string =
@@ -47,21 +47,36 @@ type DaemonRpcTarget(host: PluginHost) =
             | None -> return "unknown command"
         }
 
+    /// Gracefully shut down the daemon.
+    member _.Shutdown() : string =
+        cts.Cancel()
+        "shutting down"
+
 /// IPC server that listens on a named pipe and exposes plugin host methods via StreamJsonRpc.
 module IpcServer =
 
     /// Start the IPC server. Accepts connections in a loop until cancelled.
-    let start (pipeName: string) (host: PluginHost) (ct: CancellationToken) : Async<unit> =
+    let start
+        (pipeName: string)
+        (host: PluginHost)
+        (cts: CancellationTokenSource)
+        : Async<unit> =
         async {
-            let target = DaemonRpcTarget(host)
+            let target = DaemonRpcTarget(host, cts)
 
-            while not ct.IsCancellationRequested do
+            while not cts.Token.IsCancellationRequested do
                 let pipeServer =
-                    new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous)
+                    new NamedPipeServerStream(
+                        pipeName,
+                        PipeDirection.InOut,
+                        1,
+                        PipeTransmissionMode.Byte,
+                        PipeOptions.Asynchronous
+                    )
 
                 try
                     do!
-                        pipeServer.WaitForConnectionAsync(ct)
+                        pipeServer.WaitForConnectionAsync(cts.Token)
                         |> Async.AwaitTask
 
                     let handler =
@@ -106,3 +121,7 @@ module IpcClient =
     /// Run a registered command by name.
     let runCommand (pipeName: string) (name: string) (argsJson: string) : Async<string> =
         invoke pipeName "RunCommand" [| name; argsJson |]
+
+    /// Shut down the daemon gracefully.
+    let shutdown (pipeName: string) : Async<string> =
+        invoke pipeName "Shutdown" [||]

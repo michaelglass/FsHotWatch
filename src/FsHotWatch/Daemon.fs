@@ -41,18 +41,19 @@ type Daemon =
         }
 
     /// Run the daemon with IPC server on the given pipe name.
-    member this.RunWithIpc(pipeName: string, cancellationToken: CancellationToken) =
+    /// The CTS can be cancelled externally or via the Shutdown IPC command.
+    member this.RunWithIpc(pipeName: string, cts: CancellationTokenSource) =
         async {
             use _ = this.Watcher :> System.IDisposable
 
             let ipcTask =
-                Async.StartAsTask(IpcServer.start pipeName this.Host cancellationToken)
+                Async.StartAsTask(IpcServer.start pipeName this.Host cts)
 
             let tcs =
                 System.Threading.Tasks.TaskCompletionSource<unit>()
 
             use _reg =
-                cancellationToken.Register(fun () -> tcs.TrySetResult() |> ignore)
+                cts.Token.Register(fun () -> tcs.TrySetResult() |> ignore)
 
             do! tcs.Task |> Async.AwaitTask
 

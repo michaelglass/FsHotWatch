@@ -285,7 +285,7 @@ let ``daemon RunWithIpc starts and stops cleanly`` () =
 
     try
         let daemon = Daemon.createWith nullChecker tmpDir
-        let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts.Token))
+        let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
         Thread.Sleep(500)
         cts.Cancel()
 
@@ -317,7 +317,7 @@ let ``daemon RunWithIpc responds to IPC queries`` () =
 
         daemon.Register(plugin)
 
-        let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts.Token))
+        let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
         Thread.Sleep(500)
 
         let result = FsHotWatch.Ipc.IpcClient.getStatus pipeName |> Async.RunSynchronously

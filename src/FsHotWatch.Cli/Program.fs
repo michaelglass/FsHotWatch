@@ -85,15 +85,20 @@ let main args =
             cts.Cancel())
 
         try
-            Async.RunSynchronously(daemon.RunWithIpc(pipeName, cts.Token))
+            Async.RunSynchronously(daemon.RunWithIpc(pipeName, cts))
         with :? OperationCanceledException ->
             ()
 
         eprintfn "Daemon stopped."
         0
     | Stop ->
-        eprintfn "Stop not yet implemented (kill the daemon process)"
-        1
+        try
+            let result = IpcClient.shutdown pipeName |> Async.RunSynchronously
+            printfn "%s" result
+            0
+        with ex ->
+            eprintfn $"Could not connect to daemon: %s{ex.Message}"
+            1
     | Status None ->
         try
             let result = IpcClient.getStatus pipeName |> Async.RunSynchronously
