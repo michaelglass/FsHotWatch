@@ -37,10 +37,14 @@ type LintPlugin(?configPath: string) =
                 ctx.ReportStatus(Running(since = System.DateTime.UtcNow))
 
                 try
+                    let typeCheckResults =
+                        if isNull (box result.CheckResults) then None
+                        else Some result.CheckResults
+
                     let parsedInfo: Lint.ParsedFileInformation =
                         { Ast = result.ParseResults.ParseTree
                           Source = result.Source
-                          TypeCheckResults = Some result.CheckResults
+                          TypeCheckResults = typeCheckResults
                           ProjectCheckResults = None }
 
                     match Lint.lintParsedSource lintParams parsedInfo with
