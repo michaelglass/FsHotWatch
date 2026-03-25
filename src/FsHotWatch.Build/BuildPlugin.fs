@@ -1,9 +1,10 @@
 module FsHotWatch.Build.BuildPlugin
 
 open System
-open System.Diagnostics
+open System.Threading
 open FsHotWatch.Events
 open FsHotWatch.Plugin
+open FsHotWatch.ProcessHelper
 
 /// Runs a build command when source files change and emits BuildCompleted events.
 type BuildPlugin(?command: string, ?args: string) =
@@ -22,33 +23,17 @@ type BuildPlugin(?command: string, ?args: string) =
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
                     try
-                        let psi = ProcessStartInfo(buildCommand, buildArgs)
-                        psi.RedirectStandardOutput <- true
-                        psi.RedirectStandardError <- true
-                        psi.UseShellExecute <- false
-                        psi.WorkingDirectory <- ctx.RepoRoot
-
-                        use proc = Process.Start(psi)
-
-                        let stdout =
-                            proc.StandardOutput.ReadToEndAsync() |> Async.AwaitTask |> Async.RunSynchronously
-
-                        let stderr =
-                            proc.StandardError.ReadToEndAsync() |> Async.AwaitTask |> Async.RunSynchronously
-
-                        proc.WaitForExit()
-                        let success = proc.ExitCode = 0
-                        let output = $"%s{stdout}\n%s{stderr}".Trim()
-                        lastResult <- Some(success, output)
+                        let (success, output) = runProcess buildCommand buildArgs ctx.RepoRoot []
+                        Volatile.Write(&lastResult, Some(success, output))
 
                         if success then
                             ctx.EmitBuildCompleted(BuildSucceeded)
-                            ctx.ReportStatus(Completed(box lastResult, DateTime.UtcNow))
+                            ctx.ReportStatus(Completed(box (Volatile.Read(&lastResult)), DateTime.UtcNow))
                         else
                             ctx.EmitBuildCompleted(BuildFailed [ output ])
-                            ctx.ReportStatus(Failed($"Build failed (exit %d{proc.ExitCode})", DateTime.UtcNow))
+                            ctx.ReportStatus(Failed($"Build failed", DateTime.UtcNow))
                     with ex ->
-                        lastResult <- Some(false, ex.Message)
+                        Volatile.Write(&lastResult, Some(false, ex.Message))
                         ctx.EmitBuildCompleted(BuildFailed [ ex.Message ])
                         ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                 | SolutionChanged -> ())
@@ -57,7 +42,7 @@ type BuildPlugin(?command: string, ?args: string) =
                 "build-status",
                 fun _args ->
                     async {
-                        match lastResult with
+                        match Volatile.Read(&lastResult) with
                         | Some(ok, _) ->
                             let passed = if ok then "true" else "false"
                             return $"{{\"passed\": %s{passed}}}"

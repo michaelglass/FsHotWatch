@@ -30,16 +30,14 @@ type CoveragePlugin(coverageDir: string, ?thresholdsFile: string, ?afterCheck: u
                 doc.RootElement.EnumerateObject()
                 |> Seq.map (fun prop ->
                     let line =
-                        if prop.Value.TryGetProperty("line") |> fst then
-                            prop.Value.GetProperty("line").GetDouble()
-                        else
-                            0.0
+                        match prop.Value.TryGetProperty("line") with
+                        | true, el -> el.GetDouble()
+                        | false, _ -> 0.0
 
                     let branch =
-                        if prop.Value.TryGetProperty("branch") |> fst then
-                            prop.Value.GetProperty("branch").GetDouble()
-                        else
-                            0.0
+                        match prop.Value.TryGetProperty("branch") with
+                        | true, el -> el.GetDouble()
+                        | false, _ -> 0.0
 
                     prop.Name, { Line = line; Branch = branch })
                 |> Map.ofSeq
