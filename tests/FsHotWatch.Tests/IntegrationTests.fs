@@ -1224,3 +1224,108 @@ let ``Full pipeline: format → build → test → coverage`` () =
             Directory.Delete(tmpDir, true)
         with _ ->
             ()
+
+// ===========================================================================
+// Regression: concurrent build/test guards
+// ===========================================================================
+
+[<Fact>]
+let ``BuildPlugin does not run concurrent builds`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let mutable buildCount = 0
+
+    let recorder =
+        { new IFsHotWatchPlugin with
+            member _.Name = "build-counter"
+
+            member _.Initialize(ctx) =
+                ctx.OnBuildCompleted.Add(fun _ -> buildCount <- buildCount + 1)
+
+            member _.Dispose() = () }
+
+    // Use /bin/sleep 1 as a slow build command so the second emit arrives while the first is running
+    let plugin = BuildPlugin(command = "/bin/sleep", args = "1")
+    host.Register(recorder)
+    host.Register(plugin)
+
+    // Emit two FileChanged events rapidly — the building guard should prevent the second build
+    let t1 =
+        async { host.EmitFileChanged(SourceChanged [ "src/A.fs" ]) }
+        |> Async.StartAsTask
+
+    System.Threading.Thread.Sleep(100)
+    host.EmitFileChanged(SourceChanged [ "src/B.fs" ])
+    t1.Wait()
+
+    // Only one build should have completed — the guard skipped the second
+    test <@ buildCount = 1 @>
+
+    let status = host.GetStatus("build")
+    test <@ status.IsSome @>
+
+    test
+        <@
+            match status.Value with
+            | Completed _ -> true
+            | _ -> false
+        @>
+
+[<Fact>]
+let ``TestPrunePlugin does not run concurrent test suites`` () =
+    let dbPath =
+        Path.Combine(Path.GetTempPath(), $"fshw-tp-concurrent-{Guid.NewGuid():N}.db")
+
+    try
+        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+        let testConfigs =
+            [ { Project = "SlowTests"
+                Command = "/bin/sleep"
+                Args = "1"
+                Group = "default"
+                Environment = [] } ]
+
+        let plugin = TestPrunePlugin(dbPath, "/tmp", testConfigs = testConfigs)
+        host.Register(plugin)
+
+        // Emit two BuildSucceeded events rapidly — the testsRunning guard should queue the second
+        let t1 =
+            async { host.EmitBuildCompleted(BuildSucceeded) }
+            |> Async.StartAsTask
+
+        System.Threading.Thread.Sleep(100)
+        host.EmitBuildCompleted(BuildSucceeded)
+        t1.Wait()
+
+        // The test-results command should show results (the first run completed)
+        let cmdResult = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
+        test <@ cmdResult.IsSome @>
+        // sleep exits 0, so it counts as passed
+        test <@ cmdResult.Value.Contains("\"passed\": 1") @>
+        test <@ cmdResult.Value.Contains("\"failed\": 0") @>
+
+        let status = host.GetStatus("test-prune")
+        test <@ status.IsSome @>
+
+        // Status should not be Failed from resource exhaustion — the guard prevents concurrent runs
+        test
+            <@
+                match status.Value with
+                | Completed _ -> true
+                | _ -> false
+            @>
+    finally
+        try
+            File.Delete(dbPath)
+        with _ ->
+            ()
+
+        try
+            File.Delete(dbPath + "-wal")
+        with _ ->
+            ()
+
+        try
+            File.Delete(dbPath + "-shm")
+        with _ ->
+            ()

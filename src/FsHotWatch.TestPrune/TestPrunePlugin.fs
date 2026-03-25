@@ -165,18 +165,30 @@ type TestPrunePlugin
             | Some configs when not configs.IsEmpty ->
                 eprintfn "  [test-prune] Subscribing to OnBuildCompleted with %d test configs" configs.Length
 
+                let mutable pendingRerun = false
+
                 ctx.OnBuildCompleted.Add(fun result ->
                     match result with
                     | BuildSucceeded ->
-                        eprintfn "  [test-prune] BuildSucceeded received, running %d test configs" configs.Length
-                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                        if testsRunning then
+                            eprintfn "  [test-prune] BuildSucceeded received but tests already running — will re-run after"
+                            pendingRerun <- true
+                        else
+                            eprintfn "  [test-prune] BuildSucceeded received, running %d test configs" configs.Length
+                            ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
-                        try
-                            runTests ctx configs
-                        with ex ->
-                            testsRunning <- false
-                            eprintfn "  [test-prune] runTests failed: %s" ex.Message
-                            ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+                            try
+                                runTests ctx configs
+
+                                if pendingRerun then
+                                    pendingRerun <- false
+                                    eprintfn "  [test-prune] Re-running tests (queued during previous run)"
+                                    runTests ctx configs
+                            with ex ->
+                                testsRunning <- false
+                                pendingRerun <- false
+                                eprintfn "  [test-prune] runTests failed: %s" ex.Message
+                                ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                     | BuildFailed _ -> ())
             | _ -> ()
 

@@ -46,6 +46,8 @@ type AnalyzersPlugin(analyzerPaths: string list) =
                     let stats = client.LoadAnalyzers(path)
                     Interlocked.Add(&loadedCount, stats.Analyzers) |> ignore
 
+            let mutable errorCount = 0
+
             ctx.OnFileChecked.Add(fun result ->
                 ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
@@ -60,10 +62,22 @@ type AnalyzersPlugin(analyzerPaths: string list) =
 
                     let current = Volatile.Read(&diagnosticsByFile)
                     Volatile.Write(&diagnosticsByFile, current |> Map.add result.File messages)
-                    ctx.ReportStatus(Completed(box (Volatile.Read(&diagnosticsByFile)), DateTime.UtcNow))
                 with ex ->
+                    Interlocked.Increment(&errorCount) |> ignore
                     eprintfn "  [analyzers] Error analyzing %s: %s" result.File ex.Message
-                    ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow)))
+
+                let currentDiags = Volatile.Read(&diagnosticsByFile)
+                let errors = Volatile.Read(&errorCount)
+
+                if errors > 0 then
+                    ctx.ReportStatus(
+                        Completed(
+                            box $"analyzed %d{currentDiags.Count} files, %d{errors} errors",
+                            DateTime.UtcNow
+                        )
+                    )
+                else
+                    ctx.ReportStatus(Completed(box currentDiags, DateTime.UtcNow)))
 
             ctx.RegisterCommand(
                 "diagnostics",
