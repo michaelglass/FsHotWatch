@@ -154,10 +154,7 @@ type Daemon =
             use _ = this.Watcher :> System.IDisposable
 
             let onScan () =
-                async {
-                    do! this.ScanAll()
-                    return this.FormatScanStatus()
-                }
+                Async.StartAsTask(this.ScanAll()) |> ignore
 
             let ipcTask =
                 Async.StartAsTask(
