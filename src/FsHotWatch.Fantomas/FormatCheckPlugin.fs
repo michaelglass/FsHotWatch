@@ -1,6 +1,7 @@
 module FsHotWatch.Fantomas.FormatCheckPlugin
 
 open System.IO
+open System.Threading
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open Fantomas.Core
@@ -29,12 +30,14 @@ type FormatCheckPlugin() =
                                 CodeFormatter.FormatDocumentAsync(isSignature, source)
                                 |> Async.RunSynchronously
 
-                            if formatted.Code <> source then
-                                unformatted <- unformatted |> Set.add file
-                            else
-                                unformatted <- unformatted |> Set.remove file
+                            let current = Volatile.Read(&unformatted)
 
-                    ctx.ReportStatus(Completed(box unformatted, System.DateTime.UtcNow))
+                            if formatted.Code <> source then
+                                Volatile.Write(&unformatted, current |> Set.add file)
+                            else
+                                Volatile.Write(&unformatted, current |> Set.remove file)
+
+                    ctx.ReportStatus(Completed(box (Volatile.Read(&unformatted)), System.DateTime.UtcNow))
                 with ex ->
                     ctx.ReportStatus(PluginStatus.Failed(ex.Message, System.DateTime.UtcNow)))
 
@@ -42,8 +45,9 @@ type FormatCheckPlugin() =
                 "unformatted",
                 fun _args ->
                     async {
-                        let files = unformatted |> Set.toList |> String.concat ", "
-                        return $"{{\"count\": {unformatted.Count}, \"files\": \"{files}\"}}"
+                        let current = Volatile.Read(&unformatted)
+                        let files = current |> Set.toList |> String.concat ", "
+                        return $"{{\"count\": {current.Count}, \"files\": \"{files}\"}}"
                     }
             )
 

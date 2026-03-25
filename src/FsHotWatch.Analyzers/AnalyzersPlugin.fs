@@ -2,6 +2,7 @@ module FsHotWatch.Analyzers.AnalyzersPlugin
 
 open System
 open System.IO
+open System.Threading
 open FSharp.Analyzers.SDK
 open FSharp.Compiler.Text
 open FsHotWatch.Events
@@ -37,7 +38,7 @@ type AnalyzersPlugin(analyzerPaths: string list) =
             for path in analyzerPaths do
                 if Directory.Exists(path) then
                     let stats = client.LoadAnalyzers(path)
-                    loadedCount <- loadedCount + stats.Analyzers
+                    Interlocked.Exchange(&loadedCount, loadedCount + stats.Analyzers) |> ignore
 
             ctx.OnFileChecked.Add(fun result ->
                 ctx.ReportStatus(Running(since = DateTime.UtcNow))
@@ -51,8 +52,9 @@ type AnalyzersPlugin(analyzerPaths: string list) =
                     let messages =
                         client.RunAnalyzersSafely(context) |> Async.RunSynchronously
 
-                    diagnosticsByFile <- diagnosticsByFile |> Map.add result.File messages
-                    ctx.ReportStatus(Completed(box diagnosticsByFile, DateTime.UtcNow))
+                    let current = Volatile.Read(&diagnosticsByFile)
+                    Volatile.Write(&diagnosticsByFile, current |> Map.add result.File messages)
+                    ctx.ReportStatus(Completed(box (Volatile.Read(&diagnosticsByFile)), DateTime.UtcNow))
                 with ex ->
                     ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow)))
 
@@ -60,13 +62,16 @@ type AnalyzersPlugin(analyzerPaths: string list) =
                 "diagnostics",
                 fun _args ->
                     async {
+                        let currentDiags = Volatile.Read(&diagnosticsByFile)
+                        let currentLoaded = Volatile.Read(&loadedCount)
+
                         let totalDiags =
-                            diagnosticsByFile
+                            currentDiags
                             |> Map.toList
                             |> List.sumBy (fun (_, msgs) -> msgs.Length)
 
                         return
-                            $"{{\"analyzers\": %d{loadedCount}, \"files\": %d{diagnosticsByFile.Count}, \"diagnostics\": %d{totalDiags}}}"
+                            $"{{\"analyzers\": %d{currentLoaded}, \"files\": %d{currentDiags.Count}, \"diagnostics\": %d{totalDiags}}}"
                     }
             )
 
