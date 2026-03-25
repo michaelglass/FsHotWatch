@@ -179,6 +179,72 @@ let ``EmitProjectChecked reaches plugins`` () =
     test <@ receivedProject.Value.Project = "/tmp/test/Test.fsproj" @>
 
 [<Fact>]
+let ``preprocessor runs before events are dispatched`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let mutable preprocessorCalled = false
+
+    let preprocessor =
+        { new IFsHotWatchPreprocessor with
+            member _.Name = "tracker"
+
+            member _.Process (changedFiles: string list) (_repoRoot: string) =
+                preprocessorCalled <- true
+                []
+
+            member _.Dispose() = () }
+
+    host.RegisterPreprocessor(preprocessor)
+    let _ = host.RunPreprocessors([ "src/Lib.fs" ])
+    test <@ preprocessorCalled @>
+
+[<Fact>]
+let ``preprocessor modified files are returned`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let preprocessor =
+        { new IFsHotWatchPreprocessor with
+            member _.Name = "modifier"
+
+            member _.Process (_changedFiles: string list) (_repoRoot: string) =
+                [ "src/Formatted.fs"; "src/Other.fs" ]
+
+            member _.Dispose() = () }
+
+    host.RegisterPreprocessor(preprocessor)
+    let modified = host.RunPreprocessors([ "src/Lib.fs" ])
+    test <@ modified = [ "src/Formatted.fs"; "src/Other.fs" ] @>
+
+[<Fact>]
+let ``preprocessor status is tracked`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let preprocessor =
+        { new IFsHotWatchPreprocessor with
+            member _.Name = "status-pp"
+
+            member _.Process (_changedFiles: string list) (_repoRoot: string) = [ "a.fs" ]
+
+            member _.Dispose() = () }
+
+    host.RegisterPreprocessor(preprocessor)
+
+    // Before running, status should be Idle
+    let statusBefore = host.GetStatus("status-pp")
+    test <@ statusBefore = Some Idle @>
+
+    let _ = host.RunPreprocessors([ "src/Lib.fs" ])
+
+    let statusAfter = host.GetStatus("status-pp")
+    test <@ statusAfter.IsSome @>
+
+    test
+        <@
+            match statusAfter.Value with
+            | Completed _ -> true
+            | _ -> false
+        @>
+
+[<Fact>]
 let ``multiple plugins receive the same event`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let mutable received1 = false
