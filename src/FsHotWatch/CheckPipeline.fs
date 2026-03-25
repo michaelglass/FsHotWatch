@@ -32,7 +32,9 @@ type CheckPipeline(checker: FSharpChecker) =
             let absPath = Path.GetFullPath(filePath)
 
             match projectOptionsByFile.TryGetValue(absPath) with
-            | false, _ -> return None
+            | false, _ ->
+                eprintfn "  [check] No project options for: %s" absPath
+                return None
             | true, options ->
                 let source =
                     if File.Exists(absPath) then
@@ -42,18 +44,30 @@ type CheckPipeline(checker: FSharpChecker) =
 
                 let sourceText = SourceText.ofString source
 
-                let! parseResults, checkAnswer =
-                    checker.ParseAndCheckFileInProject(absPath, 0, sourceText, options)
+                try
+                    let! parseResults, checkAnswer =
+                        checker.ParseAndCheckFileInProject(absPath, 0, sourceText, options)
 
-                match checkAnswer with
-                | FSharpCheckFileAnswer.Succeeded checkResults ->
-                    return
-                        Some
-                            { File = absPath
-                              Source = source
-                              ParseResults = parseResults
-                              CheckResults = checkResults }
-                | FSharpCheckFileAnswer.Aborted -> return None
+                    match checkAnswer with
+                    | FSharpCheckFileAnswer.Succeeded checkResults ->
+                        return
+                            Some
+                                { File = absPath
+                                  Source = source
+                                  ParseResults = parseResults
+                                  CheckResults = checkResults }
+                    | FSharpCheckFileAnswer.Aborted ->
+                        eprintfn "  [check] Type check aborted for: %s" absPath
+                        // Still emit with parse results — lint can use the AST even without type info
+                        return
+                            Some
+                                { File = absPath
+                                  Source = source
+                                  ParseResults = parseResults
+                                  CheckResults = Unchecked.defaultof<_> }
+                with ex ->
+                    eprintfn "  [check] Failed to check %s: %s" absPath ex.Message
+                    return None
         }
 
     /// Check all registered files for a project. Returns results keyed by file path.
