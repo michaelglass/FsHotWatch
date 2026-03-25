@@ -17,8 +17,10 @@ type FileCommandPlugin
     let mutable lastResult: (bool * string) option = None
 
     interface IFsHotWatchPlugin with
+        /// Returns the configured plugin name.
         member _.Name = name
 
+        /// Subscribe to file changes and run the command on matching files; registers a status command.
         member _.Initialize(ctx) =
             ctx.OnFileChanged.Add(fun change ->
                 let files =
@@ -58,4 +60,5 @@ type FileCommandPlugin
                     }
             )
 
+        /// No resources to dispose.
         member _.Dispose() = ()

@@ -16,14 +16,23 @@ open FsHotWatch.Watcher
 /// It runs until the provided CancellationToken is cancelled.
 [<NoComparison; NoEquality>]
 type Daemon =
-    { Host: PluginHost
+    { /// The plugin host that manages plugin lifecycle and event dispatch.
+      Host: PluginHost
+      /// The file watcher monitoring the repository for changes.
       Watcher: FileWatcher
+      /// The warm FSharpChecker instance used for incremental checking.
       Checker: FSharpChecker
+      /// The check pipeline that performs incremental file checking.
       Pipeline: CheckPipeline
+      /// The project dependency graph.
       Graph: ProjectGraph
+      /// The repository root directory.
       RepoRoot: string
+      /// Current scan progress state.
       mutable ScanState: ScanState
+      /// Semaphore ensuring only one scan runs at a time.
       ScanSemaphore: SemaphoreSlim
+      /// Disposes the debounce timer used for coalescing file change events.
       DisposeDebounceTimer: unit -> unit }
 
     /// Register a plugin with the daemon's plugin host.

@@ -37,6 +37,7 @@ type TestPrunePlugin
     let mutable lastTestResults: TestResults option = None
 
     let mutable testsRunning = false
+    let mutable testsCompleted = false
     let hasTestConfigs = testConfigs |> Option.map (List.isEmpty >> not) |> Option.defaultValue false
 
     let runTests (ctx: PluginContext) (configs: TestConfig list) =
@@ -115,6 +116,7 @@ type TestPrunePlugin
         | None -> ()
 
         testsRunning <- false
+        testsCompleted <- true
         eprintfn "  [test-prune] Tests complete: %d projects, %.1fs" testResults.Results.Count testResults.Elapsed.TotalSeconds
         ctx.EmitTestCompleted(testResults)
 
@@ -140,7 +142,8 @@ type TestPrunePlugin
 
         member _.Initialize(ctx) =
             ctx.OnFileChecked.Add(fun result ->
-                if not testsRunning then
+                // Don't overwrite test results with analysis status
+                if not testsRunning && not testsCompleted then
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
                 try
@@ -157,10 +160,10 @@ type TestPrunePlugin
                     // When testConfigs is provided, don't report Completed after analysis —
                     // stay Running until tests finish. Otherwise a consumer polling status
                     // sees a brief Completed window before tests start.
-                    if not testsRunning && not hasTestConfigs then
+                    if not testsRunning && not testsCompleted && not hasTestConfigs then
                         ctx.ReportStatus(Completed(box (Volatile.Read(&lastAffectedTests)), DateTime.UtcNow))
                 with ex ->
-                    if not testsRunning then
+                    if not testsRunning && not testsCompleted then
                         ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow)))
 
             // Subscribe to build completion for test execution
