@@ -1,7 +1,9 @@
 module FsHotWatch.Daemon
 
+open System.IO
 open System.Threading
 open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Text
 open FsHotWatch.CheckPipeline
 open FsHotWatch.Events
 open FsHotWatch.Ipc
@@ -26,6 +28,23 @@ type Daemon =
     member this.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
         this.Pipeline.RegisterProject(projectPath, options)
 
+    /// Scan all registered files — check each one and emit events to plugins.
+    /// Use on startup or on-demand to establish a full baseline.
+    member this.ScanAll() =
+        async {
+            let files = this.Pipeline.GetAllRegisteredFiles()
+
+            if not files.IsEmpty then
+                this.Host.EmitFileChanged(SourceChanged files)
+
+                for file in files do
+                    let! result = this.Pipeline.CheckFile(file)
+
+                    match result with
+                    | Some checkResult -> this.Host.EmitFileChecked(checkResult)
+                    | None -> ()
+        }
+
     /// Run the daemon until cancellation is requested.
     member this.Run(cancellationToken: CancellationToken) =
         async {
@@ -40,14 +59,78 @@ type Daemon =
             do! tcs.Task |> Async.AwaitTask
         }
 
+    /// Discover .fsproj files in src/ and tests/ and register them with the pipeline.
+    /// Uses script-style options (no MSBuild) for lightweight project loading.
+    member this.DiscoverAndRegisterProjects() =
+        async {
+            let searchDirs =
+                [ Path.Combine(this.RepoRoot, "src")
+                  Path.Combine(this.RepoRoot, "tests") ]
+                |> List.filter Directory.Exists
+
+            let fsprojFiles =
+                searchDirs
+                |> List.collect (fun dir ->
+                    Directory.GetFiles(dir, "*.fsproj", SearchOption.AllDirectories)
+                    |> Array.toList)
+                |> List.filter (fun f ->
+                    let n = f.Replace('\\', '/')
+                    not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
+
+            for fsproj in fsprojFiles do
+                try
+                    let sourceFiles =
+                        let doc = System.Xml.Linq.XDocument.Load(fsproj)
+                        let projDir = Path.GetDirectoryName(Path.GetFullPath(fsproj))
+
+                        doc.Descendants(System.Xml.Linq.XName.Get "Compile")
+                        |> Seq.choose (fun el ->
+                            let inc = el.Attribute(System.Xml.Linq.XName.Get "Include")
+
+                            if inc <> null then
+                                Some(Path.GetFullPath(Path.Combine(projDir, inc.Value)))
+                            else
+                                None)
+                        |> Seq.toArray
+
+                    if sourceFiles.Length > 0 then
+                        let firstFile = sourceFiles.[0]
+
+                        if File.Exists(firstFile) then
+                            let source = File.ReadAllText(firstFile)
+                            let sourceText = SourceText.ofString source
+
+                            let! projOptions, _ =
+                                this.Checker.GetProjectOptionsFromScript(
+                                    firstFile,
+                                    sourceText,
+                                    assumeDotNetFramework = false
+                                )
+
+                            let opts =
+                                { projOptions with
+                                    SourceFiles = sourceFiles }
+
+                            this.Pipeline.RegisterProject(fsproj, opts)
+                with ex ->
+                    eprintfn $"  Warning: could not load %s{fsproj}: %s{ex.Message}"
+        }
+
     /// Run the daemon with IPC server on the given pipe name.
-    /// The CTS can be cancelled externally or via the Shutdown IPC command.
+    /// Discovers projects, performs initial scan, then watches for changes.
     member this.RunWithIpc(pipeName: string, cts: CancellationTokenSource) =
         async {
             use _ = this.Watcher :> System.IDisposable
 
+            let onScan () =
+                Async.StartAsTask(this.ScanAll()) |> ignore
+
             let ipcTask =
-                Async.StartAsTask(IpcServer.start pipeName this.Host cts)
+                Async.StartAsTask(IpcServer.start pipeName this.Host cts onScan)
+
+            // Discover projects and perform initial full scan
+            do! this.DiscoverAndRegisterProjects()
+            do! this.ScanAll()
 
             let tcs =
                 System.Threading.Tasks.TaskCompletionSource<unit>()
