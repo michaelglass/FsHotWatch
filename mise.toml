@@ -20,7 +20,8 @@ run = """
 dotnet test \
   --coverage \
   --coverage-output-format cobertura \
-  --coverage-output "$PWD/coverage/coverage.cobertura.xml"
+  --coverage-output "$PWD/coverage/coverage.cobertura.xml" \
+  --coverage-settings "$PWD/coverage.settings"
 """
 depends = ["build"]
 
