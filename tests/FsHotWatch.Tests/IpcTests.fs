@@ -225,7 +225,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
     host.Register(p3)
     host.Register(p4)
 
-    let target = DaemonRpcTarget(host, new CancellationTokenSource())
+    let target = DaemonRpcTarget(host, ignore)
     let json = target.GetStatus()
     test <@ json.Contains("Idle") @>
     test <@ json.Contains("Running since") @>
@@ -235,7 +235,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
 [<Fact>]
 let ``DaemonRpcTarget.RunCommand returns unknown command for missing command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let target = DaemonRpcTarget(host, new CancellationTokenSource())
+    let target = DaemonRpcTarget(host, ignore)
     let result = target.RunCommand("nonexistent", "") |> Async.AwaitTask |> Async.RunSynchronously
     test <@ result = "unknown command" @>
 
@@ -261,7 +261,7 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
 
     host.Register(plugin)
 
-    let target = DaemonRpcTarget(host, new CancellationTokenSource())
+    let target = DaemonRpcTarget(host, ignore)
 
     // Test with empty args
     let result1 = target.RunCommand("hello", "") |> Async.AwaitTask |> Async.RunSynchronously
@@ -290,7 +290,7 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
     host.Register(p1)
     host.Register(p2)
 
-    let target = DaemonRpcTarget(host, new CancellationTokenSource())
+    let target = DaemonRpcTarget(host, ignore)
     test <@ target.GetPluginStatus("idle-test") = "Idle" @>
     test <@ (target.GetPluginStatus("failed-test")).Contains("bad") @>
     test <@ target.GetPluginStatus("no-such") = "not found" @>
