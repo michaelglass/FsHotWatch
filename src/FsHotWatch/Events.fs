@@ -34,3 +34,8 @@ type PluginStatus =
 type PluginResult =
     { PluginName: string
       Status: PluginStatus }
+
+type ScanState =
+    | ScanIdle
+    | Scanning of total: int * completed: int * startedAt: System.DateTime
+    | ScanComplete of total: int * elapsed: System.TimeSpan

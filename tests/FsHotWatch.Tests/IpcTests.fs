@@ -23,7 +23,7 @@ let ``server responds to GetStatus`` () =
             member _.Dispose() = () }
     host.Register(plugin)
 
-    let serverTask = Async.StartAsTask(IpcServer.start pipeName host cts ignore)
+    let serverTask = Async.StartAsTask(IpcServer.start pipeName host cts (fun () -> async { return "done" }) (fun () -> "idle"))
     Thread.Sleep(500)
 
     try
@@ -47,7 +47,7 @@ let ``server responds to RunCommand`` () =
             member _.Dispose() = () }
     host.Register(plugin)
 
-    let serverTask = Async.StartAsTask(IpcServer.start pipeName host cts ignore)
+    let serverTask = Async.StartAsTask(IpcServer.start pipeName host cts (fun () -> async { return "done" }) (fun () -> "idle"))
     Thread.Sleep(500)
 
     try
@@ -70,7 +70,7 @@ let ``GetPluginStatus returns specific plugin's status`` () =
             member _.Dispose() = () }
     host.Register(plugin)
 
-    let serverTask = Async.StartAsTask(IpcServer.start pipeName host cts ignore)
+    let serverTask = Async.StartAsTask(IpcServer.start pipeName host cts (fun () -> async { return "done" }) (fun () -> "idle"))
     Thread.Sleep(500)
 
     try
@@ -86,7 +86,7 @@ let ``GetPluginStatus returns not found for unknown plugin`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let cts = new CancellationTokenSource()
 
-    let serverTask = Async.StartAsTask(IpcServer.start pipeName host cts ignore)
+    let serverTask = Async.StartAsTask(IpcServer.start pipeName host cts (fun () -> async { return "done" }) (fun () -> "idle"))
     Thread.Sleep(500)
 
     try
@@ -114,7 +114,7 @@ let ``RunCommand with plugin that returns a result`` () =
             member _.Dispose() = () }
     host.Register(plugin)
 
-    let serverTask = Async.StartAsTask(IpcServer.start pipeName host cts ignore)
+    let serverTask = Async.StartAsTask(IpcServer.start pipeName host cts (fun () -> async { return "done" }) (fun () -> "idle"))
     Thread.Sleep(500)
 
     try
@@ -130,7 +130,7 @@ let ``RunCommand returns unknown command for non-existent command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let cts = new CancellationTokenSource()
 
-    let serverTask = Async.StartAsTask(IpcServer.start pipeName host cts ignore)
+    let serverTask = Async.StartAsTask(IpcServer.start pipeName host cts (fun () -> async { return "done" }) (fun () -> "idle"))
     Thread.Sleep(500)
 
     try
@@ -175,7 +175,7 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
     host.Register(completedPlugin)
     host.Register(failedPlugin)
 
-    let serverTask = Async.StartAsTask(IpcServer.start pipeName host cts ignore)
+    let serverTask = Async.StartAsTask(IpcServer.start pipeName host cts (fun () -> async { return "done" }) (fun () -> "idle"))
     Thread.Sleep(500)
 
     try
@@ -225,7 +225,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
     host.Register(p3)
     host.Register(p4)
 
-    let target = DaemonRpcTarget(host, ignore, ignore)
+    let target = DaemonRpcTarget(host, ignore, (fun () -> async { return "done" }), (fun () -> "idle"))
     let json = target.GetStatus()
     test <@ json.Contains("Idle") @>
     test <@ json.Contains("Running since") @>
@@ -235,7 +235,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
 [<Fact>]
 let ``DaemonRpcTarget.RunCommand returns unknown command for missing command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let target = DaemonRpcTarget(host, ignore, ignore)
+    let target = DaemonRpcTarget(host, ignore, (fun () -> async { return "done" }), (fun () -> "idle"))
     let result = target.RunCommand("nonexistent", "") |> Async.AwaitTask |> Async.RunSynchronously
     test <@ result = "unknown command" @>
 
@@ -261,7 +261,7 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
 
     host.Register(plugin)
 
-    let target = DaemonRpcTarget(host, ignore, ignore)
+    let target = DaemonRpcTarget(host, ignore, (fun () -> async { return "done" }), (fun () -> "idle"))
 
     // Test with empty args
     let result1 = target.RunCommand("hello", "") |> Async.AwaitTask |> Async.RunSynchronously
@@ -290,7 +290,7 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
     host.Register(p1)
     host.Register(p2)
 
-    let target = DaemonRpcTarget(host, ignore, ignore)
+    let target = DaemonRpcTarget(host, ignore, (fun () -> async { return "done" }), (fun () -> "idle"))
     test <@ target.GetPluginStatus("idle-test") = "Idle" @>
     test <@ (target.GetPluginStatus("failed-test")).Contains("bad") @>
     test <@ target.GetPluginStatus("no-such") = "not found" @>
