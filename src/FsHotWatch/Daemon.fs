@@ -54,6 +54,8 @@ type Daemon =
                 this.ScanState <- Scanning(total, 0, System.DateTime.UtcNow)
 
                 if not files.IsEmpty then
+                    // Run preprocessors (e.g., formatter) before dispatching
+                    let _modified = this.Host.RunPreprocessors(files)
                     this.Host.EmitFileChanged(SourceChanged files)
                     let mutable completed = 0
 
