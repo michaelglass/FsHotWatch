@@ -23,15 +23,17 @@ type ProjectGraph() =
         let absRefs = references |> List.map Path.GetFullPath
         projectReferences[absProject] <- absRefs
 
-        // Update reverse index (dependents)
         for ref in absRefs do
-            let existing =
-                match projectDependents.TryGetValue(ref) with
-                | true, deps -> deps
-                | false, _ -> []
-
-            if not (existing |> List.contains absProject) then
-                projectDependents[ref] <- absProject :: existing
+            projectDependents.AddOrUpdate(
+                ref,
+                [ absProject ],
+                fun _ existing ->
+                    if List.contains absProject existing then
+                        existing
+                    else
+                        absProject :: existing
+            )
+            |> ignore
 
     /// Parse a .fsproj file and register it. Returns (sourceFiles, projectReferences).
     member this.RegisterFromFsproj(fsprojPath: string) =
@@ -107,16 +109,28 @@ type ProjectGraph() =
         result |> List.rev
 
     /// Get all projects affected by changes to the given files.
-    /// Returns in topological order.
+    /// Single DFS from all changed projects (efficient when multiple projects change).
     member this.GetAffectedProjects(changedFiles: string list) : string list =
-        let changedProjects =
+        let roots =
             changedFiles
             |> List.choose (fun f -> this.GetProjectForFile(f))
             |> List.distinct
 
-        changedProjects
-        |> List.collect (fun p -> this.GetTransitiveDependents(p))
-        |> List.distinct
+        let mutable visited = Set.empty
+        let mutable result = []
+
+        let rec walk proj =
+            if not (Set.contains proj visited) then
+                visited <- Set.add proj visited
+                result <- proj :: result
+
+                for dep in this.GetDependents(proj) do
+                    walk dep
+
+        for root in roots do
+            walk root
+
+        result |> List.rev
 
     /// Get all registered projects.
     member _.GetAllProjects() : string list =
