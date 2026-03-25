@@ -12,17 +12,28 @@ type LintPlugin(?configPath: string) =
     let mutable warningsByFile: Map<string, string list> = Map.empty
 
     let lintParams =
-        match configPath with
-        | Some path ->
-            { Lint.OptionalLintParameters.Default with
-                Configuration = Lint.ConfigurationParam.FromFile path }
-        | None -> Lint.OptionalLintParameters.Default
+        try
+            match configPath with
+            | Some path ->
+                eprintfn "  [lint] Loading config from: %s" path
+
+                { Lint.OptionalLintParameters.Default with
+                    Configuration = Lint.ConfigurationParam.FromFile path }
+            | None ->
+                eprintfn "  [lint] Using default lint config"
+                Lint.OptionalLintParameters.Default
+        with ex ->
+            eprintfn "  [lint] Failed to load lint config: %s — using defaults" ex.Message
+            Lint.OptionalLintParameters.Default
 
     interface IFsHotWatchPlugin with
         member _.Name = "lint"
 
         member _.Initialize(ctx) =
+            eprintfn "  [lint] Subscribing to OnFileChecked"
+
             ctx.OnFileChecked.Add(fun result ->
+                eprintfn "  [lint] FileChecked received: %s" result.File
                 ctx.ReportStatus(Running(since = System.DateTime.UtcNow))
 
                 try

@@ -47,37 +47,41 @@ type AnalyzersPlugin(analyzerPaths: string list) =
                     Interlocked.Add(&loadedCount, stats.Analyzers) |> ignore
 
             let mutable errorCount = 0
+            let mutable processedCount = 0
 
             ctx.OnFileChecked.Add(fun result ->
-                ctx.ReportStatus(Running(since = DateTime.UtcNow))
-
                 try
-                    let sourceText = result.Source |> SourceText.ofString
+                    ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                    processedCount <- processedCount + 1
 
-                    let context =
-                        createCliContext result.File sourceText result.ParseResults result.CheckResults
+                    try
+                        let sourceText = result.Source |> SourceText.ofString
 
-                    let messages =
-                        client.RunAnalyzersSafely(context) |> Async.RunSynchronously
+                        let context =
+                            createCliContext result.File sourceText result.ParseResults result.CheckResults
 
-                    let current = Volatile.Read(&diagnosticsByFile)
-                    Volatile.Write(&diagnosticsByFile, current |> Map.add result.File messages)
-                with ex ->
-                    Interlocked.Increment(&errorCount) |> ignore
-                    eprintfn "  [analyzers] Error analyzing %s: %s" result.File ex.Message
+                        let messages =
+                            client.RunAnalyzersSafely(context) |> Async.RunSynchronously
 
-                let currentDiags = Volatile.Read(&diagnosticsByFile)
-                let errors = Volatile.Read(&errorCount)
+                        let current = Volatile.Read(&diagnosticsByFile)
+                        Volatile.Write(&diagnosticsByFile, current |> Map.add result.File messages)
+                    with ex ->
+                        errorCount <- errorCount + 1
+                        eprintfn "  [analyzers] Error analyzing %s: %s" result.File ex.Message
 
-                if errors > 0 then
-                    ctx.ReportStatus(
-                        Completed(
-                            box $"analyzed %d{currentDiags.Count} files, %d{errors} errors",
-                            DateTime.UtcNow
+                    let currentDiags = Volatile.Read(&diagnosticsByFile)
+
+                    if errorCount > 0 then
+                        ctx.ReportStatus(
+                            Completed(
+                                box $"analyzed %d{currentDiags.Count} files, %d{errorCount} errors",
+                                DateTime.UtcNow
+                            )
                         )
-                    )
-                else
-                    ctx.ReportStatus(Completed(box currentDiags, DateTime.UtcNow)))
+                    else
+                        ctx.ReportStatus(Completed(box currentDiags, DateTime.UtcNow))
+                with outerEx ->
+                    eprintfn "  [analyzers] OUTER error in OnFileChecked handler: %s" outerEx.Message)
 
             ctx.RegisterCommand(
                 "diagnostics",

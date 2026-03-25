@@ -27,13 +27,28 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
               OnFileChecked = fileChecked.Publish
               OnProjectChecked = projectChecked.Publish
               OnTestCompleted = testCompleted.Publish
-              ReportStatus = fun status -> statuses[plugin.Name] <- status
+              ReportStatus =
+                fun status ->
+                    let statusName =
+                        match status with
+                        | Idle -> "Idle"
+                        | Running _ -> "Running"
+                        | Completed _ -> "Completed"
+                        | Failed(e, _) -> $"Failed: %s{e.Substring(0, min 80 e.Length)}"
+
+                    eprintfn "  [%s] → %s" plugin.Name statusName
+                    statuses[plugin.Name] <- status
               RegisterCommand = fun (name, handler) -> commands[name] <- handler
               EmitBuildCompleted = fun result -> buildCompleted.Trigger(result)
               EmitTestCompleted = fun results -> testCompleted.Trigger(results) }
 
         statuses[plugin.Name] <- Idle
-        plugin.Initialize(ctx)
+
+        try
+            plugin.Initialize(ctx)
+        with ex ->
+            eprintfn "  [plugin-host] Failed to initialize plugin '%s': %s" plugin.Name ex.Message
+            statuses[plugin.Name] <- Failed(ex.Message, System.DateTime.UtcNow)
 
     /// Register a preprocessor (runs before events are dispatched).
     member _.RegisterPreprocessor(preprocessor: IFsHotWatchPreprocessor) =
