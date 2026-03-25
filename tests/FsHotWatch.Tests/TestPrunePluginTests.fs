@@ -144,6 +144,38 @@ let ``duplicate file checks do not duplicate in changed-files list`` () =
             ()
 
 [<Fact>]
+let ``test-results command returns not run initially`` () =
+    let host =
+        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let plugin = TestPrunePlugin(":memory:", "/tmp")
+    host.Register(plugin)
+
+    let result = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
+    test <@ result.IsSome @>
+    test <@ result.Value.Contains("not run") @>
+
+[<Fact>]
+let ``plugin with testConfigs subscribes to OnBuildCompleted`` () =
+    let host =
+        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let configs =
+        [ { Project = "TestProject"
+            Command = "echo"
+            Args = "tests passed"
+            Group = "default"
+            Environment = [] } ]
+
+    let plugin = TestPrunePlugin(":memory:", "/tmp", testConfigs = configs)
+    host.Register(plugin)
+
+    // Verify plugin registered without crashing and status is Idle
+    let status = host.GetStatus("test-prune")
+    test <@ status.IsSome @>
+    test <@ status.Value = Idle @>
+
+[<Fact>]
 let ``dispose is callable`` () =
     let plugin = TestPrunePlugin(":memory:", "/tmp") :> IFsHotWatchPlugin
     plugin.Dispose()

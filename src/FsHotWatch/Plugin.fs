@@ -13,8 +13,11 @@ type PluginContext =
       OnBuildCompleted: IEvent<BuildResult>
       OnFileChecked: IEvent<FileCheckResult>
       OnProjectChecked: IEvent<ProjectCheckResult>
+      OnTestCompleted: IEvent<TestResults>
       ReportStatus: PluginStatus -> unit
-      RegisterCommand: string * CommandHandler -> unit }
+      RegisterCommand: string * CommandHandler -> unit
+      EmitBuildCompleted: BuildResult -> unit
+      EmitTestCompleted: TestResults -> unit }
 
 type IFsHotWatchPlugin =
     abstract Name: string
