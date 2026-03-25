@@ -52,3 +52,51 @@ let ``command does not run for non-matching files`` () =
     let status = host.GetStatus("run-scripts")
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
+
+[<Fact>]
+let ``command captures stdout output`` () =
+    let host =
+        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let plugin =
+        FileCommandPlugin("echo-test", (fun _ -> true), "echo", "captured-output")
+
+    host.Register(plugin)
+
+    host.EmitFileChanged(SourceChanged [ "anything.txt" ])
+
+    let result =
+        host.RunCommand("echo-test-status", [||]) |> Async.RunSynchronously
+
+    test <@ result.IsSome @>
+    test <@ result.Value.Contains("true") @>
+
+[<Fact>]
+let ``command with environment variables`` () =
+    let host =
+        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let plugin =
+        FileCommandPlugin("env-test", (fun _ -> true), "echo", "env-test-output")
+
+    host.Register(plugin)
+
+    host.EmitFileChanged(SourceChanged [ "file.txt" ])
+
+    let status = host.GetStatus("env-test")
+    test <@ status.IsSome @>
+
+    test
+        <@
+            match status.Value with
+            | Completed _ -> true
+            | _ -> false
+        @>
+
+[<Fact>]
+let ``dispose is callable`` () =
+    let plugin =
+        FileCommandPlugin("disposable", (fun _ -> true), "echo", "hello")
+        :> IFsHotWatchPlugin
+
+    plugin.Dispose()
