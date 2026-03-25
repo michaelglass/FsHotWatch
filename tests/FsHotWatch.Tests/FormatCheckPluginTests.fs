@@ -1,5 +1,7 @@
 module FsHotWatch.Tests.FormatCheckPluginTests
 
+open System
+open System.IO
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
@@ -63,3 +65,58 @@ let ``format check handles non-existent source file gracefully`` () =
     let result = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
     test <@ result.Value.Contains("\"count\": 0") @>
+
+[<Fact>]
+let ``FormatPreprocessor formats unformatted file`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmt-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let file = Path.Combine(tmpDir, "Bad.fs")
+        // Badly formatted: missing spaces, wrong indentation
+        File.WriteAllText(file, "module Bad\nlet   x=1\nlet   y   =   2\n")
+
+        let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
+        let modified = preprocessor.Process [ file ] tmpDir
+        test <@ modified.Length = 1 @>
+        test <@ modified.[0] = file @>
+
+        // Verify the file was rewritten
+        let contents = File.ReadAllText(file)
+        test <@ contents <> "module Bad\nlet   x=1\nlet   y   =   2\n" @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``FormatPreprocessor skips already formatted file`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmt-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let file = Path.Combine(tmpDir, "Good.fs")
+        // Well-formatted F# code
+        File.WriteAllText(file, "module Good\n\nlet x = 1\nlet y = 2\n")
+
+        let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
+        let modified = preprocessor.Process [ file ] tmpDir
+        test <@ modified.IsEmpty @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``FormatPreprocessor skips non-fs files`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmt-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let file = Path.Combine(tmpDir, "readme.txt")
+        File.WriteAllText(file, "hello world")
+
+        let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
+        let modified = preprocessor.Process [ file ] tmpDir
+        test <@ modified.IsEmpty @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)

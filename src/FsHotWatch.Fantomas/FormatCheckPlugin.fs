@@ -7,8 +7,6 @@ open Fantomas.Core
 /// Format-on-save preprocessor. Runs before other plugins receive events.
 /// Formats unformatted files and returns the list of files that were rewritten.
 type FormatPreprocessor() =
-    let mutable formattedCount = 0
-
     interface IFsHotWatchPreprocessor with
         member _.Name = "format"
 
@@ -31,9 +29,8 @@ type FormatPreprocessor() =
                         if formatted.Code <> source then
                             File.WriteAllText(file, formatted.Code)
                             modifiedFiles <- file :: modifiedFiles
-                            formattedCount <- formattedCount + 1
-                    with _ ->
-                        ()
+                    with ex ->
+                        eprintfn $"  FormatPreprocessor: failed to format %s{file}: %s{ex.Message}"
 
             modifiedFiles
 
