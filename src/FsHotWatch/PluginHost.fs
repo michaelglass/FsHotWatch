@@ -14,6 +14,7 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
 
     let commands = ConcurrentDictionary<string, CommandHandler>()
     let statuses = ConcurrentDictionary<string, PluginStatus>()
+    let preprocessors = ConcurrentBag<IFsHotWatchPreprocessor>()
 
     /// Register a plugin, wiring up its context and calling Initialize.
     member _.Register(plugin: IFsHotWatchPlugin) =
@@ -29,6 +30,27 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
 
         statuses[plugin.Name] <- Idle
         plugin.Initialize(ctx)
+
+    /// Register a preprocessor (runs before events are dispatched).
+    member _.RegisterPreprocessor(preprocessor: IFsHotWatchPreprocessor) =
+        statuses[preprocessor.Name] <- Idle
+        preprocessors.Add(preprocessor)
+
+    /// Run all preprocessors on the given files. Returns files that were modified.
+    member _.RunPreprocessors(files: string list) : string list =
+        let mutable modifiedFiles = []
+
+        for preprocessor in preprocessors do
+            statuses[preprocessor.Name] <- Running(since = System.DateTime.UtcNow)
+
+            try
+                let modified = preprocessor.Process files repoRoot
+                modifiedFiles <- modified @ modifiedFiles
+                statuses[preprocessor.Name] <- Completed(box modified, System.DateTime.UtcNow)
+            with ex ->
+                statuses[preprocessor.Name] <- Failed(ex.Message, System.DateTime.UtcNow)
+
+        modifiedFiles |> List.distinct
 
     /// Emit a file change event to all registered plugins.
     member _.EmitFileChanged(change: FileChangeKind) = fileChanged.Trigger(change)

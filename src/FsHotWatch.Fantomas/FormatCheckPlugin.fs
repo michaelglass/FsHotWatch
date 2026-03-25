@@ -1,11 +1,46 @@
 module FsHotWatch.Fantomas.FormatCheckPlugin
 
 open System.IO
-open System.Threading
-open FsHotWatch.Events
 open FsHotWatch.Plugin
 open Fantomas.Core
 
+/// Format-on-save preprocessor. Runs before other plugins receive events.
+/// Formats unformatted files and returns the list of files that were rewritten.
+type FormatPreprocessor() =
+    let mutable formattedCount = 0
+
+    interface IFsHotWatchPreprocessor with
+        member _.Name = "format"
+
+        member _.Process (changedFiles: string list) (_repoRoot: string) =
+            let mutable modifiedFiles = []
+
+            for file in changedFiles do
+                if
+                    File.Exists(file)
+                    && (file.EndsWith(".fs") || file.EndsWith(".fsx") || file.EndsWith(".fsi"))
+                then
+                    try
+                        let source = File.ReadAllText(file)
+                        let isSignature = file.EndsWith(".fsi")
+
+                        let formatted =
+                            CodeFormatter.FormatDocumentAsync(isSignature, source)
+                            |> Async.RunSynchronously
+
+                        if formatted.Code <> source then
+                            File.WriteAllText(file, formatted.Code)
+                            modifiedFiles <- file :: modifiedFiles
+                            formattedCount <- formattedCount + 1
+                    with _ ->
+                        ()
+
+            modifiedFiles
+
+        member _.Dispose() = ()
+
+/// Read-only format check plugin (reports unformatted files without modifying them).
+/// Use this instead of FormatPreprocessor if you don't want auto-formatting.
 type FormatCheckPlugin() =
     let mutable unformatted: Set<string> = Set.empty
 
@@ -17,12 +52,12 @@ type FormatCheckPlugin() =
                 try
                     let files =
                         match change with
-                        | SourceChanged files -> files
+                        | FsHotWatch.Events.SourceChanged files -> files
                         | _ -> []
 
                     for file in files do
                         if File.Exists(file) then
-                            ctx.ReportStatus(Running(since = System.DateTime.UtcNow))
+                            ctx.ReportStatus(FsHotWatch.Events.Running(since = System.DateTime.UtcNow))
                             let source = File.ReadAllText(file)
                             let isSignature = file.EndsWith(".fsi")
 
@@ -30,24 +65,25 @@ type FormatCheckPlugin() =
                                 CodeFormatter.FormatDocumentAsync(isSignature, source)
                                 |> Async.RunSynchronously
 
-                            let current = Volatile.Read(&unformatted)
-
                             if formatted.Code <> source then
-                                Volatile.Write(&unformatted, current |> Set.add file)
+                                unformatted <- unformatted |> Set.add file
                             else
-                                Volatile.Write(&unformatted, current |> Set.remove file)
+                                unformatted <- unformatted |> Set.remove file
 
-                    ctx.ReportStatus(Completed(box (Volatile.Read(&unformatted)), System.DateTime.UtcNow))
+                    ctx.ReportStatus(
+                        FsHotWatch.Events.Completed(box unformatted, System.DateTime.UtcNow)
+                    )
                 with ex ->
-                    ctx.ReportStatus(PluginStatus.Failed(ex.Message, System.DateTime.UtcNow)))
+                    ctx.ReportStatus(
+                        FsHotWatch.Events.PluginStatus.Failed(ex.Message, System.DateTime.UtcNow)
+                    ))
 
             ctx.RegisterCommand(
                 "unformatted",
                 fun _args ->
                     async {
-                        let current = Volatile.Read(&unformatted)
-                        let files = current |> Set.toList |> String.concat ", "
-                        return $"{{\"count\": {current.Count}, \"files\": \"{files}\"}}"
+                        let files = unformatted |> Set.toList |> String.concat ", "
+                        return $"{{\"count\": %d{unformatted.Count}, \"files\": \"%s{files}\"}}"
                     }
             )
 
