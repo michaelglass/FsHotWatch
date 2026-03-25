@@ -58,3 +58,31 @@ let ``build plugin emits BuildCompleted on successful build`` () =
             | Completed _ -> true
             | _ -> false
         @>
+
+[<Fact>]
+let ``build-status command returns passed true after successful build`` () =
+    let host =
+        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let plugin = BuildPlugin(command = "echo", args = "build succeeded")
+    host.Register(plugin)
+
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
+    test <@ result.IsSome @>
+    test <@ result.Value.Contains("\"passed\": true") @>
+
+[<Fact>]
+let ``build-status command returns passed false after failed build`` () =
+    let host =
+        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let plugin = BuildPlugin(command = "false", args = "")
+    host.Register(plugin)
+
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
+    test <@ result.IsSome @>
+    test <@ result.Value.Contains("\"passed\": false") @>
