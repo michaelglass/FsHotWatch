@@ -229,11 +229,9 @@ type TestPrunePlugin
 
         member _.Initialize(ctx) =
             ctx.OnFileChecked.Add(fun result ->
-                // Reset completed flag so new file changes resume status reporting
-                if testsCompleted && not testsRunning then
-                    testsCompleted <- false
-
-                if not testsRunning then
+                // Don't overwrite test results with analysis status — stay at
+                // Completed/Failed until the next build triggers a new test run
+                if not testsRunning && not testsCompleted then
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
                 try
@@ -278,7 +276,7 @@ type TestPrunePlugin
                         if not testsRunning then
                             ctx.ReportStatus(PluginStatus.Failed($"Analysis failed: %s{msg}", DateTime.UtcNow))
 
-                    if not testsRunning && not hasTestConfigs then
+                    if not testsRunning then
                         ctx.ReportStatus(Completed(box (Volatile.Read(&lastAffectedTests)), DateTime.UtcNow))
                 with ex ->
                     if not testsRunning then

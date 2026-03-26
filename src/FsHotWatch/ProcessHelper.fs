@@ -4,12 +4,7 @@ open System.Diagnostics
 
 /// Run a process and return (exitCode = 0, combined output).
 /// Reads stdout and stderr concurrently to avoid deadlock.
-let runProcess
-    (command: string)
-    (args: string)
-    (workDir: string)
-    (env: (string * string) list)
-    : bool * string =
+let runProcess (command: string) (args: string) (workDir: string) (env: (string * string) list) : bool * string =
     let psi = ProcessStartInfo(command, args)
     psi.RedirectStandardOutput <- true
     psi.RedirectStandardError <- true

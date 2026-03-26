@@ -15,8 +15,7 @@ open FsHotWatch.PluginHost
 // --- parseCommand tests ---
 
 [<Fact>]
-let ``parseCommand empty args returns Help`` () =
-    test <@ parseCommand [] = Help @>
+let ``parseCommand empty args returns Help`` () = test <@ parseCommand [] = Help @>
 
 [<Fact>]
 let ``parseCommand help returns Help`` () =
@@ -27,8 +26,7 @@ let ``parseCommand --help returns Help`` () =
     test <@ parseCommand [ "--help" ] = Help @>
 
 [<Fact>]
-let ``parseCommand -h returns Help`` () =
-    test <@ parseCommand [ "-h" ] = Help @>
+let ``parseCommand -h returns Help`` () = test <@ parseCommand [ "-h" ] = Help @>
 
 [<Fact>]
 let ``parseCommand start returns Start`` () =
@@ -66,7 +64,9 @@ let ``parseCommand command with args joins them`` () =
 
 [<Fact>]
 let ``findRepoRoot finds git repo`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"cli-test-git-{System.Guid.NewGuid():N}")
+    let tmpDir =
+        Path.Combine(Path.GetTempPath(), $"cli-test-git-{System.Guid.NewGuid():N}")
+
     let nested = Path.Combine(tmpDir, "a", "b")
     Directory.CreateDirectory(nested) |> ignore
     Directory.CreateDirectory(Path.Combine(tmpDir, ".git")) |> ignore
@@ -79,7 +79,9 @@ let ``findRepoRoot finds git repo`` () =
 
 [<Fact>]
 let ``findRepoRoot finds jj repo`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"cli-test-jj-{System.Guid.NewGuid():N}")
+    let tmpDir =
+        Path.Combine(Path.GetTempPath(), $"cli-test-jj-{System.Guid.NewGuid():N}")
+
     let nested = Path.Combine(tmpDir, "src")
     Directory.CreateDirectory(nested) |> ignore
     Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
@@ -93,7 +95,9 @@ let ``findRepoRoot finds jj repo`` () =
 [<Fact>]
 let ``findRepoRoot returns None when no repo`` () =
     // Use a temp dir with no .git or .jj ancestor
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"cli-test-none-{System.Guid.NewGuid():N}")
+    let tmpDir =
+        Path.Combine(Path.GetTempPath(), $"cli-test-none-{System.Guid.NewGuid():N}")
+
     Directory.CreateDirectory(tmpDir) |> ignore
 
     try
@@ -123,11 +127,18 @@ let ``shutdown via IPC stops the daemon`` () =
         test <@ result = "shutting down" @>
 
         // Daemon should stop within a few seconds
-        try task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore with _ -> ()
+        try
+            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+        with _ ->
+            ()
+
         test <@ task.IsCompleted @>
     finally
-        if not cts.IsCancellationRequested then cts.Cancel()
-        if Directory.Exists tmpDir then Directory.Delete(tmpDir, true)
+        if not cts.IsCancellationRequested then
+            cts.Cancel()
+
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
 
 // --- computePipeName tests ---
 
@@ -181,8 +192,14 @@ let ``CLI status query works against running daemon`` () =
         test <@ result.Contains("Idle") @>
     finally
         cts.Cancel()
-        try task.Wait(TimeSpan.FromSeconds(3.0)) |> ignore with _ -> ()
-        if Directory.Exists tmpDir then Directory.Delete(tmpDir, true)
+
+        try
+            task.Wait(TimeSpan.FromSeconds(3.0)) |> ignore
+        with _ ->
+            ()
+
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
 
 [<Fact>]
 let ``CLI plugin status query works against running daemon`` () =
@@ -196,7 +213,10 @@ let ``CLI plugin status query works against running daemon`` () =
     let plugin =
         { new IFsHotWatchPlugin with
             member _.Name = "my-lint"
-            member _.Initialize(ctx) = ctx.ReportStatus(Running(since = DateTime.UtcNow))
+
+            member _.Initialize(ctx) =
+                ctx.ReportStatus(Running(since = DateTime.UtcNow))
+
             member _.Dispose() = () }
 
     daemon.Register(plugin)
@@ -208,8 +228,14 @@ let ``CLI plugin status query works against running daemon`` () =
         test <@ result.Contains("Running") @>
     finally
         cts.Cancel()
-        try task.Wait(TimeSpan.FromSeconds(3.0)) |> ignore with _ -> ()
-        if Directory.Exists tmpDir then Directory.Delete(tmpDir, true)
+
+        try
+            task.Wait(TimeSpan.FromSeconds(3.0)) |> ignore
+        with _ ->
+            ()
+
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
 
 [<Fact>]
 let ``CLI command proxying works against running daemon`` () =
@@ -241,12 +267,20 @@ let ``CLI command proxying works against running daemon`` () =
     Thread.Sleep(500)
 
     try
-        let result = IpcClient.runCommand pipeName "greet" "Claude" |> Async.RunSynchronously
+        let result =
+            IpcClient.runCommand pipeName "greet" "Claude" |> Async.RunSynchronously
+
         test <@ result.Contains("hello Claude") @>
     finally
         cts.Cancel()
-        try task.Wait(TimeSpan.FromSeconds(3.0)) |> ignore with _ -> ()
-        if Directory.Exists tmpDir then Directory.Delete(tmpDir, true)
+
+        try
+            task.Wait(TimeSpan.FromSeconds(3.0)) |> ignore
+        with _ ->
+            ()
+
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
 
 // --- executeCommand with fake IPC tests ---
 
@@ -256,11 +290,19 @@ let private fakeIpc () : IpcOps =
       ScanStatus = fun _ -> async { return "idle" }
       GetStatus = fun _ -> async { return "{}" }
       GetPluginStatus = fun _ _ -> async { return "not found" }
-      RunCommand = fun _ _ _ -> async { return "unknown command" } }
+      RunCommand = fun _ _ _ -> async { return "unknown command" }
+      GetErrors = fun _ _ -> async { return """{"count": 0, "files": {}}""" }
+      WaitForScan = fun _ -> async { return "idle" }
+      WaitForComplete = fun _ -> async { return "{}" }
+      TriggerBuild = fun _ -> async { return "{}" }
+      FormatAll = fun _ -> async { return "formatted 0 files" }
+      IsRunning = fun _ -> true }
 
 [<Fact>]
 let ``executeCommand Help returns 0`` () =
-    let result = executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" Help
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" Help
+
     test <@ result = 0 @>
 
 [<Fact>]
@@ -269,11 +311,12 @@ let ``executeCommand Stop calls shutdown`` () =
 
     let ipc =
         { fakeIpc () with
-            Shutdown = fun _ ->
-                async {
-                    called <- true
-                    return "shutting down"
-                } }
+            Shutdown =
+                fun _ ->
+                    async {
+                        called <- true
+                        return "shutting down"
+                    } }
 
     let result = executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Stop
     test <@ result = 0 @>
@@ -281,7 +324,9 @@ let ``executeCommand Stop calls shutdown`` () =
 
 [<Fact>]
 let ``executeCommand Status returns 0`` () =
-    let result = executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" (Status None)
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" (Status None)
+
     test <@ result = 0 @>
 
 [<Fact>]
@@ -309,11 +354,12 @@ let ``executeCommand Scan calls scan IPC`` () =
 
     let ipc =
         { fakeIpc () with
-            Scan = fun _ ->
-                async {
-                    called <- true
-                    return "scan started"
-                } }
+            Scan =
+                fun _ ->
+                    async {
+                        called <- true
+                        return "scan started"
+                    } }
 
     let result = executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Scan
     test <@ result = 0 @>
@@ -325,13 +371,16 @@ let ``executeCommand ScanStatus calls scanStatus IPC`` () =
 
     let ipc =
         { fakeIpc () with
-            ScanStatus = fun _ ->
-                async {
-                    called <- true
-                    return "idle"
-                } }
+            ScanStatus =
+                fun _ ->
+                    async {
+                        called <- true
+                        return "idle"
+                    } }
 
-    let result = executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" ScanStatus
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" ScanStatus
+
     test <@ result = 0 @>
     test <@ called @>
 
@@ -341,11 +390,12 @@ let ``executeCommand Status with plugin name calls getPluginStatus`` () =
 
     let ipc =
         { fakeIpc () with
-            GetPluginStatus = fun _ name ->
-                async {
-                    calledWith <- name
-                    return "Running"
-                } }
+            GetPluginStatus =
+                fun _ name ->
+                    async {
+                        calledWith <- name
+                        return "Running"
+                    } }
 
     let result =
         executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status(Some "lint"))
@@ -380,5 +430,7 @@ let ``executeCommand returns 1 when IPC fails`` () =
         { fakeIpc () with
             GetStatus = fun _ -> async { return failwith "connection refused" } }
 
-    let result = executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status None)
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status None)
+
     test <@ result = 1 @>

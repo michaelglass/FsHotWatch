@@ -5,6 +5,7 @@ open System.IO
 open System.Threading
 open FSharp.Analyzers.SDK
 open FSharp.Compiler.Text
+open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 
@@ -63,11 +64,33 @@ type AnalyzersPlugin(analyzerPaths: string list) =
                             let context =
                                 createCliContext result.File sourceText result.ParseResults result.CheckResults
 
-                            let messages =
-                                client.RunAnalyzersSafely(context) |> Async.RunSynchronously
+                            let messages = client.RunAnalyzersSafely(context) |> Async.RunSynchronously
 
                             let current = Volatile.Read(&diagnosticsByFile)
                             Volatile.Write(&diagnosticsByFile, current |> Map.add result.File messages)
+
+                            let entries =
+                                messages
+                                |> List.collect (fun ar ->
+                                    match ar.Output with
+                                    | Ok msgs ->
+                                        msgs
+                                        |> List.map (fun m ->
+                                            { Message = m.Message
+                                              Severity =
+                                                match m.Severity with
+                                                | Severity.Error -> "error"
+                                                | Severity.Warning -> "warning"
+                                                | Severity.Info -> "info"
+                                                | Severity.Hint -> "hint"
+                                              Line = m.Range.StartLine
+                                              Column = m.Range.StartColumn })
+                                    | Error _ -> [])
+
+                            if entries.IsEmpty then
+                                ctx.ClearErrors result.File
+                            else
+                                ctx.ReportErrors result.File entries
                     with ex ->
                         errorCount <- errorCount + 1
                         eprintfn "  [analyzers] Error analyzing %s: %s" result.File ex.Message
@@ -94,9 +117,7 @@ type AnalyzersPlugin(analyzerPaths: string list) =
                         let currentLoaded = Volatile.Read(&loadedCount)
 
                         let totalDiags =
-                            currentDiags
-                            |> Map.toList
-                            |> List.sumBy (fun (_, msgs) -> msgs.Length)
+                            currentDiags |> Map.toList |> List.sumBy (fun (_, msgs) -> msgs.Length)
 
                         return
                             $"{{\"analyzers\": %d{currentLoaded}, \"files\": %d{currentDiags.Count}, \"diagnostics\": %d{totalDiags}}}"

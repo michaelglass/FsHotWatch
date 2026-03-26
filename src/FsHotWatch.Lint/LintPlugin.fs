@@ -3,6 +3,7 @@ module FsHotWatch.Lint.LintPlugin
 open System.Threading
 open FsHotWatch.Events
 open FsHotWatch.Plugin
+open FsHotWatch.ErrorLedger
 open FSharpLint.Application
 
 /// FSharpLint plugin — lints files using pre-parsed AST and check results
@@ -38,8 +39,10 @@ type LintPlugin(?configPath: string) =
 
                 try
                     let typeCheckResults =
-                        if isNull (box result.CheckResults) then None
-                        else Some result.CheckResults
+                        if isNull (box result.CheckResults) then
+                            None
+                        else
+                            Some result.CheckResults
 
                     let parsedInfo: Lint.ParsedFileInformation =
                         { Ast = result.ParseResults.ParseTree
@@ -52,6 +55,20 @@ type LintPlugin(?configPath: string) =
                         let msgs = warnings |> List.map (fun w -> w.Details.Message)
                         let current = Volatile.Read(&warningsByFile)
                         Volatile.Write(&warningsByFile, current |> Map.add result.File msgs)
+
+                        if warnings.IsEmpty then
+                            ctx.ClearErrors result.File
+                        else
+                            let entries =
+                                warnings
+                                |> List.map (fun w ->
+                                    { Message = w.Details.Message
+                                      Severity = "warning"
+                                      Line = w.Details.Range.StartLine
+                                      Column = w.Details.Range.StartColumn })
+
+                            ctx.ReportErrors result.File entries
+
                         ctx.ReportStatus(Completed(box (Volatile.Read(&warningsByFile)), System.DateTime.UtcNow))
                     | Lint.LintResult.Failure failure ->
                         let msg = $"Lint failed for %s{result.File}: %A{failure}"
@@ -65,8 +82,7 @@ type LintPlugin(?configPath: string) =
                     async {
                         let current = Volatile.Read(&warningsByFile)
 
-                        let count =
-                            current |> Map.toList |> List.sumBy (fun (_, w) -> w.Length)
+                        let count = current |> Map.toList |> List.sumBy (fun (_, w) -> w.Length)
 
                         return $"{{\"files\": %d{current.Count}, \"warnings\": %d{count}}}"
                     }

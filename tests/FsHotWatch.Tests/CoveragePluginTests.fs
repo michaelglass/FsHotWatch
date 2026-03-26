@@ -16,8 +16,7 @@ let ``plugin has correct name`` () =
 
 [<Fact>]
 let ``coverage command returns empty initially`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = CoveragePlugin("/tmp/nonexistent")
     host.Register(plugin)
@@ -34,16 +33,12 @@ let ``coverage plugin reads Cobertura XML`` () =
 
     let xmlPath = Path.Combine(subDir, "cobertura.xml")
 
-    File.WriteAllText(
-        xmlPath,
-        """<?xml version="1.0" ?><coverage line-rate="0.85" branch-rate="0.70" />"""
-    )
+    File.WriteAllText(xmlPath, """<?xml version="1.0" ?><coverage line-rate="0.85" branch-rate="0.70" />""")
 
     try
         let mutable checkDone = false
 
-        let host =
-            PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
         let plugin = CoveragePlugin(tmpDir, afterCheck = (fun () -> checkDone <- true))
         host.Register(plugin)
@@ -84,21 +79,14 @@ let ``coverage plugin fails when below threshold`` () =
 
     let xmlPath = Path.Combine(subDir, "cobertura.xml")
 
-    File.WriteAllText(
-        xmlPath,
-        """<?xml version="1.0" ?><coverage line-rate="0.85" branch-rate="0.70" />"""
-    )
+    File.WriteAllText(xmlPath, """<?xml version="1.0" ?><coverage line-rate="0.85" branch-rate="0.70" />""")
 
     let thresholdsPath = Path.Combine(tmpDir, "thresholds.json")
 
-    File.WriteAllText(
-        thresholdsPath,
-        """{"MyProject": {"line": 90.0, "branch": 50.0}}"""
-    )
+    File.WriteAllText(thresholdsPath, """{"MyProject": {"line": 90.0, "branch": 50.0}}""")
 
     try
-        let host =
-            PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
         let plugin = CoveragePlugin(tmpDir, thresholdsFile = thresholdsPath)
         host.Register(plugin)

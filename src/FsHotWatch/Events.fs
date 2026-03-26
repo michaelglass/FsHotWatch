@@ -20,24 +20,28 @@ type BuildResult =
 /// Result of type-checking a single file with the warm FSharpChecker.
 [<NoComparison>]
 type FileCheckResult =
-    { /// Absolute path to the checked file.
-      File: string
-      /// Source text of the file at check time.
-      Source: string
-      /// FCS parse results (AST).
-      ParseResults: FSharpParseFileResults
-      /// FCS type-check results (symbols, diagnostics).
-      CheckResults: FSharpCheckFileResults
-      /// FSharpProjectOptions used when checking this file.
-      ProjectOptions: FSharpProjectOptions }
+    {
+        /// Absolute path to the checked file.
+        File: string
+        /// Source text of the file at check time.
+        Source: string
+        /// FCS parse results (AST).
+        ParseResults: FSharpParseFileResults
+        /// FCS type-check results (symbols, diagnostics).
+        CheckResults: FSharpCheckFileResults
+        /// FSharpProjectOptions used when checking this file.
+        ProjectOptions: FSharpProjectOptions
+    }
 
 /// Result of checking all files in a project.
 [<NoComparison>]
 type ProjectCheckResult =
-    { /// Project file path.
-      Project: string
-      /// Per-file check results keyed by absolute file path.
-      FileResults: Map<string, FileCheckResult> }
+    {
+        /// Project file path.
+        Project: string
+        /// Per-file check results keyed by absolute file path.
+        FileResults: Map<string, FileCheckResult>
+    }
 
 /// Current status of a plugin or preprocessor.
 [<NoComparison>]
@@ -64,10 +68,12 @@ type TestResult =
 
 /// Aggregate test results across all test projects.
 type TestResults =
-    { /// Per-project test results.
-      Results: Map<string, TestResult>
-      /// Total time for all test execution.
-      Elapsed: System.TimeSpan }
+    {
+        /// Per-project test results.
+        Results: Map<string, TestResult>
+        /// Total time for all test execution.
+        Elapsed: System.TimeSpan
+    }
 
 /// Current state of the daemon's scan operation.
 type ScanState =

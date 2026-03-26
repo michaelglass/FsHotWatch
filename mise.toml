@@ -1,6 +1,8 @@
 [tools]
 dotnet = "10.0"
 
+# === Infrastructure tasks (not daemon-backed) ===
+
 [tasks.restore]
 description = "Restore dependencies"
 run = "dotnet restore"
@@ -9,13 +11,45 @@ run = "dotnet restore"
 description = "Restore local dotnet tools"
 run = "dotnet tool restore"
 
+# === Daemon-backed tasks ===
+# These auto-start the daemon if not running, then block until done.
+
 [tasks.build]
-description = "Build the solution"
-run = "dotnet build"
-depends = ["restore"]
+description = "Build via daemon"
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- build"
+depends = ["build"]
 
 [tasks.test]
-description = "Run tests with coverage"
+description = "Run tests via daemon"
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- test"
+depends = ["build"]
+
+[tasks.format]
+description = "Format code via daemon"
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- format"
+depends = ["build"]
+
+[tasks.lint]
+description = "Lint via daemon"
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- lint"
+depends = ["build"]
+
+[tasks.errors]
+description = "Show accumulated errors"
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- errors"
+depends = ["build"]
+
+[tasks.check]
+description = "Run all checks via daemon (auto-starts daemon if needed)"
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- check"
+depends = ["build"]
+# Note: depends on build to ensure CLI binary is compiled.
+# The daemon handles its own build/test/lint cycle internally.
+
+# === Direct tasks (CI, docs, packaging) ===
+
+[tasks.test-direct]
+description = "Run tests directly with coverage (for CI)"
 run = """
 dotnet test \
   --coverage \
@@ -23,32 +57,27 @@ dotnet test \
   --coverage-output "$PWD/coverage/coverage.cobertura.xml" \
   --coverage-settings "$PWD/coverage.settings"
 """
-depends = ["build"]
-
-[tasks.format]
-description = "Format code with Fantomas"
-run = "dotnet fantomas src/ tests/"
-depends = ["tool-restore"]
+depends = ["restore"]
 
 [tasks.format-check]
 description = "Check formatting without making changes"
 run = "dotnet fantomas src/ tests/ --check"
 depends = ["tool-restore"]
 
-[tasks.lint]
-description = "Run FSharpLint"
+[tasks.lint-direct]
+description = "Run FSharpLint directly (for CI)"
 run = "dotnet fsharplint lint FsHotWatch.slnx"
-depends = ["build", "tool-restore"]
+depends = ["restore", "tool-restore"]
 
 [tasks.coverage-check]
-description = "Check per-file coverage meets minimum threshold (50%)"
+description = "Check per-file coverage meets minimum threshold"
 run = "dotnet fsi scripts/check-coverage.fsx"
-depends = ["test"]
+depends = ["test-direct"]
 
 [tasks.check-api]
 description = "Check API changes since last release"
 run = "dotnet fsi scripts/check-api.fsx"
-depends = ["build"]
+depends = ["restore"]
 
 [tasks.sync-docs]
 description = "Sync README.md content to docs/index.md"
@@ -58,18 +87,14 @@ run = "dotnet fsi scripts/sync-docs.fsx"
 description = "Check if docs/index.md is in sync with README.md"
 run = "dotnet fsi scripts/sync-docs.fsx --check"
 
-[tasks.check]
-description = "Run all checks with auto-fix (format, sync-docs, then verify)"
-depends = ["format", "sync-docs", "lint", "coverage-check", "docs"]
-
 [tasks.ci]
-description = "Run all CI checks (no auto-fix)"
-depends = ["format-check", "lint", "coverage-check", "sync-docs-check", "docs"]
+description = "Run all CI checks (no daemon, no auto-fix)"
+depends = ["format-check", "lint-direct", "coverage-check", "sync-docs-check", "docs"]
 
 [tasks.run]
 description = "Run the CLI"
 run = "dotnet run --project src/FsHotWatch.Cli --"
-depends = ["build"]
+depends = ["restore"]
 
 [tasks.pack]
 description = "Create NuGet packages"
@@ -81,14 +106,14 @@ dotnet pack src/FsHotWatch.Analyzers/FsHotWatch.Analyzers.fsproj -c Release -o a
 dotnet pack src/FsHotWatch.Lint/FsHotWatch.Lint.fsproj -c Release -o artifacts
 dotnet pack src/FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj -c Release -o artifacts
 """
-depends = ["build"]
+depends = ["restore"]
 
 [tasks.docs]
 description = "Generate API documentation"
 run = "dotnet fsdocs build --output output/docs --clean"
-depends = ["build", "tool-restore"]
+depends = ["restore", "tool-restore"]
 
 [tasks.docs-watch]
 description = "Watch and serve documentation locally"
 run = "dotnet fsdocs watch"
-depends = ["build", "tool-restore"]
+depends = ["restore", "tool-restore"]

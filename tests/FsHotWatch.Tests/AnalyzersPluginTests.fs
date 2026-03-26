@@ -14,8 +14,7 @@ let ``plugin has correct name`` () =
 
 [<Fact>]
 let ``diagnostics command returns zeroes when no files checked`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = AnalyzersPlugin([])
     host.Register(plugin)
@@ -28,8 +27,7 @@ let ``diagnostics command returns zeroes when no files checked`` () =
 
 [<Fact>]
 let ``analyzer error path sets Failed status`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = AnalyzersPlugin([])
     host.Register(plugin)
@@ -43,8 +41,8 @@ let ``analyzer error path sets Failed status`` () =
 
     try
         host.EmitFileChecked(fakeResult)
-    with
-    | _ -> ()
+    with _ ->
+        ()
 
     let status = host.GetStatus("analyzers")
     test <@ status.IsSome @>
@@ -57,8 +55,7 @@ let ``analyzer error path sets Failed status`` () =
 [<Fact>]
 let ``analyzer with non-existent path skips loading`` () =
     // Exercise the Directory.Exists false branch
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = AnalyzersPlugin([ "/tmp/no-such-analyzer-dir-12345" ])
     host.Register(plugin)
@@ -77,8 +74,7 @@ let ``analyzer with mix of valid and invalid paths`` () =
     System.IO.Directory.CreateDirectory(emptyDir) |> ignore
 
     try
-        let host =
-            PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
         let plugin =
             AnalyzersPlugin(

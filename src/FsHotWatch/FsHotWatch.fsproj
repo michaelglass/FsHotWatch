@@ -49,6 +49,7 @@
   <ItemGroup>
     <Compile Include="Events.fs" />
     <Compile Include="ProcessHelper.fs" />
+    <Compile Include="ErrorLedger.fs" />
     <Compile Include="Plugin.fs" />
     <Compile Include="PluginHost.fs" />
     <Compile Include="Watcher.fs" />
