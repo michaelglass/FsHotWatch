@@ -11,7 +11,9 @@
       {
         "project": "FsHotWatch.Tests",
         "command": "dotnet",
-        "args": "run --project tests/FsHotWatch.Tests --no-build",
+        "args": "run --project tests/FsHotWatch.Tests --no-build --",
+        "filterTemplate": "--filter-class {classes}",
+        "classJoin": " ",
         "group": "default"
       }
     ]
