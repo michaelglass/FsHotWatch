@@ -259,12 +259,61 @@ module Daemon =
                 if hasSolution then
                     host.EmitFileChanged(SolutionChanged)
 
-                if not projFiles.IsEmpty then
+                if not projFiles.IsEmpty || hasSolution then
+                    eprintfn "  [daemon] Project/solution change detected — re-discovering projects"
+
                     if not (isNull (box checker)) then
                         checker.InvalidateAll()
                         checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
 
-                    host.EmitFileChanged(ProjectChanged(projFiles |> List.distinct))
+                    // Re-discover projects to pick up new files, new projects, changed references
+                    let searchDirs =
+                        [ Path.Combine(repoRoot, "src"); Path.Combine(repoRoot, "tests") ]
+                        |> List.filter Directory.Exists
+
+                    let fsprojFiles =
+                        searchDirs
+                        |> List.collect (fun dir ->
+                            Directory.GetFiles(dir, "*.fsproj", SearchOption.AllDirectories)
+                            |> Array.toList)
+                        |> List.filter (fun f ->
+                            let n = f.Replace('\\', '/')
+                            not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
+
+                    for fsproj in fsprojFiles do
+                        try
+                            graph.RegisterFromFsproj(fsproj) |> ignore
+                        with _ ->
+                            ()
+
+                    for fsproj in graph.GetTopologicalOrder() do
+                        try
+                            let srcFiles = graph.GetSourceFiles(fsproj) |> List.toArray
+
+                            if srcFiles.Length > 0 && File.Exists(srcFiles.[0]) then
+                                let source = File.ReadAllText(srcFiles.[0])
+                                let sourceText = FSharp.Compiler.Text.SourceText.ofString source
+
+                                let projOptions, _ =
+                                    checker.GetProjectOptionsFromScript(
+                                        srcFiles.[0],
+                                        sourceText,
+                                        assumeDotNetFramework = false
+                                    )
+                                    |> Async.RunSynchronously
+
+                                pipeline.RegisterProject(
+                                    fsproj,
+                                    { projOptions with
+                                        SourceFiles = srcFiles }
+                                )
+                        with _ ->
+                            ()
+
+                    eprintfn "  [daemon] Re-discovery complete: %d projects, %d files" (graph.GetAllProjects().Length) (pipeline.GetAllRegisteredFiles().Length)
+
+                    if not projFiles.IsEmpty then
+                        host.EmitFileChanged(ProjectChanged(projFiles |> List.distinct))
 
                 if not allSourceFiles.IsEmpty then
                     let modifiedByPreprocessors = host.RunPreprocessors(allSourceFiles)
