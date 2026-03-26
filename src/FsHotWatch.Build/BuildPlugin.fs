@@ -6,6 +6,8 @@ open System.Threading
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.ErrorLedger
+open FsHotWatch
+open FsHotWatch.Logging
 open FsHotWatch.ProcessHelper
 
 /// Runs a build command when source files change and emits BuildCompleted events.
@@ -27,13 +29,16 @@ type BuildPlugin(?command: string, ?args: string) =
                     building <- true
 
                     try
-                        eprintfn "  [build] Running: %s %s" buildCommand buildArgs
+                        Logging.info "build" $"Running: %s{buildCommand} %s{buildArgs}"
                         ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
                         try
                             let (success, output) = runProcess buildCommand buildArgs ctx.RepoRoot []
                             Volatile.Write(&lastResult, Some(success, output))
-                            eprintfn "  [build] Build %s" (if success then "succeeded" else "FAILED")
+                            if success then
+                                Logging.info "build" "Build succeeded"
+                            else
+                                Logging.error "build" "Build FAILED"
 
                             if success then
                                 ctx.ClearErrors "<build>"

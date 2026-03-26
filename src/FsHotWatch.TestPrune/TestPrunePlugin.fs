@@ -7,6 +7,8 @@ open System.Text.Json
 open System.Threading
 open FsHotWatch.Events
 open FsHotWatch.Plugin
+open FsHotWatch
+open FsHotWatch.Logging
 open FsHotWatch.ProcessHelper
 open TestPrune.AstAnalyzer
 open TestPrune.Database
@@ -77,14 +79,14 @@ type TestPrunePlugin
         Volatile.Write(&testsRunning, true)
 
         async {
-            eprintfn "  [test-prune] executeTests starting with %d configs" configs.Length
+            Logging.info "test-prune" $"executeTests starting with %d{configs.Length} configs"
             let sw = Stopwatch.StartNew()
 
             match beforeRun with
             | Some setup ->
-                eprintfn "  [test-prune] Running beforeRun setup..."
+                Logging.info "test-prune" "Running beforeRun setup..."
                 setup ()
-                eprintfn "  [test-prune] beforeRun complete"
+                Logging.info "test-prune" "beforeRun complete"
             | None -> ()
 
             let groups = configs |> List.groupBy (fun c -> c.Group)
@@ -106,12 +108,15 @@ type TestPrunePlugin
                                 | Some covFn -> covFn config.Project baseArgs
                                 | None -> baseArgs
 
-                            eprintfn "  [test-prune] Running: %s %s" config.Command finalArgs
+                            Logging.info "test-prune" $"Running: %s{config.Command} %s{finalArgs}"
 
                             let (success, output) =
                                 runProcess config.Command finalArgs repoRoot config.Environment
 
-                            eprintfn "  [test-prune] %s: %s" config.Project (if success then "PASSED" else "FAILED")
+                            if success then
+                                Logging.info "test-prune" $"%s{config.Project}: PASSED"
+                            else
+                                Logging.error "test-prune" $"%s{config.Project}: FAILED"
 
                             if not success then
                                 let lines = output.Split('\n')
@@ -127,13 +132,13 @@ type TestPrunePlugin
                                         || l.Contains("failed:")
                                         || l.Contains("succeeded:"))
 
-                                eprintfn "  [test-prune] %s: %d test(s) failed:" config.Project failedTests.Length
+                                Logging.error "test-prune" $"%s{config.Project}: %d{failedTests.Length} test(s) failed:"
 
                                 for line in failedTests do
-                                    eprintfn "    %s" line
+                                    Logging.error "test-prune" $"  %s{line}"
 
                                 for line in summaryLines |> Array.filter (fun l -> not (l.StartsWith("failed "))) do
-                                    eprintfn "    %s" line
+                                    Logging.error "test-prune" $"  %s{line}"
 
                             let result = if success then TestsPassed output else TestsFailed output
                             results <- (config.Project, result) :: results
@@ -159,10 +164,7 @@ type TestPrunePlugin
             Volatile.Write(&testsRunning, false)
             testsCompleted <- true
 
-            eprintfn
-                "  [test-prune] Tests complete: %d projects, %.1fs"
-                testResults.Results.Count
-                testResults.Elapsed.TotalSeconds
+            Logging.info "test-prune" $"Tests complete: %d{testResults.Results.Count} projects, %.1f{testResults.Elapsed.TotalSeconds}s"
 
             ctx.EmitTestCompleted(testResults)
 
@@ -204,7 +206,7 @@ type TestPrunePlugin
                         ext.FindAffectedTests db changedFiles repoRoot
                         |> List.map (fun t -> t.TestClass)
                     with ex ->
-                        eprintfn $"  [test-prune] Extension '%s{ext.Name}' failed: %s{ex.Message}"
+                        Logging.error "test-prune" $"Extension '%s{ext.Name}' failed: %s{ex.Message}"
                         [])
             | None -> []
 
@@ -274,7 +276,7 @@ type TestPrunePlugin
 
                             analysisRan <- true
                         | Error msg ->
-                            eprintfn $"  [test-prune] Analysis failed for %s{relPath}: %s{msg}"
+                            Logging.error "test-prune" $"Analysis failed for %s{relPath}: %s{msg}"
 
                             if not (Volatile.Read(&testsRunning)) then
                                 ctx.ReportStatus(PluginStatus.Failed($"Analysis failed: %s{msg}", DateTime.UtcNow))
@@ -290,7 +292,7 @@ type TestPrunePlugin
             // Subscribe to build completion for test execution
             match testConfigs with
             | Some configs when not configs.IsEmpty ->
-                eprintfn "  [test-prune] Subscribing to OnBuildCompleted with %d test configs" configs.Length
+                Logging.info "test-prune" $"Subscribing to OnBuildCompleted with %d{configs.Length} test configs"
 
                 let mutable pendingRerun = false
 
@@ -298,12 +300,11 @@ type TestPrunePlugin
                     match result with
                     | BuildSucceeded ->
                         if Volatile.Read(&testsRunning) then
-                            eprintfn
-                                "  [test-prune] BuildSucceeded received but tests already running — will re-run after"
+                            Logging.info "test-prune" "BuildSucceeded received but tests already running — will re-run after"
 
                             pendingRerun <- true
                         else
-                            eprintfn "  [test-prune] BuildSucceeded received, running %d test configs" configs.Length
+                            Logging.info "test-prune" $"BuildSucceeded received, running %d{configs.Length} test configs"
                             ctx.ReportStatus(Running(since = DateTime.UtcNow))
                             Volatile.Write(&testsRunning, true)
 
@@ -313,12 +314,12 @@ type TestPrunePlugin
 
                                     if pendingRerun then
                                         pendingRerun <- false
-                                        eprintfn "  [test-prune] Re-running tests (queued during previous run)"
+                                        Logging.info "test-prune" "Re-running tests (queued during previous run)"
                                         do! runTests ctx configs
                                 with ex ->
                                     Volatile.Write(&testsRunning, false)
                                     pendingRerun <- false
-                                    eprintfn "  [test-prune] runTests failed: %s" ex.Message
+                                    Logging.error "test-prune" $"runTests failed: %s{ex.Message}"
                                     ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                             }
                             |> Async.Start
@@ -457,7 +458,7 @@ type TestPrunePlugin
                                             return formatTestResultsJson results
                                 with ex ->
                                     Volatile.Write(&testsRunning, false)
-                                    eprintfn "  [test-prune] run-tests failed: %s" ex.Message
+                                    Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
                                     ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                                     return $"{{\"error\": %s{JsonSerializer.Serialize(ex.Message)}}}"
                         }

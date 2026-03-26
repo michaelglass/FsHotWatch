@@ -1,6 +1,8 @@
 module FsHotWatch.Fantomas.FormatCheckPlugin
 
 open System.IO
+open FsHotWatch
+open FsHotWatch.Logging
 open FsHotWatch.Plugin
 open Fantomas.Core
 
@@ -29,7 +31,7 @@ type FormatPreprocessor() =
                             File.WriteAllText(file, formatted.Code)
                             modifiedFiles <- file :: modifiedFiles
                     with ex ->
-                        eprintfn $"  FormatPreprocessor: failed to format %s{file}: %s{ex.Message}"
+                        Logging.error "format" $"failed to format %s{file}: %s{ex.Message}"
 
             modifiedFiles
 

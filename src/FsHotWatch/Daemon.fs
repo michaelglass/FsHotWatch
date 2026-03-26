@@ -70,7 +70,7 @@ let private discoverAndRegisterProjects
         pipeline.PrepareForRediscovery()
 
         let sw = System.Diagnostics.Stopwatch.StartNew()
-        eprintfn "  [discover] Loading project options via MSBuild evaluation..."
+        Logging.info "discover" "Loading project options via MSBuild evaluation..."
 
         try
             let loaded = loader.LoadProjects(fsprojFiles) |> Seq.toList
@@ -90,29 +90,19 @@ let private discoverAndRegisterProjects
             let fcsOptionsList = Ionide.ProjInfo.FCS.mapManyOptions loaded |> Seq.toList
             sw.Stop()
 
-            eprintfn
-                "  [discover] MSBuild evaluation complete: %d projects in %.1fs"
-                fcsOptionsList.Length
-                sw.Elapsed.TotalSeconds
+            Logging.info "discover" $"MSBuild evaluation complete: %d{fcsOptionsList.Length} projects in %.1f{sw.Elapsed.TotalSeconds}s"
 
             for fcsOptions in fcsOptionsList do
                 try
                     let absProject = Path.GetFullPath(fcsOptions.ProjectFileName)
                     pipeline.RegisterProject(absProject, fcsOptions)
 
-                    eprintfn
-                        "  [discover] Registered %s (%d files, %d opts)"
-                        (Path.GetFileName fcsOptions.ProjectFileName)
-                        fcsOptions.SourceFiles.Length
-                        fcsOptions.OtherOptions.Length
+                    Logging.info "discover" $"Registered %s{Path.GetFileName fcsOptions.ProjectFileName} (%d{fcsOptions.SourceFiles.Length} files, %d{fcsOptions.OtherOptions.Length} opts)"
                 with ex ->
-                    eprintfn
-                        "  [discover] Failed to register %s: %s"
-                        (Path.GetFileName fcsOptions.ProjectFileName)
-                        ex.Message
+                    Logging.error "discover" $"Failed to register %s{Path.GetFileName fcsOptions.ProjectFileName}: %s{ex.Message}"
         with ex ->
             sw.Stop()
-            eprintfn "  [discover] MSBuild evaluation failed (%.1fs): %s" sw.Elapsed.TotalSeconds ex.Message
+            Logging.error "discover" $"MSBuild evaluation failed (%.1f{sw.Elapsed.TotalSeconds}s): %s{ex.Message}"
     }
 
 /// Manages TaskCompletionSource instances for signal-based WaitForScan.
@@ -284,7 +274,7 @@ type Daemon =
                 let registeredProjects = this.Pipeline.GetRegisteredProjects()
                 let files = this.Pipeline.GetAllRegisteredFiles()
                 let total = files.Length
-                eprintfn "  [scan] %d projects, %d files registered" registeredProjects.Length total
+                Logging.info "scan" $"%d{registeredProjects.Length} projects, %d{total} files registered"
                 let sw = System.Diagnostics.Stopwatch.StartNew()
                 this.ScanState <- Scanning(total, 0, System.DateTime.UtcNow)
 
@@ -293,7 +283,7 @@ type Daemon =
                     let modified = this.Host.RunPreprocessors(files)
 
                     if modified.Length > 0 then
-                        eprintfn "  [scan] Preprocessors modified %d files (watcher may re-trigger)" modified.Length
+                        Logging.info "scan" $"Preprocessors modified %d{modified.Length} files (watcher may re-trigger)"
 
                     this.Host.EmitFileChanged(SourceChanged files)
                     let mutable completed = 0
@@ -323,7 +313,7 @@ type Daemon =
                             completed <- completed + 1
                             this.ScanState <- Scanning(total, completed, System.DateTime.UtcNow)
 
-                    eprintfn "  [scan] Checked %d files (%d tiers), skipped %d" checkedCount tiers.Length skippedCount
+                    Logging.info "scan" $"Checked %d{checkedCount} files (%d{tiers.Length} tiers), skipped %d{skippedCount}"
 
                 sw.Stop()
                 this.ScanState <- ScanComplete(total, sw.Elapsed)
@@ -469,19 +459,13 @@ module Daemon =
                                     | ProjectChanged files -> projFiles <- files @ projFiles
                                     | SolutionChanged -> hasSolution <- true
 
-                                if verbose then
-                                    eprintfn
-                                        "  [daemon] processChanges: %d source, %d project, solution=%b"
-                                        sourceFiles.Length
-                                        projFiles.Length
-                                        hasSolution
+                                Logging.debug "daemon" $"processChanges: %d{sourceFiles.Length} source, %d{projFiles.Length} project, solution=%b{hasSolution}"
 
-                                if verbose then
-                                    for f in sourceFiles do
-                                        eprintfn "    [daemon] source: %s" f
+                                for f in sourceFiles do
+                                    Logging.debug "daemon" $"source: %s{f}"
 
-                                    for f in projFiles do
-                                        eprintfn "    [daemon] project: %s" f
+                                for f in projFiles do
+                                    Logging.debug "daemon" $"project: %s{f}"
 
                                 // Filter out files written by preprocessors (suppress re-trigger)
                                 let allSourceFiles =
@@ -493,15 +477,15 @@ module Daemon =
                                             | true, _ -> true
                                             | false, _ -> false
 
-                                        if suppressed && verbose then
-                                            eprintfn "    [daemon] suppressed: %s" f
+                                        if suppressed then
+                                            Logging.debug "daemon" $"suppressed: %s{f}"
 
                                         not suppressed)
                                     |> List.filter (fun f ->
                                         let changed = hasContentChanged f
 
-                                        if not changed && verbose then
-                                            eprintfn "    [daemon] content unchanged: %s" f
+                                        if not changed then
+                                            Logging.debug "daemon" $"content unchanged: %s{f}"
 
                                         changed)
 
@@ -511,8 +495,8 @@ module Daemon =
                                     |> List.filter (fun f ->
                                         let changed = hasContentChanged f
 
-                                        if not changed && verbose then
-                                            eprintfn "    [daemon] content unchanged: %s" f
+                                        if not changed then
+                                            Logging.debug "daemon" $"content unchanged: %s{f}"
 
                                         changed)
 
@@ -520,7 +504,7 @@ module Daemon =
                                     host.EmitFileChanged(SolutionChanged)
 
                                 if not projFilesChanged.IsEmpty || hasSolution then
-                                    eprintfn "  [daemon] Project/solution change detected — re-discovering projects"
+                                    Logging.info "daemon" "Project/solution change detected — re-discovering projects"
 
                                     if not (isNull (box checker)) then
                                         checker.InvalidateAll()
@@ -528,10 +512,7 @@ module Daemon =
 
                                     do! discoverAndRegisterProjects repoRoot loader graph pipeline
 
-                                    eprintfn
-                                        "  [daemon] Re-discovery complete: %d projects, %d files"
-                                        (graph.GetAllProjects().Length)
-                                        (pipeline.GetAllRegisteredFiles().Length)
+                                    Logging.info "daemon" $"Re-discovery complete: %d{graph.GetAllProjects().Length} projects, %d{pipeline.GetAllRegisteredFiles().Length} files"
 
                                     if not projFilesChanged.IsEmpty then
                                         host.EmitFileChanged(ProjectChanged projFilesChanged)
@@ -558,17 +539,14 @@ module Daemon =
 
                                     host.EmitFileChanged(SourceChanged allFilesToCheck)
 
-                                    if verbose then
-                                        eprintfn "  [daemon] Checking %d files after change" allFilesToCheck.Length
+                                    Logging.debug "daemon" $"Checking %d{allFilesToCheck.Length} files after change"
 
                                     for file in allFilesToCheck do
                                         let! result = pipeline.CheckFile(file, daemonCtRef.Value)
 
                                         match result with
                                         | Some checkResult ->
-                                            if verbose then
-                                                eprintfn "  [daemon] EmitFileChecked: %s" (Path.GetFileName(file))
-
+                                            Logging.debug "daemon" $"EmitFileChecked: %s{Path.GetFileName(file)}"
                                             do! host.EmitFileCheckedParallel(checkResult)
                                             reportFcsDiagnostics host checkResult
 
@@ -590,8 +568,7 @@ module Daemon =
         let mutable pendingDelayMs = 0
 
         let onChange change =
-            if verbose then
-                eprintfn "  [watcher] %O" change
+            Logging.debug "watcher" $"%O{change}"
 
             pendingChanges.Add(change)
 
