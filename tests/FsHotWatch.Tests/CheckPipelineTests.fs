@@ -105,3 +105,40 @@ let ``CheckProject returns results for all registered source files`` () =
     finally
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``PrepareForRediscovery clears stale file options`` () =
+    let pipeline = CheckPipeline(nullChecker)
+
+    let options =
+        { ProjectFileName = "/tmp/MyProject.fsproj"
+          ProjectId = None
+          SourceFiles = [| "/tmp/FileA.fs"; "/tmp/FileB.fs" |]
+          OtherOptions = [||]
+          ReferencedProjects = [||]
+          IsIncompleteTypeCheckEnvironment = false
+          UseScriptResolutionRules = false
+          LoadTime = System.DateTime.UtcNow
+          UnresolvedReferences = None
+          OriginalLoadReferences = []
+          Stamp = None }
+
+    pipeline.RegisterProject("/tmp/MyProject.fsproj", options)
+
+    // Verify both files and the project are registered
+    test <@ pipeline.GetAllRegisteredFiles() |> List.contains "/tmp/FileA.fs" @>
+    test <@ pipeline.GetAllRegisteredFiles() |> List.contains "/tmp/FileB.fs" @>
+    test <@ pipeline.GetRegisteredProjects() |> List.contains "/tmp/MyProject.fsproj" @>
+
+    // Simulate re-discovery: clear, then re-register without FileB
+    pipeline.PrepareForRediscovery()
+
+    let updatedOptions =
+        { options with SourceFiles = [| "/tmp/FileA.fs" |] }
+
+    pipeline.RegisterProject("/tmp/MyProject.fsproj", updatedOptions)
+
+    // FileA should still be registered, FileB should be gone
+    test <@ pipeline.GetAllRegisteredFiles() |> List.contains "/tmp/FileA.fs" @>
+    test <@ pipeline.GetAllRegisteredFiles() |> List.contains "/tmp/FileB.fs" |> not @>
+    test <@ pipeline.GetRegisteredProjects() |> List.contains "/tmp/MyProject.fsproj" @>
