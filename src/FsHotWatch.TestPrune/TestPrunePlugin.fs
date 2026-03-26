@@ -40,6 +40,7 @@ type TestPrunePlugin
 
     let mutable testsRunning = false
     let mutable testsCompleted = false
+    let mutable analysisRan = false
     let hasTestConfigs = testConfigs |> Option.map (List.isEmpty >> not) |> Option.defaultValue false
 
     let runTests (ctx: PluginContext) (configs: TestConfig list) =
@@ -203,6 +204,8 @@ type TestPrunePlugin
                         if not changedNames.IsEmpty then
                             let affected = db.QueryAffectedTests(changedNames)
                             Volatile.Write(&lastAffectedTests, affected)
+
+                        analysisRan <- true
                     | Error msg ->
                         eprintfn $"  [test-prune] Analysis failed for %s{relPath}: %s{msg}"
 
@@ -251,15 +254,18 @@ type TestPrunePlugin
                 "affected-tests",
                 fun _args ->
                     async {
-                        let currentTests = Volatile.Read(&lastAffectedTests)
+                        if not analysisRan then
+                            return "{\"status\": \"not analyzed\"}"
+                        else
+                            let currentTests = Volatile.Read(&lastAffectedTests)
 
-                        let tests =
-                            currentTests
-                            |> List.map (fun t ->
-                                $"{{\"project\": \"%s{t.TestProject}\", \"class\": \"%s{t.TestClass}\", \"method\": \"%s{t.TestMethod}\"}}")
-                            |> String.concat ", "
+                            let tests =
+                                currentTests
+                                |> List.map (fun t ->
+                                    $"{{\"project\": \"%s{t.TestProject}\", \"class\": \"%s{t.TestClass}\", \"method\": \"%s{t.TestMethod}\"}}")
+                                |> String.concat ", "
 
-                        return $"[%s{tests}]"
+                            return $"[%s{tests}]"
                     }
             )
 
@@ -268,7 +274,12 @@ type TestPrunePlugin
                 fun _args ->
                     async {
                         let currentFiles = Volatile.Read(&lastChangedFiles)
-                        let files = currentFiles |> String.concat ", "
+
+                        let files =
+                            currentFiles
+                            |> List.map (fun f -> $"\"%s{f}\"")
+                            |> String.concat ", "
+
                         return $"[%s{files}]"
                     }
             )
@@ -277,21 +288,24 @@ type TestPrunePlugin
                 "test-results",
                 fun _args ->
                     async {
-                        match Volatile.Read(&lastTestResults) with
-                        | Some results ->
-                            let passed =
-                                results.Results
-                                |> Map.filter (fun _ r -> match r with TestsPassed _ -> true | _ -> false)
-                                |> Map.count
+                        if testsRunning then
+                            return "{\"status\": \"running\"}"
+                        else
+                            match Volatile.Read(&lastTestResults) with
+                            | Some results ->
+                                let passed =
+                                    results.Results
+                                    |> Map.filter (fun _ r -> match r with TestsPassed _ -> true | _ -> false)
+                                    |> Map.count
 
-                            let failed =
-                                results.Results
-                                |> Map.filter (fun _ r -> match r with TestsFailed _ -> true | _ -> false)
-                                |> Map.count
+                                let failed =
+                                    results.Results
+                                    |> Map.filter (fun _ r -> match r with TestsFailed _ -> true | _ -> false)
+                                    |> Map.count
 
-                            return
-                                $"{{\"passed\": %d{passed}, \"failed\": %d{failed}, \"elapsed\": \"%.1f{results.Elapsed.TotalSeconds}s\"}}"
-                        | None -> return "{\"status\": \"not run\"}"
+                                return
+                                    $"{{\"passed\": %d{passed}, \"failed\": %d{failed}, \"elapsed\": \"%.1f{results.Elapsed.TotalSeconds}s\"}}"
+                            | None -> return "{\"status\": \"not run\"}"
                     }
             )
 
