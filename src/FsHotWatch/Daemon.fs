@@ -3,6 +3,7 @@ module FsHotWatch.Daemon
 open System
 open System.IO
 open System.Threading
+open System.Threading.Tasks
 open FSharp.Compiler.CodeAnalysis
 open Ionide.ProjInfo
 open FsHotWatch.CheckPipeline
@@ -114,6 +115,37 @@ let private discoverAndRegisterProjects
             eprintfn "  [discover] MSBuild evaluation failed (%.1fs): %s" sw.Elapsed.TotalSeconds ex.Message
     }
 
+/// Manages TaskCompletionSource instances for signal-based WaitForScan.
+type ScanSignal() =
+    let mutable waiters: (int64 * TaskCompletionSource<unit>) list = []
+    let lockObj = obj ()
+
+    /// Register a waiter that resolves when generation exceeds afterGeneration.
+    /// If afterGeneration < 0, resolves on the next generation increment.
+    member _.WaitForGeneration(afterGeneration: int64, currentGeneration: int64) : Task<unit> =
+        if afterGeneration >= 0L && currentGeneration > afterGeneration then
+            Task.FromResult(())
+        else
+            let tcs =
+                TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+            lock lockObj (fun () -> waiters <- (afterGeneration, tcs) :: waiters)
+            tcs.Task
+
+    /// Signal all waiters whose afterGeneration is now satisfied.
+    member _.SignalGeneration(newGeneration: int64) =
+        let toSignal =
+            lock lockObj (fun () ->
+                let s, r =
+                    waiters
+                    |> List.partition (fun (afterGen, _) -> afterGen < 0L || newGeneration > afterGen)
+
+                waiters <- r
+                s)
+
+        for _, tcs in toSignal do
+            tcs.TrySetResult(()) |> ignore
+
 /// The daemon ties together a warm FSharpChecker, file watcher, check pipeline, and plugin host.
 /// It runs until the provided CancellationToken is cancelled.
 [<NoComparison; NoEquality>]
@@ -142,8 +174,12 @@ type Daemon =
         ScanSemaphore: SemaphoreSlim
         /// Disposes the debounce timer used for coalescing file change events.
         DisposeDebounceTimer: unit -> unit
+        /// Shared cancellation token ref for processChanges (set by RunWithIpc).
+        CancellationTokenRef: CancellationToken ref
         /// Signalled when the daemon is ready to accept file change events.
         Ready: ManualResetEventSlim
+        /// Signal-based notification for WaitForScan clients.
+        ScanSignal: ScanSignal
     }
 
     /// Register a plugin with the daemon's plugin host.
@@ -199,7 +235,7 @@ type Daemon =
 
                         let! results =
                             tierFiles
-                            |> List.map (fun file -> this.Pipeline.CheckFile(file))
+                            |> List.map (fun file -> this.Pipeline.CheckFile(file, ct))
                             |> Async.Parallel
 
                         for result in results do
@@ -218,6 +254,7 @@ type Daemon =
                 sw.Stop()
                 this.ScanState <- ScanComplete(total, sw.Elapsed)
                 Interlocked.Increment(&this.ScanGeneration) |> ignore
+                this.ScanSignal.SignalGeneration(Volatile.Read(&this.ScanGeneration))
             finally
                 this.ScanSemaphore.Release() |> ignore
         }
@@ -284,10 +321,13 @@ type Daemon =
                       GetScanStatus = this.FormatScanStatus
                       GetScanGeneration = this.GetScanGeneration
                       TriggerBuild = triggerBuild
-                      FormatAll = formatAll }
+                      FormatAll = formatAll
+                      WaitForScanGeneration =
+                          fun afterGen -> this.ScanSignal.WaitForGeneration(afterGen, this.GetScanGeneration()) }
 
                 let ipcTask = Async.StartAsTask(IpcServer.start pipeName rpcConfig cts)
 
+                this.CancellationTokenRef.Value <- cts.Token
                 this.Ready.Set()
 
                 // Discover projects and perform initial full scan
@@ -330,142 +370,147 @@ module Daemon =
             System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
 
         let mutable processingChanges = 0
+        let daemonCtRef = ref CancellationToken.None
 
         let processChanges (_state: obj) =
             if Interlocked.CompareExchange(&processingChanges, 1, 0) = 0 then
-              Async.Start(async {
-                try
-                    let changes = System.Collections.Generic.List<FileChangeKind>()
-                    let mutable item = Unchecked.defaultof<_>
+                Async.Start(
+                    async {
+                        try
+                            let changes = System.Collections.Generic.List<FileChangeKind>()
+                            let mutable item = Unchecked.defaultof<_>
 
-                    while pendingChanges.TryTake(&item) do
-                        changes.Add(item)
+                            while pendingChanges.TryTake(&item) do
+                                changes.Add(item)
 
-                    if changes.Count > 0 then
-                        let mutable sourceFiles = []
-                        let mutable projFiles = []
-                        let mutable hasSolution = false
+                            if changes.Count > 0 then
+                                let mutable sourceFiles = []
+                                let mutable projFiles = []
+                                let mutable hasSolution = false
 
-                        for c in changes do
-                            match c with
-                            | SourceChanged files -> sourceFiles <- files @ sourceFiles
-                            | ProjectChanged files -> projFiles <- files @ projFiles
-                            | SolutionChanged -> hasSolution <- true
+                                for c in changes do
+                                    match c with
+                                    | SourceChanged files -> sourceFiles <- files @ sourceFiles
+                                    | ProjectChanged files -> projFiles <- files @ projFiles
+                                    | SolutionChanged -> hasSolution <- true
 
-                        if verbose then
-                            eprintfn
-                                "  [daemon] processChanges: %d source, %d project, solution=%b"
-                                sourceFiles.Length
-                                projFiles.Length
-                                hasSolution
+                                if verbose then
+                                    eprintfn
+                                        "  [daemon] processChanges: %d source, %d project, solution=%b"
+                                        sourceFiles.Length
+                                        projFiles.Length
+                                        hasSolution
 
-                        if verbose then
-                            for f in sourceFiles do
-                                eprintfn "    [daemon] source: %s" f
+                                if verbose then
+                                    for f in sourceFiles do
+                                        eprintfn "    [daemon] source: %s" f
 
-                            for f in projFiles do
-                                eprintfn "    [daemon] project: %s" f
+                                    for f in projFiles do
+                                        eprintfn "    [daemon] project: %s" f
 
-                        // Filter out files written by preprocessors (suppress re-trigger)
-                        let allSourceFiles =
-                            sourceFiles
-                            |> List.distinct
-                            |> List.filter (fun f ->
-                                let suppressed =
-                                    match suppressedFiles.TryRemove(f) with
-                                    | true, _ -> true
-                                    | false, _ -> false
+                                // Filter out files written by preprocessors (suppress re-trigger)
+                                let allSourceFiles =
+                                    sourceFiles
+                                    |> List.distinct
+                                    |> List.filter (fun f ->
+                                        let suppressed =
+                                            match suppressedFiles.TryRemove(f) with
+                                            | true, _ -> true
+                                            | false, _ -> false
 
-                                if suppressed && verbose then
-                                    eprintfn "    [daemon] suppressed: %s" f
+                                        if suppressed && verbose then
+                                            eprintfn "    [daemon] suppressed: %s" f
 
-                                not suppressed)
-                            |> List.filter (fun f ->
-                                let changed = hasContentChanged f
+                                        not suppressed)
+                                    |> List.filter (fun f ->
+                                        let changed = hasContentChanged f
 
-                                if not changed && verbose then
-                                    eprintfn "    [daemon] content unchanged: %s" f
+                                        if not changed && verbose then
+                                            eprintfn "    [daemon] content unchanged: %s" f
 
-                                changed)
+                                        changed)
 
-                        let projFilesChanged =
-                            projFiles
-                            |> List.distinct
-                            |> List.filter (fun f ->
-                                let changed = hasContentChanged f
+                                let projFilesChanged =
+                                    projFiles
+                                    |> List.distinct
+                                    |> List.filter (fun f ->
+                                        let changed = hasContentChanged f
 
-                                if not changed && verbose then
-                                    eprintfn "    [daemon] content unchanged: %s" f
+                                        if not changed && verbose then
+                                            eprintfn "    [daemon] content unchanged: %s" f
 
-                                changed)
+                                        changed)
 
-                        if hasSolution then
-                            host.EmitFileChanged(SolutionChanged)
+                                if hasSolution then
+                                    host.EmitFileChanged(SolutionChanged)
 
-                        if not projFilesChanged.IsEmpty || hasSolution then
-                            eprintfn "  [daemon] Project/solution change detected — re-discovering projects"
+                                if not projFilesChanged.IsEmpty || hasSolution then
+                                    eprintfn "  [daemon] Project/solution change detected — re-discovering projects"
 
-                            if not (isNull (box checker)) then
-                                checker.InvalidateAll()
-                                checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
+                                    if not (isNull (box checker)) then
+                                        checker.InvalidateAll()
+                                        checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
 
-                            do! discoverAndRegisterProjects repoRoot loader graph pipeline
+                                    do! discoverAndRegisterProjects repoRoot loader graph pipeline
 
-                            eprintfn
-                                "  [daemon] Re-discovery complete: %d projects, %d files"
-                                (graph.GetAllProjects().Length)
-                                (pipeline.GetAllRegisteredFiles().Length)
+                                    eprintfn
+                                        "  [daemon] Re-discovery complete: %d projects, %d files"
+                                        (graph.GetAllProjects().Length)
+                                        (pipeline.GetAllRegisteredFiles().Length)
 
-                            if not projFilesChanged.IsEmpty then
-                                host.EmitFileChanged(ProjectChanged projFilesChanged)
+                                    if not projFilesChanged.IsEmpty then
+                                        host.EmitFileChanged(ProjectChanged projFilesChanged)
 
-                        if not allSourceFiles.IsEmpty then
-                            let modifiedByPreprocessors = host.RunPreprocessors(allSourceFiles)
+                                if not allSourceFiles.IsEmpty then
+                                    let modifiedByPreprocessors = host.RunPreprocessors(allSourceFiles)
 
-                            for file in modifiedByPreprocessors do
-                                suppressedFiles.TryAdd(file, true) |> ignore
+                                    for file in modifiedByPreprocessors do
+                                        suppressedFiles.TryAdd(file, true) |> ignore
 
-                            let changedProjects =
-                                allSourceFiles
-                                |> List.choose (fun f -> graph.GetProjectForFile(f))
-                                |> List.distinct
+                                    let changedProjects =
+                                        allSourceFiles
+                                        |> List.choose (fun f -> graph.GetProjectForFile(f))
+                                        |> List.distinct
 
-                            let dependentProjectFiles =
-                                changedProjects
-                                |> List.collect (fun p -> graph.GetTransitiveDependents(p))
-                                |> List.distinct
-                                |> List.filter (fun p -> not (changedProjects |> List.contains p))
-                                |> List.collect (fun proj -> graph.GetSourceFiles(proj))
+                                    let dependentProjectFiles =
+                                        changedProjects
+                                        |> List.collect (fun p -> graph.GetTransitiveDependents(p))
+                                        |> List.distinct
+                                        |> List.filter (fun p -> not (changedProjects |> List.contains p))
+                                        |> List.collect (fun proj -> graph.GetSourceFiles(proj))
 
-                            let allFilesToCheck = (allSourceFiles @ dependentProjectFiles) |> List.distinct
+                                    let allFilesToCheck = (allSourceFiles @ dependentProjectFiles) |> List.distinct
 
-                            host.EmitFileChanged(SourceChanged allFilesToCheck)
+                                    host.EmitFileChanged(SourceChanged allFilesToCheck)
 
-                            if verbose then
-                                eprintfn "  [daemon] Checking %d files after change" allFilesToCheck.Length
-
-                            for file in allFilesToCheck do
-                                let! result = pipeline.CheckFile(file)
-
-                                match result with
-                                | Some checkResult ->
                                     if verbose then
-                                        eprintfn "  [daemon] EmitFileChecked: %s" (Path.GetFileName(file))
+                                        eprintfn "  [daemon] Checking %d files after change" allFilesToCheck.Length
 
-                                    do! host.EmitFileCheckedParallel(checkResult)
-                                    reportFcsDiagnostics host checkResult
+                                    for file in allFilesToCheck do
+                                        let! result = pipeline.CheckFile(file, daemonCtRef.Value)
 
-                                | None -> ()
-                finally
-                    Interlocked.Exchange(&processingChanges, 0) |> ignore
+                                        match result with
+                                        | Some checkResult ->
+                                            if verbose then
+                                                eprintfn "  [daemon] EmitFileChecked: %s" (Path.GetFileName(file))
 
-                    // If items arrived during processing, re-arm the debounce timer
-                    if not pendingChanges.IsEmpty then
-                        lock debounceLock (fun () ->
-                            match debounceTimer with
-                            | Some timer -> timer.Change(sourceDebounceMs, System.Threading.Timeout.Infinite) |> ignore
-                            | None -> ())
-              })
+                                            do! host.EmitFileCheckedParallel(checkResult)
+                                            reportFcsDiagnostics host checkResult
+
+                                        | None -> ()
+                        finally
+                            Interlocked.Exchange(&processingChanges, 0) |> ignore
+
+                            // If items arrived during processing, re-arm the debounce timer
+                            if not pendingChanges.IsEmpty then
+                                lock debounceLock (fun () ->
+                                    match debounceTimer with
+                                    | Some timer ->
+                                        timer.Change(sourceDebounceMs, System.Threading.Timeout.Infinite) |> ignore
+                                    | None -> ())
+                    },
+                    daemonCtRef.Value
+                )
 
         let mutable pendingDelayMs = 0
 
@@ -520,7 +565,9 @@ module Daemon =
           ScanGeneration = 0L
           ScanSemaphore = new SemaphoreSlim(1, 1)
           DisposeDebounceTimer = disposeDebounceTimer
-          Ready = new ManualResetEventSlim(false) }
+          CancellationTokenRef = daemonCtRef
+          Ready = new ManualResetEventSlim(false)
+          ScanSignal = ScanSignal() }
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     let create (repoRoot: string) =

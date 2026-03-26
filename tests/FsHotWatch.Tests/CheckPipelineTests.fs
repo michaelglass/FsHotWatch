@@ -1,6 +1,8 @@
 module FsHotWatch.Tests.CheckPipelineTests
 
+open System
 open System.IO
+open System.Threading
 open Xunit
 open Swensen.Unquote
 open FSharp.Compiler.CodeAnalysis
@@ -153,3 +155,16 @@ let ``PrepareForRediscovery clears stale file options`` () =
     test <@ pipeline.GetAllRegisteredFiles() |> List.contains "/tmp/FileA.fs" @>
     test <@ pipeline.GetAllRegisteredFiles() |> List.contains "/tmp/FileB.fs" |> not @>
     test <@ pipeline.GetRegisteredProjects() |> List.contains "/tmp/MyProject.fsproj" @>
+
+[<Fact>]
+let ``CheckFile throws OperationCanceledException when token is cancelled`` () =
+    let pipeline = CheckPipeline(nullChecker)
+    let cts = new CancellationTokenSource()
+    cts.Cancel()
+
+    Assert.ThrowsAsync<OperationCanceledException>(fun () ->
+        pipeline.CheckFile("/tmp/anything.fs", cts.Token)
+        |> Async.StartAsTask :> System.Threading.Tasks.Task)
+    |> Async.AwaitTask
+    |> Async.RunSynchronously
+    |> ignore
