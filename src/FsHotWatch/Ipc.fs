@@ -26,7 +26,8 @@ type DaemonRpcConfig =
       GetScanGeneration: unit -> int64
       TriggerBuild: unit -> Async<unit>
       FormatAll: unit -> Async<string>
-      WaitForScanGeneration: int64 -> Task<unit> }
+      WaitForScanGeneration: int64 -> Task<unit>
+      WaitForAllTerminal: unit -> Task<unit> }
 
 /// RPC target object exposed to clients via StreamJsonRpc.
 type DaemonRpcTarget(config: DaemonRpcConfig) =
@@ -115,40 +116,10 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
                 return config.GetScanStatus()
         }
 
-    /// Poll plugin statuses until all are in a terminal state AND stable for 2 seconds.
+    /// Wait for all plugins to reach a terminal state with 1s stability confirmation.
     member this.WaitForComplete() : Task<string> =
         task {
-            let isTerminal (s: PluginStatus) =
-                match s with
-                | Running _ -> false
-                | _ -> true
-
-            let mutable stableFor = 0
-            let mutable iteration = 0
-
-            while stableFor < 4 do
-                let statuses = config.Host.GetAllStatuses()
-                let allDone = statuses |> Map.forall (fun _ s -> isTerminal s)
-
-                if allDone then
-                    stableFor <- stableFor + 1
-                else
-                    let running =
-                        statuses
-                        |> Map.toList
-                        |> List.choose (fun (name, s) ->
-                            match s with
-                            | Running _ -> Some name
-                            | _ -> None)
-
-                    if iteration % 10 = 0 then
-                        eprintfn "  [wait-for-complete] Still running: %s" (String.concat ", " running)
-
-                    stableFor <- 0
-
-                iteration <- iteration + 1
-                do! Task.Delay(500)
-
+            do! config.WaitForAllTerminal()
             return this.GetStatus()
         }
 
