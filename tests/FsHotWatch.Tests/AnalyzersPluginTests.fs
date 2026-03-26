@@ -38,7 +38,8 @@ let ``analyzer error path sets Failed status`` () =
         { File = "/tmp/nonexistent/Fake.fs"
           Source = ""
           ParseResults = Unchecked.defaultof<_>
-          CheckResults = Unchecked.defaultof<_> }
+          CheckResults = Unchecked.defaultof<_>
+          ProjectOptions = Unchecked.defaultof<_> }
 
     try
         host.EmitFileChecked(fakeResult)

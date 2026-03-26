@@ -50,7 +50,8 @@ let ``test-prune error path sets Failed status on null check results`` () =
         { File = "/tmp/nonexistent/Fake.fs"
           Source = ""
           ParseResults = Unchecked.defaultof<_>
-          CheckResults = Unchecked.defaultof<_> }
+          CheckResults = Unchecked.defaultof<_>
+          ProjectOptions = Unchecked.defaultof<_> }
 
     try
         host.EmitFileChecked(fakeResult)
@@ -87,7 +88,8 @@ let ``changed-files tracks files after emit with valid relative path`` () =
             { File = fakeFile
               Source = "module Lib\nlet x = 1\n"
               ParseResults = Unchecked.defaultof<_>
-              CheckResults = Unchecked.defaultof<_> }
+              CheckResults = Unchecked.defaultof<_>
+              ProjectOptions = Unchecked.defaultof<_> }
 
         // This will trigger the catch because CheckResults is null,
         // but the changed-files tracking and storedSymbols path both execute before that.
@@ -125,7 +127,8 @@ let ``duplicate file checks do not duplicate in changed-files list`` () =
             { File = fakeFile
               Source = "module Dup\n"
               ParseResults = Unchecked.defaultof<_>
-              CheckResults = Unchecked.defaultof<_> }
+              CheckResults = Unchecked.defaultof<_>
+              ProjectOptions = Unchecked.defaultof<_> }
 
         // Emit twice — the plugin deduplicates via List.contains
         for _ in 1..2 do
