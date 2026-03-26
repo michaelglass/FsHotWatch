@@ -55,8 +55,7 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
                         | Completed _ -> "Completed"
                         | Failed(e, _) -> $"Failed: %s{e.Substring(0, min 80 e.Length)}"
 
-                    if verbose then
-                        eprintfn "  [%s] → %s" plugin.Name statusName
+                    Logging.debug plugin.Name $"→ %s{statusName}"
 
                     statuses[plugin.Name] <- status
                     statusChanged.Trigger(plugin.Name, status)
@@ -71,7 +70,7 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
         try
             plugin.Initialize(ctx)
         with ex ->
-            eprintfn "  [plugin-host] Failed to initialize plugin '%s': %s" plugin.Name ex.Message
+            Logging.error "plugin-host" $"Failed to initialize plugin '%s{plugin.Name}': %s{ex.Message}"
             statuses[plugin.Name] <- Failed(ex.Message, System.DateTime.UtcNow)
 
     /// Register a preprocessor (runs before events are dispatched).

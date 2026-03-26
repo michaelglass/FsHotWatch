@@ -43,9 +43,7 @@ type CheckPipeline(checker: FSharpChecker) =
 
             match projectOptionsByFile.TryGetValue(absPath) with
             | false, _ ->
-                if verbose then
-                    eprintfn "  [check] No project options for: %s" absPath
-
+                Logging.debug "check" $"No project options for: %s{absPath}"
                 return None
             | true, options ->
                 let source =
@@ -64,9 +62,7 @@ type CheckPipeline(checker: FSharpChecker) =
                     sw.Stop()
 
                     if sw.Elapsed.TotalSeconds > 2.0 then
-                        if verbose then
-                            eprintfn
-                                $"  [check] SLOW: %s{Path.GetFileName(absPath)} took %.1f{sw.Elapsed.TotalSeconds}s"
+                        Logging.debug "check" $"SLOW: %s{Path.GetFileName(absPath)} took %.1f{sw.Elapsed.TotalSeconds}s"
 
                     match checkAnswer with
                     | FSharpCheckFileAnswer.Succeeded checkResults ->
@@ -87,7 +83,7 @@ type CheckPipeline(checker: FSharpChecker) =
                                   CheckResults = Unchecked.defaultof<_>
                                   ProjectOptions = options }
                 with ex ->
-                    eprintfn "  [check] Failed to check %s: %s" absPath ex.Message
+                    Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
                     return None
         }
 
