@@ -155,8 +155,7 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                                 if Volatile.Read(&errorCount) > 0 then
                                     ctx.ReportStatus(
                                         Completed(
-                                            box
-                                                $"analyzed %d{currentDiags.Count} files, %d{errorCount} errors",
+                                            box $"analyzed %d{currentDiags.Count} files, %d{errorCount} errors",
                                             DateTime.UtcNow
                                         )
                                     )
@@ -171,8 +170,7 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
 
                                 ctx.ReportStatus(
                                     Completed(
-                                        box
-                                            $"analyzed %d{currentDiags.Count} files, %d{errorCount} errors",
+                                        box $"analyzed %d{currentDiags.Count} files, %d{errorCount} errors",
                                         DateTime.UtcNow
                                     )
                                 )

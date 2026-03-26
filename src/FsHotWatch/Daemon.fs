@@ -90,16 +90,22 @@ let private discoverAndRegisterProjects
             let fcsOptionsList = Ionide.ProjInfo.FCS.mapManyOptions loaded |> Seq.toList
             sw.Stop()
 
-            Logging.info "discover" $"MSBuild evaluation complete: %d{fcsOptionsList.Length} projects in %.1f{sw.Elapsed.TotalSeconds}s"
+            Logging.info
+                "discover"
+                $"MSBuild evaluation complete: %d{fcsOptionsList.Length} projects in %.1f{sw.Elapsed.TotalSeconds}s"
 
             for fcsOptions in fcsOptionsList do
                 try
                     let absProject = Path.GetFullPath(fcsOptions.ProjectFileName)
                     pipeline.RegisterProject(absProject, fcsOptions)
 
-                    Logging.info "discover" $"Registered %s{Path.GetFileName fcsOptions.ProjectFileName} (%d{fcsOptions.SourceFiles.Length} files, %d{fcsOptions.OtherOptions.Length} opts)"
+                    Logging.info
+                        "discover"
+                        $"Registered %s{Path.GetFileName fcsOptions.ProjectFileName} (%d{fcsOptions.SourceFiles.Length} files, %d{fcsOptions.OtherOptions.Length} opts)"
                 with ex ->
-                    Logging.error "discover" $"Failed to register %s{Path.GetFileName fcsOptions.ProjectFileName}: %s{ex.Message}"
+                    Logging.error
+                        "discover"
+                        $"Failed to register %s{Path.GetFileName fcsOptions.ProjectFileName}: %s{ex.Message}"
         with ex ->
             sw.Stop()
             Logging.error "discover" $"MSBuild evaluation failed (%.1f{sw.Elapsed.TotalSeconds}s): %s{ex.Message}"
@@ -113,9 +119,24 @@ type ScanSignal() =
     /// Register a waiter that resolves when generation exceeds afterGeneration.
     /// If afterGeneration < 0, resolves on the next generation increment.
     member _.WaitForGeneration(afterGeneration: int64, currentGeneration: int64) : Task<unit> =
-        if afterGeneration >= 0L && currentGeneration > afterGeneration then
+        let alreadySatisfied =
+            if afterGeneration >= 0L then
+                currentGeneration > afterGeneration
+            else
+                // Legacy path (afterGeneration < 0): resolve immediately if any scan has completed
+                currentGeneration > 0L
+
+        if alreadySatisfied then
+            Logging.debug
+                "scan-signal"
+                $"WaitForGeneration(%d{afterGeneration}, %d{currentGeneration}) — already satisfied, returning immediately"
+
             Task.FromResult(())
         else
+            Logging.debug
+                "scan-signal"
+                $"WaitForGeneration(%d{afterGeneration}, %d{currentGeneration}) — registering waiter"
+
             let tcs =
                 TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
@@ -129,6 +150,10 @@ type ScanSignal() =
                 let s, r =
                     waiters
                     |> List.partition (fun (afterGen, _) -> afterGen < 0L || newGeneration > afterGen)
+
+                Logging.debug
+                    "scan-signal"
+                    $"SignalGeneration(%d{newGeneration}) — resolving %d{s.Length} waiters, %d{r.Length} remaining"
 
                 waiters <- r
                 s)
@@ -154,12 +179,20 @@ let private waitForAllTerminal (host: PluginHost) () : Task<unit> =
 
                 let statuses = host.GetAllStatuses()
 
-                let allTerminal =
+                let running =
                     statuses
-                    |> Map.forall (fun _ s ->
+                    |> Map.toList
+                    |> List.choose (fun (name, s) ->
                         match s with
-                        | Running _ -> false
-                        | _ -> true)
+                        | Running _ -> Some name
+                        | _ -> None)
+
+                let allTerminal = running.IsEmpty
+                let runningStr = String.concat ", " running
+
+                Logging.debug
+                    "wait-complete"
+                    $"checkAndSchedule: allTerminal=%b{allTerminal}, running=[%s{runningStr}], total=%d{statuses.Count}"
 
                 // Cancel any pending confirmation timer
                 timerCts
@@ -189,6 +222,10 @@ let private waitForAllTerminal (host: PluginHost) () : Task<unit> =
                                                 match s with
                                                 | Running _ -> false
                                                 | _ -> true)
+
+                                        Logging.debug
+                                            "wait-complete"
+                                            $"1s confirmation: stillTerminal=%b{stillTerminal}"
 
                                         if stillTerminal then
                                             resolved <- true
@@ -313,7 +350,9 @@ type Daemon =
                             completed <- completed + 1
                             this.ScanState <- Scanning(total, completed, System.DateTime.UtcNow)
 
-                    Logging.info "scan" $"Checked %d{checkedCount} files (%d{tiers.Length} tiers), skipped %d{skippedCount}"
+                    Logging.info
+                        "scan"
+                        $"Checked %d{checkedCount} files (%d{tiers.Length} tiers), skipped %d{skippedCount}"
 
                 sw.Stop()
                 this.ScanState <- ScanComplete(total, sw.Elapsed)
@@ -387,7 +426,7 @@ type Daemon =
                       TriggerBuild = triggerBuild
                       FormatAll = formatAll
                       WaitForScanGeneration =
-                          fun afterGen -> this.ScanSignal.WaitForGeneration(afterGen, this.GetScanGeneration())
+                        fun afterGen -> this.ScanSignal.WaitForGeneration(afterGen, this.GetScanGeneration())
                       WaitForAllTerminal = waitForAllTerminal this.Host }
 
                 let ipcTask = Async.StartAsTask(IpcServer.start pipeName rpcConfig cts)
@@ -459,7 +498,9 @@ module Daemon =
                                     | ProjectChanged files -> projFiles <- files @ projFiles
                                     | SolutionChanged -> hasSolution <- true
 
-                                Logging.debug "daemon" $"processChanges: %d{sourceFiles.Length} source, %d{projFiles.Length} project, solution=%b{hasSolution}"
+                                Logging.debug
+                                    "daemon"
+                                    $"processChanges: %d{sourceFiles.Length} source, %d{projFiles.Length} project, solution=%b{hasSolution}"
 
                                 for f in sourceFiles do
                                     Logging.debug "daemon" $"source: %s{f}"
@@ -512,7 +553,9 @@ module Daemon =
 
                                     do! discoverAndRegisterProjects repoRoot loader graph pipeline
 
-                                    Logging.info "daemon" $"Re-discovery complete: %d{graph.GetAllProjects().Length} projects, %d{pipeline.GetAllRegisteredFiles().Length} files"
+                                    Logging.info
+                                        "daemon"
+                                        $"Re-discovery complete: %d{graph.GetAllProjects().Length} projects, %d{pipeline.GetAllRegisteredFiles().Length} files"
 
                                     if not projFilesChanged.IsEmpty then
                                         host.EmitFileChanged(ProjectChanged projFilesChanged)

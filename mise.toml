@@ -41,7 +41,7 @@ depends = ["build"]
 
 [tasks.check]
 description = "Run all checks via daemon (auto-starts daemon if needed)"
-run = "dotnet run --project src/FsHotWatch.Cli --no-build -- check"
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- --verbose check"
 depends = ["build"]
 # Note: depends on build to ensure CLI binary is compiled.
 # The daemon handles its own build/test/lint cycle internally.

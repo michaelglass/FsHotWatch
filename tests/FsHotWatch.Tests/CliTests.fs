@@ -318,7 +318,9 @@ let ``executeCommand Stop calls shutdown`` () =
                         return "shutting down"
                     } }
 
-    let result = executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Stop ""
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Stop ""
+
     test <@ result = 0 @>
     test <@ called @>
 
@@ -361,7 +363,9 @@ let ``executeCommand Scan calls scan IPC`` () =
                         return "scan started"
                     } }
 
-    let result = executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Scan ""
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Scan ""
+
     test <@ result = 0 @>
     test <@ called @>
 

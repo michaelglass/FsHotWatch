@@ -6,6 +6,7 @@ open System.Text.Json
 open System.Threading
 open System.Threading.Tasks
 open StreamJsonRpc
+open FsHotWatch.Logging
 open FsHotWatch.PluginHost
 open FsHotWatch.Events
 
@@ -107,6 +108,10 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
     /// If afterGeneration < 0, uses the legacy behavior (wait for any scan completion).
     member _.WaitForScan(afterGeneration: int64) : Task<string> =
         task {
+            Logging.debug
+                "rpc"
+                $"WaitForScan(%d{afterGeneration}) called, current generation=%d{config.GetScanGeneration()}"
+
             if afterGeneration >= 0L then
                 do! config.WaitForScanGeneration(afterGeneration)
                 return config.GetScanStatus()
@@ -119,7 +124,21 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
     /// Wait for all plugins to reach a terminal state with 1s stability confirmation.
     member this.WaitForComplete() : Task<string> =
         task {
+            let statuses = config.Host.GetAllStatuses()
+
+            let statusMap =
+                statuses
+                |> Map.map (fun _ s ->
+                    match s with
+                    | Events.Running _ -> "Running"
+                    | Events.Completed _ -> "Completed"
+                    | Events.Failed _ -> "Failed"
+                    | Events.Idle -> "Idle")
+
+            Logging.debug "rpc" $"WaitForComplete() called, statuses: %A{statusMap}"
+
             do! config.WaitForAllTerminal()
+            Logging.debug "rpc" "WaitForComplete() resolved"
             return this.GetStatus()
         }
 
