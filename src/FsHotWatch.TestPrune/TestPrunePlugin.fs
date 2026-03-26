@@ -18,11 +18,19 @@ open TestPrune.SymbolDiff
 
 /// Configuration for a test project to run.
 type TestConfig =
-    { Project: string
-      Command: string
-      Args: string
-      Group: string
-      Environment: (string * string) list }
+    {
+        Project: string
+        Command: string
+        Args: string
+        Group: string
+        Environment: (string * string) list
+        /// Template for class-based test filtering. {classes} is replaced with
+        /// the joined class names. Example: "-- --filter-class {classes}"
+        FilterTemplate: string option
+        /// Separator for joining class names in the filter. Default: " "
+        /// Example: "|ClassName=" for dotnet test --filter "ClassName=A|ClassName=B"
+        ClassJoin: string
+    }
 
 /// TestPrune plugin — re-indexes changed files using the warm FSharpChecker,
 /// reports which tests are affected, and optionally runs tests after build completes.
@@ -34,7 +42,7 @@ type TestPrunePlugin
         ?extensions: ITestPruneExtension list,
         ?beforeRun: unit -> unit,
         ?afterRun: TestResults -> unit,
-        ?coverageArgs: string -> string -> string
+        ?coverageArgs: string -> string
     ) =
     let db = Database.create dbPath
     let mutable lastAffectedTests: TestMethodInfo list = []
@@ -73,9 +81,28 @@ type TestPrunePlugin
 
         $"{{\"elapsed\": \"%.1f{results.Elapsed.TotalSeconds}s\", \"projects\": [%s{projects}]}}"
 
-    /// Execute test configs with an optional extra filter appended to args.
+    /// Build the filter arg string for a config given affected classes.
+    let buildFilterArgs (config: TestConfig) (classes: string list) : string option =
+        match classes, config.FilterTemplate with
+        | [], _ -> None
+        | _, None ->
+            Logging.debug "test-prune" $"No filterTemplate configured — running all tests for %s{config.Project}"
+            None
+        | classes, Some template ->
+            let joined = classes |> String.concat config.ClassJoin
+            let result = template.Replace("{classes}", joined)
+            Logging.info "test-prune" $"Filter: %s{result}"
+            Some result
+
+    /// Execute test configs with optional affected classes for filtering.
     /// Handles beforeRun, coverageArgs, process execution, result storage, and status reporting.
-    let executeTests (ctx: PluginContext) (configs: TestConfig list) (extraFilter: string option) =
+    /// rawFilter is a passthrough filter string (from run-tests command), bypassing the template.
+    let executeTests
+        (ctx: PluginContext)
+        (configs: TestConfig list)
+        (affectedClasses: string list)
+        (rawFilter: string option)
+        =
         Volatile.Write(&testsRunning, true)
 
         async {
@@ -98,15 +125,29 @@ type TestPrunePlugin
                         let mutable results = []
 
                         for config in groupConfigs do
-                            let baseArgs =
-                                match extraFilter with
-                                | Some filter -> $"%s{config.Args} %s{filter}"
-                                | None -> config.Args
+                            // Collect extra args (filter + coverage) to append
+                            let extraArgs = ResizeArray<string>()
+
+                            // Template-based class filter (from impact analysis)
+                            match buildFilterArgs config affectedClasses with
+                            | Some f -> extraArgs.Add(f)
+                            | None -> ()
+
+                            // Raw passthrough filter (from run-tests command)
+                            match rawFilter with
+                            | Some f -> extraArgs.Add(f)
+                            | None -> ()
+
+                            match coverageArgs with
+                            | Some covFn -> extraArgs.Add(covFn config.Project)
+                            | None -> ()
 
                             let finalArgs =
-                                match coverageArgs with
-                                | Some covFn -> covFn config.Project baseArgs
-                                | None -> baseArgs
+                                if extraArgs.Count > 0 then
+                                    let extra = String.concat " " extraArgs
+                                    $"%s{config.Args} %s{extra}"
+                                else
+                                    config.Args
 
                             Logging.info "test-prune" $"Running: %s{config.Command} %s{finalArgs}"
 
@@ -221,16 +262,12 @@ type TestPrunePlugin
 
                 (astClasses @ extensionClasses) |> List.distinct
 
-            let filter =
-                match affectedClasses with
-                | [] -> None
-                | classes ->
-                    classes
-                    |> List.map (fun c -> $"--filter-class \"%s{c}\"")
-                    |> String.concat " "
-                    |> Some
+            if affectedClasses.IsEmpty then
+                Logging.info "test-prune" "No affected classes found — running all tests"
+            else
+                Logging.info "test-prune" $"Affected classes: %A{affectedClasses}"
 
-            let! _ = executeTests ctx configs filter
+            let! _ = executeTests ctx configs affectedClasses None
             return ()
         }
 
@@ -465,7 +502,7 @@ type TestPrunePlugin
                                         | Ok configs when configs.IsEmpty ->
                                             return "{\"error\": \"no matching test projects\"}"
                                         | Ok configs ->
-                                            let! results = executeTests ctx configs filter
+                                            let! results = executeTests ctx configs [] filter
                                             return formatTestResultsJson results
                                 with ex ->
                                     Volatile.Write(&testsRunning, false)

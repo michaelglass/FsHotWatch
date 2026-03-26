@@ -157,7 +157,9 @@ let ``plugin with testConfigs subscribes to OnBuildCompleted`` () =
             Command = "echo"
             Args = "tests passed"
             Group = "default"
-            Environment = [] } ]
+            Environment = []
+            FilterTemplate = None
+            ClassJoin = " " } ]
 
     let plugin = TestPrunePlugin(":memory:", "/tmp", testConfigs = configs)
     host.Register(plugin)
@@ -187,7 +189,9 @@ let ``extension contributes affected test classes during test run`` () =
                 Command = "echo"
                 Args = "done"
                 Group = "default"
-                Environment = [] } ]
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -220,7 +224,9 @@ let ``extension error is caught and does not crash plugin`` () =
                 Command = "echo"
                 Args = "done"
                 Group = "default"
-                Environment = [] } ]
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -301,7 +307,9 @@ let ``plugin reports Running status on FileChecked after tests complete`` () =
                 Command = "echo"
                 Args = "ok"
                 Group = "default"
-                Environment = [] } ]
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let plugin = TestPrunePlugin(":memory:", tmpDir, testConfigs = configs)
@@ -343,7 +351,9 @@ let ``run-tests command runs all projects and returns results`` () =
                 Command = "echo"
                 Args = "ok"
                 Group = "default"
-                Environment = [] } ]
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let plugin = TestPrunePlugin(":memory:", tmpDir, testConfigs = configs)
@@ -362,12 +372,16 @@ let ``run-tests with project filter runs only named project`` () =
                 Command = "echo"
                 Args = "alpha"
                 Group = "default"
-                Environment = [] }
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " }
               { Project = "Beta"
                 Command = "echo"
                 Args = "beta"
                 Group = "default"
-                Environment = [] } ]
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let plugin = TestPrunePlugin(":memory:", tmpDir, testConfigs = configs)
@@ -389,12 +403,16 @@ let ``run-tests with only-failed reruns failed projects`` () =
                 Command = "echo"
                 Args = "ok"
                 Group = "default"
-                Environment = [] }
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " }
               { Project = "Fails"
                 Command = "false"
                 Args = ""
                 Group = "default"
-                Environment = [] } ]
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let plugin = TestPrunePlugin(":memory:", tmpDir, testConfigs = configs)
