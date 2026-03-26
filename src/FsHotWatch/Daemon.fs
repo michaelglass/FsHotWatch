@@ -1,9 +1,10 @@
 module FsHotWatch.Daemon
 
+open System
 open System.IO
 open System.Threading
 open FSharp.Compiler.CodeAnalysis
-open FSharp.Compiler.Text
+open Ionide.ProjInfo
 open FsHotWatch.CheckPipeline
 open FsHotWatch.Events
 open FsHotWatch.Ipc
@@ -13,23 +14,23 @@ open FsHotWatch.ProjectGraph
 open FsHotWatch.Watcher
 
 /// Discover .fsproj files and register them with the graph and pipeline.
+/// Uses Ionide.ProjInfo for MSBuild design-time evaluation to get real
+/// assembly references, NuGet packages, and compiler flags.
 let private discoverAndRegisterProjects
     (repoRoot: string)
-    (checker: FSharpChecker)
+    (_checker: FSharpChecker)
     (graph: ProjectGraph)
     (pipeline: CheckPipeline)
     =
     async {
         let searchDirs =
-            [ Path.Combine(repoRoot, "src")
-              Path.Combine(repoRoot, "tests") ]
+            [ Path.Combine(repoRoot, "src"); Path.Combine(repoRoot, "tests") ]
             |> List.filter Directory.Exists
 
         let fsprojFiles =
             searchDirs
             |> List.collect (fun dir ->
-                Directory.GetFiles(dir, "*.fsproj", SearchOption.AllDirectories)
-                |> Array.toList)
+                Directory.GetFiles(dir, "*.fsproj", SearchOption.AllDirectories) |> Array.toList)
             |> List.filter (fun f ->
                 let n = f.Replace('\\', '/')
                 not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
@@ -37,56 +38,77 @@ let private discoverAndRegisterProjects
         graph.PrepareForRediscovery()
         pipeline.PrepareForRediscovery()
 
+        // Register projects in the graph (for dependency tracking via XML parse)
         for fsproj in fsprojFiles do
             try
                 graph.RegisterFromFsproj(fsproj) |> ignore
             with ex ->
                 eprintfn "  [discover] Failed to parse %s: %s" (Path.GetFileName fsproj) ex.Message
 
-        for fsproj in graph.GetTopologicalOrder() do
-            try
-                let srcFiles = graph.GetSourceFiles(fsproj) |> List.toArray
+        // Use Ionide.ProjInfo for real MSBuild evaluation — resolves NuGet packages,
+        // project references, and compiler flags that GetProjectOptionsFromScript missed
+        let sw = System.Diagnostics.Stopwatch.StartNew()
+        eprintfn "  [discover] Loading project options via MSBuild evaluation..."
 
-                let anchorFile = srcFiles |> Array.tryFind File.Exists
+        try
+            let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
+            let loader = WorkspaceLoader.Create(toolsPath, [])
+            let loaded = loader.LoadProjects(fsprojFiles) |> Seq.toList
+            sw.Stop()
 
-                match anchorFile with
-                | Some anchor ->
-                    let source = File.ReadAllText(anchor)
-                    let sourceText = SourceText.ofString source
+            eprintfn
+                "  [discover] MSBuild evaluation complete: %d projects in %.1fs"
+                loaded.Length
+                sw.Elapsed.TotalSeconds
 
-                    let! projOptions, _ =
-                        checker.GetProjectOptionsFromScript(anchor, sourceText, assumeDotNetFramework = false)
+            // Use Ionide.ProjInfo.FCS to convert to FSharpProjectOptions with
+            // proper ReferencedProjects wiring for cross-project type resolution
+            let fcsOptionsList = Ionide.ProjInfo.FCS.mapManyOptions loaded |> Seq.toList
 
-                    pipeline.RegisterProject(fsproj, { projOptions with SourceFiles = srcFiles })
-                    eprintfn "  [discover] Registered %s (%d files)" (Path.GetFileName fsproj) srcFiles.Length
-                | None ->
-                    eprintfn "  [discover] Skipping %s — no source files exist on disk" (Path.GetFileName fsproj)
-            with ex ->
-                eprintfn "  [discover] Failed to load %s: %s" (Path.GetFileName fsproj) ex.Message
+            for fcsOptions in fcsOptionsList do
+                try
+                    let absProject = Path.GetFullPath(fcsOptions.ProjectFileName)
+                    pipeline.RegisterProject(absProject, fcsOptions)
+
+                    eprintfn
+                        "  [discover] Registered %s (%d files, %d refs)"
+                        (Path.GetFileName fcsOptions.ProjectFileName)
+                        fcsOptions.SourceFiles.Length
+                        fcsOptions.OtherOptions.Length
+                with ex ->
+                    eprintfn
+                        "  [discover] Failed to register %s: %s"
+                        (Path.GetFileName fcsOptions.ProjectFileName)
+                        ex.Message
+        with ex ->
+            sw.Stop()
+            eprintfn "  [discover] MSBuild evaluation failed (%.1fs): %s" sw.Elapsed.TotalSeconds ex.Message
     }
 
 /// The daemon ties together a warm FSharpChecker, file watcher, check pipeline, and plugin host.
 /// It runs until the provided CancellationToken is cancelled.
 [<NoComparison; NoEquality>]
 type Daemon =
-    { /// The plugin host that manages plugin lifecycle and event dispatch.
-      Host: PluginHost
-      /// The file watcher monitoring the repository for changes.
-      Watcher: FileWatcher
-      /// The warm FSharpChecker instance used for incremental checking.
-      Checker: FSharpChecker
-      /// The check pipeline that performs incremental file checking.
-      Pipeline: CheckPipeline
-      /// The project dependency graph.
-      Graph: ProjectGraph
-      /// The repository root directory.
-      RepoRoot: string
-      /// Current scan progress state.
-      mutable ScanState: ScanState
-      /// Semaphore ensuring only one scan runs at a time.
-      ScanSemaphore: SemaphoreSlim
-      /// Disposes the debounce timer used for coalescing file change events.
-      DisposeDebounceTimer: unit -> unit }
+    {
+        /// The plugin host that manages plugin lifecycle and event dispatch.
+        Host: PluginHost
+        /// The file watcher monitoring the repository for changes.
+        Watcher: FileWatcher
+        /// The warm FSharpChecker instance used for incremental checking.
+        Checker: FSharpChecker
+        /// The check pipeline that performs incremental file checking.
+        Pipeline: CheckPipeline
+        /// The project dependency graph.
+        Graph: ProjectGraph
+        /// The repository root directory.
+        RepoRoot: string
+        /// Current scan progress state.
+        mutable ScanState: ScanState
+        /// Semaphore ensuring only one scan runs at a time.
+        ScanSemaphore: SemaphoreSlim
+        /// Disposes the debounce timer used for coalescing file change events.
+        DisposeDebounceTimer: unit -> unit
+    }
 
     /// Register a plugin with the daemon's plugin host.
     member this.Register(plugin: IFsHotWatchPlugin) = this.Host.Register(plugin)
@@ -133,8 +155,7 @@ type Daemon =
                         | Some checkResult ->
                             checkedCount <- checkedCount + 1
                             this.Host.EmitFileChecked(checkResult)
-                        | None ->
-                            skippedCount <- skippedCount + 1
+                        | None -> skippedCount <- skippedCount + 1
 
                         completed <- completed + 1
                         this.ScanState <- Scanning(total, completed, System.DateTime.UtcNow)
@@ -153,11 +174,9 @@ type Daemon =
             use _ = this.Watcher :> System.IDisposable
 
             try
-                let tcs =
-                    System.Threading.Tasks.TaskCompletionSource<unit>()
+                let tcs = System.Threading.Tasks.TaskCompletionSource<unit>()
 
-                use _reg =
-                    cancellationToken.Register(fun () -> tcs.TrySetResult() |> ignore)
+                use _reg = cancellationToken.Register(fun () -> tcs.TrySetResult() |> ignore)
 
                 do! tcs.Task |> Async.AwaitTask
             finally
@@ -175,8 +194,7 @@ type Daemon =
         | Scanning(total, completed, _) ->
             let pct = if total > 0 then completed * 100 / total else 0
             $"scanning: %d{completed}/%d{total} files (%d{pct}%%)"
-        | ScanComplete(total, elapsed) ->
-            $"complete: %d{total} files checked in %.1f{elapsed.TotalSeconds}s"
+        | ScanComplete(total, elapsed) -> $"complete: %d{total} files checked in %.1f{elapsed.TotalSeconds}s"
 
     /// Run the daemon with IPC server on the given pipe name.
     /// Discovers projects, performs initial scan, then watches for changes.
@@ -189,26 +207,22 @@ type Daemon =
                     Async.StartAsTask(this.ScanAll()) |> ignore
 
                 let ipcTask =
-                    Async.StartAsTask(
-                        IpcServer.start pipeName this.Host cts onScan this.FormatScanStatus
-                    )
+                    Async.StartAsTask(IpcServer.start pipeName this.Host cts onScan this.FormatScanStatus)
 
                 // Discover projects and perform initial full scan
                 do! this.DiscoverAndRegisterProjects()
                 do! this.ScanAll()
 
-                let tcs =
-                    System.Threading.Tasks.TaskCompletionSource<unit>()
+                let tcs = System.Threading.Tasks.TaskCompletionSource<unit>()
 
-                use _reg =
-                    cts.Token.Register(fun () -> tcs.TrySetResult() |> ignore)
+                use _reg = cts.Token.Register(fun () -> tcs.TrySetResult() |> ignore)
 
                 do! tcs.Task |> Async.AwaitTask
 
                 try
                     ipcTask.Wait(System.TimeSpan.FromSeconds(1.0)) |> ignore
-                with
-                | _ -> ()
+                with _ ->
+                    ()
             finally
                 this.DisposeDebounceTimer()
         }
@@ -227,87 +241,100 @@ module Daemon =
         let pendingChanges = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
         let mutable debounceTimer: System.Threading.Timer option = None
         let debounceLock = obj ()
-        let suppressedFiles = System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
+
+        let suppressedFiles =
+            System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
+
         let mutable processingChanges = 0
 
         let processChanges (_state: obj) =
-          if Interlocked.CompareExchange(&processingChanges, 1, 0) = 0 then
-            try
-            let changes = System.Collections.Generic.List<FileChangeKind>()
-            let mutable item = Unchecked.defaultof<_>
+            if Interlocked.CompareExchange(&processingChanges, 1, 0) = 0 then
+                try
+                    let changes = System.Collections.Generic.List<FileChangeKind>()
+                    let mutable item = Unchecked.defaultof<_>
 
-            while pendingChanges.TryTake(&item) do
-                changes.Add(item)
+                    while pendingChanges.TryTake(&item) do
+                        changes.Add(item)
 
-            if changes.Count > 0 then
-                let mutable sourceFiles = []
-                let mutable projFiles = []
-                let mutable hasSolution = false
+                    if changes.Count > 0 then
+                        let mutable sourceFiles = []
+                        let mutable projFiles = []
+                        let mutable hasSolution = false
 
-                for c in changes do
-                    match c with
-                    | SourceChanged files -> sourceFiles <- files @ sourceFiles
-                    | ProjectChanged files -> projFiles <- files @ projFiles
-                    | SolutionChanged -> hasSolution <- true
+                        for c in changes do
+                            match c with
+                            | SourceChanged files -> sourceFiles <- files @ sourceFiles
+                            | ProjectChanged files -> projFiles <- files @ projFiles
+                            | SolutionChanged -> hasSolution <- true
 
-                // Filter out files written by preprocessors (suppress re-trigger)
-                let allSourceFiles =
-                    sourceFiles
-                    |> List.distinct
-                    |> List.filter (fun f ->
-                        match suppressedFiles.TryRemove(f) with
-                        | true, _ -> false
-                        | false, _ -> true)
+                        // Filter out files written by preprocessors (suppress re-trigger)
+                        let allSourceFiles =
+                            sourceFiles
+                            |> List.distinct
+                            |> List.filter (fun f ->
+                                match suppressedFiles.TryRemove(f) with
+                                | true, _ -> false
+                                | false, _ -> true)
 
-                if hasSolution then
-                    host.EmitFileChanged(SolutionChanged)
+                        if hasSolution then
+                            host.EmitFileChanged(SolutionChanged)
 
-                if not projFiles.IsEmpty || hasSolution then
-                    eprintfn "  [daemon] Project/solution change detected — re-discovering projects"
+                        if not projFiles.IsEmpty || hasSolution then
+                            eprintfn "  [daemon] Project/solution change detected — re-discovering projects"
 
-                    if not (isNull (box checker)) then
-                        checker.InvalidateAll()
-                        checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
+                            if not (isNull (box checker)) then
+                                checker.InvalidateAll()
+                                checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
 
-                    discoverAndRegisterProjects repoRoot checker graph pipeline |> Async.RunSynchronously
-                    eprintfn "  [daemon] Re-discovery complete: %d projects, %d files" (graph.GetAllProjects().Length) (pipeline.GetAllRegisteredFiles().Length)
+                            discoverAndRegisterProjects repoRoot checker graph pipeline
+                            |> Async.RunSynchronously
 
-                    if not projFiles.IsEmpty then
-                        host.EmitFileChanged(ProjectChanged(projFiles |> List.distinct))
+                            eprintfn
+                                "  [daemon] Re-discovery complete: %d projects, %d files"
+                                (graph.GetAllProjects().Length)
+                                (pipeline.GetAllRegisteredFiles().Length)
 
-                if not allSourceFiles.IsEmpty then
-                    let modifiedByPreprocessors = host.RunPreprocessors(allSourceFiles)
+                            if not projFiles.IsEmpty then
+                                host.EmitFileChanged(ProjectChanged(projFiles |> List.distinct))
 
-                    for file in modifiedByPreprocessors do
-                        suppressedFiles.TryAdd(file, true) |> ignore
+                        if not allSourceFiles.IsEmpty then
+                            let modifiedByPreprocessors = host.RunPreprocessors(allSourceFiles)
 
-                    let changedProjects =
-                        allSourceFiles
-                        |> List.choose (fun f -> graph.GetProjectForFile(f))
-                        |> List.distinct
+                            for file in modifiedByPreprocessors do
+                                suppressedFiles.TryAdd(file, true) |> ignore
 
-                    // Files in dependent projects (not the changed project itself)
-                    let dependentProjectFiles =
-                        changedProjects
-                        |> List.collect (fun p -> graph.GetTransitiveDependents(p))
-                        |> List.distinct
-                        |> List.filter (fun p -> not (changedProjects |> List.contains p))
-                        |> List.collect (fun proj -> graph.GetSourceFiles(proj))
+                            let changedProjects =
+                                allSourceFiles
+                                |> List.choose (fun f -> graph.GetProjectForFile(f))
+                                |> List.distinct
 
-                    let allFilesToCheck =
-                        (allSourceFiles @ dependentProjectFiles) |> List.distinct
+                            // Files in dependent projects (not the changed project itself)
+                            let dependentProjectFiles =
+                                changedProjects
+                                |> List.collect (fun p -> graph.GetTransitiveDependents(p))
+                                |> List.distinct
+                                |> List.filter (fun p -> not (changedProjects |> List.contains p))
+                                |> List.collect (fun proj -> graph.GetSourceFiles(proj))
 
-                    host.EmitFileChanged(SourceChanged allFilesToCheck)
+                            let allFilesToCheck = (allSourceFiles @ dependentProjectFiles) |> List.distinct
 
-                    for file in allFilesToCheck do
-                        let result = pipeline.CheckFile(file) |> Async.RunSynchronously
+                            host.EmitFileChanged(SourceChanged allFilesToCheck)
 
-                        match result with
-                        | Some checkResult -> host.EmitFileChecked(checkResult)
-                        | None -> ()
+                            for file in allFilesToCheck do
+                                let result = pipeline.CheckFile(file) |> Async.RunSynchronously
 
-            finally
-                Volatile.Write(&processingChanges, 0)
+                                match result with
+                                | Some checkResult -> host.EmitFileChecked(checkResult)
+                                | None -> ()
+                finally
+                    Interlocked.Exchange(&processingChanges, 0) |> ignore
+
+                    // If items arrived during processing, re-arm the debounce timer
+                    if not pendingChanges.IsEmpty then
+                        lock debounceLock (fun () ->
+                            match debounceTimer with
+                            | Some timer -> timer.Change(sourceDebounceMs, System.Threading.Timeout.Infinite) |> ignore
+                            | None -> ())
 
         let mutable pendingDelayMs = 0
 
@@ -324,8 +351,7 @@ module Daemon =
                 pendingDelayMs <- max pendingDelayMs delayMs
 
                 match debounceTimer with
-                | Some timer ->
-                    timer.Change(pendingDelayMs, System.Threading.Timeout.Infinite) |> ignore
+                | Some timer -> timer.Change(pendingDelayMs, System.Threading.Timeout.Infinite) |> ignore
                 | None ->
                     debounceTimer <-
                         Some(
