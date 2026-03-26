@@ -5,6 +5,7 @@ open System.IO
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Text
 open FsHotWatch.Events
+open FsHotWatch.Logging
 
 /// Manages project options and performs incremental file checking with the warm FSharpChecker.
 type CheckPipeline(checker: FSharpChecker) =
@@ -38,7 +39,8 @@ type CheckPipeline(checker: FSharpChecker) =
 
             match projectOptionsByFile.TryGetValue(absPath) with
             | false, _ ->
-                eprintfn "  [check] No project options for: %s" absPath
+                if verbose then
+                    eprintfn "  [check] No project options for: %s" absPath
                 return None
             | true, options ->
                 let source =
@@ -57,7 +59,8 @@ type CheckPipeline(checker: FSharpChecker) =
                     sw.Stop()
 
                     if sw.Elapsed.TotalSeconds > 2.0 then
-                        eprintfn $"  [check] SLOW: %s{Path.GetFileName(absPath)} took %.1f{sw.Elapsed.TotalSeconds}s"
+                        if verbose then
+                            eprintfn $"  [check] SLOW: %s{Path.GetFileName(absPath)} took %.1f{sw.Elapsed.TotalSeconds}s"
 
                     match checkAnswer with
                     | FSharpCheckFileAnswer.Succeeded checkResults ->

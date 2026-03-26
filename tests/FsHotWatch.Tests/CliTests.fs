@@ -292,7 +292,7 @@ let private fakeIpc () : IpcOps =
       GetPluginStatus = fun _ _ -> async { return "not found" }
       RunCommand = fun _ _ _ -> async { return "unknown command" }
       GetErrors = fun _ _ -> async { return """{"count": 0, "files": {}}""" }
-      WaitForScan = fun _ -> async { return "idle" }
+      WaitForScan = fun _ _ -> async { return "idle" }
       WaitForComplete = fun _ -> async { return "{}" }
       TriggerBuild = fun _ -> async { return "{}" }
       FormatAll = fun _ -> async { return "formatted 0 files" }
@@ -434,3 +434,25 @@ let ``executeCommand returns 1 when IPC fails`` () =
         executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status None)
 
     test <@ result = 1 @>
+
+// --- decideDaemonAction tests ---
+
+[<Fact>]
+let ``decideDaemonAction reuses running daemon with matching config`` () =
+    let action = decideDaemonAction true "abc123" "abc123"
+    test <@ action = Reuse @>
+
+[<Fact>]
+let ``decideDaemonAction restarts daemon when config hash changes`` () =
+    let action = decideDaemonAction true "old-hash" "new-hash"
+    test <@ action = Restart @>
+
+[<Fact>]
+let ``decideDaemonAction starts fresh when daemon not running`` () =
+    let action = decideDaemonAction false "" "abc123"
+    test <@ action = StartFresh @>
+
+[<Fact>]
+let ``decideDaemonAction starts fresh when not running even with matching hash`` () =
+    let action = decideDaemonAction false "abc123" "abc123"
+    test <@ action = StartFresh @>

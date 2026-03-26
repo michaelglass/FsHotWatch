@@ -4,15 +4,31 @@ open System.Collections.Concurrent
 open FSharp.Compiler.CodeAnalysis
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
+open FsHotWatch.Logging
 open FsHotWatch.Plugin
 
 /// Manages plugin lifecycle, event dispatch, command registration, and status tracking.
 type PluginHost(checker: FSharpChecker, repoRoot: string) =
     let fileChanged = Event<FileChangeKind>()
     let buildCompleted = Event<BuildResult>()
-    let fileChecked = Event<FileCheckResult>()
     let projectChecked = Event<ProjectCheckResult>()
     let testCompleted = Event<TestResults>()
+
+    let fileCheckedHandlers = ConcurrentBag<FileCheckResult -> unit>()
+
+    /// IEvent wrapper that captures handlers into a bag for parallel dispatch.
+    let fileCheckedCapture =
+        { new IEvent<Handler<FileCheckResult>, FileCheckResult> with
+            member _.AddHandler(handler) =
+                fileCheckedHandlers.Add(fun r -> handler.Invoke(null, r))
+
+            member _.RemoveHandler(_handler) = ()
+
+            member _.Subscribe(observer) =
+                fileCheckedHandlers.Add(fun r -> observer.OnNext(r))
+
+                { new System.IDisposable with
+                    member _.Dispose() = () } }
 
     let ledger = ErrorLedger()
     let commands = ConcurrentDictionary<string, CommandHandler>()
@@ -26,7 +42,7 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
               RepoRoot = repoRoot
               OnFileChanged = fileChanged.Publish
               OnBuildCompleted = buildCompleted.Publish
-              OnFileChecked = fileChecked.Publish
+              OnFileChecked = fileCheckedCapture
               OnProjectChecked = projectChecked.Publish
               OnTestCompleted = testCompleted.Publish
               ReportStatus =
@@ -38,7 +54,9 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
                         | Completed _ -> "Completed"
                         | Failed(e, _) -> $"Failed: %s{e.Substring(0, min 80 e.Length)}"
 
-                    eprintfn "  [%s] → %s" plugin.Name statusName
+                    if verbose then
+                        eprintfn "  [%s] → %s" plugin.Name statusName
+
                     statuses[plugin.Name] <- status
               RegisterCommand = fun (name, handler) -> commands[name] <- handler
               EmitBuildCompleted = fun result -> buildCompleted.Trigger(result)
@@ -88,8 +106,24 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
     /// Clear errors in the ledger for a named source + file.
     member _.ClearErrors(pluginName: string, filePath: string) = ledger.Clear(pluginName, filePath)
 
-    /// Emit a file checked event to all registered plugins.
-    member _.EmitFileChecked(result: FileCheckResult) = fileChecked.Trigger(result)
+    /// Emit a file checked event to all registered plugins (synchronous, sequential).
+    member _.EmitFileChecked(result: FileCheckResult) =
+        for handler in fileCheckedHandlers.ToArray() do
+            handler result
+
+    /// Emit a file checked event to all registered plugins in parallel.
+    /// Each handler runs as an independent async computation.
+    member _.EmitFileCheckedParallel(result: FileCheckResult) : Async<unit> =
+        async {
+            let handlers = fileCheckedHandlers.ToArray()
+
+            if handlers.Length > 0 then
+                do!
+                    handlers
+                    |> Array.map (fun handler -> async { handler result })
+                    |> Async.Parallel
+                    |> Async.Ignore
+        }
 
     /// Emit a project checked event to all registered plugins.
     member _.EmitProjectChecked(result: ProjectCheckResult) = projectChecked.Trigger(result)

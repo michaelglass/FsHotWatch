@@ -1,6 +1,8 @@
 module FsHotWatch.Tests.PluginHostTests
 
 open System
+open System.Diagnostics
+open System.Threading
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.ErrorLedger
@@ -344,3 +346,42 @@ let ``GetErrorsByPlugin returns only that plugin's errors`` () =
     let aErrors = host.GetErrorsByPlugin("pluginA")
     test <@ aErrors.Count = 1 @>
     test <@ aErrors.ContainsKey "/src/A.fs" @>
+
+[<Fact>]
+let ``EmitFileCheckedParallel runs handlers concurrently`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let mutable handler1Done = 0L
+    let mutable handler2Done = 0L
+
+    let makeSlowPlugin name (setter: int64 -> unit) delayMs =
+        { new IFsHotWatchPlugin with
+            member _.Name = name
+
+            member _.Initialize(ctx) =
+                ctx.OnFileChecked.Add(fun _ ->
+                    Thread.Sleep(delayMs: int)
+                    setter (Stopwatch.GetTimestamp()))
+
+            member _.Dispose() = () }
+
+    host.Register(makeSlowPlugin "slow1" (fun t -> handler1Done <- t) 200)
+    host.Register(makeSlowPlugin "slow2" (fun t -> handler2Done <- t) 200)
+
+    let dummyResult =
+        { File = "/tmp/test.fs"
+          Source = ""
+          ParseResults = Unchecked.defaultof<_>
+          CheckResults = Unchecked.defaultof<_>
+          ProjectOptions = Unchecked.defaultof<_> }
+
+    let sw = Stopwatch.StartNew()
+    host.EmitFileCheckedParallel(dummyResult) |> Async.RunSynchronously
+    sw.Stop()
+
+    // Both handlers should have completed
+    test <@ handler1Done > 0L @>
+    test <@ handler2Done > 0L @>
+
+    // If run in parallel, total time should be ~200ms, not ~400ms.
+    // Allow generous margin but it should be well under sequential time.
+    test <@ sw.ElapsedMilliseconds < 350L @>

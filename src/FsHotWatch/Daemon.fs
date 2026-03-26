@@ -9,6 +9,7 @@ open FsHotWatch.CheckPipeline
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.Ipc
+open FsHotWatch.Logging
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
 open FsHotWatch.ProjectGraph
@@ -134,6 +135,8 @@ type Daemon =
         WorkspaceLoader: IWorkspaceLoader
         /// Current scan progress state.
         mutable ScanState: ScanState
+        /// Monotonically increasing scan generation counter.
+        mutable ScanGeneration: int64
         /// Semaphore ensuring only one scan runs at a time.
         ScanSemaphore: SemaphoreSlim
         /// Disposes the debounce timer used for coalescing file change events.
@@ -156,6 +159,9 @@ type Daemon =
     /// Get current scan state.
     member this.GetScanState() = this.ScanState
 
+    /// Get current scan generation (incremented after each completed scan).
+    member this.GetScanGeneration() = Volatile.Read(&this.ScanGeneration)
+
     /// Scan all registered files — check each one and emit events to plugins.
     /// Blocks until complete. If a scan is already running, waits for it to finish.
     member this.ScanAll() =
@@ -174,30 +180,42 @@ type Daemon =
                 if not files.IsEmpty then
                     // Run preprocessors (e.g., formatter) before dispatching
                     let _modified = this.Host.RunPreprocessors(files)
+
+                    if _modified.Length > 0 then
+                        eprintfn "  [scan] Preprocessors modified %d files (watcher may re-trigger)" _modified.Length
                     this.Host.EmitFileChanged(SourceChanged files)
                     let mutable completed = 0
 
                     let mutable checkedCount = 0
                     let mutable skippedCount = 0
 
-                    for file in files do
-                        let! result = this.Pipeline.CheckFile(file)
+                    // Check files in parallel tiers based on project dependency graph
+                    let tiers = this.Graph.GetParallelTiers()
 
-                        match result with
-                        | Some checkResult ->
-                            checkedCount <- checkedCount + 1
-                            this.Host.EmitFileChecked(checkResult)
-                            reportFcsDiagnostics this.Host checkResult
+                    for tier in tiers do
+                        let tierFiles = tier |> List.collect (fun proj -> this.Graph.GetSourceFiles(proj))
 
-                        | None -> skippedCount <- skippedCount + 1
+                        let! results =
+                            tierFiles
+                            |> List.map (fun file -> this.Pipeline.CheckFile(file))
+                            |> Async.Parallel
 
-                        completed <- completed + 1
-                        this.ScanState <- Scanning(total, completed, System.DateTime.UtcNow)
+                        for result in results do
+                            match result with
+                            | Some checkResult ->
+                                checkedCount <- checkedCount + 1
+                                do! this.Host.EmitFileCheckedParallel(checkResult)
+                                reportFcsDiagnostics this.Host checkResult
+                            | None -> skippedCount <- skippedCount + 1
 
-                    eprintfn "  [scan] Checked %d files, skipped %d" checkedCount skippedCount
+                            completed <- completed + 1
+                            this.ScanState <- Scanning(total, completed, System.DateTime.UtcNow)
+
+                    eprintfn "  [scan] Checked %d files (%d tiers), skipped %d" checkedCount tiers.Length skippedCount
 
                 sw.Stop()
                 this.ScanState <- ScanComplete(total, sw.Elapsed)
+                Interlocked.Increment(&this.ScanGeneration) |> ignore
             finally
                 this.ScanSemaphore.Release() |> ignore
         }
@@ -257,10 +275,16 @@ type Daemon =
                         return $"formatted %d{modified.Length} files"
                     }
 
-                let ipcTask =
-                    Async.StartAsTask(
-                        IpcServer.start pipeName this.Host cts onScan this.FormatScanStatus triggerBuild formatAll
-                    )
+                let rpcConfig: DaemonRpcConfig =
+                    { Host = this.Host
+                      RequestShutdown = fun () -> cts.Cancel()
+                      RequestScan = onScan
+                      GetScanStatus = this.FormatScanStatus
+                      GetScanGeneration = this.GetScanGeneration
+                      TriggerBuild = triggerBuild
+                      FormatAll = formatAll }
+
+                let ipcTask = Async.StartAsTask(IpcServer.start pipeName rpcConfig cts)
 
                 this.Ready.Set()
 
@@ -325,14 +349,29 @@ module Daemon =
                             | ProjectChanged files -> projFiles <- files @ projFiles
                             | SolutionChanged -> hasSolution <- true
 
+                        eprintfn "  [daemon] processChanges: %d source, %d project, solution=%b" sourceFiles.Length projFiles.Length hasSolution
+
+                        if verbose then
+                            for f in sourceFiles do
+                                eprintfn "    [daemon] source: %s" f
+
+                            for f in projFiles do
+                                eprintfn "    [daemon] project: %s" f
+
                         // Filter out files written by preprocessors (suppress re-trigger)
                         let allSourceFiles =
                             sourceFiles
                             |> List.distinct
                             |> List.filter (fun f ->
-                                match suppressedFiles.TryRemove(f) with
-                                | true, _ -> false
-                                | false, _ -> true)
+                                let suppressed =
+                                    match suppressedFiles.TryRemove(f) with
+                                    | true, _ -> true
+                                    | false, _ -> false
+
+                                if suppressed && verbose then
+                                    eprintfn "    [daemon] suppressed: %s" f
+
+                                not suppressed)
 
                         if hasSolution then
                             host.EmitFileChanged(SolutionChanged)
@@ -378,12 +417,15 @@ module Daemon =
 
                             host.EmitFileChanged(SourceChanged allFilesToCheck)
 
+                            eprintfn "  [daemon] Checking %d files after change" allFilesToCheck.Length
+
                             for file in allFilesToCheck do
                                 let result = pipeline.CheckFile(file) |> Async.RunSynchronously
 
                                 match result with
                                 | Some checkResult ->
-                                    host.EmitFileChecked(checkResult)
+                                    eprintfn "  [daemon] EmitFileChecked: %s" (Path.GetFileName(file))
+                                    Async.RunSynchronously(host.EmitFileCheckedParallel(checkResult))
                                     reportFcsDiagnostics host checkResult
 
                                 | None -> ()
@@ -400,6 +442,7 @@ module Daemon =
         let mutable pendingDelayMs = 0
 
         let onChange change =
+            eprintfn "  [watcher] %A" change
             pendingChanges.Add(change)
 
             let delayMs =
@@ -444,6 +487,7 @@ module Daemon =
           RepoRoot = repoRoot
           WorkspaceLoader = loader
           ScanState = ScanIdle
+          ScanGeneration = 0L
           ScanSemaphore = new SemaphoreSlim(1, 1)
           DisposeDebounceTimer = disposeDebounceTimer
           Ready = new ManualResetEventSlim(false) }

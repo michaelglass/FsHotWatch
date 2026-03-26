@@ -124,7 +124,7 @@ type IpcOps =
       GetPluginStatus: string -> string -> Async<string>
       RunCommand: string -> string -> string -> Async<string>
       GetErrors: string -> string -> Async<string>
-      WaitForScan: string -> Async<string>
+      WaitForScan: string -> int64 -> Async<string>
       WaitForComplete: string -> Async<string>
       TriggerBuild: string -> Async<string>
       FormatAll: string -> Async<string>
@@ -163,6 +163,9 @@ let private showHelp () =
     printfn "  errors             Show current errors from all plugins"
     printfn "  check              Full check: scan, build, lint, then report errors"
     printfn "  <command> [args]   Run a plugin-registered command"
+    printfn ""
+    printfn "Options:"
+    printfn "  -v, --verbose      Show per-file status transitions"
 
 let private runIpc (action: Async<string>) : int =
     try
@@ -228,6 +231,20 @@ let private computeConfigHash (repoRoot: string) =
 
     Convert.ToHexStringLower(hash).Substring(0, 16)
 
+/// What action ensureDaemon should take.
+type DaemonAction =
+    | Reuse
+    | Restart
+    | StartFresh
+
+/// Determine what daemon action is needed based on current state.
+let decideDaemonAction (isRunning: bool) (storedHash: string) (currentHash: string) : DaemonAction =
+    if isRunning then
+        if storedHash = currentHash then Reuse
+        else Restart
+    else
+        StartFresh
+
 /// Kill a stale daemon process by PID file.
 let private killStaleDaemon (repoRoot: string) =
     let pidPath = Path.Combine(repoRoot, ".fs-hot-watch", "daemon.pid")
@@ -278,28 +295,28 @@ let private ensureDaemon (ipc: IpcOps) (repoRoot: string) (pipeName: string) : b
     let stateDir = Path.Combine(repoRoot, ".fs-hot-watch")
     let hashPath = Path.Combine(stateDir, "config.hash")
     let currentHash = computeConfigHash repoRoot
+    let isRunning = ipc.IsRunning pipeName
 
-    if ipc.IsRunning pipeName then
-        let storedHash =
-            if File.Exists hashPath then
-                File.ReadAllText(hashPath).Trim()
-            else
-                ""
-
-        if storedHash = currentHash then
-            true
+    let storedHash =
+        if File.Exists hashPath then
+            File.ReadAllText(hashPath).Trim()
         else
-            eprintfn "  Daemon config changed — restarting..."
+            ""
 
-            try
-                ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
-                Thread.Sleep(1000)
-            with _ ->
-                ()
+    match decideDaemonAction isRunning storedHash currentHash with
+    | Reuse -> true
+    | Restart ->
+        eprintfn "  Daemon config changed — restarting..."
 
-            killStaleDaemon repoRoot
-            startFreshDaemon ipc repoRoot pipeName currentHash
-    else
+        try
+            ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
+            Thread.Sleep(1000)
+        with _ ->
+            ()
+
+        killStaleDaemon repoRoot
+        startFreshDaemon ipc repoRoot pipeName currentHash
+    | StartFresh ->
         killStaleDaemon repoRoot
         startFreshDaemon ipc repoRoot pipeName currentHash
 
@@ -378,7 +395,7 @@ let executeCommand
         else
             // Wait for the daemon's initial scan (triggered by RunWithIpc on startup)
             eprintfn "  Waiting for scan to complete..."
-            let scanResult = ipc.WaitForScan pipeName |> Async.RunSynchronously
+            let scanResult = ipc.WaitForScan pipeName -1L |> Async.RunSynchronously
             eprintfn "  Scan: %s" scanResult
             eprintfn "  Waiting for all plugins to complete..."
             ipc.WaitForComplete pipeName |> Async.RunSynchronously |> ignore
@@ -387,6 +404,13 @@ let executeCommand
 
 [<EntryPoint>]
 let main args =
+    let argList = args |> Array.toList
+
+    if argList |> List.exists (fun a -> a = "--verbose" || a = "-v") then
+        FsHotWatch.Logging.verbose <- true
+
+    let filteredArgs = argList |> List.filter (fun a -> a <> "--verbose" && a <> "-v")
+
     let repoRoot =
         match findRepoRoot (Directory.GetCurrentDirectory()) with
         | Some root -> root
@@ -396,5 +420,5 @@ let main args =
             ""
 
     let pipeName = computePipeName repoRoot
-    let command = parseCommand (args |> Array.toList)
+    let command = parseCommand filteredArgs
     executeCommand Daemon.create defaultIpcOps repoRoot pipeName command
