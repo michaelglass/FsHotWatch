@@ -13,6 +13,7 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
     let buildCompleted = Event<BuildResult>()
     let projectChecked = Event<ProjectCheckResult>()
     let testCompleted = Event<TestResults>()
+    let statusChanged = Event<string * PluginStatus>()
 
     let fileCheckedHandlers = ConcurrentBag<FileCheckResult -> unit>()
 
@@ -58,6 +59,7 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
                         eprintfn "  [%s] → %s" plugin.Name statusName
 
                     statuses[plugin.Name] <- status
+                    statusChanged.Trigger(plugin.Name, status)
               RegisterCommand = fun (name, handler) -> commands[name] <- handler
               EmitBuildCompleted = fun result -> buildCompleted.Trigger(result)
               EmitTestCompleted = fun results -> testCompleted.Trigger(results)
@@ -162,6 +164,9 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
 
     /// Total error count across all plugins and files.
     member _.ErrorCount() = ledger.Count()
+
+    /// Event fired when any plugin's status changes.
+    member _.OnStatusChanged = statusChanged.Publish
 
     /// Create a new PluginHost.
     static member create (checker: FSharpChecker) (repoRoot: string) = PluginHost(checker, repoRoot)

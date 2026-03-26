@@ -146,6 +146,80 @@ type ScanSignal() =
         for _, tcs in toSignal do
             tcs.TrySetResult(()) |> ignore
 
+/// Wait for all plugins to reach a terminal state with 1-second stability confirmation.
+let private waitForAllTerminal (host: PluginHost) () : Task<unit> =
+    let tcs =
+        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    let mutable timerCts: CancellationTokenSource option = None
+    let mutable subscription: System.IDisposable option = None
+    let mutable resolved = false
+    let lockObj = obj ()
+
+    let checkAndSchedule () =
+        lock lockObj (fun () ->
+            if resolved then
+                ()
+            else
+
+                let statuses = host.GetAllStatuses()
+
+                let allTerminal =
+                    statuses
+                    |> Map.forall (fun _ s ->
+                        match s with
+                        | Running _ -> false
+                        | _ -> true)
+
+                // Cancel any pending confirmation timer
+                timerCts
+                |> Option.iter (fun c ->
+                    c.Cancel()
+                    c.Dispose())
+
+                timerCts <- None
+
+                if allTerminal && not statuses.IsEmpty then
+                    // Schedule 1-second confirmation
+                    let newCts = new CancellationTokenSource()
+                    timerCts <- Some newCts
+
+                    Task
+                        .Delay(1000, newCts.Token)
+                        .ContinueWith(fun (t: Task) ->
+                            if not t.IsCanceled then
+                                lock lockObj (fun () ->
+                                    if not resolved then
+                                        // Re-check to confirm stability
+                                        let final = host.GetAllStatuses()
+
+                                        let stillTerminal =
+                                            final
+                                            |> Map.forall (fun _ s ->
+                                                match s with
+                                                | Running _ -> false
+                                                | _ -> true)
+
+                                        if stillTerminal then
+                                            resolved <- true
+
+                                            timerCts |> Option.iter (fun c -> c.Dispose())
+                                            timerCts <- None
+
+                                            subscription |> Option.iter (fun s -> s.Dispose())
+                                            subscription <- None
+
+                                            tcs.TrySetResult(()) |> ignore))
+                    |> ignore)
+
+    // Check immediately in case already terminal
+    checkAndSchedule ()
+
+    // Subscribe to status changes (returns IDisposable for cleanup)
+    subscription <- Some(host.OnStatusChanged.Subscribe(fun _ -> checkAndSchedule ()))
+
+    tcs.Task
+
 /// The daemon ties together a warm FSharpChecker, file watcher, check pipeline, and plugin host.
 /// It runs until the provided CancellationToken is cancelled.
 [<NoComparison; NoEquality>]
@@ -323,7 +397,8 @@ type Daemon =
                       TriggerBuild = triggerBuild
                       FormatAll = formatAll
                       WaitForScanGeneration =
-                          fun afterGen -> this.ScanSignal.WaitForGeneration(afterGen, this.GetScanGeneration()) }
+                          fun afterGen -> this.ScanSignal.WaitForGeneration(afterGen, this.GetScanGeneration())
+                      WaitForAllTerminal = waitForAllTerminal this.Host }
 
                 let ipcTask = Async.StartAsTask(IpcServer.start pipeName rpcConfig cts)
 

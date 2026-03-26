@@ -18,7 +18,8 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       GetScanGeneration = fun () -> 0L
       TriggerBuild = fun () -> async { return () }
       FormatAll = fun () -> async { return "formatted 0 files" }
-      WaitForScanGeneration = fun _ -> Task.FromResult(()) }
+      WaitForScanGeneration = fun _ -> Task.FromResult(())
+      WaitForAllTerminal = fun () -> Task.FromResult(()) }
 
 [<Fact>]
 let ``server responds to GetStatus`` () =
@@ -457,3 +458,23 @@ let ``WaitForScan blocks until generation advances`` () =
 
     let result = waitTask.Result
     test <@ result.Contains("complete") @>
+
+[<Fact>]
+let ``WaitForComplete resolves when all plugins terminal`` () =
+    let tcs = TaskCompletionSource<unit>()
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let config =
+        { defaultRpcConfig host with
+            WaitForAllTerminal = fun () -> tcs.Task }
+
+    let target = DaemonRpcTarget(config)
+    let waitTask = target.WaitForComplete()
+
+    test <@ not waitTask.IsCompleted @>
+
+    tcs.SetResult(())
+
+    let result = waitTask.Result
+    // Should return status JSON
+    test <@ result.Contains("{") @>
