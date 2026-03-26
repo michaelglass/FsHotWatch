@@ -39,6 +39,16 @@ let private findRepoRoot () =
 
     walk assemblyDir
 
+/// Poll until the plugin status is no longer Running, with a timeout.
+let private waitForStatusSettled (host: PluginHost) (pluginName: string) (timeoutMs: int) =
+    let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
+    let mutable settled = false
+
+    while not settled && DateTime.UtcNow < deadline do
+        match host.GetStatus(pluginName) with
+        | Some(Running _) -> Threading.Thread.Sleep(50)
+        | _ -> settled <- true
+
 [<Fact>]
 let ``all plugins receive events when checking a file`` () =
     let repoRoot = findRepoRoot ()
@@ -193,6 +203,9 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     match result with
     | Some checkResult -> host.EmitFileChecked(checkResult)
     | None -> failwith "Failed to check file"
+
+    // The analyzers plugin now runs async — wait for it to settle
+    waitForStatusSettled host "analyzers" 10000
 
     // The analyzers plugin should have completed (or failed gracefully)
     let status = host.GetStatus("analyzers")
@@ -668,6 +681,8 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
     | Some checkResult ->
         host.EmitFileChecked(checkResult)
 
+        waitForStatusSettled host "analyzers" 10000
+
         let status = host.GetStatus("analyzers")
         test <@ status.IsSome @>
 
@@ -721,6 +736,8 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
     match result with
     | Some checkResult ->
         host.EmitFileChecked(checkResult)
+
+        waitForStatusSettled host "analyzers" 10000
 
         let status = host.GetStatus("analyzers")
         test <@ status.IsSome @>
@@ -829,6 +846,7 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
         host.Register(plugin)
 
         host.EmitBuildCompleted(BuildSucceeded)
+        waitForStatusSettled host "test-prune" 10000
 
         let cmdResult = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ cmdResult.IsSome @>
@@ -877,6 +895,7 @@ let ``TestPrunePlugin with failing test reports failure`` () =
         host.Register(plugin)
 
         host.EmitBuildCompleted(BuildSucceeded)
+        waitForStatusSettled host "test-prune" 10000
 
         let cmdResult = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ cmdResult.IsSome @>
@@ -1145,6 +1164,8 @@ let ``Full pipeline: format → build → test → coverage`` () =
                 | _ -> false
             @>
 
+        waitForStatusSettled host "test-prune" 10000
+
         let testStatus = host.GetStatus("test-prune")
         test <@ testStatus.IsSome @>
 
@@ -1154,6 +1175,9 @@ let ``Full pipeline: format → build → test → coverage`` () =
                 | Completed _ -> true
                 | _ -> false
             @>
+
+        // Coverage is triggered by TestCompleted — wait for it too
+        waitForStatusSettled host "coverage" 10000
 
         let covStatus = host.GetStatus("coverage")
         test <@ covStatus.IsSome @>
@@ -1245,13 +1269,20 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
         host.Register(plugin)
 
         // Emit two BuildSucceeded events rapidly — the testsRunning guard should queue the second
-        let t1 = async { host.EmitBuildCompleted(BuildSucceeded) } |> Async.StartAsTask
-
+        host.EmitBuildCompleted(BuildSucceeded)
         System.Threading.Thread.Sleep(100)
         host.EmitBuildCompleted(BuildSucceeded)
-        t1.Wait()
 
-        // The test-results command should show results (the first run completed)
+        // Wait for async test execution to complete (sleep 1 + potential re-run)
+        // Poll test-results directly since status may briefly flip between runs
+        let deadline = DateTime.UtcNow.AddSeconds(15.0)
+        let mutable resultReady = false
+
+        while not resultReady && DateTime.UtcNow < deadline do
+            match host.RunCommand("test-results", [||]) |> Async.RunSynchronously with
+            | Some v when v.Contains("\"status\": \"passed\"") -> resultReady <- true
+            | _ -> Threading.Thread.Sleep(200)
+
         let cmdResult = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ cmdResult.IsSome @>
         // sleep exits 0, so it counts as passed

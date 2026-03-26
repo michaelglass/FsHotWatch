@@ -197,7 +197,12 @@ let ``extension contributes affected test classes during test run`` () =
         host.Register(plugin)
 
         host.EmitBuildCompleted(BuildSucceeded)
-        System.Threading.Thread.Sleep(500)
+
+        // Wait for async test execution to complete
+        let deadline = DateTime.UtcNow.AddSeconds(10.0)
+
+        while not extensionCalled && DateTime.UtcNow < deadline do
+            System.Threading.Thread.Sleep(50)
 
         test <@ extensionCalled @>)
 

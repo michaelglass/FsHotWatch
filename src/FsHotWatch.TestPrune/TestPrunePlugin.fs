@@ -74,123 +74,124 @@ type TestPrunePlugin
     /// Execute test configs with an optional extra filter appended to args.
     /// Handles beforeRun, coverageArgs, process execution, result storage, and status reporting.
     let executeTests (ctx: PluginContext) (configs: TestConfig list) (extraFilter: string option) =
-        eprintfn "  [test-prune] executeTests starting with %d configs" configs.Length
-        testsRunning <- true
-        let sw = Stopwatch.StartNew()
+        Volatile.Write(&testsRunning, true)
 
-        match beforeRun with
-        | Some setup ->
-            eprintfn "  [test-prune] Running beforeRun setup..."
-            setup ()
-            eprintfn "  [test-prune] beforeRun complete"
-        | None -> ()
+        async {
+            eprintfn "  [test-prune] executeTests starting with %d configs" configs.Length
+            let sw = Stopwatch.StartNew()
 
-        let groups = configs |> List.groupBy (fun c -> c.Group)
+            match beforeRun with
+            | Some setup ->
+                eprintfn "  [test-prune] Running beforeRun setup..."
+                setup ()
+                eprintfn "  [test-prune] beforeRun complete"
+            | None -> ()
 
-        let groupResults =
-            groups
-            |> List.map (fun (_, groupConfigs) ->
-                async {
-                    let mutable results = []
+            let groups = configs |> List.groupBy (fun c -> c.Group)
 
-                    for config in groupConfigs do
-                        let baseArgs =
-                            match extraFilter with
-                            | Some filter -> $"%s{config.Args} %s{filter}"
-                            | None -> config.Args
+            let! groupResults =
+                groups
+                |> List.map (fun (_, groupConfigs) ->
+                    async {
+                        let mutable results = []
 
-                        let finalArgs =
-                            match coverageArgs with
-                            | Some covFn -> covFn config.Project baseArgs
-                            | None -> baseArgs
+                        for config in groupConfigs do
+                            let baseArgs =
+                                match extraFilter with
+                                | Some filter -> $"%s{config.Args} %s{filter}"
+                                | None -> config.Args
 
-                        eprintfn "  [test-prune] Running: %s %s" config.Command finalArgs
+                            let finalArgs =
+                                match coverageArgs with
+                                | Some covFn -> covFn config.Project baseArgs
+                                | None -> baseArgs
 
-                        let (success, output) =
-                            runProcess config.Command finalArgs repoRoot config.Environment
+                            eprintfn "  [test-prune] Running: %s %s" config.Command finalArgs
 
-                        eprintfn "  [test-prune] %s: %s" config.Project (if success then "PASSED" else "FAILED")
+                            let (success, output) =
+                                runProcess config.Command finalArgs repoRoot config.Environment
 
-                        if not success then
-                            let lines = output.Split('\n')
+                            eprintfn "  [test-prune] %s: %s" config.Project (if success then "PASSED" else "FAILED")
 
-                            // Extract failed test names and summary
-                            let failedTests = lines |> Array.filter (fun l -> l.StartsWith("failed "))
+                            if not success then
+                                let lines = output.Split('\n')
 
-                            let summaryLines =
-                                lines
-                                |> Array.filter (fun l ->
-                                    l.StartsWith("failed ")
-                                    || l.StartsWith("Test run summary:")
-                                    || l.Contains("total:")
-                                    || l.Contains("failed:")
-                                    || l.Contains("succeeded:"))
+                                let failedTests = lines |> Array.filter (fun l -> l.StartsWith("failed "))
 
-                            eprintfn "  [test-prune] %s: %d test(s) failed:" config.Project failedTests.Length
+                                let summaryLines =
+                                    lines
+                                    |> Array.filter (fun l ->
+                                        l.StartsWith("failed ")
+                                        || l.StartsWith("Test run summary:")
+                                        || l.Contains("total:")
+                                        || l.Contains("failed:")
+                                        || l.Contains("succeeded:"))
 
-                            for line in failedTests do
-                                eprintfn "    %s" line
+                                eprintfn "  [test-prune] %s: %d test(s) failed:" config.Project failedTests.Length
 
-                            for line in summaryLines |> Array.filter (fun l -> not (l.StartsWith("failed "))) do
-                                eprintfn "    %s" line
+                                for line in failedTests do
+                                    eprintfn "    %s" line
 
-                        let result = if success then TestsPassed output else TestsFailed output
-                        results <- (config.Project, result) :: results
+                                for line in summaryLines |> Array.filter (fun l -> not (l.StartsWith("failed "))) do
+                                    eprintfn "    %s" line
 
-                    return results
-                })
-            |> Async.Parallel
-            |> Async.RunSynchronously
-            |> Array.toList
-            |> List.collect id
+                            let result = if success then TestsPassed output else TestsFailed output
+                            results <- (config.Project, result) :: results
 
-        sw.Stop()
+                        return results
+                    })
+                |> Async.Parallel
 
-        let testResults =
-            { Results = groupResults |> Map.ofList
-              Elapsed = sw.Elapsed }
+            let groupResults = groupResults |> Array.toList |> List.collect id
 
-        Volatile.Write(&lastTestResults, Some testResults)
+            sw.Stop()
 
-        match afterRun with
-        | Some hook -> hook testResults
-        | None -> ()
+            let testResults =
+                { Results = groupResults |> Map.ofList
+                  Elapsed = sw.Elapsed }
 
-        testsRunning <- false
-        testsCompleted <- true
+            Volatile.Write(&lastTestResults, Some testResults)
 
-        eprintfn
-            "  [test-prune] Tests complete: %d projects, %.1fs"
-            testResults.Results.Count
-            testResults.Elapsed.TotalSeconds
+            match afterRun with
+            | Some hook -> hook testResults
+            | None -> ()
 
-        ctx.EmitTestCompleted(testResults)
+            Volatile.Write(&testsRunning, false)
+            testsCompleted <- true
 
-        let allPassed =
-            testResults.Results
-            |> Map.forall (fun _ r ->
-                match r with
-                | TestsPassed _ -> true
-                | _ -> false)
+            eprintfn
+                "  [test-prune] Tests complete: %d projects, %.1fs"
+                testResults.Results.Count
+                testResults.Elapsed.TotalSeconds
 
-        if allPassed then
-            ctx.ReportStatus(Completed(box testResults, DateTime.UtcNow))
-        else
-            let failedProjects =
+            ctx.EmitTestCompleted(testResults)
+
+            let allPassed =
                 testResults.Results
-                |> Map.toList
-                |> List.choose (fun (name, r) ->
+                |> Map.forall (fun _ r ->
                     match r with
-                    | TestsFailed _ -> Some name
-                    | _ -> None)
+                    | TestsPassed _ -> true
+                    | _ -> false)
 
-            let names = failedProjects |> String.concat ", "
-            ctx.ReportStatus(PluginStatus.Failed($"%d{failedProjects.Length} failed: %s{names}", DateTime.UtcNow))
+            if allPassed then
+                ctx.ReportStatus(Completed(box testResults, DateTime.UtcNow))
+            else
+                let failedProjects =
+                    testResults.Results
+                    |> Map.toList
+                    |> List.choose (fun (name, r) ->
+                        match r with
+                        | TestsFailed _ -> Some name
+                        | _ -> None)
 
-        testResults
+                let names = failedProjects |> String.concat ", "
+                ctx.ReportStatus(PluginStatus.Failed($"%d{failedProjects.Length} failed: %s{names}", DateTime.UtcNow))
+
+            return testResults
+        }
 
     /// Run tests with impact-analysis filtering (called from OnBuildCompleted).
-    let runTests (ctx: PluginContext) (configs: TestConfig list) =
+    let runTests (ctx: PluginContext) (configs: TestConfig list) = async {
         // Combine AST-based affected tests with extension results
         let extensionClasses =
             match extensions with
@@ -222,65 +223,69 @@ type TestPrunePlugin
                 |> String.concat " "
                 |> Some
 
-        executeTests ctx configs filter |> ignore
+        let! _ = executeTests ctx configs filter
+        return () }
 
     interface IFsHotWatchPlugin with
         member _.Name = "test-prune"
 
         member _.Initialize(ctx) =
             ctx.OnFileChecked.Add(fun result ->
-                // Don't overwrite test results with analysis status — stay at
-                // Completed/Failed until the next build triggers a new test run
-                if not testsRunning && not testsCompleted then
+                // Reset completed flag so new file changes can report status
+                if Volatile.Read(&testsCompleted) && not (Volatile.Read(&testsRunning)) then
+                    Volatile.Write(&testsCompleted, false)
+
+                if not (Volatile.Read(&testsRunning)) && not (Volatile.Read(&testsCompleted)) then
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
-                try
-                    let relPath = Path.GetRelativePath(repoRoot, result.File).Replace('\\', '/')
+                async {
+                    try
+                        let relPath = Path.GetRelativePath(repoRoot, result.File).Replace('\\', '/')
 
-                    let currentFiles = Volatile.Read(&lastChangedFiles)
+                        let currentFiles = Volatile.Read(&lastChangedFiles)
 
-                    if not (currentFiles |> List.contains relPath) then
-                        Volatile.Write(&lastChangedFiles, relPath :: currentFiles)
+                        if not (currentFiles |> List.contains relPath) then
+                            Volatile.Write(&lastChangedFiles, relPath :: currentFiles)
 
-                    match
-                        analyzeSource ctx.Checker result.File result.Source result.ProjectOptions
-                        |> Async.RunSynchronously
-                    with
-                    | Ok analysisResult ->
-                        let projectName =
-                            result.ProjectOptions.ProjectFileName |> Path.GetFileNameWithoutExtension
+                        let! analysisResult = analyzeSource ctx.Checker result.File result.Source result.ProjectOptions
 
-                        let normalizedSymbols = normalizeSymbolPaths repoRoot analysisResult.Symbols
+                        match analysisResult with
+                        | Ok analysisResult ->
+                            let projectName =
+                                result.ProjectOptions.ProjectFileName |> Path.GetFileNameWithoutExtension
 
-                        let fileAnalysis =
-                            { Symbols = normalizedSymbols
-                              Dependencies = analysisResult.Dependencies
-                              TestMethods =
-                                analysisResult.TestMethods
-                                |> List.map (fun t -> { t with TestProject = projectName }) }
+                            let normalizedSymbols = normalizeSymbolPaths repoRoot analysisResult.Symbols
 
-                        // Diff current symbols against previously stored (read BEFORE overwriting)
-                        let storedSymbols = db.GetSymbolsInFile(relPath)
-                        db.RebuildForProject(projectName, fileAnalysis)
-                        let changes = detectChanges normalizedSymbols storedSymbols
-                        let changedNames = changedSymbolNames changes
+                            let fileAnalysis =
+                                { Symbols = normalizedSymbols
+                                  Dependencies = analysisResult.Dependencies
+                                  TestMethods =
+                                    analysisResult.TestMethods
+                                    |> List.map (fun t -> { t with TestProject = projectName }) }
 
-                        if not changedNames.IsEmpty then
-                            let affected = db.QueryAffectedTests(changedNames)
-                            Volatile.Write(&lastAffectedTests, affected)
+                            let storedSymbols = db.GetSymbolsInFile(relPath)
+                            db.RebuildForProject(projectName, fileAnalysis)
+                            let changes = detectChanges normalizedSymbols storedSymbols
+                            let changedNames = changedSymbolNames changes
 
-                        analysisRan <- true
-                    | Error msg ->
-                        eprintfn $"  [test-prune] Analysis failed for %s{relPath}: %s{msg}"
+                            if not changedNames.IsEmpty then
+                                let affected = db.QueryAffectedTests(changedNames)
+                                Volatile.Write(&lastAffectedTests, affected)
 
-                        if not testsRunning then
-                            ctx.ReportStatus(PluginStatus.Failed($"Analysis failed: %s{msg}", DateTime.UtcNow))
+                            analysisRan <- true
+                        | Error msg ->
+                            eprintfn $"  [test-prune] Analysis failed for %s{relPath}: %s{msg}"
 
-                    if not testsRunning then
-                        ctx.ReportStatus(Completed(box (Volatile.Read(&lastAffectedTests)), DateTime.UtcNow))
-                with ex ->
-                    if not testsRunning then
-                        ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow)))
+                            if not (Volatile.Read(&testsRunning)) then
+                                ctx.ReportStatus(PluginStatus.Failed($"Analysis failed: %s{msg}", DateTime.UtcNow))
+
+                        if not (Volatile.Read(&testsRunning)) then
+                            ctx.ReportStatus(Completed(box (Volatile.Read(&lastAffectedTests)), DateTime.UtcNow))
+                    with ex ->
+                        if not (Volatile.Read(&testsRunning)) then
+                            ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+                }
+                |> Async.Start)
 
             // Subscribe to build completion for test execution
             match testConfigs with
@@ -292,7 +297,7 @@ type TestPrunePlugin
                 ctx.OnBuildCompleted.Add(fun result ->
                     match result with
                     | BuildSucceeded ->
-                        if testsRunning then
+                        if Volatile.Read(&testsRunning) then
                             eprintfn
                                 "  [test-prune] BuildSucceeded received but tests already running — will re-run after"
 
@@ -300,19 +305,23 @@ type TestPrunePlugin
                         else
                             eprintfn "  [test-prune] BuildSucceeded received, running %d test configs" configs.Length
                             ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                            Volatile.Write(&testsRunning, true)
 
-                            try
-                                runTests ctx configs
+                            async {
+                                try
+                                    do! runTests ctx configs
 
-                                if pendingRerun then
+                                    if pendingRerun then
+                                        pendingRerun <- false
+                                        eprintfn "  [test-prune] Re-running tests (queued during previous run)"
+                                        do! runTests ctx configs
+                                with ex ->
+                                    Volatile.Write(&testsRunning, false)
                                     pendingRerun <- false
-                                    eprintfn "  [test-prune] Re-running tests (queued during previous run)"
-                                    runTests ctx configs
-                            with ex ->
-                                testsRunning <- false
-                                pendingRerun <- false
-                                eprintfn "  [test-prune] runTests failed: %s" ex.Message
-                                ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+                                    eprintfn "  [test-prune] runTests failed: %s" ex.Message
+                                    ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+                            }
+                            |> Async.Start
                     | BuildFailed _ -> ())
             | _ -> ()
 
@@ -351,7 +360,7 @@ type TestPrunePlugin
                 "test-results",
                 fun _args ->
                     async {
-                        if testsRunning then
+                        if Volatile.Read(&testsRunning) then
                             return "{\"status\": \"running\"}"
                         else
                             match Volatile.Read(&lastTestResults) with
@@ -373,7 +382,7 @@ type TestPrunePlugin
                     "run-tests",
                     fun args ->
                         async {
-                            if testsRunning then
+                            if Volatile.Read(&testsRunning) then
                                 return "{\"error\": \"tests already running\"}"
                             else
                                 ctx.ReportStatus(Running(since = DateTime.UtcNow))
@@ -444,10 +453,10 @@ type TestPrunePlugin
                                         | Ok configs when configs.IsEmpty ->
                                             return "{\"error\": \"no matching test projects\"}"
                                         | Ok configs ->
-                                            let results = executeTests ctx configs filter
+                                            let! results = executeTests ctx configs filter
                                             return formatTestResultsJson results
                                 with ex ->
-                                    testsRunning <- false
+                                    Volatile.Write(&testsRunning, false)
                                     eprintfn "  [test-prune] run-tests failed: %s" ex.Message
                                     ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                                     return $"{{\"error\": %s{JsonSerializer.Serialize(ex.Message)}}}"
