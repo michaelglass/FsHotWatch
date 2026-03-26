@@ -2,6 +2,7 @@ module FsHotWatch.CheckPipeline
 
 open System.Collections.Concurrent
 open System.IO
+open System.Threading
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Text
 open FsHotWatch.Events
@@ -33,8 +34,11 @@ type CheckPipeline(checker: FSharpChecker) =
     member _.GetAllRegisteredFiles() : string list = projectOptionsByFile.Keys |> Seq.toList
 
     /// Check a single file using the warm checker. Returns FileCheckResult if successful.
-    member _.CheckFile(filePath: string) : Async<FileCheckResult option> =
+    /// If ct is provided and already cancelled, throws OperationCanceledException.
+    member _.CheckFile(filePath: string, ?ct: CancellationToken) : Async<FileCheckResult option> =
         async {
+            let ct = defaultArg ct CancellationToken.None
+            ct.ThrowIfCancellationRequested()
             let absPath = Path.GetFullPath(filePath)
 
             match projectOptionsByFile.TryGetValue(absPath) with
@@ -88,7 +92,7 @@ type CheckPipeline(checker: FSharpChecker) =
         }
 
     /// Check all registered files for a project. Returns results keyed by file path.
-    member this.CheckProject(projectPath: string) : Async<ProjectCheckResult option> =
+    member this.CheckProject(projectPath: string, ?ct: CancellationToken) : Async<ProjectCheckResult option> =
         async {
             match projectOptionsByProject.TryGetValue(projectPath) with
             | false, _ -> return None
@@ -96,7 +100,7 @@ type CheckPipeline(checker: FSharpChecker) =
                 let mutable fileResults = Map.empty
 
                 for sourceFile in options.SourceFiles do
-                    let! result = this.CheckFile(sourceFile)
+                    let! result = this.CheckFile(sourceFile, ?ct = ct)
 
                     match result with
                     | Some r -> fileResults <- fileResults |> Map.add sourceFile r

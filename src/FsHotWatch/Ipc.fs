@@ -25,7 +25,8 @@ type DaemonRpcConfig =
       GetScanStatus: unit -> string
       GetScanGeneration: unit -> int64
       TriggerBuild: unit -> Async<unit>
-      FormatAll: unit -> Async<string> }
+      FormatAll: unit -> Async<string>
+      WaitForScanGeneration: int64 -> Task<unit> }
 
 /// RPC target object exposed to clients via StreamJsonRpc.
 type DaemonRpcTarget(config: DaemonRpcConfig) =
@@ -100,30 +101,18 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
         let result = {| count = count; files = allErrors |}
         JsonSerializer.Serialize(result)
 
-    /// Poll scan status every 200ms until scanning is complete, then return the final status.
+    /// Wait for scan generation to advance past afterGeneration, then return the final status.
     /// If afterGeneration >= 0, waits until the scan generation exceeds it (for hot daemon re-scans).
     /// If afterGeneration < 0, uses the legacy behavior (wait for any scan completion).
     member _.WaitForScan(afterGeneration: int64) : Task<string> =
         task {
             if afterGeneration >= 0L then
-                // Wait until a scan completes after the given generation
-                while config.GetScanGeneration() <= afterGeneration do
-                    do! Task.Delay(200)
-
+                do! config.WaitForScanGeneration(afterGeneration)
                 return config.GetScanStatus()
             else
-                // Legacy: wait for status to leave idle, then leave scanning
-                let mutable status = config.GetScanStatus()
-
-                while status = "idle" do
-                    do! Task.Delay(200)
-                    status <- config.GetScanStatus()
-
-                while status.StartsWith("scanning") do
-                    do! Task.Delay(200)
-                    status <- config.GetScanStatus()
-
-                return status
+                // Legacy: wait for any scan completion (generation 0 -> 1)
+                do! config.WaitForScanGeneration(-1L)
+                return config.GetScanStatus()
         }
 
     /// Poll plugin statuses until all are in a terminal state AND stable for 2 seconds.

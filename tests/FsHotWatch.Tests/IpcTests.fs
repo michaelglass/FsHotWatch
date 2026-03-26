@@ -2,6 +2,7 @@ module FsHotWatch.Tests.IpcTests
 
 open System
 open System.Threading
+open System.Threading.Tasks
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Ipc
@@ -16,7 +17,8 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       GetScanStatus = fun () -> "idle"
       GetScanGeneration = fun () -> 0L
       TriggerBuild = fun () -> async { return () }
-      FormatAll = fun () -> async { return "formatted 0 files" } }
+      FormatAll = fun () -> async { return "formatted 0 files" }
+      WaitForScanGeneration = fun _ -> Task.FromResult(()) }
 
 [<Fact>]
 let ``server responds to GetStatus`` () =
@@ -417,3 +419,41 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
     test <@ target.GetPluginStatus("idle-test") = "Idle" @>
     test <@ (target.GetPluginStatus("failed-test")).Contains("bad") @>
     test <@ target.GetPluginStatus("no-such") = "not found" @>
+
+[<Fact>]
+let ``WaitForScan resolves immediately when generation already advanced`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let config =
+        { defaultRpcConfig host with
+            GetScanStatus = fun () -> "complete: 10 files checked in 0.5s"
+            WaitForScanGeneration =
+                fun afterGen ->
+                    if 5L > afterGen then
+                        Task.FromResult(())
+                    else
+                        task { do! Task.Delay(10_000) } }
+
+    let target = DaemonRpcTarget(config)
+    let result = target.WaitForScan(3L).Result
+    test <@ result.Contains("complete") @>
+
+[<Fact>]
+let ``WaitForScan blocks until generation advances`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let tcs = TaskCompletionSource<unit>()
+
+    let config =
+        { defaultRpcConfig host with
+            GetScanStatus = fun () -> "complete: 5 files"
+            WaitForScanGeneration = fun _afterGen -> tcs.Task }
+
+    let target = DaemonRpcTarget(config)
+    let waitTask = target.WaitForScan(0L)
+
+    test <@ not waitTask.IsCompleted @>
+
+    tcs.SetResult(())
+
+    let result = waitTask.Result
+    test <@ result.Contains("complete") @>
