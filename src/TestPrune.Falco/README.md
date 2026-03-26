@@ -1,4 +1,4 @@
-<!-- sync:falco-intro:start -->
+<!-- sync:falco-readme:start -->
 # TestPrune.Falco
 
 When you change a route handler, only re-run the integration tests that
@@ -8,7 +8,6 @@ This is an extension for [TestPrune](https://github.com/michaelglass/TestPrune)
 that connects Falco URL routes to integration tests. If you change the
 handler for `/api/users/{id}`, it finds the tests that make requests to
 that URL and runs just those.
-<!-- sync:falco-intro:end -->
 
 ## Installation
 
@@ -60,3 +59,4 @@ let affected =
 
 - [Full documentation](https://michaelglass.github.io/TestPrune/Falco/)
 - [API reference](https://michaelglass.github.io/TestPrune/reference/testprune-falco.html)
+<!-- sync:falco-readme:end -->

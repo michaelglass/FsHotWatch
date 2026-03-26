@@ -1,4 +1,4 @@
-<!-- sync:intro:start -->
+<!-- sync:readme:start -->
 # TestPrune
 
 Only run the tests affected by your change.
@@ -6,7 +6,6 @@ Only run the tests affected by your change.
 TestPrune analyzes your F# code to figure out which functions depend on
 which, then uses that to skip tests that couldn't possibly be affected
 by what you changed.
-<!-- sync:intro:end -->
 
 ## Why?
 
@@ -184,6 +183,11 @@ test-prune dead-code   # Find unreachable production code
 test-prune dead-code --include-tests  # Include test files in report
 ```
 
+## Documentation
+
+- [Full documentation](https://michaelglass.github.io/TestPrune/)
+- [API reference](https://michaelglass.github.io/TestPrune/reference/testprune.html)
+
 ## Design choices
 
 **Static analysis, not coverage.** TestPrune reads your code's AST
@@ -197,3 +201,4 @@ is much worse than running a few unnecessary ones.
 
 **Single-file storage.** The dependency graph is one `.test-prune.db`
 file. No servers, no services. Rebuilds are atomic.
+<!-- sync:readme:end -->
