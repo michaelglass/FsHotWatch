@@ -1,7 +1,6 @@
 module FsHotWatch.Tests.PluginHostTests
 
 open System
-open System.Diagnostics
 open System.Threading
 open Xunit
 open Swensen.Unquote
@@ -350,22 +349,29 @@ let ``GetErrorsByPlugin returns only that plugin's errors`` () =
 [<Fact>]
 let ``EmitFileCheckedParallel runs handlers concurrently`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
-    let mutable handler1Done = 0L
-    let mutable handler2Done = 0L
+    // Both handlers enter simultaneously, proving concurrency.
+    // If sequential, handler2 would never reach the barrier before timeout.
+    let barrier = new CountdownEvent(2)
+    let mutable handler1Entered = false
+    let mutable handler2Entered = false
 
-    let makeSlowPlugin name (setter: int64 -> unit) delayMs =
+    let makePlugin name (setter: bool ref) =
         { new IFsHotWatchPlugin with
             member _.Name = name
 
             member _.Initialize(ctx) =
                 ctx.OnFileChecked.Add(fun _ ->
-                    Thread.Sleep(delayMs: int)
-                    setter (Stopwatch.GetTimestamp()))
+                    setter.Value <- true
+                    barrier.Signal() |> ignore
+                    // Wait for both to be running before completing
+                    barrier.Wait(5000) |> ignore)
 
             member _.Dispose() = () }
 
-    host.Register(makeSlowPlugin "slow1" (fun t -> handler1Done <- t) 200)
-    host.Register(makeSlowPlugin "slow2" (fun t -> handler2Done <- t) 200)
+    let ref1 = ref false
+    let ref2 = ref false
+    host.Register(makePlugin "p1" ref1)
+    host.Register(makePlugin "p2" ref2)
 
     let dummyResult =
         { File = "/tmp/test.fs"
@@ -374,14 +380,8 @@ let ``EmitFileCheckedParallel runs handlers concurrently`` () =
           CheckResults = Unchecked.defaultof<_>
           ProjectOptions = Unchecked.defaultof<_> }
 
-    let sw = Stopwatch.StartNew()
     host.EmitFileCheckedParallel(dummyResult) |> Async.RunSynchronously
-    sw.Stop()
 
-    // Both handlers should have completed
-    test <@ handler1Done > 0L @>
-    test <@ handler2Done > 0L @>
-
-    // If run in parallel, total time should be ~200ms, not ~400ms.
-    // Allow generous margin but it should be well under sequential time.
-    test <@ sw.ElapsedMilliseconds < 350L @>
+    // Both handlers ran and reached the barrier concurrently
+    test <@ ref1.Value @>
+    test <@ ref2.Value @>

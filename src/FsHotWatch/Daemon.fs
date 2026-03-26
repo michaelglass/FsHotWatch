@@ -11,6 +11,7 @@ open FsHotWatch.Events
 open FsHotWatch.Ipc
 open FsHotWatch.Logging
 open FsHotWatch.Plugin
+open FsHotWatch.Watcher
 open FsHotWatch.PluginHost
 open FsHotWatch.ProjectGraph
 open FsHotWatch.Watcher
@@ -179,10 +180,11 @@ type Daemon =
 
                 if not files.IsEmpty then
                     // Run preprocessors (e.g., formatter) before dispatching
-                    let _modified = this.Host.RunPreprocessors(files)
+                    let modified = this.Host.RunPreprocessors(files)
 
-                    if _modified.Length > 0 then
-                        eprintfn "  [scan] Preprocessors modified %d files (watcher may re-trigger)" _modified.Length
+                    if modified.Length > 0 then
+                        eprintfn "  [scan] Preprocessors modified %d files (watcher may re-trigger)" modified.Length
+
                     this.Host.EmitFileChanged(SourceChanged files)
                     let mutable completed = 0
 
@@ -331,6 +333,7 @@ module Daemon =
 
         let processChanges (_state: obj) =
             if Interlocked.CompareExchange(&processingChanges, 1, 0) = 0 then
+              Async.Start(async {
                 try
                     let changes = System.Collections.Generic.List<FileChangeKind>()
                     let mutable item = Unchecked.defaultof<_>
@@ -349,7 +352,12 @@ module Daemon =
                             | ProjectChanged files -> projFiles <- files @ projFiles
                             | SolutionChanged -> hasSolution <- true
 
-                        eprintfn "  [daemon] processChanges: %d source, %d project, solution=%b" sourceFiles.Length projFiles.Length hasSolution
+                        if verbose then
+                            eprintfn
+                                "  [daemon] processChanges: %d source, %d project, solution=%b"
+                                sourceFiles.Length
+                                projFiles.Length
+                                hasSolution
 
                         if verbose then
                             for f in sourceFiles do
@@ -372,27 +380,44 @@ module Daemon =
                                     eprintfn "    [daemon] suppressed: %s" f
 
                                 not suppressed)
+                            |> List.filter (fun f ->
+                                let changed = hasContentChanged f
+
+                                if not changed && verbose then
+                                    eprintfn "    [daemon] content unchanged: %s" f
+
+                                changed)
+
+                        let projFilesChanged =
+                            projFiles
+                            |> List.distinct
+                            |> List.filter (fun f ->
+                                let changed = hasContentChanged f
+
+                                if not changed && verbose then
+                                    eprintfn "    [daemon] content unchanged: %s" f
+
+                                changed)
 
                         if hasSolution then
                             host.EmitFileChanged(SolutionChanged)
 
-                        if not projFiles.IsEmpty || hasSolution then
+                        if not projFilesChanged.IsEmpty || hasSolution then
                             eprintfn "  [daemon] Project/solution change detected — re-discovering projects"
 
                             if not (isNull (box checker)) then
                                 checker.InvalidateAll()
                                 checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
 
-                            discoverAndRegisterProjects repoRoot loader graph pipeline
-                            |> Async.RunSynchronously
+                            do! discoverAndRegisterProjects repoRoot loader graph pipeline
 
                             eprintfn
                                 "  [daemon] Re-discovery complete: %d projects, %d files"
                                 (graph.GetAllProjects().Length)
                                 (pipeline.GetAllRegisteredFiles().Length)
 
-                            if not projFiles.IsEmpty then
-                                host.EmitFileChanged(ProjectChanged(projFiles |> List.distinct))
+                            if not projFilesChanged.IsEmpty then
+                                host.EmitFileChanged(ProjectChanged projFilesChanged)
 
                         if not allSourceFiles.IsEmpty then
                             let modifiedByPreprocessors = host.RunPreprocessors(allSourceFiles)
@@ -405,7 +430,6 @@ module Daemon =
                                 |> List.choose (fun f -> graph.GetProjectForFile(f))
                                 |> List.distinct
 
-                            // Files in dependent projects (not the changed project itself)
                             let dependentProjectFiles =
                                 changedProjects
                                 |> List.collect (fun p -> graph.GetTransitiveDependents(p))
@@ -417,15 +441,18 @@ module Daemon =
 
                             host.EmitFileChanged(SourceChanged allFilesToCheck)
 
-                            eprintfn "  [daemon] Checking %d files after change" allFilesToCheck.Length
+                            if verbose then
+                                eprintfn "  [daemon] Checking %d files after change" allFilesToCheck.Length
 
                             for file in allFilesToCheck do
-                                let result = pipeline.CheckFile(file) |> Async.RunSynchronously
+                                let! result = pipeline.CheckFile(file)
 
                                 match result with
                                 | Some checkResult ->
-                                    eprintfn "  [daemon] EmitFileChecked: %s" (Path.GetFileName(file))
-                                    Async.RunSynchronously(host.EmitFileCheckedParallel(checkResult))
+                                    if verbose then
+                                        eprintfn "  [daemon] EmitFileChecked: %s" (Path.GetFileName(file))
+
+                                    do! host.EmitFileCheckedParallel(checkResult)
                                     reportFcsDiagnostics host checkResult
 
                                 | None -> ()
@@ -438,11 +465,14 @@ module Daemon =
                             match debounceTimer with
                             | Some timer -> timer.Change(sourceDebounceMs, System.Threading.Timeout.Infinite) |> ignore
                             | None -> ())
+              })
 
         let mutable pendingDelayMs = 0
 
         let onChange change =
-            eprintfn "  [watcher] %A" change
+            if verbose then
+                eprintfn "  [watcher] %O" change
+
             pendingChanges.Add(change)
 
             let delayMs =
