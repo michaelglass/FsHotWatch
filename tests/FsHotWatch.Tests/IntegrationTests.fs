@@ -840,7 +840,9 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
                 Command = "echo"
                 Args = "test passed"
                 Group = "default"
-                Environment = [] } ]
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
 
         let plugin = TestPrunePlugin(dbPath, "/tmp", testConfigs = testConfigs)
         host.Register(plugin)
@@ -889,7 +891,9 @@ let ``TestPrunePlugin with failing test reports failure`` () =
                 Command = "false"
                 Args = ""
                 Group = "default"
-                Environment = [] } ]
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
 
         let plugin = TestPrunePlugin(dbPath, "/tmp", testConfigs = testConfigs)
         host.Register(plugin)
@@ -1133,7 +1137,9 @@ let ``Full pipeline: format → build → test → coverage`` () =
                 Command = "echo"
                 Args = "tests passed"
                 Group = "default"
-                Environment = [] } ]
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
 
         let testPrunePlugin = TestPrunePlugin(dbPath, "/tmp", testConfigs = testConfigs)
         host.Register(testPrunePlugin)
@@ -1263,7 +1269,9 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
                 Command = "/bin/sleep"
                 Args = "1"
                 Group = "default"
-                Environment = [] } ]
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
 
         let plugin = TestPrunePlugin(dbPath, "/tmp", testConfigs = testConfigs)
         host.Register(plugin)

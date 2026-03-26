@@ -15,7 +15,9 @@ type TestProjectConfig =
       Command: string
       Args: string
       Group: string
-      Environment: (string * string) list }
+      Environment: (string * string) list
+      FilterTemplate: string option
+      ClassJoin: string }
 
 /// Parsed daemon configuration from .fs-hot-watch.json.
 type DaemonConfiguration =
@@ -136,11 +138,23 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
                                         |> Seq.toList
                                     | _ -> []
 
+                                let filterTemplate =
+                                    match p.TryGetProperty("filterTemplate") with
+                                    | true, v -> Some(v.GetString())
+                                    | _ -> None
+
+                                let classJoin =
+                                    match p.TryGetProperty("classJoin") with
+                                    | true, v -> v.GetString()
+                                    | _ -> " "
+
                                 { Project = project
                                   Command = command
                                   Args = args
                                   Group = group
-                                  Environment = env })
+                                  Environment = env
+                                  FilterTemplate = filterTemplate
+                                  ClassJoin = classJoin })
                             |> Seq.toList
                         | _ -> []
 
@@ -261,7 +275,9 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                   Command = p.Command
                   Args = p.Args
                   Group = p.Group
-                  Environment = p.Environment })
+                  Environment = p.Environment
+                  FilterTemplate = p.FilterTemplate
+                  ClassJoin = p.ClassJoin })
 
         let beforeRun =
             match t.BeforeRun with
@@ -282,12 +298,12 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         let coverageArgs =
             match config.Coverage with
             | Some cov ->
-                Some(fun (project: string) (baseArgs: string) ->
+                Some(fun (project: string) ->
                     let outputDir = Path.Combine(cov.Directory, project)
                     Directory.CreateDirectory(outputDir) |> ignore
                     let outputPath = Path.GetFullPath(Path.Combine(outputDir, "coverage.cobertura.xml"))
 
-                    $"%s{baseArgs} -- --coverage --coverage-output-format cobertura --coverage-output \"%s{outputPath}\"")
+                    $"--coverage --coverage-output-format cobertura --coverage-output \"%s{outputPath}\"")
             | None -> None
 
         eprintfn "  [config] Registering TestPrunePlugin with %d test projects" testConfigs.Length
