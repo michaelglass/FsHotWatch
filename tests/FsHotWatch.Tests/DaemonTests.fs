@@ -9,18 +9,48 @@ open FsHotWatch.Daemon
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 
-// macOS kqueue-based FileSystemWatcher is unreliable — use polling watcher
+// macOS kqueue-based FileSystemWatcher is unreliable — use polling watcher for tests.
+// TODO: Replace Watcher.fs with FSEventStreamCreate on macOS, inotify on Linux.
 do
     if
-        System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
-            System.Runtime.InteropServices.OSPlatform.OSX
-        )
+        System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.OSX)
     then
         Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "1")
 
 /// A null checker is fine for tests that don't perform actual compilation.
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
+
+/// Poll until condition is true or timeout. Polling watcher interval is ~4s.
+let private waitUntil (condition: unit -> bool) (timeoutMs: int) =
+    let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
+
+    while not (condition ()) && DateTime.UtcNow < deadline do
+        Thread.Sleep(500)
+
+/// Write a sentinel file and wait for the daemon to process it (proves watcher is live).
+let private waitForDaemonReady (srcDir: string) (changeCount: unit -> int) =
+    let sentinel = Path.Combine(srcDir, "_sentinel.fs")
+    File.WriteAllText(sentinel, "module Sentinel")
+    waitUntil (fun () -> changeCount () > 0) 30000
+    // Wait for the event storm to settle (create + potential delete events)
+    let mutable lastCount = changeCount ()
+    let mutable stable = 0
+
+    while stable < 2 do
+        Thread.Sleep(1000)
+        let c = changeCount ()
+
+        if c = lastCount then
+            stable <- stable + 1
+        else
+            lastCount <- c
+            stable <- 0
+
+    try
+        File.Delete(sentinel)
+    with _ ->
+        ()
 
 [<Fact>]
 let ``daemon starts and stops without error`` () =
@@ -124,14 +154,14 @@ let ``daemon dispatches file change events to plugins`` () =
         daemon.Register(plugin)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
-        Thread.Sleep(2000)
+        waitForDaemonReady (Path.Combine(tmpDir, "src")) (fun () -> receivedChanges.Length)
+        receivedChanges <- []
 
-        // Write a file to trigger the watcher
         let newFile = Path.Combine(tmpDir, "src", "New.fs")
         File.WriteAllText(newFile, "module New")
         Thread.Sleep(500)
         File.SetLastWriteTimeUtc(newFile, DateTime.UtcNow)
-        Thread.Sleep(5000)
+        waitUntil (fun () -> receivedChanges.Length >= 1) 30000
 
         cts.Cancel()
 
@@ -167,7 +197,8 @@ let ``daemon debounces rapid file changes into one batch`` () =
         daemon.Register(plugin)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
-        Thread.Sleep(2000)
+        waitForDaemonReady (Path.Combine(tmpDir, "src")) (fun () -> receivedChanges.Length)
+        receivedChanges <- []
 
         // Write 3 files rapidly (within debounce window)
         let fileA = Path.Combine(tmpDir, "src", "A.fs")
@@ -176,14 +207,22 @@ let ``daemon debounces rapid file changes into one batch`` () =
         File.WriteAllText(fileA, "module A")
         File.WriteAllText(fileB, "module B")
         File.WriteAllText(fileC, "module C")
-        // Touch files to ensure watcher sees them (macOS kqueue)
         Thread.Sleep(500)
         File.SetLastWriteTimeUtc(fileA, DateTime.UtcNow)
         File.SetLastWriteTimeUtc(fileB, DateTime.UtcNow)
         File.SetLastWriteTimeUtc(fileC, DateTime.UtcNow)
 
-        // Wait for debounce to fire (500ms debounce + buffer)
-        Thread.Sleep(5000)
+        waitUntil
+            (fun () ->
+                let allFiles =
+                    receivedChanges
+                    |> List.collect (fun c ->
+                        match c with
+                        | SourceChanged files -> files
+                        | _ -> [])
+
+                allFiles.Length >= 3)
+            30000
 
         cts.Cancel()
 
@@ -192,8 +231,6 @@ let ``daemon debounces rapid file changes into one batch`` () =
         with :? AggregateException ->
             ()
 
-        // The debounce should merge rapid changes - we expect fewer SourceChanged events
-        // than individual file writes (ideally 1 batched event, but timing may vary)
         let sourceChanges =
             receivedChanges
             |> List.choose (fun c ->
@@ -201,10 +238,8 @@ let ``daemon debounces rapid file changes into one batch`` () =
                 | SourceChanged files -> Some files
                 | _ -> None)
 
-        // We should have received at least one SourceChanged event
         test <@ sourceChanges.Length >= 1 @>
 
-        // The total files across all SourceChanged events should cover our 3 files
         let allFiles = sourceChanges |> List.collect id
         test <@ allFiles.Length >= 3 @>
     finally
@@ -233,14 +268,22 @@ let ``daemon handles ProjectChanged events`` () =
         daemon.Register(plugin)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
-        Thread.Sleep(2000)
+        waitForDaemonReady (Path.Combine(tmpDir, "src")) (fun () -> receivedChanges.Length)
+        receivedChanges <- []
 
-        // Write an fsproj file to trigger a ProjectChanged event
         let projFile = Path.Combine(tmpDir, "src", "Test.fsproj")
         File.WriteAllText(projFile, "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>")
         Thread.Sleep(500)
         File.SetLastWriteTimeUtc(projFile, DateTime.UtcNow)
-        Thread.Sleep(5000)
+
+        waitUntil
+            (fun () ->
+                receivedChanges
+                |> List.exists (fun c ->
+                    match c with
+                    | ProjectChanged _ -> true
+                    | _ -> false))
+            30000
 
         cts.Cancel()
 
@@ -283,14 +326,23 @@ let ``daemon handles SolutionChanged events`` () =
         daemon.Register(plugin)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
-        Thread.Sleep(2000)
+        // Prove watcher is ready via a sentinel in src/
+        waitForDaemonReady (Path.Combine(tmpDir, "src")) (fun () -> receivedChanges.Length)
+        receivedChanges <- []
 
-        // Write a .sln file to trigger a SolutionChanged event
         let slnFile = Path.Combine(tmpDir, "Test.sln")
         File.WriteAllText(slnFile, "Microsoft Visual Studio Solution File")
         Thread.Sleep(500)
         File.SetLastWriteTimeUtc(slnFile, DateTime.UtcNow)
-        Thread.Sleep(5000)
+
+        waitUntil
+            (fun () ->
+                receivedChanges
+                |> List.exists (fun c ->
+                    match c with
+                    | SolutionChanged -> true
+                    | _ -> false))
+            30000
 
         cts.Cancel()
 
@@ -335,7 +387,9 @@ let ``daemon Run completes when cancellation is immediate`` () =
 
 [<Fact>]
 let ``Daemon.create creates a working daemon with real checker`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-create-{Guid.NewGuid():N}")
+    let tmpDir =
+        Path.Combine(Path.GetTempPath(), $"fshw-daemon-create-{Guid.NewGuid():N}")
+
     Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
     let cts = new CancellationTokenSource()
 
