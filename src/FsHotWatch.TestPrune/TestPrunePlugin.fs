@@ -45,6 +45,10 @@ type TestPrunePlugin
         ?coverageArgs: string -> string
     ) =
     let db = Database.create dbPath
+
+    let pendingAnalysis =
+        System.Collections.Concurrent.ConcurrentDictionary<string, ResizeArray<AnalysisResult>>()
+
     let mutable lastAffectedTests: TestMethodInfo list = []
     let mutable lastChangedFiles: string list = []
     let mutable lastTestResults: TestResults option = None
@@ -237,9 +241,32 @@ type TestPrunePlugin
             return testResults
         }
 
+    /// Flush accumulated per-file analysis results to the DB, one RebuildForProject
+    /// call per project with all files combined. This preserves cross-file dependency
+    /// edges (e.g. test→prod) that per-file rebuilds would destroy.
+    let flushPendingAnalysis () =
+        let projects = pendingAnalysis.Keys |> Seq.toList
+
+        for projectName in projects do
+            match pendingAnalysis.TryRemove(projectName) with
+            | true, bag ->
+                let items = bag |> Seq.toList
+
+                let combined =
+                    { Symbols = items |> List.collect (fun r -> r.Symbols)
+                      Dependencies = items |> List.collect (fun r -> r.Dependencies)
+                      TestMethods = items |> List.collect (fun r -> r.TestMethods) }
+
+                Logging.info "test-prune" $"Flushing %d{items.Length} files for %s{projectName} to DB"
+                db.RebuildForProject(projectName, combined)
+            | false, _ -> ()
+
     /// Run tests with impact-analysis filtering (called from OnBuildCompleted).
     let runTests (ctx: PluginContext) (configs: TestConfig list) =
         async {
+            // Flush accumulated analysis to DB before querying affected tests
+            flushPendingAnalysis ()
+
             // Combine AST-based affected tests with extension results
             let extensionClasses =
                 match extensions with
@@ -308,8 +335,14 @@ type TestPrunePlugin
                                     analysisResult.TestMethods
                                     |> List.map (fun t -> { t with TestProject = projectName }) }
 
+                            // Accumulate per-project; flush on OnBuildCompleted.
+                            // RebuildForProject deletes deps bidirectionally, so calling
+                            // it per-file destroys test→prod edges from earlier files.
+                            let bag = pendingAnalysis.GetOrAdd(projectName, fun _ -> ResizeArray<_>())
+
+                            bag.Add(fileAnalysis)
+
                             let storedSymbols = db.GetSymbolsInFile(relPath)
-                            db.RebuildForProject(projectName, fileAnalysis)
                             let changes = detectChanges normalizedSymbols storedSymbols
                             let changedNames = changedSymbolNames changes
 
