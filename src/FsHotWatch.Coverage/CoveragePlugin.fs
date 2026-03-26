@@ -5,6 +5,8 @@ open System.IO
 open System.Text.Json
 open System.Xml.Linq
 open FsHotWatch.Events
+open FsHotWatch
+open FsHotWatch.Logging
 open FsHotWatch.Plugin
 
 /// Line and branch coverage thresholds for a project.
@@ -80,7 +82,7 @@ type CoveragePlugin(coverageDir: string, ?thresholdsFile: string, ?afterCheck: u
         member _.Initialize(ctx) =
             ctx.OnTestCompleted.Add(fun testResults ->
                 if testResults.Results.IsEmpty then
-                    eprintfn "  [coverage] No test results, skipping coverage check"
+                    Logging.warn "coverage" "No test results, skipping coverage check"
                 else
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
 

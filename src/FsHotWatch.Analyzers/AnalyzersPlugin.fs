@@ -7,6 +7,8 @@ open FSharp.Analyzers.SDK
 open FSharp.Compiler.Text
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
+open FsHotWatch
+open FsHotWatch.Logging
 open FsHotWatch.Plugin
 
 /// Hosts F# analyzers in-process using the warm checker's results.
@@ -91,7 +93,7 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                 Interlocked.Increment(&processedCount) |> ignore
 
                 if isNull (box result.CheckResults) then
-                    eprintfn "  [analyzers] Skipping %s — no type check results" result.File
+                    Logging.warn "analyzers" $"Skipping %s{result.File} — no type check results"
 
                     let currentDiags = Volatile.Read(&diagnosticsByFile)
 
@@ -162,7 +164,7 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                                     ctx.ReportStatus(Completed(box currentDiags, DateTime.UtcNow))
                             with ex ->
                                 Interlocked.Increment(&errorCount) |> ignore
-                                eprintfn "  [analyzers] Error analyzing %s: %s" result.File ex.Message
+                                Logging.error "analyzers" $"Error analyzing %s{result.File}: %s{ex.Message}"
 
                                 // Per-file errors don't fail the plugin — report Completed with error count
                                 let currentDiags = Volatile.Read(&diagnosticsByFile)
