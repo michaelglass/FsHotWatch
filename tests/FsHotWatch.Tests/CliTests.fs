@@ -301,7 +301,7 @@ let private fakeIpc () : IpcOps =
 [<Fact>]
 let ``executeCommand Help returns 0`` () =
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" Help
+        executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" Help ""
 
     test <@ result = 0 @>
 
@@ -318,14 +318,14 @@ let ``executeCommand Stop calls shutdown`` () =
                         return "shutting down"
                     } }
 
-    let result = executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Stop
+    let result = executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Stop ""
     test <@ result = 0 @>
     test <@ called @>
 
 [<Fact>]
 let ``executeCommand Status returns 0`` () =
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" (Status None)
+        executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" (Status None) ""
 
     test <@ result = 0 @>
 
@@ -343,7 +343,7 @@ let ``executeCommand PluginCommand proxies to IPC`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (PluginCommand("warnings", ""))
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (PluginCommand("warnings", "")) ""
 
     test <@ result = 0 @>
     test <@ cmdName = "warnings" @>
@@ -361,7 +361,7 @@ let ``executeCommand Scan calls scan IPC`` () =
                         return "scan started"
                     } }
 
-    let result = executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Scan
+    let result = executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Scan ""
     test <@ result = 0 @>
     test <@ called @>
 
@@ -379,7 +379,7 @@ let ``executeCommand ScanStatus calls scanStatus IPC`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" ScanStatus
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" ScanStatus ""
 
     test <@ result = 0 @>
     test <@ called @>
@@ -398,7 +398,7 @@ let ``executeCommand Status with plugin name calls getPluginStatus`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status(Some "lint"))
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status(Some "lint")) ""
 
     test <@ result = 0 @>
     test <@ calledWith = "lint" @>
@@ -416,7 +416,7 @@ let ``executeCommand Start with fake daemon throws on null daemon`` () =
 
     let threw =
         try
-            executeCommand createDaemon (fakeIpc ()) "/tmp" "pipe" Start |> ignore
+            executeCommand createDaemon (fakeIpc ()) "/tmp" "pipe" Start "" |> ignore
             false
         with _ ->
             true
@@ -431,7 +431,7 @@ let ``executeCommand returns 1 when IPC fails`` () =
             GetStatus = fun _ -> async { return failwith "connection refused" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status None)
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status None) ""
 
     test <@ result = 1 @>
 

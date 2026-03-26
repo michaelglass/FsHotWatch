@@ -165,7 +165,8 @@ let private showHelp () =
     printfn "  <command> [args]   Run a plugin-registered command"
     printfn ""
     printfn "Options:"
-    printfn "  -v, --verbose      Show per-file status transitions"
+    printfn "  -v, --verbose              Show per-file status transitions (same as --log-level=debug)"
+    printfn "  --log-level=<level>        Set log level: error, warning, info, debug (default: info)"
 
 let private runIpc (action: Async<string>) : int =
     try
@@ -265,7 +266,13 @@ let private killStaleDaemon (repoRoot: string) =
         with _ ->
             ()
 
-let private startFreshDaemon (ipc: IpcOps) (repoRoot: string) (pipeName: string) (currentHash: string) : bool =
+let private startFreshDaemon
+    (ipc: IpcOps)
+    (repoRoot: string)
+    (pipeName: string)
+    (currentHash: string)
+    (extraArgs: string)
+    : bool =
     let stateDir = Path.Combine(repoRoot, ".fs-hot-watch")
     eprintfn "Starting daemon..."
     let exe = Environment.ProcessPath
@@ -273,7 +280,10 @@ let private startFreshDaemon (ipc: IpcOps) (repoRoot: string) (pipeName: string)
     // Without this, mise (and similar task runners) wait for all child processes
     // to exit, causing them to hang even after the CLI client completes.
     let psi =
-        System.Diagnostics.ProcessStartInfo("/bin/sh", $"-c \"nohup '%s{exe}' start > /dev/null 2>&1 & echo $!\"")
+        System.Diagnostics.ProcessStartInfo(
+            "/bin/sh",
+            $"-c \"nohup '%s{exe}' %s{extraArgs}start > /dev/null 2>&1 & echo $!\""
+        )
 
     psi.WorkingDirectory <- repoRoot
     psi.UseShellExecute <- false
@@ -291,7 +301,7 @@ let private startFreshDaemon (ipc: IpcOps) (repoRoot: string) (pipeName: string)
 
     ipc.IsRunning pipeName
 
-let private ensureDaemon (ipc: IpcOps) (repoRoot: string) (pipeName: string) : bool =
+let private ensureDaemon (ipc: IpcOps) (repoRoot: string) (pipeName: string) (extraArgs: string) : bool =
     let stateDir = Path.Combine(repoRoot, ".fs-hot-watch")
     let hashPath = Path.Combine(stateDir, "config.hash")
     let currentHash = computeConfigHash repoRoot
@@ -315,10 +325,10 @@ let private ensureDaemon (ipc: IpcOps) (repoRoot: string) (pipeName: string) : b
             ()
 
         killStaleDaemon repoRoot
-        startFreshDaemon ipc repoRoot pipeName currentHash
+        startFreshDaemon ipc repoRoot pipeName currentHash extraArgs
     | StartFresh ->
         killStaleDaemon repoRoot
-        startFreshDaemon ipc repoRoot pipeName currentHash
+        startFreshDaemon ipc repoRoot pipeName currentHash extraArgs
 
 /// Execute a parsed command with injectable dependencies.
 let executeCommand
@@ -327,6 +337,7 @@ let executeCommand
     (repoRoot: string)
     (pipeName: string)
     (command: Command)
+    (daemonExtraArgs: string)
     : int =
     match command with
     | Help ->
@@ -358,38 +369,38 @@ let executeCommand
     | Status(Some pluginName) -> runIpc (ipc.GetPluginStatus pipeName pluginName)
     | PluginCommand(cmd, argsJson) -> runIpc (ipc.RunCommand pipeName cmd argsJson)
     | Build ->
-        if not (ensureDaemon ipc repoRoot pipeName) then
+        if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
             eprintfn "Failed to start daemon"
             1
         else
             eprintfn "  Triggering build..."
             runIpcWithExitCode (ipc.TriggerBuild pipeName)
     | Test argsJson ->
-        if not (ensureDaemon ipc repoRoot pipeName) then
+        if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
             eprintfn "Failed to start daemon"
             1
         else
             runIpcWithExitCode (ipc.RunCommand pipeName "run-tests" argsJson)
     | Format ->
-        if not (ensureDaemon ipc repoRoot pipeName) then
+        if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
             eprintfn "Failed to start daemon"
             1
         else
             runIpc (ipc.FormatAll pipeName)
     | Lint ->
-        if not (ensureDaemon ipc repoRoot pipeName) then
+        if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
             eprintfn "Failed to start daemon"
             1
         else
             runIpcWithExitCode (ipc.RunCommand pipeName "lint" "")
     | Errors ->
-        if not (ensureDaemon ipc repoRoot pipeName) then
+        if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
             eprintfn "Failed to start daemon"
             1
         else
             runIpcWithExitCode (ipc.GetErrors pipeName "")
     | Check ->
-        if not (ensureDaemon ipc repoRoot pipeName) then
+        if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
             eprintfn "Failed to start daemon"
             1
         else
@@ -406,10 +417,36 @@ let executeCommand
 let main args =
     let argList = args |> Array.toList
 
+    let logLevelArg =
+        argList
+        |> List.tryFind (fun a -> a.StartsWith("--log-level="))
+        |> Option.map (fun a -> a.Substring("--log-level=".Length))
+
     if argList |> List.exists (fun a -> a = "--verbose" || a = "-v") then
         FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
 
-    let filteredArgs = argList |> List.filter (fun a -> a <> "--verbose" && a <> "-v")
+    match logLevelArg with
+    | Some "error" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
+    | Some "warning" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Warning
+    | Some "info" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Info
+    | Some "debug" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
+    | Some other -> eprintfn "Unknown log level: %s (using info)" other
+    | None -> ()
+
+    let filteredArgs =
+        argList
+        |> List.filter (fun a -> a <> "--verbose" && a <> "-v" && not (a.StartsWith("--log-level=")))
+
+    // Build extra args string to forward logging flags to daemon subprocess
+    let daemonExtraArgs =
+        match logLevelArg with
+        | Some("error" | "warning" | "info" | "debug" as level) -> $"--log-level=%s{level} "
+        | Some _ -> "" // invalid level already warned; don't forward
+        | None ->
+            if argList |> List.exists (fun a -> a = "--verbose" || a = "-v") then
+                "--verbose "
+            else
+                ""
 
     let repoRoot =
         match findRepoRoot (Directory.GetCurrentDirectory()) with
@@ -421,4 +458,4 @@ let main args =
 
     let pipeName = computePipeName repoRoot
     let command = parseCommand filteredArgs
-    executeCommand Daemon.create defaultIpcOps repoRoot pipeName command
+    executeCommand Daemon.create defaultIpcOps repoRoot pipeName command daemonExtraArgs
