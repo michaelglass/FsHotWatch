@@ -8,6 +8,22 @@ open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
 open FsHotWatch.TestPrune.TestPrunePlugin
+open TestPrune.AstAnalyzer
+open TestPrune.Database
+open TestPrune.Extensions
+open TestPrune.SymbolDiff
+
+let private withTmpDir (prefix: string) (f: string -> unit) =
+    let dir = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(dir) |> ignore
+
+    try
+        f dir
+    finally
+        try
+            Directory.Delete(dir, true)
+        with _ ->
+            ()
 
 [<Fact>]
 let ``plugin has correct name`` () =
@@ -68,18 +84,15 @@ let ``test-prune error path sets Failed status on null check results`` () =
 
 [<Fact>]
 let ``changed-files tracks files after emit with valid relative path`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmpDir) |> ignore
-    let dbPath = Path.Combine(tmpDir, "test.db")
+    withTmpDir "tp-test" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "test.db")
 
-    try
         let host =
             PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
         let plugin = TestPrunePlugin(dbPath, tmpDir)
         host.Register(plugin)
 
-        // Create a fake file under tmpDir so GetRelativePath produces a meaningful relative path
         let fakeFile = Path.Combine(tmpDir, "src", "Lib.fs")
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         File.WriteAllText(fakeFile, "module Lib\nlet x = 1\n")
@@ -91,29 +104,19 @@ let ``changed-files tracks files after emit with valid relative path`` () =
               CheckResults = Unchecked.defaultof<_>
               ProjectOptions = Unchecked.defaultof<_> }
 
-        // This will trigger the catch because CheckResults is null,
-        // but the changed-files tracking and storedSymbols path both execute before that.
         try
             host.EmitFileChecked(fakeResult)
         with
         | _ -> ()
 
-        // The file should have been tracked in lastChangedFiles before the error
         let status = host.GetStatus("test-prune")
-        test <@ status.IsSome @>
-    finally
-        try
-            Directory.Delete(tmpDir, true)
-        with _ ->
-            ()
+        test <@ status.IsSome @>)
 
 [<Fact>]
 let ``duplicate file checks do not duplicate in changed-files list`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-dup-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmpDir) |> ignore
-    let dbPath = Path.Combine(tmpDir, "test.db")
+    withTmpDir "tp-dup" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "test.db")
 
-    try
         let host =
             PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -130,21 +133,14 @@ let ``duplicate file checks do not duplicate in changed-files list`` () =
               CheckResults = Unchecked.defaultof<_>
               ProjectOptions = Unchecked.defaultof<_> }
 
-        // Emit twice — the plugin deduplicates via List.contains
         for _ in 1..2 do
             try
                 host.EmitFileChecked(fakeResult)
             with
             | _ -> ()
 
-        // Status should be set (Running or Failed)
         let status = host.GetStatus("test-prune")
-        test <@ status.IsSome @>
-    finally
-        try
-            Directory.Delete(tmpDir, true)
-        with _ ->
-            ()
+        test <@ status.IsSome @>)
 
 [<Fact>]
 let ``test-results command returns not run initially`` () =
@@ -177,6 +173,162 @@ let ``plugin with testConfigs subscribes to OnBuildCompleted`` () =
     let status = host.GetStatus("test-prune")
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
+
+[<Fact>]
+let ``extension contributes affected test classes during test run`` () =
+    withTmpDir "tp-ext" (fun tmpDir ->
+        let mutable extensionCalled = false
+
+        let fakeExtension =
+            { new ITestPruneExtension with
+                member _.Name = "fake-extension"
+
+                member _.FindAffectedTests _db _changedFiles _repoRoot =
+                    extensionCalled <- true
+
+                    [ { AffectedTest.TestProject = "TestProj"
+                        TestClass = "ExtensionClass" } ] }
+
+        let configs =
+            [ { Project = "TestProject"
+                Command = "echo"
+                Args = "done"
+                Group = "default"
+                Environment = [] } ]
+
+        let host =
+            PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+        let plugin =
+            TestPrunePlugin(":memory:", tmpDir, testConfigs = configs, extensions = [ fakeExtension ])
+
+        host.Register(plugin)
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        System.Threading.Thread.Sleep(500)
+
+        test <@ extensionCalled @>)
+
+[<Fact>]
+let ``extension error is caught and does not crash plugin`` () =
+    withTmpDir "tp-ext-err" (fun tmpDir ->
+        let failingExtension =
+            { new ITestPruneExtension with
+                member _.Name = "failing-extension"
+
+                member _.FindAffectedTests _db _changedFiles _repoRoot =
+                    failwith "extension broke" }
+
+        let configs =
+            [ { Project = "TestProject"
+                Command = "echo"
+                Args = "done"
+                Group = "default"
+                Environment = [] } ]
+
+        let host =
+            PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+        let plugin =
+            TestPrunePlugin(":memory:", tmpDir, testConfigs = configs, extensions = [ failingExtension ])
+
+        host.Register(plugin)
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        System.Threading.Thread.Sleep(500)
+
+        let status = host.GetStatus("test-prune")
+        test <@ status.IsSome @>)
+
+[<Fact>]
+let ``database read-before-write preserves previous symbols for diffing`` () =
+    // RebuildForProject must happen AFTER GetSymbolsInFile to get previous state for diffing.
+    withTmpDir "tp-db" (fun tmpDir ->
+        let db = Database.create (Path.Combine(tmpDir, "test.db"))
+
+        let symbol1: SymbolInfo =
+            { FullName = "MyModule.foo"
+              Kind = SymbolKind.Value
+              SourceFile = "src/Lib.fs"
+              LineStart = 1
+              LineEnd = 1 }
+
+        let testMethod1: TestMethodInfo =
+            { SymbolFullName = "Tests.myTest"
+              TestProject = "TestProj"
+              TestClass = "Tests"
+              TestMethod = "myTest" }
+
+        let result1: AnalysisResult =
+            { Symbols = [ symbol1 ]
+              Dependencies =
+                [ { FromSymbol = "Tests.myTest"
+                    ToSymbol = "MyModule.foo"
+                    Kind = DependencyKind.Calls } ]
+              TestMethods = [ testMethod1 ] }
+
+        db.RebuildForProject("TestProj", result1)
+
+        let symbol2 = { symbol1 with LineEnd = 5 }
+        let result2 = { result1 with Symbols = [ symbol2 ] }
+
+        // Correct pattern: read BEFORE write
+        let storedBefore = db.GetSymbolsInFile("src/Lib.fs")
+        db.RebuildForProject("TestProj", result2)
+
+        test <@ storedBefore.Length = 1 @>
+        test <@ storedBefore.[0].LineEnd = 1 @>
+
+        let storedAfter = db.GetSymbolsInFile("src/Lib.fs")
+        test <@ storedAfter.Length = 1 @>
+        test <@ storedAfter.[0].LineEnd = 5 @>
+
+        // Diffing against pre-write data detects the change
+        let changes = detectChanges [ symbol2 ] storedBefore
+        let changedNames = changedSymbolNames changes
+        test <@ not changedNames.IsEmpty @>
+
+        // Diffing against post-write data finds no changes (the bug this test guards against)
+        let noChanges = detectChanges [ symbol2 ] storedAfter
+        let noChangedNames = changedSymbolNames noChanges
+        test <@ noChangedNames.IsEmpty @>)
+
+[<Fact>]
+let ``plugin reports Running status on FileChecked after tests complete`` () =
+    withTmpDir "tp-reset" (fun tmpDir ->
+        let configs =
+            [ { Project = "TestProject"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = [] } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let plugin = TestPrunePlugin(":memory:", tmpDir, testConfigs = configs)
+        host.Register(plugin)
+
+        // Trigger build → test run
+        host.EmitBuildCompleted(BuildSucceeded)
+        System.Threading.Thread.Sleep(500)
+
+        // After tests complete, emit a FileChecked — should transition away from test-run status
+        let fakeFile = Path.Combine(tmpDir, "New.fs")
+        File.WriteAllText(fakeFile, "module New")
+        let fakeResult: FileCheckResult =
+            { File = fakeFile
+              Source = "module New"
+              ParseResults = Unchecked.defaultof<_>
+              CheckResults = Unchecked.defaultof<_>
+              ProjectOptions = Unchecked.defaultof<_> }
+
+        try host.EmitFileChecked(fakeResult) with _ -> ()
+
+        let status = host.GetStatus("test-prune")
+        test <@ status.IsSome @>
+        match status.Value with
+        | Completed(data, _) when (data :? FsHotWatch.Events.TestResults) ->
+            Assert.Fail("Expected status to change after new FileChecked, not remain as test-run Completed")
+        | _ -> ())
 
 [<Fact>]
 let ``dispose is callable`` () =

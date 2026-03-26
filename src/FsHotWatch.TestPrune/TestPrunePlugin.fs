@@ -9,6 +9,7 @@ open FsHotWatch.Plugin
 open FsHotWatch.ProcessHelper
 open TestPrune.AstAnalyzer
 open TestPrune.Database
+open TestPrune.Extensions
 open TestPrune.ImpactAnalysis
 open TestPrune.SymbolDiff
 
@@ -27,6 +28,7 @@ type TestPrunePlugin
         dbPath: string,
         repoRoot: string,
         ?testConfigs: TestConfig list,
+        ?extensions: ITestPruneExtension list,
         ?beforeRun: unit -> unit,
         ?afterRun: TestResults -> unit,
         ?coverageArgs: string -> string -> string
@@ -52,10 +54,28 @@ type TestPrunePlugin
             eprintfn "  [test-prune] beforeRun complete"
         | None -> ()
 
+        // Combine AST-based affected tests with extension results (e.g. route→handler mapping)
+        let extensionClasses =
+            match extensions with
+            | Some exts ->
+                let changedFiles = Volatile.Read(&lastChangedFiles)
+
+                exts
+                |> List.collect (fun ext ->
+                    try
+                        ext.FindAffectedTests db changedFiles repoRoot
+                        |> List.map (fun t -> t.TestClass)
+                    with ex ->
+                        eprintfn $"  [test-prune] Extension '%s{ext.Name}' failed: %s{ex.Message}"
+                        [])
+            | None -> []
+
         let affectedClasses =
-            Volatile.Read(&lastAffectedTests)
-            |> List.map (fun t -> t.TestClass)
-            |> List.distinct
+            let astClasses =
+                Volatile.Read(&lastAffectedTests)
+                |> List.map (fun t -> t.TestClass)
+
+            (astClasses @ extensionClasses) |> List.distinct
 
         // Group configs by Group key — same group runs sequentially, different groups run in parallel
         let groups =
@@ -142,6 +162,10 @@ type TestPrunePlugin
 
         member _.Initialize(ctx) =
             ctx.OnFileChecked.Add(fun result ->
+                // Reset completed flag so new file changes resume status reporting
+                if testsCompleted && not testsRunning then
+                    testsCompleted <- false
+
                 // Don't overwrite test results with analysis status
                 if not testsRunning && not testsCompleted then
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
@@ -155,11 +179,36 @@ type TestPrunePlugin
                     if not (currentFiles |> List.contains relPath) then
                         Volatile.Write(&lastChangedFiles, relPath :: currentFiles)
 
-                    let storedSymbols = db.GetSymbolsInFile(relPath)
+                    match analyzeSource ctx.Checker result.File result.Source result.ProjectOptions |> Async.RunSynchronously with
+                    | Ok analysisResult ->
+                        let projectName =
+                            result.ProjectOptions.ProjectFileName
+                            |> Path.GetFileNameWithoutExtension
 
-                    // When testConfigs is provided, don't report Completed after analysis —
-                    // stay Running until tests finish. Otherwise a consumer polling status
-                    // sees a brief Completed window before tests start.
+                        let normalizedSymbols = normalizeSymbolPaths repoRoot analysisResult.Symbols
+
+                        let fileAnalysis =
+                            { Symbols = normalizedSymbols
+                              Dependencies = analysisResult.Dependencies
+                              TestMethods =
+                                analysisResult.TestMethods
+                                |> List.map (fun t -> { t with TestProject = projectName }) }
+
+                        // Diff current symbols against previously stored (read BEFORE overwriting)
+                        let storedSymbols = db.GetSymbolsInFile(relPath)
+                        db.RebuildForProject(projectName, fileAnalysis)
+                        let changes = detectChanges normalizedSymbols storedSymbols
+                        let changedNames = changedSymbolNames changes
+
+                        if not changedNames.IsEmpty then
+                            let affected = db.QueryAffectedTests(changedNames)
+                            Volatile.Write(&lastAffectedTests, affected)
+                    | Error msg ->
+                        eprintfn $"  [test-prune] Analysis failed for %s{relPath}: %s{msg}"
+
+                        if not testsRunning && not testsCompleted then
+                            ctx.ReportStatus(PluginStatus.Failed($"Analysis failed: %s{msg}", DateTime.UtcNow))
+
                     if not testsRunning && not testsCompleted && not hasTestConfigs then
                         ctx.ReportStatus(Completed(box (Volatile.Read(&lastAffectedTests)), DateTime.UtcNow))
                 with ex ->
