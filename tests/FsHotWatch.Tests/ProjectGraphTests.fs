@@ -133,3 +133,29 @@ let ``PrepareForRediscovery clears stale projectDependents`` () =
     graph.RegisterProject("/proj/A.fsproj", [ "/proj/A.fs" ], [])
     graph.RegisterProject("/proj/B.fsproj", [ "/proj/B.fs" ], [])
     test <@ graph.GetDependents("/proj/A.fsproj") |> List.isEmpty @>
+
+[<Fact>]
+let ``GetParallelTiers groups independent projects in same tier`` () =
+    let graph = ProjectGraph()
+    graph.RegisterProject("/proj/A.fsproj", [ "/proj/A.fs" ], [])
+    graph.RegisterProject("/proj/B.fsproj", [ "/proj/B.fs" ], [])
+    graph.RegisterProject("/proj/C.fsproj", [ "/proj/C.fs" ], [ "/proj/A.fsproj"; "/proj/B.fsproj" ])
+    let tiers = graph.GetParallelTiers()
+    // A and B have no deps, so they should be in tier 0
+    // C depends on A and B, so it should be in tier 1
+    test <@ tiers.Length = 2 @>
+    test <@ tiers.[0] |> List.contains "/proj/A.fsproj" @>
+    test <@ tiers.[0] |> List.contains "/proj/B.fsproj" @>
+    test <@ tiers.[1] = [ "/proj/C.fsproj" ] @>
+
+[<Fact>]
+let ``GetParallelTiers handles linear chain`` () =
+    let graph = ProjectGraph()
+    graph.RegisterProject("/proj/A.fsproj", [ "/proj/A.fs" ], [])
+    graph.RegisterProject("/proj/B.fsproj", [ "/proj/B.fs" ], [ "/proj/A.fsproj" ])
+    graph.RegisterProject("/proj/C.fsproj", [ "/proj/C.fs" ], [ "/proj/B.fsproj" ])
+    let tiers = graph.GetParallelTiers()
+    test <@ tiers.Length = 3 @>
+    test <@ tiers.[0] = [ "/proj/A.fsproj" ] @>
+    test <@ tiers.[1] = [ "/proj/B.fsproj" ] @>
+    test <@ tiers.[2] = [ "/proj/C.fsproj" ] @>

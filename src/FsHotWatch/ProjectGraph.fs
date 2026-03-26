@@ -144,13 +144,15 @@ type ProjectGraph() =
     /// Get all registered projects.
     member _.GetAllProjects() : string list = projectFiles.Keys |> Seq.toList
 
-    /// Topological sort of all registered projects (dependencies before dependents).
-    member this.GetTopologicalOrder() : string list =
-        let allProjects = this.GetAllProjects() |> Set.ofList
+    /// Group projects into parallel tiers where each tier's projects
+    /// have all dependencies satisfied by earlier tiers.
+    member this.GetParallelTiers() : string list list =
+        let projects = this.GetAllProjects()
+        let allProjects = projects |> Set.ofList
 
-        let rec topoSort remaining sorted (sortedSet: Set<string>) =
+        let rec buildTiers remaining (sortedSet: Set<string>) acc =
             if remaining |> List.isEmpty then
-                sorted |> List.rev
+                acc |> List.rev
             else
                 let ready, blocked =
                     remaining
@@ -160,10 +162,13 @@ type ProjectGraph() =
                         |> List.forall sortedSet.Contains)
 
                 if ready.IsEmpty then
-                    List.rev sorted @ remaining
+                    List.rev (remaining :: acc)
                 else
                     let newSet = ready |> List.fold (fun s p -> Set.add p s) sortedSet
+                    buildTiers blocked newSet (ready :: acc)
 
-                    topoSort blocked (ready @ sorted) newSet
+        buildTiers projects Set.empty []
 
-        topoSort (this.GetAllProjects()) [] Set.empty
+    /// Topological sort of all registered projects (dependencies before dependents).
+    member this.GetTopologicalOrder() : string list =
+        this.GetParallelTiers() |> List.collect id
