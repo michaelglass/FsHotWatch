@@ -21,8 +21,7 @@ open FsHotWatch.Coverage.CoveragePlugin
 open FsHotWatch.FileCommand.FileCommandPlugin
 
 let private findRepoRoot () =
-    let assemblyDir =
-        Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)
+    let assemblyDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)
 
     let rec walk dir =
         if
@@ -45,11 +44,7 @@ let ``all plugins receive events when checking a file`` () =
     let repoRoot = findRepoRoot ()
 
     let checker =
-        FSharpChecker.Create(
-            projectCacheSize = 200,
-            keepAssemblyContents = true,
-            keepAllBackgroundResolutions = true
-        )
+        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
     let pipeline = CheckPipeline(checker)
     let host = PluginHost.create checker repoRoot
@@ -69,8 +64,7 @@ let ``all plugins receive events when checking a file`` () =
     pipeline.RegisterProject("FsHotWatch", projOptions)
 
     // Register all four plugins
-    let dbPath =
-        Path.Combine(Path.GetTempPath(), $"fshw-inttest-{Guid.NewGuid():N}.db")
+    let dbPath = Path.Combine(Path.GetTempPath(), $"fshw-inttest-{Guid.NewGuid():N}.db")
 
     let testPrune = TestPrunePlugin(dbPath, repoRoot)
     let lint = LintPlugin()
@@ -176,11 +170,7 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let analyzers = AnalyzersPlugin(analyzerPaths)
 
     let checker =
-        FSharpChecker.Create(
-            projectCacheSize = 200,
-            keepAssemblyContents = true,
-            keepAllBackgroundResolutions = true
-        )
+        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
     let host = PluginHost.create checker repoRoot
     host.Register(analyzers)
@@ -302,8 +292,7 @@ let x = 5
 [<Fact>]
 let ``format check plugin detects unformatted code`` () =
     // Badly formatted F# — extra spaces, wrong indentation
-    let badlyFormatted =
-        "module    Temp\nlet   x   =   5\nlet y=       10\n"
+    let badlyFormatted = "module    Temp\nlet   x   =   5\nlet y=       10\n"
 
     withTempFsFile badlyFormatted (fun _dir filePath ->
         let checker =
@@ -398,10 +387,7 @@ let ``multiple file changes are debounced into one batch by SourceChanged`` () =
                           $"module    File{i}\nlet   x   =   {i}\n"
                       else
                           let formatted =
-                              Fantomas.Core.CodeFormatter.FormatDocumentAsync(
-                                  false,
-                                  $"module File{i}\n\nlet x = {i}\n"
-                              )
+                              Fantomas.Core.CodeFormatter.FormatDocumentAsync(false, $"module File{i}\n\nlet x = {i}\n")
                               |> Async.RunSynchronously
 
                           formatted.Code
@@ -467,9 +453,7 @@ let ``PROFILE: startup phases timing`` () =
 
     let fsprojFiles =
         searchDirs
-        |> List.collect (fun dir ->
-            Directory.GetFiles(dir, "*.fsproj", SearchOption.AllDirectories)
-            |> Array.toList)
+        |> List.collect (fun dir -> Directory.GetFiles(dir, "*.fsproj", SearchOption.AllDirectories) |> Array.toList)
         |> List.filter (fun f ->
             let n = f.Replace('\\', '/')
             not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
@@ -502,14 +486,15 @@ let ``PROFILE: startup phases timing`` () =
                 let sourceText = SourceText.ofString source
 
                 let projOptions, _ =
-                    checker.GetProjectOptionsFromScript(
-                        sourceFiles.[0],
-                        sourceText,
-                        assumeDotNetFramework = false
-                    )
+                    checker.GetProjectOptionsFromScript(sourceFiles.[0], sourceText, assumeDotNetFramework = false)
                     |> Async.RunSynchronously
 
-                pipeline.RegisterProject(fsproj, { projOptions with SourceFiles = sourceFiles })
+                pipeline.RegisterProject(
+                    fsproj,
+                    { projOptions with
+                        SourceFiles = sourceFiles }
+                )
+
                 totalFiles <- totalFiles + sourceFiles.Length
         with _ ->
             ()
@@ -585,11 +570,7 @@ let ``LintPlugin reports no warnings on clean code`` () =
     let repoRoot = findRepoRoot ()
 
     let checker =
-        FSharpChecker.Create(
-            projectCacheSize = 200,
-            keepAssemblyContents = true,
-            keepAllBackgroundResolutions = true
-        )
+        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
     let host = PluginHost.create checker repoRoot
     let lint = LintPlugin()
@@ -629,11 +610,7 @@ let ``LintPlugin reports warnings on code with issues`` () =
     let repoRoot = findRepoRoot ()
 
     let checker =
-        FSharpChecker.Create(
-            projectCacheSize = 200,
-            keepAssemblyContents = true,
-            keepAllBackgroundResolutions = true
-        )
+        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
     let host = PluginHost.create checker repoRoot
     let lint = LintPlugin()
@@ -668,11 +645,7 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
     let repoRoot = findRepoRoot ()
 
     let checker =
-        FSharpChecker.Create(
-            projectCacheSize = 200,
-            keepAssemblyContents = true,
-            keepAllBackgroundResolutions = true
-        )
+        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
     let host = PluginHost.create checker repoRoot
     let analyzers = AnalyzersPlugin([])
@@ -700,8 +673,7 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
 
         match status.Value with
         | Completed _ -> () // Empty analyzer paths, should complete with no diagnostics
-        | PluginStatus.Failed(msg, _) ->
-            Assert.True(true, $"Analyzers failed gracefully: {msg}")
+        | PluginStatus.Failed(msg, _) -> Assert.True(true, $"Analyzers failed gracefully: {msg}")
         | other -> Assert.Fail($"Unexpected status: %A{other}")
     | None -> Assert.True(true, "Skipped: FCS could not check file")
 
@@ -722,17 +694,12 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
     let customAnalyzerPath =
         Path.Combine(repoRoot, "examples/ExampleAnalyzer/bin/Debug/net10.0")
 
-    let analyzerPaths =
-        [ customAnalyzerPath ] |> List.filter Directory.Exists
+    let analyzerPaths = [ customAnalyzerPath ] |> List.filter Directory.Exists
 
     test <@ analyzerPaths |> List.exists (fun p -> p.Contains("ExampleAnalyzer")) @>
 
     let checker =
-        FSharpChecker.Create(
-            projectCacheSize = 200,
-            keepAssemblyContents = true,
-            keepAllBackgroundResolutions = true
-        )
+        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
     let host = PluginHost.create checker repoRoot
     let analyzers = AnalyzersPlugin(analyzerPaths)
@@ -778,7 +745,10 @@ let ``BuildPlugin succeeds with echo command`` () =
     let recorder =
         { new IFsHotWatchPlugin with
             member _.Name = "build-recorder"
-            member _.Initialize(ctx) = ctx.OnBuildCompleted.Add(fun r -> receivedBuild <- Some r)
+
+            member _.Initialize(ctx) =
+                ctx.OnBuildCompleted.Add(fun r -> receivedBuild <- Some r)
+
             member _.Dispose() = () }
 
     let plugin = BuildPlugin(command = "echo", args = "build ok")
@@ -807,7 +777,10 @@ let ``BuildPlugin fails with false command`` () =
     let recorder =
         { new IFsHotWatchPlugin with
             member _.Name = "build-recorder"
-            member _.Initialize(ctx) = ctx.OnBuildCompleted.Add(fun r -> receivedBuild <- Some r)
+
+            member _.Initialize(ctx) =
+                ctx.OnBuildCompleted.Add(fun r -> receivedBuild <- Some r)
+
             member _.Dispose() = () }
 
     let plugin = BuildPlugin(command = "false", args = "")
@@ -859,8 +832,7 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
 
         let cmdResult = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ cmdResult.IsSome @>
-        test <@ cmdResult.Value.Contains("\"passed\": 1") @>
-        test <@ cmdResult.Value.Contains("\"failed\": 0") @>
+        test <@ cmdResult.Value.Contains("\"status\": \"passed\"") @>
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
@@ -889,8 +861,7 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
 
 [<Fact>]
 let ``TestPrunePlugin with failing test reports failure`` () =
-    let dbPath =
-        Path.Combine(Path.GetTempPath(), $"fshw-tp-fail-{Guid.NewGuid():N}.db")
+    let dbPath = Path.Combine(Path.GetTempPath(), $"fshw-tp-fail-{Guid.NewGuid():N}.db")
 
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -909,7 +880,7 @@ let ``TestPrunePlugin with failing test reports failure`` () =
 
         let cmdResult = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ cmdResult.IsSome @>
-        test <@ cmdResult.Value.Contains("\"failed\": 1") @>
+        test <@ cmdResult.Value.Contains("\"status\": \"failed\"") @>
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
@@ -948,17 +919,11 @@ let ``CoveragePlugin succeeds when coverage above threshold`` () =
 
     let xmlPath = Path.Combine(subDir, "cobertura.xml")
 
-    File.WriteAllText(
-        xmlPath,
-        """<?xml version="1.0" ?><coverage line-rate="0.90" branch-rate="0.80" />"""
-    )
+    File.WriteAllText(xmlPath, """<?xml version="1.0" ?><coverage line-rate="0.90" branch-rate="0.80" />""")
 
     let thresholdsPath = Path.Combine(tmpDir, "thresholds.json")
 
-    File.WriteAllText(
-        thresholdsPath,
-        """{"TestProject": {"line": 85.0, "branch": 75.0}}"""
-    )
+    File.WriteAllText(thresholdsPath, """{"TestProject": {"line": 85.0, "branch": 75.0}}""")
 
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -994,17 +959,11 @@ let ``CoveragePlugin fails when coverage below threshold`` () =
 
     let xmlPath = Path.Combine(subDir, "cobertura.xml")
 
-    File.WriteAllText(
-        xmlPath,
-        """<?xml version="1.0" ?><coverage line-rate="0.50" branch-rate="0.30" />"""
-    )
+    File.WriteAllText(xmlPath, """<?xml version="1.0" ?><coverage line-rate="0.50" branch-rate="0.30" />""")
 
     let thresholdsPath = Path.Combine(tmpDir, "thresholds.json")
 
-    File.WriteAllText(
-        thresholdsPath,
-        """{"TestProject": {"line": 85.0, "branch": 75.0}}"""
-    )
+    File.WriteAllText(thresholdsPath, """{"TestProject": {"line": 85.0, "branch": 75.0}}""")
 
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -1134,10 +1093,7 @@ let ``Full pipeline: format → build → test → coverage`` () =
 
     let xmlPath = Path.Combine(covSubDir, "cobertura.xml")
 
-    File.WriteAllText(
-        xmlPath,
-        """<?xml version="1.0" ?><coverage line-rate="0.95" branch-rate="0.85" />"""
-    )
+    File.WriteAllText(xmlPath, """<?xml version="1.0" ?><coverage line-rate="0.95" branch-rate="0.85" />""")
 
     let dbPath = Path.Combine(tmpDir, "test-prune.db")
 
@@ -1289,9 +1245,7 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
         host.Register(plugin)
 
         // Emit two BuildSucceeded events rapidly — the testsRunning guard should queue the second
-        let t1 =
-            async { host.EmitBuildCompleted(BuildSucceeded) }
-            |> Async.StartAsTask
+        let t1 = async { host.EmitBuildCompleted(BuildSucceeded) } |> Async.StartAsTask
 
         System.Threading.Thread.Sleep(100)
         host.EmitBuildCompleted(BuildSucceeded)
@@ -1301,8 +1255,7 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
         let cmdResult = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ cmdResult.IsSome @>
         // sleep exits 0, so it counts as passed
-        test <@ cmdResult.Value.Contains("\"passed\": 1") @>
-        test <@ cmdResult.Value.Contains("\"failed\": 0") @>
+        test <@ cmdResult.Value.Contains("\"status\": \"passed\"") @>
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>

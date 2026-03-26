@@ -32,8 +32,7 @@ let ``plugin has correct name`` () =
 
 [<Fact>]
 let ``affected-tests command returns not-analyzed when no files checked`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = TestPrunePlugin(":memory:", "/tmp")
     host.Register(plugin)
@@ -44,8 +43,7 @@ let ``affected-tests command returns not-analyzed when no files checked`` () =
 
 [<Fact>]
 let ``changed-files command returns empty list when no files checked`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = TestPrunePlugin(":memory:", "/tmp")
     host.Register(plugin)
@@ -56,8 +54,7 @@ let ``changed-files command returns empty list when no files checked`` () =
 
 [<Fact>]
 let ``test-prune error path sets Failed status on null check results`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = TestPrunePlugin(":memory:", "/tmp")
     host.Register(plugin)
@@ -71,8 +68,8 @@ let ``test-prune error path sets Failed status on null check results`` () =
 
     try
         host.EmitFileChecked(fakeResult)
-    with
-    | _ -> ()
+    with _ ->
+        ()
 
     let status = host.GetStatus("test-prune")
     test <@ status.IsSome @>
@@ -87,8 +84,7 @@ let ``changed-files tracks files after emit with valid relative path`` () =
     withTmpDir "tp-test" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
-        let host =
-            PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
         let plugin = TestPrunePlugin(dbPath, tmpDir)
         host.Register(plugin)
@@ -106,8 +102,8 @@ let ``changed-files tracks files after emit with valid relative path`` () =
 
         try
             host.EmitFileChecked(fakeResult)
-        with
-        | _ -> ()
+        with _ ->
+            ()
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>)
@@ -117,8 +113,7 @@ let ``duplicate file checks do not duplicate in changed-files list`` () =
     withTmpDir "tp-dup" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
-        let host =
-            PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
         let plugin = TestPrunePlugin(dbPath, tmpDir)
         host.Register(plugin)
@@ -136,16 +131,15 @@ let ``duplicate file checks do not duplicate in changed-files list`` () =
         for _ in 1..2 do
             try
                 host.EmitFileChecked(fakeResult)
-            with
-            | _ -> ()
+            with _ ->
+                ()
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>)
 
 [<Fact>]
 let ``test-results command returns not run initially`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = TestPrunePlugin(":memory:", "/tmp")
     host.Register(plugin)
@@ -156,8 +150,7 @@ let ``test-results command returns not run initially`` () =
 
 [<Fact>]
 let ``plugin with testConfigs subscribes to OnBuildCompleted`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let configs =
         [ { Project = "TestProject"
@@ -196,8 +189,7 @@ let ``extension contributes affected test classes during test run`` () =
                 Group = "default"
                 Environment = [] } ]
 
-        let host =
-            PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
         let plugin =
             TestPrunePlugin(":memory:", tmpDir, testConfigs = configs, extensions = [ fakeExtension ])
@@ -216,8 +208,7 @@ let ``extension error is caught and does not crash plugin`` () =
             { new ITestPruneExtension with
                 member _.Name = "failing-extension"
 
-                member _.FindAffectedTests _db _changedFiles _repoRoot =
-                    failwith "extension broke" }
+                member _.FindAffectedTests _db _changedFiles _repoRoot = failwith "extension broke" }
 
         let configs =
             [ { Project = "TestProject"
@@ -226,8 +217,7 @@ let ``extension error is caught and does not crash plugin`` () =
                 Group = "default"
                 Environment = [] } ]
 
-        let host =
-            PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
         let plugin =
             TestPrunePlugin(":memory:", tmpDir, testConfigs = configs, extensions = [ failingExtension ])
@@ -251,7 +241,8 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
               Kind = SymbolKind.Value
               SourceFile = "src/Lib.fs"
               LineStart = 1
-              LineEnd = 1 }
+              LineEnd = 1
+              ContentHash = "abc123" }
 
         let testMethod1: TestMethodInfo =
             { SymbolFullName = "Tests.myTest"
@@ -269,7 +260,11 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
 
         db.RebuildForProject("TestProj", result1)
 
-        let symbol2 = { symbol1 with LineEnd = 5 }
+        let symbol2 =
+            { symbol1 with
+                LineEnd = 5
+                ContentHash = "changed" }
+
         let result2 = { result1 with Symbols = [ symbol2 ] }
 
         // Correct pattern: read BEFORE write
@@ -314,6 +309,7 @@ let ``plugin reports Running status on FileChecked after tests complete`` () =
         // After tests complete, emit a FileChecked — should transition away from test-run status
         let fakeFile = Path.Combine(tmpDir, "New.fs")
         File.WriteAllText(fakeFile, "module New")
+
         let fakeResult: FileCheckResult =
             { File = fakeFile
               Source = "module New"
@@ -321,14 +317,105 @@ let ``plugin reports Running status on FileChecked after tests complete`` () =
               CheckResults = Unchecked.defaultof<_>
               ProjectOptions = Unchecked.defaultof<_> }
 
-        try host.EmitFileChecked(fakeResult) with _ -> ()
+        try
+            host.EmitFileChecked(fakeResult)
+        with _ ->
+            ()
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
+
         match status.Value with
         | Completed(data, _) when (data :? FsHotWatch.Events.TestResults) ->
             Assert.Fail("Expected status to change after new FileChecked, not remain as test-run Completed")
         | _ -> ())
+
+[<Fact>]
+let ``run-tests command runs all projects and returns results`` () =
+    withTmpDir "tp-run" (fun tmpDir ->
+        let configs =
+            [ { Project = "TestProject"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = [] } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let plugin = TestPrunePlugin(":memory:", tmpDir, testConfigs = configs)
+        host.Register(plugin)
+
+        let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
+        test <@ result.IsSome @>
+        test <@ result.Value.Contains("\"status\": \"passed\"") @>
+        test <@ result.Value.Contains("\"elapsed\":") @>)
+
+[<Fact>]
+let ``run-tests with project filter runs only named project`` () =
+    withTmpDir "tp-run-proj" (fun tmpDir ->
+        let configs =
+            [ { Project = "Alpha"
+                Command = "echo"
+                Args = "alpha"
+                Group = "default"
+                Environment = [] }
+              { Project = "Beta"
+                Command = "echo"
+                Args = "beta"
+                Group = "default"
+                Environment = [] } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let plugin = TestPrunePlugin(":memory:", tmpDir, testConfigs = configs)
+        host.Register(plugin)
+
+        let result =
+            host.RunCommand("run-tests", [| """{"projects": ["Alpha"]}""" |])
+            |> Async.RunSynchronously
+
+        test <@ result.IsSome @>
+        test <@ result.Value.Contains("Alpha") @>
+        test <@ not (result.Value.Contains("Beta")) @>)
+
+[<Fact>]
+let ``run-tests with only-failed reruns failed projects`` () =
+    withTmpDir "tp-run-failed" (fun tmpDir ->
+        let configs =
+            [ { Project = "Passes"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = [] }
+              { Project = "Fails"
+                Command = "false"
+                Args = ""
+                Group = "default"
+                Environment = [] } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let plugin = TestPrunePlugin(":memory:", tmpDir, testConfigs = configs)
+        host.Register(plugin)
+
+        // First run — Fails project will fail
+        host.EmitBuildCompleted(BuildSucceeded)
+        System.Threading.Thread.Sleep(500)
+
+        // Now rerun only failed — should only run "Fails", not "Passes"
+        let result =
+            host.RunCommand("run-tests", [| """{"only-failed": true}""" |])
+            |> Async.RunSynchronously
+
+        test <@ result.IsSome @>
+        test <@ result.Value.Contains("Fails") @>
+        test <@ not (result.Value.Contains("Passes")) @>)
+
+[<Fact>]
+let ``run-tests not registered when no testConfigs`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let plugin = TestPrunePlugin(":memory:", "/tmp")
+    host.Register(plugin)
+
+    let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
+    test <@ result.IsNone @>
 
 [<Fact>]
 let ``dispose is callable`` () =
