@@ -31,7 +31,7 @@ let ``plugin has correct name`` () =
     test <@ plugin.Name = "test-prune" @>
 
 [<Fact>]
-let ``affected-tests command returns empty list when no files checked`` () =
+let ``affected-tests command returns not-analyzed when no files checked`` () =
     let host =
         PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -40,7 +40,7 @@ let ``affected-tests command returns empty list when no files checked`` () =
 
     let result = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
-    test <@ result.Value = "[]" @>
+    test <@ result.Value.Contains("not analyzed") @>
 
 [<Fact>]
 let ``changed-files command returns empty list when no files checked`` () =
