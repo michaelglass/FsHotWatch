@@ -25,8 +25,9 @@ let internal hasContentChanged (path: string) =
             | _ ->
                 fileHashes[path] <- hash
                 true
-    with _ ->
-        true
+    with
+    | :? IOException -> true
+    | :? UnauthorizedAccessException -> true
 
 /// Holds a set of FileSystemWatchers monitoring a repository for F# file changes.
 [<NoComparison; NoEquality>]
@@ -71,6 +72,10 @@ let internal classifyChange (path: string) =
 module FileWatcher =
     /// Create a FileWatcher that monitors src/ and tests/ for F#-relevant file changes.
     let create (repoRoot: string) (onChange: FileChangeKind -> unit) : FileWatcher =
+        let handle (e: FileSystemEventArgs) =
+            if isRelevantFile e.FullPath then
+                onChange (classifyChange e.FullPath)
+
         let createWatcher (dir: string) =
             if Directory.Exists(dir) then
                 let w = new FileSystemWatcher(dir)
@@ -82,13 +87,6 @@ module FileWatcher =
                 w.Filters.Add("*.fsproj")
                 w.Filters.Add("*.props")
                 w.Filters.Add("project.assets.json")
-
-                let handle (e: FileSystemEventArgs) =
-                    if isRelevantFile e.FullPath then
-                        if hasContentChanged e.FullPath then
-                            onChange (classifyChange e.FullPath)
-                        else
-                            eprintfn "  [watcher] SKIPPED (content unchanged): %s" (Path.GetFileName(e.FullPath))
 
                 w.Changed.Add(handle)
                 w.Created.Add(handle)
@@ -104,13 +102,6 @@ module FileWatcher =
             w.Filters.Add("*.sln")
             w.Filters.Add("*.slnx")
             w.NotifyFilter <- NotifyFilters.LastWrite ||| NotifyFilters.FileName
-
-            let handle (e: FileSystemEventArgs) =
-                if isRelevantFile e.FullPath then
-                    if hasContentChanged e.FullPath then
-                        onChange (classifyChange e.FullPath)
-                    else
-                        eprintfn "  [watcher] SKIPPED (content unchanged): %s" (Path.GetFileName(e.FullPath))
 
             w.Changed.Add(handle)
             w.Created.Add(handle)

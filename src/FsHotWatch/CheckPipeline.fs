@@ -41,6 +41,7 @@ type CheckPipeline(checker: FSharpChecker) =
             | false, _ ->
                 if verbose then
                     eprintfn "  [check] No project options for: %s" absPath
+
                 return None
             | true, options ->
                 let source =
@@ -60,7 +61,8 @@ type CheckPipeline(checker: FSharpChecker) =
 
                     if sw.Elapsed.TotalSeconds > 2.0 then
                         if verbose then
-                            eprintfn $"  [check] SLOW: %s{Path.GetFileName(absPath)} took %.1f{sw.Elapsed.TotalSeconds}s"
+                            eprintfn
+                                $"  [check] SLOW: %s{Path.GetFileName(absPath)} took %.1f{sw.Elapsed.TotalSeconds}s"
 
                     match checkAnswer with
                     | FSharpCheckFileAnswer.Succeeded checkResults ->
