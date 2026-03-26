@@ -43,27 +43,26 @@ type FileWatcher =
 let internal isRelevantFile (path: string) =
     let normalized = path.Replace('\\', '/')
     let ext = Path.GetExtension(path).ToLowerInvariant()
-    let fileName = Path.GetFileName(path)
 
-    // Project infrastructure files (allowed even in obj/)
-    if fileName = "project.assets.json" || ext = ".props" then
-        true
-    else
-        let isRelevantExt =
-            ext = ".fs" || ext = ".fsx" || ext = ".fsproj" || ext = ".sln" || ext = ".slnx"
+    let isRelevantExt =
+        ext = ".fs"
+        || ext = ".fsx"
+        || ext = ".fsproj"
+        || ext = ".sln"
+        || ext = ".slnx"
+        || ext = ".props"
 
-        let isExcluded = normalized.Contains("/obj/") || normalized.Contains("/bin/")
+    let isExcluded = normalized.Contains("/obj/") || normalized.Contains("/bin/")
 
-        isRelevantExt && not isExcluded
+    isRelevantExt && not isExcluded
 
 /// Classify a file path as a solution, project, or source change.
 let internal classifyChange (path: string) =
     let ext = Path.GetExtension(path).ToLowerInvariant()
-    let fileName = Path.GetFileName(path)
 
     if ext = ".sln" || ext = ".slnx" then
         SolutionChanged
-    elif ext = ".fsproj" || ext = ".props" || fileName = "project.assets.json" then
+    elif ext = ".fsproj" || ext = ".props" then
         ProjectChanged [ path ]
     else
         SourceChanged [ path ]
@@ -86,7 +85,6 @@ module FileWatcher =
                 w.Filters.Add("*.fsx")
                 w.Filters.Add("*.fsproj")
                 w.Filters.Add("*.props")
-                w.Filters.Add("project.assets.json")
 
                 w.Changed.Add(handle)
                 w.Created.Add(handle)
