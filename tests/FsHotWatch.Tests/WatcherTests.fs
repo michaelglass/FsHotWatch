@@ -8,17 +8,91 @@ open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.Watcher
 
-// macOS kqueue-based FileSystemWatcher is unreliable — use polling watcher
+// === Unit tests for classification/filtering (no FileSystemWatcher needed) ===
+
+[<Fact>]
+let ``isRelevantFile accepts .fs files`` () =
+    test <@ isRelevantFile "/repo/src/Lib.fs" @>
+
+[<Fact>]
+let ``isRelevantFile accepts .fsx files`` () =
+    test <@ isRelevantFile "/repo/src/Script.fsx" @>
+
+[<Fact>]
+let ``isRelevantFile accepts .fsproj files`` () =
+    test <@ isRelevantFile "/repo/src/App.fsproj" @>
+
+[<Fact>]
+let ``isRelevantFile accepts .sln files`` () =
+    test <@ isRelevantFile "/repo/App.sln" @>
+
+[<Fact>]
+let ``isRelevantFile rejects files in obj directory`` () =
+    test <@ not (isRelevantFile "/repo/src/obj/Debug/Generated.fs") @>
+
+[<Fact>]
+let ``isRelevantFile rejects files in bin directory`` () =
+    test <@ not (isRelevantFile "/repo/src/bin/Debug/App.fs") @>
+
+[<Fact>]
+let ``isRelevantFile accepts project.assets.json even in obj`` () =
+    test <@ isRelevantFile "/repo/src/obj/project.assets.json" @>
+
+[<Fact>]
+let ``isRelevantFile accepts .props files`` () =
+    test <@ isRelevantFile "/repo/Directory.Build.props" @>
+
+[<Fact>]
+let ``isRelevantFile rejects unrelated extensions`` () =
+    test <@ not (isRelevantFile "/repo/src/readme.md") @>
+    test <@ not (isRelevantFile "/repo/src/data.json") @>
+
+[<Fact>]
+let ``classifyChange maps .fs to SourceChanged`` () =
+    match classifyChange "/repo/src/Lib.fs" with
+    | SourceChanged _ -> ()
+    | other -> Assert.Fail($"Expected SourceChanged, got %A{other}")
+
+[<Fact>]
+let ``classifyChange maps .fsproj to ProjectChanged`` () =
+    match classifyChange "/repo/src/App.fsproj" with
+    | ProjectChanged _ -> ()
+    | other -> Assert.Fail($"Expected ProjectChanged, got %A{other}")
+
+[<Fact>]
+let ``classifyChange maps .sln to SolutionChanged`` () =
+    test <@ classifyChange "/repo/App.sln" = SolutionChanged @>
+
+[<Fact>]
+let ``classifyChange maps .props to ProjectChanged`` () =
+    match classifyChange "/repo/Directory.Build.props" with
+    | ProjectChanged _ -> ()
+    | other -> Assert.Fail($"Expected ProjectChanged, got %A{other}")
+
+[<Fact>]
+let ``classifyChange maps project.assets.json to ProjectChanged`` () =
+    match classifyChange "/repo/src/obj/project.assets.json" with
+    | ProjectChanged _ -> ()
+    | other -> Assert.Fail($"Expected ProjectChanged, got %A{other}")
+
+// === Integration test: verify FileWatcher.create produces a working watcher ===
+// Uses polling watcher on macOS for reliability.
+
 do
     if
-        System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
-            System.Runtime.InteropServices.OSPlatform.OSX
-        )
+        System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.OSX)
     then
         Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "1")
 
+/// Poll until condition is true or timeout.
+let private waitUntil (condition: unit -> bool) (timeoutMs: int) =
+    let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
+
+    while not (condition ()) && DateTime.UtcNow < deadline do
+        Thread.Sleep(500)
+
 [<Fact>]
-let ``watcher detects new fs file in src`` () =
+let ``watcher detects file changes in src directory`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshotwatch-test-{Guid.NewGuid():N}")
     let srcDir = Path.Combine(tmpDir, "src")
     Directory.CreateDirectory(srcDir) |> ignore
@@ -26,45 +100,11 @@ let ``watcher detects new fs file in src`` () =
     let onChange change = changes <- change :: changes
 
     use watcher = FileWatcher.create tmpDir onChange
-    Thread.Sleep(2000)
+
     let testFile = Path.Combine(srcDir, "Test.fs")
     File.WriteAllText(testFile, "module Test")
-    // Touch the file again to ensure the watcher sees it (macOS kqueue can miss rapid creates)
     Thread.Sleep(500)
-    File.SetLastWriteTimeUtc(testFile, System.DateTime.UtcNow)
-    Thread.Sleep(5000)
+    File.SetLastWriteTimeUtc(testFile, DateTime.UtcNow)
+    waitUntil (fun () -> changes.Length >= 1) 30000
     test <@ changes.Length >= 1 @>
-    Directory.Delete(tmpDir, true)
-
-[<Fact>]
-let ``watcher ignores obj directory`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshotwatch-test-{Guid.NewGuid():N}")
-    let objDir = Path.Combine(tmpDir, "src", "obj")
-    Directory.CreateDirectory(objDir) |> ignore
-    let mutable changes = []
-    let onChange change = changes <- change :: changes
-
-    use watcher = FileWatcher.create tmpDir onChange
-    Thread.Sleep(2000)
-    File.WriteAllText(Path.Combine(objDir, "Generated.fs"), "module Gen")
-    Thread.Sleep(5000)
-    test <@ changes |> List.isEmpty @>
-    Directory.Delete(tmpDir, true)
-
-[<Fact>]
-let ``watcher classifies fsproj as ProjectChanged`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshotwatch-test-{Guid.NewGuid():N}")
-    let srcDir = Path.Combine(tmpDir, "src")
-    Directory.CreateDirectory(srcDir) |> ignore
-    let mutable changes = []
-    let onChange change = changes <- change :: changes
-
-    use watcher = FileWatcher.create tmpDir onChange
-    Thread.Sleep(2000)
-    let testFile = Path.Combine(srcDir, "Test.fsproj")
-    File.WriteAllText(testFile, "<Project/>")
-    Thread.Sleep(500)
-    File.SetLastWriteTimeUtc(testFile, System.DateTime.UtcNow)
-    Thread.Sleep(5000)
-    test <@ changes |> List.exists (fun c -> match c with ProjectChanged _ -> true | _ -> false) @>
     Directory.Delete(tmpDir, true)

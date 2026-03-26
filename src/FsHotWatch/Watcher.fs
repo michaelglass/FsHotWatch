@@ -15,7 +15,7 @@ type FileWatcher =
                 w.Dispose()
 
 /// Returns true if the file path has a relevant extension and is not in obj/ or bin/.
-let private isRelevantFile (path: string) =
+let internal isRelevantFile (path: string) =
     let normalized = path.Replace('\\', '/')
     let ext = Path.GetExtension(path).ToLowerInvariant()
     let fileName = Path.GetFileName(path)
@@ -25,23 +25,19 @@ let private isRelevantFile (path: string) =
         true
     else
         let isRelevantExt =
-            ext = ".fs"
-            || ext = ".fsx"
-            || ext = ".fsproj"
-            || ext = ".sln"
-            || ext = ".slnx"
+            ext = ".fs" || ext = ".fsx" || ext = ".fsproj" || ext = ".sln" || ext = ".slnx"
 
-        let isExcluded =
-            normalized.Contains("/obj/") || normalized.Contains("/bin/")
+        let isExcluded = normalized.Contains("/obj/") || normalized.Contains("/bin/")
 
         isRelevantExt && not isExcluded
 
 /// Classify a file path as a solution, project, or source change.
-let private classifyChange (path: string) =
+let internal classifyChange (path: string) =
     let ext = Path.GetExtension(path).ToLowerInvariant()
     let fileName = Path.GetFileName(path)
 
-    if ext = ".sln" || ext = ".slnx" then SolutionChanged
+    if ext = ".sln" || ext = ".slnx" then
+        SolutionChanged
     elif ext = ".fsproj" || ext = ".props" || fileName = "project.assets.json" then
         ProjectChanged [ path ]
     else
