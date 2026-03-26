@@ -54,6 +54,24 @@ description = "Check per-file coverage meets minimum threshold (50%)"
 run = "dotnet fsi scripts/check-coverage.fsx"
 depends = ["test"]
 
+[tasks.dead-code]
+description = "Find unreachable production code"
+run = "dotnet run --project src/TestPrune -- dead-code"
+depends = ["build"]
+
+[tasks.dead-code-tests]
+description = "Find unreachable test code (dead test helpers)"
+run = "dotnet run --project src/TestPrune -- dead-code --include-tests"
+depends = ["build"]
+
+[tasks.dead-code-example]
+description = "Find dead code in example solution (library + consumer)"
+run = """
+dotnet run --project src/TestPrune -- --repo examples/SampleSolution index
+dotnet run --project src/TestPrune -- --repo examples/SampleSolution dead-code --entry "SampleWeb.Handlers.*"
+"""
+depends = ["build", "example-build"]
+
 [tasks.check-api]
 description = "Check API changes since last release"
 run = "dotnet fsi scripts/check-api.fsx"

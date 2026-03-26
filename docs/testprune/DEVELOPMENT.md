@@ -26,6 +26,8 @@ mise run example        # Run test-prune against example solution
 mise run example-build  # Build the example solution
 mise run docs           # Generate API documentation
 mise run coverage-check # Check per-file coverage thresholds
+mise run dead-code      # Find unreachable production code
+mise run dead-code-tests # Find unreachable test code
 ```
 
 ## Project Structure

@@ -18,21 +18,27 @@ type Command =
     | Index
     | Run
     | Status
-    | DeadCodeCmd of entryPatterns: string list
+    | DeadCodeCmd of entryPatterns: string list * includeTests: bool
     | Help
 
 let defaultEntryPatterns =
     [ "*.main"; "*.Program.*"; "*.Routes.*"; "*.Scheduler.*" ]
 
-let rec private parseEntryFlags (args: string list) (acc: string list) =
+let rec private parseDeadCodeFlags (args: string list) (acc: string list) (includeTests: bool) =
     match args with
-    | "--entry" :: pattern :: rest -> parseEntryFlags rest (pattern :: acc)
-    | [] -> Ok(acc |> List.rev)
+    | "--entry" :: pattern :: rest -> parseDeadCodeFlags rest (pattern :: acc) includeTests
+    | "--include-tests" :: rest -> parseDeadCodeFlags rest acc true
+    | [] -> Ok(acc |> List.rev, includeTests)
     | unknown :: _ -> Error $"Unknown flag: %s{unknown}"
 
-type ParsedCommand = { Command: Command; RepoRoot: string option }
+type ParsedCommand =
+    { Command: Command
+      RepoRoot: string option }
 
-let rec private parseGlobalFlags (args: string list) (repoRoot: string option) : Result<string list * string option, string> =
+let rec private parseGlobalFlags
+    (args: string list)
+    (repoRoot: string option)
+    : Result<string list * string option, string> =
     match args with
     | "--repo" :: path :: rest -> parseGlobalFlags rest (Some path)
     | _ -> Ok(args, repoRoot)
@@ -48,9 +54,9 @@ let parseArgs (args: string array) : Result<ParsedCommand, string> =
             | [ "run" ] -> Ok Run
             | [ "status" ] -> Ok Status
             | "dead-code" :: rest ->
-                match parseEntryFlags rest [] with
-                | Ok [] -> Ok(DeadCodeCmd defaultEntryPatterns)
-                | Ok patterns -> Ok(DeadCodeCmd patterns)
+                match parseDeadCodeFlags rest [] false with
+                | Ok([], includeTests) -> Ok(DeadCodeCmd(defaultEntryPatterns, includeTests))
+                | Ok(patterns, includeTests) -> Ok(DeadCodeCmd(patterns, includeTests))
                 | Error msg -> Error msg
             | [ "help" ]
             | [ "--help" ]
@@ -75,8 +81,9 @@ let showHelp () =
     printfn "  help       Show this help message"
     printfn ""
     printfn "dead-code options:"
-    printfn "  --entry <pattern>  Add entry point pattern (repeatable)"
-    printfn "                     Default: *.main, *.Program.*, *.Routes.*, *.Scheduler.*"
+    printfn "  --entry <pattern>   Add entry point pattern (repeatable)"
+    printfn "                      Default: *.main, *.Program.*, *.Routes.*, *.Scheduler.*"
+    printfn "  --include-tests     Include symbols from test files in dead code report"
 
 /// Walk up from startDir looking for .jj or .git directory.
 let findRepoRoot (startDir: string) : string option =
@@ -212,7 +219,8 @@ let runIndexWith
                     eprintfn $"  Error parsing %s{fsprojPath}: %s{ex.Message}"
                     None)
 
-        let reindexedProjects = System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
+        let reindexedProjects =
+            System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
 
         let projectPathSet = projectInfos |> List.map (fun (p, _, _) -> p) |> Set.ofList
 
@@ -223,15 +231,12 @@ let runIndexWith
                 let ready, blocked =
                     remaining
                     |> List.partition (fun (_, _, refs) ->
-                        refs
-                        |> List.filter projectPathSet.Contains
-                        |> List.forall processedSet.Contains)
+                        refs |> List.filter projectPathSet.Contains |> List.forall processedSet.Contains)
 
                 if ready.IsEmpty then
                     [ remaining ]
                 else
-                    let newSet =
-                        ready |> List.fold (fun s (p, _, _) -> Set.add p s) processedSet
+                    let newSet = ready |> List.fold (fun s (p, _, _) -> Set.add p s) processedSet
 
                     ready :: topoLevels blocked newSet
 
@@ -254,9 +259,7 @@ let runIndexWith
                     let projOptions = lazy (getOptions checker fsprojPath)
 
                     let projSnapshot =
-                        lazy
-                            (createProjectSnapshot (projOptions.Force())
-                             |> Async.RunSynchronously)
+                        lazy (createProjectSnapshot (projOptions.Force()) |> Async.RunSynchronously)
 
                     let mutable analyzedFiles = 0
                     let mutable firstChangedIndex = None
@@ -267,8 +270,7 @@ let runIndexWith
                             if not (File.Exists(sourceFile)) then
                                 None
                             else
-                                let relPath =
-                                    Path.GetRelativePath(repoRoot, sourceFile).Replace('\\', '/')
+                                let relPath = Path.GetRelativePath(repoRoot, sourceFile).Replace('\\', '/')
 
                                 let fileKey = computeFileKey sourceFile
 
@@ -294,11 +296,7 @@ let runIndexWith
                                     let source = File.ReadAllText(sourceFile)
 
                                     match
-                                        analyzeSourceWithSnapshot
-                                            checker
-                                            sourceFile
-                                            source
-                                            (projSnapshot.Force())
+                                        analyzeSourceWithSnapshot checker sourceFile source (projSnapshot.Force())
                                         |> Async.RunSynchronously
                                     with
                                     | Ok result ->
@@ -564,7 +562,7 @@ let runRunWith (getDiff: DiffProvider) (repoRoot: string) : int =
 let runRun (repoRoot: string) : int = runRunWith jjDiffProvider repoRoot
 
 /// Run the dead-code command: detect unreachable symbols from entry points.
-let runDeadCode (repoRoot: string) (entryPatterns: string list) : int =
+let runDeadCode (repoRoot: string) (entryPatterns: string list) (includeTests: bool) : int =
     let dbPath = Path.Combine(repoRoot, ".test-prune.db")
 
     if not (File.Exists(dbPath)) then
@@ -572,7 +570,7 @@ let runDeadCode (repoRoot: string) (entryPatterns: string list) : int =
         1
     else
         let db = Database.create dbPath
-        let result = findDeadCode db entryPatterns
+        let result = findDeadCode db entryPatterns includeTests
 
         printfn "Dead code analysis:"
         printfn $"  Total symbols: %d{result.TotalSymbols}"
@@ -611,7 +609,7 @@ let runCommand (parsed: ParsedCommand) : int =
     | Index -> runIndex repoRoot
     | Run -> runRun repoRoot
     | Status -> runStatus repoRoot
-    | DeadCodeCmd patterns -> runDeadCode repoRoot patterns
+    | DeadCodeCmd(patterns, includeTests) -> runDeadCode repoRoot patterns includeTests
     | Help ->
         showHelp ()
         0

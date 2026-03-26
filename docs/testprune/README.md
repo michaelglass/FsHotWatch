@@ -122,8 +122,16 @@ The same dependency graph can find code that's never reached from your
 entry points:
 
 ```fsharp
-let result = findDeadCode db [ "*.main"; "*.Program.*" ]
+let result = findDeadCode db [ "*.main"; "*.Program.*" ] false
 // result.UnreachableSymbols — functions nothing calls
+```
+
+By default, symbols in test files are excluded from the report. Pass
+`true` for `includeTests` to find dead code in your test suite too
+(e.g. unused test helpers):
+
+```fsharp
+let result = findDeadCode db [ "Tests.MyTests.*" ] true
 ```
 
 ## How it works
@@ -172,7 +180,8 @@ If you just want to try it out without writing code:
 test-prune index       # Build the dependency graph
 test-prune run         # Run only affected tests
 test-prune status      # Show what would run (dry-run)
-test-prune dead-code   # Find unreachable code
+test-prune dead-code   # Find unreachable production code
+test-prune dead-code --include-tests  # Include test files in report
 ```
 
 ## Design choices

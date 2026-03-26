@@ -516,3 +516,20 @@ type Counter() =
             |> List.tryFind (fun s -> s.FullName.EndsWith("Prop", StringComparison.Ordinal) && s.Kind = Property)
 
         test <@ propSym.IsSome @>
+
+let analyzeRaw source =
+    let fileName = "/tmp/AstAnalyzerTest.fsx"
+    let options = getScriptOptions checker fileName source |> Async.RunSynchronously
+    analyzeSource checker fileName source options |> Async.RunSynchronously
+
+module ``Parse error handling`` =
+
+    [<Fact>]
+    let ``returns Error for source with parse errors`` () =
+        let result = analyzeRaw "let let let = ="
+
+        test <@ Result.isError result @>
+
+        match result with
+        | Error msg -> test <@ msg.StartsWith("Parse errors:", StringComparison.Ordinal) @>
+        | Ok _ -> failwith "expected error"

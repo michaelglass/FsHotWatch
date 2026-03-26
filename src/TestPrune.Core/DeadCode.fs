@@ -29,7 +29,7 @@ let private matchesPattern (pattern: string) (name: string) =
     | false, false -> name = pattern
 
 /// Find symbols that are not reachable from the given entry point patterns.
-let findDeadCode (db: Database) (entryPointPatterns: string list) : DeadCodeResult =
+let findDeadCode (db: Database) (entryPointPatterns: string list) (includeTests: bool) : DeadCodeResult =
     let allSymbols = db.GetAllSymbols()
     let allNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
 
@@ -60,8 +60,29 @@ let findDeadCode (db: Database) (entryPointPatterns: string list) : DeadCodeResu
             && not (testMethodNames |> Set.contains s.FullName)
             && s.Kind <> Module
             && s.Kind <> DuCase
-            && not (s.SourceFile.StartsWith("tests/", StringComparison.Ordinal)))
+            && (includeTests
+                || not (s.SourceFile.StartsWith("tests/", StringComparison.Ordinal))))
+
+    // Filter out local bindings and parameters — symbols without a dot in their
+    // name are locals that aren't independently actionable. Also filter symbols
+    // whose line range is contained within another symbol's range (for cases where
+    // full body ranges are available).
+    let isLocal (s: SymbolInfo) = not (s.FullName.Contains('.'))
+
+    let isContainedByAnother (s: SymbolInfo) =
+        allSymbols
+        |> List.exists (fun parent ->
+            parent.Kind <> Module
+            && parent.Kind <> DuCase
+            && parent.SourceFile = s.SourceFile
+            && parent.LineStart <= s.LineStart
+            && parent.LineEnd >= s.LineEnd
+            && (parent.LineStart <> s.LineStart || parent.LineEnd <> s.LineEnd))
+
+    let shallowest =
+        unreachableSymbols
+        |> List.filter (fun s -> not (isLocal s) && not (isContainedByAnother s))
 
     { TotalSymbols = allNames.Count
       ReachableSymbols = reachable.Count
-      UnreachableSymbols = unreachableSymbols }
+      UnreachableSymbols = shallowest }

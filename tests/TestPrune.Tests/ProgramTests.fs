@@ -24,39 +24,43 @@ module ``parseArgs`` =
     let ``empty args returns Help`` () = test <@ cmd [||] = Ok Help @>
 
     [<Fact>]
-    let ``index command`` () =
-        test <@ cmd [| "index" |] = Ok Index @>
+    let ``index command`` () = test <@ cmd [| "index" |] = Ok Index @>
 
     [<Fact>]
-    let ``run command`` () =
-        test <@ cmd [| "run" |] = Ok Run @>
+    let ``run command`` () = test <@ cmd [| "run" |] = Ok Run @>
 
     [<Fact>]
     let ``status command`` () =
         test <@ cmd [| "status" |] = Ok Status @>
 
     [<Fact>]
-    let ``help command`` () =
-        test <@ cmd [| "help" |] = Ok Help @>
+    let ``help command`` () = test <@ cmd [| "help" |] = Ok Help @>
 
     [<Fact>]
-    let ``--help flag`` () =
-        test <@ cmd [| "--help" |] = Ok Help @>
+    let ``--help flag`` () = test <@ cmd [| "--help" |] = Ok Help @>
 
     [<Fact>]
-    let ``-h flag`` () =
-        test <@ cmd [| "-h" |] = Ok Help @>
+    let ``-h flag`` () = test <@ cmd [| "-h" |] = Ok Help @>
 
     [<Fact>]
     let ``dead-code command with defaults`` () =
-        test <@ cmd [| "dead-code" |] = Ok(DeadCodeCmd defaultEntryPatterns) @>
+        test <@ cmd [| "dead-code" |] = Ok(DeadCodeCmd(defaultEntryPatterns, false)) @>
 
     [<Fact>]
     let ``dead-code command with custom entry patterns`` () =
-        let result =
-            cmd [| "dead-code"; "--entry"; "*.main"; "--entry"; "*.Routes.*" |]
+        let result = cmd [| "dead-code"; "--entry"; "*.main"; "--entry"; "*.Routes.*" |]
 
-        test <@ result = Ok(DeadCodeCmd [ "*.main"; "*.Routes.*" ]) @>
+        test <@ result = Ok(DeadCodeCmd([ "*.main"; "*.Routes.*" ], false)) @>
+
+    [<Fact>]
+    let ``dead-code command with --include-tests`` () =
+        test <@ cmd [| "dead-code"; "--include-tests" |] = Ok(DeadCodeCmd(defaultEntryPatterns, true)) @>
+
+    [<Fact>]
+    let ``dead-code command with --entry and --include-tests`` () =
+        let result = cmd [| "dead-code"; "--entry"; "*.main"; "--include-tests" |]
+
+        test <@ result = Ok(DeadCodeCmd([ "*.main" ], true)) @>
 
     [<Fact>]
     let ``dead-code command with unknown flag returns Error`` () =
@@ -71,7 +75,13 @@ module ``parseArgs`` =
     [<Fact>]
     let ``--repo flag sets RepoRoot`` () =
         let result = parseArgs [| "--repo"; "/some/path"; "index" |]
-        test <@ result = Ok { Command = Index; RepoRoot = Some "/some/path" } @>
+
+        test
+            <@
+                result = Ok
+                    { Command = Index
+                      RepoRoot = Some "/some/path" }
+            @>
 
     [<Fact>]
     let ``no --repo flag leaves RepoRoot as None`` () =
@@ -296,7 +306,7 @@ module ``runDeadCode`` =
         Directory.CreateDirectory(tmpDir) |> ignore
 
         try
-            test <@ runDeadCode tmpDir [ "*.main" ] = 1 @>
+            test <@ runDeadCode tmpDir [ "*.main" ] false = 1 @>
         finally
             Directory.Delete(tmpDir, true)
 
@@ -311,7 +321,7 @@ module ``runDeadCode`` =
         Console.SetOut(sw)
 
         try
-            test <@ runDeadCode tmpDir [ "*.main" ] = 0 @>
+            test <@ runDeadCode tmpDir [ "*.main" ] false = 0 @>
         finally
             Console.SetOut(oldOut)
             Directory.Delete(tmpDir, true)
@@ -570,7 +580,10 @@ module ``runIndexWith`` =
 
             let dbPath = Path.Combine(tmpDir, ".test-prune.db")
             let db = Database.create dbPath
-            let relPath = Path.GetRelativePath(tmpDir, Path.Combine(srcDir, "Lib.fs")).Replace('\\', '/')
+
+            let relPath =
+                Path.GetRelativePath(tmpDir, Path.Combine(srcDir, "Lib.fs")).Replace('\\', '/')
+
             let originalFileKey = db.GetFileKey(relPath)
             test <@ originalFileKey.IsSome @>
 

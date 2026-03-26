@@ -11,3 +11,6 @@ let factorial n =
         | n -> loop (acc * n) (n - 1)
 
     loop 1 n
+
+/// This function is not used by any consumer — dead code.
+let subtract x y = x - y

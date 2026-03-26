@@ -216,7 +216,10 @@ let private hashSourceLines (source: string) (startLine: int) (endLine: int) : s
     let end' = min lines.Length endLine
     let slice = lines[start .. end' - 1]
     let content = String.concat "\n" slice
-    let bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content))
+
+    let bytes =
+        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content))
+
     System.Convert.ToHexStringLower(bytes)
 
 let private extractResults
@@ -339,8 +342,7 @@ let analyzeSourceWithSnapshot
     (projectSnapshot: FSharpProjectSnapshot)
     =
     async {
-        let! parseResults, checkAnswer =
-            checker.ParseAndCheckFileInProject(sourceFileName, projectSnapshot)
+        let! parseResults, checkAnswer = checker.ParseAndCheckFileInProject(sourceFileName, projectSnapshot)
 
         return extractResults sourceFileName source parseResults checkAnswer
     }

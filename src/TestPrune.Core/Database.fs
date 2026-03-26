@@ -448,18 +448,14 @@ type Database(dbPath: string) =
 
         use reader = cmd.ExecuteReader()
 
-        if reader.Read() then
-            Some(reader.GetString(0))
-        else
-            None
+        if reader.Read() then Some(reader.GetString(0)) else None
 
     /// Store a cache key for a project (insert or update).
     member _.SetProjectKey(projectName: string, key: string) =
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()
 
-        cmd.CommandText <-
-            "INSERT OR REPLACE INTO project_keys (project_name, key) VALUES (@projectName, @key)"
+        cmd.CommandText <- "INSERT OR REPLACE INTO project_keys (project_name, key) VALUES (@projectName, @key)"
 
         cmd.Parameters.AddWithValue("@projectName", projectName) |> ignore
         cmd.Parameters.AddWithValue("@key", key) |> ignore
@@ -483,18 +479,14 @@ type Database(dbPath: string) =
 
         use reader = cmd.ExecuteReader()
 
-        if reader.Read() then
-            Some(reader.GetString(0))
-        else
-            None
+        if reader.Read() then Some(reader.GetString(0)) else None
 
     /// Store a cache key for a source file (insert or update).
     member _.SetFileKey(sourceFile: string, key: string) =
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()
 
-        cmd.CommandText <-
-            "INSERT OR REPLACE INTO file_keys (source_file, key) VALUES (@sourceFile, @key)"
+        cmd.CommandText <- "INSERT OR REPLACE INTO file_keys (source_file, key) VALUES (@sourceFile, @key)"
 
         cmd.Parameters.AddWithValue("@sourceFile", sourceFile) |> ignore
         cmd.Parameters.AddWithValue("@key", key) |> ignore

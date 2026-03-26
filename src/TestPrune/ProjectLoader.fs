@@ -51,16 +51,16 @@ let getProjectOptions (_checker: FSharpChecker) (fsprojPath: string) : FSharpPro
     let project = Path.GetFullPath fsprojPath
     let tp = toolsPath.Value
 
-    let opts =
+    let allLoaded, opts =
         lock msbuildLock (fun () ->
             let loader = WorkspaceLoader.Create(tp)
+            let allLoaded = loader.LoadProjects [ project ] |> Seq.toList
 
-            let loaded =
-                loader.LoadProjects [ project ]
-                |> Seq.tryFind (fun p -> p.ProjectFileName = project)
+            let projOpts =
+                allLoaded
+                |> List.tryFind (fun p -> p.ProjectFileName = project)
+                |> Option.defaultWith (fun () -> failwith $"Ionide.ProjInfo failed to load project: %s{project}")
 
-            match loaded with
-            | Some projOpts -> projOpts
-            | None -> failwith $"Ionide.ProjInfo failed to load project: %s{project}")
+            allLoaded, projOpts)
 
-    Ionide.ProjInfo.FCS.mapToFSharpProjectOptions opts [||]
+    Ionide.ProjInfo.FCS.mapToFSharpProjectOptions opts allLoaded

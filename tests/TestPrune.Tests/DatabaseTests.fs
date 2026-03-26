@@ -440,6 +440,38 @@ module ``Route handler round-trip`` =
             let files = db.GetAllHandlerSourceFiles()
             test <@ files = Set.empty @>)
 
+module ``Empty database queries`` =
+
+    [<Fact>]
+    let ``GetAllSymbols returns empty on fresh database`` () =
+        withDb (fun db ->
+            let symbols = db.GetAllSymbols()
+            test <@ symbols |> List.isEmpty @>)
+
+    [<Fact>]
+    let ``GetTestMethodSymbolNames returns empty on fresh database`` () =
+        withDb (fun db ->
+            let names = db.GetTestMethodSymbolNames()
+            test <@ names = Set.empty @>)
+
+    [<Fact>]
+    let ``GetReachableSymbols with non-empty roots on empty database returns empty`` () =
+        withDb (fun db ->
+            let reachable = db.GetReachableSymbols([ "nonexistent" ])
+            test <@ reachable = Set.empty @>)
+
+    [<Fact>]
+    let ``GetAllRouteHandlers returns empty on fresh database`` () =
+        withDb (fun db ->
+            let handlers = db.GetAllRouteHandlers()
+            test <@ handlers |> List.isEmpty @>)
+
+    [<Fact>]
+    let ``GetAllHandlerSourceFiles returns empty on fresh database`` () =
+        withDb (fun db ->
+            let files = db.GetAllHandlerSourceFiles()
+            test <@ files = Set.empty @>)
+
 module ``stringToSymbolKind fallback`` =
 
     [<Fact>]

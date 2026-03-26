@@ -7,6 +7,7 @@ open Swensen.Unquote
 open FSharp.Compiler.CodeAnalysis
 open TestPrune.AstAnalyzer
 open TestPrune.Database
+open TestPrune.DeadCode
 open TestPrune.SymbolDiff
 open TestPrune.ImpactAnalysis
 
@@ -331,3 +332,144 @@ let f x = x
             match result with
             | RunSubset tests -> test <@ tests |> List.isEmpty @>
             | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{reason}")
+
+module ``Dead code — full pipeline`` =
+
+    [<Fact>]
+    let ``unreachable function detected from real FCS analysis`` () =
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+let usedFunc x = x + 1
+let main () = usedFunc 5 |> ignore
+let deadFunc x = x * 2
+"""
+
+            let result = analyze source
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = [] }
+
+            db.RebuildForProject("MyProject", analysis)
+
+            let deadResult = findDeadCode db [ "*.main" ] false
+
+            let deadNames = deadResult.UnreachableSymbols |> List.map (fun s -> s.FullName)
+
+            test
+                <@
+                    deadNames
+                    |> List.exists (fun n -> n.EndsWith("deadFunc", StringComparison.Ordinal))
+                @>
+
+            test
+                <@
+                    deadNames
+                    |> List.exists (fun n -> n.EndsWith("usedFunc", StringComparison.Ordinal))
+                    |> not
+                @>
+
+            test
+                <@
+                    deadNames
+                    |> List.exists (fun n -> n.EndsWith("main", StringComparison.Ordinal))
+                    |> not
+                @>)
+
+    [<Fact>]
+    let ``transitive reachability keeps deep dependencies alive`` () =
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+let baseHelper x = x + 1
+let midHelper x = baseHelper x
+let topFunc () = midHelper 5 |> ignore
+let orphan x = x - 1
+"""
+
+            let result = analyze source
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = [] }
+
+            db.RebuildForProject("MyProject", analysis)
+
+            let deadResult = findDeadCode db [ "*.topFunc" ] false
+
+            let deadNames = deadResult.UnreachableSymbols |> List.map (fun s -> s.FullName)
+
+            // baseHelper and midHelper are transitively reachable from topFunc
+            test
+                <@
+                    deadNames
+                    |> List.exists (fun n -> n.EndsWith("baseHelper", StringComparison.Ordinal))
+                    |> not
+                @>
+
+            test
+                <@
+                    deadNames
+                    |> List.exists (fun n -> n.EndsWith("midHelper", StringComparison.Ordinal))
+                    |> not
+                @>
+            // orphan is not reachable
+            test
+                <@
+                    deadNames
+                    |> List.exists (fun n -> n.EndsWith("orphan", StringComparison.Ordinal))
+                @>)
+
+    [<Fact>]
+    let ``DU cases are excluded from dead code report`` () =
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+type Shape =
+    | Circle of float
+    | Square of float
+
+let area (s: Shape) =
+    match s with
+    | Circle r -> System.Math.PI * r * r
+    | Square s -> s * s
+
+let main () = area (Circle 1.0) |> ignore
+"""
+
+            let result = analyze source
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = [] }
+
+            db.RebuildForProject("MyProject", analysis)
+
+            let deadResult = findDeadCode db [ "*.main" ] false
+
+            let deadNames = deadResult.UnreachableSymbols |> List.map (fun s -> s.FullName)
+
+            // DU cases should not appear in dead code
+            test
+                <@
+                    deadNames
+                    |> List.exists (fun n -> n.EndsWith("Circle", StringComparison.Ordinal))
+                    |> not
+                @>
+
+            test
+                <@
+                    deadNames
+                    |> List.exists (fun n -> n.EndsWith("Square", StringComparison.Ordinal))
+                    |> not
+                @>)
