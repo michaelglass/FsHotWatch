@@ -85,8 +85,19 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
 
             let mutable errorCount = 0
             let mutable processedCount = 0
-            // Note: errorCount and processedCount are accessed from concurrent Async.Start
-            // handlers. Use Interlocked for safe concurrent updates.
+
+            let reportCompleted () =
+                let currentDiags = Volatile.Read(&diagnosticsByFile)
+
+                if Volatile.Read(&errorCount) > 0 then
+                    ctx.ReportStatus(
+                        Completed(
+                            box $"analyzed %d{currentDiags.Count} files, %d{errorCount} errors",
+                            DateTime.UtcNow
+                        )
+                    )
+                else
+                    ctx.ReportStatus(Completed(box currentDiags, DateTime.UtcNow))
 
             ctx.OnFileChecked.Add(fun result ->
                 ctx.ReportStatus(Running(since = DateTime.UtcNow))
@@ -94,18 +105,7 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
 
                 if isNull (box result.CheckResults) then
                     Logging.warn "analyzers" $"Skipping %s{result.File} — no type check results"
-
-                    let currentDiags = Volatile.Read(&diagnosticsByFile)
-
-                    if Volatile.Read(&errorCount) > 0 then
-                        ctx.ReportStatus(
-                            Completed(
-                                box $"analyzed %d{currentDiags.Count} files, %d{errorCount} errors",
-                                DateTime.UtcNow
-                            )
-                        )
-                    else
-                        ctx.ReportStatus(Completed(box currentDiags, DateTime.UtcNow))
+                    reportCompleted ()
                 else
                     async {
                         do! semaphore.WaitAsync(cts.Token) |> Async.AwaitTask
@@ -150,30 +150,11 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                                 else
                                     ctx.ReportErrors result.File entries
 
-                                let currentDiags = Volatile.Read(&diagnosticsByFile)
-
-                                if Volatile.Read(&errorCount) > 0 then
-                                    ctx.ReportStatus(
-                                        Completed(
-                                            box $"analyzed %d{currentDiags.Count} files, %d{errorCount} errors",
-                                            DateTime.UtcNow
-                                        )
-                                    )
-                                else
-                                    ctx.ReportStatus(Completed(box currentDiags, DateTime.UtcNow))
+                                reportCompleted ()
                             with ex ->
                                 Interlocked.Increment(&errorCount) |> ignore
                                 Logging.error "analyzers" $"Error analyzing %s{result.File}: %s{ex.Message}"
-
-                                // Per-file errors don't fail the plugin — report Completed with error count
-                                let currentDiags = Volatile.Read(&diagnosticsByFile)
-
-                                ctx.ReportStatus(
-                                    Completed(
-                                        box $"analyzed %d{currentDiags.Count} files, %d{errorCount} errors",
-                                        DateTime.UtcNow
-                                    )
-                                )
+                                reportCompleted ()
                         finally
                             semaphore.Release() |> ignore
                     }
