@@ -3,6 +3,7 @@ module FsHotWatch.Cli.DaemonConfig
 open System
 open System.IO
 open System.Text.Json
+open FsHotWatch
 open FsHotWatch.Daemon
 open FsHotWatch.Events
 open FsHotWatch.Plugin
@@ -50,7 +51,7 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
     let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
 
     if not (File.Exists configPath) then
-        eprintfn "  [config] No .fs-hot-watch.json found, using defaults (build + format + lint)"
+        Logging.info "config" "No .fs-hot-watch.json found, using defaults (build + format + lint)"
         defaultConfig
     else
 
@@ -219,23 +220,23 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
                   Coverage = coverage
                   FileCommands = fileCommands }
 
-            eprintfn "  [config] Loaded .fs-hot-watch.json"
+            Logging.info "config" "Loaded .fs-hot-watch.json"
             config
         with ex ->
-            eprintfn "  [config] Failed to parse .fs-hot-watch.json: %s" ex.Message
-            eprintfn "  [config] Using defaults"
+            Logging.error "config" $"Failed to parse .fs-hot-watch.json: %s{ex.Message}"
+            Logging.info "config" "Using defaults"
             defaultConfig
 
 /// Register plugins on the daemon based on the loaded configuration.
 let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
     // Format preprocessor (runs before other plugins see the file)
     if config.Format then
-        eprintfn "  [config] Registering FormatPreprocessor"
+        Logging.info "config" "Registering FormatPreprocessor"
         daemon.RegisterPreprocessor(FsHotWatch.Fantomas.FormatCheckPlugin.FormatPreprocessor())
 
     // Lint plugin
     if config.Lint then
-        eprintfn "  [config] Registering LintPlugin"
+        Logging.info "config" "Registering LintPlugin"
         daemon.Register(FsHotWatch.Lint.LintPlugin.LintPlugin())
 
     // Analyzers plugin
@@ -251,14 +252,14 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             |> List.filter Directory.Exists
 
         if not resolvedPaths.IsEmpty then
-            eprintfn "  [config] Registering AnalyzersPlugin with %d paths" resolvedPaths.Length
+            Logging.info "config" $"Registering AnalyzersPlugin with %d{resolvedPaths.Length} paths"
             daemon.Register(FsHotWatch.Analyzers.AnalyzersPlugin.AnalyzersPlugin(resolvedPaths))
     | None -> ()
 
     // Build plugin
     match config.Build with
     | Some b ->
-        eprintfn "  [config] Registering BuildPlugin: %s %s" b.Command b.Args
+        Logging.info "config" $"Registering BuildPlugin: %s{b.Command} %s{b.Args}"
         daemon.Register(FsHotWatch.Build.BuildPlugin.BuildPlugin(command = b.Command, args = b.Args))
     | None -> ()
 
@@ -283,14 +284,14 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             match t.BeforeRun with
             | Some cmd ->
                 Some(fun () ->
-                    eprintfn "  [test-prune] Running beforeRun: %s" cmd
+                    Logging.info "test-prune" $"Running beforeRun: %s{cmd}"
                     let parts = cmd.Split(' ', 2)
                     let command = parts.[0]
                     let args = if parts.Length > 1 then parts.[1] else ""
                     let (success, output) = runProcess command args repoRoot []
 
                     if not success then
-                        eprintfn "  [test-prune] beforeRun failed:\n%s" output
+                        Logging.error "test-prune" $"beforeRun failed:\n%s{output}"
                         failwith $"beforeRun failed: %s{cmd}")
             | None -> None
 
@@ -306,7 +307,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                     $"--coverage --coverage-output-format cobertura --coverage-output \"%s{outputPath}\"")
             | None -> None
 
-        eprintfn "  [config] Registering TestPrunePlugin with %d test projects" testConfigs.Length
+        Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"
 
         let plugin =
             match beforeRun, coverageArgs with
@@ -322,7 +323,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
     // Coverage plugin (after tests)
     match config.Coverage with
     | Some cov ->
-        eprintfn "  [config] Registering CoveragePlugin: %s" cov.Directory
+        Logging.info "config" $"Registering CoveragePlugin: %s{cov.Directory}"
 
         daemon.Register(
             FsHotWatch.Coverage.CoveragePlugin.CoveragePlugin(
@@ -334,7 +335,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
 
     // File commands
     for fc in config.FileCommands do
-        eprintfn "  [config] Registering FileCommandPlugin: %s → %s %s" fc.Pattern fc.Command fc.Args
+        Logging.info "config" $"Registering FileCommandPlugin: %s{fc.Pattern} → %s{fc.Command} %s{fc.Args}"
         let pattern = fc.Pattern
 
         let fileFilter (path: string) =
