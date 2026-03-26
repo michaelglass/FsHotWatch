@@ -23,10 +23,11 @@ let setLogLevel level =
 /// Check if a given level is enabled.
 let isEnabled level = level <= logLevel
 
-/// Log a message at the given level, with a component tag.
+/// Log a message at the given level, with a component tag and timestamp.
 let log (level: LogLevel) (tag: string) (msg: string) =
     if isEnabled level then
-        eprintfn "  [%s] %s" tag msg
+        let ts = System.DateTime.UtcNow.ToString("HH:mm:ss.fff")
+        eprintfn "  [%s] %s %s" tag ts msg
 
 /// Log at Debug level (verbose only).
 let debug tag msg = log LogLevel.Debug tag msg
