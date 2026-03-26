@@ -21,24 +21,26 @@ do
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
 
-/// Poll until condition is true or timeout. Polling watcher interval is ~4s.
+/// Poll until condition is true or timeout.
 let private waitUntil (condition: unit -> bool) (timeoutMs: int) =
     let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
 
     while not (condition ()) && DateTime.UtcNow < deadline do
-        Thread.Sleep(500)
+        Thread.Sleep(100)
 
 /// Write a sentinel file and wait for the daemon to process it (proves watcher is live).
+/// Then wait for events to stabilize before returning.
 let private waitForDaemonReady (srcDir: string) (changeCount: unit -> int) =
     let sentinel = Path.Combine(srcDir, "_sentinel.fs")
     File.WriteAllText(sentinel, "module Sentinel")
     waitUntil (fun () -> changeCount () > 0) 30000
-    // Wait for the event storm to settle (create + potential delete events)
+
+    // Wait for event storm to settle (create + potential debounce events)
     let mutable lastCount = changeCount ()
     let mutable stable = 0
 
-    while stable < 2 do
-        Thread.Sleep(1000)
+    while stable < 3 do
+        Thread.Sleep(200)
         let c = changeCount ()
 
         if c = lastCount then
@@ -61,7 +63,7 @@ let ``daemon starts and stops without error`` () =
     try
         let daemon = Daemon.createWith nullChecker tmpDir
         let task = Async.StartAsTask(daemon.Run(cts.Token))
-        Thread.Sleep(500)
+        daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
         cts.Cancel()
 
         try
@@ -159,8 +161,7 @@ let ``daemon dispatches file change events to plugins`` () =
 
         let newFile = Path.Combine(tmpDir, "src", "New.fs")
         File.WriteAllText(newFile, "module New")
-        Thread.Sleep(500)
-        File.SetLastWriteTimeUtc(newFile, DateTime.UtcNow)
+        File.SetLastWriteTimeUtc(newFile, DateTime.UtcNow.AddSeconds(1.0))
         waitUntil (fun () -> receivedChanges.Length >= 1) 30000
 
         cts.Cancel()
@@ -207,10 +208,10 @@ let ``daemon debounces rapid file changes into one batch`` () =
         File.WriteAllText(fileA, "module A")
         File.WriteAllText(fileB, "module B")
         File.WriteAllText(fileC, "module C")
-        Thread.Sleep(500)
-        File.SetLastWriteTimeUtc(fileA, DateTime.UtcNow)
-        File.SetLastWriteTimeUtc(fileB, DateTime.UtcNow)
-        File.SetLastWriteTimeUtc(fileC, DateTime.UtcNow)
+        let touchTime = DateTime.UtcNow.AddSeconds(1.0)
+        File.SetLastWriteTimeUtc(fileA, touchTime)
+        File.SetLastWriteTimeUtc(fileB, touchTime)
+        File.SetLastWriteTimeUtc(fileC, touchTime)
 
         waitUntil
             (fun () ->
@@ -273,8 +274,7 @@ let ``daemon handles ProjectChanged events`` () =
 
         let projFile = Path.Combine(tmpDir, "src", "Test.fsproj")
         File.WriteAllText(projFile, "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>")
-        Thread.Sleep(500)
-        File.SetLastWriteTimeUtc(projFile, DateTime.UtcNow)
+        File.SetLastWriteTimeUtc(projFile, DateTime.UtcNow.AddSeconds(1.0))
 
         waitUntil
             (fun () ->
@@ -332,8 +332,7 @@ let ``daemon handles SolutionChanged events`` () =
 
         let slnFile = Path.Combine(tmpDir, "Test.sln")
         File.WriteAllText(slnFile, "Microsoft Visual Studio Solution File")
-        Thread.Sleep(500)
-        File.SetLastWriteTimeUtc(slnFile, DateTime.UtcNow)
+        File.SetLastWriteTimeUtc(slnFile, DateTime.UtcNow.AddSeconds(1.0))
 
         waitUntil
             (fun () ->
@@ -397,7 +396,7 @@ let ``Daemon.create creates a working daemon with real checker`` () =
         // Exercise the Daemon.create path (not createWith) which creates its own FSharpChecker
         let daemon = Daemon.create tmpDir
         let task = Async.StartAsTask(daemon.Run(cts.Token))
-        Thread.Sleep(500)
+        daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
         cts.Cancel()
 
         try
@@ -421,7 +420,7 @@ let ``daemon RunWithIpc starts and stops cleanly`` () =
     try
         let daemon = Daemon.createWith nullChecker tmpDir
         let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
-        Thread.Sleep(500)
+        daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
         cts.Cancel()
 
         try
@@ -453,7 +452,7 @@ let ``daemon RunWithIpc responds to IPC queries`` () =
         daemon.Register(plugin)
 
         let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
-        Thread.Sleep(500)
+        daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
 
         let result = FsHotWatch.Ipc.IpcClient.getStatus pipeName |> Async.RunSynchronously
         test <@ result.Contains("ipc-test") @>

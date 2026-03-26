@@ -10,13 +10,14 @@ open FsHotWatch.Build.BuildPlugin
 
 [<Fact>]
 let ``plugin has correct name`` () =
-    let plugin = BuildPlugin(command = "echo", args = "build succeeded") :> IFsHotWatchPlugin
+    let plugin =
+        BuildPlugin(command = "echo", args = "build succeeded") :> IFsHotWatchPlugin
+
     test <@ plugin.Name = "build" @>
 
 [<Fact>]
 let ``build-status command returns not run initially`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = BuildPlugin(command = "echo", args = "build succeeded")
     host.Register(plugin)
@@ -27,8 +28,7 @@ let ``build-status command returns not run initially`` () =
 
 [<Fact>]
 let ``build plugin emits BuildCompleted on successful build`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let mutable receivedBuild: BuildResult option = None
 
@@ -61,8 +61,7 @@ let ``build plugin emits BuildCompleted on successful build`` () =
 
 [<Fact>]
 let ``build-status command returns passed true after successful build`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = BuildPlugin(command = "echo", args = "build succeeded")
     host.Register(plugin)
@@ -71,12 +70,11 @@ let ``build-status command returns passed true after successful build`` () =
 
     let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
-    test <@ result.Value.Contains("\"passed\": true") @>
+    test <@ result.Value.Contains("\"status\": \"passed\"") @>
 
 [<Fact>]
-let ``build-status command returns passed false after failed build`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+let ``build-status command returns failed after failed build`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = BuildPlugin(command = "false", args = "")
     host.Register(plugin)
@@ -85,4 +83,4 @@ let ``build-status command returns passed false after failed build`` () =
 
     let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
-    test <@ result.Value.Contains("\"passed\": false") @>
+    test <@ result.Value.Contains("\"status\": \"failed\"") @>

@@ -23,8 +23,7 @@ type FormatPreprocessor() =
                         let isSignature = file.EndsWith(".fsi")
 
                         let formatted =
-                            CodeFormatter.FormatDocumentAsync(isSignature, source)
-                            |> Async.RunSynchronously
+                            CodeFormatter.FormatDocumentAsync(isSignature, source) |> Async.RunSynchronously
 
                         if formatted.Code <> source then
                             File.WriteAllText(file, formatted.Code)
@@ -59,21 +58,16 @@ type FormatCheckPlugin() =
                             let isSignature = file.EndsWith(".fsi")
 
                             let formatted =
-                                CodeFormatter.FormatDocumentAsync(isSignature, source)
-                                |> Async.RunSynchronously
+                                CodeFormatter.FormatDocumentAsync(isSignature, source) |> Async.RunSynchronously
 
                             if formatted.Code <> source then
                                 unformatted <- unformatted |> Set.add file
                             else
                                 unformatted <- unformatted |> Set.remove file
 
-                    ctx.ReportStatus(
-                        FsHotWatch.Events.Completed(box unformatted, System.DateTime.UtcNow)
-                    )
+                    ctx.ReportStatus(FsHotWatch.Events.Completed(box unformatted, System.DateTime.UtcNow))
                 with ex ->
-                    ctx.ReportStatus(
-                        FsHotWatch.Events.PluginStatus.Failed(ex.Message, System.DateTime.UtcNow)
-                    ))
+                    ctx.ReportStatus(FsHotWatch.Events.PluginStatus.Failed(ex.Message, System.DateTime.UtcNow)))
 
             ctx.RegisterCommand(
                 "unformatted",

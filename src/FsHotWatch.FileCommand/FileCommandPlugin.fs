@@ -7,13 +7,7 @@ open FsHotWatch.Plugin
 open FsHotWatch.ProcessHelper
 
 /// Runs a command when files matching a filter change.
-type FileCommandPlugin
-    (
-        name: string,
-        fileFilter: string -> bool,
-        command: string,
-        args: string
-    ) =
+type FileCommandPlugin(name: string, fileFilter: string -> bool, command: string, args: string) =
     let mutable lastResult: (bool * string) option = None
 
     interface IFsHotWatchPlugin with
@@ -41,9 +35,7 @@ type FileCommandPlugin
                         if success then
                             ctx.ReportStatus(Completed(box (Volatile.Read(&lastResult)), DateTime.UtcNow))
                         else
-                            ctx.ReportStatus(
-                                PluginStatus.Failed($"%s{name} failed", DateTime.UtcNow)
-                            )
+                            ctx.ReportStatus(PluginStatus.Failed($"%s{name} failed", DateTime.UtcNow))
                     with ex ->
                         Volatile.Write(&lastResult, Some(false, ex.Message))
                         ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow)))

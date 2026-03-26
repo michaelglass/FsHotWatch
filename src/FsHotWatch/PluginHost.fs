@@ -2,6 +2,7 @@ module FsHotWatch.PluginHost
 
 open System.Collections.Concurrent
 open FSharp.Compiler.CodeAnalysis
+open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 
@@ -13,6 +14,7 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
     let projectChecked = Event<ProjectCheckResult>()
     let testCompleted = Event<TestResults>()
 
+    let ledger = ErrorLedger()
     let commands = ConcurrentDictionary<string, CommandHandler>()
     let statuses = ConcurrentDictionary<string, PluginStatus>()
     let preprocessors = ConcurrentBag<IFsHotWatchPreprocessor>()
@@ -40,7 +42,9 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
                     statuses[plugin.Name] <- status
               RegisterCommand = fun (name, handler) -> commands[name] <- handler
               EmitBuildCompleted = fun result -> buildCompleted.Trigger(result)
-              EmitTestCompleted = fun results -> testCompleted.Trigger(results) }
+              EmitTestCompleted = fun results -> testCompleted.Trigger(results)
+              ReportErrors = fun file errors -> ledger.Report(plugin.Name, file, errors)
+              ClearErrors = fun file -> ledger.Clear(plugin.Name, file) }
 
         statuses[plugin.Name] <- Idle
 
@@ -77,6 +81,13 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
     /// Emit a build completed event to all registered plugins.
     member _.EmitBuildCompleted(result: BuildResult) = buildCompleted.Trigger(result)
 
+    /// Report errors to the ledger on behalf of a named source (e.g., "fcs").
+    member _.ReportErrors(pluginName: string, filePath: string, entries: ErrorEntry list) =
+        ledger.Report(pluginName, filePath, entries)
+
+    /// Clear errors in the ledger for a named source + file.
+    member _.ClearErrors(pluginName: string, filePath: string) = ledger.Clear(pluginName, filePath)
+
     /// Emit a file checked event to all registered plugins.
     member _.EmitFileChecked(result: FileCheckResult) = fileChecked.Trigger(result)
 
@@ -105,6 +116,18 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
     /// Get all plugin statuses as an immutable map.
     member _.GetAllStatuses() : Map<string, PluginStatus> =
         statuses |> Seq.map (fun kvp -> kvp.Key, kvp.Value) |> Map.ofSeq
+
+    /// Get all errors grouped by file path.
+    member _.GetErrors() = ledger.GetAll()
+
+    /// Get errors for a specific plugin only.
+    member _.GetErrorsByPlugin(name) = ledger.GetByPlugin(name)
+
+    /// True if any errors exist in the ledger.
+    member _.HasErrors() = ledger.HasErrors()
+
+    /// Total error count across all plugins and files.
+    member _.ErrorCount() = ledger.Count()
 
     /// Create a new PluginHost.
     static member create (checker: FSharpChecker) (repoRoot: string) = PluginHost(checker, repoRoot)

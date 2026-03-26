@@ -142,8 +142,7 @@ type ProjectGraph() =
         result |> List.rev
 
     /// Get all registered projects.
-    member _.GetAllProjects() : string list =
-        projectFiles.Keys |> Seq.toList
+    member _.GetAllProjects() : string list = projectFiles.Keys |> Seq.toList
 
     /// Topological sort of all registered projects (dependencies before dependents).
     member this.GetTopologicalOrder() : string list =
@@ -163,8 +162,7 @@ type ProjectGraph() =
                 if ready.IsEmpty then
                     List.rev sorted @ remaining
                 else
-                    let newSet =
-                        ready |> List.fold (fun s p -> Set.add p s) sortedSet
+                    let newSet = ready |> List.fold (fun s p -> Set.add p s) sortedSet
 
                     topoSort blocked (ready @ sorted) newSet
 

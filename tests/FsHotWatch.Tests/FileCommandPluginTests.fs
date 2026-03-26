@@ -10,15 +10,13 @@ open FsHotWatch.FileCommand.FileCommandPlugin
 [<Fact>]
 let ``plugin has correct name`` () =
     let plugin =
-        FileCommandPlugin("run-scripts", (fun f -> f.EndsWith(".fsx")), "echo", "hello")
-        :> IFsHotWatchPlugin
+        FileCommandPlugin("run-scripts", (fun f -> f.EndsWith(".fsx")), "echo", "hello") :> IFsHotWatchPlugin
 
     test <@ plugin.Name = "run-scripts" @>
 
 [<Fact>]
 let ``command runs when matching files change`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin =
         FileCommandPlugin("run-scripts", (fun f -> f.EndsWith(".fsx")), "echo", "hello")
@@ -39,8 +37,7 @@ let ``command runs when matching files change`` () =
 
 [<Fact>]
 let ``command does not run for non-matching files`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin =
         FileCommandPlugin("run-scripts", (fun f -> f.EndsWith(".fsx")), "echo", "hello")
@@ -55,8 +52,7 @@ let ``command does not run for non-matching files`` () =
 
 [<Fact>]
 let ``command captures stdout output`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin =
         FileCommandPlugin("echo-test", (fun _ -> true), "echo", "captured-output")
@@ -65,16 +61,14 @@ let ``command captures stdout output`` () =
 
     host.EmitFileChanged(SourceChanged [ "anything.txt" ])
 
-    let result =
-        host.RunCommand("echo-test-status", [||]) |> Async.RunSynchronously
+    let result = host.RunCommand("echo-test-status", [||]) |> Async.RunSynchronously
 
     test <@ result.IsSome @>
     test <@ result.Value.Contains("true") @>
 
 [<Fact>]
 let ``command with environment variables`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin =
         FileCommandPlugin("env-test", (fun _ -> true), "echo", "env-test-output")
@@ -96,7 +90,6 @@ let ``command with environment variables`` () =
 [<Fact>]
 let ``dispose is callable`` () =
     let plugin =
-        FileCommandPlugin("disposable", (fun _ -> true), "echo", "hello")
-        :> IFsHotWatchPlugin
+        FileCommandPlugin("disposable", (fun _ -> true), "echo", "hello") :> IFsHotWatchPlugin
 
     plugin.Dispose()

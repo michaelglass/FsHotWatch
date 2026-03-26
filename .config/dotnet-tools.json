@@ -6,19 +6,22 @@
       "version": "7.0.5",
       "commands": [
         "fantomas"
-      ]
+      ],
+      "rollForward": false
     },
     "dotnet-fsharplint": {
-      "version": "0.26.10",
+      "version": "0.26.11--date20260212-1023.git-8e20e0b",
       "commands": [
         "dotnet-fsharplint"
-      ]
+      ],
+      "rollForward": false
     },
     "fsdocs-tool": {
       "version": "21.0.0",
       "commands": [
         "fsdocs"
-      ]
+      ],
+      "rollForward": false
     }
   }
 }

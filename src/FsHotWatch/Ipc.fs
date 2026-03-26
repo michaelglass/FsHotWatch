@@ -22,7 +22,9 @@ type DaemonRpcTarget
         host: PluginHost,
         requestShutdown: unit -> unit,
         requestScan: unit -> unit,
-        getScanStatus: unit -> string
+        getScanStatus: unit -> string,
+        triggerBuild: unit -> Async<unit>,
+        formatAll: unit -> Async<string>
     ) =
 
     /// Returns a JSON string of all plugin statuses.
@@ -66,15 +68,109 @@ type DaemonRpcTarget
     /// Get current scan progress without blocking.
     member _.ScanStatus() : string = getScanStatus ()
 
+    /// Query the error ledger. If pluginFilter is empty, return all errors; otherwise filter to that plugin.
+    member _.GetErrors(pluginFilter: string) : string =
+        let allErrors =
+            if System.String.IsNullOrEmpty(pluginFilter) then
+                host.GetErrors()
+                |> Map.map (fun _file entries ->
+                    entries
+                    |> List.map (fun (plugin, e) ->
+                        {| plugin = plugin
+                           message = e.Message
+                           severity = e.Severity
+                           line = e.Line
+                           column = e.Column |}))
+            else
+                host.GetErrorsByPlugin(pluginFilter)
+                |> Map.map (fun _file entries ->
+                    entries
+                    |> List.map (fun e ->
+                        {| plugin = pluginFilter
+                           message = e.Message
+                           severity = e.Severity
+                           line = e.Line
+                           column = e.Column |}))
+
+        let count = allErrors |> Map.fold (fun acc _ entries -> acc + entries.Length) 0
+        let result = {| count = count; files = allErrors |}
+        JsonSerializer.Serialize(result)
+
+    /// Poll scan status every 200ms until scanning is complete, then return the final status.
+    member _.WaitForScan() : Task<string> =
+        task {
+            // Wait until scan has started (status leaves "idle")
+            let mutable status = getScanStatus ()
+
+            while status = "idle" do
+                do! Task.Delay(200)
+                status <- getScanStatus ()
+
+            // Then wait until scan completes
+            while status.StartsWith("scanning") do
+                do! Task.Delay(200)
+                status <- getScanStatus ()
+
+            return status
+        }
+
+    /// Poll plugin statuses until all are in a terminal state AND stable for 2 seconds.
+    member this.WaitForComplete() : Task<string> =
+        task {
+            let isTerminal (s: PluginStatus) =
+                match s with
+                | Running _ -> false
+                | _ -> true
+
+            let mutable stableFor = 0
+            let mutable iteration = 0
+
+            while stableFor < 4 do
+                let statuses = host.GetAllStatuses()
+                let allDone = statuses |> Map.forall (fun _ s -> isTerminal s)
+
+                if allDone then
+                    stableFor <- stableFor + 1
+                else
+                    let running =
+                        statuses
+                        |> Map.toList
+                        |> List.choose (fun (name, s) ->
+                            match s with
+                            | Running _ -> Some name
+                            | _ -> None)
+
+                    if iteration % 10 = 0 then
+                        eprintfn "  [wait-for-complete] Still running: %s" (String.concat ", " running)
+
+                    stableFor <- 0
+
+                iteration <- iteration + 1
+                do! Task.Delay(500)
+
+            return this.GetStatus()
+        }
+
+    /// Trigger a build by emitting SourceChanged for all registered files, then wait for completion.
+    member this.TriggerBuild() : Task<string> =
+        task {
+            do! triggerBuild () |> Async.StartAsTask
+            let! _ = this.WaitForComplete()
+            return this.GetStatus()
+        }
+
+    /// Run all preprocessors on all registered files and return a summary.
+    member _.FormatAll() : Task<string> =
+        task {
+            let! result = formatAll () |> Async.StartAsTask
+            return result
+        }
+
 /// IPC server that listens on a named pipe and exposes plugin host methods via StreamJsonRpc.
 module IpcServer =
 
     /// Accept a single connection, handle it, and clean up when done.
-    let private acceptOne
-        (pipeName: string)
-        (target: DaemonRpcTarget)
-        (ct: CancellationToken)
-        : Async<unit> =
+    let private acceptOne (pipeName: string) (target: DaemonRpcTarget) (ct: CancellationToken) : Async<unit> =
         async {
             let pipeServer =
                 new NamedPipeServerStream(
@@ -88,8 +184,7 @@ module IpcServer =
             try
                 do! pipeServer.WaitForConnectionAsync(ct) |> Async.AwaitTask
 
-                let handler =
-                    new HeaderDelimitedMessageHandler(pipeServer :> System.IO.Stream)
+                let handler = new HeaderDelimitedMessageHandler(pipeServer :> System.IO.Stream)
 
                 let rpc = new JsonRpc(handler, target)
                 rpc.StartListening()
@@ -111,10 +206,12 @@ module IpcServer =
         (cts: CancellationTokenSource)
         (onScan: unit -> unit)
         (getScanStatus: unit -> string)
+        (triggerBuild: unit -> Async<unit>)
+        (formatAll: unit -> Async<string>)
         : Async<unit> =
         async {
             let target =
-                DaemonRpcTarget(host, (fun () -> cts.Cancel()), onScan, getScanStatus)
+                DaemonRpcTarget(host, (fun () -> cts.Cancel()), onScan, getScanStatus, triggerBuild, formatAll)
 
             // Keep 3 accept tasks running at all times so clients can connect immediately
             let mutable acceptTasks: Task list = []
@@ -128,13 +225,16 @@ module IpcServer =
             while not cts.Token.IsCancellationRequested do
                 try
                     // Wait for any accept to complete
-                    let! completed =
-                        Task.WhenAny(acceptTasks |> List.toArray) |> Async.AwaitTask
+                    let! completed = Task.WhenAny(acceptTasks |> List.toArray) |> Async.AwaitTask
 
                     // Replace completed task with a new accept
                     acceptTasks <-
                         acceptTasks
-                        |> List.map (fun t -> if Object.ReferenceEquals(t, completed) then startAccept () else t)
+                        |> List.map (fun t ->
+                            if Object.ReferenceEquals(t, completed) then
+                                startAccept ()
+                            else
+                                t)
                 with
                 | :? OperationCanceledException -> ()
                 | _ -> ()
@@ -151,8 +251,7 @@ module IpcClient =
 
             do! pipeClient.ConnectAsync(5000) |> Async.AwaitTask
 
-            let handler =
-                new HeaderDelimitedMessageHandler(pipeClient :> System.IO.Stream)
+            let handler = new HeaderDelimitedMessageHandler(pipeClient :> System.IO.Stream)
 
             use rpc = new JsonRpc(handler)
             rpc.StartListening()
@@ -161,8 +260,7 @@ module IpcClient =
         }
 
     /// Get all plugin statuses as a JSON string.
-    let getStatus (pipeName: string) : Async<string> =
-        invoke pipeName "GetStatus" [||]
+    let getStatus (pipeName: string) : Async<string> = invoke pipeName "GetStatus" [||]
 
     /// Get a single plugin's status.
     let getPluginStatus (pipeName: string) (pluginName: string) : Async<string> =
@@ -173,13 +271,37 @@ module IpcClient =
         invoke pipeName "RunCommand" [| name; argsJson |]
 
     /// Shut down the daemon gracefully.
-    let shutdown (pipeName: string) : Async<string> =
-        invoke pipeName "Shutdown" [||]
+    let shutdown (pipeName: string) : Async<string> = invoke pipeName "Shutdown" [||]
 
     /// Trigger a full scan of all registered files.
-    let scan (pipeName: string) : Async<string> =
-        invoke pipeName "Scan" [||]
+    let scan (pipeName: string) : Async<string> = invoke pipeName "Scan" [||]
 
     /// Get current scan progress.
-    let scanStatus (pipeName: string) : Async<string> =
-        invoke pipeName "ScanStatus" [||]
+    let scanStatus (pipeName: string) : Async<string> = invoke pipeName "ScanStatus" [||]
+
+    /// Get errors, optionally filtered by plugin name.
+    let getErrors (pipeName: string) (pluginFilter: string) : Async<string> =
+        invoke pipeName "GetErrors" [| pluginFilter |]
+
+    /// Wait for scan to complete, then return final status.
+    let waitForScan (pipeName: string) : Async<string> = invoke pipeName "WaitForScan" [||]
+
+    /// Wait for all plugins to reach a terminal state, then return full status.
+    let waitForComplete (pipeName: string) : Async<string> = invoke pipeName "WaitForComplete" [||]
+
+    /// Trigger a build and wait for it to complete.
+    let triggerBuild (pipeName: string) : Async<string> = invoke pipeName "TriggerBuild" [||]
+
+    /// Run all preprocessors on all registered files.
+    let formatAll (pipeName: string) : Async<string> = invoke pipeName "FormatAll" [||]
+
+    /// Quick probe to check if a daemon is listening on the named pipe.
+    let isRunning (pipeName: string) : bool =
+        try
+            use pipe =
+                new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous)
+
+            pipe.ConnectAsync(500).Wait()
+            true
+        with _ ->
+            false

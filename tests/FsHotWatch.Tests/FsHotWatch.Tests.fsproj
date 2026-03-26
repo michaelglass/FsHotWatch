@@ -10,6 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="ErrorLedgerTests.fs" />
     <Compile Include="EventTests.fs" />
     <Compile Include="PluginTests.fs" />
     <Compile Include="PluginHostTests.fs" />
