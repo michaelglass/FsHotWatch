@@ -11,6 +11,12 @@ type CheckPipeline(checker: FSharpChecker) =
     let projectOptionsByFile = ConcurrentDictionary<string, FSharpProjectOptions>()
     let projectOptionsByProject = ConcurrentDictionary<string, FSharpProjectOptions>()
 
+    /// Clear all registered projects and file mappings. Call before re-discovery
+    /// to ensure deleted projects and removed files don't leave stale options.
+    member _.PrepareForRediscovery() =
+        projectOptionsByFile.Clear()
+        projectOptionsByProject.Clear()
+
     /// Register project options for a project. Maps each source file to this project's options.
     member _.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
         projectOptionsByProject[projectPath] <- options

@@ -102,3 +102,34 @@ let ``GetAffectedProjects returns empty for unknown file`` () =
     let graph = ProjectGraph()
     graph.RegisterProject("/proj/A.fsproj", [ "/proj/A.fs" ], [])
     test <@ graph.GetAffectedProjects([ "/proj/Unknown.fs" ]) = [] @>
+
+[<Fact>]
+let ``PrepareForRediscovery clears fileToProject for removed files`` () =
+    let graph = ProjectGraph()
+    graph.RegisterProject("/proj/A.fsproj", [ "/proj/A.fs"; "/proj/Old.fs" ], [])
+    graph.PrepareForRediscovery()
+    graph.RegisterProject("/proj/A.fsproj", [ "/proj/A.fs" ], [])
+    test <@ graph.GetProjectForFile("/proj/Old.fs") = None @>
+    test <@ graph.GetProjectForFile("/proj/A.fs") = Some "/proj/A.fsproj" @>
+
+[<Fact>]
+let ``PrepareForRediscovery clears deleted projects`` () =
+    let graph = ProjectGraph()
+    graph.RegisterProject("/proj/A.fsproj", [ "/proj/A.fs" ], [])
+    graph.RegisterProject("/proj/B.fsproj", [ "/proj/B.fs" ], [ "/proj/A.fsproj" ])
+    graph.PrepareForRediscovery()
+    graph.RegisterProject("/proj/A.fsproj", [ "/proj/A.fs" ], [])
+    test <@ graph.GetAllProjects() = [ "/proj/A.fsproj" ] @>
+    test <@ graph.GetProjectForFile("/proj/B.fs") = None @>
+    test <@ graph.GetDependents("/proj/A.fsproj") = [] @>
+
+[<Fact>]
+let ``PrepareForRediscovery clears stale projectDependents`` () =
+    let graph = ProjectGraph()
+    graph.RegisterProject("/proj/A.fsproj", [ "/proj/A.fs" ], [])
+    graph.RegisterProject("/proj/B.fsproj", [ "/proj/B.fs" ], [ "/proj/A.fsproj" ])
+    test <@ graph.GetDependents("/proj/A.fsproj") = [ "/proj/B.fsproj" ] @>
+    graph.PrepareForRediscovery()
+    graph.RegisterProject("/proj/A.fsproj", [ "/proj/A.fs" ], [])
+    graph.RegisterProject("/proj/B.fsproj", [ "/proj/B.fs" ], [])
+    test <@ graph.GetDependents("/proj/A.fsproj") = [] @>

@@ -12,6 +12,15 @@ type ProjectGraph() =
     let projectReferences = ConcurrentDictionary<string, string list>()
     let projectDependents = ConcurrentDictionary<string, string list>()
 
+    /// Clear all state so the next round of RegisterProject/RegisterFromFsproj calls
+    /// rebuild from scratch. Call before re-discovery to remove deleted projects,
+    /// removed files, and stale dependent relationships.
+    member _.PrepareForRediscovery() =
+        fileToProject.Clear()
+        projectFiles.Clear()
+        projectReferences.Clear()
+        projectDependents.Clear()
+
     /// Register a project with its source files and references.
     member _.RegisterProject(projectPath: string, sourceFiles: string list, references: string list) =
         let absProject = Path.GetFullPath(projectPath)
