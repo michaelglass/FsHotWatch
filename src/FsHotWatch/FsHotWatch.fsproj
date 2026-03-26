@@ -47,6 +47,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="Logging.fs" />
     <Compile Include="Events.fs" />
     <Compile Include="ProcessHelper.fs" />
     <Compile Include="ErrorLedger.fs" />

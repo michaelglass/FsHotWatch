@@ -1,8 +1,32 @@
 module FsHotWatch.Watcher
 
 open System
+open System.Collections.Concurrent
 open System.IO
+open System.Security.Cryptography
 open FsHotWatch.Events
+
+/// Track file content hashes to skip watcher events where mtime changed but content didn't.
+let private fileHashes = ConcurrentDictionary<string, byte[]>()
+
+/// Returns true if the file content actually changed since last check.
+/// Updates the stored hash on change. Returns true for new/deleted files.
+let internal hasContentChanged (path: string) =
+    try
+        if not (File.Exists(path)) then
+            fileHashes.TryRemove(path) |> ignore
+            true
+        else
+            let content = File.ReadAllBytes(path)
+            let hash = SHA256.HashData(content)
+
+            match fileHashes.TryGetValue(path) with
+            | true, previous when ReadOnlySpan(previous).SequenceEqual(ReadOnlySpan(hash)) -> false
+            | _ ->
+                fileHashes[path] <- hash
+                true
+    with _ ->
+        true
 
 /// Holds a set of FileSystemWatchers monitoring a repository for F# file changes.
 [<NoComparison; NoEquality>]
@@ -61,7 +85,10 @@ module FileWatcher =
 
                 let handle (e: FileSystemEventArgs) =
                     if isRelevantFile e.FullPath then
-                        onChange (classifyChange e.FullPath)
+                        if hasContentChanged e.FullPath then
+                            onChange (classifyChange e.FullPath)
+                        else
+                            eprintfn "  [watcher] SKIPPED (content unchanged): %s" (Path.GetFileName(e.FullPath))
 
                 w.Changed.Add(handle)
                 w.Created.Add(handle)
@@ -80,7 +107,10 @@ module FileWatcher =
 
             let handle (e: FileSystemEventArgs) =
                 if isRelevantFile e.FullPath then
-                    onChange (classifyChange e.FullPath)
+                    if hasContentChanged e.FullPath then
+                        onChange (classifyChange e.FullPath)
+                    else
+                        eprintfn "  [watcher] SKIPPED (content unchanged): %s" (Path.GetFileName(e.FullPath))
 
             w.Changed.Add(handle)
             w.Created.Add(handle)

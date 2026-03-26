@@ -9,6 +9,15 @@ open FsHotWatch.PluginHost
 open FsHotWatch.Plugin
 open FsHotWatch.Events
 
+let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
+    { Host = host
+      RequestShutdown = ignore
+      RequestScan = ignore
+      GetScanStatus = fun () -> "idle"
+      GetScanGeneration = fun () -> 0L
+      TriggerBuild = fun () -> async { return () }
+      FormatAll = fun () -> async { return "formatted 0 files" } }
+
 [<Fact>]
 let ``server responds to GetStatus`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
@@ -26,8 +35,7 @@ let ``server responds to GetStatus`` () =
 
     let serverTask =
         Async.StartAsTask(
-            IpcServer.start pipeName host cts ignore (fun () -> "idle") (fun () -> async { return () }) (fun () ->
-                async { return "formatted 0 files" })
+            IpcServer.start pipeName (defaultRpcConfig host) cts
         )
 
     Thread.Sleep(500)
@@ -62,8 +70,7 @@ let ``server responds to RunCommand`` () =
 
     let serverTask =
         Async.StartAsTask(
-            IpcServer.start pipeName host cts ignore (fun () -> "idle") (fun () -> async { return () }) (fun () ->
-                async { return "formatted 0 files" })
+            IpcServer.start pipeName (defaultRpcConfig host) cts
         )
 
     Thread.Sleep(500)
@@ -95,8 +102,7 @@ let ``GetPluginStatus returns specific plugin's status`` () =
 
     let serverTask =
         Async.StartAsTask(
-            IpcServer.start pipeName host cts ignore (fun () -> "idle") (fun () -> async { return () }) (fun () ->
-                async { return "formatted 0 files" })
+            IpcServer.start pipeName (defaultRpcConfig host) cts
         )
 
     Thread.Sleep(500)
@@ -122,8 +128,7 @@ let ``GetPluginStatus returns not found for unknown plugin`` () =
 
     let serverTask =
         Async.StartAsTask(
-            IpcServer.start pipeName host cts ignore (fun () -> "idle") (fun () -> async { return () }) (fun () ->
-                async { return "formatted 0 files" })
+            IpcServer.start pipeName (defaultRpcConfig host) cts
         )
 
     Thread.Sleep(500)
@@ -167,8 +172,7 @@ let ``RunCommand with plugin that returns a result`` () =
 
     let serverTask =
         Async.StartAsTask(
-            IpcServer.start pipeName host cts ignore (fun () -> "idle") (fun () -> async { return () }) (fun () ->
-                async { return "formatted 0 files" })
+            IpcServer.start pipeName (defaultRpcConfig host) cts
         )
 
     Thread.Sleep(500)
@@ -194,8 +198,7 @@ let ``RunCommand returns unknown command for non-existent command`` () =
 
     let serverTask =
         Async.StartAsTask(
-            IpcServer.start pipeName host cts ignore (fun () -> "idle") (fun () -> async { return () }) (fun () ->
-                async { return "formatted 0 files" })
+            IpcServer.start pipeName (defaultRpcConfig host) cts
         )
 
     Thread.Sleep(500)
@@ -259,8 +262,7 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
 
     let serverTask =
         Async.StartAsTask(
-            IpcServer.start pipeName host cts ignore (fun () -> "idle") (fun () -> async { return () }) (fun () ->
-                async { return "formatted 0 files" })
+            IpcServer.start pipeName (defaultRpcConfig host) cts
         )
 
     Thread.Sleep(500)
@@ -326,14 +328,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
     host.Register(p4)
 
     let target =
-        DaemonRpcTarget(
-            host,
-            ignore,
-            ignore,
-            (fun () -> "idle"),
-            (fun () -> async { return () }),
-            (fun () -> async { return "formatted 0 files" })
-        )
+        DaemonRpcTarget(defaultRpcConfig host)
 
     let json = target.GetStatus()
     test <@ json.Contains("Idle") @>
@@ -346,14 +341,7 @@ let ``DaemonRpcTarget.RunCommand returns unknown command for missing command`` (
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let target =
-        DaemonRpcTarget(
-            host,
-            ignore,
-            ignore,
-            (fun () -> "idle"),
-            (fun () -> async { return () }),
-            (fun () -> async { return "formatted 0 files" })
-        )
+        DaemonRpcTarget(defaultRpcConfig host)
 
     let result =
         target.RunCommand("nonexistent", "")
@@ -385,14 +373,7 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
     host.Register(plugin)
 
     let target =
-        DaemonRpcTarget(
-            host,
-            ignore,
-            ignore,
-            (fun () -> "idle"),
-            (fun () -> async { return () }),
-            (fun () -> async { return "formatted 0 files" })
-        )
+        DaemonRpcTarget(defaultRpcConfig host)
 
     // Test with empty args
     let result1 =
@@ -431,14 +412,7 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
     host.Register(p2)
 
     let target =
-        DaemonRpcTarget(
-            host,
-            ignore,
-            ignore,
-            (fun () -> "idle"),
-            (fun () -> async { return () }),
-            (fun () -> async { return "formatted 0 files" })
-        )
+        DaemonRpcTarget(defaultRpcConfig host)
 
     test <@ target.GetPluginStatus("idle-test") = "Idle" @>
     test <@ (target.GetPluginStatus("failed-test")).Contains("bad") @>
