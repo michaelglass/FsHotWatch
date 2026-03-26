@@ -3,6 +3,7 @@ module FsHotWatch.Tests.PluginHostTests
 open System
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
@@ -205,8 +206,7 @@ let ``preprocessor modified files are returned`` () =
         { new IFsHotWatchPreprocessor with
             member _.Name = "modifier"
 
-            member _.Process (_changedFiles: string list) (_repoRoot: string) =
-                [ "src/Formatted.fs"; "src/Other.fs" ]
+            member _.Process (_changedFiles: string list) (_repoRoot: string) = [ "src/Formatted.fs"; "src/Other.fs" ]
 
             member _.Dispose() = () }
 
@@ -269,3 +269,78 @@ let ``multiple plugins receive the same event`` () =
     test <@ received1 @>
     test <@ received2 @>
     test <@ received3 @>
+
+[<Fact>]
+let ``plugin can report and query errors via host`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let plugin =
+        { new IFsHotWatchPlugin with
+            member _.Name = "error-reporter"
+
+            member _.Initialize(ctx) =
+                ctx.ReportErrors
+                    "/src/A.fs"
+                    [ { Message = "bad"
+                        Severity = "warning"
+                        Line = 1
+                        Column = 0 } ]
+
+            member _.Dispose() = () }
+
+    host.Register(plugin)
+    test <@ host.HasErrors() @>
+    test <@ host.ErrorCount() = 1 @>
+    let errors = host.GetErrors()
+    test <@ errors.ContainsKey "/src/A.fs" @>
+
+[<Fact>]
+let ``plugin ClearErrors removes errors from ledger`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let mutable clearFn: (string -> unit) option = None
+
+    let plugin =
+        { new IFsHotWatchPlugin with
+            member _.Name = "clear-test"
+
+            member _.Initialize(ctx) =
+                ctx.ReportErrors
+                    "/src/B.fs"
+                    [ { Message = "oops"
+                        Severity = "error"
+                        Line = 5
+                        Column = 0 } ]
+
+                clearFn <- Some ctx.ClearErrors
+
+            member _.Dispose() = () }
+
+    host.Register(plugin)
+    test <@ host.HasErrors() @>
+    clearFn.Value "/src/B.fs"
+    test <@ not (host.HasErrors()) @>
+
+[<Fact>]
+let ``GetErrorsByPlugin returns only that plugin's errors`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let makeErrorPlugin name file msg =
+        { new IFsHotWatchPlugin with
+            member _.Name = name
+
+            member _.Initialize(ctx) =
+                ctx.ReportErrors
+                    file
+                    [ { Message = msg
+                        Severity = "error"
+                        Line = 1
+                        Column = 0 } ]
+
+            member _.Dispose() = () }
+
+    host.Register(makeErrorPlugin "pluginA" "/src/A.fs" "from A")
+    host.Register(makeErrorPlugin "pluginB" "/src/B.fs" "from B")
+    test <@ host.ErrorCount() = 2 @>
+    let aErrors = host.GetErrorsByPlugin("pluginA")
+    test <@ aErrors.Count = 1 @>
+    test <@ aErrors.ContainsKey "/src/A.fs" @>

@@ -89,7 +89,7 @@ let private waitUntil (condition: unit -> bool) (timeoutMs: int) =
     let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
 
     while not (condition ()) && DateTime.UtcNow < deadline do
-        Thread.Sleep(500)
+        Thread.Sleep(50)
 
 [<Fact>]
 let ``watcher detects file changes in src directory`` () =
@@ -103,8 +103,7 @@ let ``watcher detects file changes in src directory`` () =
 
     let testFile = Path.Combine(srcDir, "Test.fs")
     File.WriteAllText(testFile, "module Test")
-    Thread.Sleep(500)
-    File.SetLastWriteTimeUtc(testFile, DateTime.UtcNow)
+    File.SetLastWriteTimeUtc(testFile, DateTime.UtcNow.AddSeconds(1.0))
     waitUntil (fun () -> changes.Length >= 1) 30000
     test <@ changes.Length >= 1 @>
     Directory.Delete(tmpDir, true)

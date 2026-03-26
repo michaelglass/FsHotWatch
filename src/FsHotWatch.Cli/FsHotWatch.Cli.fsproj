@@ -15,11 +15,19 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <Compile Include="DaemonConfig.fs" />
         <Compile Include="Program.fs" />
     </ItemGroup>
 
     <ItemGroup>
         <ProjectReference Include="../FsHotWatch/FsHotWatch.fsproj" />
+        <ProjectReference Include="../FsHotWatch.Build/FsHotWatch.Build.fsproj" />
+        <ProjectReference Include="../FsHotWatch.Lint/FsHotWatch.Lint.fsproj" />
+        <ProjectReference Include="../FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj" />
+        <ProjectReference Include="../FsHotWatch.Analyzers/FsHotWatch.Analyzers.fsproj" />
+        <ProjectReference Include="../FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj" />
+        <ProjectReference Include="../FsHotWatch.Coverage/FsHotWatch.Coverage.fsproj" />
+        <ProjectReference Include="../FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj" />
     </ItemGroup>
 
     <ItemGroup>

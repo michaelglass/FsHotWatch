@@ -1,0 +1,22 @@
+{
+  "build": {
+    "command": "dotnet",
+    "args": "build"
+  },
+  "format": true,
+  "lint": true,
+  "tests": {
+    "beforeRun": "dotnet build",
+    "projects": [
+      {
+        "project": "FsHotWatch.Tests",
+        "command": "dotnet",
+        "args": "run --project tests/FsHotWatch.Tests --no-build",
+        "group": "default"
+      }
+    ]
+  },
+  "coverage": {
+    "directory": "./coverage"
+  }
+}

@@ -6,6 +6,7 @@ open System.Threading
 open FSharp.Compiler.CodeAnalysis
 open Ionide.ProjInfo
 open FsHotWatch.CheckPipeline
+open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.Ipc
 open FsHotWatch.Plugin
@@ -13,12 +14,39 @@ open FsHotWatch.PluginHost
 open FsHotWatch.ProjectGraph
 open FsHotWatch.Watcher
 
+/// Extract FCS diagnostics from check results and report to the error ledger.
+let private reportFcsDiagnostics (host: PluginHost) (checkResult: Events.FileCheckResult) =
+    if not (isNull (box checkResult.CheckResults)) then
+        let diagnostics =
+            checkResult.CheckResults.Diagnostics
+            |> Array.choose (fun d ->
+                match d.Severity with
+                | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error ->
+                    Some
+                        { Message = d.Message
+                          Severity = "error"
+                          Line = d.StartLine
+                          Column = d.StartColumn }
+                | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning ->
+                    Some
+                        { Message = d.Message
+                          Severity = "warning"
+                          Line = d.StartLine
+                          Column = d.StartColumn }
+                | _ -> None)
+            |> Array.toList
+
+        if diagnostics.IsEmpty then
+            host.ClearErrors("fcs", checkResult.File)
+        else
+            host.ReportErrors("fcs", checkResult.File, diagnostics)
+
 /// Discover .fsproj files and register them with the graph and pipeline.
 /// Uses Ionide.ProjInfo for MSBuild design-time evaluation to get real
 /// assembly references, NuGet packages, and compiler flags.
 let private discoverAndRegisterProjects
     (repoRoot: string)
-    (_checker: FSharpChecker)
+    (loader: IWorkspaceLoader)
     (graph: ProjectGraph)
     (pipeline: CheckPipeline)
     =
@@ -38,32 +66,31 @@ let private discoverAndRegisterProjects
         graph.PrepareForRediscovery()
         pipeline.PrepareForRediscovery()
 
-        // Register projects in the graph (for dependency tracking via XML parse)
-        for fsproj in fsprojFiles do
-            try
-                graph.RegisterFromFsproj(fsproj) |> ignore
-            with ex ->
-                eprintfn "  [discover] Failed to parse %s: %s" (Path.GetFileName fsproj) ex.Message
-
-        // Use Ionide.ProjInfo for real MSBuild evaluation — resolves NuGet packages,
-        // project references, and compiler flags that GetProjectOptionsFromScript missed
         let sw = System.Diagnostics.Stopwatch.StartNew()
         eprintfn "  [discover] Loading project options via MSBuild evaluation..."
 
         try
-            let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
-            let loader = WorkspaceLoader.Create(toolsPath, [])
             let loaded = loader.LoadProjects(fsprojFiles) |> Seq.toList
+
+            // Register projects in the graph using Ionide-derived data (not XML parse)
+            // so source file lists match what FCS sees (handles globs, conditionals, generated files)
+            for proj in loaded do
+                let absProject = Path.GetFullPath(proj.ProjectFileName)
+                let sourceFiles = proj.SourceFiles |> List.map Path.GetFullPath
+
+                let references =
+                    proj.ReferencedProjects
+                    |> List.map (fun r -> Path.GetFullPath(r.ProjectFileName))
+
+                graph.RegisterProject(absProject, sourceFiles, references)
+
+            let fcsOptionsList = Ionide.ProjInfo.FCS.mapManyOptions loaded |> Seq.toList
             sw.Stop()
 
             eprintfn
                 "  [discover] MSBuild evaluation complete: %d projects in %.1fs"
-                loaded.Length
+                fcsOptionsList.Length
                 sw.Elapsed.TotalSeconds
-
-            // Use Ionide.ProjInfo.FCS to convert to FSharpProjectOptions with
-            // proper ReferencedProjects wiring for cross-project type resolution
-            let fcsOptionsList = Ionide.ProjInfo.FCS.mapManyOptions loaded |> Seq.toList
 
             for fcsOptions in fcsOptionsList do
                 try
@@ -71,7 +98,7 @@ let private discoverAndRegisterProjects
                     pipeline.RegisterProject(absProject, fcsOptions)
 
                     eprintfn
-                        "  [discover] Registered %s (%d files, %d refs)"
+                        "  [discover] Registered %s (%d files, %d opts)"
                         (Path.GetFileName fcsOptions.ProjectFileName)
                         fcsOptions.SourceFiles.Length
                         fcsOptions.OtherOptions.Length
@@ -102,12 +129,17 @@ type Daemon =
         Graph: ProjectGraph
         /// The repository root directory.
         RepoRoot: string
+        /// Cached MSBuild workspace loader (created once at startup to avoid
+        /// accumulating MSBuild BuildManager instances on each re-discovery).
+        WorkspaceLoader: IWorkspaceLoader
         /// Current scan progress state.
         mutable ScanState: ScanState
         /// Semaphore ensuring only one scan runs at a time.
         ScanSemaphore: SemaphoreSlim
         /// Disposes the debounce timer used for coalescing file change events.
         DisposeDebounceTimer: unit -> unit
+        /// Signalled when the daemon is ready to accept file change events.
+        Ready: ManualResetEventSlim
     }
 
     /// Register a plugin with the daemon's plugin host.
@@ -155,6 +187,8 @@ type Daemon =
                         | Some checkResult ->
                             checkedCount <- checkedCount + 1
                             this.Host.EmitFileChecked(checkResult)
+                            reportFcsDiagnostics this.Host checkResult
+
                         | None -> skippedCount <- skippedCount + 1
 
                         completed <- completed + 1
@@ -172,6 +206,7 @@ type Daemon =
     member this.Run(cancellationToken: CancellationToken) =
         async {
             use _ = this.Watcher :> System.IDisposable
+            this.Ready.Set()
 
             try
                 let tcs = System.Threading.Tasks.TaskCompletionSource<unit>()
@@ -181,11 +216,12 @@ type Daemon =
                 do! tcs.Task |> Async.AwaitTask
             finally
                 this.DisposeDebounceTimer()
+                this.Ready.Dispose()
         }
 
     /// Discover .fsproj files in src/ and tests/ and register them with the pipeline.
     member this.DiscoverAndRegisterProjects() =
-        discoverAndRegisterProjects this.RepoRoot this.Checker this.Graph this.Pipeline
+        discoverAndRegisterProjects this.RepoRoot this.WorkspaceLoader this.Graph this.Pipeline
 
     /// Format scan state as a human-readable string.
     member this.FormatScanStatus() =
@@ -206,8 +242,27 @@ type Daemon =
                 let onScan () =
                     Async.StartAsTask(this.ScanAll()) |> ignore
 
+                let triggerBuild () =
+                    async {
+                        let files = this.Pipeline.GetAllRegisteredFiles()
+
+                        if not files.IsEmpty then
+                            this.Host.EmitFileChanged(SourceChanged files)
+                    }
+
+                let formatAll () =
+                    async {
+                        let files = this.Pipeline.GetAllRegisteredFiles()
+                        let modified = this.Host.RunPreprocessors(files)
+                        return $"formatted %d{modified.Length} files"
+                    }
+
                 let ipcTask =
-                    Async.StartAsTask(IpcServer.start pipeName this.Host cts onScan this.FormatScanStatus)
+                    Async.StartAsTask(
+                        IpcServer.start pipeName this.Host cts onScan this.FormatScanStatus triggerBuild formatAll
+                    )
+
+                this.Ready.Set()
 
                 // Discover projects and perform initial full scan
                 do! this.DiscoverAndRegisterProjects()
@@ -225,6 +280,7 @@ type Daemon =
                     ()
             finally
                 this.DisposeDebounceTimer()
+                this.Ready.Dispose()
         }
 
 /// Functions for creating and managing daemons.
@@ -237,6 +293,8 @@ module Daemon =
         let host = PluginHost.create checker repoRoot
         let pipeline = CheckPipeline(checker)
         let graph = ProjectGraph()
+        let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
+        let loader = WorkspaceLoader.Create(toolsPath, [])
 
         let pendingChanges = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
         let mutable debounceTimer: System.Threading.Timer option = None
@@ -286,7 +344,7 @@ module Daemon =
                                 checker.InvalidateAll()
                                 checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
 
-                            discoverAndRegisterProjects repoRoot checker graph pipeline
+                            discoverAndRegisterProjects repoRoot loader graph pipeline
                             |> Async.RunSynchronously
 
                             eprintfn
@@ -324,7 +382,10 @@ module Daemon =
                                 let result = pipeline.CheckFile(file) |> Async.RunSynchronously
 
                                 match result with
-                                | Some checkResult -> host.EmitFileChecked(checkResult)
+                                | Some checkResult ->
+                                    host.EmitFileChecked(checkResult)
+                                    reportFcsDiagnostics host checkResult
+
                                 | None -> ()
                 finally
                     Interlocked.Exchange(&processingChanges, 0) |> ignore
@@ -381,9 +442,11 @@ module Daemon =
           Pipeline = pipeline
           Graph = graph
           RepoRoot = repoRoot
+          WorkspaceLoader = loader
           ScanState = ScanIdle
           ScanSemaphore = new SemaphoreSlim(1, 1)
-          DisposeDebounceTimer = disposeDebounceTimer }
+          DisposeDebounceTimer = disposeDebounceTimer
+          Ready = new ManualResetEventSlim(false) }
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     let create (repoRoot: string) =

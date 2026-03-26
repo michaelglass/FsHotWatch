@@ -62,3 +62,6 @@ tmp/
 
 # Project
 TODO.md
+
+# Daemon state
+.fs-hot-watch/

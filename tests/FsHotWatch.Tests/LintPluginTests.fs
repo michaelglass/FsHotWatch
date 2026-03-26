@@ -14,8 +14,7 @@ let ``plugin has correct name`` () =
 
 [<Fact>]
 let ``warnings command returns zeroes when no files checked`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = LintPlugin()
     host.Register(plugin)
@@ -27,13 +26,14 @@ let ``warnings command returns zeroes when no files checked`` () =
 
 [<Fact>]
 let ``LintPlugin with configPath sets up lint params`` () =
-    let plugin = LintPlugin(configPath = "/tmp/nonexistent-config.json") :> IFsHotWatchPlugin
+    let plugin =
+        LintPlugin(configPath = "/tmp/nonexistent-config.json") :> IFsHotWatchPlugin
+
     test <@ plugin.Name = "lint" @>
 
 [<Fact>]
 let ``lint error path sets Failed status on null check results`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = LintPlugin()
     host.Register(plugin)
@@ -47,8 +47,8 @@ let ``lint error path sets Failed status on null check results`` () =
 
     try
         host.EmitFileChecked(fakeResult)
-    with
-    | _ -> ()
+    with _ ->
+        ()
 
     let status = host.GetStatus("lint")
     test <@ status.IsSome @>
@@ -60,14 +60,15 @@ let ``lint error path sets Failed status on null check results`` () =
 
 [<Fact>]
 let ``warnings command with args passes through`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = LintPlugin()
     host.Register(plugin)
 
     // The warnings command ignores args, but verify it handles non-empty args
-    let result = host.RunCommand("warnings", [| "--verbose" |]) |> Async.RunSynchronously
+    let result =
+        host.RunCommand("warnings", [| "--verbose" |]) |> Async.RunSynchronously
+
     test <@ result.IsSome @>
     test <@ result.Value.Contains("\"files\": 0") @>
 
@@ -78,8 +79,7 @@ let ``dispose is callable`` () =
 
 [<Fact>]
 let ``lint error path with empty source triggers failure`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = LintPlugin()
     host.Register(plugin)
@@ -94,8 +94,8 @@ let ``lint error path with empty source triggers failure`` () =
 
     try
         host.EmitFileChecked(fakeResult)
-    with
-    | _ -> ()
+    with _ ->
+        ()
 
     let status = host.GetStatus("lint")
     test <@ status.IsSome @>

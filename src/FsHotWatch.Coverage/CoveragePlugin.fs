@@ -12,14 +12,16 @@ type CoverageThreshold = { Line: float; Branch: float }
 
 /// Coverage result for a single project.
 type CoverageResult =
-    { /// The project name derived from the coverage report directory.
-      Project: string
-      /// Line coverage percentage (0-100).
-      LineRate: float
-      /// Branch coverage percentage (0-100).
-      BranchRate: float
-      /// Whether both line and branch rates meet the configured threshold.
-      MeetsThreshold: bool }
+    {
+        /// The project name derived from the coverage report directory.
+        Project: string
+        /// Line coverage percentage (0-100).
+        LineRate: float
+        /// Branch coverage percentage (0-100).
+        BranchRate: float
+        /// Whether both line and branch rates meet the configured threshold.
+        MeetsThreshold: bool
+    }
 
 /// Checks coverage thresholds after tests complete.
 /// Reads Cobertura XML reports from coverageDir and compares against thresholds.
@@ -99,14 +101,12 @@ type CoveragePlugin(coverageDir: string, ?thresholdsFile: string, ?afterCheck: u
                             |> List.choose (fun xmlPath ->
                                 match parseCoberturaXml xmlPath with
                                 | Some(lineRate, branchRate) ->
-                                    let projectName =
-                                        Path.GetDirectoryName(xmlPath) |> Path.GetFileName
+                                    let projectName = Path.GetDirectoryName(xmlPath) |> Path.GetFileName
 
                                     let meetsThreshold =
                                         match thresholds |> Map.tryFind projectName with
                                         | Some threshold ->
-                                            lineRate >= threshold.Line
-                                            && branchRate >= threshold.Branch
+                                            lineRate >= threshold.Line && branchRate >= threshold.Branch
                                         | None -> true
 
                                     Some
@@ -120,14 +120,10 @@ type CoveragePlugin(coverageDir: string, ?thresholdsFile: string, ?afterCheck: u
 
                         if coverageFiles.IsEmpty then
                             ctx.ReportStatus(
-                                PluginStatus.Failed(
-                                    $"No coverage files found in %s{coverageDir}",
-                                    DateTime.UtcNow
-                                )
+                                PluginStatus.Failed($"No coverage files found in %s{coverageDir}", DateTime.UtcNow)
                             )
                         else
-                            let allPass =
-                                results |> List.forall (fun r -> r.MeetsThreshold)
+                            let allPass = results |> List.forall (fun r -> r.MeetsThreshold)
 
                             match afterCheck with
                             | Some hook -> hook ()
@@ -144,10 +140,7 @@ type CoveragePlugin(coverageDir: string, ?thresholdsFile: string, ?afterCheck: u
                                     |> String.concat "; "
 
                                 ctx.ReportStatus(
-                                    PluginStatus.Failed(
-                                        $"Coverage below threshold: %s{failures}",
-                                        DateTime.UtcNow
-                                    )
+                                    PluginStatus.Failed($"Coverage below threshold: %s{failures}", DateTime.UtcNow)
                                 )
                     with ex ->
                         ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow)))

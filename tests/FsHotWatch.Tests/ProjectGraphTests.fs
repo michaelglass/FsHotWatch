@@ -34,7 +34,7 @@ let ``GetDependents returns reverse references`` () =
     graph.RegisterProject("/proj/A.fsproj", [ "/proj/A.fs" ], [])
     graph.RegisterProject("/proj/B.fsproj", [ "/proj/B.fs" ], [ "/proj/A.fsproj" ])
     test <@ graph.GetDependents("/proj/A.fsproj") = [ "/proj/B.fsproj" ] @>
-    test <@ graph.GetDependents("/proj/B.fsproj") = [] @>
+    test <@ graph.GetDependents("/proj/B.fsproj") |> List.isEmpty @>
 
 [<Fact>]
 let ``GetTransitiveDependents walks the graph`` () =
@@ -101,7 +101,7 @@ let ``RegisterFromFsproj parses real fsproj`` () =
 let ``GetAffectedProjects returns empty for unknown file`` () =
     let graph = ProjectGraph()
     graph.RegisterProject("/proj/A.fsproj", [ "/proj/A.fs" ], [])
-    test <@ graph.GetAffectedProjects([ "/proj/Unknown.fs" ]) = [] @>
+    test <@ graph.GetAffectedProjects([ "/proj/Unknown.fs" ]) |> List.isEmpty @>
 
 [<Fact>]
 let ``PrepareForRediscovery clears fileToProject for removed files`` () =
@@ -121,7 +121,7 @@ let ``PrepareForRediscovery clears deleted projects`` () =
     graph.RegisterProject("/proj/A.fsproj", [ "/proj/A.fs" ], [])
     test <@ graph.GetAllProjects() = [ "/proj/A.fsproj" ] @>
     test <@ graph.GetProjectForFile("/proj/B.fs") = None @>
-    test <@ graph.GetDependents("/proj/A.fsproj") = [] @>
+    test <@ graph.GetDependents("/proj/A.fsproj") |> List.isEmpty @>
 
 [<Fact>]
 let ``PrepareForRediscovery clears stale projectDependents`` () =
@@ -132,4 +132,4 @@ let ``PrepareForRediscovery clears stale projectDependents`` () =
     graph.PrepareForRediscovery()
     graph.RegisterProject("/proj/A.fsproj", [ "/proj/A.fs" ], [])
     graph.RegisterProject("/proj/B.fsproj", [ "/proj/B.fs" ], [])
-    test <@ graph.GetDependents("/proj/A.fsproj") = [] @>
+    test <@ graph.GetDependents("/proj/A.fsproj") |> List.isEmpty @>

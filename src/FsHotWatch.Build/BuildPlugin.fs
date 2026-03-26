@@ -1,9 +1,11 @@
 module FsHotWatch.Build.BuildPlugin
 
 open System
+open System.Text.Json
 open System.Threading
 open FsHotWatch.Events
 open FsHotWatch.Plugin
+open FsHotWatch.ErrorLedger
 open FsHotWatch.ProcessHelper
 
 /// Runs a build command when source files change and emits BuildCompleted events.
@@ -34,13 +36,31 @@ type BuildPlugin(?command: string, ?args: string) =
                             eprintfn "  [build] Build %s" (if success then "succeeded" else "FAILED")
 
                             if success then
+                                ctx.ClearErrors "<build>"
                                 ctx.EmitBuildCompleted(BuildSucceeded)
                                 ctx.ReportStatus(Completed(box (Volatile.Read(&lastResult)), DateTime.UtcNow))
                             else
+                                ctx.ReportErrors
+                                    "<build>"
+                                    [ { Message = output
+                                        Severity = "error"
+                                        Line = 0
+                                        Column = 0 } ]
+
                                 ctx.EmitBuildCompleted(BuildFailed [ output ])
-                                ctx.ReportStatus(Failed("Build failed", DateTime.UtcNow))
+                                let lines = output.Split('\n')
+                                let summary = lines |> Array.skip (max 0 (lines.Length - 5)) |> String.concat "\n"
+                                ctx.ReportStatus(Failed($"Build failed: %s{summary}", DateTime.UtcNow))
                         with ex ->
                             Volatile.Write(&lastResult, Some(false, ex.Message))
+
+                            ctx.ReportErrors
+                                "<build>"
+                                [ { Message = ex.Message
+                                    Severity = "error"
+                                    Line = 0
+                                    Column = 0 } ]
+
                             ctx.EmitBuildCompleted(BuildFailed [ ex.Message ])
                             ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                     finally
@@ -57,9 +77,15 @@ type BuildPlugin(?command: string, ?args: string) =
                 fun _args ->
                     async {
                         match Volatile.Read(&lastResult) with
-                        | Some(ok, _) ->
-                            let passed = if ok then "true" else "false"
-                            return $"{{\"passed\": %s{passed}}}"
+                        | Some(ok, output) ->
+                            let status = if ok then "passed" else "failed"
+                            let lines = output.Split('\n')
+
+                            let truncated =
+                                lines |> Array.skip (max 0 (lines.Length - 200)) |> String.concat "\n"
+
+                            let escapedOutput = JsonSerializer.Serialize(truncated)
+                            return $"{{\"status\": \"%s{status}\", \"output\": %s{escapedOutput}}}"
                         | None -> return "{\"status\": \"not run\"}"
                     }
             )

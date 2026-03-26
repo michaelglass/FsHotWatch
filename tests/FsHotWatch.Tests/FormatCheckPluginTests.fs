@@ -16,8 +16,7 @@ let ``plugin has correct name`` () =
 
 [<Fact>]
 let ``unformatted command returns zero count when no files processed`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = FormatCheckPlugin()
     host.Register(plugin)
@@ -28,8 +27,7 @@ let ``unformatted command returns zero count when no files processed`` () =
 
 [<Fact>]
 let ``format check handles non-source change events without crashing`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = FormatCheckPlugin()
     host.Register(plugin)
@@ -50,8 +48,7 @@ let ``format check handles non-source change events without crashing`` () =
 
 [<Fact>]
 let ``format check handles non-existent source file gracefully`` () =
-    let host =
-        PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = FormatCheckPlugin()
     host.Register(plugin)

@@ -8,8 +8,7 @@ open FsHotWatch.CheckPipeline
 
 /// A null checker suffices for tests that only exercise state management
 /// (RegisterProject / lookup) without performing actual compilation.
-let private nullChecker =
-    Unchecked.defaultof<FSharpChecker>
+let private nullChecker = Unchecked.defaultof<FSharpChecker>
 
 [<Fact>]
 let ``CheckFile returns None when no project registered for the file`` () =
@@ -19,12 +18,13 @@ let ``CheckFile returns None when no project registered for the file`` () =
 
 [<Fact>]
 let ``RegisterProject makes CheckFile find the project for its source files`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-pipeline-{System.Guid.NewGuid():N}")
+    let tmpDir =
+        Path.Combine(Path.GetTempPath(), $"fshw-pipeline-{System.Guid.NewGuid():N}")
+
     Directory.CreateDirectory(tmpDir) |> ignore
 
     try
-        let checker =
-            FSharpChecker.Create(projectCacheSize = 10)
+        let checker = FSharpChecker.Create(projectCacheSize = 10)
 
         let pipeline = CheckPipeline(checker)
 
@@ -35,7 +35,10 @@ let ``RegisterProject makes CheckFile find the project for its source files`` ()
 
         // Use GetProjectOptionsFromScript to build minimal project options
         let options, _diagnostics =
-            checker.GetProjectOptionsFromScript(absSource, FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText absSource))
+            checker.GetProjectOptionsFromScript(
+                absSource,
+                FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText absSource)
+            )
             |> Async.RunSynchronously
 
         pipeline.RegisterProject("/tmp/Test.fsproj", options)
@@ -72,17 +75,21 @@ let ``CheckFile returns None for unregistered file even when other projects exis
 [<Fact>]
 let ``CheckProject returns None for unregistered project`` () =
     let pipeline = CheckPipeline(nullChecker)
-    let result = pipeline.CheckProject("/tmp/NoSuchProject.fsproj") |> Async.RunSynchronously
+
+    let result =
+        pipeline.CheckProject("/tmp/NoSuchProject.fsproj") |> Async.RunSynchronously
+
     test <@ result = None @>
 
 [<Fact>]
 let ``CheckProject returns results for all registered source files`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-checkproj-{System.Guid.NewGuid():N}")
+    let tmpDir =
+        Path.Combine(Path.GetTempPath(), $"fshw-checkproj-{System.Guid.NewGuid():N}")
+
     Directory.CreateDirectory(tmpDir) |> ignore
 
     try
-        let checker =
-            FSharpChecker.Create(projectCacheSize = 10)
+        let checker = FSharpChecker.Create(projectCacheSize = 10)
 
         let pipeline = CheckPipeline(checker)
 
@@ -92,7 +99,10 @@ let ``CheckProject returns results for all registered source files`` () =
         let absSource = Path.GetFullPath(sourceFile)
 
         let options, _diagnostics =
-            checker.GetProjectOptionsFromScript(absSource, FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText absSource))
+            checker.GetProjectOptionsFromScript(
+                absSource,
+                FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText absSource)
+            )
             |> Async.RunSynchronously
 
         let projectPath = "/tmp/CheckProject.fsproj"
@@ -134,7 +144,8 @@ let ``PrepareForRediscovery clears stale file options`` () =
     pipeline.PrepareForRediscovery()
 
     let updatedOptions =
-        { options with SourceFiles = [| "/tmp/FileA.fs" |] }
+        { options with
+            SourceFiles = [| "/tmp/FileA.fs" |] }
 
     pipeline.RegisterProject("/tmp/MyProject.fsproj", updatedOptions)
 
