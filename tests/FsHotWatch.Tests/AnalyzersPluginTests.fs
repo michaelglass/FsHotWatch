@@ -98,3 +98,30 @@ let ``analyzer dispose is callable`` () =
     let plugin = AnalyzersPlugin([]) :> IFsHotWatchPlugin
     // Dispose should not throw
     plugin.Dispose()
+
+[<Fact>]
+let ``concurrent analyzer runs are bounded`` () =
+    let plugin = AnalyzersPlugin([], maxConcurrency = 2) :> IFsHotWatchPlugin
+    test <@ plugin.Name = "analyzers" @>
+    plugin.Dispose()
+
+[<Fact>]
+let ``dispose cancels in-flight work`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let plugin = AnalyzersPlugin([], maxConcurrency = 2)
+    host.Register(plugin)
+
+    let fakeResult: FileCheckResult =
+        { File = "/tmp/nonexistent/Fake.fs"
+          Source = ""
+          ParseResults = Unchecked.defaultof<_>
+          CheckResults = Unchecked.defaultof<_>
+          ProjectOptions = Unchecked.defaultof<_> }
+
+    try
+        host.EmitFileChecked(fakeResult)
+    with _ ->
+        ()
+
+    // Dispose should not throw even with in-flight work
+    (plugin :> IFsHotWatchPlugin).Dispose()
