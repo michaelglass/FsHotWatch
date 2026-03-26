@@ -83,19 +83,19 @@ type ProjectGraph() =
 
     /// Get all source files for a project.
     member _.GetSourceFiles(projectPath: string) : string list =
-        match projectFiles.TryGetValue(Path.GetFullPath(projectPath)) with
+        match projectFiles.TryGetValue(projectPath) with
         | true, files -> files
         | false, _ -> []
 
     /// Get direct project references for a project.
     member _.GetReferences(projectPath: string) : string list =
-        match projectReferences.TryGetValue(Path.GetFullPath(projectPath)) with
+        match projectReferences.TryGetValue(projectPath) with
         | true, refs -> refs
         | false, _ -> []
 
     /// Get projects that directly depend on the given project.
     member _.GetDependents(projectPath: string) : string list =
-        match projectDependents.TryGetValue(Path.GetFullPath(projectPath)) with
+        match projectDependents.TryGetValue(projectPath) with
         | true, deps -> deps
         | false, _ -> []
 
