@@ -35,12 +35,18 @@ let ``isRelevantFile rejects files in bin directory`` () =
     test <@ not (isRelevantFile "/repo/src/bin/Debug/App.fs") @>
 
 [<Fact>]
-let ``isRelevantFile accepts project.assets.json even in obj`` () =
-    test <@ isRelevantFile "/repo/src/obj/project.assets.json" @>
+let ``isRelevantFile rejects project.assets.json`` () =
+    test <@ not (isRelevantFile "/repo/src/obj/project.assets.json") @>
 
 [<Fact>]
 let ``isRelevantFile accepts .props files`` () =
     test <@ isRelevantFile "/repo/Directory.Build.props" @>
+
+[<Fact>]
+let ``isRelevantFile rejects files in obj`` () =
+    test <@ not (isRelevantFile "/repo/src/obj/project.assets.json") @>
+    test <@ not (isRelevantFile "/repo/src/obj/Debug/net10.0/App.fs") @>
+    test <@ not (isRelevantFile "/repo/src/obj/NuGet.props") @>
 
 [<Fact>]
 let ``isRelevantFile rejects unrelated extensions`` () =
@@ -70,10 +76,12 @@ let ``classifyChange maps .props to ProjectChanged`` () =
     | other -> Assert.Fail($"Expected ProjectChanged, got %A{other}")
 
 [<Fact>]
-let ``classifyChange maps project.assets.json to ProjectChanged`` () =
+let ``classifyChange maps project.assets.json to SourceChanged`` () =
+    // project.assets.json is no longer specially handled — it's just another json file
+    // that gets rejected by isRelevantFile before classifyChange is called
     match classifyChange "/repo/src/obj/project.assets.json" with
-    | ProjectChanged _ -> ()
-    | other -> Assert.Fail($"Expected ProjectChanged, got %A{other}")
+    | SourceChanged _ -> ()
+    | other -> Assert.Fail($"Expected SourceChanged (fallthrough), got %A{other}")
 
 // === Integration test: verify FileWatcher.create produces a working watcher ===
 // Uses polling watcher on macOS for reliability.
