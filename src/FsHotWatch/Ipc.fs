@@ -104,21 +104,12 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
         JsonSerializer.Serialize(result)
 
     /// Wait for scan generation to advance past afterGeneration, then return the final status.
-    /// If afterGeneration >= 0, waits until the scan generation exceeds it (for hot daemon re-scans).
-    /// If afterGeneration < 0, uses the legacy behavior (wait for any scan completion).
+    /// Negative afterGeneration means "wait for any scan completion" (legacy path).
     member _.WaitForScan(afterGeneration: int64) : Task<string> =
         task {
-            Logging.debug
-                "rpc"
-                $"WaitForScan(%d{afterGeneration}) called, current generation=%d{config.GetScanGeneration()}"
-
-            if afterGeneration >= 0L then
-                do! config.WaitForScanGeneration(afterGeneration)
-                return config.GetScanStatus()
-            else
-                // Legacy: wait for any scan completion (generation 0 -> 1)
-                do! config.WaitForScanGeneration(-1L)
-                return config.GetScanStatus()
+            Logging.debug "rpc" $"WaitForScan(%d{afterGeneration}) called"
+            do! config.WaitForScanGeneration(afterGeneration)
+            return config.GetScanStatus()
         }
 
     /// Wait for all plugins to reach a terminal state with 1s stability confirmation.

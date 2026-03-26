@@ -161,6 +161,14 @@ type ScanSignal() =
         for _, tcs in toSignal do
             tcs.TrySetResult(()) |> ignore
 
+let private isTerminal (s: PluginStatus) =
+    match s with
+    | Running _ -> false
+    | _ -> true
+
+let private allTerminal (statuses: Map<string, PluginStatus>) =
+    not statuses.IsEmpty && statuses |> Map.forall (fun _ s -> isTerminal s)
+
 /// Wait for all plugins to reach a terminal state with 1-second stability confirmation.
 let private waitForAllTerminal (host: PluginHost) () : Task<unit> =
     let tcs =
@@ -179,22 +187,6 @@ let private waitForAllTerminal (host: PluginHost) () : Task<unit> =
 
                 let statuses = host.GetAllStatuses()
 
-                let running =
-                    statuses
-                    |> Map.toList
-                    |> List.choose (fun (name, s) ->
-                        match s with
-                        | Running _ -> Some name
-                        | _ -> None)
-
-                let allTerminal = running.IsEmpty
-                let runningStr = String.concat ", " running
-
-                Logging.debug
-                    "wait-complete"
-                    $"checkAndSchedule: allTerminal=%b{allTerminal}, running=[%s{runningStr}], total=%d{statuses.Count}"
-
-                // Cancel any pending confirmation timer
                 timerCts
                 |> Option.iter (fun c ->
                     c.Cancel()
@@ -202,8 +194,7 @@ let private waitForAllTerminal (host: PluginHost) () : Task<unit> =
 
                 timerCts <- None
 
-                if allTerminal && not statuses.IsEmpty then
-                    // Schedule 1-second confirmation
+                if allTerminal statuses then
                     let newCts = new CancellationTokenSource()
                     timerCts <- Some newCts
 
@@ -213,21 +204,9 @@ let private waitForAllTerminal (host: PluginHost) () : Task<unit> =
                             if not t.IsCanceled then
                                 lock lockObj (fun () ->
                                     if not resolved then
-                                        // Re-check to confirm stability
                                         let final = host.GetAllStatuses()
 
-                                        let stillTerminal =
-                                            final
-                                            |> Map.forall (fun _ s ->
-                                                match s with
-                                                | Running _ -> false
-                                                | _ -> true)
-
-                                        Logging.debug
-                                            "wait-complete"
-                                            $"1s confirmation: stillTerminal=%b{stillTerminal}"
-
-                                        if stillTerminal then
+                                        if allTerminal final then
                                             resolved <- true
 
                                             timerCts |> Option.iter (fun c -> c.Dispose())
@@ -239,11 +218,9 @@ let private waitForAllTerminal (host: PluginHost) () : Task<unit> =
                                             tcs.TrySetResult(()) |> ignore))
                     |> ignore)
 
-    // Check immediately in case already terminal
-    checkAndSchedule ()
-
-    // Subscribe to status changes (returns IDisposable for cleanup)
+    // Subscribe before initial check to avoid TOCTOU gap
     subscription <- Some(host.OnStatusChanged.Subscribe(fun _ -> checkAndSchedule ()))
+    checkAndSchedule ()
 
     tcs.Task
 
