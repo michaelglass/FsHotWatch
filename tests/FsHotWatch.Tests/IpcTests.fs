@@ -37,9 +37,7 @@ let ``server responds to GetStatus`` () =
     host.Register(plugin)
 
     let serverTask =
-        Async.StartAsTask(
-            IpcServer.start pipeName (defaultRpcConfig host) cts
-        )
+        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
     Thread.Sleep(500)
 
@@ -72,9 +70,7 @@ let ``server responds to RunCommand`` () =
     host.Register(plugin)
 
     let serverTask =
-        Async.StartAsTask(
-            IpcServer.start pipeName (defaultRpcConfig host) cts
-        )
+        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
     Thread.Sleep(500)
 
@@ -104,9 +100,7 @@ let ``GetPluginStatus returns specific plugin's status`` () =
     host.Register(plugin)
 
     let serverTask =
-        Async.StartAsTask(
-            IpcServer.start pipeName (defaultRpcConfig host) cts
-        )
+        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
     Thread.Sleep(500)
 
@@ -130,9 +124,7 @@ let ``GetPluginStatus returns not found for unknown plugin`` () =
     let cts = new CancellationTokenSource()
 
     let serverTask =
-        Async.StartAsTask(
-            IpcServer.start pipeName (defaultRpcConfig host) cts
-        )
+        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
     Thread.Sleep(500)
 
@@ -174,9 +166,7 @@ let ``RunCommand with plugin that returns a result`` () =
     host.Register(plugin)
 
     let serverTask =
-        Async.StartAsTask(
-            IpcServer.start pipeName (defaultRpcConfig host) cts
-        )
+        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
     Thread.Sleep(500)
 
@@ -200,9 +190,7 @@ let ``RunCommand returns unknown command for non-existent command`` () =
     let cts = new CancellationTokenSource()
 
     let serverTask =
-        Async.StartAsTask(
-            IpcServer.start pipeName (defaultRpcConfig host) cts
-        )
+        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
     Thread.Sleep(500)
 
@@ -264,9 +252,7 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
     host.Register(failedPlugin)
 
     let serverTask =
-        Async.StartAsTask(
-            IpcServer.start pipeName (defaultRpcConfig host) cts
-        )
+        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
     Thread.Sleep(500)
 
@@ -330,8 +316,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
     host.Register(p3)
     host.Register(p4)
 
-    let target =
-        DaemonRpcTarget(defaultRpcConfig host)
+    let target = DaemonRpcTarget(defaultRpcConfig host)
 
     let json = target.GetStatus()
     test <@ json.Contains("Idle") @>
@@ -343,8 +328,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
 let ``DaemonRpcTarget.RunCommand returns unknown command for missing command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let target =
-        DaemonRpcTarget(defaultRpcConfig host)
+    let target = DaemonRpcTarget(defaultRpcConfig host)
 
     let result =
         target.RunCommand("nonexistent", "")
@@ -375,8 +359,7 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
 
     host.Register(plugin)
 
-    let target =
-        DaemonRpcTarget(defaultRpcConfig host)
+    let target = DaemonRpcTarget(defaultRpcConfig host)
 
     // Test with empty args
     let result1 =
@@ -414,8 +397,7 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
     host.Register(p1)
     host.Register(p2)
 
-    let target =
-        DaemonRpcTarget(defaultRpcConfig host)
+    let target = DaemonRpcTarget(defaultRpcConfig host)
 
     test <@ target.GetPluginStatus("idle-test") = "Idle" @>
     test <@ (target.GetPluginStatus("failed-test")).Contains("bad") @>
@@ -458,6 +440,26 @@ let ``WaitForScan blocks until generation advances`` () =
 
     let result = waitTask.Result
     test <@ result.Contains("complete") @>
+
+[<Fact>]
+let ``WaitForScan legacy path resolves immediately on hot daemon`` () =
+    // Regression: WaitForGeneration(-1, currentGen>0) must not hang.
+    // On a hot daemon the scan already completed (generation=1+),
+    // so the legacy path (afterGeneration=-1) should return immediately.
+    let signal = FsHotWatch.Daemon.ScanSignal()
+    let task = signal.WaitForGeneration(-1L, 1L)
+    test <@ task.IsCompleted @>
+
+[<Fact>]
+let ``WaitForScan legacy path blocks on cold daemon`` () =
+    // On a cold daemon (generation=0), the legacy path should block
+    // until a scan completes.
+    let signal = FsHotWatch.Daemon.ScanSignal()
+    let task = signal.WaitForGeneration(-1L, 0L)
+    test <@ not task.IsCompleted @>
+    // Signal generation 1 — should resolve
+    signal.SignalGeneration(1L)
+    test <@ task.IsCompleted @>
 
 [<Fact>]
 let ``WaitForComplete resolves when all plugins terminal`` () =

@@ -7,6 +7,7 @@ open FsHotWatch.Logging
 [<Fact>]
 let ``default log level is Info`` () =
     let original = logLevel
+
     try
         setLogLevel LogLevel.Info
         test <@ logLevel = LogLevel.Info @>
@@ -16,6 +17,7 @@ let ``default log level is Info`` () =
 [<Fact>]
 let ``setting verbose sets level to Debug`` () =
     let original = logLevel
+
     try
         setLogLevel LogLevel.Debug
         test <@ logLevel = LogLevel.Debug @>
@@ -26,6 +28,7 @@ let ``setting verbose sets level to Debug`` () =
 [<Fact>]
 let ``isEnabled returns true for levels at or above current`` () =
     let original = logLevel
+
     try
         setLogLevel LogLevel.Warning
         test <@ isEnabled LogLevel.Error @>
@@ -41,6 +44,7 @@ let ``log function respects level`` () =
     let sb = System.Text.StringBuilder()
     let writer = new System.IO.StringWriter(sb)
     let prevErr = System.Console.Error
+
     try
         System.Console.SetError(writer)
         setLogLevel LogLevel.Warning

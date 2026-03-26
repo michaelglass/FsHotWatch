@@ -241,8 +241,7 @@ type DaemonAction =
 /// Determine what daemon action is needed based on current state.
 let decideDaemonAction (isRunning: bool) (storedHash: string) (currentHash: string) : DaemonAction =
     if isRunning then
-        if storedHash = currentHash then Reuse
-        else Restart
+        if storedHash = currentHash then Reuse else Restart
     else
         StartFresh
 
@@ -274,7 +273,10 @@ let private startFreshDaemon
     (extraArgs: string)
     : bool =
     let stateDir = Path.Combine(repoRoot, ".fs-hot-watch")
-    eprintfn "Starting daemon..."
+    let logDir = Path.Combine(repoRoot, "log")
+    Directory.CreateDirectory(logDir) |> ignore
+    let logFile = Path.Combine(logDir, "daemon.log")
+    eprintfn "Starting daemon... (log: %s)" logFile
     let exe = Environment.ProcessPath
     // Launch via shell with nohup to fully detach from parent process group.
     // Without this, mise (and similar task runners) wait for all child processes
@@ -282,7 +284,7 @@ let private startFreshDaemon
     let psi =
         System.Diagnostics.ProcessStartInfo(
             "/bin/sh",
-            $"-c \"nohup '%s{exe}' %s{extraArgs}start > /dev/null 2>&1 & echo $!\""
+            $"-c \"nohup '%s{exe}' %s{extraArgs}start >> '%s{logFile}' 2>&1 & echo $!\""
         )
 
     psi.WorkingDirectory <- repoRoot

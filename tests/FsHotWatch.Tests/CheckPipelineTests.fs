@@ -163,8 +163,7 @@ let ``CheckFile throws OperationCanceledException when token is cancelled`` () =
     cts.Cancel()
 
     Assert.ThrowsAsync<OperationCanceledException>(fun () ->
-        pipeline.CheckFile("/tmp/anything.fs", cts.Token)
-        |> Async.StartAsTask :> System.Threading.Tasks.Task)
+        pipeline.CheckFile("/tmp/anything.fs", cts.Token) |> Async.StartAsTask :> System.Threading.Tasks.Task)
     |> Async.AwaitTask
     |> Async.RunSynchronously
     |> ignore

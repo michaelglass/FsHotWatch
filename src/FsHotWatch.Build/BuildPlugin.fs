@@ -35,6 +35,7 @@ type BuildPlugin(?command: string, ?args: string) =
                         try
                             let (success, output) = runProcess buildCommand buildArgs ctx.RepoRoot []
                             Volatile.Write(&lastResult, Some(success, output))
+
                             if success then
                                 Logging.info "build" "Build succeeded"
                             else

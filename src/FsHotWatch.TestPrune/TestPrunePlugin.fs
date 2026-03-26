@@ -132,7 +132,9 @@ type TestPrunePlugin
                                         || l.Contains("failed:")
                                         || l.Contains("succeeded:"))
 
-                                Logging.error "test-prune" $"%s{config.Project}: %d{failedTests.Length} test(s) failed:"
+                                Logging.error
+                                    "test-prune"
+                                    $"%s{config.Project}: %d{failedTests.Length} test(s) failed:"
 
                                 for line in failedTests do
                                     Logging.error "test-prune" $"  %s{line}"
@@ -164,7 +166,9 @@ type TestPrunePlugin
             Volatile.Write(&testsRunning, false)
             testsCompleted <- true
 
-            Logging.info "test-prune" $"Tests complete: %d{testResults.Results.Count} projects, %.1f{testResults.Elapsed.TotalSeconds}s"
+            Logging.info
+                "test-prune"
+                $"Tests complete: %d{testResults.Results.Count} projects, %.1f{testResults.Elapsed.TotalSeconds}s"
 
             ctx.EmitTestCompleted(testResults)
 
@@ -193,40 +197,42 @@ type TestPrunePlugin
         }
 
     /// Run tests with impact-analysis filtering (called from OnBuildCompleted).
-    let runTests (ctx: PluginContext) (configs: TestConfig list) = async {
-        // Combine AST-based affected tests with extension results
-        let extensionClasses =
-            match extensions with
-            | Some exts ->
-                let changedFiles = Volatile.Read(&lastChangedFiles)
+    let runTests (ctx: PluginContext) (configs: TestConfig list) =
+        async {
+            // Combine AST-based affected tests with extension results
+            let extensionClasses =
+                match extensions with
+                | Some exts ->
+                    let changedFiles = Volatile.Read(&lastChangedFiles)
 
-                exts
-                |> List.collect (fun ext ->
-                    try
-                        ext.FindAffectedTests db changedFiles repoRoot
-                        |> List.map (fun t -> t.TestClass)
-                    with ex ->
-                        Logging.error "test-prune" $"Extension '%s{ext.Name}' failed: %s{ex.Message}"
-                        [])
-            | None -> []
+                    exts
+                    |> List.collect (fun ext ->
+                        try
+                            ext.FindAffectedTests db changedFiles repoRoot
+                            |> List.map (fun t -> t.TestClass)
+                        with ex ->
+                            Logging.error "test-prune" $"Extension '%s{ext.Name}' failed: %s{ex.Message}"
+                            [])
+                | None -> []
 
-        let affectedClasses =
-            let astClasses =
-                Volatile.Read(&lastAffectedTests) |> List.map (fun t -> t.TestClass)
+            let affectedClasses =
+                let astClasses =
+                    Volatile.Read(&lastAffectedTests) |> List.map (fun t -> t.TestClass)
 
-            (astClasses @ extensionClasses) |> List.distinct
+                (astClasses @ extensionClasses) |> List.distinct
 
-        let filter =
-            match affectedClasses with
-            | [] -> None
-            | classes ->
-                classes
-                |> List.map (fun c -> $"--filter-class \"%s{c}\"")
-                |> String.concat " "
-                |> Some
+            let filter =
+                match affectedClasses with
+                | [] -> None
+                | classes ->
+                    classes
+                    |> List.map (fun c -> $"--filter-class \"%s{c}\"")
+                    |> String.concat " "
+                    |> Some
 
-        let! _ = executeTests ctx configs filter
-        return () }
+            let! _ = executeTests ctx configs filter
+            return ()
+        }
 
     interface IFsHotWatchPlugin with
         member _.Name = "test-prune"
@@ -300,11 +306,16 @@ type TestPrunePlugin
                     match result with
                     | BuildSucceeded ->
                         if Volatile.Read(&testsRunning) then
-                            Logging.info "test-prune" "BuildSucceeded received but tests already running — will re-run after"
+                            Logging.info
+                                "test-prune"
+                                "BuildSucceeded received but tests already running — will re-run after"
 
                             pendingRerun <- true
                         else
-                            Logging.info "test-prune" $"BuildSucceeded received, running %d{configs.Length} test configs"
+                            Logging.info
+                                "test-prune"
+                                $"BuildSucceeded received, running %d{configs.Length} test configs"
+
                             ctx.ReportStatus(Running(since = DateTime.UtcNow))
                             Volatile.Write(&testsRunning, true)
 
