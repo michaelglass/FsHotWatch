@@ -34,6 +34,9 @@ let private discoverAndRegisterProjects
                 let n = f.Replace('\\', '/')
                 not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
 
+        graph.PrepareForRediscovery()
+        pipeline.PrepareForRediscovery()
+
         for fsproj in fsprojFiles do
             try
                 graph.RegisterFromFsproj(fsproj) |> ignore
@@ -44,15 +47,20 @@ let private discoverAndRegisterProjects
             try
                 let srcFiles = graph.GetSourceFiles(fsproj) |> List.toArray
 
-                if srcFiles.Length > 0 && File.Exists(srcFiles.[0]) then
-                    let source = File.ReadAllText(srcFiles.[0])
+                let anchorFile = srcFiles |> Array.tryFind File.Exists
+
+                match anchorFile with
+                | Some anchor ->
+                    let source = File.ReadAllText(anchor)
                     let sourceText = SourceText.ofString source
 
                     let! projOptions, _ =
-                        checker.GetProjectOptionsFromScript(srcFiles.[0], sourceText, assumeDotNetFramework = false)
+                        checker.GetProjectOptionsFromScript(anchor, sourceText, assumeDotNetFramework = false)
 
                     pipeline.RegisterProject(fsproj, { projOptions with SourceFiles = srcFiles })
                     eprintfn "  [discover] Registered %s (%d files)" (Path.GetFileName fsproj) srcFiles.Length
+                | None ->
+                    eprintfn "  [discover] Skipping %s — no source files exist on disk" (Path.GetFileName fsproj)
             with ex ->
                 eprintfn "  [discover] Failed to load %s: %s" (Path.GetFileName fsproj) ex.Message
     }
@@ -220,8 +228,11 @@ module Daemon =
         let mutable debounceTimer: System.Threading.Timer option = None
         let debounceLock = obj ()
         let suppressedFiles = System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
+        let mutable processingChanges = 0
 
         let processChanges (_state: obj) =
+          if Interlocked.CompareExchange(&processingChanges, 1, 0) = 0 then
+            try
             let changes = System.Collections.Generic.List<FileChangeKind>()
             let mutable item = Unchecked.defaultof<_>
 
@@ -294,6 +305,9 @@ module Daemon =
                         match result with
                         | Some checkResult -> host.EmitFileChecked(checkResult)
                         | None -> ()
+
+            finally
+                Volatile.Write(&processingChanges, 0)
 
         let mutable pendingDelayMs = 0
 
