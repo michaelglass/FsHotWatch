@@ -27,7 +27,9 @@ type FileCheckResult =
       /// FCS parse results (AST).
       ParseResults: FSharpParseFileResults
       /// FCS type-check results (symbols, diagnostics).
-      CheckResults: FSharpCheckFileResults }
+      CheckResults: FSharpCheckFileResults
+      /// FSharpProjectOptions used when checking this file.
+      ProjectOptions: FSharpProjectOptions }
 
 /// Result of checking all files in a project.
 [<NoComparison>]

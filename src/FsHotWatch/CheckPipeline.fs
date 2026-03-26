@@ -62,7 +62,8 @@ type CheckPipeline(checker: FSharpChecker) =
                                 { File = absPath
                                   Source = source
                                   ParseResults = parseResults
-                                  CheckResults = checkResults }
+                                  CheckResults = checkResults
+                                  ProjectOptions = options }
                     | FSharpCheckFileAnswer.Aborted ->
                         // Still emit with parse results — lint can use the AST even without type info
                         return
@@ -70,7 +71,8 @@ type CheckPipeline(checker: FSharpChecker) =
                                 { File = absPath
                                   Source = source
                                   ParseResults = parseResults
-                                  CheckResults = Unchecked.defaultof<_> }
+                                  CheckResults = Unchecked.defaultof<_>
+                                  ProjectOptions = options }
                 with ex ->
                     eprintfn "  [check] Failed to check %s: %s" absPath ex.Message
                     return None
