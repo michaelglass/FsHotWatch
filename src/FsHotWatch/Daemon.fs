@@ -12,6 +12,51 @@ open FsHotWatch.PluginHost
 open FsHotWatch.ProjectGraph
 open FsHotWatch.Watcher
 
+/// Discover .fsproj files and register them with the graph and pipeline.
+let private discoverAndRegisterProjects
+    (repoRoot: string)
+    (checker: FSharpChecker)
+    (graph: ProjectGraph)
+    (pipeline: CheckPipeline)
+    =
+    async {
+        let searchDirs =
+            [ Path.Combine(repoRoot, "src")
+              Path.Combine(repoRoot, "tests") ]
+            |> List.filter Directory.Exists
+
+        let fsprojFiles =
+            searchDirs
+            |> List.collect (fun dir ->
+                Directory.GetFiles(dir, "*.fsproj", SearchOption.AllDirectories)
+                |> Array.toList)
+            |> List.filter (fun f ->
+                let n = f.Replace('\\', '/')
+                not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
+
+        for fsproj in fsprojFiles do
+            try
+                graph.RegisterFromFsproj(fsproj) |> ignore
+            with ex ->
+                eprintfn "  [discover] Failed to parse %s: %s" (Path.GetFileName fsproj) ex.Message
+
+        for fsproj in graph.GetTopologicalOrder() do
+            try
+                let srcFiles = graph.GetSourceFiles(fsproj) |> List.toArray
+
+                if srcFiles.Length > 0 && File.Exists(srcFiles.[0]) then
+                    let source = File.ReadAllText(srcFiles.[0])
+                    let sourceText = SourceText.ofString source
+
+                    let! projOptions, _ =
+                        checker.GetProjectOptionsFromScript(srcFiles.[0], sourceText, assumeDotNetFramework = false)
+
+                    pipeline.RegisterProject(fsproj, { projOptions with SourceFiles = srcFiles })
+                    eprintfn "  [discover] Registered %s (%d files)" (Path.GetFileName fsproj) srcFiles.Length
+            with ex ->
+                eprintfn "  [discover] Failed to load %s: %s" (Path.GetFileName fsproj) ex.Message
+    }
+
 /// The daemon ties together a warm FSharpChecker, file watcher, check pipeline, and plugin host.
 /// It runs until the provided CancellationToken is cancelled.
 [<NoComparison; NoEquality>]
@@ -112,61 +157,8 @@ type Daemon =
         }
 
     /// Discover .fsproj files in src/ and tests/ and register them with the pipeline.
-    /// Builds the project dependency graph and loads script-style FCS options.
     member this.DiscoverAndRegisterProjects() =
-        async {
-            let searchDirs =
-                [ Path.Combine(this.RepoRoot, "src")
-                  Path.Combine(this.RepoRoot, "tests") ]
-                |> List.filter Directory.Exists
-
-            let fsprojFiles =
-                searchDirs
-                |> List.collect (fun dir ->
-                    Directory.GetFiles(dir, "*.fsproj", SearchOption.AllDirectories)
-                    |> Array.toList)
-                |> List.filter (fun f ->
-                    let n = f.Replace('\\', '/')
-                    not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
-
-            // First pass: register all projects in the graph (for dependency tracking)
-            for fsproj in fsprojFiles do
-                try
-                    this.Graph.RegisterFromFsproj(fsproj) |> ignore
-                with ex ->
-                    eprintfn $"  Warning: could not parse %s{fsproj}: %s{ex.Message}"
-
-            // Second pass: load FCS options in topological order (deps first)
-            let ordered = this.Graph.GetTopologicalOrder()
-
-            for fsproj in ordered do
-                try
-                    let sourceFiles =
-                        this.Graph.GetSourceFiles(fsproj) |> List.toArray
-
-                    if sourceFiles.Length > 0 then
-                        let firstFile = sourceFiles.[0]
-
-                        if File.Exists(firstFile) then
-                            let source = File.ReadAllText(firstFile)
-                            let sourceText = SourceText.ofString source
-
-                            let! projOptions, _ =
-                                this.Checker.GetProjectOptionsFromScript(
-                                    firstFile,
-                                    sourceText,
-                                    assumeDotNetFramework = false
-                                )
-
-                            let opts =
-                                { projOptions with
-                                    SourceFiles = sourceFiles }
-
-                            this.Pipeline.RegisterProject(fsproj, opts)
-                            eprintfn "  [discover] Registered %s (%d files)" (Path.GetFileName fsproj) sourceFiles.Length
-                with ex ->
-                    eprintfn "  [discover] Failed to load %s: %s" (Path.GetFileName fsproj) ex.Message
-        }
+        discoverAndRegisterProjects this.RepoRoot this.Checker this.Graph this.Pipeline
 
     /// Format scan state as a human-readable string.
     member this.FormatScanStatus() =
@@ -266,50 +258,7 @@ module Daemon =
                         checker.InvalidateAll()
                         checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
 
-                    // Re-discover projects to pick up new files, new projects, changed references
-                    let searchDirs =
-                        [ Path.Combine(repoRoot, "src"); Path.Combine(repoRoot, "tests") ]
-                        |> List.filter Directory.Exists
-
-                    let fsprojFiles =
-                        searchDirs
-                        |> List.collect (fun dir ->
-                            Directory.GetFiles(dir, "*.fsproj", SearchOption.AllDirectories)
-                            |> Array.toList)
-                        |> List.filter (fun f ->
-                            let n = f.Replace('\\', '/')
-                            not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
-
-                    for fsproj in fsprojFiles do
-                        try
-                            graph.RegisterFromFsproj(fsproj) |> ignore
-                        with _ ->
-                            ()
-
-                    for fsproj in graph.GetTopologicalOrder() do
-                        try
-                            let srcFiles = graph.GetSourceFiles(fsproj) |> List.toArray
-
-                            if srcFiles.Length > 0 && File.Exists(srcFiles.[0]) then
-                                let source = File.ReadAllText(srcFiles.[0])
-                                let sourceText = FSharp.Compiler.Text.SourceText.ofString source
-
-                                let projOptions, _ =
-                                    checker.GetProjectOptionsFromScript(
-                                        srcFiles.[0],
-                                        sourceText,
-                                        assumeDotNetFramework = false
-                                    )
-                                    |> Async.RunSynchronously
-
-                                pipeline.RegisterProject(
-                                    fsproj,
-                                    { projOptions with
-                                        SourceFiles = srcFiles }
-                                )
-                        with _ ->
-                            ()
-
+                    discoverAndRegisterProjects repoRoot checker graph pipeline |> Async.RunSynchronously
                     eprintfn "  [daemon] Re-discovery complete: %d projects, %d files" (graph.GetAllProjects().Length) (pipeline.GetAllRegisteredFiles().Length)
 
                     if not projFiles.IsEmpty then
