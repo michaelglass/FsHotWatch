@@ -27,6 +27,7 @@
     <Compile Include="BuildPluginTests.fs" />
     <Compile Include="CoveragePluginTests.fs" />
     <Compile Include="FileCommandPluginTests.fs" />
+    <Compile Include="LoggingTests.fs" />
     <Compile Include="IntegrationTests.fs" />
   </ItemGroup>
 

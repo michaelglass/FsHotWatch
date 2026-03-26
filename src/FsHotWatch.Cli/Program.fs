@@ -407,7 +407,7 @@ let main args =
     let argList = args |> Array.toList
 
     if argList |> List.exists (fun a -> a = "--verbose" || a = "-v") then
-        FsHotWatch.Logging.verbose <- true
+        FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
 
     let filteredArgs = argList |> List.filter (fun a -> a <> "--verbose" && a <> "-v")
 
