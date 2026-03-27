@@ -14,6 +14,10 @@ type CheckPipeline(checker: FSharpChecker) =
     let projectOptionsByFile = ConcurrentDictionary<string, FSharpProjectOptions>()
     let projectOptionsByProject = ConcurrentDictionary<string, FSharpProjectOptions>()
     let fileTokens = ConcurrentDictionary<string, CancellationTokenSource>()
+    let mutable nextVersion = 0L
+
+    /// Get the next monotonic version number for a check result.
+    member _.NextVersion() = Interlocked.Increment(&nextVersion)
 
     /// Clear all registered projects and file mappings. Call before re-discovery
     /// to ensure deleted projects and removed files don't leave stale options.
@@ -97,6 +101,8 @@ type CheckPipeline(checker: FSharpChecker) =
 
                     let sourceText = SourceText.ofString source
 
+                    let version = this.NextVersion()
+
                     try
                         let sw = System.Diagnostics.Stopwatch.StartNew()
 
@@ -118,7 +124,8 @@ type CheckPipeline(checker: FSharpChecker) =
                                       Source = source
                                       ParseResults = parseResults
                                       CheckResults = checkResults
-                                      ProjectOptions = options }
+                                      ProjectOptions = options
+                                      Version = version }
                         | FSharpCheckFileAnswer.Aborted ->
                             // Still emit with parse results — lint can use the AST even without type info
                             return
@@ -127,7 +134,8 @@ type CheckPipeline(checker: FSharpChecker) =
                                       Source = source
                                       ParseResults = parseResults
                                       CheckResults = Unchecked.defaultof<_>
-                                      ProjectOptions = options }
+                                      ProjectOptions = options
+                                      Version = version }
                     with ex ->
                         Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
                         return None

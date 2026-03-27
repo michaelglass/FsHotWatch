@@ -37,7 +37,8 @@ let ``analyzer error path sets Failed status`` () =
           Source = ""
           ParseResults = Unchecked.defaultof<_>
           CheckResults = Unchecked.defaultof<_>
-          ProjectOptions = Unchecked.defaultof<_> }
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = 0L }
 
     try
         host.EmitFileChecked(fakeResult)
@@ -116,7 +117,8 @@ let ``dispose cancels in-flight work`` () =
           Source = ""
           ParseResults = Unchecked.defaultof<_>
           CheckResults = Unchecked.defaultof<_>
-          ProjectOptions = Unchecked.defaultof<_> }
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = 0L }
 
     try
         host.EmitFileChecked(fakeResult)

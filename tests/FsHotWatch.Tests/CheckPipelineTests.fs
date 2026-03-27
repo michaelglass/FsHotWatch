@@ -6,6 +6,7 @@ open System.Threading
 open Xunit
 open Swensen.Unquote
 open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Text
 open FsHotWatch.CheckPipeline
 
 /// A null checker suffices for tests that only exercise state management
@@ -195,3 +196,32 @@ let ``CancelPreviousCheck links to caller token`` () =
 
     callerCts.Cancel()
     test <@ fileCts.IsCancellationRequested @>
+
+[<Fact>]
+let ``CheckFile assigns increasing version numbers`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-version-{Guid.NewGuid():N}")
+
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let checker = FSharpChecker.Create(projectCacheSize = 10)
+        let pipeline = CheckPipeline(checker)
+        let sourceFile = Path.Combine(tmpDir, "Lib.fs")
+        File.WriteAllText(sourceFile, "module Lib\nlet x = 42\n")
+        let absSource = Path.GetFullPath(sourceFile)
+
+        let options, _ =
+            checker.GetProjectOptionsFromScript(absSource, SourceText.ofString (File.ReadAllText absSource))
+            |> Async.RunSynchronously
+
+        pipeline.RegisterProject("/tmp/Version.fsproj", options)
+
+        let result1 = pipeline.CheckFile(absSource) |> Async.RunSynchronously
+        let result2 = pipeline.CheckFile(absSource) |> Async.RunSynchronously
+
+        test <@ result1.IsSome @>
+        test <@ result2.IsSome @>
+        test <@ result2.Value.Version > result1.Value.Version @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
