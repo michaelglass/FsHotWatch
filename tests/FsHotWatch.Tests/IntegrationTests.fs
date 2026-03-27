@@ -19,6 +19,8 @@ open FsHotWatch.Analyzers.AnalyzersPlugin
 open FsHotWatch.Build.BuildPlugin
 open FsHotWatch.Coverage.CoveragePlugin
 open FsHotWatch.FileCommand.FileCommandPlugin
+open FsHotWatch.CheckCache
+open FsHotWatch.FileCheckCache
 
 let private findRepoRoot () =
     let assemblyDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)
@@ -1321,3 +1323,101 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
             File.Delete(dbPath + "-shm")
         with _ ->
             ()
+
+[<Fact>]
+let ``file cache enables fast cold-start check`` () =
+    let repoRoot = findRepoRoot ()
+    let cacheDir = Path.Combine(Path.GetTempPath(), $"fshw-cache-{Guid.NewGuid():N}")
+
+    let checker =
+        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+
+    let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
+    let source = File.ReadAllText(sourceFile)
+    let sourceText = SourceText.ofString source
+
+    let projOptions =
+        checker.GetProjectOptionsFromScript(sourceFile, sourceText, assumeDotNetFramework = false)
+        |> Async.RunSynchronously
+        |> fst
+
+    try
+        // --- Cold check (populates cache) ---
+        let backend1 = FileCheckCache(cacheDir) :> ICheckCacheBackend
+        let pipeline1 = CheckPipeline(checker, cacheBackend = backend1)
+        pipeline1.RegisterProject("FsHotWatch", projOptions)
+
+        let sw1 = Stopwatch.StartNew()
+        let result1 = pipeline1.CheckFile(sourceFile) |> Async.RunSynchronously
+        sw1.Stop()
+
+        test <@ result1.IsSome @>
+        test <@ result1.Value.File = Path.GetFullPath(sourceFile) @>
+
+        // Verify cache file was written
+        let cacheFiles = Directory.GetFiles(cacheDir, "*.json")
+        test <@ cacheFiles.Length > 0 @>
+
+        // --- Warm check (new pipeline, same cache dir = simulated cold restart) ---
+        let backend2 = FileCheckCache(cacheDir) :> ICheckCacheBackend
+        let pipeline2 = CheckPipeline(checker, cacheBackend = backend2)
+        pipeline2.RegisterProject("FsHotWatch", projOptions)
+
+        let sw2 = Stopwatch.StartNew()
+        let result2 = pipeline2.CheckFile(sourceFile) |> Async.RunSynchronously
+        sw2.Stop()
+
+        test <@ result2.IsSome @>
+        test <@ result2.Value.File = Path.GetFullPath(sourceFile) @>
+
+        // Cache hit should be significantly faster than cold check
+        test <@ sw2.ElapsedMilliseconds < sw1.ElapsedMilliseconds @>
+        test <@ sw2.ElapsedMilliseconds < 50L @>
+    finally
+        if Directory.Exists(cacheDir) then
+            Directory.Delete(cacheDir, true)
+
+[<Fact>]
+let ``cached check result has null FCS types but valid metadata`` () =
+    let repoRoot = findRepoRoot ()
+
+    let cacheDir =
+        Path.Combine(Path.GetTempPath(), $"fshw-cache-meta-{Guid.NewGuid():N}")
+
+    let checker =
+        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+
+    let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
+    let source = File.ReadAllText(sourceFile)
+    let sourceText = SourceText.ofString source
+
+    let projOptions =
+        checker.GetProjectOptionsFromScript(sourceFile, sourceText, assumeDotNetFramework = false)
+        |> Async.RunSynchronously
+        |> fst
+
+    try
+        // Populate cache
+        let backend1 = FileCheckCache(cacheDir) :> ICheckCacheBackend
+        let pipeline1 = CheckPipeline(checker, cacheBackend = backend1)
+        pipeline1.RegisterProject("FsHotWatch", projOptions)
+        pipeline1.CheckFile(sourceFile) |> Async.RunSynchronously |> ignore
+
+        // Read from cache (new pipeline = cold restart)
+        let backend2 = FileCheckCache(cacheDir) :> ICheckCacheBackend
+        let pipeline2 = CheckPipeline(checker, cacheBackend = backend2)
+        pipeline2.RegisterProject("FsHotWatch", projOptions)
+        let result = pipeline2.CheckFile(sourceFile) |> Async.RunSynchronously
+
+        test <@ result.IsSome @>
+        let r = result.Value
+
+        // File path preserved
+        test <@ r.File = Path.GetFullPath(sourceFile) @>
+
+        // FCS types are null (can't serialize)
+        test <@ isNull (box r.CheckResults) @>
+        test <@ isNull (box r.ParseResults) @>
+    finally
+        if Directory.Exists(cacheDir) then
+            Directory.Delete(cacheDir, true)
