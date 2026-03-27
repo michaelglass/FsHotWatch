@@ -324,7 +324,7 @@ let runIndexWith
                           TestMethods = results |> List.collect (fun r -> r.TestMethods) }
 
                     if analyzedFiles > 0 then
-                        db.RebuildProjects([ projName, combined ])
+                        db.RebuildProjects([ combined ])
 
                     db.SetProjectKey(projName, hash)
                     reindexedProjects.TryAdd(fsprojPath, true) |> ignore

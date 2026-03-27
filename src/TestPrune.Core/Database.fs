@@ -119,16 +119,13 @@ type Database(dbPath: string) =
     /// Create a Database instance, initializing the schema if needed.
     static member create(dbPath: string) = Database(dbPath)
 
-    /// Clear and re-insert symbols, dependencies, and test methods for the given projects.
+    /// Clear and re-insert symbols, dependencies, and test methods.
     /// All symbols are inserted before any dependencies, so cross-project edges resolve correctly.
-    /// When called with a single project, dependency edges to symbols in other projects will only
-    /// resolve if those symbols already exist in the database from a prior call. For correct
-    /// cross-project edges, pass all projects in a single call.
-    member _.RebuildProjects(projects: (string * AnalysisResult) list) =
-        let allResults = projects |> List.map snd
-
+    /// When called with a subset of projects, dependency edges to symbols in other projects will
+    /// only resolve if those symbols already exist in the database from a prior call.
+    member _.RebuildProjects(results: AnalysisResult list) =
         let sourceFiles =
-            allResults
+            results
             |> List.collect (fun r -> r.Symbols |> List.map (fun s -> s.SourceFile))
             |> List.distinct
 
@@ -137,7 +134,6 @@ type Database(dbPath: string) =
         use txn = conn.BeginTransaction()
 
         try
-            // Phase 1: Delete existing data for all source files
             for file in sourceFiles do
                 use delCmd = conn.CreateCommand()
                 delCmd.Transaction <- txn
@@ -155,7 +151,6 @@ type Database(dbPath: string) =
 
             let now = DateTime.UtcNow.ToString("o")
 
-            // Phase 2: Insert ALL symbols across ALL projects
             use insCmd = conn.CreateCommand()
             insCmd.Transaction <- txn
 
@@ -173,7 +168,7 @@ type Database(dbPath: string) =
             let pContentHash = insCmd.Parameters.Add("@contentHash", SqliteType.Text)
             let pIndexedAt = insCmd.Parameters.Add("@indexedAt", SqliteType.Text)
 
-            for result in allResults do
+            for result in results do
                 for sym in result.Symbols do
                     pFullName.Value <- sym.FullName
                     pKind.Value <- symbolKindToString sym.Kind
@@ -184,7 +179,7 @@ type Database(dbPath: string) =
                     pIndexedAt.Value <- now
                     insCmd.ExecuteNonQuery() |> ignore
 
-            // Phase 3: Insert ALL dependencies (target symbols now guaranteed to exist)
+            // Dependencies are inserted after all symbols so cross-project edges resolve
             use depCmd = conn.CreateCommand()
             depCmd.Transaction <- txn
 
@@ -200,14 +195,13 @@ type Database(dbPath: string) =
             let pToSymbol = depCmd.Parameters.Add("@toSymbol", SqliteType.Text)
             let pDepKind = depCmd.Parameters.Add("@depKind", SqliteType.Text)
 
-            for result in allResults do
+            for result in results do
                 for dep in result.Dependencies do
                     pFromSymbol.Value <- dep.FromSymbol
                     pToSymbol.Value <- dep.ToSymbol
                     pDepKind.Value <- depKindToString dep.Kind
                     depCmd.ExecuteNonQuery() |> ignore
 
-            // Phase 4: Insert ALL test methods
             use tmCmd = conn.CreateCommand()
             tmCmd.Transaction <- txn
 
@@ -223,7 +217,7 @@ type Database(dbPath: string) =
             let pTestClass = tmCmd.Parameters.Add("@testClass", SqliteType.Text)
             let pTestMethod = tmCmd.Parameters.Add("@testMethod", SqliteType.Text)
 
-            for result in allResults do
+            for result in results do
                 for tm in result.TestMethods do
                     pSymbolFullName.Value <- tm.SymbolFullName
                     pTestProject.Value <- tm.TestProject

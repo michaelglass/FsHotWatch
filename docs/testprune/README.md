@@ -62,7 +62,7 @@ let projOptions = getScriptOptions checker fileName source |> Async.RunSynchrono
 match analyzeSource checker fileName source projOptions |> Async.RunSynchronously with
 | Ok result ->
     let normalized = { result with Symbols = normalizeSymbolPaths repoRoot result.Symbols }
-    db.RebuildProjects([ "MyProject", normalized ])
+    db.RebuildProjects([ normalized ])
 | Error msg -> eprintfn $"Failed: %s{msg}"
 ```
 
@@ -86,7 +86,7 @@ match db.GetProjectKey("MyProject") with
         // File changed — run FCS analysis
         // ... analyzeSource, then db.SetFileKey(...)
 
-    db.RebuildProjects([ "MyProject", combined ])
+    db.RebuildProjects([ combined ])
     db.SetProjectKey("MyProject", currentKey)
 ```
 

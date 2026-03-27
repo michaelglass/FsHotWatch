@@ -75,7 +75,7 @@ module ``Changed symbol with dependent test`` =
     [<Fact>]
     let ``direct dependency returns the test`` () =
         withDb (fun db ->
-            db.RebuildProjects([ "proj", standardGraph ])
+            db.RebuildProjects([ standardGraph ])
 
             // funcB changed
             let currentSymbols =
@@ -101,7 +101,7 @@ module ``Changed symbol with transitive dependent test`` =
     [<Fact>]
     let ``transitive dependency returns the test`` () =
         withDb (fun db ->
-            db.RebuildProjects([ "proj", standardGraph ])
+            db.RebuildProjects([ standardGraph ])
 
             // TypeC changed
             let currentSymbols =
@@ -127,7 +127,7 @@ module ``Changed symbol with no dependent tests`` =
     [<Fact>]
     let ``production-only code returns empty subset`` () =
         withDb (fun db ->
-            db.RebuildProjects([ "proj", standardGraph ])
+            db.RebuildProjects([ standardGraph ])
 
             // unrelated changed
             let currentSymbols =
@@ -194,7 +194,7 @@ module ``Multiple changed symbols`` =
                         TestClass = "Tests"
                         TestMethod = "test2" } ] }
 
-            db.RebuildProjects([ "proj", graph ])
+            db.RebuildProjects([ graph ])
 
             // Both funcA and funcB changed
             let currentSymbols =
@@ -229,7 +229,7 @@ module ``No changes`` =
     [<Fact>]
     let ``empty changed files returns empty subset`` () =
         withDb (fun db ->
-            db.RebuildProjects([ "proj", standardGraph ])
+            db.RebuildProjects([ standardGraph ])
             let result = selectTests db [] Map.empty
 
             match result with
@@ -241,7 +241,7 @@ module ``New file not indexed`` =
     [<Fact>]
     let ``new file triggers RunAll`` () =
         withDb (fun db ->
-            db.RebuildProjects([ "proj", standardGraph ])
+            db.RebuildProjects([ standardGraph ])
 
             // brand new file with symbols, not in DB
             let currentSymbols =
@@ -265,7 +265,7 @@ module ``fsproj changed`` =
     [<Fact>]
     let ``fsproj change triggers RunAll`` () =
         withDb (fun db ->
-            db.RebuildProjects([ "proj", standardGraph ])
+            db.RebuildProjects([ standardGraph ])
             let result = selectTests db [ "src/MyProject.fsproj" ] Map.empty
 
             match result with
@@ -288,7 +288,7 @@ module ``File with no stored symbols and no current symbols`` =
     [<Fact>]
     let ``both stored and current symbols empty returns empty subset`` () =
         withDb (fun db ->
-            db.RebuildProjects([ "proj", standardGraph ])
+            db.RebuildProjects([ standardGraph ])
 
             // "src/Empty.fs" was never indexed (no stored symbols) and has no current symbols either
             let currentSymbols = Map.ofList [ "src/Empty.fs", [] ]
@@ -304,7 +304,7 @@ module ``File that had symbols but now has none`` =
     [<Fact>]
     let ``all symbols removed from file detects removals and returns affected tests`` () =
         withDb (fun db ->
-            db.RebuildProjects([ "proj", standardGraph ])
+            db.RebuildProjects([ standardGraph ])
 
             // src/Lib.fs has stored symbols (Lib.funcB) but current symbols list is empty — all removed
             let currentSymbols = Map.ofList [ "src/Lib.fs", [] ]
