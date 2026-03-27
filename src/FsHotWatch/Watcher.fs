@@ -90,6 +90,8 @@ module FileWatcher =
             w.NotifyFilter <- NotifyFilters.LastWrite ||| NotifyFilters.FileName
             w.Changed.Add(handleFsw)
             w.Created.Add(handleFsw)
+            w.Deleted.Add(handleFsw)
+            w.Renamed.Add(handleFsw)
             w.EnableRaisingEvents <- true
             w :> IDisposable
 
@@ -116,7 +118,7 @@ module FileWatcher =
                     w.Changed.Add(handleFsw)
                     w.Created.Add(handleFsw)
                     w.Deleted.Add(handleFsw)
-                    w.Renamed.Add(fun e -> handleFsw e)
+                    w.Renamed.Add(handleFsw)
                     w.EnableRaisingEvents <- true
                     Some(w :> IDisposable)
                 else

@@ -8,17 +8,11 @@ open Swensen.Unquote
 open FsHotWatch.Daemon
 open FsHotWatch.Events
 open FsHotWatch.Plugin
+open FsHotWatch.Tests.TestHelpers
 
 /// A null checker is fine for tests that don't perform actual compilation.
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
-
-/// Poll until condition is true or timeout.
-let private waitUntil (condition: unit -> bool) (timeoutMs: int) =
-    let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
-
-    while not (condition ()) && DateTime.UtcNow < deadline do
-        Thread.Sleep(100)
 
 /// Write a sentinel file and wait for the daemon to process it (proves watcher is live).
 /// Then wait for events to stabilize before returning.
