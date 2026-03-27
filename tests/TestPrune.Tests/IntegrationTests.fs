@@ -103,8 +103,7 @@ let ``counter starts at zero`` () =
                     |> List.map (fun t -> { t with TestProject = "TestProject" }) }
 
             // Store both in DB
-            db.RebuildProjects([ "MyProject", libAnalysis ])
-            db.RebuildProjects([ "MyProject", testAnalysis ])
+            db.RebuildProjects([ "MyProject", libAnalysis; "MyProject", testAnalysis ])
 
             // Verify test methods were detected
             let allSymbols = db.GetAllSymbolNames()

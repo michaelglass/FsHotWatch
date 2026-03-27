@@ -121,6 +121,9 @@ type Database(dbPath: string) =
 
     /// Clear and re-insert symbols, dependencies, and test methods for the given projects.
     /// All symbols are inserted before any dependencies, so cross-project edges resolve correctly.
+    /// When called with a single project, dependency edges to symbols in other projects will only
+    /// resolve if those symbols already exist in the database from a prior call. For correct
+    /// cross-project edges, pass all projects in a single call.
     member _.RebuildProjects(projects: (string * AnalysisResult) list) =
         let allResults = projects |> List.map snd
 
