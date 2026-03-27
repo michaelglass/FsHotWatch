@@ -42,11 +42,9 @@ let private waitForDaemonReady (srcDir: string) (changeCount: unit -> int) =
 
 [<Fact>]
 let ``daemon starts and stops without error`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-    let cts = new CancellationTokenSource()
-
-    try
+    withTempDir "daemon" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let cts = new CancellationTokenSource()
         let daemon = Daemon.createWith nullChecker tmpDir None None
         let task = Async.StartAsTask(daemon.Run(cts.Token))
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
@@ -57,30 +55,22 @@ let ``daemon starts and stops without error`` () =
         with :? AggregateException ->
             ()
 
-        test <@ task.IsCompleted @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        test <@ task.IsCompleted @>)
 
 [<Fact>]
 let ``daemon suppresses watcher events for preprocessor-modified files`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-{Guid.NewGuid():N}")
-    let srcDir = Path.Combine(tmpDir, "src")
-    Directory.CreateDirectory(srcDir) |> ignore
-    let mutable sourceChangedEvents: string list list = []
-    let cts = new CancellationTokenSource()
-
-    try
+    withTempDir "daemon" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let mutable sourceChangedEvents: string list list = []
+        let cts = new CancellationTokenSource()
         let daemon = Daemon.createWith nullChecker tmpDir None None
 
-        // Register a preprocessor that claims it modified the file
         let preprocessor =
             { new IFsHotWatchPreprocessor with
                 member _.Name = "test-formatter"
 
-                member _.Process (changedFiles: string list) (_repoRoot: string) =
-                    // Claim we modified all files (simulates format-on-save)
-                    changedFiles
+                member _.Process (changedFiles: string list) (_repoRoot: string) = changedFiles
 
                 member _.Dispose() = () }
 
@@ -100,34 +90,22 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
 
         daemon.Register(plugin)
 
-        // Test the suppression mechanism at the host level (more reliable than watcher timing)
-        // Simulate what processChanges does: run preprocessors, then emit
         let host = daemon.Host
         let testFiles = [ Path.Combine(srcDir, "Fmt.fs") ]
-
-        // RunPreprocessors returns modified files
         let modified = host.RunPreprocessors(testFiles)
-
-        // The preprocessor claims all files as modified
         test <@ modified.Length = testFiles.Length @>
 
-        // Verify preprocessor status was updated
         let status = host.GetStatus("test-formatter")
         test <@ status.IsSome @>
 
-        cts.Cancel()
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        cts.Cancel())
 
 [<Fact>]
 let ``daemon dispatches file change events to plugins`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-    let mutable receivedChanges = []
-    let cts = new CancellationTokenSource()
-
-    try
+    withTempDir "daemon" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let mutable receivedChanges = []
+        let cts = new CancellationTokenSource()
         let daemon = Daemon.createWith nullChecker tmpDir None None
 
         let plugin =
@@ -157,19 +135,14 @@ let ``daemon dispatches file change events to plugins`` () =
         with :? AggregateException ->
             ()
 
-        test <@ receivedChanges.Length >= 1 @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        test <@ receivedChanges.Length >= 1 @>)
 
 [<Fact>]
 let ``daemon debounces rapid file changes into one batch`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-    let mutable receivedChanges: FileChangeKind list = []
-    let cts = new CancellationTokenSource()
-
-    try
+    withTempDir "daemon" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let mutable receivedChanges: FileChangeKind list = []
+        let cts = new CancellationTokenSource()
         let daemon = Daemon.createWith nullChecker tmpDir None None
 
         let plugin =
@@ -187,7 +160,6 @@ let ``daemon debounces rapid file changes into one batch`` () =
         waitForDaemonReady (Path.Combine(tmpDir, "src")) (fun () -> receivedChanges.Length)
         receivedChanges <- []
 
-        // Write 3 files rapidly (within debounce window)
         let fileA = Path.Combine(tmpDir, "src", "A.fs")
         let fileB = Path.Combine(tmpDir, "src", "B.fs")
         let fileC = Path.Combine(tmpDir, "src", "C.fs")
@@ -228,19 +200,14 @@ let ``daemon debounces rapid file changes into one batch`` () =
         test <@ sourceChanges.Length >= 1 @>
 
         let allFiles = sourceChanges |> List.collect id
-        test <@ allFiles.Length >= 3 @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        test <@ allFiles.Length >= 3 @>)
 
 [<Fact>]
 let ``daemon handles ProjectChanged events`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-    let mutable receivedChanges: FileChangeKind list = []
-    let cts = new CancellationTokenSource()
-
-    try
+    withTempDir "daemon" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let mutable receivedChanges: FileChangeKind list = []
+        let cts = new CancellationTokenSource()
         let daemon = Daemon.createWith nullChecker tmpDir None None
 
         let plugin =
@@ -285,19 +252,14 @@ let ``daemon handles ProjectChanged events`` () =
                 | ProjectChanged _ -> true
                 | _ -> false)
 
-        test <@ projectChanges @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        test <@ projectChanges @>)
 
 [<Fact>]
 let ``daemon handles SolutionChanged events`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-    let mutable receivedChanges: FileChangeKind list = []
-    let cts = new CancellationTokenSource()
-
-    try
+    withTempDir "daemon" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let mutable receivedChanges: FileChangeKind list = []
+        let cts = new CancellationTokenSource()
         let daemon = Daemon.createWith nullChecker tmpDir None None
 
         let plugin =
@@ -312,7 +274,6 @@ let ``daemon handles SolutionChanged events`` () =
         daemon.Register(plugin)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
-        // Prove watcher is ready via a sentinel in src/
         waitForDaemonReady (Path.Combine(tmpDir, "src")) (fun () -> receivedChanges.Length)
         receivedChanges <- []
 
@@ -343,20 +304,14 @@ let ``daemon handles SolutionChanged events`` () =
                 | SolutionChanged -> true
                 | _ -> false)
 
-        test <@ solutionChanges @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        test <@ solutionChanges @>)
 
 [<Fact>]
 let ``daemon Run completes when cancellation is immediate`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-    let cts = new CancellationTokenSource()
-
-    try
+    withTempDir "daemon" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let cts = new CancellationTokenSource()
         let daemon = Daemon.createWith nullChecker tmpDir None None
-        // Cancel immediately
         cts.Cancel()
         let task = Async.StartAsTask(daemon.Run(cts.Token))
 
@@ -365,21 +320,13 @@ let ``daemon Run completes when cancellation is immediate`` () =
         with :? AggregateException ->
             ()
 
-        test <@ task.IsCompleted @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        test <@ task.IsCompleted @>)
 
 [<Fact>]
 let ``Daemon.create creates a working daemon with real checker`` () =
-    let tmpDir =
-        Path.Combine(Path.GetTempPath(), $"fshw-daemon-create-{Guid.NewGuid():N}")
-
-    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-    let cts = new CancellationTokenSource()
-
-    try
-        // Exercise the Daemon.create path (not createWith) which creates its own FSharpChecker
+    withTempDir "daemon" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let cts = new CancellationTokenSource()
         let daemon = Daemon.create tmpDir None None
         let task = Async.StartAsTask(daemon.Run(cts.Token))
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
@@ -391,19 +338,14 @@ let ``Daemon.create creates a working daemon with real checker`` () =
             ()
 
         test <@ task.IsCompleted @>
-        test <@ daemon.RepoRoot = tmpDir @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        test <@ daemon.RepoRoot = tmpDir @>)
 
 [<Fact>]
 let ``daemon RunWithIpc starts and stops cleanly`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-ipc-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-    let cts = new CancellationTokenSource()
-    let pipeName = $"fshw-test-{Guid.NewGuid():N}"
-
-    try
+    withTempDir "daemon-ipc" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let cts = new CancellationTokenSource()
+        let pipeName = $"fshw-test-{Guid.NewGuid():N}"
         let daemon = Daemon.createWith nullChecker tmpDir None None
         let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
@@ -414,19 +356,14 @@ let ``daemon RunWithIpc starts and stops cleanly`` () =
         with :? AggregateException ->
             ()
 
-        test <@ task.IsCompleted @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        test <@ task.IsCompleted @>)
 
 [<Fact>]
 let ``daemon RunWithIpc responds to IPC queries`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-ipc-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-    let cts = new CancellationTokenSource()
-    let pipeName = $"fshw-test-{Guid.NewGuid():N}"
-
-    try
+    withTempDir "daemon-ipc" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let cts = new CancellationTokenSource()
+        let pipeName = $"fshw-test-{Guid.NewGuid():N}"
         let daemon = Daemon.createWith nullChecker tmpDir None None
 
         let plugin =
@@ -448,17 +385,13 @@ let ``daemon RunWithIpc responds to IPC queries`` () =
         try
             task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
         with :? AggregateException ->
-            ()
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+            ())
 
 [<Fact>]
 let ``daemon RegisterProject stores options in pipeline`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-daemon-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+    withTempDir "daemon" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
-    try
         let checker =
             FSharp.Compiler.CodeAnalysis.FSharpChecker.Create(projectCacheSize = 10)
 
@@ -478,9 +411,5 @@ let ``daemon RegisterProject stores options in pipeline`` () =
 
         daemon.RegisterProject("/tmp/Test.fsproj", options)
 
-        // Verify by checking a file through the pipeline
         let result = daemon.Pipeline.CheckFile(absSource) |> Async.RunSynchronously
-        test <@ result.IsSome @>
-    finally
-        if Directory.Exists tmpDir then
-            Directory.Delete(tmpDir, true)
+        test <@ result.IsSome @>)
