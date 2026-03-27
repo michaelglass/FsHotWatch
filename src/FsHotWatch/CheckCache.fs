@@ -1,18 +1,21 @@
 module FsHotWatch.CheckCache
 
 open System
+open System.IO
 open System.Security.Cryptography
 open System.Text
 open FSharp.Compiler.CodeAnalysis
 open FsHotWatch.Events
-open FsHotWatch.JjHelper
+
+/// Compute a SHA256 hex digest of a string
+let private sha256Hex (content: string) : string =
+    use sha = SHA256.Create()
+    let bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(content))
+    BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant()
 
 /// Hash a CacheKey to produce a stable, unique identifier
 let hashCacheKey (key: CacheKey) : string =
-    use sha = SHA256.Create()
-    let content = $"%s{key.FileHash}||%s{key.ProjectOptionsHash}"
-    let bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(content))
-    BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant()
+    sha256Hex $"%s{key.FileHash}||%s{key.ProjectOptionsHash}"
 
 /// Backend interface for storing/retrieving cached results
 type ICheckCacheBackend =
@@ -28,33 +31,48 @@ type ICheckCacheBackend =
     /// Clear all cache entries
     abstract member Clear: unit -> unit
 
-/// Computes FileHash from file content (using jj commit_id when available, falls back to mtime)
-let getFileHash (filePath: string) : string =
-    let normalizedPath = System.IO.Path.GetFullPath(filePath)
+/// Pluggable strategy for computing file hashes (cache keys)
+type ICacheKeyProvider =
+    /// Compute a content hash for a file
+    abstract member GetFileHash: filePath: string -> string
 
-    match JjHelper.currentCommitId () with
-    | Some commitId ->
-        // Use jj snapshot + file path as hash (content-addressed)
-        let content = $"jj:%s{commitId}|%s{normalizedPath}"
-        use sha = SHA256.Create()
-        let bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(content))
-        BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant()
-    | None ->
-        // Fallback: use file metadata (size + mtime)
-        try
-            let info = System.IO.FileInfo(normalizedPath)
-            let content = $"%s{normalizedPath}:%d{info.Length}:%d{info.LastWriteTimeUtc.Ticks}"
-            use sha = SHA256.Create()
-            let bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(content))
-            BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant()
-        with _ ->
-            // File doesn't exist or is unreadable — use path only
-            let content = $"unreadable:%s{normalizedPath}"
-            use sha = SHA256.Create()
-            let bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(content))
-            BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant()
+    /// Check if everything is unchanged since last run (fast global guard).
+    /// Returns true if nothing changed — caller can skip all per-file checks.
+    abstract member IsGlobalCacheValid: unit -> bool
 
-/// Computes ProjectOptionsHash from FSharp.Compiler.CodeAnalysis.FSharpProjectOptions
+/// Timestamp-based cache key provider (works everywhere, no VCS dependency).
+/// Uses file size + last-write-time as the cache key.
+type TimestampCacheKeyProvider() =
+    interface ICacheKeyProvider with
+        member _.GetFileHash(filePath: string) : string =
+            let normalizedPath = Path.GetFullPath(filePath)
+
+            try
+                let info = FileInfo(normalizedPath)
+                sha256Hex $"%s{normalizedPath}:%d{info.Length}:%d{info.LastWriteTimeUtc.Ticks}"
+            with _ ->
+                sha256Hex $"unreadable:%s{normalizedPath}"
+
+        member _.IsGlobalCacheValid() = false
+
+/// jj-based cache key provider. Uses jj commit_id as a fast global guard
+/// (if nothing in the tree changed, skip everything). Falls back to timestamp
+/// for per-file hashing since jj commit_id is tree-wide, not per-file.
+type JjCacheKeyProvider() =
+    let timestampFallback = TimestampCacheKeyProvider() :> ICacheKeyProvider
+
+    interface ICacheKeyProvider with
+        member _.GetFileHash(filePath: string) : string =
+            // Per-file hash uses timestamp (jj commit_id is tree-wide, not per-file)
+            timestampFallback.GetFileHash(filePath)
+
+        member _.IsGlobalCacheValid() : bool =
+            // If jj commit_id hasn't changed since last check, nothing in the tree changed
+            match JjHelper.currentCommitId () with
+            | Some _ -> false // TODO: compare with stored commit_id once file backend exists
+            | None -> false
+
+/// Computes ProjectOptionsHash from FSharpProjectOptions
 let getProjectOptionsHash (options: FSharpProjectOptions) : string =
     let parts =
         [ string options.ProjectFileName
@@ -62,7 +80,9 @@ let getProjectOptionsHash (options: FSharpProjectOptions) : string =
           string (Array.length options.ReferencedProjects)
           String.concat "|" options.OtherOptions ]
 
-    let content = String.concat "||" parts
-    use sha = SHA256.Create()
-    let bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(content))
-    BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant()
+    sha256Hex (String.concat "||" parts)
+
+/// Compute a CacheKey for a file using the given provider
+let makeCacheKey (provider: ICacheKeyProvider) (filePath: string) (options: FSharpProjectOptions) : CacheKey =
+    { FileHash = provider.GetFileHash(filePath)
+      ProjectOptionsHash = getProjectOptionsHash options }
