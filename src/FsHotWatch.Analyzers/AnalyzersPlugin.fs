@@ -38,8 +38,14 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
             let keyType = ignoreRangesType.GetGenericArguments().[0]
             let valueType = ignoreRangesType.GetGenericArguments().[1]
 
+            // Get Map.empty from the same FSharp.Core assembly as the SDK uses.
+            // Map<_,_> has no static Empty property — it lives in MapModule.
             let emptyIgnoreRanges =
-                typedefof<Map<_, _>>.MakeGenericType(keyType, valueType).GetProperty("Empty").GetValue(null)
+                let mapModuleType =
+                    ignoreRangesType.Assembly.GetType("Microsoft.FSharp.Collections.MapModule")
+
+                let emptyMethod = mapModuleType.GetMethod("Empty")
+                emptyMethod.MakeGenericMethod(keyType, valueType).Invoke(null, null)
 
             let apoCtor = ctorParams.[6].ParameterType.GetConstructors() |> Array.tryHead
             (ctor, ctorParams, emptyIgnoreRanges, apoCtor)
