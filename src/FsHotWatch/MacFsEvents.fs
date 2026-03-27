@@ -116,6 +116,14 @@ let private createCFStringArray (paths: string list) =
         |> List.map (fun p -> CFStringCreateWithCString(nativeint 0, p, kCFStringEncodingUTF8))
         |> List.toArray
 
+    if cfStrings |> Array.exists (fun s -> s = nativeint 0) then
+        // Release any successfully created strings before failing
+        for s in cfStrings do
+            if s <> nativeint 0 then
+                CFRelease(s)
+
+        failwith "CFStringCreateWithCString returned null — failed to create CFString for a watched path"
+
     let arr =
         CFArrayCreate(nativeint 0, cfStrings, nativeint cfStrings.Length, nativeint 0)
 
@@ -141,77 +149,94 @@ type FsEventStream(directories: string list, onFileChanged: string -> unit, late
 
     let callback =
         FSEventStreamCallback(fun _streamRef _clientInfo numEvents eventPaths eventFlags _eventIds ->
-            let count = int numEvents
+            if not (Volatile.Read(&disposed)) then
+                let count = int numEvents
 
-            for i in 0 .. count - 1 do
-                let pathPtr = Marshal.ReadIntPtr(eventPaths, i * IntPtr.Size)
-                let path = Marshal.PtrToStringUTF8(pathPtr)
-                let flags = uint32 (Marshal.ReadInt32(eventFlags + nativeint (i * 4)))
+                for i in 0 .. count - 1 do
+                    let pathPtr = Marshal.ReadIntPtr(eventPaths, i * IntPtr.Size)
+                    let path = Marshal.PtrToStringUTF8(pathPtr)
+                    let flags = uint32 (Marshal.ReadInt32(eventFlags + nativeint (i * 4)))
 
-                if not (isNull path) && isFileChangeEvent flags then
-                    onFileChanged path)
+                    if not (isNull path) && isFileChangeEvent flags then
+                        try
+                            onFileChanged path
+                        with _ ->
+                            ())
+
+    let cleanup () =
+        if streamRef <> nativeint 0 then
+            FSEventStreamStop(streamRef)
+            FSEventStreamInvalidate(streamRef)
+            FSEventStreamRelease(streamRef)
+            streamRef <- nativeint 0
+
+        if queueRef <> nativeint 0 then
+            dispatch_release (queueRef)
+            queueRef <- nativeint 0
+
+        for s in cfStringRefs do
+            if s <> nativeint 0 then
+                CFRelease(s)
+
+        cfStringRefs <- [||]
+
+        if cfArrayRef <> nativeint 0 then
+            CFRelease(cfArrayRef)
+            cfArrayRef <- nativeint 0
+
+        if callbackHandle.IsAllocated then
+            callbackHandle.Free()
 
     do
-        // Pin the callback delegate so GC doesn't collect it while native code holds a reference
-        callbackHandle <- GCHandle.Alloc(callback)
+        if directories.IsEmpty then
+            invalidArg "directories" "At least one directory is required"
 
-        let arr, strs = createCFStringArray directories
-        cfArrayRef <- arr
-        cfStringRefs <- strs
+        try
+            // Pin the callback delegate so GC doesn't collect it while native code holds a reference
+            callbackHandle <- GCHandle.Alloc(callback)
 
-        let flags = kFSEventStreamCreateFlagFileEvents ||| kFSEventStreamCreateFlagNoDefer
+            let arr, strs = createCFStringArray directories
+            cfArrayRef <- arr
+            cfStringRefs <- strs
 
-        streamRef <-
-            FSEventStreamCreate(
-                nativeint 0,
-                callback,
-                nativeint 0,
-                cfArrayRef,
-                kFSEventStreamEventIdSinceNow,
-                latencySeconds,
-                flags
-            )
+            let flags = kFSEventStreamCreateFlagFileEvents ||| kFSEventStreamCreateFlagNoDefer
 
-        if streamRef = nativeint 0 then
-            failwith "FSEventStreamCreate returned null — failed to create FSEvents stream"
+            streamRef <-
+                FSEventStreamCreate(
+                    nativeint 0,
+                    callback,
+                    nativeint 0,
+                    cfArrayRef,
+                    kFSEventStreamEventIdSinceNow,
+                    latencySeconds,
+                    flags
+                )
 
-        queueRef <- dispatch_queue_create ("com.fshotwatch.fsevents", nativeint 0)
-        FSEventStreamSetDispatchQueue(streamRef, queueRef)
+            if streamRef = nativeint 0 then
+                failwith "FSEventStreamCreate returned null — failed to create FSEvents stream"
 
-        if not (FSEventStreamStart(streamRef)) then
-            failwith "FSEventStreamStart returned false — failed to start FSEvents stream"
+            queueRef <- dispatch_queue_create ("com.fshotwatch.fsevents", nativeint 0)
+
+            if queueRef = nativeint 0 then
+                failwith "dispatch_queue_create returned null — failed to create dispatch queue"
+
+            FSEventStreamSetDispatchQueue(streamRef, queueRef)
+
+            if not (FSEventStreamStart(streamRef)) then
+                failwith "FSEventStreamStart returned false — failed to start FSEvents stream"
+        with ex ->
+            cleanup ()
+            raise ex
 
     /// Returns true if the stream was successfully created and started.
-    member _.IsRunning = streamRef <> nativeint 0 && not disposed
+    member _.IsRunning =
+        Volatile.Read(&streamRef) <> nativeint 0 && not (Volatile.Read(&disposed))
 
     interface IDisposable with
         member _.Dispose() =
-            if not disposed then
-                disposed <- true
-
-                if streamRef <> nativeint 0 then
-                    FSEventStreamStop(streamRef)
-                    FSEventStreamInvalidate(streamRef)
-                    FSEventStreamRelease(streamRef)
-                    streamRef <- nativeint 0
-
-                if queueRef <> nativeint 0 then
-                    dispatch_release (queueRef)
-                    queueRef <- nativeint 0
-
-                // Release CF objects
-                for s in cfStringRefs do
-                    if s <> nativeint 0 then
-                        CFRelease(s)
-
-                cfStringRefs <- [||]
-
-                if cfArrayRef <> nativeint 0 then
-                    CFRelease(cfArrayRef)
-                    cfArrayRef <- nativeint 0
-
-                if callbackHandle.IsAllocated then
-                    callbackHandle.Free()
+            if not (Volatile.Read(&disposed)) then
+                Volatile.Write(&disposed, true)
+                cleanup ()
 
 /// Create an FsEventStream watching the given directories.
 /// The callback is invoked on a GCD background thread with each changed file path.
