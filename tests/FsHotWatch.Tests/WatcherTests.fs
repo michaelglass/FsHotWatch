@@ -84,13 +84,6 @@ let ``classifyChange maps project.assets.json to SourceChanged`` () =
     | other -> Assert.Fail($"Expected SourceChanged (fallthrough), got %A{other}")
 
 // === Integration test: verify FileWatcher.create produces a working watcher ===
-// Uses polling watcher on macOS for reliability.
-
-do
-    if
-        System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.OSX)
-    then
-        Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "1")
 
 /// Poll until condition is true or timeout.
 let private waitUntil (condition: unit -> bool) (timeoutMs: int) =
