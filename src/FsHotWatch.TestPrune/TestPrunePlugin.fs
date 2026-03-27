@@ -42,8 +42,7 @@ type TestPrunePlugin
         ?extensions: ITestPruneExtension list,
         ?beforeRun: unit -> unit,
         ?afterRun: TestResults -> unit,
-        ?coverageArgs: string -> string,
-        ?flushOrder: unit -> string list
+        ?coverageArgs: string -> string
     ) =
     let db = Database.create dbPath
 
@@ -242,23 +241,13 @@ type TestPrunePlugin
             return testResults
         }
 
-    /// Flush accumulated per-file analysis results to the DB, one RebuildForProject
-    /// call per project with all files combined. This preserves cross-file dependency
-    /// edges (e.g. test→prod) that per-file rebuilds would destroy.
-    /// Projects are flushed in topological order (leaves first) so that cross-project
-    /// dependency INSERT JOINs find their target symbols already in the DB.
+    /// Flush accumulated per-file analysis results to the DB in a single RebuildProjects
+    /// call. Batching all projects together ensures cross-project dependency edges resolve
+    /// correctly (all symbols inserted before any deps, in one transaction).
     let flushPendingAnalysis () =
-        let pendingKeys = pendingAnalysis.Keys |> Set.ofSeq
+        let allResults = ResizeArray<AnalysisResult>()
 
-        let projects =
-            match flushOrder with
-            | Some getOrder ->
-                let ordered = getOrder () |> List.filter pendingKeys.Contains
-                let remaining = pendingKeys - (Set.ofList ordered)
-                ordered @ (Set.toList remaining)
-            | None -> pendingKeys |> Set.toList
-
-        for projectName in projects do
+        for projectName in pendingAnalysis.Keys |> Seq.toList do
             match pendingAnalysis.TryRemove(projectName) with
             | true, bag ->
                 let items = bag |> Seq.toList
@@ -269,8 +258,11 @@ type TestPrunePlugin
                       TestMethods = items |> List.collect (fun r -> r.TestMethods) }
 
                 Logging.info "test-prune" $"Flushing %d{items.Length} files for %s{projectName} to DB"
-                db.RebuildForProject(projectName, combined)
+                allResults.Add(combined)
             | false, _ -> ()
+
+        if allResults.Count > 0 then
+            db.RebuildProjects(Seq.toList allResults)
 
     /// Run tests with impact-analysis filtering (called from OnBuildCompleted).
     let runTests (ctx: PluginContext) (configs: TestConfig list) =

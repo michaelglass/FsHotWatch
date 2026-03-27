@@ -30,6 +30,6 @@
 
   <ItemGroup>
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
-    <PackageReference Include="TestPrune.Core" Version="0.1.0-alpha.3" />
+    <PackageReference Include="TestPrune.Core" Version="0.1.0-alpha.4" />
   </ItemGroup>
 </Project>
