@@ -374,7 +374,40 @@ let createProjectSnapshot (projectOptions: FSharpProjectOptions) =
 
     FSharpProjectSnapshot.FromOptions(projectOptions, getFileSnapshot)
 
+/// Detect 'open' statements in source code to find cross-file dependencies.
+let private detectOpenedModules (source: string) : string list =
+    source.Split('\n')
+    |> Array.map (fun line ->
+        let trimmed = line.Trim()
+        if trimmed.StartsWith("open ") then
+            trimmed.Substring(5).Trim()
+        else
+            "")
+    |> Array.filter (fun s -> not (String.IsNullOrEmpty(s)))
+    |> Array.toList
+
+/// Find script files in the same directory that match opened modules.
+let private findRelatedScriptFiles (currentFile: string) (openedModules: string list) : string list =
+    if List.isEmpty openedModules then
+        []
+    else
+        let dirPath = Path.GetDirectoryName(currentFile)
+
+        try
+            let availableFiles =
+                Directory.GetFiles(dirPath, "*.fsx")
+                |> Array.filter (fun f -> f <> currentFile)
+                |> Array.toList
+
+            availableFiles
+            |> List.filter (fun f ->
+                let fileName = Path.GetFileNameWithoutExtension(f)
+                openedModules |> List.exists (fun m -> m = fileName))
+        with _ ->
+            []
+
 /// Convenience: create project options from a script source string.
+/// Detects 'open' statements and includes related script files in the SourceFiles array.
 let getScriptOptions (checker: FSharpChecker) (sourceFileName: string) (source: string) =
     async {
         let sourceText = SourceText.ofString source
@@ -382,5 +415,22 @@ let getScriptOptions (checker: FSharpChecker) (sourceFileName: string) (source: 
         let! projOptions, _diagnostics =
             checker.GetProjectOptionsFromScript(sourceFileName, sourceText, assumeDotNetFramework = false)
 
-        return projOptions
+        // Detect opened modules and find related script files
+        let openedModules = detectOpenedModules source
+        let relatedFiles = findRelatedScriptFiles sourceFileName openedModules
+
+        // Include related files in the project options
+        let enhancedSourceFiles =
+            if List.isEmpty relatedFiles then
+                projOptions.SourceFiles
+            else
+                (relatedFiles |> List.toArray)
+                |> Array.append projOptions.SourceFiles
+                |> Array.distinct
+
+        let enhancedOptions =
+            { projOptions with
+                SourceFiles = enhancedSourceFiles }
+
+        return enhancedOptions
     }
