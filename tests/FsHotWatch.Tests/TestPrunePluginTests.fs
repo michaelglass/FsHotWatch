@@ -64,7 +64,8 @@ let ``test-prune error path sets Failed status on null check results`` () =
           Source = ""
           ParseResults = Unchecked.defaultof<_>
           CheckResults = Unchecked.defaultof<_>
-          ProjectOptions = Unchecked.defaultof<_> }
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = 0L }
 
     try
         host.EmitFileChecked(fakeResult)
@@ -98,7 +99,8 @@ let ``changed-files tracks files after emit with valid relative path`` () =
               Source = "module Lib\nlet x = 1\n"
               ParseResults = Unchecked.defaultof<_>
               CheckResults = Unchecked.defaultof<_>
-              ProjectOptions = Unchecked.defaultof<_> }
+              ProjectOptions = Unchecked.defaultof<_>
+              Version = 0L }
 
         try
             host.EmitFileChecked(fakeResult)
@@ -126,7 +128,8 @@ let ``duplicate file checks do not duplicate in changed-files list`` () =
               Source = "module Dup\n"
               ParseResults = Unchecked.defaultof<_>
               CheckResults = Unchecked.defaultof<_>
-              ProjectOptions = Unchecked.defaultof<_> }
+              ProjectOptions = Unchecked.defaultof<_>
+              Version = 0L }
 
         for _ in 1..2 do
             try
@@ -328,7 +331,8 @@ let ``plugin reports Running status on FileChecked after tests complete`` () =
               Source = "module New"
               ParseResults = Unchecked.defaultof<_>
               CheckResults = Unchecked.defaultof<_>
-              ProjectOptions = Unchecked.defaultof<_> }
+              ProjectOptions = Unchecked.defaultof<_>
+              Version = 0L }
 
         try
             host.EmitFileChecked(fakeResult)

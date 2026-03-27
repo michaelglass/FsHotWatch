@@ -43,7 +43,8 @@ let ``lint error path sets Failed status on null check results`` () =
           Source = ""
           ParseResults = Unchecked.defaultof<_>
           CheckResults = Unchecked.defaultof<_>
-          ProjectOptions = Unchecked.defaultof<_> }
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = 0L }
 
     try
         host.EmitFileChecked(fakeResult)
@@ -90,7 +91,8 @@ let ``lint error path with empty source triggers failure`` () =
           Source = "module Empty"
           ParseResults = Unchecked.defaultof<_>
           CheckResults = Unchecked.defaultof<_>
-          ProjectOptions = Unchecked.defaultof<_> }
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = 0L }
 
     try
         host.EmitFileChecked(fakeResult)

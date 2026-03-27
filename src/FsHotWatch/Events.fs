@@ -31,6 +31,8 @@ type FileCheckResult =
         CheckResults: FSharpCheckFileResults
         /// FSharpProjectOptions used when checking this file.
         ProjectOptions: FSharpProjectOptions
+        /// Monotonic version counter — higher means newer.
+        Version: int64
     }
 
 /// Result of checking all files in a project.
