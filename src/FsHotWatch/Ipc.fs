@@ -22,7 +22,7 @@ let private formatStatus (status: PluginStatus) =
 type DaemonRpcConfig =
     { Host: PluginHost
       RequestShutdown: unit -> unit
-      RequestScan: unit -> unit
+      RequestScan: bool -> unit
       GetScanStatus: unit -> string
       GetScanGeneration: unit -> int64
       TriggerBuild: unit -> Async<unit>
@@ -68,9 +68,10 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
         "shutting down"
 
     /// Trigger a full scan. Returns the generation counter to pass to WaitForScan.
-    member _.Scan() : string =
+    /// When force=true, bypasses the jj guard to re-check all files regardless of commit_id.
+    member _.Scan(force: bool) : string =
         let gen = config.GetScanGeneration()
-        config.RequestScan()
+        config.RequestScan(force)
         $"scan started:%d{gen}"
 
     /// Get current scan progress without blocking.
@@ -254,8 +255,8 @@ module IpcClient =
     /// Shut down the daemon gracefully.
     let shutdown (pipeName: string) : Async<string> = invoke pipeName "Shutdown" [||]
 
-    /// Trigger a full scan of all registered files.
-    let scan (pipeName: string) : Async<string> = invoke pipeName "Scan" [||]
+    /// Trigger a full scan of all registered files. When force=true, bypasses jj guard.
+    let scan (pipeName: string) (force: bool) : Async<string> = invoke pipeName "Scan" [| force |]
 
     /// Get current scan progress.
     let scanStatus (pipeName: string) : Async<string> = invoke pipeName "ScanStatus" [||]

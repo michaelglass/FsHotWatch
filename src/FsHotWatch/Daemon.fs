@@ -6,6 +6,7 @@ open System.Threading
 open System.Threading.Tasks
 open FSharp.Compiler.CodeAnalysis
 open Ionide.ProjInfo
+open System.Text.Json
 open FsHotWatch.CheckCache
 open FsHotWatch.CheckPipeline
 open FsHotWatch.ErrorLedger
@@ -293,14 +294,25 @@ type Daemon =
             | Some checkResult ->
                 do! this.Host.EmitFileCheckedParallel(checkResult)
                 reportFcsDiagnostics this.Host checkResult
-                return $"{{\"status\": \"rechecked\", \"file\": \"%s{checkResult.File}\"}}"
-            | None -> return $"{{\"status\": \"failed\", \"file\": \"%s{System.IO.Path.GetFullPath(filePath)}\"}}"
+
+                return
+                    JsonSerializer.Serialize(
+                        {| status = "rechecked"
+                           file = checkResult.File |}
+                    )
+            | None ->
+                return
+                    JsonSerializer.Serialize(
+                        {| status = "failed"
+                           file = Path.GetFullPath(filePath) |}
+                    )
         }
 
     /// Scan all registered files — check each one and emit events to plugins.
     /// Blocks until complete. If a scan is already running, waits for it to finish.
-    member this.ScanAll() =
+    member this.ScanAll(?force: bool) =
         async {
+            let force = defaultArg force false
             let! ct = Async.CancellationToken
             do! this.ScanSemaphore.WaitAsync(ct) |> Async.AwaitTask
 
@@ -313,10 +325,18 @@ type Daemon =
                 this.ScanState <- Scanning(total, 0, System.DateTime.UtcNow)
 
                 if not files.IsEmpty then
-                    // jj guard: determine which files actually need checking
+                    // jj guard: determine which files actually need checking (bypassed when force=true)
                     let scanDecision =
                         match this.JjGuard with
-                        | Some guard -> guard.BeginScan()
+                        | Some guard ->
+                            // Always call BeginScan to snapshot currentCommitId for CommitScanSuccess
+                            let decision = guard.BeginScan()
+
+                            if force then
+                                Logging.info "scan" "force scan: bypassing jj guard"
+                                JjHelper.CheckAll
+                            else
+                                decision
                         | None -> JjHelper.CheckAll
 
                     match scanDecision with
@@ -435,8 +455,8 @@ type Daemon =
             use _ = this.Watcher :> System.IDisposable
 
             try
-                let onScan () =
-                    Async.StartAsTask(this.ScanAll()) |> ignore
+                let onScan (force: bool) =
+                    Async.StartAsTask(this.ScanAll(force = force)) |> ignore
 
                 let triggerBuild () =
                     async {
