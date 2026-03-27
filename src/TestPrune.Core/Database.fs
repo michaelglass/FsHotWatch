@@ -123,7 +123,13 @@ type Database(dbPath: string) =
     /// All symbols are inserted before any dependencies, so cross-project edges resolve correctly.
     /// When called with a subset of projects, dependency edges to symbols in other projects will
     /// only resolve if those symbols already exist in the database from a prior call.
-    member _.RebuildProjects(results: AnalysisResult list) =
+    /// Optional fileKeys/projectKeys are written in the same transaction for atomicity.
+    member _.RebuildProjects
+        (
+            results: AnalysisResult list,
+            ?fileKeys: (string * string) list,
+            ?projectKeys: (string * string) list
+        ) =
         let sourceFiles =
             results
             |> List.collect (fun r -> r.Symbols |> List.map (fun s -> s.SourceFile))
@@ -134,19 +140,25 @@ type Database(dbPath: string) =
         use txn = conn.BeginTransaction()
 
         try
-            for file in sourceFiles do
+            // Batch delete using parameterized IN-clause
+            if not sourceFiles.IsEmpty then
+                let paramNames = sourceFiles |> List.mapi (fun i _ -> $"@f%d{i}")
+                let placeholders = String.Join(", ", paramNames)
+
                 use delCmd = conn.CreateCommand()
                 delCmd.Transaction <- txn
 
                 delCmd.CommandText <-
-                    """
-                    DELETE FROM dependencies WHERE from_symbol_id IN (SELECT id FROM symbols WHERE source_file = @file)
-                        OR to_symbol_id IN (SELECT id FROM symbols WHERE source_file = @file);
-                    DELETE FROM test_methods WHERE symbol_id IN (SELECT id FROM symbols WHERE source_file = @file);
-                    DELETE FROM symbols WHERE source_file = @file;
+                    $"""
+                    DELETE FROM dependencies WHERE from_symbol_id IN (SELECT id FROM symbols WHERE source_file IN (%s{placeholders}))
+                        OR to_symbol_id IN (SELECT id FROM symbols WHERE source_file IN (%s{placeholders}));
+                    DELETE FROM test_methods WHERE symbol_id IN (SELECT id FROM symbols WHERE source_file IN (%s{placeholders}));
+                    DELETE FROM symbols WHERE source_file IN (%s{placeholders});
                     """
 
-                delCmd.Parameters.AddWithValue("@file", file) |> ignore
+                sourceFiles
+                |> List.iteri (fun i file -> delCmd.Parameters.AddWithValue($"@f%d{i}", file) |> ignore)
+
                 delCmd.ExecuteNonQuery() |> ignore
 
             let now = DateTime.UtcNow.ToString("o")
@@ -224,6 +236,41 @@ type Database(dbPath: string) =
                     pTestClass.Value <- tm.TestClass
                     pTestMethod.Value <- tm.TestMethod
                     tmCmd.ExecuteNonQuery() |> ignore
+
+            // Write cache keys in the same transaction
+            match fileKeys with
+            | Some keys when not keys.IsEmpty ->
+                use fkCmd = conn.CreateCommand()
+                fkCmd.Transaction <- txn
+
+                fkCmd.CommandText <-
+                    "INSERT OR REPLACE INTO file_keys (source_file, key) VALUES (@sourceFile, @key)"
+
+                let pFkFile = fkCmd.Parameters.Add("@sourceFile", SqliteType.Text)
+                let pFkKey = fkCmd.Parameters.Add("@key", SqliteType.Text)
+
+                for (file, key) in keys do
+                    pFkFile.Value <- file
+                    pFkKey.Value <- key
+                    fkCmd.ExecuteNonQuery() |> ignore
+            | _ -> ()
+
+            match projectKeys with
+            | Some keys when not keys.IsEmpty ->
+                use pkCmd = conn.CreateCommand()
+                pkCmd.Transaction <- txn
+
+                pkCmd.CommandText <-
+                    "INSERT OR REPLACE INTO project_keys (project_name, key) VALUES (@projectName, @key)"
+
+                let pPkName = pkCmd.Parameters.Add("@projectName", SqliteType.Text)
+                let pPkKey = pkCmd.Parameters.Add("@key", SqliteType.Text)
+
+                for (name, key) in keys do
+                    pPkName.Value <- name
+                    pPkKey.Value <- key
+                    pkCmd.ExecuteNonQuery() |> ignore
+            | _ -> ()
 
             txn.Commit()
         with ex ->

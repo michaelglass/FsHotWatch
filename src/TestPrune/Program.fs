@@ -242,6 +242,9 @@ let runIndexWith
 
         let levels = topoLevels projectInfos Set.empty
 
+        let allFileKeys = System.Collections.Concurrent.ConcurrentBag<string * string>()
+        let allProjectKeys = System.Collections.Concurrent.ConcurrentBag<string * string>()
+
         let indexProject (fsprojPath: string, compileFiles, projectRefs) : AnalysisResult option =
             let projName = Path.GetFileNameWithoutExtension(fsprojPath)
 
@@ -306,7 +309,7 @@ let runIndexWith
                                         if firstChangedIndex.IsNone then
                                             firstChangedIndex <- Some idx
 
-                                        db.SetFileKey(relPath, fileKey)
+                                        allFileKeys.Add(relPath, fileKey)
 
                                         Some
                                             {| Symbols = normalizeSymbolPaths repoRoot result.Symbols
@@ -324,7 +327,7 @@ let runIndexWith
                           Dependencies = results |> List.collect (fun r -> r.Dependencies)
                           TestMethods = results |> List.collect (fun r -> r.TestMethods) }
 
-                    db.SetProjectKey(projName, hash)
+                    allProjectKeys.Add(projName, hash)
                     reindexedProjects.TryAdd(fsprojPath, true) |> ignore
                     Threading.Interlocked.Add(&totalSymbols, combined.Symbols.Length) |> ignore
                     Threading.Interlocked.Add(&totalDeps, combined.Dependencies.Length) |> ignore
@@ -356,7 +359,11 @@ let runIndexWith
             allResults <- allResults @ (levelResults |> List.choose id)
 
         if not allResults.IsEmpty then
-            db.RebuildProjects(allResults)
+            db.RebuildProjects(
+                allResults,
+                fileKeys = (allFileKeys |> Seq.toList),
+                projectKeys = (allProjectKeys |> Seq.toList)
+            )
 
         eprintfn $"Indexed %d{totalSymbols} symbols, %d{totalDeps} dependencies, %d{totalTests} test methods"
 
