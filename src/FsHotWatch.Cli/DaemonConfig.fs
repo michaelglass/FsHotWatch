@@ -315,11 +315,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                 repoRoot,
                 testConfigs = testConfigs,
                 ?beforeRun = beforeRun,
-                ?coverageArgs = coverageArgs,
-                flushOrder =
-                    fun () ->
-                        daemon.Graph.GetTopologicalOrder()
-                        |> List.map (System.IO.Path.GetFileNameWithoutExtension)
+                ?coverageArgs = coverageArgs
             )
 
         daemon.Register(plugin)

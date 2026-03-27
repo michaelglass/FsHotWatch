@@ -4,6 +4,8 @@ open System
 open System.IO
 open Xunit
 open Swensen.Unquote
+open FSharp.Compiler.CodeAnalysis
+open FsHotWatch.CheckPipeline
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
@@ -272,7 +274,7 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
                     Kind = DependencyKind.Calls } ]
               TestMethods = [ testMethod1 ] }
 
-        db.RebuildForProject("TestProj", result1)
+        db.RebuildProjects([ result1 ])
 
         let symbol2 =
             { symbol1 with
@@ -283,7 +285,7 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
 
         // Correct pattern: read BEFORE write
         let storedBefore = db.GetSymbolsInFile("src/Lib.fs")
-        db.RebuildForProject("TestProj", result2)
+        db.RebuildProjects([ result2 ])
 
         test <@ storedBefore.Length = 1 @>
         test <@ storedBefore.[0].LineEnd = 1 @>
@@ -448,3 +450,173 @@ let ``run-tests not registered when no testConfigs`` () =
 let ``dispose is callable`` () =
     let plugin = TestPrunePlugin(":memory:", "/tmp") :> IFsHotWatchPlugin
     plugin.Dispose()
+
+// Inline FactAttribute so test detection works without xUnit assemblies in script options.
+// Uses module-level [<Fact>] functions — the pattern that analyzeSource reliably detects
+// via FCS symbol uses without needing resolved assembly references.
+let private testSource moduleName =
+    $"""module {moduleName}
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+[<Fact>]
+let myTest () = ()
+"""
+
+// Source with a prod function that a test can call to create a dependency edge.
+let private testSourceWithDep moduleName =
+    $"""module {moduleName}
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+let compute x = x + 1
+
+[<Fact>]
+let computeTest () =
+    let _ = compute 1
+    ()
+"""
+
+/// Emit a file through the CheckPipeline and wait for the plugin's async analysis to settle.
+/// analyzeSource inside OnFileChecked runs async — the caller must not trigger
+/// BuildSucceeded (which flushes pendingAnalysis) until the analysis completes.
+let private emitFileAndWait
+    (checker: FSharpChecker)
+    (pipeline: CheckPipeline)
+    (host: PluginHost)
+    (filePath: string)
+    (source: string)
+    =
+    async {
+        File.WriteAllText(filePath, source)
+        let! projOptions = getScriptOptions checker filePath source
+        pipeline.RegisterProject(filePath, projOptions)
+        let! result = pipeline.CheckFile(filePath)
+
+        match result with
+        | Some r -> host.EmitFileChecked(r)
+        | None -> failwith $"CheckFile returned None for {filePath}"
+
+        let deadline = DateTime.UtcNow.AddSeconds(10.0)
+        let mutable settled = false
+
+        while not settled && DateTime.UtcNow < deadline do
+            match host.GetStatus("test-prune") with
+            | Some(Running _) -> System.Threading.Thread.Sleep(50)
+            | _ -> settled <- true
+    }
+
+[<Fact>]
+let ``after scan and build, test methods are in the sqlite database`` () =
+    withTmpDir "tp-db-scan" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let testFile = Path.Combine(tmpDir, "MyTests.fsx")
+
+        let checker = FSharpChecker.Create(keepAssemblyContents = true)
+        let pipeline = CheckPipeline(checker)
+
+        let testConfigs =
+            [ { Project = "EchoTests"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
+
+        let host = PluginHost.create checker tmpDir
+        let plugin = TestPrunePlugin(dbPath, tmpDir, testConfigs = testConfigs)
+        host.Register(plugin)
+
+        // emitFileAndWait ensures analyzeSource completes before BuildSucceeded flushes pendingAnalysis
+        emitFileAndWait checker pipeline host testFile (testSource "MyTests")
+        |> Async.RunSynchronously
+
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        let deadline = DateTime.UtcNow.AddSeconds(15.0)
+        let mutable settled = false
+
+        while not settled && DateTime.UtcNow < deadline do
+            match host.GetStatus("test-prune") with
+            | Some(Running _) -> System.Threading.Thread.Sleep(50)
+            | _ -> settled <- true
+
+        let db = Database.create dbPath
+        let relPath = Path.GetRelativePath(tmpDir, testFile).Replace('\\', '/')
+        let testMethods = db.GetTestMethodsInFile(relPath)
+
+        test <@ testMethods.Length > 0 @>
+        test <@ testMethods |> List.exists (fun t -> t.TestMethod = "myTest") @>
+
+        test
+            <@
+                testMethods
+                |> List.exists (fun t -> t.TestClass.EndsWith("MyTests", StringComparison.Ordinal))
+            @>)
+
+[<Fact>]
+let ``after a symbol change, affected-tests identifies the dependent test`` () =
+    // Single-file: prod function + test function in the same .fsx.
+    // First scan populates DB. Second scan changes compute → detectChanges finds it
+    // changed → QueryAffectedTests returns computeTest.
+    withTmpDir "tp-minimal" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let srcFile = Path.Combine(tmpDir, "All.fsx")
+
+        let testConfigs =
+            [ { Project = "MyTests"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = Some "-- --filter-class {classes}"
+                ClassJoin = "|" } ]
+
+        let checker = FSharpChecker.Create(keepAssemblyContents = true)
+        let pipeline = CheckPipeline(checker)
+        let host = PluginHost.create checker tmpDir
+        let plugin = TestPrunePlugin(dbPath, tmpDir, testConfigs = testConfigs)
+        host.Register(plugin)
+
+        // First scan: populate DB with symbols and dependency edge
+        emitFileAndWait checker pipeline host srcFile (testSourceWithDep "All")
+        |> Async.RunSynchronously
+
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        let deadline1 = DateTime.UtcNow.AddSeconds(15.0)
+        let mutable settled1 = false
+
+        while not settled1 && DateTime.UtcNow < deadline1 do
+            match host.GetStatus("test-prune") with
+            | Some(Running _) -> System.Threading.Thread.Sleep(50)
+            | _ -> settled1 <- true
+
+        // Second scan: change compute body so ContentHash differs
+        let changedSrc =
+            """module All
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+let compute x = x + 2
+
+[<Fact>]
+let computeTest () =
+    let _ = compute 1
+    ()
+"""
+
+        emitFileAndWait checker pipeline host srcFile changedSrc
+        |> Async.RunSynchronously
+
+        // After the second FileChecked, affected-tests should contain computeTest
+        // (compute changed → QueryAffectedTests finds computeTest via the dependency edge)
+        let affectedResult =
+            host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
+
+        test <@ affectedResult.IsSome @>
+        test <@ affectedResult.Value.Contains("computeTest") @>)
