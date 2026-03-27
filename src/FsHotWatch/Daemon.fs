@@ -6,6 +6,7 @@ open System.Threading
 open System.Threading.Tasks
 open FSharp.Compiler.CodeAnalysis
 open Ionide.ProjInfo
+open FsHotWatch.CheckCache
 open FsHotWatch.CheckPipeline
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
@@ -441,7 +442,25 @@ module Daemon =
     /// Create a daemon with the given checker (internal, for testing).
     let internal createWith (checker: FSharpChecker) (repoRoot: string) =
         let host = PluginHost.create checker repoRoot
-        let pipeline = CheckPipeline(checker)
+
+        // Set up check result cache in .fshw/cache/
+        let cacheDir = Path.Combine(repoRoot, ".fshw", "cache")
+
+        let cacheBackend =
+            FsHotWatch.FileCheckCache.FileCheckCache(cacheDir) :> ICheckCacheBackend
+
+        let cacheKeyProvider =
+            match JjHelper.currentCommitId () with
+            | Some _ ->
+                Logging.info "daemon" "Using jj-based cache key provider"
+                JjCacheKeyProvider() :> ICacheKeyProvider
+            | None ->
+                Logging.info "daemon" "Using timestamp-based cache key provider"
+                TimestampCacheKeyProvider() :> ICacheKeyProvider
+
+        let pipeline =
+            CheckPipeline(checker, cacheBackend = cacheBackend, cacheKeyProvider = cacheKeyProvider)
+
         let graph = ProjectGraph()
         let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
         let loader = WorkspaceLoader.Create(toolsPath, [])
