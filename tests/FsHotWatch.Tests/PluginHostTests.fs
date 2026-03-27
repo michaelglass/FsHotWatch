@@ -378,7 +378,8 @@ let ``EmitFileCheckedParallel runs handlers concurrently`` () =
           Source = ""
           ParseResults = Unchecked.defaultof<_>
           CheckResults = Unchecked.defaultof<_>
-          ProjectOptions = Unchecked.defaultof<_> }
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = 0L }
 
     host.EmitFileCheckedParallel(dummyResult) |> Async.RunSynchronously
 
