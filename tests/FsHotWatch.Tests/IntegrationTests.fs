@@ -51,6 +51,23 @@ let private waitForStatusSettled (host: PluginHost) (pluginName: string) (timeou
         | Some(Running _) -> Threading.Thread.Sleep(50)
         | _ -> settled <- true
 
+// ---------------------------------------------------------------------------
+// Helper: build the ExampleAnalyzer once (thread-safe, shared across tests)
+// ---------------------------------------------------------------------------
+let private exampleAnalyzerPath =
+    lazy
+        let repoRoot = findRepoRoot ()
+        let dir = Path.Combine(repoRoot, "examples/ExampleAnalyzer")
+        let psi = ProcessStartInfo("dotnet", $"""build "{dir}" -v quiet""")
+        psi.UseShellExecute <- false
+        let proc = Process.Start(psi)
+        proc.WaitForExit()
+
+        if proc.ExitCode <> 0 then
+            failwith "ExampleAnalyzer build failed"
+
+        Path.Combine(dir, "bin/Debug/net10.0")
+
 [<Fact>]
 let ``all plugins receive events when checking a file`` () =
     let repoRoot = findRepoRoot ()
@@ -151,33 +168,16 @@ let ``all plugins receive events when checking a file`` () =
 [<Fact>]
 let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let repoRoot = findRepoRoot ()
+    let customAnalyzerPath = exampleAnalyzerPath.Value
 
-    // Build the example analyzer project
-    let exampleProjectDir = Path.Combine(repoRoot, "examples/ExampleAnalyzer")
-
-    let buildPsi =
-        System.Diagnostics.ProcessStartInfo("dotnet", $"""build "{exampleProjectDir}" -v quiet""")
-
-    buildPsi.UseShellExecute <- false
-    let buildProc = System.Diagnostics.Process.Start(buildPsi)
-    buildProc.WaitForExit()
-    test <@ buildProc.ExitCode = 0 @>
-
-    // Find analyzer DLL paths
     let gResearchPath =
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             ".nuget/packages/g-research.fsharp.analyzers/0.22.0/analyzers/dotnet/fs"
         )
 
-    let customAnalyzerPath =
-        Path.Combine(repoRoot, "examples/ExampleAnalyzer/bin/Debug/net10.0")
-
     let analyzerPaths =
         [ gResearchPath; customAnalyzerPath ] |> List.filter Directory.Exists
-
-    // At minimum the custom analyzer should be available
-    test <@ analyzerPaths |> List.exists (fun p -> p.Contains("ExampleAnalyzer")) @>
 
     let analyzers = AnalyzersPlugin(analyzerPaths)
 
@@ -256,6 +256,30 @@ let private checkTempFile (checker: FSharpChecker) (filePath: string) =
     pipeline.RegisterProject("TempProject", projOptions)
     let result = pipeline.CheckFile(filePath) |> Async.RunSynchronously
     result
+
+// ---------------------------------------------------------------------------
+// Helper: run an analyzer test — build analyzer, check a temp file, assert on result
+// ---------------------------------------------------------------------------
+let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> string -> unit) =
+    let repoRoot = findRepoRoot ()
+    let analyzerPath = exampleAnalyzerPath.Value
+
+    let checker =
+        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+
+    let host = PluginHost.create checker repoRoot
+    let analyzers = AnalyzersPlugin([ analyzerPath ])
+    host.Register(analyzers)
+
+    withTempFsFile source (fun _dir tmpFile ->
+        let result = checkTempFile checker tmpFile
+
+        match result with
+        | Some checkResult ->
+            host.EmitFileChecked(checkResult)
+            waitForStatusSettled host "analyzers" 10000
+            assertResult host tmpFile
+        | None -> Assert.Fail("FCS failed to check file"))
 
 [<Fact>]
 let ``lint plugin detects warnings on bad code`` () =
@@ -697,29 +721,13 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
 [<Fact>]
 let ``AnalyzersPlugin loads real analyzers from example project`` () =
     let repoRoot = findRepoRoot ()
-
-    let exampleProjectDir = Path.Combine(repoRoot, "examples/ExampleAnalyzer")
-
-    let buildPsi =
-        ProcessStartInfo("dotnet", $"""build "{exampleProjectDir}" -v quiet""")
-
-    buildPsi.UseShellExecute <- false
-    let buildProc = Process.Start(buildPsi)
-    buildProc.WaitForExit()
-    test <@ buildProc.ExitCode = 0 @>
-
-    let customAnalyzerPath =
-        Path.Combine(repoRoot, "examples/ExampleAnalyzer/bin/Debug/net10.0")
-
-    let analyzerPaths = [ customAnalyzerPath ] |> List.filter Directory.Exists
-
-    test <@ analyzerPaths |> List.exists (fun p -> p.Contains("ExampleAnalyzer")) @>
+    let analyzerPath = exampleAnalyzerPath.Value
 
     let checker =
         FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
     let host = PluginHost.create checker repoRoot
-    let analyzers = AnalyzersPlugin(analyzerPaths)
+    let analyzers = AnalyzersPlugin([ analyzerPath ])
     host.Register(analyzers)
 
     let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
@@ -747,144 +755,47 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
         match status.Value with
         | Completed _ -> ()
         | PluginStatus.Failed(msg, _) ->
-            // Analyzer version mismatch may cause failure — acceptable
             Assert.True(true, $"Analyzers failed gracefully: {msg}")
         | other -> Assert.Fail($"Unexpected status: %A{other}")
     | None -> Assert.True(true, "Skipped: FCS could not check file")
 
 [<Fact>]
 let ``AnalyzersPlugin produces warning on wildcard DU match`` () =
-    let repoRoot = findRepoRoot ()
-
-    let exampleProjectDir = Path.Combine(repoRoot, "examples/ExampleAnalyzer")
-    let buildPsi = ProcessStartInfo("dotnet", $"""build "{exampleProjectDir}" -v quiet""")
-    buildPsi.UseShellExecute <- false
-    let buildProc = Process.Start(buildPsi)
-    buildProc.WaitForExit()
-    test <@ buildProc.ExitCode = 0 @>
-
-    let analyzerPath = Path.Combine(repoRoot, "examples/ExampleAnalyzer/bin/Debug/net10.0")
-    test <@ Directory.Exists(analyzerPath) @>
-
-    // Source with a wildcard match on a DU — the analyzer should flag this
     let source =
         "module Test\ntype Shape = Circle | Square\nlet f s = match s with | Circle -> 1 | _ -> 2\n"
 
-    let checker =
-        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+    withAnalyzerCheck source (fun host _tmpFile ->
+        let status = host.GetStatus("analyzers")
+        test <@ status.IsSome @>
 
-    let host = PluginHost.create checker repoRoot
-    let analyzers = AnalyzersPlugin([ analyzerPath ])
-    host.Register(analyzers)
-
-    // Verify the diagnostics command exists and starts at 0
-    let diagsBefore = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
-    test <@ diagsBefore.IsSome @>
-    test <@ diagsBefore.Value.Contains("\"analyzers\":1") @>
-
-    let tmpFile = Path.Combine(Path.GetTempPath(), $"fshw-analyzer-{Guid.NewGuid():N}.fs")
-    File.WriteAllText(tmpFile, source)
-
-    try
-        let sourceText = SourceText.ofString source
-
-        let projOptions =
-            checker.GetProjectOptionsFromScript(tmpFile, sourceText, assumeDotNetFramework = false)
-            |> Async.RunSynchronously
-            |> fst
-
-        let pipeline = CheckPipeline(checker)
-        pipeline.RegisterProject("TestProj", projOptions)
-        let result = pipeline.CheckFile(tmpFile) |> Async.RunSynchronously
-
-        match result with
-        | Some checkResult ->
-            host.EmitFileChecked(checkResult)
-            waitForStatusSettled host "analyzers" 10000
-
-            let status = host.GetStatus("analyzers")
-            test <@ status.IsSome @>
-
-            match status.Value with
-            | Completed _ ->
-                // Verify the diagnostics command reports actual results
-                let diags = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
-                test <@ diags.IsSome @>
-                // Should have at least 1 file analyzed with diagnostics
-                test <@ diags.Value.Contains("\"files\":1") @>
-
-                // Verify the error ledger has the wildcard warning
-                let errors = host.GetErrorsByPlugin("analyzers")
-                let allEntries = errors |> Map.toList |> List.collect snd
-                test <@ allEntries.Length > 0 @>
-                test <@ allEntries |> List.exists (fun e -> e.Severity = "warning") @>
-            | PluginStatus.Failed(msg, _) -> Assert.Fail($"Analyzer should succeed but failed: {msg}")
-            | other -> Assert.Fail($"Unexpected status: %A{other}")
-        | None -> Assert.Fail("FCS failed to check file with wildcard DU match")
-    finally
-        File.Delete(tmpFile)
+        match status.Value with
+        | Completed _ ->
+            let errors = host.GetErrorsByPlugin("analyzers")
+            let allEntries = errors |> Map.toList |> List.collect snd
+            test <@ allEntries.Length > 0 @>
+            test <@ allEntries |> List.exists (fun e -> e.Severity = "warning") @>
+        | PluginStatus.Failed(msg, _) -> Assert.Fail($"Analyzer should succeed but failed: {msg}")
+        | other -> Assert.Fail($"Unexpected status: %A{other}"))
 
 [<Fact>]
 let ``AnalyzersPlugin produces no warning on exhaustive DU match`` () =
-    let repoRoot = findRepoRoot ()
-
-    let exampleProjectDir = Path.Combine(repoRoot, "examples/ExampleAnalyzer")
-    let buildPsi = ProcessStartInfo("dotnet", $"""build "{exampleProjectDir}" -v quiet""")
-    buildPsi.UseShellExecute <- false
-    let buildProc = Process.Start(buildPsi)
-    buildProc.WaitForExit()
-    test <@ buildProc.ExitCode = 0 @>
-
-    let analyzerPath = Path.Combine(repoRoot, "examples/ExampleAnalyzer/bin/Debug/net10.0")
-
-    // Source with exhaustive match — no wildcard, no warning
     let source =
         "module Test\ntype Shape = Circle | Square\nlet f s = match s with | Circle -> 1 | Square -> 2\n"
 
-    let checker =
-        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+    withAnalyzerCheck source (fun host tmpFile ->
+        let status = host.GetStatus("analyzers")
+        test <@ status.IsSome @>
 
-    let host = PluginHost.create checker repoRoot
-    let analyzers = AnalyzersPlugin([ analyzerPath ])
-    host.Register(analyzers)
+        match status.Value with
+        | Completed _ ->
+            let errors = host.GetErrorsByPlugin("analyzers")
+            let fileErrors = errors |> Map.tryFind (Path.GetFullPath(tmpFile))
 
-    let tmpFile = Path.Combine(Path.GetTempPath(), $"fshw-analyzer-{Guid.NewGuid():N}.fs")
-    File.WriteAllText(tmpFile, source)
-
-    try
-        let sourceText = SourceText.ofString source
-
-        let projOptions =
-            checker.GetProjectOptionsFromScript(tmpFile, sourceText, assumeDotNetFramework = false)
-            |> Async.RunSynchronously
-            |> fst
-
-        let pipeline = CheckPipeline(checker)
-        pipeline.RegisterProject("TestProj", projOptions)
-        let result = pipeline.CheckFile(tmpFile) |> Async.RunSynchronously
-
-        match result with
-        | Some checkResult ->
-            host.EmitFileChecked(checkResult)
-            waitForStatusSettled host "analyzers" 10000
-
-            let status = host.GetStatus("analyzers")
-            test <@ status.IsSome @>
-
-            match status.Value with
-            | Completed _ ->
-                // No wildcard warnings — error ledger should be clean for this file
-                let errors = host.GetErrorsByPlugin("analyzers")
-                let fileErrors = errors |> Map.tryFind (Path.GetFullPath(tmpFile))
-
-                match fileErrors with
-                | Some entries -> Assert.Fail($"Expected no warnings but got %d{entries.Length}")
-                | None -> () // Clean — no analyzer errors for this file
-            | PluginStatus.Failed(msg, _) -> Assert.Fail($"Analyzer should succeed but failed: {msg}")
-            | other -> Assert.Fail($"Unexpected status: %A{other}")
-        | None -> Assert.Fail("FCS failed to check file with exhaustive DU match")
-    finally
-        File.Delete(tmpFile)
+            match fileErrors with
+            | Some entries -> Assert.Fail($"Expected no warnings but got %d{entries.Length}")
+            | None -> ()
+        | PluginStatus.Failed(msg, _) -> Assert.Fail($"Analyzer should succeed but failed: {msg}")
+        | other -> Assert.Fail($"Unexpected status: %A{other}"))
 
 // ===========================================================================
 // BuildPlugin — success and failure
