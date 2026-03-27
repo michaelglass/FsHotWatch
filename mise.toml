@@ -46,6 +46,10 @@ depends = ["build"]
 # Note: depends on build to ensure CLI binary is compiled.
 # The daemon handles its own build/test/lint cycle internally.
 
+[tasks.cache-clear]
+description = "Clear the check result cache"
+run = "rm -rf .fshw/cache/"
+
 # === Direct tasks (CI, docs, packaging) ===
 
 [tasks.test-direct]

@@ -440,16 +440,27 @@ module Daemon =
     let private projectDebounceMs = 200
 
     /// Create a daemon with the given checker (internal, for testing).
-    let internal createWith (checker: FSharpChecker) (repoRoot: string) =
+    /// When cacheBackend or cacheKeyProvider are None, defaults to FileCheckCache + TimestampCacheKeyProvider.
+    let internal createWith
+        (checker: FSharpChecker)
+        (repoRoot: string)
+        (cacheBackend: ICheckCacheBackend option)
+        (cacheKeyProvider: ICacheKeyProvider option)
+        =
         let host = PluginHost.create checker repoRoot
 
-        // Set up check result cache in .fshw/cache/
-        let cacheDir = Path.Combine(repoRoot, ".fshw", "cache")
+        // Set up check result cache — use provided backend or default to file cache in .fshw/cache/
+        let effectiveBackend =
+            match cacheBackend with
+            | Some b -> b
+            | None ->
+                let cacheDir = Path.Combine(repoRoot, ".fshw", "cache")
+                FsHotWatch.FileCheckCache.FileCheckCache(cacheDir) :> ICheckCacheBackend
 
-        let cacheBackend =
-            FsHotWatch.FileCheckCache.FileCheckCache(cacheDir) :> ICheckCacheBackend
-
-        let pipeline = CheckPipeline(checker, cacheBackend = cacheBackend)
+        let pipeline =
+            match cacheKeyProvider with
+            | Some kp -> CheckPipeline(checker, cacheBackend = effectiveBackend, cacheKeyProvider = kp)
+            | None -> CheckPipeline(checker, cacheBackend = effectiveBackend)
 
         let graph = ProjectGraph()
         let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
@@ -654,7 +665,12 @@ module Daemon =
           ScanSignal = ScanSignal() }
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
-    let create (repoRoot: string) =
+    /// When cacheBackend or cacheKeyProvider are None, defaults to FileCheckCache + TimestampCacheKeyProvider.
+    let create
+        (repoRoot: string)
+        (cacheBackend: ICheckCacheBackend option)
+        (cacheKeyProvider: ICacheKeyProvider option)
+        =
         let checker =
             FSharpChecker.Create(
                 projectCacheSize = 200,
@@ -663,4 +679,4 @@ module Daemon =
                 parallelReferenceResolution = true
             )
 
-        createWith checker repoRoot
+        createWith checker repoRoot cacheBackend cacheKeyProvider
