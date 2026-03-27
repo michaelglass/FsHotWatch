@@ -68,53 +68,69 @@ type AnalysisResult =
       Dependencies: Dependency list
       TestMethods: TestMethodInfo list }
 
+/// Internal classification logic that can be tested with injected symbolClassifier.
+/// This separation allows test code to provide mock symbols that throw exceptions.
+let private tryClassifyEntity (entity: FSharpEntity) : (SymbolKind * string) option =
+    try
+        let fullName = entity.FullName
+
+        if entity.IsFSharpModule then
+            Some(Module, fullName)
+        elif entity.IsFSharpUnion then
+            Some(Type, fullName)
+        elif entity.IsFSharpRecord then
+            Some(Type, fullName)
+        elif entity.IsEnum then
+            Some(Type, fullName)
+        elif entity.IsFSharpAbbreviation then
+            Some(Type, fullName)
+        elif entity.IsClass || entity.IsValueType || entity.IsInterface then
+            Some(Type, fullName)
+        else
+            Some(Type, fullName)
+    with :? InvalidOperationException ->
+        None
+
+let private tryClassifyMemberOrFunction (mfv: FSharpMemberOrFunctionOrValue) : (SymbolKind * string) option =
+    try
+        let fullName = mfv.FullName
+
+        if mfv.IsProperty || mfv.IsPropertyGetterMethod || mfv.IsPropertySetterMethod then
+            Some(Property, fullName)
+        elif mfv.IsUnionCaseTester then
+            // These are the auto-generated Is* properties on DU cases — skip them
+            None
+        elif
+            mfv.FullType.IsFunctionType
+            || mfv.IsFunction
+            || mfv.CurriedParameterGroups.Count > 0
+        then
+            Some(Function, fullName)
+        else
+            Some(Value, fullName)
+    with :? InvalidOperationException ->
+        None
+
+let private tryClassifyUnionCase (uc: FSharpUnionCase) : (SymbolKind * string) option =
+    try
+        Some(DuCase, uc.FullName)
+    with :? InvalidOperationException ->
+        None
+
 let private classifySymbol (symbol: FSharpSymbol) : (SymbolKind * string) option =
     match symbol with
-    | :? FSharpEntity as entity ->
-        try
-            let fullName = entity.FullName
-
-            if entity.IsFSharpModule then
-                Some(Module, fullName)
-            elif entity.IsFSharpUnion then
-                Some(Type, fullName)
-            elif entity.IsFSharpRecord then
-                Some(Type, fullName)
-            elif entity.IsEnum then
-                Some(Type, fullName)
-            elif entity.IsFSharpAbbreviation then
-                Some(Type, fullName)
-            elif entity.IsClass || entity.IsValueType || entity.IsInterface then
-                Some(Type, fullName)
-            else
-                Some(Type, fullName)
-        with :? InvalidOperationException ->
-            None
-    | :? FSharpMemberOrFunctionOrValue as mfv ->
-        try
-            let fullName = mfv.FullName
-
-            if mfv.IsProperty || mfv.IsPropertyGetterMethod || mfv.IsPropertySetterMethod then
-                Some(Property, fullName)
-            elif mfv.IsUnionCaseTester then
-                // These are the auto-generated Is* properties on DU cases — skip them
-                None
-            elif
-                mfv.FullType.IsFunctionType
-                || mfv.IsFunction
-                || mfv.CurriedParameterGroups.Count > 0
-            then
-                Some(Function, fullName)
-            else
-                Some(Value, fullName)
-        with :? InvalidOperationException ->
-            None
-    | :? FSharpUnionCase as uc ->
-        try
-            Some(DuCase, uc.FullName)
-        with :? InvalidOperationException ->
-            None
+    | :? FSharpEntity as entity -> tryClassifyEntity entity
+    | :? FSharpMemberOrFunctionOrValue as mfv -> tryClassifyMemberOrFunction mfv
+    | :? FSharpUnionCase as uc -> tryClassifyUnionCase uc
     | _ -> None
+
+// Test helpers - expose internal classification for unit testing exception paths
+[<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
+module internal TestHelpers =
+    let testClassifySymbol = classifySymbol
+    let testTryClassifyEntity = tryClassifyEntity
+    let testTryClassifyMemberOrFunction = tryClassifyMemberOrFunction
+    let testTryClassifyUnionCase = tryClassifyUnionCase
 
 let private classifyDependency (symbol: FSharpSymbol) : DependencyKind =
     match symbol with
@@ -222,6 +238,11 @@ let private hashSourceLines (source: string) (startLine: int) (endLine: int) : s
 
     System.Convert.ToHexStringLower(bytes)
 
+/// Extract analysis results from parse and type-check results.
+/// Note: Some branches (Aborted case, exception handlers in tryClassify* functions,
+/// and catch-all cases in classifyDependency) are defensive against rare FCS edge cases
+/// and are difficult to test without malformed symbol mocks. These paths are present
+/// for robustness but rarely exercised in normal usage.
 let private extractResults
     (sourceFileName: string)
     (source: string)
@@ -255,9 +276,26 @@ let private extractResults
                     else
                         None)
 
-            let symbols = definitions |> List.map fst
-
             let moduleBindingRanges = collectModuleBindingRanges parseResults.ParseTree
+
+            let isModuleLevel (symbolInfo: SymbolInfo) =
+                // A symbol is module-level if:
+                // 1. It's a Type, Module, DuCase, or Property (these are always queryable), OR
+                // 2. It's a Value/Function that's a module-level binding (by name).
+                match symbolInfo.Kind with
+                | Type
+                | Module
+                | DuCase
+                | Property -> true
+                | Function
+                | Value ->
+                    // Check if this symbol's name is in the set of module-level binding names.
+                    moduleBindingRanges
+                    |> List.exists (fun (name, _) -> symbolInfo.FullName.EndsWith(name, StringComparison.Ordinal))
+
+            let symbols =
+                definitions
+                |> List.choose (fun (symbolInfo, _) -> if isModuleLevel symbolInfo then Some symbolInfo else None)
 
             let findEnclosing (useRange: range) =
                 let candidates =
@@ -379,6 +417,7 @@ let private detectOpenedModules (source: string) : string list =
     source.Split('\n')
     |> Array.map (fun line ->
         let trimmed = line.Trim()
+
         if trimmed.StartsWith("open ") then
             trimmed.Substring(5).Trim()
         else
