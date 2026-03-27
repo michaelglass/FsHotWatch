@@ -101,11 +101,12 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
     member _.EmitBuildCompleted(result: BuildResult) = buildCompleted.Trigger(result)
 
     /// Report errors to the ledger on behalf of a named source (e.g., "fcs").
-    member _.ReportErrors(pluginName: string, filePath: string, entries: ErrorEntry list) =
-        ledger.Report(pluginName, filePath, entries)
+    member _.ReportErrors(pluginName: string, filePath: string, entries: ErrorEntry list, ?version: int64) =
+        ledger.Report(pluginName, filePath, entries, ?version = version)
 
     /// Clear errors in the ledger for a named source + file.
-    member _.ClearErrors(pluginName: string, filePath: string) = ledger.Clear(pluginName, filePath)
+    member _.ClearErrors(pluginName: string, filePath: string, ?version: int64) =
+        ledger.Clear(pluginName, filePath, ?version = version)
 
     /// Emit a file checked event to all registered plugins (synchronous, sequential).
     member _.EmitFileChecked(result: FileCheckResult) =

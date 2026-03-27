@@ -43,9 +43,9 @@ let private reportFcsDiagnostics (host: PluginHost) (checkResult: Events.FileChe
             |> Array.toList
 
         if diagnostics.IsEmpty then
-            host.ClearErrors("fcs", checkResult.File)
+            host.ClearErrors("fcs", checkResult.File, version = checkResult.Version)
         else
-            host.ReportErrors("fcs", checkResult.File, diagnostics)
+            host.ReportErrors("fcs", checkResult.File, diagnostics, version = checkResult.Version)
 
 /// Discover .fsproj files and register them with the graph and pipeline.
 /// Uses Ionide.ProjInfo for MSBuild design-time evaluation to get real
