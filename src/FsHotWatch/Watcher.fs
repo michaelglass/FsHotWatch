@@ -29,15 +29,15 @@ let internal hasContentChanged (path: string) =
     | :? IOException -> true
     | :? UnauthorizedAccessException -> true
 
-/// Holds a set of FileSystemWatchers monitoring a repository for F# file changes.
+/// Holds disposable watchers monitoring a repository for F# file changes.
 [<NoComparison; NoEquality>]
 type FileWatcher =
-    { Watchers: FileSystemWatcher list }
+    { Disposables: IDisposable list }
 
     interface IDisposable with
         member this.Dispose() =
-            for w in this.Watchers do
-                w.Dispose()
+            for d in this.Disposables do
+                d.Dispose()
 
 /// Returns true if the file path has a relevant extension and is not in obj/ or bin/.
 let internal isRelevantFile (path: string) =
@@ -71,45 +71,61 @@ let internal classifyChange (path: string) =
 module FileWatcher =
     /// Create a FileWatcher that monitors src/ and tests/ for F#-relevant file changes.
     let create (repoRoot: string) (onChange: FileChangeKind -> unit) : FileWatcher =
-        let handle (e: FileSystemEventArgs) =
-            if isRelevantFile e.FullPath then
-                onChange (classifyChange e.FullPath)
+        let handle (path: string) =
+            if isRelevantFile path then
+                onChange (classifyChange path)
 
-        let createWatcher (dir: string) =
-            if Directory.Exists(dir) then
-                let w = new FileSystemWatcher(dir)
-                w.IncludeSubdirectories <- true
-                w.NotifyFilter <- NotifyFilters.LastWrite ||| NotifyFilters.FileName
+        let handleFsw (e: FileSystemEventArgs) = handle e.FullPath
 
-                w.Filters.Add("*.fs")
-                w.Filters.Add("*.fsx")
-                w.Filters.Add("*.fsproj")
-                w.Filters.Add("*.props")
+        let isMacOS =
+            System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+                System.Runtime.InteropServices.OSPlatform.OSX
+            )
 
-                w.Changed.Add(handle)
-                w.Created.Add(handle)
-                w.Deleted.Add(handle)
-                w.Renamed.Add(fun e -> handle e)
-                w.EnableRaisingEvents <- true
-                Some w
-            else
-                None
-
+        // Solution file watcher: always FileSystemWatcher (single dir, non-recursive)
         let slnWatcher =
             let w = new FileSystemWatcher(repoRoot)
             w.Filters.Add("*.sln")
             w.Filters.Add("*.slnx")
             w.NotifyFilter <- NotifyFilters.LastWrite ||| NotifyFilters.FileName
-
-            w.Changed.Add(handle)
-            w.Created.Add(handle)
+            w.Changed.Add(handleFsw)
+            w.Created.Add(handleFsw)
             w.EnableRaisingEvents <- true
-            Some w
+            w :> IDisposable
 
-        let watchers =
-            [ createWatcher (Path.Combine(repoRoot, "src"))
-              createWatcher (Path.Combine(repoRoot, "tests"))
-              slnWatcher ]
-            |> List.choose id
+        if isMacOS then
+            let dirs =
+                [ Path.Combine(repoRoot, "src"); Path.Combine(repoRoot, "tests") ]
+                |> List.filter Directory.Exists
 
-        { Watchers = watchers }
+            if dirs.IsEmpty then
+                { Disposables = [ slnWatcher ] }
+            else
+                let stream = MacFsEvents.create dirs handle
+                { Disposables = [ stream :> IDisposable; slnWatcher ] }
+        else
+            let createFsw (dir: string) =
+                if Directory.Exists(dir) then
+                    let w = new FileSystemWatcher(dir)
+                    w.IncludeSubdirectories <- true
+                    w.NotifyFilter <- NotifyFilters.LastWrite ||| NotifyFilters.FileName
+                    w.Filters.Add("*.fs")
+                    w.Filters.Add("*.fsx")
+                    w.Filters.Add("*.fsproj")
+                    w.Filters.Add("*.props")
+                    w.Changed.Add(handleFsw)
+                    w.Created.Add(handleFsw)
+                    w.Deleted.Add(handleFsw)
+                    w.Renamed.Add(fun e -> handleFsw e)
+                    w.EnableRaisingEvents <- true
+                    Some(w :> IDisposable)
+                else
+                    None
+
+            let watchers =
+                [ createFsw (Path.Combine(repoRoot, "src"))
+                  createFsw (Path.Combine(repoRoot, "tests"))
+                  Some slnWatcher ]
+                |> List.choose id
+
+            { Disposables = watchers }
