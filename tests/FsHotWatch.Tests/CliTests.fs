@@ -5,6 +5,7 @@ open System.IO
 open System.Threading
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.Cli.DaemonConfig
 open FsHotWatch.Cli.Program
 open FsHotWatch.Daemon
 open FsHotWatch.Ipc
@@ -284,6 +285,16 @@ let ``CLI command proxying works against running daemon`` () =
 
 // --- executeCommand with fake IPC tests ---
 
+let private fakeConfig: DaemonConfiguration =
+    { Build = None
+      Format = false
+      Lint = false
+      Cache = NoCache
+      Analyzers = None
+      Tests = None
+      Coverage = None
+      FileCommands = [] }
+
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
       Scan = fun _ -> async { return "scan started" }
@@ -301,7 +312,7 @@ let private fakeIpc () : IpcOps =
 [<Fact>]
 let ``executeCommand Help returns 0`` () =
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" Help ""
+        executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" Help "" fakeConfig
 
     test <@ result = 0 @>
 
@@ -319,7 +330,7 @@ let ``executeCommand Stop calls shutdown`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Stop ""
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Stop "" fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>
@@ -327,7 +338,7 @@ let ``executeCommand Stop calls shutdown`` () =
 [<Fact>]
 let ``executeCommand Status returns 0`` () =
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" (Status None) ""
+        executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" (Status None) "" fakeConfig
 
     test <@ result = 0 @>
 
@@ -345,7 +356,7 @@ let ``executeCommand PluginCommand proxies to IPC`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (PluginCommand("warnings", "")) ""
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (PluginCommand("warnings", "")) "" fakeConfig
 
     test <@ result = 0 @>
     test <@ cmdName = "warnings" @>
@@ -364,7 +375,7 @@ let ``executeCommand Scan calls scan IPC`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Scan ""
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Scan "" fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>
@@ -383,7 +394,7 @@ let ``executeCommand ScanStatus calls scanStatus IPC`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" ScanStatus ""
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" ScanStatus "" fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>
@@ -402,7 +413,7 @@ let ``executeCommand Status with plugin name calls getPluginStatus`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status(Some "lint")) ""
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status(Some "lint")) "" fakeConfig
 
     test <@ result = 0 @>
     test <@ calledWith = "lint" @>
@@ -420,7 +431,9 @@ let ``executeCommand Start with fake daemon throws on null daemon`` () =
 
     let threw =
         try
-            executeCommand createDaemon (fakeIpc ()) "/tmp" "pipe" Start "" |> ignore
+            executeCommand createDaemon (fakeIpc ()) "/tmp" "pipe" Start "" fakeConfig
+            |> ignore
+
             false
         with _ ->
             true
@@ -435,7 +448,7 @@ let ``executeCommand returns 1 when IPC fails`` () =
             GetStatus = fun _ -> async { return failwith "connection refused" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status None) ""
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status None) "" fakeConfig
 
     test <@ result = 1 @>
 

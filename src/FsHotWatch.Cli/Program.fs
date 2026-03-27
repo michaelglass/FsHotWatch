@@ -340,6 +340,7 @@ let executeCommand
     (pipeName: string)
     (command: Command)
     (daemonExtraArgs: string)
+    (config: DaemonConfiguration)
     : int =
     match command with
     | Help ->
@@ -358,7 +359,6 @@ let executeCommand
             string (System.Diagnostics.Process.GetCurrentProcess().Id)
         )
 
-        let config = loadConfig repoRoot
         let daemon = createDaemon repoRoot
         registerPlugins daemon repoRoot config
         let cts = new CancellationTokenSource()
@@ -492,4 +492,4 @@ let main args =
     let createDaemon (root: string) = Daemon.create root backend keyProvider
 
     let command = parseCommand filteredArgs
-    executeCommand createDaemon defaultIpcOps repoRoot pipeName command daemonExtraArgs
+    executeCommand createDaemon defaultIpcOps repoRoot pipeName command daemonExtraArgs config

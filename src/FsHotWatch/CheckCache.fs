@@ -4,7 +4,6 @@ open System
 open System.IO
 open System.Security.Cryptography
 open System.Text
-open System.Threading
 open FSharp.Compiler.CodeAnalysis
 open FsHotWatch.Events
 
@@ -59,22 +58,12 @@ let getProjectOptionsHash (options: FSharpProjectOptions) : string =
 
     sha256Hex (String.concat "||" parts)
 
-/// jj-based cache key provider. Uses jj commit_id as a global guard --
-/// if the tree hasn't changed, all cached results are still valid.
-/// Per-file hashing falls back to timestamp since jj commit_id is tree-wide.
-type JjCacheKeyProvider(repoRoot: string) =
+/// jj-based cache key provider. Per-file hashing uses timestamp
+/// (jj commit_id is tree-wide, not per-file).
+/// Preserved as a distinct type so jj-specific optimizations
+/// (e.g., global cache guard via commit_id comparison) can be added later.
+type JjCacheKeyProvider(_repoRoot: string) =
     let timestampFallback = TimestampCacheKeyProvider() :> ICacheKeyProvider
-    let mutable lastKnownCommitId: string option = None
-
-    /// Check if the jj working copy is unchanged since last check
-    member _.IsTreeUnchanged() : bool =
-        match Volatile.Read(&lastKnownCommitId), JjHelper.currentCommitId repoRoot with
-        | Some last, Some current -> last = current
-        | _ -> false
-
-    /// Update the stored commit_id (call after a successful full scan)
-    member _.UpdateCommitId() =
-        Volatile.Write(&lastKnownCommitId, JjHelper.getWorkingCopyCommitId repoRoot)
 
     interface ICacheKeyProvider with
         member _.GetFileHash(filePath: string) : string = timestampFallback.GetFileHash(filePath)
