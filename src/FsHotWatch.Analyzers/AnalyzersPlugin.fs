@@ -44,7 +44,10 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                 let mapModuleType =
                     ignoreRangesType.Assembly.GetType("Microsoft.FSharp.Collections.MapModule")
 
-                let emptyMethod = mapModuleType.GetMethod("Empty")
+                let emptyMethod =
+                    mapModuleType.GetMethods()
+                    |> Array.find (fun m -> m.Name = "Empty" && m.IsGenericMethodDefinition)
+
                 emptyMethod.MakeGenericMethod(keyType, valueType).Invoke(null, null)
 
             let apoCtor = ctorParams.[6].ParameterType.GetConstructors() |> Array.tryHead
