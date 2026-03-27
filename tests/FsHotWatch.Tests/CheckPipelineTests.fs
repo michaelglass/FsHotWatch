@@ -157,13 +157,41 @@ let ``PrepareForRediscovery clears stale file options`` () =
     test <@ pipeline.GetRegisteredProjects() |> List.contains "/tmp/MyProject.fsproj" @>
 
 [<Fact>]
-let ``CheckFile throws OperationCanceledException when token is cancelled`` () =
+let ``CheckFile returns None when token is cancelled`` () =
     let pipeline = CheckPipeline(nullChecker)
     let cts = new CancellationTokenSource()
     cts.Cancel()
 
-    Assert.ThrowsAsync<OperationCanceledException>(fun () ->
-        pipeline.CheckFile("/tmp/anything.fs", cts.Token) |> Async.StartAsTask :> System.Threading.Tasks.Task)
-    |> Async.AwaitTask
-    |> Async.RunSynchronously
-    |> ignore
+    let result =
+        pipeline.CheckFile("/tmp/anything.fs", cts.Token) |> Async.RunSynchronously
+
+    test <@ result = None @>
+
+[<Fact>]
+let ``CancelPreviousCheck cancels previous token for same file`` () =
+    let pipeline = CheckPipeline(nullChecker)
+    let first = pipeline.CancelPreviousCheck("/tmp/Test.fs")
+    test <@ not first.IsCancellationRequested @>
+
+    let _second = pipeline.CancelPreviousCheck("/tmp/Test.fs")
+    test <@ first.IsCancellationRequested @>
+
+[<Fact>]
+let ``PrepareForRediscovery cancels all file tokens`` () =
+    let pipeline = CheckPipeline(nullChecker)
+    let cts1 = pipeline.CancelPreviousCheck("/tmp/A.fs")
+    let cts2 = pipeline.CancelPreviousCheck("/tmp/B.fs")
+
+    pipeline.PrepareForRediscovery()
+
+    test <@ cts1.IsCancellationRequested @>
+    test <@ cts2.IsCancellationRequested @>
+
+[<Fact>]
+let ``CancelPreviousCheck links to caller token`` () =
+    let pipeline = CheckPipeline(nullChecker)
+    let callerCts = new CancellationTokenSource()
+    let fileCts = pipeline.CancelPreviousCheck("/tmp/Linked.fs", callerCts.Token)
+
+    callerCts.Cancel()
+    test <@ fileCts.IsCancellationRequested @>

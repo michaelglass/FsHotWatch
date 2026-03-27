@@ -151,6 +151,7 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                             with ex ->
                                 Interlocked.Increment(&errorCount) |> ignore
                                 Logging.error "analyzers" $"Error analyzing %s{result.File}: %s{ex.Message}"
+                                Logging.debug "analyzers" $"Stack trace: %s{ex.StackTrace}"
                                 reportCompleted ()
                         finally
                             semaphore.Release() |> ignore

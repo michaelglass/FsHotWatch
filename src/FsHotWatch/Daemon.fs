@@ -20,23 +20,26 @@ open FsHotWatch.Watcher
 /// Extract FCS diagnostics from check results and report to the error ledger.
 let private reportFcsDiagnostics (host: PluginHost) (checkResult: Events.FileCheckResult) =
     if not (isNull (box checkResult.CheckResults)) then
+        // FCS per-file diagnostics are noisy: TreatWarningsAsErrors promotes CE-related
+        // warnings (FS1182 from SqlHydra, etc.) to errors that the real build handles
+        // via #nowarn. The build plugin provides authoritative compilation diagnostics.
+        // Only report genuine FCS errors that aren't the well-known CE false positives.
+        let suppressedCodes = set [ 1182 ] // SqlHydra CE "value unused"
+
         let diagnostics =
             checkResult.CheckResults.Diagnostics
             |> Array.choose (fun d ->
-                match d.Severity with
-                | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error ->
-                    Some
-                        { Message = d.Message
-                          Severity = "error"
-                          Line = d.StartLine
-                          Column = d.StartColumn }
-                | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning ->
-                    Some
-                        { Message = d.Message
-                          Severity = "warning"
-                          Line = d.StartLine
-                          Column = d.StartColumn }
-                | _ -> None)
+                if suppressedCodes.Contains(d.ErrorNumber) then
+                    None
+                else
+                    match d.Severity with
+                    | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error ->
+                        Some
+                            { Message = d.Message
+                              Severity = "error"
+                              Line = d.StartLine
+                              Column = d.StartColumn }
+                    | _ -> None)
             |> Array.toList
 
         if diagnostics.IsEmpty then
