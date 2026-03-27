@@ -491,9 +491,10 @@ type Daemon =
                 this.CancellationTokenRef.Value <- cts.Token
                 this.Ready.Set()
 
-                // Discover projects and perform initial full scan
+                // Discover projects and perform initial full scan (force bypasses jj guard
+                // since plugins have no state from previous daemon runs)
                 do! this.DiscoverAndRegisterProjects()
-                do! this.ScanAll()
+                do! this.ScanAll(force = true)
 
                 let tcs = System.Threading.Tasks.TaskCompletionSource<unit>()
 
