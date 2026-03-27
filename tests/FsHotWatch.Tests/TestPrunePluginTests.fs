@@ -628,12 +628,21 @@ let ``cross-file type change only runs affected test classes`` () =
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let libFile = Path.Combine(tmpDir, "Lib.fsx")
         let testsFile = Path.Combine(tmpDir, "Tests.fsx")
+        let captureFile = Path.Combine(tmpDir, "test-invocation.txt")
+
+        // Create a simple wrapper script that will capture arguments
+        let wrapperPath = Path.Combine(tmpDir, "test-wrapper.sh")
+
+        let scriptContent =
+            $"#!/bin/bash\n# Write all arguments to the capture file\necho \"$@\" >> \"{captureFile}\"\nexit 0\n"
+
+        File.WriteAllText(wrapperPath, scriptContent)
 
         // Create test config with class filtering
         let testConfigs =
             [ { Project = "MyTests"
-                Command = "echo"
-                Args = "tests ran"
+                Command = "bash"
+                Args = wrapperPath
                 Group = "default"
                 Environment = []
                 FilterTemplate = Some "-- --filter-class {classes}"
@@ -765,4 +774,28 @@ let validate (cfg: Config) = cfg.Value.Length > 0
 
         test <@ affectedTests.Contains("testValidateTrue") @>
         test <@ affectedTests.Contains("testValidateFalse") @>
-        test <@ not (affectedTests.Contains("testOtherStuff")) @>)
+        test <@ not (affectedTests.Contains("testOtherStuff")) @>
+
+        // Trigger test execution by emitting BuildCompleted with affected tests detected
+        // This should invoke the test command with the filter applied
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        let deadline2 = DateTime.UtcNow.AddSeconds(5.0)
+        let mutable settled2 = false
+
+        while not settled2 && DateTime.UtcNow < deadline2 do
+            match host.GetStatus("test-prune") with
+            | Some(Running _) -> System.Threading.Thread.Sleep(50)
+            | _ -> settled2 <- true
+
+        // Verify that the test command was invoked with the correct filter
+        test <@ File.Exists(captureFile) @>
+
+        let capturedArgs = File.ReadAllText(captureFile)
+
+        // The critical validation: the filter template was applied with the affected test class
+        // Since all three test functions are in the Tests module, they all belong to the same "class"
+        // The filter should be present, showing the template was substituted with the class name
+        test <@ capturedArgs.Contains("--filter-class") @>
+        // The filter should contain the Tests module name (where the tests live)
+        test <@ capturedArgs.Contains("Tests") @>)
