@@ -11,19 +11,51 @@ type ErrorEntry =
 
 /// Accumulates per-file errors from plugins. Errors auto-clear when a file
 /// is re-checked and passes. Thread-safe via ConcurrentDictionary.
+/// Supports optional version-guarded updates: when a version is provided,
+/// stale updates (version < last accepted) are silently ignored.
 type ErrorLedger() =
     let errors = ConcurrentDictionary<struct (string * string), ErrorEntry list>()
+    let versions = ConcurrentDictionary<struct (string * string), int64>()
 
     /// Set errors for a plugin + file. Replaces previous. Empty list clears.
-    member _.Report(pluginName: string, filePath: string, entries: ErrorEntry list) =
-        if entries.IsEmpty then
-            errors.TryRemove(struct (pluginName, filePath)) |> ignore
-        else
-            errors[struct (pluginName, filePath)] <- entries
+    /// When version is provided, updates with version < last accepted are ignored.
+    member _.Report(pluginName: string, filePath: string, entries: ErrorEntry list, ?version: int64) =
+        let key = struct (pluginName, filePath)
+
+        match version with
+        | Some v ->
+            let lastVersion = versions.GetOrAdd(key, 0L)
+
+            if v < lastVersion then
+                ()
+            else
+                versions[key] <- v
+
+                if entries.IsEmpty then
+                    errors.TryRemove(key) |> ignore
+                else
+                    errors[key] <- entries
+        | None ->
+            if entries.IsEmpty then
+                errors.TryRemove(key) |> ignore
+            else
+                errors[key] <- entries
 
     /// Clear all errors for a plugin + file.
-    member _.Clear(pluginName: string, filePath: string) =
-        errors.TryRemove(struct (pluginName, filePath)) |> ignore
+    /// When version is provided, clears with version < last accepted are ignored.
+    member _.Clear(pluginName: string, filePath: string, ?version: int64) =
+        let key = struct (pluginName, filePath)
+
+        match version with
+        | Some v ->
+            let lastVersion = versions.GetOrAdd(key, 0L)
+
+            if v < lastVersion then
+                ()
+            else
+                versions[key] <- v
+                errors.TryRemove(key) |> ignore
+        | None -> errors.TryRemove(key) |> ignore
 
     /// Clear all errors for a plugin.
     member _.ClearPlugin(pluginName: string) =
