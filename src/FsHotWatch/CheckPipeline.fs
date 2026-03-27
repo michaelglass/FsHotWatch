@@ -9,6 +9,13 @@ open FSharp.Compiler.Text
 open FsHotWatch.Events
 open FsHotWatch.Logging
 
+let private cancelAndDispose (cts: CancellationTokenSource) =
+    try
+        cts.Cancel()
+        cts.Dispose()
+    with :? ObjectDisposedException ->
+        ()
+
 /// Manages project options and performs incremental file checking with the warm FSharpChecker.
 type CheckPipeline(checker: FSharpChecker) =
     let projectOptionsByFile = ConcurrentDictionary<string, FSharpProjectOptions>()
@@ -16,19 +23,12 @@ type CheckPipeline(checker: FSharpChecker) =
     let fileTokens = ConcurrentDictionary<string, CancellationTokenSource>()
     let mutable nextVersion = 0L
 
-    /// Get the next monotonic version number for a check result.
     member _.NextVersion() = Interlocked.Increment(&nextVersion)
 
-    /// Clear all registered projects and file mappings. Call before re-discovery
-    /// to ensure deleted projects and removed files don't leave stale options.
-    /// Also cancels all outstanding per-file cancellation tokens.
+    /// Clear all registered projects, file mappings, and per-file cancellation tokens.
     member _.PrepareForRediscovery() =
         for kvp in fileTokens do
-            try
-                kvp.Value.Cancel()
-                kvp.Value.Dispose()
-            with :? ObjectDisposedException ->
-                ()
+            cancelAndDispose kvp.Value
 
         fileTokens.Clear()
         projectOptionsByFile.Clear()
@@ -64,12 +64,7 @@ type CheckPipeline(checker: FSharpChecker) =
             filePath,
             newCts,
             fun _ existing ->
-                try
-                    existing.Cancel()
-                    existing.Dispose()
-                with :? ObjectDisposedException ->
-                    ()
-
+                cancelAndDispose existing
                 newCts
         )
         |> ignore
@@ -150,17 +145,17 @@ type CheckPipeline(checker: FSharpChecker) =
             match projectOptionsByProject.TryGetValue(projectPath) with
             | false, _ -> return None
             | true, options ->
-                let mutable fileResults = Map.empty
+                let results = System.Collections.Generic.Dictionary<string, FileCheckResult>()
 
                 for sourceFile in options.SourceFiles do
                     let! result = this.CheckFile(sourceFile, ?ct = ct)
 
                     match result with
-                    | Some r -> fileResults <- fileResults |> Map.add sourceFile r
+                    | Some r -> results[sourceFile] <- r
                     | None -> ()
 
                 return
                     Some
                         { Project = projectPath
-                          FileResults = fileResults }
+                          FileResults = results |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq }
         }
