@@ -130,3 +130,68 @@ let ``Report without version always updates`` () =
     let errors = ledger.GetAll()
     let fileErrors = errors |> Map.tryFind "/tmp/Lib.fs" |> Option.defaultValue []
     test <@ (snd fileErrors.[0]).Message = "second" @>
+
+[<Fact>]
+let ``Report accepts newer version after initial versioned report`` () =
+    let ledger = ErrorLedger()
+
+    let entry1 =
+        { Message = "first"
+          Severity = "error"
+          Line = 1
+          Column = 0 }
+
+    let entry2 =
+        { Message = "updated"
+          Severity = "error"
+          Line = 2
+          Column = 0 }
+
+    ledger.Report("fcs", "/tmp/Lib.fs", [ entry1 ], version = 1L)
+    // This hits the update factory branch where v >= last (2 >= 1)
+    ledger.Report("fcs", "/tmp/Lib.fs", [ entry2 ], version = 2L)
+
+    let errors = ledger.GetAll()
+    let fileErrors = errors |> Map.tryFind "/tmp/Lib.fs" |> Option.defaultValue []
+    test <@ fileErrors.Length = 1 @>
+    test <@ (snd fileErrors.[0]).Message = "updated" @>
+
+[<Fact>]
+let ``Report accepts equal version as update`` () =
+    let ledger = ErrorLedger()
+
+    let entry1 =
+        { Message = "first"
+          Severity = "error"
+          Line = 1
+          Column = 0 }
+
+    let entry2 =
+        { Message = "same-version-update"
+          Severity = "error"
+          Line = 2
+          Column = 0 }
+
+    ledger.Report("fcs", "/tmp/Lib.fs", [ entry1 ], version = 3L)
+    // Same version should still be accepted (v >= last, 3 >= 3)
+    ledger.Report("fcs", "/tmp/Lib.fs", [ entry2 ], version = 3L)
+
+    let errors = ledger.GetAll()
+    let fileErrors = errors |> Map.tryFind "/tmp/Lib.fs" |> Option.defaultValue []
+    test <@ fileErrors.Length = 1 @>
+    test <@ (snd fileErrors.[0]).Message = "same-version-update" @>
+
+[<Fact>]
+let ``Clear accepts newer version after initial versioned report`` () =
+    let ledger = ErrorLedger()
+
+    let entry1 =
+        { Message = "error"
+          Severity = "error"
+          Line = 1
+          Column = 0 }
+
+    ledger.Report("fcs", "/tmp/Lib.fs", [ entry1 ], version = 1L)
+    // Clear with higher version should succeed (hits update branch where v >= last)
+    ledger.Clear("fcs", "/tmp/Lib.fs", version = 2L)
+    test <@ not (ledger.HasErrors()) @>
