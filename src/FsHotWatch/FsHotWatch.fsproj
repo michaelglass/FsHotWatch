@@ -52,6 +52,7 @@
     <Compile Include="ProcessHelper.fs" />
     <Compile Include="JjHelper.fs" />
     <Compile Include="CheckCache.fs" />
+    <Compile Include="InMemoryCheckCache.fs" />
     <Compile Include="ErrorLedger.fs" />
     <Compile Include="Plugin.fs" />
     <Compile Include="PluginHost.fs" />
