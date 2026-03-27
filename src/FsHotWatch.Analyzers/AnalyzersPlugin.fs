@@ -29,8 +29,22 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
         checkResults
         (projectOptions: FSharp.Compiler.CodeAnalysis.FSharpProjectOptions)
         =
-        let ctor = typeof<CliContext>.GetConstructors().[0]
-        let ignoreRangesParam = ctor.GetParameters().[7].ParameterType
+        Logging.info "analyzers" $"createCliContext called for %s{(fileName :?> string)}"
+
+        let ctors = typeof<CliContext>.GetConstructors()
+        Logging.info "analyzers" $"CliContext has %d{ctors.Length} constructors"
+        let ctor = ctors.[0]
+
+        let ctorParams = ctor.GetParameters()
+
+        let paramDesc =
+            ctorParams
+            |> Array.map (fun p -> $"{p.Name}:{p.ParameterType.Name}")
+            |> String.concat ", "
+
+        Logging.info "analyzers" $"CliContext ctor has %d{ctorParams.Length} params: %s{paramDesc}"
+
+        let ignoreRangesParam = ctorParams.[7].ParameterType
         let keyType = ignoreRangesParam.GetGenericArguments().[0]
         let valueType = ignoreRangesParam.GetGenericArguments().[1]
 
@@ -38,14 +52,13 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
             typedefof<Map<_, _>>.MakeGenericType(keyType, valueType).GetProperty("Empty").GetValue(null)
 
         // Construct AnalyzerProjectOptions via reflection (SDK type, not FCS type)
-        let apoType = ctor.GetParameters().[6].ParameterType
+        let apoType = ctorParams.[6].ParameterType
         let apoCtor = apoType.GetConstructors() |> Array.tryHead
 
         let analyzerProjectOptions =
             match apoCtor with
             | Some c ->
                 try
-                    // AnalyzerProjectOptions expects: tag, projectFileName, projectId, sourceFiles, referencedProjectsPath, loadTime, otherOptions
                     let sourceFiles = projectOptions.SourceFiles |> Array.toList
                     let otherOptions = projectOptions.OtherOptions |> Array.toList
 
@@ -58,21 +71,35 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                            box System.DateTime.UtcNow
                            box otherOptions |]
                     )
-                with _ ->
+                with ex ->
+                    Logging.error "analyzers" $"AnalyzerProjectOptions ctor failed: %s{ex.ToString()}"
                     null
-            | None -> null
+            | None ->
+                Logging.warn "analyzers" "No AnalyzerProjectOptions constructor found"
+                null
 
-        ctor.Invoke(
+        let args =
             [| fileName
                sourceText
                parseResults
                checkResults
                box None // typedTree
-               null // checkProjectResults — analyzers that need this will skip
+               null // checkProjectResults
                analyzerProjectOptions
                emptyIgnoreRanges |]
-        )
-        :?> CliContext
+
+        // Log which args are null
+        let nullArgs =
+            args
+            |> Array.mapi (fun i a -> i, ctorParams.[i].Name, isNull a)
+            |> Array.filter (fun (_, _, n) -> n)
+            |> Array.map (fun (i, name, _) -> $"{i}:{name}")
+
+        if nullArgs.Length > 0 then
+            let nullDesc = nullArgs |> String.concat ", "
+            Logging.warn "analyzers" $"Null args for CliContext: %s{nullDesc}"
+
+        ctor.Invoke(args) :?> CliContext
 
     interface IFsHotWatchPlugin with
         member _.Name = "analyzers"

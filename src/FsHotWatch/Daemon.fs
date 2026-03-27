@@ -283,6 +283,20 @@ type Daemon =
     /// Get current scan generation (incremented after each completed scan).
     member this.GetScanGeneration() = Volatile.Read(&this.ScanGeneration)
 
+    /// Invalidate cache for a file, re-check it, and emit results to plugins.
+    member this.InvalidateAndRecheck(filePath: string) =
+        async {
+            this.Pipeline.InvalidateFile(filePath)
+            let! result = this.Pipeline.CheckFile(filePath)
+
+            match result with
+            | Some checkResult ->
+                do! this.Host.EmitFileCheckedParallel(checkResult)
+                reportFcsDiagnostics this.Host checkResult
+                return $"{{\"status\": \"rechecked\", \"file\": \"%s{checkResult.File}\"}}"
+            | None -> return $"{{\"status\": \"failed\", \"file\": \"%s{System.IO.Path.GetFullPath(filePath)}\"}}"
+        }
+
     /// Scan all registered files — check each one and emit events to plugins.
     /// Blocks until complete. If a scan is already running, waits for it to finish.
     member this.ScanAll() =
@@ -449,7 +463,8 @@ type Daemon =
                       FormatAll = formatAll
                       WaitForScanGeneration =
                         fun afterGen -> this.ScanSignal.WaitForGeneration(afterGen, this.GetScanGeneration())
-                      WaitForAllTerminal = waitForAllTerminal this.Host }
+                      WaitForAllTerminal = waitForAllTerminal this.Host
+                      InvalidateAndRecheck = fun filePath -> this.InvalidateAndRecheck(filePath) }
 
                 let ipcTask = Async.StartAsTask(IpcServer.start pipeName rpcConfig cts)
 

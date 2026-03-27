@@ -28,7 +28,8 @@ type DaemonRpcConfig =
       TriggerBuild: unit -> Async<unit>
       FormatAll: unit -> Async<string>
       WaitForScanGeneration: int64 -> Task<unit>
-      WaitForAllTerminal: unit -> Task<unit> }
+      WaitForAllTerminal: unit -> Task<unit>
+      InvalidateAndRecheck: string -> Async<string> }
 
 /// RPC target object exposed to clients via StreamJsonRpc.
 type DaemonRpcTarget(config: DaemonRpcConfig) =
@@ -139,6 +140,13 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
             do! config.TriggerBuild() |> Async.StartAsTask
             let! _ = this.WaitForComplete()
             return this.GetStatus()
+        }
+
+    /// Invalidate cache for a file and re-check it.
+    member _.InvalidateCache(filePath: string) : Task<string> =
+        task {
+            let! result = config.InvalidateAndRecheck filePath |> Async.StartAsTask
+            return result
         }
 
     /// Run all preprocessors on all registered files and return a summary.
@@ -268,6 +276,10 @@ module IpcClient =
 
     /// Run all preprocessors on all registered files.
     let formatAll (pipeName: string) : Async<string> = invoke pipeName "FormatAll" [||]
+
+    /// Invalidate cache for a file and re-check it.
+    let invalidateCache (pipeName: string) (filePath: string) : Async<string> =
+        invoke pipeName "InvalidateCache" [| filePath |]
 
     /// Quick probe to check if a daemon is listening on the named pipe.
     let isRunning (pipeName: string) : bool =
