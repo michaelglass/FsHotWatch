@@ -39,6 +39,20 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
         projectOptionsByProject.Clear()
         cacheBackend |> Option.iter (fun b -> b.Clear())
 
+    /// Invalidate the cache entry for a file so the next CheckFile call re-runs FCS.
+    member _.InvalidateFile(filePath: string) =
+        let absPath = System.IO.Path.GetFullPath(filePath)
+
+        match cacheBackend with
+        | Some backend ->
+            match projectOptionsByFile.TryGetValue(absPath) with
+            | true, options ->
+                let key = makeCacheKey keyProvider absPath options
+                backend.Invalidate(key)
+                Logging.debug "check" $"Cache invalidated: %s{System.IO.Path.GetFileName(absPath)}"
+            | _ -> ()
+        | None -> ()
+
     /// Register project options for a project. Maps each source file to this project's options.
     member _.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
         projectOptionsByProject[projectPath] <- options

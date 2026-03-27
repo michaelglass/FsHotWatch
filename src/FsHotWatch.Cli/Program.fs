@@ -23,6 +23,7 @@ type Command =
     | Lint
     | Errors
     | Check
+    | InvalidateCache of filePath: string
     | Help
 
 /// Walk up from startDir looking for .jj or .git directory.
@@ -111,6 +112,7 @@ let parseCommand (args: string list) : Command =
     | [ "lint" ] -> Lint
     | [ "errors" ] -> Errors
     | [ "check" ] -> Check
+    | [ "invalidate-cache"; path ] -> InvalidateCache path
     | cmd :: rest ->
         let argsStr = if rest.IsEmpty then "" else String.concat " " rest
         PluginCommand(cmd, argsStr)
@@ -128,6 +130,7 @@ type IpcOps =
       WaitForComplete: string -> Async<string>
       TriggerBuild: string -> Async<string>
       FormatAll: string -> Async<string>
+      InvalidateCache: string -> string -> Async<string>
       IsRunning: string -> bool }
 
 /// Default IPC operations using the real IpcClient.
@@ -143,6 +146,7 @@ let defaultIpcOps: IpcOps =
       WaitForComplete = IpcClient.waitForComplete
       TriggerBuild = IpcClient.triggerBuild
       FormatAll = IpcClient.formatAll
+      InvalidateCache = IpcClient.invalidateCache
       IsRunning = IpcClient.isRunning }
 
 let private showHelp () =
@@ -162,6 +166,7 @@ let private showHelp () =
     printfn "  lint               Run linter on all files"
     printfn "  errors             Show current errors from all plugins"
     printfn "  check              Full check: scan, build, lint, then report errors"
+    printfn "  invalidate-cache <file>    Invalidate cache for a file and re-check it"
     printfn "  <command> [args]   Run a plugin-registered command"
     printfn ""
     printfn "Options:"
@@ -411,6 +416,12 @@ let executeCommand
             1
         else
             runIpcWithExitCode (ipc.GetErrors pipeName "")
+    | InvalidateCache filePath ->
+        if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
+            eprintfn "Failed to start daemon"
+            1
+        else
+            runIpcWithExitCode (ipc.InvalidateCache pipeName filePath)
     | Check ->
         if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
             eprintfn "Failed to start daemon"
