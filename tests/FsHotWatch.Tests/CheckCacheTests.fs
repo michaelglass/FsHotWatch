@@ -5,6 +5,7 @@ open System.IO
 open Xunit
 open FsHotWatch.Events
 open FsHotWatch.CheckCache
+open FsHotWatch.InMemoryCheckCache
 
 [<Fact>]
 let ``CacheKey produces consistent hash for same inputs`` () =
@@ -120,3 +121,97 @@ let ``JjCacheKeyProvider delegates per-file hash to timestamp`` () =
         Assert.Equal<string>(jjHash, tsHash)
     finally
         File.Delete(tempFile)
+
+// --- InMemoryCheckCache tests ---
+
+let private makeTestResult (file: string) (version: int64) : FileCheckResult =
+    { File = file
+      Source = "test"
+      ParseResults = Unchecked.defaultof<_>
+      CheckResults = Unchecked.defaultof<_>
+      ProjectOptions = Unchecked.defaultof<_>
+      Version = version }
+
+let private makeKey (fileHash: string) : CacheKey =
+    { FileHash = fileHash
+      ProjectOptionsHash = "proj" }
+
+[<Fact>]
+let ``InMemoryCheckCache stores and retrieves results`` () =
+    let cache = InMemoryCheckCache(10) :> ICheckCacheBackend
+    let key = makeKey "file1"
+    let result = makeTestResult "test.fs" 1L
+
+    cache.Set key result
+
+    match cache.TryGet key with
+    | Some r -> Assert.Equal("test.fs", r.File)
+    | None -> Assert.Fail("Expected Some but got None")
+
+[<Fact>]
+let ``InMemoryCheckCache returns None for missing key`` () =
+    let cache = InMemoryCheckCache(10) :> ICheckCacheBackend
+    let key = makeKey "nonexistent"
+
+    Assert.True(cache.TryGet(key).IsNone)
+
+[<Fact>]
+let ``InMemoryCheckCache evicts LRU on overflow`` () =
+    let cache = InMemoryCheckCache(2) :> ICheckCacheBackend
+    let key1 = makeKey "a"
+    let key2 = makeKey "b"
+    let key3 = makeKey "c"
+
+    cache.Set key1 (makeTestResult "a.fs" 1L)
+    cache.Set key2 (makeTestResult "b.fs" 2L)
+    // This should evict key1 (oldest)
+    cache.Set key3 (makeTestResult "c.fs" 3L)
+
+    Assert.True(cache.TryGet(key1).IsNone)
+    Assert.True(cache.TryGet(key2).IsSome)
+    Assert.True(cache.TryGet(key3).IsSome)
+
+[<Fact>]
+let ``InMemoryCheckCache LRU access refreshes entry`` () =
+    let cache = InMemoryCheckCache(2) :> ICheckCacheBackend
+    let key1 = makeKey "a"
+    let key2 = makeKey "b"
+    let key3 = makeKey "c"
+
+    cache.Set key1 (makeTestResult "a.fs" 1L)
+    cache.Set key2 (makeTestResult "b.fs" 2L)
+    // Access key1 to refresh it — key2 is now the LRU
+    cache.TryGet key1 |> ignore
+    // This should evict key2 (now the oldest)
+    cache.Set key3 (makeTestResult "c.fs" 3L)
+
+    Assert.True(cache.TryGet(key1).IsSome)
+    Assert.True(cache.TryGet(key2).IsNone)
+    Assert.True(cache.TryGet(key3).IsSome)
+
+[<Fact>]
+let ``InMemoryCheckCache invalidates entry`` () =
+    let cache = InMemoryCheckCache(10) :> ICheckCacheBackend
+    let key = makeKey "file1"
+
+    cache.Set key (makeTestResult "test.fs" 1L)
+    cache.Invalidate key
+
+    Assert.True(cache.TryGet(key).IsNone)
+
+[<Fact>]
+let ``InMemoryCheckCache clear removes all entries`` () =
+    let cache = InMemoryCheckCache(10) :> ICheckCacheBackend
+    let key1 = makeKey "a"
+    let key2 = makeKey "b"
+    let key3 = makeKey "c"
+
+    cache.Set key1 (makeTestResult "a.fs" 1L)
+    cache.Set key2 (makeTestResult "b.fs" 2L)
+    cache.Set key3 (makeTestResult "c.fs" 3L)
+
+    cache.Clear()
+
+    Assert.True(cache.TryGet(key1).IsNone)
+    Assert.True(cache.TryGet(key2).IsNone)
+    Assert.True(cache.TryGet(key3).IsNone)
