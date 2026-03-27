@@ -281,20 +281,19 @@ let private startFreshDaemon
     // Launch via shell with nohup to fully detach from parent process group.
     // Without this, mise (and similar task runners) wait for all child processes
     // to exit, causing them to hang even after the CLI client completes.
+    // Launch with nohup so mise/task-runners don't wait for us.
+    // The daemon writes its own PID to daemon.pid on startup (not echo $! which gives the nohup wrapper PID).
     let psi =
         System.Diagnostics.ProcessStartInfo(
             "/bin/sh",
-            $"-c \"nohup '%s{exe}' %s{extraArgs}start >> '%s{logFile}' 2>&1 & echo $!\""
+            $"-c \"nohup '%s{exe}' %s{extraArgs}start >> '%s{logFile}' 2>&1 &\""
         )
 
     psi.WorkingDirectory <- repoRoot
     psi.UseShellExecute <- false
-    psi.RedirectStandardOutput <- true
     let proc = System.Diagnostics.Process.Start(psi)
-    let pidStr = proc.StandardOutput.ReadToEnd().Trim()
     proc.WaitForExit()
     Directory.CreateDirectory(stateDir) |> ignore
-    File.WriteAllText(Path.Combine(stateDir, "daemon.pid"), pidStr)
     File.WriteAllText(Path.Combine(stateDir, "config.hash"), currentHash)
     let deadline = DateTime.UtcNow.AddSeconds(30.0)
 
@@ -348,6 +347,16 @@ let executeCommand
     | Start ->
         eprintfn $"Starting FsHotWatch daemon for %s{repoRoot}"
         eprintfn $"Pipe: %s{pipeName}"
+        // Write our own PID so killStaleDaemon can find the actual daemon process,
+        // not the nohup wrapper that launched us.
+        let stateDir = Path.Combine(repoRoot, ".fs-hot-watch")
+        Directory.CreateDirectory(stateDir) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(stateDir, "daemon.pid"),
+            string (System.Diagnostics.Process.GetCurrentProcess().Id)
+        )
+
         let config = loadConfig repoRoot
         let daemon = createDaemon repoRoot
         registerPlugins daemon repoRoot config
