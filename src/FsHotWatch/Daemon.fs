@@ -440,7 +440,7 @@ module Daemon =
     let private projectDebounceMs = 200
 
     /// Create a daemon with the given checker (internal, for testing).
-    /// When cacheBackend or cacheKeyProvider are None, defaults to FileCheckCache + TimestampCacheKeyProvider.
+    /// Pass None for both cache params to disable caching entirely.
     let internal createWith
         (checker: FSharpChecker)
         (repoRoot: string)
@@ -449,18 +449,11 @@ module Daemon =
         =
         let host = PluginHost.create checker repoRoot
 
-        // Set up check result cache — use provided backend or default to file cache in .fshw/cache/
-        let effectiveBackend =
-            match cacheBackend with
-            | Some b -> b
-            | None ->
-                let cacheDir = Path.Combine(repoRoot, ".fshw", "cache")
-                FsHotWatch.FileCheckCache.FileCheckCache(cacheDir) :> ICheckCacheBackend
-
         let pipeline =
-            match cacheKeyProvider with
-            | Some kp -> CheckPipeline(checker, cacheBackend = effectiveBackend, cacheKeyProvider = kp)
-            | None -> CheckPipeline(checker, cacheBackend = effectiveBackend)
+            match cacheBackend, cacheKeyProvider with
+            | Some b, Some kp -> CheckPipeline(checker, cacheBackend = b, cacheKeyProvider = kp)
+            | Some b, None -> CheckPipeline(checker, cacheBackend = b)
+            | _ -> CheckPipeline(checker)
 
         let graph = ProjectGraph()
         let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
