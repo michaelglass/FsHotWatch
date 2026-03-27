@@ -3,6 +3,25 @@ module FsHotWatch.Events
 
 open FSharp.Compiler.CodeAnalysis
 
+/// Identifies a check result in the cache
+type CacheKey =
+    {
+        /// Content hash of the file being checked (from jj or file metadata)
+        FileHash: string
+        /// Hash of project options (dependencies, compiler flags)
+        ProjectOptionsHash: string
+    }
+
+/// Information about a cache operation.
+/// Designed for the two-tier cache model (in-memory + file-based) that will be implemented
+/// in Tasks 3-5. The FromMemory field tracks which tier served the cache hit, enabling
+/// statistics and future optimization of the cache hierarchy.
+type CacheOperationInfo =
+    { Key: CacheKey
+      File: string
+      HitCache: bool
+      FromMemory: bool }
+
 /// Describes what kind of file change was detected by the watcher.
 type FileChangeKind =
     /// F# source files (.fs, .fsx) changed.
