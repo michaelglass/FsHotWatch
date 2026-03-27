@@ -5,6 +5,7 @@ module FsHotWatch.MacFsEvents
 open System
 open System.Runtime.InteropServices
 open System.Threading
+open FsHotWatch.Logging
 
 // ─── Native library paths ───────────────────────────────────────────
 [<Literal>]
@@ -139,7 +140,7 @@ let private isFileChangeEvent (flags: uint32) =
 /// Managed wrapper around a native FSEventStream.
 /// Watches the given directories for file-level events and invokes the callback
 /// with each changed file path. Uses a GCD dispatch queue for event delivery.
-type FsEventStream(directories: string list, onFileChanged: string -> unit, latencySeconds: float) =
+type FsEventStream(directories: string list, onFileEvent: string -> unit, latencySeconds: float) =
     let mutable disposed = false
     let mutable streamRef = nativeint 0
     let mutable queueRef = nativeint 0
@@ -153,15 +154,17 @@ type FsEventStream(directories: string list, onFileChanged: string -> unit, late
                 let count = int numEvents
 
                 for i in 0 .. count - 1 do
-                    let pathPtr = Marshal.ReadIntPtr(eventPaths, i * IntPtr.Size)
-                    let path = Marshal.PtrToStringUTF8(pathPtr)
                     let flags = uint32 (Marshal.ReadInt32(eventFlags + nativeint (i * 4)))
 
-                    if not (isNull path) && isFileChangeEvent flags then
-                        try
-                            onFileChanged path
-                        with _ ->
-                            ())
+                    if isFileChangeEvent flags then
+                        let pathPtr = Marshal.ReadIntPtr(eventPaths, i * IntPtr.Size)
+                        let path = Marshal.PtrToStringUTF8(pathPtr)
+
+                        if not (isNull path) then
+                            try
+                                onFileEvent path
+                            with ex ->
+                                debug "fsevents" $"callback exception: %s{ex.Message}")
 
     let cleanup () =
         if streamRef <> nativeint 0 then
@@ -240,5 +243,5 @@ type FsEventStream(directories: string list, onFileChanged: string -> unit, late
 
 /// Create an FsEventStream watching the given directories.
 /// The callback is invoked on a GCD background thread with each changed file path.
-let create (directories: string list) (onFileChanged: string -> unit) =
-    new FsEventStream(directories, onFileChanged, 0.05)
+let create (directories: string list) (onFileEvent: string -> unit) =
+    new FsEventStream(directories, onFileEvent, 0.05)

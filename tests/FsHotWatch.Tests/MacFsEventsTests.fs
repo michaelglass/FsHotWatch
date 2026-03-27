@@ -6,46 +6,31 @@ open System.Runtime.InteropServices
 open System.Threading
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.Tests.TestHelpers
 
 let private isMacOS = RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
-
-/// Poll until condition is true or timeout.
-let private waitUntil (condition: unit -> bool) (timeoutMs: int) =
-    let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
-
-    while not (condition ()) && DateTime.UtcNow < deadline do
-        Thread.Sleep(50)
 
 [<Fact>]
 let ``FsEventStream create and dispose without crash`` () =
     if not isMacOS then
-        ()
+        Assert.Skip("macOS only")
     else
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fsevents-{Guid.NewGuid():N}")
-
-        Directory.CreateDirectory(tmpDir) |> ignore
-
-        try
+        withTempDir "fsevents" (fun tmpDir ->
             use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] ignore
-            test <@ _stream.IsRunning @>
-        finally
-            Directory.Delete(tmpDir, true)
+            test <@ _stream.IsRunning @>)
 
 [<Fact>]
 let ``FsEventStream detects file creation`` () =
     if not isMacOS then
-        ()
+        Assert.Skip("macOS only")
     else
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fsevents-{Guid.NewGuid():N}")
+        withTempDir "fsevents" (fun tmpDir ->
+            let mutable detectedPaths: string list = []
+            let lockObj = obj ()
 
-        Directory.CreateDirectory(tmpDir) |> ignore
-        let mutable detectedPaths: string list = []
-        let lockObj = obj ()
+            let onFile path =
+                lock lockObj (fun () -> detectedPaths <- path :: detectedPaths)
 
-        let onFile path =
-            lock lockObj (fun () -> detectedPaths <- path :: detectedPaths)
-
-        try
             use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] onFile
 
             // Give FSEvents a moment to start receiving events
@@ -57,28 +42,23 @@ let ``FsEventStream detects file creation`` () =
             waitUntil (fun () -> lock lockObj (fun () -> detectedPaths.Length > 0)) 5000
 
             let paths = lock lockObj (fun () -> detectedPaths)
-            test <@ paths |> List.exists (fun p -> p.EndsWith("Test.fs")) @>
-        finally
-            Directory.Delete(tmpDir, true)
+            test <@ paths |> List.exists (fun p -> p.EndsWith("Test.fs")) @>)
 
 [<Fact>]
 let ``FsEventStream detects file modification`` () =
     if not isMacOS then
-        ()
+        Assert.Skip("macOS only")
     else
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fsevents-{Guid.NewGuid():N}")
+        withTempDir "fsevents" (fun tmpDir ->
+            let testFile = Path.Combine(tmpDir, "Lib.fs")
+            File.WriteAllText(testFile, "module Lib\nlet x = 1\n")
 
-        Directory.CreateDirectory(tmpDir) |> ignore
-        let testFile = Path.Combine(tmpDir, "Lib.fs")
-        File.WriteAllText(testFile, "module Lib\nlet x = 1\n")
+            let mutable detectedPaths: string list = []
+            let lockObj = obj ()
 
-        let mutable detectedPaths: string list = []
-        let lockObj = obj ()
+            let onFile path =
+                lock lockObj (fun () -> detectedPaths <- path :: detectedPaths)
 
-        let onFile path =
-            lock lockObj (fun () -> detectedPaths <- path :: detectedPaths)
-
-        try
             use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] onFile
             Thread.Sleep(200)
 
@@ -89,28 +69,23 @@ let ``FsEventStream detects file modification`` () =
             waitUntil (fun () -> lock lockObj (fun () -> detectedPaths.Length > 0)) 5000
 
             let paths = lock lockObj (fun () -> detectedPaths)
-            test <@ paths |> List.exists (fun p -> p.EndsWith("Lib.fs")) @>
-        finally
-            Directory.Delete(tmpDir, true)
+            test <@ paths |> List.exists (fun p -> p.EndsWith("Lib.fs")) @>)
 
 [<Fact>]
 let ``FsEventStream detects file deletion`` () =
     if not isMacOS then
-        ()
+        Assert.Skip("macOS only")
     else
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fsevents-{Guid.NewGuid():N}")
+        withTempDir "fsevents" (fun tmpDir ->
+            let testFile = Path.Combine(tmpDir, "Del.fs")
+            File.WriteAllText(testFile, "module Del")
 
-        Directory.CreateDirectory(tmpDir) |> ignore
-        let testFile = Path.Combine(tmpDir, "Del.fs")
-        File.WriteAllText(testFile, "module Del")
+            let mutable detectedPaths: string list = []
+            let lockObj = obj ()
 
-        let mutable detectedPaths: string list = []
-        let lockObj = obj ()
+            let onFile path =
+                lock lockObj (fun () -> detectedPaths <- path :: detectedPaths)
 
-        let onFile path =
-            lock lockObj (fun () -> detectedPaths <- path :: detectedPaths)
-
-        try
             use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] onFile
             Thread.Sleep(200)
             lock lockObj (fun () -> detectedPaths <- [])
@@ -119,15 +94,12 @@ let ``FsEventStream detects file deletion`` () =
             waitUntil (fun () -> lock lockObj (fun () -> detectedPaths.Length > 0)) 5000
 
             let paths = lock lockObj (fun () -> detectedPaths)
-            test <@ paths |> List.exists (fun p -> p.EndsWith("Del.fs")) @>
-        finally
-            if Directory.Exists(tmpDir) then
-                Directory.Delete(tmpDir, true)
+            test <@ paths |> List.exists (fun p -> p.EndsWith("Del.fs")) @>)
 
 [<Fact>]
 let ``FsEventStream watches multiple directories`` () =
     if not isMacOS then
-        ()
+        Assert.Skip("macOS only")
     else
         let tmpRoot =
             Path.Combine(Path.GetTempPath(), $"fshw-fsevents-multi-{Guid.NewGuid():N}")

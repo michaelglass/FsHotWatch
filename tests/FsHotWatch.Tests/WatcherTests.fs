@@ -7,6 +7,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.Watcher
+open FsHotWatch.Tests.TestHelpers
 
 // === Unit tests for classification/filtering (no FileSystemWatcher needed) ===
 
@@ -84,13 +85,6 @@ let ``classifyChange maps project.assets.json to SourceChanged`` () =
     | other -> Assert.Fail($"Expected SourceChanged (fallthrough), got %A{other}")
 
 // === Integration test: verify FileWatcher.create produces a working watcher ===
-
-/// Poll until condition is true or timeout.
-let private waitUntil (condition: unit -> bool) (timeoutMs: int) =
-    let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
-
-    while not (condition ()) && DateTime.UtcNow < deadline do
-        Thread.Sleep(50)
 
 [<Fact>]
 let ``watcher detects file changes in src directory`` () =
