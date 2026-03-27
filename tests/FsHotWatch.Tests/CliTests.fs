@@ -118,7 +118,7 @@ let ``shutdown via IPC stops the daemon`` () =
     let pipeName = computePipeName tmpDir
     let cts = new CancellationTokenSource()
 
-    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir
+    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None
     let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
     Thread.Sleep(500)
 
@@ -174,7 +174,7 @@ let ``CLI status query works against running daemon`` () =
     let pipeName = computePipeName tmpDir
     let cts = new CancellationTokenSource()
 
-    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir
+    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None
 
     let plugin =
         { new IFsHotWatchPlugin with
@@ -208,7 +208,7 @@ let ``CLI plugin status query works against running daemon`` () =
     let pipeName = computePipeName tmpDir
     let cts = new CancellationTokenSource()
 
-    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir
+    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None
 
     let plugin =
         { new IFsHotWatchPlugin with
@@ -244,7 +244,7 @@ let ``CLI command proxying works against running daemon`` () =
     let pipeName = computePipeName tmpDir
     let cts = new CancellationTokenSource()
 
-    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir
+    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None
 
     let plugin =
         { new IFsHotWatchPlugin with
