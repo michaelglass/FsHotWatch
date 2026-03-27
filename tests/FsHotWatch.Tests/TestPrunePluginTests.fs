@@ -639,17 +639,18 @@ let ``cross-file type change only runs affected test classes`` () =
         let testsFile = Path.Combine(tmpDir, "Tests.fsx")
         let captureFile = Path.Combine(tmpDir, "test-invocation.txt")
 
-        // Create a simple wrapper script that will capture arguments
-        let wrapperPath = Path.Combine(tmpDir, "test-wrapper.sh")
+        // Note: This test requires bash and only runs successfully on Unix/Linux
+        let bashPath = Path.Combine(tmpDir, "test-wrapper.sh")
 
-        // Create wrapper script (with escaped path to prevent injection)
-        File.WriteAllText(wrapperPath, $"#!/bin/bash\necho \"$@\" >> '{captureFile}'\nexit 0\n")
+        try
+            File.WriteAllText(bashPath, $"#!/bin/bash\necho \"$@\" >> '{captureFile}'\nexit 0\n")
+        with ex ->
+            failwith $"Failed to create test wrapper script: {ex.Message}"
 
-        // Create test config with class filtering
         let testConfigs =
             [ { Project = "MyTests"
                 Command = "bash"
-                Args = wrapperPath
+                Args = bashPath
                 Group = "default"
                 Environment = []
                 FilterTemplate = Some "-- --filter-class {classes}"
@@ -757,16 +758,12 @@ let validate (cfg: Config) = cfg.Value.Length > 0
 
         test <@ affectedResult.IsSome @>
 
-        // The key validation: only testValidateTrue and testValidateFalse should be affected
-        // testOtherStuff should NOT be included because it doesn't depend on Config
         let affectedTests = affectedResult.Value
 
         test <@ affectedTests.Contains("testValidateTrue") @>
         test <@ affectedTests.Contains("testValidateFalse") @>
         test <@ not (affectedTests.Contains("testOtherStuff")) @>
 
-        // Trigger test execution by emitting BuildCompleted with affected tests detected
-        // This should invoke the test command with the filter applied
         host.EmitBuildCompleted(BuildSucceeded)
 
         waitForPluginIdle host "test-prune" 5.0
