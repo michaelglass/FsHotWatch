@@ -167,6 +167,7 @@ let private showHelp () =
     printfn "Options:"
     printfn "  -v, --verbose              Show per-file status transitions (same as --log-level=debug)"
     printfn "  --log-level=<level>        Set log level: error, warning, info, debug (default: info)"
+    printfn "  --no-cache                 Disable check result cache"
 
 let private runIpc (action: Async<string>) : int =
     try
@@ -444,20 +445,32 @@ let main args =
     | Some other -> eprintfn "Unknown log level: %s (using info)" other
     | None -> ()
 
+    let noCache = argList |> List.exists (fun a -> a = "--no-cache")
+
     let filteredArgs =
         argList
-        |> List.filter (fun a -> a <> "--verbose" && a <> "-v" && not (a.StartsWith("--log-level=")))
+        |> List.filter (fun a ->
+            a <> "--verbose"
+            && a <> "-v"
+            && a <> "--no-cache"
+            && not (a.StartsWith("--log-level=")))
 
     // Build extra args string to forward logging flags to daemon subprocess
     let daemonExtraArgs =
-        match logLevelArg with
-        | Some("error" | "warning" | "info" | "debug" as level) -> $"--log-level=%s{level} "
-        | Some _ -> "" // invalid level already warned; don't forward
-        | None ->
-            if argList |> List.exists (fun a -> a = "--verbose" || a = "-v") then
-                "--verbose "
-            else
-                ""
+        let parts =
+            [ match logLevelArg with
+              | Some("error" | "warning" | "info" | "debug" as level) -> $"--log-level=%s{level}"
+              | Some _ -> () // invalid level already warned; don't forward
+              | None ->
+                  if argList |> List.exists (fun a -> a = "--verbose" || a = "-v") then
+                      "--verbose"
+              if noCache then
+                  "--no-cache" ]
+
+        if parts.IsEmpty then
+            ""
+        else
+            (String.concat " " parts) + " "
 
     let repoRoot =
         match findRepoRoot (Directory.GetCurrentDirectory()) with
@@ -468,5 +481,15 @@ let main args =
             ""
 
     let pipeName = computePipeName repoRoot
+
+    // Load config to determine cache backend, then create daemon factory with cache wired in
+    let config = loadConfig repoRoot
+
+    let cacheConfig = if noCache then DaemonConfig.NoCache else config.Cache
+
+    let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
+
+    let createDaemon (root: string) = Daemon.create root backend keyProvider
+
     let command = parseCommand filteredArgs
-    executeCommand Daemon.create defaultIpcOps repoRoot pipeName command daemonExtraArgs
+    executeCommand createDaemon defaultIpcOps repoRoot pipeName command daemonExtraArgs

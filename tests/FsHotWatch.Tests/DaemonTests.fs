@@ -47,7 +47,7 @@ let ``daemon starts and stops without error`` () =
     let cts = new CancellationTokenSource()
 
     try
-        let daemon = Daemon.createWith nullChecker tmpDir
+        let daemon = Daemon.createWith nullChecker tmpDir None None
         let task = Async.StartAsTask(daemon.Run(cts.Token))
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
         cts.Cancel()
@@ -71,7 +71,7 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
     let cts = new CancellationTokenSource()
 
     try
-        let daemon = Daemon.createWith nullChecker tmpDir
+        let daemon = Daemon.createWith nullChecker tmpDir None None
 
         // Register a preprocessor that claims it modified the file
         let preprocessor =
@@ -128,7 +128,7 @@ let ``daemon dispatches file change events to plugins`` () =
     let cts = new CancellationTokenSource()
 
     try
-        let daemon = Daemon.createWith nullChecker tmpDir
+        let daemon = Daemon.createWith nullChecker tmpDir None None
 
         let plugin =
             { new IFsHotWatchPlugin with
@@ -170,7 +170,7 @@ let ``daemon debounces rapid file changes into one batch`` () =
     let cts = new CancellationTokenSource()
 
     try
-        let daemon = Daemon.createWith nullChecker tmpDir
+        let daemon = Daemon.createWith nullChecker tmpDir None None
 
         let plugin =
             { new IFsHotWatchPlugin with
@@ -241,7 +241,7 @@ let ``daemon handles ProjectChanged events`` () =
     let cts = new CancellationTokenSource()
 
     try
-        let daemon = Daemon.createWith nullChecker tmpDir
+        let daemon = Daemon.createWith nullChecker tmpDir None None
 
         let plugin =
             { new IFsHotWatchPlugin with
@@ -298,7 +298,7 @@ let ``daemon handles SolutionChanged events`` () =
     let cts = new CancellationTokenSource()
 
     try
-        let daemon = Daemon.createWith nullChecker tmpDir
+        let daemon = Daemon.createWith nullChecker tmpDir None None
 
         let plugin =
             { new IFsHotWatchPlugin with
@@ -355,7 +355,7 @@ let ``daemon Run completes when cancellation is immediate`` () =
     let cts = new CancellationTokenSource()
 
     try
-        let daemon = Daemon.createWith nullChecker tmpDir
+        let daemon = Daemon.createWith nullChecker tmpDir None None
         // Cancel immediately
         cts.Cancel()
         let task = Async.StartAsTask(daemon.Run(cts.Token))
@@ -380,7 +380,7 @@ let ``Daemon.create creates a working daemon with real checker`` () =
 
     try
         // Exercise the Daemon.create path (not createWith) which creates its own FSharpChecker
-        let daemon = Daemon.create tmpDir
+        let daemon = Daemon.create tmpDir None None
         let task = Async.StartAsTask(daemon.Run(cts.Token))
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
         cts.Cancel()
@@ -404,7 +404,7 @@ let ``daemon RunWithIpc starts and stops cleanly`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
 
     try
-        let daemon = Daemon.createWith nullChecker tmpDir
+        let daemon = Daemon.createWith nullChecker tmpDir None None
         let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
         cts.Cancel()
@@ -427,7 +427,7 @@ let ``daemon RunWithIpc responds to IPC queries`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
 
     try
-        let daemon = Daemon.createWith nullChecker tmpDir
+        let daemon = Daemon.createWith nullChecker tmpDir None None
 
         let plugin =
             { new IFsHotWatchPlugin with
@@ -462,7 +462,7 @@ let ``daemon RegisterProject stores options in pipeline`` () =
         let checker =
             FSharp.Compiler.CodeAnalysis.FSharpChecker.Create(projectCacheSize = 10)
 
-        let daemon = Daemon.createWith checker tmpDir
+        let daemon = Daemon.createWith checker tmpDir None None
 
         let sourceFile = Path.Combine(tmpDir, "src", "Lib.fs")
         File.WriteAllText(sourceFile, "module Lib\nlet x = 42\n")

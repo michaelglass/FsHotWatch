@@ -4,11 +4,49 @@ open System
 open System.IO
 open System.Text.Json
 open FsHotWatch
+open FsHotWatch.CheckCache
 open FsHotWatch.Daemon
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.ProcessHelper
 open FsHotWatch.TestPrune.TestPrunePlugin
+
+/// Cache backend configuration.
+type CacheBackendConfig =
+    /// Disable caching entirely
+    | NoCache
+    /// In-memory LRU cache only (lost on restart)
+    | InMemoryOnly of maxSize: int
+    /// File-based cache with timestamp key provider
+    | FileBackend
+    /// File-based cache with jj-aware key provider
+    | JjFileBackend
+
+/// Create cache backend and key provider from config.
+let createCacheComponents
+    (repoRoot: string)
+    (config: CacheBackendConfig)
+    : (ICheckCacheBackend option * ICacheKeyProvider option) =
+    let cacheDir = Path.Combine(repoRoot, ".fshw", "cache")
+
+    match config with
+    | NoCache -> (None, None)
+    | InMemoryOnly maxSize ->
+        (Some(FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(maxSize) :> ICheckCacheBackend),
+         Some(TimestampCacheKeyProvider() :> ICacheKeyProvider))
+    | FileBackend ->
+        (Some(FsHotWatch.FileCheckCache.FileCheckCache(cacheDir) :> ICheckCacheBackend),
+         Some(TimestampCacheKeyProvider() :> ICacheKeyProvider))
+    | JjFileBackend ->
+        (Some(FsHotWatch.FileCheckCache.FileCheckCache(cacheDir) :> ICheckCacheBackend),
+         Some(JjCacheKeyProvider(repoRoot) :> ICacheKeyProvider))
+
+/// Detect the default cache backend: jj if .jj/ exists, otherwise file.
+let detectDefaultCacheBackend (repoRoot: string) : CacheBackendConfig =
+    if Directory.Exists(Path.Combine(repoRoot, ".jj")) then
+        JjFileBackend
+    else
+        FileBackend
 
 /// Configuration for a single test project.
 type TestProjectConfig =
@@ -25,6 +63,7 @@ type DaemonConfiguration =
     { Build: {| Command: string; Args: string |} option
       Format: bool
       Lint: bool
+      Cache: CacheBackendConfig
       Analyzers: {| Paths: string list |} option
       Tests:
           {| BeforeRun: string option
@@ -37,10 +76,11 @@ type DaemonConfiguration =
              Command: string
              Args: string |} list }
 
-let private defaultConfig =
+let private defaultConfigFor (repoRoot: string) =
     { Build = Some {| Command = "dotnet"; Args = "build" |}
       Format = true
       Lint = true
+      Cache = detectDefaultCacheBackend repoRoot
       Analyzers = None
       Tests = None
       Coverage = None
@@ -50,9 +90,11 @@ let private defaultConfig =
 let loadConfig (repoRoot: string) : DaemonConfiguration =
     let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
 
+    let defaults = defaultConfigFor repoRoot
+
     if not (File.Exists configPath) then
         Logging.info "config" "No .fs-hot-watch.json found, using defaults (build + format + lint)"
-        defaultConfig
+        defaults
     else
 
         try
@@ -86,6 +128,22 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
                 match root.TryGetProperty("lint") with
                 | true, v -> v.GetBoolean()
                 | _ -> true
+
+            let cache =
+                match root.TryGetProperty("cache") with
+                | true, v when v.ValueKind = JsonValueKind.False -> NoCache
+                | true, v when v.ValueKind = JsonValueKind.True -> defaults.Cache
+                | true, v when v.ValueKind = JsonValueKind.String ->
+                    match v.GetString().ToLowerInvariant() with
+                    | "memory" -> InMemoryOnly 500
+                    | "file" -> FileBackend
+                    | "jj" -> JjFileBackend
+                    | "none"
+                    | "false" -> NoCache
+                    | other ->
+                        Logging.warn "config" $"Unknown cache value '%s{other}', using default"
+                        defaults.Cache
+                | _ -> defaults.Cache
 
             let analyzers =
                 match root.TryGetProperty("analyzers") with
@@ -215,6 +273,7 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
                 { Build = build
                   Format = format
                   Lint = lint
+                  Cache = cache
                   Analyzers = analyzers
                   Tests = tests
                   Coverage = coverage
@@ -225,7 +284,7 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
         with ex ->
             Logging.error "config" $"Failed to parse .fs-hot-watch.json: %s{ex.Message}"
             Logging.info "config" "Using defaults"
-            defaultConfig
+            defaults
 
 /// Register plugins on the daemon based on the loaded configuration.
 let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
