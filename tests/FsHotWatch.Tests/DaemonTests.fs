@@ -9,14 +9,6 @@ open FsHotWatch.Daemon
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 
-// macOS kqueue-based FileSystemWatcher is unreliable — use polling watcher for tests.
-// TODO: Replace Watcher.fs with FSEventStreamCreate on macOS, inotify on Linux.
-do
-    if
-        System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.OSX)
-    then
-        Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "1")
-
 /// A null checker is fine for tests that don't perform actual compilation.
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
