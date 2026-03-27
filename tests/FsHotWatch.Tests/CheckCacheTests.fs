@@ -7,6 +7,7 @@ open FsHotWatch.Events
 open FsHotWatch.CheckCache
 open FsHotWatch.InMemoryCheckCache
 open FsHotWatch.FileCheckCache
+open FsHotWatch.JjHelper
 
 [<Fact>]
 let ``CacheKey produces consistent hash for same inputs`` () =
@@ -314,5 +315,125 @@ let ``FileCheckCache clear removes all entries`` () =
         cache.Clear()
         Assert.True(cache.TryGet(makeKey "a").IsNone)
         Assert.True(cache.TryGet(makeKey "b").IsNone)
+    finally
+        Directory.Delete(tempDir, true)
+
+// --- JjScanGuard tests ---
+
+[<Fact>]
+let ``JjScanGuard returns SkipAll when commit_id matches stored`` () =
+    let tempDir = Path.Combine(Path.GetTempPath(), $"fshw-jj-guard-{Guid.NewGuid():N}")
+    let fshwDir = Path.Combine(tempDir, ".fshw")
+    Directory.CreateDirectory(fshwDir) |> ignore
+    File.WriteAllText(Path.Combine(fshwDir, "last-commit.id"), "abc123def456")
+
+    try
+        let guard =
+            JjScanGuard(tempDir, getCommitId = (fun () -> Some "abc123def456"), getDiff = (fun _ -> Set.empty))
+
+        let decision = guard.BeginScan()
+
+        match decision with
+        | SkipAll -> ()
+        | other -> Assert.Fail($"Expected SkipAll but got %A{other}")
+    finally
+        Directory.Delete(tempDir, true)
+
+[<Fact>]
+let ``JjScanGuard returns CheckSubset when commit_id differs`` () =
+    let tempDir = Path.Combine(Path.GetTempPath(), $"fshw-jj-guard-{Guid.NewGuid():N}")
+    let fshwDir = Path.Combine(tempDir, ".fshw")
+    Directory.CreateDirectory(fshwDir) |> ignore
+    File.WriteAllText(Path.Combine(fshwDir, "last-commit.id"), "old_commit_id")
+
+    let changedFiles = set [ "/repo/src/File.fs"; "/repo/src/Other.fs" ]
+
+    try
+        let guard =
+            JjScanGuard(tempDir, getCommitId = (fun () -> Some "new_commit_id"), getDiff = (fun _from -> changedFiles))
+
+        let decision = guard.BeginScan()
+
+        match decision with
+        | CheckSubset files -> Assert.Equal<Set<string>>(changedFiles, files)
+        | other -> Assert.Fail($"Expected CheckSubset but got %A{other}")
+    finally
+        Directory.Delete(tempDir, true)
+
+[<Fact>]
+let ``JjScanGuard returns CheckAll when no stored commit_id`` () =
+    let tempDir = Path.Combine(Path.GetTempPath(), $"fshw-jj-guard-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tempDir) |> ignore
+
+    try
+        let guard =
+            JjScanGuard(tempDir, getCommitId = (fun () -> Some "some_commit_id"), getDiff = (fun _ -> Set.empty))
+
+        let decision = guard.BeginScan()
+
+        match decision with
+        | CheckAll -> ()
+        | other -> Assert.Fail($"Expected CheckAll but got %A{other}")
+    finally
+        Directory.Delete(tempDir, true)
+
+[<Fact>]
+let ``JjScanGuard returns CheckAll when jj unavailable`` () =
+    let tempDir = Path.Combine(Path.GetTempPath(), $"fshw-jj-guard-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tempDir) |> ignore
+
+    try
+        let guard =
+            JjScanGuard(tempDir, getCommitId = (fun () -> None), getDiff = (fun _ -> Set.empty))
+
+        let decision = guard.BeginScan()
+
+        match decision with
+        | CheckAll -> ()
+        | other -> Assert.Fail($"Expected CheckAll but got %A{other}")
+    finally
+        Directory.Delete(tempDir, true)
+
+[<Fact>]
+let ``JjScanGuard CommitScanSuccess writes commit_id to disk`` () =
+    let tempDir = Path.Combine(Path.GetTempPath(), $"fshw-jj-guard-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tempDir) |> ignore
+
+    try
+        let guard =
+            JjScanGuard(tempDir, getCommitId = (fun () -> Some "written_commit_id"), getDiff = (fun _ -> Set.empty))
+
+        guard.BeginScan() |> ignore
+        guard.CommitScanSuccess()
+
+        let storedId =
+            File.ReadAllText(Path.Combine(tempDir, ".fshw", "last-commit.id")).Trim()
+
+        Assert.Equal("written_commit_id", storedId)
+    finally
+        Directory.Delete(tempDir, true)
+
+[<Fact>]
+let ``JjScanGuard second scan returns SkipAll after CommitScanSuccess`` () =
+    let tempDir = Path.Combine(Path.GetTempPath(), $"fshw-jj-guard-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tempDir) |> ignore
+
+    try
+        let commitId = "stable_commit_id"
+
+        let guard =
+            JjScanGuard(tempDir, getCommitId = (fun () -> Some commitId), getDiff = (fun _ -> Set.empty))
+
+        // First scan: CheckAll (no stored commit_id)
+        match guard.BeginScan() with
+        | CheckAll -> ()
+        | other -> Assert.Fail($"Expected CheckAll on first scan but got %A{other}")
+
+        guard.CommitScanSuccess()
+
+        // Second scan: SkipAll (commit_id now matches stored)
+        match guard.BeginScan() with
+        | SkipAll -> ()
+        | other -> Assert.Fail($"Expected SkipAll on second scan but got %A{other}")
     finally
         Directory.Delete(tempDir, true)
