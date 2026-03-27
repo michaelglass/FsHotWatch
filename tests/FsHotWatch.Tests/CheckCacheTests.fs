@@ -89,3 +89,21 @@ let ``getFileHash returns lowercase hex hash`` () =
     Assert.DoesNotContain("-", hash)
     // Verify reasonable length (SHA256 is 64 hex chars)
     Assert.True(hash.Length = 64)
+
+[<Fact>]
+let ``getProjectOptionsHash is stable for same options`` () =
+    let checker = FSharpChecker.Create()
+    let sourceText = FSharp.Compiler.Text.SourceText.ofString "module Test"
+
+    let options1, _ =
+        checker.GetProjectOptionsFromScript("/test/test.fsx", sourceText)
+        |> Async.RunSynchronously
+
+    let options2, _ =
+        checker.GetProjectOptionsFromScript("/test/test.fsx", sourceText)
+        |> Async.RunSynchronously
+
+    let hash1 = getProjectOptionsHash options1
+    let hash2 = getProjectOptionsHash options2
+
+    Assert.Equal<string>(hash1, hash2)
