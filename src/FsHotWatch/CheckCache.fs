@@ -8,7 +8,7 @@ open FSharp.Compiler.CodeAnalysis
 open FsHotWatch.Events
 
 /// Compute a SHA256 hex digest of a string
-let private sha256Hex (content: string) : string =
+let sha256Hex (content: string) : string =
     use sha = SHA256.Create()
     let bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(content))
     BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant()

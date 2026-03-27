@@ -1,0 +1,99 @@
+/// File-based cache backend for cold start improvements.
+/// Stores partial FileCheckResult data to disk as JSON.
+module FsHotWatch.FileCheckCache
+
+open System
+open System.IO
+open System.Text.Json
+open FsHotWatch.Events
+open FsHotWatch.CheckCache
+
+/// Serializable representation of a cached check result.
+/// FCS types can't be serialized, so we store what we can.
+type CachedFileEntry =
+    { File: string
+      SourceHash: string
+      Version: int64
+      DiagnosticCount: int
+      CachedAt: DateTimeOffset }
+
+/// File-based cache backend for cold start improvements.
+/// Stores partial FileCheckResult data to disk as JSON.
+/// On TryGet, returns FileCheckResult with Unchecked.defaultof for FCS types.
+type FileCheckCache(cacheDir: string) =
+    do
+        if not (Directory.Exists(cacheDir)) then
+            Directory.CreateDirectory(cacheDir) |> ignore
+
+    let cacheFilePath (keyHash: string) =
+        Path.Combine(cacheDir, $"%s{keyHash}.json")
+
+    interface ICheckCacheBackend with
+        member _.TryGet(key: CacheKey) : FileCheckResult option =
+            let keyHash = hashCacheKey key
+            let path = cacheFilePath keyHash
+
+            if File.Exists(path) then
+                try
+                    let json = File.ReadAllText(path)
+                    let entry = JsonSerializer.Deserialize<CachedFileEntry>(json)
+
+                    // Reconstruct partial FileCheckResult
+                    // FCS types are defaultof — consumers already handle null CheckResults
+                    Some
+                        { File = entry.File
+                          Source = "" // don't store full source on disk
+                          ParseResults = Unchecked.defaultof<_>
+                          CheckResults = Unchecked.defaultof<_>
+                          ProjectOptions = Unchecked.defaultof<_>
+                          Version = entry.Version }
+                with ex ->
+                    Logging.debug "file-cache" $"Failed to read cache %s{keyHash}: %s{ex.Message}"
+                    None
+            else
+                None
+
+        member _.Set (key: CacheKey) (result: FileCheckResult) : unit =
+            let keyHash = hashCacheKey key
+            let path = cacheFilePath keyHash
+
+            try
+                let sourceHash = sha256Hex result.Source
+
+                let diagnosticCount =
+                    if isNull (box result.CheckResults) then
+                        0
+                    else
+                        result.CheckResults.Diagnostics.Length
+
+                let entry =
+                    { File = result.File
+                      SourceHash = sourceHash
+                      Version = result.Version
+                      DiagnosticCount = diagnosticCount
+                      CachedAt = DateTimeOffset.UtcNow }
+
+                let json =
+                    JsonSerializer.Serialize(entry, JsonSerializerOptions(WriteIndented = true))
+
+                File.WriteAllText(path, json)
+            with ex ->
+                Logging.error "file-cache" $"Failed to write cache %s{keyHash}: %s{ex.Message}"
+
+        member _.Invalidate(key: CacheKey) : unit =
+            let keyHash = hashCacheKey key
+            let path = cacheFilePath keyHash
+
+            if File.Exists(path) then
+                try
+                    File.Delete(path)
+                with ex ->
+                    Logging.error "file-cache" $"Failed to invalidate cache: %s{ex.Message}"
+
+        member _.Clear() : unit =
+            try
+                if Directory.Exists(cacheDir) then
+                    for file in Directory.GetFiles(cacheDir, "*.json") do
+                        File.Delete(file)
+            with ex ->
+                Logging.error "file-cache" $"Failed to clear cache: %s{ex.Message}"
