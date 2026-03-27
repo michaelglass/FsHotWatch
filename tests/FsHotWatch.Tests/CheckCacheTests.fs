@@ -200,6 +200,18 @@ let ``InMemoryCheckCache invalidates entry`` () =
     Assert.True(cache.TryGet(key).IsNone)
 
 [<Fact>]
+let ``InMemoryCheckCache updates existing key with new value`` () =
+    let cache = InMemoryCheckCache(10) :> ICheckCacheBackend
+    let key = makeKey "file1"
+
+    cache.Set key (makeTestResult "test.fs" 1L)
+    cache.Set key (makeTestResult "test.fs" 2L)
+
+    match cache.TryGet key with
+    | Some r -> Assert.Equal(2L, r.Version)
+    | None -> Assert.Fail("Expected Some but got None")
+
+[<Fact>]
 let ``InMemoryCheckCache clear removes all entries`` () =
     let cache = InMemoryCheckCache(10) :> ICheckCacheBackend
     let key1 = makeKey "a"
