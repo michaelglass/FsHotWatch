@@ -1,35 +1,11 @@
 module TestPrune.Tests.DatabaseTests
 
-open System
-open System.IO
 open Xunit
 open Swensen.Unquote
 open Microsoft.Data.Sqlite
 open TestPrune.AstAnalyzer
 open TestPrune.Database
-
-let private tempDbPath () =
-    Path.Combine(Path.GetTempPath(), $"test-prune-%A{Guid.NewGuid()}.db")
-
-let private withDb (f: Database -> unit) =
-    let path = tempDbPath ()
-
-    try
-        let db = Database.create path
-        f db
-    finally
-        if File.Exists path then
-            File.Delete path
-
-        // SQLite WAL/SHM files
-        let walPath = path + "-wal"
-        let shmPath = path + "-shm"
-
-        if File.Exists walPath then
-            File.Delete walPath
-
-        if File.Exists shmPath then
-            File.Delete shmPath
+open TestPrune.Tests.TestHelpers
 
 let private openRawConnection (dbPath: string) =
     let conn = new SqliteConnection($"Data Source=%s{dbPath}")
@@ -519,11 +495,7 @@ module ``stringToSymbolKind fallback`` =
 
     [<Fact>]
     let ``unknown kind string falls back to Value`` () =
-        let path = tempDbPath ()
-
-        try
-            let db = Database.create path
-
+        withDbPath (fun path db ->
             // Insert a symbol row with an unknown kind string directly via raw SQL
             use conn = openRawConnection path
 
@@ -539,26 +511,13 @@ module ``stringToSymbolKind fallback`` =
 
             let symbols = db.GetSymbolsInFile("src/Foo.fs")
             test <@ symbols.Length = 1 @>
-            test <@ symbols[0].Kind = Value @>
-        finally
-            if File.Exists path then
-                File.Delete path
-
-            if File.Exists(path + "-wal") then
-                File.Delete(path + "-wal")
-
-            if File.Exists(path + "-shm") then
-                File.Delete(path + "-shm")
+            test <@ symbols[0].Kind = Value @>)
 
 module ``stringToDepKind fallback`` =
 
     [<Fact>]
     let ``unknown dep kind string falls back to References`` () =
-        let path = tempDbPath ()
-
-        try
-            let db = Database.create path
-
+        withDbPath (fun path db ->
             // Seed two symbols so we can insert a dependency between them
             let result =
                 { Symbols =
@@ -602,16 +561,7 @@ module ``stringToDepKind fallback`` =
             // References, meaning testA is still returned as affected by funcB
             let affected = db.QueryAffectedTests([ "Lib.funcB" ])
             test <@ affected.Length = 1 @>
-            test <@ affected[0].TestMethod = "testA" @>
-        finally
-            if File.Exists path then
-                File.Delete path
-
-            if File.Exists(path + "-wal") then
-                File.Delete(path + "-wal")
-
-            if File.Exists(path + "-shm") then
-                File.Delete(path + "-shm")
+            test <@ affected[0].TestMethod = "testA" @>)
 
 module ``Project key storage`` =
 

@@ -1,34 +1,11 @@
 module TestPrune.Tests.DeadCodeTests
 
-open System
-open System.IO
 open Xunit
 open Swensen.Unquote
 open TestPrune.AstAnalyzer
 open TestPrune.Database
 open TestPrune.DeadCode
-
-let private tempDbPath () =
-    Path.Combine(Path.GetTempPath(), $"test-prune-%A{Guid.NewGuid()}.db")
-
-let private withDb (f: Database -> unit) =
-    let path = tempDbPath ()
-
-    try
-        let db = Database.create path
-        f db
-    finally
-        if File.Exists path then
-            File.Delete path
-
-        let walPath = path + "-wal"
-        let shmPath = path + "-shm"
-
-        if File.Exists walPath then
-            File.Delete walPath
-
-        if File.Exists shmPath then
-            File.Delete shmPath
+open TestPrune.Tests.TestHelpers
 
 module ``All symbols reachable`` =
 
