@@ -46,8 +46,12 @@ let ``parseCommand status with plugin returns Status Some`` () =
     test <@ parseCommand [ "status"; "lint" ] = Status(Some "lint") @>
 
 [<Fact>]
-let ``parseCommand scan returns Scan`` () =
-    test <@ parseCommand [ "scan" ] = Scan @>
+let ``parseCommand scan returns Scan false`` () =
+    test <@ parseCommand [ "scan" ] = Scan false @>
+
+[<Fact>]
+let ``parseCommand scan --force returns Scan true`` () =
+    test <@ parseCommand [ "scan"; "--force" ] = Scan true @>
 
 [<Fact>]
 let ``parseCommand scan-status returns ScanStatus`` () =
@@ -297,7 +301,7 @@ let private fakeConfig: DaemonConfiguration =
 
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
-      Scan = fun _ -> async { return "scan started" }
+      Scan = fun _ _ -> async { return "scan started" }
       ScanStatus = fun _ -> async { return "idle" }
       GetStatus = fun _ -> async { return "{}" }
       GetPluginStatus = fun _ _ -> async { return "not found" }
@@ -369,14 +373,14 @@ let ``executeCommand Scan calls scan IPC`` () =
     let ipc =
         { fakeIpc () with
             Scan =
-                fun _ ->
+                fun _ _ ->
                     async {
                         called <- true
                         return "scan started"
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Scan "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Scan false) "" fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>
