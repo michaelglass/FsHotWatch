@@ -752,6 +752,140 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
         | other -> Assert.Fail($"Unexpected status: %A{other}")
     | None -> Assert.True(true, "Skipped: FCS could not check file")
 
+[<Fact>]
+let ``AnalyzersPlugin produces warning on wildcard DU match`` () =
+    let repoRoot = findRepoRoot ()
+
+    let exampleProjectDir = Path.Combine(repoRoot, "examples/ExampleAnalyzer")
+    let buildPsi = ProcessStartInfo("dotnet", $"""build "{exampleProjectDir}" -v quiet""")
+    buildPsi.UseShellExecute <- false
+    let buildProc = Process.Start(buildPsi)
+    buildProc.WaitForExit()
+    test <@ buildProc.ExitCode = 0 @>
+
+    let analyzerPath = Path.Combine(repoRoot, "examples/ExampleAnalyzer/bin/Debug/net10.0")
+    test <@ Directory.Exists(analyzerPath) @>
+
+    // Source with a wildcard match on a DU — the analyzer should flag this
+    let source =
+        "module Test\ntype Shape = Circle | Square\nlet f s = match s with | Circle -> 1 | _ -> 2\n"
+
+    let checker =
+        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+
+    let host = PluginHost.create checker repoRoot
+    let analyzers = AnalyzersPlugin([ analyzerPath ])
+    host.Register(analyzers)
+
+    // Verify the diagnostics command exists and starts at 0
+    let diagsBefore = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
+    test <@ diagsBefore.IsSome @>
+    test <@ diagsBefore.Value.Contains("\"analyzers\":1") @>
+
+    let tmpFile = Path.Combine(Path.GetTempPath(), $"fshw-analyzer-{Guid.NewGuid():N}.fs")
+    File.WriteAllText(tmpFile, source)
+
+    try
+        let sourceText = SourceText.ofString source
+
+        let projOptions =
+            checker.GetProjectOptionsFromScript(tmpFile, sourceText, assumeDotNetFramework = false)
+            |> Async.RunSynchronously
+            |> fst
+
+        let pipeline = CheckPipeline(checker)
+        pipeline.RegisterProject("TestProj", projOptions)
+        let result = pipeline.CheckFile(tmpFile) |> Async.RunSynchronously
+
+        match result with
+        | Some checkResult ->
+            host.EmitFileChecked(checkResult)
+            waitForStatusSettled host "analyzers" 10000
+
+            let status = host.GetStatus("analyzers")
+            test <@ status.IsSome @>
+
+            match status.Value with
+            | Completed _ ->
+                // Verify the diagnostics command reports actual results
+                let diags = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
+                test <@ diags.IsSome @>
+                // Should have at least 1 file analyzed with diagnostics
+                test <@ diags.Value.Contains("\"files\":1") @>
+
+                // Verify the error ledger has the wildcard warning
+                let errors = host.GetErrorsByPlugin("analyzers")
+                let allEntries = errors |> Map.toList |> List.collect snd
+                test <@ allEntries.Length > 0 @>
+                test <@ allEntries |> List.exists (fun e -> e.Severity = "warning") @>
+            | PluginStatus.Failed(msg, _) -> Assert.Fail($"Analyzer should succeed but failed: {msg}")
+            | other -> Assert.Fail($"Unexpected status: %A{other}")
+        | None -> Assert.Fail("FCS failed to check file with wildcard DU match")
+    finally
+        File.Delete(tmpFile)
+
+[<Fact>]
+let ``AnalyzersPlugin produces no warning on exhaustive DU match`` () =
+    let repoRoot = findRepoRoot ()
+
+    let exampleProjectDir = Path.Combine(repoRoot, "examples/ExampleAnalyzer")
+    let buildPsi = ProcessStartInfo("dotnet", $"""build "{exampleProjectDir}" -v quiet""")
+    buildPsi.UseShellExecute <- false
+    let buildProc = Process.Start(buildPsi)
+    buildProc.WaitForExit()
+    test <@ buildProc.ExitCode = 0 @>
+
+    let analyzerPath = Path.Combine(repoRoot, "examples/ExampleAnalyzer/bin/Debug/net10.0")
+
+    // Source with exhaustive match — no wildcard, no warning
+    let source =
+        "module Test\ntype Shape = Circle | Square\nlet f s = match s with | Circle -> 1 | Square -> 2\n"
+
+    let checker =
+        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+
+    let host = PluginHost.create checker repoRoot
+    let analyzers = AnalyzersPlugin([ analyzerPath ])
+    host.Register(analyzers)
+
+    let tmpFile = Path.Combine(Path.GetTempPath(), $"fshw-analyzer-{Guid.NewGuid():N}.fs")
+    File.WriteAllText(tmpFile, source)
+
+    try
+        let sourceText = SourceText.ofString source
+
+        let projOptions =
+            checker.GetProjectOptionsFromScript(tmpFile, sourceText, assumeDotNetFramework = false)
+            |> Async.RunSynchronously
+            |> fst
+
+        let pipeline = CheckPipeline(checker)
+        pipeline.RegisterProject("TestProj", projOptions)
+        let result = pipeline.CheckFile(tmpFile) |> Async.RunSynchronously
+
+        match result with
+        | Some checkResult ->
+            host.EmitFileChecked(checkResult)
+            waitForStatusSettled host "analyzers" 10000
+
+            let status = host.GetStatus("analyzers")
+            test <@ status.IsSome @>
+
+            match status.Value with
+            | Completed _ ->
+                // No wildcard warnings — error ledger should be clean for this file
+                let errors = host.GetErrorsByPlugin("analyzers")
+                let fileErrors = errors |> Map.tryFind (Path.GetFullPath(tmpFile))
+
+                match fileErrors with
+                | Some entries -> Assert.Fail($"Expected no warnings but got %d{entries.Length}")
+                | None -> () // Clean — no analyzer errors for this file
+            | PluginStatus.Failed(msg, _) -> Assert.Fail($"Analyzer should succeed but failed: {msg}")
+            | other -> Assert.Fail($"Unexpected status: %A{other}")
+        | None -> Assert.Fail("FCS failed to check file with exhaustive DU match")
+    finally
+        File.Delete(tmpFile)
+
 // ===========================================================================
 // BuildPlugin — success and failure
 // ===========================================================================
