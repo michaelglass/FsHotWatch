@@ -21,9 +21,9 @@ let ``diagnostics command returns zeroes when no files checked`` () =
 
     let result = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
-    test <@ result.Value.Contains("\"analyzers\": 0") @>
-    test <@ result.Value.Contains("\"files\": 0") @>
-    test <@ result.Value.Contains("\"diagnostics\": 0") @>
+    test <@ result.Value.Contains("\"analyzers\":0") @>
+    test <@ result.Value.Contains("\"files\":0") @>
+    test <@ result.Value.Contains("\"diagnostics\":0") @>
 
 [<Fact>]
 let ``analyzer error path sets Failed status`` () =
@@ -64,7 +64,7 @@ let ``analyzer with non-existent path skips loading`` () =
     // No analyzers should be loaded — diagnostics command shows 0 analyzers
     let result = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
-    test <@ result.Value.Contains("\"analyzers\": 0") @>
+    test <@ result.Value.Contains("\"analyzers\":0") @>
 
 [<Fact>]
 let ``analyzer with mix of valid and invalid paths`` () =
@@ -87,7 +87,7 @@ let ``analyzer with mix of valid and invalid paths`` () =
 
         let result = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
         test <@ result.IsSome @>
-        test <@ result.Value.Contains("\"analyzers\": 0") @>
+        test <@ result.Value.Contains("\"analyzers\":0") @>
     finally
         try
             System.IO.Directory.Delete(emptyDir, true)
