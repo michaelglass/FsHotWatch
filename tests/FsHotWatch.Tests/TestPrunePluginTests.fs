@@ -620,3 +620,149 @@ let computeTest () =
 
         test <@ affectedResult.IsSome @>
         test <@ affectedResult.Value.Contains("computeTest") @>)
+
+[<Fact>]
+let ``after a cross-file type change, affected-tests identifies dependent test`` () =
+    // Cross-file scenario: separate Lib.fsx and Tests.fsx
+    // Lib defines a type. Tests opens Lib and uses that type in a test.
+    // When type changes, QueryAffectedTests should find the test that uses it.
+    withTmpDir "tp-cross-file" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let libFile = Path.Combine(tmpDir, "Lib.fsx")
+        let testFile = Path.Combine(tmpDir, "Tests.fsx")
+
+        let testConfigs =
+            [ { Project = "MyTests"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = Some "-- --filter-class {classes}"
+                ClassJoin = "|" } ]
+
+        let checker = FSharpChecker.Create(keepAssemblyContents = true)
+        let pipeline = CheckPipeline(checker)
+        let host = PluginHost.create checker tmpDir
+        let plugin = TestPrunePlugin(dbPath, tmpDir, testConfigs = testConfigs)
+        host.Register(plugin)
+
+        // Lib.fsx: define a record type
+        let libSource =
+            """module Lib
+
+type Config = { Line: float; Branch: float }
+
+let validateConfig (cfg: Config) = cfg.Line > 0.0
+"""
+
+        // Tests.fsx: open Lib, use Config in a test
+        let testSource1 =
+            """module Tests
+
+open Lib
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+[<Fact>]
+let testValidate () =
+    let cfg = { Line = 0.8; Branch = 0.7 }
+    let result = validateConfig cfg
+    ()
+"""
+
+        // Create a project context that includes BOTH files so cross-file resolution works
+        async {
+            File.WriteAllText(libFile, libSource)
+            File.WriteAllText(testFile, testSource1)
+
+            // Create combined project options that includes both files
+            let! libOptions = getScriptOptions checker libFile libSource
+
+            let combinedOptions =
+                { libOptions with
+                    SourceFiles = [| libFile; testFile |] }
+
+            // Register both files under the same project context
+            pipeline.RegisterProject(libFile, combinedOptions)
+
+            // Emit lib file through the pipeline
+            let! libResult = pipeline.CheckFile(libFile)
+
+            match libResult with
+            | Some r -> host.EmitFileChecked(r)
+            | None -> failwith $"CheckFile returned None for {libFile}"
+
+            let deadline0 = DateTime.UtcNow.AddSeconds(10.0)
+            let mutable settled0 = false
+
+            while not settled0 && DateTime.UtcNow < deadline0 do
+                match host.GetStatus("test-prune") with
+                | Some(Running _) -> System.Threading.Thread.Sleep(50)
+                | _ -> settled0 <- true
+
+            // Emit test file through the pipeline
+            let! testResult = pipeline.CheckFile(testFile)
+
+            match testResult with
+            | Some r -> host.EmitFileChecked(r)
+            | None -> failwith $"CheckFile returned None for {testFile}"
+
+            let deadline00 = DateTime.UtcNow.AddSeconds(10.0)
+            let mutable settled00 = false
+
+            while not settled00 && DateTime.UtcNow < deadline00 do
+                match host.GetStatus("test-prune") with
+                | Some(Running _) -> System.Threading.Thread.Sleep(50)
+                | _ -> settled00 <- true
+
+            return ()
+        }
+        |> Async.RunSynchronously
+
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        let deadline1 = DateTime.UtcNow.AddSeconds(15.0)
+        let mutable settled1 = false
+
+        while not settled1 && DateTime.UtcNow < deadline1 do
+            match host.GetStatus("test-prune") with
+            | Some(Running _) -> System.Threading.Thread.Sleep(50)
+            | _ -> settled1 <- true
+
+        // Second scan: add a field to Config type
+        let libSource2 =
+            """module Lib
+
+type Config = { Line: float; Branch: float; Threshold: bool }
+
+let validateConfig (cfg: Config) = cfg.Line > 0.0
+"""
+
+        // Update the lib file and re-check with the same combined project context
+        async {
+            File.WriteAllText(libFile, libSource2)
+
+            let! libResult2 = pipeline.CheckFile(libFile)
+
+            match libResult2 with
+            | Some r -> host.EmitFileChecked(r)
+            | None -> failwith $"CheckFile returned None for {libFile} (second scan)"
+
+            let deadline2 = DateTime.UtcNow.AddSeconds(10.0)
+            let mutable settled2 = false
+
+            while not settled2 && DateTime.UtcNow < deadline2 do
+                match host.GetStatus("test-prune") with
+                | Some(Running _) -> System.Threading.Thread.Sleep(50)
+                | _ -> settled2 <- true
+        }
+        |> Async.RunSynchronously
+
+        // After the second FileChecked for Lib, affected-tests should contain testValidate
+        // (Config changed → QueryAffectedTests finds testValidate via the cross-file dependency)
+        let affectedResult =
+            host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
+
+        test <@ affectedResult.IsSome @>
+        test <@ affectedResult.Value.Contains("testValidate") @>)

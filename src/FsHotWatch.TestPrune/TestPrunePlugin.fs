@@ -349,8 +349,17 @@ type TestPrunePlugin
                             let changes = detectChanges normalizedSymbols storedSymbols
                             let changedNames = changedSymbolNames changes
 
+                            Logging.info
+                                "test-prune"
+                                $"detectChanges for %s{relPath}: %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{normalizedSymbols.Length} current"
+
                             if not changedNames.IsEmpty then
                                 let affected = db.QueryAffectedTests(changedNames)
+
+                                Logging.info
+                                    "test-prune"
+                                    $"QueryAffectedTests(%A{changedNames}): %d{affected.Length} affected tests"
+
                                 Volatile.Write(&lastAffectedTests, affected)
 
                             analysisRan <- true
