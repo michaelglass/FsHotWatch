@@ -6,6 +6,7 @@ open Xunit
 open FsHotWatch.Events
 open FsHotWatch.CheckCache
 open FsHotWatch.InMemoryCheckCache
+open FsHotWatch.FileCheckCache
 
 [<Fact>]
 let ``CacheKey produces consistent hash for same inputs`` () =
@@ -250,3 +251,87 @@ let ``InMemoryCheckCache clear removes all entries`` () =
     Assert.True(cache.TryGet(key1).IsNone)
     Assert.True(cache.TryGet(key2).IsNone)
     Assert.True(cache.TryGet(key3).IsNone)
+
+// --- FileCheckCache tests ---
+
+[<Fact>]
+let ``FileCheckCache stores and retrieves results`` () =
+    let tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+    Directory.CreateDirectory(tempDir) |> ignore
+
+    try
+        let cache = FileCheckCache(tempDir) :> ICheckCacheBackend
+        let key = makeKey "file1"
+        let result = makeTestResult "test.fs" 42L
+
+        cache.Set key result
+
+        match cache.TryGet key with
+        | Some r ->
+            Assert.Equal("test.fs", r.File)
+            Assert.Equal(42L, r.Version)
+        | None -> Assert.Fail("Expected Some but got None")
+    finally
+        Directory.Delete(tempDir, true)
+
+[<Fact>]
+let ``FileCheckCache returns None for missing key`` () =
+    let tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+    Directory.CreateDirectory(tempDir) |> ignore
+
+    try
+        let cache = FileCheckCache(tempDir) :> ICheckCacheBackend
+        let key = makeKey "nonexistent"
+        Assert.True(cache.TryGet(key).IsNone)
+    finally
+        Directory.Delete(tempDir, true)
+
+[<Fact>]
+let ``FileCheckCache persists across instances`` () =
+    let tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+    Directory.CreateDirectory(tempDir) |> ignore
+
+    try
+        let cache1 = FileCheckCache(tempDir) :> ICheckCacheBackend
+        let key = makeKey "file1"
+        cache1.Set key (makeTestResult "test.fs" 99L)
+
+        // New instance simulates cold start
+        let cache2 = FileCheckCache(tempDir) :> ICheckCacheBackend
+
+        match cache2.TryGet key with
+        | Some r ->
+            Assert.Equal("test.fs", r.File)
+            Assert.Equal(99L, r.Version)
+        | None -> Assert.Fail("Expected cached result to persist across instances")
+    finally
+        Directory.Delete(tempDir, true)
+
+[<Fact>]
+let ``FileCheckCache invalidates entry`` () =
+    let tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+    Directory.CreateDirectory(tempDir) |> ignore
+
+    try
+        let cache = FileCheckCache(tempDir) :> ICheckCacheBackend
+        let key = makeKey "file1"
+        cache.Set key (makeTestResult "test.fs" 1L)
+        cache.Invalidate key
+        Assert.True(cache.TryGet(key).IsNone)
+    finally
+        Directory.Delete(tempDir, true)
+
+[<Fact>]
+let ``FileCheckCache clear removes all entries`` () =
+    let tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+    Directory.CreateDirectory(tempDir) |> ignore
+
+    try
+        let cache = FileCheckCache(tempDir) :> ICheckCacheBackend
+        cache.Set (makeKey "a") (makeTestResult "a.fs" 1L)
+        cache.Set (makeKey "b") (makeTestResult "b.fs" 2L)
+        cache.Clear()
+        Assert.True(cache.TryGet(makeKey "a").IsNone)
+        Assert.True(cache.TryGet(makeKey "b").IsNone)
+    finally
+        Directory.Delete(tempDir, true)
