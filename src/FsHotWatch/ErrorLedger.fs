@@ -1,6 +1,7 @@
 module FsHotWatch.ErrorLedger
 
 open System.Collections.Concurrent
+open System.Threading
 
 /// A single diagnostic entry from a plugin.
 type ErrorEntry =
@@ -17,25 +18,39 @@ type ErrorLedger() =
     let errors = ConcurrentDictionary<struct (string * string), ErrorEntry list>()
     let versions = ConcurrentDictionary<struct (string * string), int64>()
 
+    /// Atomically check and advance the version for a key.
+    /// Returns true if the version was accepted (>= last seen), false if stale.
+    let tryAcceptVersion key (v: int64) =
+        let mutable accepted = false
+
+        versions.AddOrUpdate(
+            key,
+            (fun _ ->
+                accepted <- true
+                v),
+            (fun _ last ->
+                if v >= last then
+                    accepted <- true
+                    v
+                else
+                    accepted <- false
+                    last)
+        )
+        |> ignore
+
+        accepted
+
     /// Set errors for a plugin + file. Replaces previous. Empty list clears.
     /// When version is provided, updates with version < last accepted are ignored.
     member _.Report(pluginName: string, filePath: string, entries: ErrorEntry list, ?version: int64) =
         let key = struct (pluginName, filePath)
 
-        match version with
-        | Some v ->
-            let lastVersion = versions.GetOrAdd(key, 0L)
+        let accepted =
+            match version with
+            | Some v -> tryAcceptVersion key v
+            | None -> true
 
-            if v < lastVersion then
-                ()
-            else
-                versions[key] <- v
-
-                if entries.IsEmpty then
-                    errors.TryRemove(key) |> ignore
-                else
-                    errors[key] <- entries
-        | None ->
+        if accepted then
             if entries.IsEmpty then
                 errors.TryRemove(key) |> ignore
             else
@@ -46,16 +61,13 @@ type ErrorLedger() =
     member _.Clear(pluginName: string, filePath: string, ?version: int64) =
         let key = struct (pluginName, filePath)
 
-        match version with
-        | Some v ->
-            let lastVersion = versions.GetOrAdd(key, 0L)
+        let accepted =
+            match version with
+            | Some v -> tryAcceptVersion key v
+            | None -> true
 
-            if v < lastVersion then
-                ()
-            else
-                versions[key] <- v
-                errors.TryRemove(key) |> ignore
-        | None -> errors.TryRemove(key) |> ignore
+        if accepted then
+            errors.TryRemove(key) |> ignore
 
     /// Clear all errors for a plugin.
     member _.ClearPlugin(pluginName: string) =
