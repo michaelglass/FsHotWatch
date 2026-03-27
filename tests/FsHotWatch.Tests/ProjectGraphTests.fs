@@ -159,3 +159,107 @@ let ``GetParallelTiers handles linear chain`` () =
     test <@ tiers.[0] = [ "/proj/A.fsproj" ] @>
     test <@ tiers.[1] = [ "/proj/B.fsproj" ] @>
     test <@ tiers.[2] = [ "/proj/C.fsproj" ] @>
+
+// --- Coverage for uncovered edge cases ---
+
+// Line 41: RegisterProject duplicate dependent (existing list already contains project)
+[<Fact>]
+let ``RegisterProject does not duplicate dependent when registered twice`` () =
+    let graph = ProjectGraph()
+    graph.RegisterProject("/proj/A.fsproj", [ "/proj/A.fs" ], [])
+    graph.RegisterProject("/proj/B.fsproj", [ "/proj/B.fs" ], [ "/proj/A.fsproj" ])
+    // Re-register B with same reference — should not add duplicate dependent
+    graph.RegisterProject("/proj/B.fsproj", [ "/proj/B.fs" ], [ "/proj/A.fsproj" ])
+    let deps = graph.GetDependents("/proj/A.fsproj")
+    test <@ deps = [ "/proj/B.fsproj" ] @>
+
+// Line 61: RegisterFromFsproj with Compile element missing Include attribute
+[<Fact>]
+let ``RegisterFromFsproj ignores Compile elements without Include attribute`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-noinclude-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    File.WriteAllText(
+        Path.Combine(tmpDir, "A.fsproj"),
+        """<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+    <Compile />
+  </ItemGroup>
+</Project>"""
+    )
+
+    File.WriteAllText(Path.Combine(tmpDir, "Lib.fs"), "module Lib")
+
+    try
+        let graph = ProjectGraph()
+        let (sourceFiles, refs) = graph.RegisterFromFsproj(Path.Combine(tmpDir, "A.fsproj"))
+        test <@ sourceFiles.Length = 1 @>
+        test <@ refs |> List.isEmpty @>
+    finally
+        Directory.Delete(tmpDir, true)
+
+// Line 72: RegisterFromFsproj with ProjectReference element missing Include attribute
+[<Fact>]
+let ``RegisterFromFsproj ignores ProjectReference elements without Include attribute`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-noref-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    File.WriteAllText(
+        Path.Combine(tmpDir, "A.fsproj"),
+        """<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../B/B.fsproj" />
+    <ProjectReference />
+  </ItemGroup>
+</Project>"""
+    )
+
+    File.WriteAllText(Path.Combine(tmpDir, "Lib.fs"), "module Lib")
+
+    try
+        let graph = ProjectGraph()
+        let (sourceFiles, refs) = graph.RegisterFromFsproj(Path.Combine(tmpDir, "A.fsproj"))
+        test <@ sourceFiles.Length = 1 @>
+        test <@ refs.Length = 1 @>
+    finally
+        Directory.Delete(tmpDir, true)
+
+// Line 88: GetSourceFiles for unregistered project returns empty list
+[<Fact>]
+let ``GetSourceFiles returns empty for unregistered project`` () =
+    let graph = ProjectGraph()
+    test <@ graph.GetSourceFiles("/proj/NoSuch.fsproj") = [] @>
+
+// Line 94: GetReferences for unregistered project returns empty list
+[<Fact>]
+let ``GetReferences returns empty for unregistered project`` () =
+    let graph = ProjectGraph()
+    test <@ graph.GetReferences("/proj/NoSuch.fsproj") = [] @>
+
+// Line 165: GetParallelTiers with circular dependency (blocked projects forced into final tier)
+[<Fact>]
+let ``GetParallelTiers puts circular dependencies in final tier`` () =
+    let graph = ProjectGraph()
+    // Create a cycle: A -> B -> A (impossible in reality, but tests the fallback path)
+    graph.RegisterProject("/proj/A.fsproj", [ "/proj/A.fs" ], [ "/proj/B.fsproj" ])
+    graph.RegisterProject("/proj/B.fsproj", [ "/proj/B.fs" ], [ "/proj/A.fsproj" ])
+    let tiers = graph.GetParallelTiers()
+    // Neither can be "ready" — both should end up in the remaining tier
+    test <@ tiers.Length = 1 @>
+    test <@ tiers.[0] |> List.length = 2 @>
+
+// GetParallelTiers with empty graph
+[<Fact>]
+let ``GetParallelTiers returns empty for empty graph`` () =
+    let graph = ProjectGraph()
+    test <@ graph.GetParallelTiers() = [] @>
+
+// GetTopologicalOrder returns empty for empty graph
+[<Fact>]
+let ``GetTopologicalOrder returns empty for empty graph`` () =
+    let graph = ProjectGraph()
+    test <@ graph.GetTopologicalOrder() = [] @>
