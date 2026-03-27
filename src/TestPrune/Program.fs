@@ -242,7 +242,7 @@ let runIndexWith
 
         let levels = topoLevels projectInfos Set.empty
 
-        let indexProject (fsprojPath: string, compileFiles, projectRefs) =
+        let indexProject (fsprojPath: string, compileFiles, projectRefs) : AnalysisResult option =
             let projName = Path.GetFileNameWithoutExtension(fsprojPath)
 
             try
@@ -255,6 +255,7 @@ let runIndexWith
                 | Some stored when stored = hash && not depReindexed ->
                     Threading.Interlocked.Increment(&skippedProjects) |> ignore
                     eprintfn $"  %s{projName}: unchanged, skipping"
+                    None
                 | _ ->
                     let projOptions = lazy (getOptions checker fsprojPath)
 
@@ -323,9 +324,6 @@ let runIndexWith
                           Dependencies = results |> List.collect (fun r -> r.Dependencies)
                           TestMethods = results |> List.collect (fun r -> r.TestMethods) }
 
-                    if analyzedFiles > 0 then
-                        db.RebuildProjects([ combined ])
-
                     db.SetProjectKey(projName, hash)
                     reindexedProjects.TryAdd(fsprojPath, true) |> ignore
                     Threading.Interlocked.Add(&totalSymbols, combined.Symbols.Length) |> ignore
@@ -336,18 +334,29 @@ let runIndexWith
 
                     eprintfn
                         $"  %s{projName}: %d{combined.Symbols.Length} symbols, %d{combined.Dependencies.Length} deps, %d{combined.TestMethods.Length} tests (%d{analyzedFiles}/%d{fileCount} files analyzed)"
+
+                    if analyzedFiles > 0 then Some combined else None
             with ex ->
                 eprintfn $"  Error processing %s{projName}: %s{ex.Message}"
+                None
+
+        let mutable allResults = []
 
         for level in levels do
-            if level.Length = 1 then
-                indexProject level.Head
-            else
-                level
-                |> List.map (fun proj -> async { indexProject proj })
-                |> Async.Parallel
-                |> Async.RunSynchronously
-                |> ignore
+            let levelResults =
+                if level.Length = 1 then
+                    [ indexProject level.Head ]
+                else
+                    level
+                    |> List.map (fun proj -> async { return indexProject proj })
+                    |> Async.Parallel
+                    |> Async.RunSynchronously
+                    |> Array.toList
+
+            allResults <- allResults @ (levelResults |> List.choose id)
+
+        if not allResults.IsEmpty then
+            db.RebuildProjects(allResults)
 
         eprintfn $"Indexed %d{totalSymbols} symbols, %d{totalDeps} dependencies, %d{totalTests} test methods"
 
