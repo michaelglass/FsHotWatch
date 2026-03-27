@@ -103,8 +103,8 @@ let ``counter starts at zero`` () =
                     |> List.map (fun t -> { t with TestProject = "TestProject" }) }
 
             // Store both in DB
-            db.RebuildForProject("MyProject", libAnalysis)
-            db.RebuildForProject("MyProject", testAnalysis)
+            db.RebuildProjects([ "MyProject", libAnalysis ])
+            db.RebuildProjects([ "MyProject", testAnalysis ])
 
             // Verify test methods were detected
             let allSymbols = db.GetAllSymbolNames()
@@ -162,7 +162,7 @@ let testMethod () = helperFunc 5 |> ignore
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" }) }
 
-            db.RebuildForProject("MyProject", analysis)
+            db.RebuildProjects([ "MyProject", analysis ])
 
             // Verify transitive chain exists: testMethod -> helperFunc -> baseFunc
             let helperCallsBase =
@@ -236,7 +236,7 @@ let testDescribe () = describe (Circle 1.0) |> ignore
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" }) }
 
-            db.RebuildForProject("MyProject", analysis)
+            db.RebuildProjects([ "MyProject", analysis ])
 
             // Find the Shape DU symbol and simulate a change (adding a case shifts lines)
             let storedSymbols = db.GetSymbolsInFile "src/M.fs"
@@ -288,7 +288,7 @@ let f x = x
                   Dependencies = result.Dependencies
                   TestMethods = [] }
 
-            db.RebuildForProject("MyProject", analysis)
+            db.RebuildProjects([ "MyProject", analysis ])
 
             // A new file not in the DB
             let currentSymbols =
@@ -325,7 +325,7 @@ let f x = x
                   Dependencies = result.Dependencies
                   TestMethods = [] }
 
-            db.RebuildForProject("MyProject", analysis)
+            db.RebuildProjects([ "MyProject", analysis ])
 
             let result = selectTests db [] Map.empty
 
@@ -354,7 +354,7 @@ let deadFunc x = x * 2
                   Dependencies = result.Dependencies
                   TestMethods = [] }
 
-            db.RebuildForProject("MyProject", analysis)
+            db.RebuildProjects([ "MyProject", analysis ])
 
             let deadResult = findDeadCode db [ "*.main" ] false
 
@@ -400,7 +400,7 @@ let orphan x = x - 1
                   Dependencies = result.Dependencies
                   TestMethods = [] }
 
-            db.RebuildForProject("MyProject", analysis)
+            db.RebuildProjects([ "MyProject", analysis ])
 
             let deadResult = findDeadCode db [ "*.topFunc" ] false
 
@@ -453,7 +453,7 @@ let main () = area (Circle 1.0) |> ignore
                   Dependencies = result.Dependencies
                   TestMethods = [] }
 
-            db.RebuildForProject("MyProject", analysis)
+            db.RebuildProjects([ "MyProject", analysis ])
 
             let deadResult = findDeadCode db [ "*.main" ] false
 

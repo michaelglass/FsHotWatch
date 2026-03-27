@@ -53,7 +53,7 @@ module ``Create initializes schema`` =
 module ``Store and retrieve symbols`` =
 
     [<Fact>]
-    let ``insert via RebuildForProject and query back via GetSymbolsInFile`` () =
+    let ``insert via RebuildProjects and query back via GetSymbolsInFile`` () =
         withDb (fun db ->
             let result =
                 { Symbols =
@@ -72,7 +72,7 @@ module ``Store and retrieve symbols`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("MyProject", result)
+            db.RebuildProjects([ "MyProject", result ])
 
             let symbols = db.GetSymbolsInFile "src/MyModule.fs"
             test <@ symbols.Length = 2 @>
@@ -120,7 +120,7 @@ module ``Transitive dependency query`` =
                         TestClass = "Tests"
                         TestMethod = "testA" } ] }
 
-            db.RebuildForProject("MyProject", result)
+            db.RebuildProjects([ "MyProject", result ])
 
             let affected = db.QueryAffectedTests [ "Domain.TypeC" ]
             test <@ affected.Length = 1 @>
@@ -157,7 +157,7 @@ module ``Direct dependency`` =
                         TestClass = "Tests"
                         TestMethod = "testA" } ] }
 
-            db.RebuildForProject("MyProject", result)
+            db.RebuildProjects([ "MyProject", result ])
 
             let affected = db.QueryAffectedTests [ "Lib.funcB" ]
             test <@ affected.Length = 1 @>
@@ -198,12 +198,12 @@ module ``No dependency`` =
                         TestClass = "Tests"
                         TestMethod = "testA" } ] }
 
-            db.RebuildForProject("MyProject", result)
+            db.RebuildProjects([ "MyProject", result ])
 
             let affected = db.QueryAffectedTests [ "Other.unrelated" ]
             test <@ affected |> List.isEmpty @>)
 
-module ``RebuildForProject replaces old data`` =
+module ``RebuildProjects replaces old data`` =
 
     [<Fact>]
     let ``rebuild twice only latest data present`` () =
@@ -219,7 +219,7 @@ module ``RebuildForProject replaces old data`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("MyProject", result1)
+            db.RebuildProjects([ "MyProject", result1 ])
 
             let result2 =
                 { Symbols =
@@ -232,7 +232,7 @@ module ``RebuildForProject replaces old data`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("MyProject", result2)
+            db.RebuildProjects([ "MyProject", result2 ])
 
             let symbols = db.GetSymbolsInFile "src/Mod.fs"
             test <@ symbols.Length = 1 @>
@@ -241,6 +241,51 @@ module ``RebuildForProject replaces old data`` =
             let allNames = db.GetAllSymbolNames()
             test <@ allNames |> Set.contains "Mod.oldFunc" |> not @>
             test <@ allNames |> Set.contains "Mod.newFunc" @>)
+
+module ``Cross-project dependencies`` =
+
+    [<Fact>]
+    let ``cross-project dep edges survive regardless of list order`` () =
+        withDb (fun db ->
+            // Project A defines the symbol
+            let projectA =
+                "ProjectA",
+                { Symbols =
+                    [ { FullName = "LibModule.helper"
+                        Kind = Function
+                        SourceFile = "src/Lib/Helper.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "" } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            // Project B has a test that depends on A's symbol
+            let projectB =
+                "ProjectB",
+                { Symbols =
+                    [ { FullName = "Tests.MyTests.test1"
+                        Kind = Function
+                        SourceFile = "tests/MyTests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "" } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.MyTests.test1"
+                        ToSymbol = "LibModule.helper"
+                        Kind = Calls } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.MyTests.test1"
+                        TestProject = "ProjectB"
+                        TestClass = "Tests.MyTests"
+                        TestMethod = "test1" } ] }
+
+            // Pass B before A — the old API would silently drop the edge
+            db.RebuildProjects([ projectB; projectA ])
+
+            let affected = db.QueryAffectedTests [ "LibModule.helper" ]
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "test1" @>)
 
 module ``Multiple tests depending on same symbol`` =
 
@@ -284,7 +329,7 @@ module ``Multiple tests depending on same symbol`` =
                         TestClass = "Tests"
                         TestMethod = "test2" } ] }
 
-            db.RebuildForProject("MyProject", result)
+            db.RebuildProjects([ "MyProject", result ])
 
             let affected = db.QueryAffectedTests [ "Lib.sharedFunc" ]
             test <@ affected.Length = 2 @>
@@ -320,7 +365,7 @@ module ``GetAllSymbolNames`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("MyProject", result)
+            db.RebuildProjects([ "MyProject", result ])
 
             let names = db.GetAllSymbolNames()
             test <@ names = set [ "A.one"; "B.two"; "C.three" ] @>)
@@ -538,7 +583,7 @@ module ``stringToDepKind fallback`` =
                         TestClass = "Tests"
                         TestMethod = "testA" } ] }
 
-            db.RebuildForProject("MyProject", result)
+            db.RebuildProjects([ "MyProject", result ])
 
             // Insert a dependency with an unknown dep_kind directly via raw SQL
             use conn = openRawConnection path
@@ -601,98 +646,6 @@ module ``Project key storage`` =
             test <@ db.GetProjectKey "ProjectA" = Some "hash-a" @>
             test <@ db.GetProjectKey "ProjectB" = Some "hash-b" @>)
 
-module ``RebuildForProjectIfChanged`` =
-
-    [<Fact>]
-    let ``rebuilds when no previous hash exists`` () =
-        withDb (fun db ->
-            let result =
-                { Symbols =
-                    [ { FullName = "Mod.func"
-                        Kind = Function
-                        SourceFile = "src/Mod.fs"
-                        LineStart = 1
-                        LineEnd = 5
-                        ContentHash = "" } ]
-                  Dependencies = []
-                  TestMethods = [] }
-
-            let rebuilt = db.RebuildForProjectIfChanged("MyProject", "hash-1", result)
-            test <@ rebuilt = true @>
-
-            let symbols = db.GetSymbolsInFile "src/Mod.fs"
-            test <@ symbols.Length = 1 @>
-            test <@ db.GetProjectKey "MyProject" = Some "hash-1" @>)
-
-    [<Fact>]
-    let ``skips rebuild when hash matches`` () =
-        withDb (fun db ->
-            let result1 =
-                { Symbols =
-                    [ { FullName = "Mod.func"
-                        Kind = Function
-                        SourceFile = "src/Mod.fs"
-                        LineStart = 1
-                        LineEnd = 5
-                        ContentHash = "" } ]
-                  Dependencies = []
-                  TestMethods = [] }
-
-            db.RebuildForProjectIfChanged("MyProject", "same-hash", result1) |> ignore
-
-            // Second call with same hash but different data — should skip
-            let result2 =
-                { Symbols =
-                    [ { FullName = "Mod.differentFunc"
-                        Kind = Function
-                        SourceFile = "src/Mod.fs"
-                        LineStart = 1
-                        LineEnd = 5
-                        ContentHash = "" } ]
-                  Dependencies = []
-                  TestMethods = [] }
-
-            let rebuilt = db.RebuildForProjectIfChanged("MyProject", "same-hash", result2)
-            test <@ rebuilt = false @>
-
-            // Original data should still be there
-            let symbols = db.GetSymbolsInFile "src/Mod.fs"
-            test <@ symbols[0].FullName = "Mod.func" @>)
-
-    [<Fact>]
-    let ``rebuilds when hash differs`` () =
-        withDb (fun db ->
-            let result1 =
-                { Symbols =
-                    [ { FullName = "Mod.func"
-                        Kind = Function
-                        SourceFile = "src/Mod.fs"
-                        LineStart = 1
-                        LineEnd = 5
-                        ContentHash = "" } ]
-                  Dependencies = []
-                  TestMethods = [] }
-
-            db.RebuildForProjectIfChanged("MyProject", "hash-1", result1) |> ignore
-
-            let result2 =
-                { Symbols =
-                    [ { FullName = "Mod.newFunc"
-                        Kind = Function
-                        SourceFile = "src/Mod.fs"
-                        LineStart = 1
-                        LineEnd = 5
-                        ContentHash = "" } ]
-                  Dependencies = []
-                  TestMethods = [] }
-
-            let rebuilt = db.RebuildForProjectIfChanged("MyProject", "hash-2", result2)
-            test <@ rebuilt = true @>
-
-            let symbols = db.GetSymbolsInFile "src/Mod.fs"
-            test <@ symbols[0].FullName = "Mod.newFunc" @>
-            test <@ db.GetProjectKey "MyProject" = Some "hash-2" @>)
-
 module ``File key storage`` =
 
     [<Fact>]
@@ -747,7 +700,7 @@ module ``GetDependenciesFromFile`` =
                         Kind = Calls } ]
                   TestMethods = [] }
 
-            db.RebuildForProject("MyProject", result)
+            db.RebuildProjects([ "MyProject", result ])
 
             let deps = db.GetDependenciesFromFile "tests/Tests.fs"
             test <@ deps.Length = 1 @>
@@ -769,7 +722,7 @@ module ``GetDependenciesFromFile`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("MyProject", result)
+            db.RebuildProjects([ "MyProject", result ])
 
             let deps = db.GetDependenciesFromFile "src/Lib.fs"
             test <@ deps |> List.isEmpty @>)
@@ -800,7 +753,7 @@ module ``GetTestMethodsInFile`` =
                         TestClass = "Tests"
                         TestMethod = "testA" } ] }
 
-            db.RebuildForProject("MyProject", result)
+            db.RebuildProjects([ "MyProject", result ])
 
             let tests = db.GetTestMethodsInFile "tests/Tests.fs"
             test <@ tests.Length = 1 @>
@@ -822,7 +775,7 @@ module ``GetTestMethodsInFile`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("MyProject", result)
+            db.RebuildProjects([ "MyProject", result ])
 
             let tests = db.GetTestMethodsInFile "src/Lib.fs"
             test <@ tests |> List.isEmpty @>)

@@ -55,7 +55,7 @@ module ``All symbols reachable`` =
                         Kind = Calls } ]
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             let result = findDeadCode db [ "*.Program.main" ] false
 
@@ -94,7 +94,7 @@ module ``Unreachable function detected`` =
                         Kind = Calls } ]
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             let result = findDeadCode db [ "*.Program.main" ] false
 
@@ -144,7 +144,7 @@ module ``Transitive reachability`` =
                         Kind = UsesType } ]
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             let result = findDeadCode db [ "*.Program.main" ] false
 
@@ -177,7 +177,7 @@ module ``Test methods excluded`` =
                         TestClass = "MyTests"
                         TestMethod = "testSomething" } ] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             let result = findDeadCode db [ "*.Program.main" ] false
 
@@ -212,7 +212,7 @@ module ``Module symbols excluded`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             let result = findDeadCode db [ "*.Program.main" ] false
 
@@ -254,7 +254,7 @@ module ``Only shallowest unreachable reported`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             let result = findDeadCode db [ "*.Program.main" ] false
 
@@ -287,7 +287,7 @@ module ``Only shallowest unreachable reported`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             let result = findDeadCode db [ "*.Program.main" ] false
 
@@ -321,7 +321,7 @@ module ``Only shallowest unreachable reported`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             let result = findDeadCode db [ "*.Program.main" ] false
 
@@ -355,7 +355,7 @@ module ``Only shallowest unreachable reported`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             let result = findDeadCode db [ "*.Program.main" ] false
 
@@ -388,7 +388,7 @@ module ``Only shallowest unreachable reported`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             let result = findDeadCode db [ "*.Program.main" ] false
 
@@ -417,7 +417,7 @@ module ``Test file symbols excluded`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             let result = findDeadCode db [ "*.Program.main" ] false
 
@@ -444,7 +444,7 @@ module ``Test file symbols excluded`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             let result = findDeadCode db [ "*.Program.main" ] true
 
@@ -484,7 +484,7 @@ module ``Test file symbols excluded`` =
                         TestClass = "MyTest"
                         TestMethod = "testSomething" } ] }
 
-            db.RebuildForProject("Tests", graph)
+            db.RebuildProjects([ "Tests", graph ])
 
             // Use test method as entry point, include tests in report
             let result = findDeadCode db [ "Tests.MyTest.testSomething" ] true
@@ -515,7 +515,7 @@ module ``matchesPattern — both wildcards (true, true)`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             // *Route* should match App.MyRouteHandler and make it reachable
             let result = findDeadCode db [ "*Route*" ] false
@@ -543,7 +543,7 @@ module ``matchesPattern — both wildcards (true, true)`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             // *Route* must not match App.Unrelated
             let result = findDeadCode db [ "*Route*" ] false
@@ -573,7 +573,7 @@ module ``matchesPattern — start wildcard only (true, false)`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             // *.main matches Program.main, making it the sole entry point
             let result = findDeadCode db [ "*.main" ] false
@@ -601,7 +601,7 @@ module ``matchesPattern — start wildcard only (true, false)`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             // *.main must not match App.Lib.helper
             let result = findDeadCode db [ "*.main" ] false
@@ -631,7 +631,7 @@ module ``matchesPattern — end wildcard only (false, true)`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             // App.* must not match Other.Lib.helper
             let result = findDeadCode db [ "App.*" ] false
@@ -661,7 +661,7 @@ module ``matchesPattern — exact match (false, false)`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             // Exact pattern must not match App.Lib.helper
             let result = findDeadCode db [ "App.Program.main" ] false
@@ -692,7 +692,7 @@ module ``matchesPattern — exact match (false, false)`` =
                         Kind = Calls } ]
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             let result = findDeadCode db [ "App.Program.main" ] false
 
@@ -732,7 +732,7 @@ module ``DU case symbols excluded`` =
                   Dependencies = []
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             let result = findDeadCode db [ "*.Program.main" ] false
 
@@ -765,7 +765,7 @@ module ``No matching entry points`` =
                         Kind = Calls } ]
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             let result = findDeadCode db [ "*.nonexistent" ] false
 
@@ -812,7 +812,7 @@ module ``Multiple entry point patterns`` =
                         Kind = Calls } ]
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             let result = findDeadCode db [ "*.handler"; "*.run" ] false
 
@@ -845,7 +845,7 @@ module ``matchesPattern — prefix positive`` =
                         Kind = Calls } ]
                   TestMethods = [] }
 
-            db.RebuildForProject("App", graph)
+            db.RebuildProjects([ "App", graph ])
 
             // App.* matches App.Program.main, reachability follows to App.Lib.helper
             let result = findDeadCode db [ "App.*" ] false
