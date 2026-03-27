@@ -49,6 +49,7 @@
   <ItemGroup>
     <Compile Include="Logging.fs" />
     <Compile Include="Events.fs" />
+    <Compile Include="CheckCache.fs" />
     <Compile Include="ProcessHelper.fs" />
     <Compile Include="ErrorLedger.fs" />
     <Compile Include="Plugin.fs" />
