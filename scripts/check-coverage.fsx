@@ -28,13 +28,13 @@ let overrides =
     Map.ofList
         [ // FalcoRouteAnalysis.fs: Compiler-generated branches in for-loop iteration and
           // regex matching closures. Line gap from obj/bin filter path in findTestFiles.
-          "FalcoRouteAnalysis.fs", (97.0, 85.0)
+          "FalcoRouteAnalysis.fs", (97.0, 85.7)
           // AstAnalyzer.fs: Exception handlers for InvalidOperationException in classifySymbol/
           // isTestAttribute are impossible to trigger — they guard against faulty FCS symbols.
           // classifyDependency default arm requires non-standard FSharp symbol types.
           // Compiler-generated branches for type-test patterns and for-loop iteration add
           // uncoverable IL branches. Parse error path now tested.
-          "AstAnalyzer.fs", (91.0, 74.0)
+          "AstAnalyzer.fs", (91.0, 74.3)
           // DeadCode.fs: Compiler-generated branch in || short-circuit within List.exists
           // closure (line 80). Both sides of the disjunction are tested, but the IL branch
           // for evaluating the right side when left is true is not reachable.
@@ -42,14 +42,14 @@ let overrides =
           // Database.fs: Compiler-generated branches in while-loop readers, use-binding IDisposable
           // null checks, and transaction try/with rollback paths. All logic paths tested; remaining
           // 23 uncovered branches are IL artifacts not reachable from F# code.
-          "Database.fs", (82.0, 65.0)
+          "Database.fs", (84.0, 68.0)
           // ImpactAnalysis.fs: Compiler-generated branches for fold tuple deconstruction
           // and list filtering. All logic paths are tested.
-          "ImpactAnalysis.fs", (100.0, 66.0)
+          "ImpactAnalysis.fs", (100.0, 66.6)
           // Program.fs: Pure functions, analyzeChanges, runStatusWith, runRunWith, runDeadCode,
           // showHelp, runIndexWith all tested via DI. Remaining uncovered: dotnetBuildRunner
           // (actual process exec), jjDiffProvider (actual jj), runCommand/main entry points.
-          "Program.fs", (59.0, 41.0)
+          "Program.fs", (69.0, 54.0)
           // ProjectLoader.fs: parseProjectFile tested with temp files including missing-attribute
           // branches. getProjectOptions requires Ionide.ProjInfo MSBuild — not unit-testable.
           // toolsPath/msbuildLock are lazy init + lock objects.

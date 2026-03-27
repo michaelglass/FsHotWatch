@@ -125,11 +125,8 @@ type Database(dbPath: string) =
     /// only resolve if those symbols already exist in the database from a prior call.
     /// Optional fileKeys/projectKeys are written in the same transaction for atomicity.
     member _.RebuildProjects
-        (
-            results: AnalysisResult list,
-            ?fileKeys: (string * string) list,
-            ?projectKeys: (string * string) list
-        ) =
+        (results: AnalysisResult list, ?fileKeys: (string * string) list, ?projectKeys: (string * string) list)
+        =
         let sourceFiles =
             results
             |> List.collect (fun r -> r.Symbols |> List.map (fun s -> s.SourceFile))
@@ -243,8 +240,7 @@ type Database(dbPath: string) =
                 use fkCmd = conn.CreateCommand()
                 fkCmd.Transaction <- txn
 
-                fkCmd.CommandText <-
-                    "INSERT OR REPLACE INTO file_keys (source_file, key) VALUES (@sourceFile, @key)"
+                fkCmd.CommandText <- "INSERT OR REPLACE INTO file_keys (source_file, key) VALUES (@sourceFile, @key)"
 
                 let pFkFile = fkCmd.Parameters.Add("@sourceFile", SqliteType.Text)
                 let pFkKey = fkCmd.Parameters.Add("@key", SqliteType.Text)

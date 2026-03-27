@@ -169,11 +169,18 @@ web apps that maps URL routes to integration tests.
 |---------|---------------|
 | [`TestPrune.Core`](https://www.nuget.org/packages/TestPrune.Core) | The library — use this in your build system or editor |
 | [`TestPrune.Falco`](https://www.nuget.org/packages/TestPrune.Falco) | Extension for Falco web apps (route → test mapping) |
-| `TestPrune` | CLI tool (convenience wrapper around the library) |
+| `TestPrune` | CLI tool (reference implementation — see below) |
 
-## CLI
+## CLI (reference implementation)
 
-If you just want to try it out without writing code:
+The `TestPrune` CLI is a **reference implementation** — it shows how to
+wire up the library, but it's not optimized for production use. In
+particular, FSharp.Compiler.Service analysis is inherently slow (it
+type-checks your entire project), so the CLI re-indexes serially and
+can take a while on large codebases. For real workflows, use
+`TestPrune.Core` directly in your build system where you can cache
+aggressively, parallelize across projects, and integrate with your
+existing tooling.
 
 ```
 test-prune index       # Build the dependency graph
@@ -191,10 +198,12 @@ test-prune dead-code --include-tests  # Include test files in report
 ## Design choices
 
 **Static analysis, not coverage.** TestPrune reads your code's AST
-instead of instrumenting test runs. This means indexing is fast, you
-don't need to run tests to build the graph, and there's no
-flaky-coverage problem. The tradeoff: it might run a few extra tests,
-but it won't miss broken ones.
+instead of instrumenting test runs. This means you don't need to run
+tests to build the graph, and there's no flaky-coverage problem. The
+tradeoff: it might run a few extra tests, but it won't miss broken
+ones. Note that FSharp.Compiler.Service type-checking is not instant —
+plan on caching aggressively (see the file- and project-level caching
+APIs) and parallelizing across projects in your integration.
 
 **Safe by default.** When in doubt, run everything. A missed broken test
 is much worse than running a few unnecessary ones.
