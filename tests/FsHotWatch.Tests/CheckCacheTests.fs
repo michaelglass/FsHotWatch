@@ -1,8 +1,10 @@
 module FsHotWatch.Tests.CheckCacheTests
 
+open System
 open Xunit
 open FsHotWatch.Events
 open FsHotWatch.CheckCache
+open FSharp.Compiler.CodeAnalysis
 
 [<Fact>]
 let ``CacheKey produces consistent hash for same inputs`` () =
@@ -61,3 +63,29 @@ let ``hash format is lowercase hex with no dashes`` () =
     Assert.Matches("^[a-f0-9]+$", hash)
     // Verify no dashes or other separators
     Assert.DoesNotContain("-", hash)
+
+[<Fact>]
+let ``getFileHash returns consistent hash for same file`` () =
+    // Create a temp file
+    let tempFile = System.IO.Path.GetTempFileName()
+    System.IO.File.WriteAllText(tempFile, "test content")
+
+    let hash1 = getFileHash tempFile
+    let hash2 = getFileHash tempFile
+
+    try
+        Assert.Equal<string>(hash1, hash2)
+    finally
+        System.IO.File.Delete(tempFile)
+
+[<Fact>]
+let ``getFileHash returns lowercase hex hash`` () =
+    // Test that hash format is correct
+    let hash = getFileHash "/nonexistent/test.fs"
+
+    // Verify it's lowercase hex (only 0-9a-f characters)
+    Assert.Matches("^[a-f0-9]+$", hash)
+    // Verify no dashes or other separators
+    Assert.DoesNotContain("-", hash)
+    // Verify reasonable length (SHA256 is 64 hex chars)
+    Assert.True(hash.Length = 64)
