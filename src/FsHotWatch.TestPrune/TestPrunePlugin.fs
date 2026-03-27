@@ -42,7 +42,8 @@ type TestPrunePlugin
         ?extensions: ITestPruneExtension list,
         ?beforeRun: unit -> unit,
         ?afterRun: TestResults -> unit,
-        ?coverageArgs: string -> string
+        ?coverageArgs: string -> string,
+        ?flushOrder: unit -> string list
     ) =
     let db = Database.create dbPath
 
@@ -244,8 +245,18 @@ type TestPrunePlugin
     /// Flush accumulated per-file analysis results to the DB, one RebuildForProject
     /// call per project with all files combined. This preserves cross-file dependency
     /// edges (e.g. test→prod) that per-file rebuilds would destroy.
+    /// Projects are flushed in topological order (leaves first) so that cross-project
+    /// dependency INSERT JOINs find their target symbols already in the DB.
     let flushPendingAnalysis () =
-        let projects = pendingAnalysis.Keys |> Seq.toList
+        let pendingKeys = pendingAnalysis.Keys |> Set.ofSeq
+
+        let projects =
+            match flushOrder with
+            | Some getOrder ->
+                let ordered = getOrder () |> List.filter pendingKeys.Contains
+                let remaining = pendingKeys - (Set.ofList ordered)
+                ordered @ (Set.toList remaining)
+            | None -> pendingKeys |> Set.toList
 
         for projectName in projects do
             match pendingAnalysis.TryRemove(projectName) with

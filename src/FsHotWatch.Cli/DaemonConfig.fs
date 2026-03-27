@@ -310,12 +310,17 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"
 
         let plugin =
-            match beforeRun, coverageArgs with
-            | Some br, Some ca ->
-                TestPrunePlugin(dbPath, repoRoot, testConfigs = testConfigs, beforeRun = br, coverageArgs = ca)
-            | Some br, None -> TestPrunePlugin(dbPath, repoRoot, testConfigs = testConfigs, beforeRun = br)
-            | None, Some ca -> TestPrunePlugin(dbPath, repoRoot, testConfigs = testConfigs, coverageArgs = ca)
-            | None, None -> TestPrunePlugin(dbPath, repoRoot, testConfigs = testConfigs)
+            TestPrunePlugin(
+                dbPath,
+                repoRoot,
+                testConfigs = testConfigs,
+                ?beforeRun = beforeRun,
+                ?coverageArgs = coverageArgs,
+                flushOrder =
+                    fun () ->
+                        daemon.Graph.GetTopologicalOrder()
+                        |> List.map (System.IO.Path.GetFileNameWithoutExtension)
+            )
 
         daemon.Register(plugin)
     | None -> ()
