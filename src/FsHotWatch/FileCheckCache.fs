@@ -2,7 +2,6 @@
 /// Stores partial FileCheckResult data to disk as JSON.
 module FsHotWatch.FileCheckCache
 
-open System
 open System.IO
 open System.Text.Json
 open FsHotWatch.Events
@@ -10,12 +9,9 @@ open FsHotWatch.CheckCache
 
 /// Serializable representation of a cached check result.
 /// FCS types can't be serialized, so we store what we can.
-type CachedFileEntry =
-    { File: string
-      SourceHash: string
-      Version: int64
-      DiagnosticCount: int
-      CachedAt: DateTimeOffset }
+type CachedFileEntry = { File: string; Version: int64 }
+
+let private serializerOptions = JsonSerializerOptions(WriteIndented = true)
 
 /// File-based cache backend for cold start improvements.
 /// Stores partial FileCheckResult data to disk as JSON.
@@ -33,24 +29,18 @@ type FileCheckCache(cacheDir: string) =
             let keyHash = hashCacheKey key
             let path = cacheFilePath keyHash
 
-            if File.Exists(path) then
-                try
-                    let json = File.ReadAllText(path)
-                    let entry = JsonSerializer.Deserialize<CachedFileEntry>(json)
+            try
+                let json = File.ReadAllText(path)
+                let entry = JsonSerializer.Deserialize<CachedFileEntry>(json)
 
-                    // Reconstruct partial FileCheckResult
-                    // FCS types are defaultof — consumers already handle null CheckResults
-                    Some
-                        { File = entry.File
-                          Source = "" // don't store full source on disk
-                          ParseResults = Unchecked.defaultof<_>
-                          CheckResults = Unchecked.defaultof<_>
-                          ProjectOptions = Unchecked.defaultof<_>
-                          Version = entry.Version }
-                with ex ->
-                    Logging.debug "file-cache" $"Failed to read cache %s{keyHash}: %s{ex.Message}"
-                    None
-            else
+                Some
+                    { File = entry.File
+                      Source = ""
+                      ParseResults = Unchecked.defaultof<_>
+                      CheckResults = Unchecked.defaultof<_>
+                      ProjectOptions = Unchecked.defaultof<_>
+                      Version = entry.Version }
+            with _ ->
                 None
 
         member _.Set (key: CacheKey) (result: FileCheckResult) : unit =
@@ -58,24 +48,11 @@ type FileCheckCache(cacheDir: string) =
             let path = cacheFilePath keyHash
 
             try
-                let sourceHash = sha256Hex result.Source
-
-                let diagnosticCount =
-                    if isNull (box result.CheckResults) then
-                        0
-                    else
-                        result.CheckResults.Diagnostics.Length
-
                 let entry =
                     { File = result.File
-                      SourceHash = sourceHash
-                      Version = result.Version
-                      DiagnosticCount = diagnosticCount
-                      CachedAt = DateTimeOffset.UtcNow }
+                      Version = result.Version }
 
-                let json =
-                    JsonSerializer.Serialize(entry, JsonSerializerOptions(WriteIndented = true))
-
+                let json = JsonSerializer.Serialize(entry, serializerOptions)
                 File.WriteAllText(path, json)
             with ex ->
                 Logging.error "file-cache" $"Failed to write cache %s{keyHash}: %s{ex.Message}"
@@ -84,11 +61,11 @@ type FileCheckCache(cacheDir: string) =
             let keyHash = hashCacheKey key
             let path = cacheFilePath keyHash
 
-            if File.Exists(path) then
-                try
-                    File.Delete(path)
-                with ex ->
-                    Logging.error "file-cache" $"Failed to invalidate cache: %s{ex.Message}"
+            try
+                File.Delete(path)
+            with
+            | :? FileNotFoundException -> ()
+            | ex -> Logging.error "file-cache" $"Failed to invalidate cache: %s{ex.Message}"
 
         member _.Clear() : unit =
             try

@@ -449,17 +449,7 @@ module Daemon =
         let cacheBackend =
             FsHotWatch.FileCheckCache.FileCheckCache(cacheDir) :> ICheckCacheBackend
 
-        let cacheKeyProvider =
-            match JjHelper.currentCommitId () with
-            | Some _ ->
-                Logging.info "daemon" "Using jj-based cache key provider"
-                JjCacheKeyProvider() :> ICacheKeyProvider
-            | None ->
-                Logging.info "daemon" "Using timestamp-based cache key provider"
-                TimestampCacheKeyProvider() :> ICacheKeyProvider
-
-        let pipeline =
-            CheckPipeline(checker, cacheBackend = cacheBackend, cacheKeyProvider = cacheKeyProvider)
+        let pipeline = CheckPipeline(checker, cacheBackend = cacheBackend)
 
         let graph = ProjectGraph()
         let toolsPath = Init.init (DirectoryInfo(repoRoot)) None

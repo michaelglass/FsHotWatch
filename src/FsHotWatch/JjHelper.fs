@@ -1,15 +1,14 @@
 module FsHotWatch.JjHelper
 
-open System
 open System.Threading
 open FsHotWatch.ProcessHelper
 open FsHotWatch.Logging
 
 /// Get the jj working copy commit_id (content-addressed hash of entire tree)
-let getWorkingCopyCommitId () : string option =
+let getWorkingCopyCommitId (repoRoot: string) : string option =
     try
         let (success, output) =
-            ProcessHelper.runProcess "jj" "log -r @ --no-graph -T commit_id" "" []
+            ProcessHelper.runProcess "jj" "log -r @ --no-graph -T commit_id" repoRoot []
 
         if success then
             let id = output.Trim()
@@ -21,32 +20,14 @@ let getWorkingCopyCommitId () : string option =
         Logging.debug "jj-helper" $"jj commit_id error: %s{ex.Message}"
         None
 
-/// Get files changed between two jj snapshots
-let getChangedFiles (fromCommitId: string) : Set<string> option =
-    try
-        let args = $"diff --name-only --from %s{fromCommitId} --to @"
-        let (success, output) = ProcessHelper.runProcess "jj" args "" []
-
-        if success then
-            output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
-            |> Array.map (fun f -> f.Trim())
-            |> Array.filter (fun f -> f.Length > 0)
-            |> Set.ofArray
-            |> Some
-        else
-            None
-    with ex ->
-        Logging.debug "jj-helper" $"jj diff error: %s{ex.Message}"
-        None
-
 /// Memoize the current working copy commit_id for this process
 let mutable private cachedCommitId: string option = None
 
 /// Get memoized jj commit_id (avoids repeated jj calls during a single daemon session)
-let currentCommitId () : string option =
+let currentCommitId (repoRoot: string) : string option =
     match Volatile.Read(&cachedCommitId) with
     | Some id -> Some id
     | None ->
-        let id = getWorkingCopyCommitId ()
+        let id = getWorkingCopyCommitId repoRoot
         Volatile.Write(&cachedCommitId, id)
         id
