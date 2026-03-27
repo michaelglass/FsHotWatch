@@ -58,10 +58,9 @@ let getFileHash (filePath: string) : string =
 let getProjectOptionsHash (options: FSharpProjectOptions) : string =
     let parts =
         [ string options.ProjectFileName
-          string options.TargetFramework
-          string (List.length options.SourceFiles)
-          string (List.length options.ReferencedProjects)
-          String.concat "|" options.CompilerFlags ]
+          String.concat "|" options.SourceFiles
+          string (Array.length options.ReferencedProjects)
+          String.concat "|" options.OtherOptions ]
 
     let content = String.concat "||" parts
     use sha = SHA256.Create()
