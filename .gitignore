@@ -66,3 +66,6 @@ TODO.md
 # Daemon state
 .fs-hot-watch/
 .fshw/
+
+# Implementation plans (working documents)
+docs/plans/
