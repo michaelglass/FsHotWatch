@@ -53,6 +53,7 @@
     <Compile Include="ErrorLedger.fs" />
     <Compile Include="Plugin.fs" />
     <Compile Include="PluginHost.fs" />
+    <Compile Include="MacFsEvents.fs" />
     <Compile Include="Watcher.fs" />
     <Compile Include="ProjectGraph.fs" />
     <Compile Include="CheckPipeline.fs" />
