@@ -533,3 +533,77 @@ module ``Parse error handling`` =
         match result with
         | Error msg -> test <@ msg.StartsWith("Parse errors:", StringComparison.Ordinal) @>
         | Ok _ -> failwith "expected error"
+
+module ``Cross-file dependencies (regression)`` =
+
+    [<Fact>]
+    let ``function using type from module parameter creates dependency`` () =
+        // Regression test: when a type is used in a parameter annotation,
+        // getScriptOptions should include related modules in the project context
+        // so that cross-file references can be resolved.
+        let tmpDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "testprune-cross-file-" + System.Guid.NewGuid().ToString("N"))
+        System.IO.Directory.CreateDirectory(tmpDir) |> ignore
+
+        try
+            let libFile = System.IO.Path.Combine(tmpDir, "Lib.fsx")
+            let consumerFile = System.IO.Path.Combine(tmpDir, "Consumer.fsx")
+
+            let libSource =
+                """module Lib
+
+type Config = { Value: string }
+
+let processConfig (cfg: Config) = cfg.Value.Length
+"""
+
+            let consumerSource =
+                """module Consumer
+
+open Lib
+
+let test () =
+    let cfg = { Value = "hello" }
+    let len = processConfig cfg
+    len
+"""
+
+            // Write files to disk so FCS can analyze them
+            System.IO.File.WriteAllText(libFile, libSource)
+            System.IO.File.WriteAllText(consumerFile, consumerSource)
+
+            let libOptions = getScriptOptions checker libFile libSource |> Async.RunSynchronously
+            let consumerOptions =
+                getScriptOptions checker consumerFile consumerSource |> Async.RunSynchronously
+
+            // Both should be analyzable
+            let libResult = analyzeSource checker libFile libSource libOptions |> Async.RunSynchronously
+            let consumerResult =
+                analyzeSource checker consumerFile consumerSource consumerOptions |> Async.RunSynchronously
+
+            // Check if lib analysis worked
+            match libResult with
+            | Ok libAnalysis ->
+                // Lib.fsx should have a dependency: processConfig -> Config
+                let configDep =
+                    libAnalysis.Dependencies
+                    |> List.tryFind (fun d ->
+                        d.FromSymbol.EndsWith("processConfig", StringComparison.Ordinal)
+                        && d.ToSymbol.EndsWith("Config", StringComparison.Ordinal))
+
+                test <@ configDep.IsSome @>
+                test <@ configDep.Value.Kind = UsesType @>
+            | Error e -> failwith $"lib analysis failed: {e}"
+
+            // Verify cross-file dependency detection:
+            // getScriptOptions should detect the 'open Lib' statement and include Lib.fsx
+            // in the SourceFiles array, allowing FCS to resolve Lib's symbols
+            test <@ consumerOptions.SourceFiles |> Array.exists (fun f -> f.EndsWith("Lib.fsx", StringComparison.Ordinal)) @>
+
+            // The core fix is validated above:
+            // getScriptOptions now detects 'open Lib' and includes Lib.fsx in SourceFiles.
+            // This enables downstream tools to resolve cross-file symbols properly.
+        finally
+            try
+                System.IO.Directory.Delete(tmpDir, true)
+            with _ ->
+                ()

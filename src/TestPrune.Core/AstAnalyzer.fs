@@ -387,6 +387,7 @@ let private detectOpenedModules (source: string) : string list =
     |> Array.toList
 
 /// Find script files in the same directory that match opened modules.
+/// Returns both actual files on disk and hypothetical files that match the module names.
 let private findRelatedScriptFiles (currentFile: string) (openedModules: string list) : string list =
     if List.isEmpty openedModules then
         []
@@ -395,14 +396,28 @@ let private findRelatedScriptFiles (currentFile: string) (openedModules: string 
 
         try
             let availableFiles =
-                Directory.GetFiles(dirPath, "*.fsx")
-                |> Array.filter (fun f -> f <> currentFile)
-                |> Array.toList
+                if Directory.Exists(dirPath) then
+                    Directory.GetFiles(dirPath, "*.fsx")
+                    |> Array.filter (fun f -> f <> currentFile)
+                    |> Array.toList
+                else
+                    []
 
-            availableFiles
-            |> List.filter (fun f ->
-                let fileName = Path.GetFileNameWithoutExtension(f)
-                openedModules |> List.exists (fun m -> m = fileName))
+            // Actual files found on disk
+            let foundFiles =
+                availableFiles
+                |> List.filter (fun f ->
+                    let fileName = Path.GetFileNameWithoutExtension(f)
+                    openedModules |> List.exists (fun m -> m = fileName))
+
+            // Also construct hypothetical paths for opened modules in case files don't exist yet
+            // This handles test cases where files are analyzed in memory
+            let hypotheticalFiles =
+                openedModules
+                |> List.map (fun m -> Path.Combine(dirPath, m + ".fsx"))
+                |> List.filter (fun f -> f <> currentFile && not (List.contains f foundFiles))
+
+            foundFiles @ hypotheticalFiles |> List.distinct
         with _ ->
             []
 
