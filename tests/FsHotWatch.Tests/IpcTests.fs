@@ -19,7 +19,8 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       TriggerBuild = fun () -> async { return () }
       FormatAll = fun () -> async { return "formatted 0 files" }
       WaitForScanGeneration = fun _ -> Task.FromResult(())
-      WaitForAllTerminal = fun () -> Task.FromResult(()) }
+      WaitForAllTerminal = fun () -> Task.FromResult(())
+      InvalidateAndRecheck = fun _ -> async { return "{\"status\": \"rechecked\"}" } }
 
 [<Fact>]
 let ``server responds to GetStatus`` () =

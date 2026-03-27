@@ -307,6 +307,7 @@ let private fakeIpc () : IpcOps =
       WaitForComplete = fun _ -> async { return "{}" }
       TriggerBuild = fun _ -> async { return "{}" }
       FormatAll = fun _ -> async { return "formatted 0 files" }
+      InvalidateCache = fun _ _ -> async { return "{\"status\": \"rechecked\"}" }
       IsRunning = fun _ -> true }
 
 [<Fact>]
