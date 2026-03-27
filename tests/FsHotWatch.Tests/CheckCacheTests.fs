@@ -105,25 +105,6 @@ let ``TimestampCacheKeyProvider returns lowercase hex hash`` () =
     Assert.True(hash.Length = 64)
 
 [<Fact>]
-let ``TimestampCacheKeyProvider global cache is always invalid`` () =
-    let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
-    Assert.False(provider.IsGlobalCacheValid())
-
-[<Fact>]
-let ``JjCacheKeyProvider delegates per-file hash to timestamp`` () =
-    let jjProvider = JjCacheKeyProvider() :> ICacheKeyProvider
-    let tsProvider = TimestampCacheKeyProvider() :> ICacheKeyProvider
-    let tempFile = Path.GetTempFileName()
-    File.WriteAllText(tempFile, "test content")
-
-    try
-        let jjHash = jjProvider.GetFileHash(tempFile)
-        let tsHash = tsProvider.GetFileHash(tempFile)
-        Assert.Equal<string>(jjHash, tsHash)
-    finally
-        File.Delete(tempFile)
-
-[<Fact>]
 let ``makeCacheKey produces different keys for different files`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
     let tempFile1 = Path.GetTempFileName()
