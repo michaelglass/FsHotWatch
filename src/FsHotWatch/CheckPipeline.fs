@@ -8,6 +8,7 @@ open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Text
 open FsHotWatch.Events
 open FsHotWatch.Logging
+open FsHotWatch.CheckCache
 
 let private cancelAndDispose (cts: CancellationTokenSource) =
     try
@@ -17,7 +18,10 @@ let private cancelAndDispose (cts: CancellationTokenSource) =
         ()
 
 /// Manages project options and performs incremental file checking with the warm FSharpChecker.
-type CheckPipeline(checker: FSharpChecker) =
+type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?cacheKeyProvider: ICacheKeyProvider) =
+    let keyProvider =
+        defaultArg cacheKeyProvider (TimestampCacheKeyProvider() :> ICacheKeyProvider)
+
     let projectOptionsByFile = ConcurrentDictionary<string, FSharpProjectOptions>()
     let projectOptionsByProject = ConcurrentDictionary<string, FSharpProjectOptions>()
     let fileTokens = ConcurrentDictionary<string, CancellationTokenSource>()
@@ -33,6 +37,7 @@ type CheckPipeline(checker: FSharpChecker) =
         fileTokens.Clear()
         projectOptionsByFile.Clear()
         projectOptionsByProject.Clear()
+        cacheBackend |> Option.iter (fun b -> b.Clear())
 
     /// Register project options for a project. Maps each source file to this project's options.
     member _.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
@@ -88,52 +93,73 @@ type CheckPipeline(checker: FSharpChecker) =
                     Logging.debug "check" $"No project options for: %s{absPath}"
                     return None
                 | true, options ->
-                    let source =
-                        if File.Exists(absPath) then
-                            File.ReadAllText(absPath)
-                        else
-                            ""
+                    // Check cache before running expensive FCS check
+                    let cacheKey =
+                        cacheBackend |> Option.map (fun _ -> makeCacheKey keyProvider absPath options)
 
-                    let sourceText = SourceText.ofString source
+                    let cached =
+                        match cacheBackend, cacheKey with
+                        | Some backend, Some key -> backend.TryGet(key)
+                        | _ -> None
 
-                    let version = this.NextVersion()
+                    match cached with
+                    | Some result ->
+                        Logging.debug "check" $"Cache hit: %s{Path.GetFileName(absPath)}"
+                        return Some result
+                    | None ->
 
-                    try
-                        let sw = System.Diagnostics.Stopwatch.StartNew()
+                        let source =
+                            if File.Exists(absPath) then
+                                File.ReadAllText(absPath)
+                            else
+                                ""
 
-                        let! parseResults, checkAnswer =
-                            checker.ParseAndCheckFileInProject(absPath, 0, sourceText, options)
+                        let sourceText = SourceText.ofString source
 
-                        sw.Stop()
+                        let version = this.NextVersion()
 
-                        if sw.Elapsed.TotalSeconds > 2.0 then
-                            Logging.debug
-                                "check"
-                                $"SLOW: %s{Path.GetFileName(absPath)} took %.1f{sw.Elapsed.TotalSeconds}s"
+                        try
+                            let sw = System.Diagnostics.Stopwatch.StartNew()
 
-                        match checkAnswer with
-                        | FSharpCheckFileAnswer.Succeeded checkResults ->
-                            return
-                                Some
+                            let! parseResults, checkAnswer =
+                                checker.ParseAndCheckFileInProject(absPath, 0, sourceText, options)
+
+                            sw.Stop()
+
+                            if sw.Elapsed.TotalSeconds > 2.0 then
+                                Logging.debug
+                                    "check"
+                                    $"SLOW: %s{Path.GetFileName(absPath)} took %.1f{sw.Elapsed.TotalSeconds}s"
+
+                            match checkAnswer with
+                            | FSharpCheckFileAnswer.Succeeded checkResults ->
+                                let result =
                                     { File = absPath
                                       Source = source
                                       ParseResults = parseResults
                                       CheckResults = checkResults
                                       ProjectOptions = options
                                       Version = version }
-                        | FSharpCheckFileAnswer.Aborted ->
-                            // Still emit with parse results — lint can use the AST even without type info
-                            return
-                                Some
-                                    { File = absPath
-                                      Source = source
-                                      ParseResults = parseResults
-                                      CheckResults = Unchecked.defaultof<_>
-                                      ProjectOptions = options
-                                      Version = version }
-                    with ex ->
-                        Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
-                        return None
+
+                                // Store successful result in cache
+                                match cacheBackend, cacheKey with
+                                | Some backend, Some key -> backend.Set key result
+                                | _ -> ()
+
+                                return Some result
+                            | FSharpCheckFileAnswer.Aborted ->
+                                // Still emit with parse results — lint can use the AST even without type info
+                                return
+                                    Some
+                                        { File = absPath
+                                          Source = source
+                                          ParseResults = parseResults
+                                          CheckResults = Unchecked.defaultof<_>
+                                          ProjectOptions = options
+                                          Version = version }
+                        with ex ->
+                            Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
+                            return None
             with :? OperationCanceledException ->
                 Logging.debug "check" $"Cancelled: %s{Path.GetFileName(absPath)}"
                 return None

@@ -122,6 +122,29 @@ let ``JjCacheKeyProvider delegates per-file hash to timestamp`` () =
     finally
         File.Delete(tempFile)
 
+[<Fact>]
+let ``makeCacheKey produces different keys for different files`` () =
+    let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
+    let tempFile1 = Path.GetTempFileName()
+    let tempFile2 = Path.GetTempFileName()
+    File.WriteAllText(tempFile1, "content1")
+    File.WriteAllText(tempFile2, "content2")
+
+    let checker = FSharp.Compiler.CodeAnalysis.FSharpChecker.Create()
+
+    let opts1, _ =
+        checker.GetProjectOptionsFromScript(tempFile1, FSharp.Compiler.Text.SourceText.ofString "module A")
+        |> Async.RunSynchronously
+
+    let key1 = makeCacheKey provider tempFile1 opts1
+    let key2 = makeCacheKey provider tempFile2 opts1
+
+    try
+        Assert.NotEqual<string>(key1.FileHash, key2.FileHash)
+    finally
+        File.Delete(tempFile1)
+        File.Delete(tempFile2)
+
 // --- InMemoryCheckCache tests ---
 
 let private makeTestResult (file: string) (version: int64) : FileCheckResult =
