@@ -14,6 +14,7 @@ open TestPrune.AstAnalyzer
 open TestPrune.Database
 open TestPrune.Extensions
 open TestPrune.SymbolDiff
+open FsHotWatch.Tests.TestHelpers
 
 let private withTmpDir (prefix: string) (f: string -> unit) =
     let dir = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}")
@@ -26,6 +27,14 @@ let private withTmpDir (prefix: string) (f: string -> unit) =
             Directory.Delete(dir, true)
         with _ ->
             ()
+
+let private waitForPluginIdle (host: PluginHost) (pluginName: string) (timeoutSecs: float) =
+    waitUntil
+        (fun () ->
+            match host.GetStatus(pluginName) with
+            | Some(Running _) -> false
+            | _ -> true)
+        (int (timeoutSecs * 1000.0))
 
 [<Fact>]
 let ``plugin has correct name`` () =
@@ -633,10 +642,8 @@ let ``cross-file type change only runs affected test classes`` () =
         // Create a simple wrapper script that will capture arguments
         let wrapperPath = Path.Combine(tmpDir, "test-wrapper.sh")
 
-        let scriptContent =
-            $"#!/bin/bash\n# Write all arguments to the capture file\necho \"$@\" >> \"{captureFile}\"\nexit 0\n"
-
-        File.WriteAllText(wrapperPath, scriptContent)
+        // Create wrapper script (with escaped path to prevent injection)
+        File.WriteAllText(wrapperPath, $"#!/bin/bash\necho \"$@\" >> '{captureFile}'\nexit 0\n")
 
         // Create test config with class filtering
         let testConfigs =
@@ -717,24 +724,12 @@ let testOtherStuff () =
         | None -> failwith "tests CheckFile failed"
 
         // Wait for analysis
-        let deadline0 = DateTime.UtcNow.AddSeconds(10.0)
-        let mutable settled0 = false
-
-        while not settled0 && DateTime.UtcNow < deadline0 do
-            match host.GetStatus("test-prune") with
-            | Some(Running _) -> System.Threading.Thread.Sleep(50)
-            | _ -> settled0 <- true
+        waitForPluginIdle host "test-prune" 10.0
 
         // Emit build completion to flush analysis to database
         host.EmitBuildCompleted(BuildSucceeded)
 
-        let deadline0b = DateTime.UtcNow.AddSeconds(10.0)
-        let mutable settled0b = false
-
-        while not settled0b && DateTime.UtcNow < deadline0b do
-            match host.GetStatus("test-prune") with
-            | Some(Running _) -> System.Threading.Thread.Sleep(50)
-            | _ -> settled0b <- true
+        waitForPluginIdle host "test-prune" 10.0
 
         // Now change the type: add a new field
         let libSource2 =
@@ -754,13 +749,7 @@ let validate (cfg: Config) = cfg.Value.Length > 0
         | None -> failwith "lib CheckFile 2 failed"
 
         // Wait for impact analysis
-        let deadline1 = DateTime.UtcNow.AddSeconds(10.0)
-        let mutable settled1 = false
-
-        while not settled1 && DateTime.UtcNow < deadline1 do
-            match host.GetStatus("test-prune") with
-            | Some(Running _) -> System.Threading.Thread.Sleep(50)
-            | _ -> settled1 <- true
+        waitForPluginIdle host "test-prune" 10.0
 
         // Query affected tests
         let affectedResult =
@@ -780,22 +769,14 @@ let validate (cfg: Config) = cfg.Value.Length > 0
         // This should invoke the test command with the filter applied
         host.EmitBuildCompleted(BuildSucceeded)
 
-        let deadline2 = DateTime.UtcNow.AddSeconds(5.0)
-        let mutable settled2 = false
-
-        while not settled2 && DateTime.UtcNow < deadline2 do
-            match host.GetStatus("test-prune") with
-            | Some(Running _) -> System.Threading.Thread.Sleep(50)
-            | _ -> settled2 <- true
+        waitForPluginIdle host "test-prune" 5.0
 
         // Verify that the test command was invoked with the correct filter
-        test <@ File.Exists(captureFile) @>
+        let capturedArgs =
+            try
+                File.ReadAllText(captureFile)
+            with :? System.IO.FileNotFoundException ->
+                failwith $"Test command did not execute or write to {captureFile}"
 
-        let capturedArgs = File.ReadAllText(captureFile)
-
-        // The critical validation: the filter template was applied with the affected test class
-        // Since all three test functions are in the Tests module, they all belong to the same "class"
-        // The filter should be present, showing the template was substituted with the class name
         test <@ capturedArgs.Contains("--filter-class") @>
-        // The filter should contain the Tests module name (where the tests live)
         test <@ capturedArgs.Contains("Tests") @>)
