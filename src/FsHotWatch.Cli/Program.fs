@@ -13,7 +13,7 @@ open FsHotWatch.Ipc
 type Command =
     | Start
     | Stop
-    | Scan
+    | Scan of force: bool
     | ScanStatus
     | Status of pluginName: string option
     | PluginCommand of name: string * args: string
@@ -55,7 +55,8 @@ let parseCommand (args: string list) : Command =
     | [ "-h" ] -> Help
     | [ "start" ] -> Start
     | [ "stop" ] -> Stop
-    | [ "scan" ] -> Scan
+    | [ "scan" ] -> Scan false
+    | [ "scan"; "--force" ] -> Scan true
     | [ "scan-status" ] -> ScanStatus
     | [ "status" ] -> Status None
     | [ "status"; pluginName ] -> Status(Some pluginName)
@@ -120,7 +121,7 @@ let parseCommand (args: string list) : Command =
 /// Injectable IPC operations for testability.
 type IpcOps =
     { Shutdown: string -> Async<string>
-      Scan: string -> Async<string>
+      Scan: string -> bool -> Async<string>
       ScanStatus: string -> Async<string>
       GetStatus: string -> Async<string>
       GetPluginStatus: string -> string -> Async<string>
@@ -157,7 +158,7 @@ let private showHelp () =
     printfn "Commands:"
     printfn "  start              Start daemon in foreground (auto-scans on boot)"
     printfn "  stop               Stop running daemon"
-    printfn "  scan               Re-scan all files"
+    printfn "  scan [--force]      Re-scan all files (--force bypasses jj guard)"
     printfn "  scan-status        Check scan progress without blocking"
     printfn "  status [plugin]    Show plugin statuses"
     printfn "  build              Trigger a build and wait for completion"
@@ -380,7 +381,7 @@ let executeCommand
         eprintfn "Daemon stopped."
         0
     | Stop -> runIpc (ipc.Shutdown pipeName)
-    | Scan -> runIpc (ipc.Scan pipeName)
+    | Scan force -> runIpc (ipc.Scan pipeName force)
     | ScanStatus -> runIpc (ipc.ScanStatus pipeName)
     | Status None -> runIpc (ipc.GetStatus pipeName)
     | Status(Some pluginName) -> runIpc (ipc.GetPluginStatus pipeName pluginName)
