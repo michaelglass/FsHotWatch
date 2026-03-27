@@ -13,6 +13,7 @@
     <Compile Include="TestHelpers.fs" />
     <Compile Include="ErrorLedgerTests.fs" />
     <Compile Include="EventTests.fs" />
+    <Compile Include="CheckCacheTests.fs" />
     <Compile Include="PluginTests.fs" />
     <Compile Include="PluginHostTests.fs" />
     <Compile Include="MacFsEventsTests.fs" />
