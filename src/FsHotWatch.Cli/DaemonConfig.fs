@@ -266,7 +266,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
     // TestPrune plugin
     match config.Tests with
     | Some t ->
-        let dbPath = Path.Combine(repoRoot, ".fs-hot-watch", "test-impact.db")
+        let dbPath = Path.Combine(repoRoot, ".fshw", "test-impact.db")
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)) |> ignore
 
         let testConfigs =

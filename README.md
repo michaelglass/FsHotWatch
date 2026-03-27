@@ -99,6 +99,18 @@ type MyPlugin() =
 - `ctx.ReportStatus(status)` — tell the daemon your current status
 - `ctx.RegisterCommand(name, handler)` — add a CLI command
 
+## Cache Directory
+
+FsHotWatch stores check result caches and the TestPrune database in `.fshw/` at the repository root. Add this to your `.gitignore`:
+
+```
+.fshw/
+```
+
+The cache directory contains:
+- `cache/` — Cached FCS check results for faster cold starts
+- `test-impact.db` — TestPrune dependency analysis database
+
 ## Architecture
 
 See the [architecture design doc](docs/plans/2026-03-24-architecture-design.md)
