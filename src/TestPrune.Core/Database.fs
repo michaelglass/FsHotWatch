@@ -119,17 +119,22 @@ type Database(dbPath: string) =
     /// Create a Database instance, initializing the schema if needed.
     static member create(dbPath: string) = Database(dbPath)
 
-    /// Clear and re-insert symbols, dependencies, and test methods for files in a project.
-    member _.RebuildForProject(_projectName: string, result: AnalysisResult) =
+    /// Clear and re-insert symbols, dependencies, and test methods for the given projects.
+    /// All symbols are inserted before any dependencies, so cross-project edges resolve correctly.
+    member _.RebuildProjects(projects: (string * AnalysisResult) list) =
+        let allResults = projects |> List.map snd
+
         let sourceFiles =
-            result.Symbols |> List.map (fun s -> s.SourceFile) |> List.distinct
+            allResults
+            |> List.collect (fun r -> r.Symbols |> List.map (fun s -> s.SourceFile))
+            |> List.distinct
 
         use conn = openConnection dbPath
 
         use txn = conn.BeginTransaction()
 
         try
-            // Delete existing data for these source files (explicit deletes before symbols to avoid FK issues)
+            // Phase 1: Delete existing data for all source files
             for file in sourceFiles do
                 use delCmd = conn.CreateCommand()
                 delCmd.Transaction <- txn
@@ -147,7 +152,7 @@ type Database(dbPath: string) =
 
             let now = DateTime.UtcNow.ToString("o")
 
-            // Insert symbols
+            // Phase 2: Insert ALL symbols across ALL projects
             use insCmd = conn.CreateCommand()
             insCmd.Transaction <- txn
 
@@ -165,17 +170,18 @@ type Database(dbPath: string) =
             let pContentHash = insCmd.Parameters.Add("@contentHash", SqliteType.Text)
             let pIndexedAt = insCmd.Parameters.Add("@indexedAt", SqliteType.Text)
 
-            for sym in result.Symbols do
-                pFullName.Value <- sym.FullName
-                pKind.Value <- symbolKindToString sym.Kind
-                pSourceFile.Value <- sym.SourceFile
-                pLineStart.Value <- sym.LineStart
-                pLineEnd.Value <- sym.LineEnd
-                pContentHash.Value <- sym.ContentHash
-                pIndexedAt.Value <- now
-                insCmd.ExecuteNonQuery() |> ignore
+            for result in allResults do
+                for sym in result.Symbols do
+                    pFullName.Value <- sym.FullName
+                    pKind.Value <- symbolKindToString sym.Kind
+                    pSourceFile.Value <- sym.SourceFile
+                    pLineStart.Value <- sym.LineStart
+                    pLineEnd.Value <- sym.LineEnd
+                    pContentHash.Value <- sym.ContentHash
+                    pIndexedAt.Value <- now
+                    insCmd.ExecuteNonQuery() |> ignore
 
-            // Insert dependencies
+            // Phase 3: Insert ALL dependencies (target symbols now guaranteed to exist)
             use depCmd = conn.CreateCommand()
             depCmd.Transaction <- txn
 
@@ -191,13 +197,14 @@ type Database(dbPath: string) =
             let pToSymbol = depCmd.Parameters.Add("@toSymbol", SqliteType.Text)
             let pDepKind = depCmd.Parameters.Add("@depKind", SqliteType.Text)
 
-            for dep in result.Dependencies do
-                pFromSymbol.Value <- dep.FromSymbol
-                pToSymbol.Value <- dep.ToSymbol
-                pDepKind.Value <- depKindToString dep.Kind
-                depCmd.ExecuteNonQuery() |> ignore
+            for result in allResults do
+                for dep in result.Dependencies do
+                    pFromSymbol.Value <- dep.FromSymbol
+                    pToSymbol.Value <- dep.ToSymbol
+                    pDepKind.Value <- depKindToString dep.Kind
+                    depCmd.ExecuteNonQuery() |> ignore
 
-            // Insert test methods
+            // Phase 4: Insert ALL test methods
             use tmCmd = conn.CreateCommand()
             tmCmd.Transaction <- txn
 
@@ -213,12 +220,13 @@ type Database(dbPath: string) =
             let pTestClass = tmCmd.Parameters.Add("@testClass", SqliteType.Text)
             let pTestMethod = tmCmd.Parameters.Add("@testMethod", SqliteType.Text)
 
-            for tm in result.TestMethods do
-                pSymbolFullName.Value <- tm.SymbolFullName
-                pTestProject.Value <- tm.TestProject
-                pTestClass.Value <- tm.TestClass
-                pTestMethod.Value <- tm.TestMethod
-                tmCmd.ExecuteNonQuery() |> ignore
+            for result in allResults do
+                for tm in result.TestMethods do
+                    pSymbolFullName.Value <- tm.SymbolFullName
+                    pTestProject.Value <- tm.TestProject
+                    pTestClass.Value <- tm.TestClass
+                    pTestMethod.Value <- tm.TestMethod
+                    tmCmd.ExecuteNonQuery() |> ignore
 
             txn.Commit()
         with ex ->
@@ -460,15 +468,6 @@ type Database(dbPath: string) =
         cmd.Parameters.AddWithValue("@projectName", projectName) |> ignore
         cmd.Parameters.AddWithValue("@key", key) |> ignore
         cmd.ExecuteNonQuery() |> ignore
-
-    /// Rebuild only if the project's cache key has changed. Returns true if rebuild occurred.
-    member this.RebuildForProjectIfChanged(projectName: string, key: string, result: AnalysisResult) : bool =
-        match this.GetProjectKey(projectName) with
-        | Some stored when stored = key -> false
-        | _ ->
-            this.RebuildForProject(projectName, result)
-            this.SetProjectKey(projectName, key)
-            true
 
     /// Get the stored cache key for a source file, or None if not yet indexed.
     member _.GetFileKey(sourceFile: string) : string option =
