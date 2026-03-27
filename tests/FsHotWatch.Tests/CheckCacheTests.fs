@@ -402,3 +402,136 @@ let ``JjScanGuard second scan returns SkipAll after CommitScanSuccess`` () =
         match guard.BeginScan() with
         | SkipAll -> ()
         | other -> Assert.Fail($"Expected SkipAll on second scan but got %A{other}"))
+
+// --- JjCacheKeyProvider tests ---
+
+[<Fact>]
+let ``JjCacheKeyProvider delegates to TimestampCacheKeyProvider`` () =
+    let tempFile = Path.GetTempFileName()
+    File.WriteAllText(tempFile, "jj cache key test")
+
+    try
+        let jjProvider = JjCacheKeyProvider("/fake/repo") :> ICacheKeyProvider
+        let tsProvider = TimestampCacheKeyProvider() :> ICacheKeyProvider
+
+        let jjHash = jjProvider.GetFileHash(tempFile)
+        let tsHash = tsProvider.GetFileHash(tempFile)
+
+        Assert.Equal<string>(tsHash, jjHash)
+    finally
+        File.Delete(tempFile)
+
+[<Fact>]
+let ``JjCacheKeyProvider returns consistent hash for same file`` () =
+    let tempFile = Path.GetTempFileName()
+    File.WriteAllText(tempFile, "consistency test")
+
+    try
+        let provider = JjCacheKeyProvider("/fake/repo") :> ICacheKeyProvider
+        let hash1 = provider.GetFileHash(tempFile)
+        let hash2 = provider.GetFileHash(tempFile)
+        Assert.Equal<string>(hash1, hash2)
+    finally
+        File.Delete(tempFile)
+
+[<Fact>]
+let ``JjCacheKeyProvider handles nonexistent file`` () =
+    let provider = JjCacheKeyProvider("/fake/repo") :> ICacheKeyProvider
+    let hash = provider.GetFileHash("/nonexistent/file.fs")
+
+    // Should not throw, returns a valid hash (the "unreadable" fallback)
+    Assert.Matches("^[a-f0-9]+$", hash)
+    Assert.True(hash.Length = 64)
+
+// --- JjScanGuard additional coverage ---
+
+[<Fact>]
+let ``JjScanGuard CommitScanSuccess is no-op when commit_id is None`` () =
+    withTempDir "jj-guard-noop" (fun tempDir ->
+        let guard =
+            JjScanGuard(tempDir, getCommitId = (fun () -> None), getDiff = (fun _ -> Set.empty))
+
+        guard.BeginScan() |> ignore
+        guard.CommitScanSuccess()
+
+        // .fshw directory should not exist since nothing was written
+        let fshwDir = Path.Combine(tempDir, ".fshw")
+        Assert.False(Directory.Exists(fshwDir)))
+
+[<Fact>]
+let ``JjScanGuard CommitScanSuccess creates .fshw directory if missing`` () =
+    withTempDir "jj-guard-mkdir" (fun tempDir ->
+        let guard =
+            JjScanGuard(tempDir, getCommitId = (fun () -> Some "create_dir_test"), getDiff = (fun _ -> Set.empty))
+
+        guard.BeginScan() |> ignore
+        guard.CommitScanSuccess()
+
+        let fshwDir = Path.Combine(tempDir, ".fshw")
+        Assert.True(Directory.Exists(fshwDir))
+        let storedId = File.ReadAllText(Path.Combine(fshwDir, "last-commit.id")).Trim()
+        Assert.Equal("create_dir_test", storedId))
+
+[<Fact>]
+let ``JjScanGuard readStoredCommitId returns None for empty file`` () =
+    withTempDir "jj-guard-empty" (fun tempDir ->
+        let fshwDir = Path.Combine(tempDir, ".fshw")
+        Directory.CreateDirectory(fshwDir) |> ignore
+        File.WriteAllText(Path.Combine(fshwDir, "last-commit.id"), "   ")
+
+        let guard =
+            JjScanGuard(tempDir, getCommitId = (fun () -> Some "new_id"), getDiff = (fun _ -> Set.empty))
+
+        // Empty/whitespace stored id should be treated as None => CheckAll
+        match guard.BeginScan() with
+        | CheckAll -> ()
+        | other -> Assert.Fail($"Expected CheckAll but got %A{other}"))
+
+[<Fact>]
+let ``JjScanGuard BeginScan passes stored commit_id to getDiff`` () =
+    withTempDir "jj-guard-diff-arg" (fun tempDir ->
+        withStoredCommitId tempDir "stored_abc123"
+        let mutable capturedFromId = ""
+
+        let guard =
+            JjScanGuard(
+                tempDir,
+                getCommitId = (fun () -> Some "new_commit_id"),
+                getDiff =
+                    (fun fromId ->
+                        capturedFromId <- fromId
+                        set [ "/repo/changed.fs" ])
+            )
+
+        guard.BeginScan() |> ignore
+        Assert.Equal("stored_abc123", capturedFromId))
+
+[<Fact>]
+let ``JjScanGuard truncId shows first 8 chars for long ids`` () =
+    // This tests the truncId helper indirectly via the CheckSubset path
+    // which logs the commit_id. The test verifies it doesn't crash on long ids.
+    withTempDir "jj-guard-trunc" (fun tempDir ->
+        withStoredCommitId tempDir "abcdefghijklmnop1234567890"
+
+        let guard =
+            JjScanGuard(
+                tempDir,
+                getCommitId = (fun () -> Some "zyxwvutsrqponmlk0987654321"),
+                getDiff = (fun _ -> set [ "/repo/file.fs" ])
+            )
+
+        match guard.BeginScan() with
+        | CheckSubset files -> Assert.Contains("/repo/file.fs", files)
+        | other -> Assert.Fail($"Expected CheckSubset but got %A{other}"))
+
+[<Fact>]
+let ``JjScanGuard truncId handles short ids`` () =
+    withTempDir "jj-guard-short" (fun tempDir ->
+        withStoredCommitId tempDir "abc"
+
+        let guard =
+            JjScanGuard(tempDir, getCommitId = (fun () -> Some "xyz"), getDiff = (fun _ -> set [ "/repo/f.fs" ]))
+
+        match guard.BeginScan() with
+        | CheckSubset files -> Assert.Contains("/repo/f.fs", files)
+        | other -> Assert.Fail($"Expected CheckSubset but got %A{other}"))

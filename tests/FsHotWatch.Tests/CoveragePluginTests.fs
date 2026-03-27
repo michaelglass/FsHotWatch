@@ -111,3 +111,290 @@ let ``coverage plugin fails when below threshold`` () =
             Directory.Delete(tmpDir, true)
         with _ ->
             ()
+
+[<Fact>]
+let ``coverage plugin skips check when no test results`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let plugin = CoveragePlugin("/tmp/nonexistent")
+    host.Register(plugin)
+
+    let testResults =
+        { Results = Map.empty
+          Elapsed = TimeSpan.FromSeconds(0.0) }
+
+    host.EmitTestCompleted(testResults)
+
+    // Status should remain Idle since the handler returns early
+    let status = host.GetStatus("coverage")
+    test <@ status.IsSome @>
+    test <@ status.Value = Idle @>
+
+[<Fact>]
+let ``coverage plugin reports Failed when coverage dir does not exist`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let plugin = CoveragePlugin("/tmp/nonexistent-cov-dir-xyz")
+    host.Register(plugin)
+
+    let testResults =
+        { Results = Map.ofList [ "TestProject", TestsPassed "ok" ]
+          Elapsed = TimeSpan.FromSeconds(1.0) }
+
+    host.EmitTestCompleted(testResults)
+
+    let status = host.GetStatus("coverage")
+    test <@ status.IsSome @>
+
+    test
+        <@
+            match status.Value with
+            | Failed(msg, _) -> msg.Contains("No coverage files found")
+            | _ -> false
+        @>
+
+[<Fact>]
+let ``coverage plugin handles threshold file with missing branch property`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-nobranch-{Guid.NewGuid():N}")
+    let subDir = Path.Combine(tmpDir, "Proj")
+    Directory.CreateDirectory(subDir) |> ignore
+
+    let xmlPath = Path.Combine(subDir, "cobertura.xml")
+
+    File.WriteAllText(xmlPath, """<?xml version="1.0" ?><coverage line-rate="0.50" branch-rate="0.50" />""")
+
+    let thresholdsPath = Path.Combine(tmpDir, "thresholds.json")
+    // Only line threshold, no branch key
+    File.WriteAllText(thresholdsPath, """{"Proj": {"line": 40.0}}""")
+
+    try
+        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+        let plugin = CoveragePlugin(tmpDir, thresholdsFile = thresholdsPath)
+        host.Register(plugin)
+
+        let testResults =
+            { Results = Map.ofList [ "Proj", TestsPassed "ok" ]
+              Elapsed = TimeSpan.FromSeconds(1.0) }
+
+        host.EmitTestCompleted(testResults)
+
+        let status = host.GetStatus("coverage")
+        test <@ status.IsSome @>
+
+        test
+            <@
+                match status.Value with
+                | Completed _ -> true
+                | _ -> false
+            @>
+    finally
+        try
+            Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact>]
+let ``coverage plugin handles threshold file with missing line property`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-noline-{Guid.NewGuid():N}")
+    let subDir = Path.Combine(tmpDir, "Proj")
+    Directory.CreateDirectory(subDir) |> ignore
+
+    let xmlPath = Path.Combine(subDir, "cobertura.xml")
+
+    File.WriteAllText(xmlPath, """<?xml version="1.0" ?><coverage line-rate="0.50" branch-rate="0.50" />""")
+
+    let thresholdsPath = Path.Combine(tmpDir, "thresholds.json")
+    // Only branch threshold, no line key
+    File.WriteAllText(thresholdsPath, """{"Proj": {"branch": 40.0}}""")
+
+    try
+        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+        let plugin = CoveragePlugin(tmpDir, thresholdsFile = thresholdsPath)
+        host.Register(plugin)
+
+        let testResults =
+            { Results = Map.ofList [ "Proj", TestsPassed "ok" ]
+              Elapsed = TimeSpan.FromSeconds(1.0) }
+
+        host.EmitTestCompleted(testResults)
+
+        let status = host.GetStatus("coverage")
+        test <@ status.IsSome @>
+
+        test
+            <@
+                match status.Value with
+                | Completed _ -> true
+                | _ -> false
+            @>
+    finally
+        try
+            Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact>]
+let ``coverage plugin handles invalid thresholds JSON`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-badjson-{Guid.NewGuid():N}")
+    let subDir = Path.Combine(tmpDir, "TestProject")
+    Directory.CreateDirectory(subDir) |> ignore
+
+    let xmlPath = Path.Combine(subDir, "cobertura.xml")
+
+    File.WriteAllText(xmlPath, """<?xml version="1.0" ?><coverage line-rate="0.85" branch-rate="0.70" />""")
+
+    let thresholdsPath = Path.Combine(tmpDir, "thresholds.json")
+    File.WriteAllText(thresholdsPath, "this is not valid json {{{")
+
+    try
+        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+        let plugin = CoveragePlugin(tmpDir, thresholdsFile = thresholdsPath)
+        host.Register(plugin)
+
+        let testResults =
+            { Results = Map.ofList [ "TestProject", TestsPassed "ok" ]
+              Elapsed = TimeSpan.FromSeconds(1.0) }
+
+        host.EmitTestCompleted(testResults)
+
+        // Invalid JSON falls back to Map.empty, so no thresholds => all pass
+        let status = host.GetStatus("coverage")
+        test <@ status.IsSome @>
+
+        test
+            <@
+                match status.Value with
+                | Completed _ -> true
+                | _ -> false
+            @>
+    finally
+        try
+            Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact>]
+let ``coverage plugin handles non-existent thresholds file`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-nothresh-{Guid.NewGuid():N}")
+    let subDir = Path.Combine(tmpDir, "TestProject")
+    Directory.CreateDirectory(subDir) |> ignore
+
+    let xmlPath = Path.Combine(subDir, "cobertura.xml")
+
+    File.WriteAllText(xmlPath, """<?xml version="1.0" ?><coverage line-rate="0.85" branch-rate="0.70" />""")
+
+    try
+        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+        let plugin =
+            CoveragePlugin(tmpDir, thresholdsFile = "/tmp/nonexistent-thresholds-xyz.json")
+
+        host.Register(plugin)
+
+        let testResults =
+            { Results = Map.ofList [ "TestProject", TestsPassed "ok" ]
+              Elapsed = TimeSpan.FromSeconds(1.0) }
+
+        host.EmitTestCompleted(testResults)
+
+        let status = host.GetStatus("coverage")
+        test <@ status.IsSome @>
+
+        test
+            <@
+                match status.Value with
+                | Completed _ -> true
+                | _ -> false
+            @>
+    finally
+        try
+            Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact>]
+let ``coverage plugin handles XML with missing attributes`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-nullattr-{Guid.NewGuid():N}")
+    let subDir = Path.Combine(tmpDir, "TestProject")
+    Directory.CreateDirectory(subDir) |> ignore
+
+    let xmlPath = Path.Combine(subDir, "cobertura.xml")
+    // XML with no line-rate or branch-rate attributes
+    File.WriteAllText(xmlPath, """<?xml version="1.0" ?><coverage />""")
+
+    try
+        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+        let plugin = CoveragePlugin(tmpDir)
+        host.Register(plugin)
+
+        let testResults =
+            { Results = Map.ofList [ "TestProject", TestsPassed "ok" ]
+              Elapsed = TimeSpan.FromSeconds(1.0) }
+
+        host.EmitTestCompleted(testResults)
+
+        let status = host.GetStatus("coverage")
+        test <@ status.IsSome @>
+
+        test
+            <@
+                match status.Value with
+                | Completed _ -> true
+                | _ -> false
+            @>
+
+        let result = host.RunCommand("coverage", [||]) |> Async.RunSynchronously
+        test <@ result.IsSome @>
+        test <@ result.Value.Contains("0.0") @>
+    finally
+        try
+            Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact>]
+let ``coverage plugin handles invalid XML file`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-badxml-{Guid.NewGuid():N}")
+    let subDir = Path.Combine(tmpDir, "TestProject")
+    Directory.CreateDirectory(subDir) |> ignore
+
+    let xmlPath = Path.Combine(subDir, "cobertura.xml")
+    File.WriteAllText(xmlPath, "this is not valid xml <<<>>>")
+
+    try
+        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+        let plugin = CoveragePlugin(tmpDir)
+        host.Register(plugin)
+
+        let testResults =
+            { Results = Map.ofList [ "TestProject", TestsPassed "ok" ]
+              Elapsed = TimeSpan.FromSeconds(1.0) }
+
+        host.EmitTestCompleted(testResults)
+
+        // Invalid XML is skipped by parseCoberturaXml (returns None)
+        // but there are coverage files found, so it goes to allPass check with empty results
+        let status = host.GetStatus("coverage")
+        test <@ status.IsSome @>
+
+        test
+            <@
+                match status.Value with
+                | Completed _ -> true
+                | _ -> false
+            @>
+    finally
+        try
+            Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact>]
+let ``coverage plugin dispose is callable`` () =
+    let plugin = CoveragePlugin("/tmp") :> IFsHotWatchPlugin
+    plugin.Dispose()

@@ -8,10 +8,51 @@ open Swensen.Unquote
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Text
 open FsHotWatch.CheckPipeline
+open FsHotWatch.CheckCache
+open FsHotWatch.Events
 
 /// A null checker suffices for tests that only exercise state management
 /// (RegisterProject / lookup) without performing actual compilation.
 let private nullChecker = Unchecked.defaultof<FSharpChecker>
+
+let private dummyOptions projectName sourceFiles =
+    { ProjectFileName = projectName
+      ProjectId = None
+      SourceFiles = sourceFiles |> Array.ofList
+      OtherOptions = [||]
+      ReferencedProjects = [||]
+      IsIncompleteTypeCheckEnvironment = false
+      UseScriptResolutionRules = false
+      LoadTime = System.DateTime.UtcNow
+      UnresolvedReferences = None
+      OriginalLoadReferences = []
+      Stamp = None }
+
+/// In-memory cache backend for testing
+type private InMemoryCache() =
+    let store = System.Collections.Concurrent.ConcurrentDictionary<string, FileCheckResult>()
+
+    member val InvalidateCalls = System.Collections.Generic.List<CacheKey>()
+    member val ClearCalls = ref 0
+
+    interface ICheckCacheBackend with
+        member _.TryGet(key) =
+            let hash = hashCacheKey key
+
+            match store.TryGetValue(hash) with
+            | true, v -> Some v
+            | _ -> None
+
+        member _.Set key result =
+            let hash = hashCacheKey key
+            store[hash] <- result
+
+        member this.Invalidate(key) =
+            let hash = hashCacheKey key
+            store.TryRemove(hash) |> ignore
+            this.InvalidateCalls.Add(key)
+
+        member this.Clear() = incr this.ClearCalls; store.Clear()
 
 [<Fact>]
 let ``CheckFile returns None when no project registered for the file`` () =
@@ -225,3 +266,80 @@ let ``CheckFile assigns increasing version numbers`` () =
     finally
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
+
+// --- InvalidateFile coverage (lines 44-54) ---
+
+[<Fact>]
+let ``InvalidateFile with cache backend calls Invalidate for registered file`` () =
+    let cache = InMemoryCache()
+    let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
+
+    let options = dummyOptions "/tmp/Inv.fsproj" [ "/tmp/Inv.fs" ]
+    pipeline.RegisterProject("/tmp/Inv.fsproj", options)
+    pipeline.InvalidateFile("/tmp/Inv.fs")
+    test <@ cache.InvalidateCalls.Count = 1 @>
+
+[<Fact>]
+let ``InvalidateFile with cache backend does nothing for unregistered file`` () =
+    let cache = InMemoryCache()
+    let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
+    pipeline.InvalidateFile("/tmp/Unknown.fs")
+    test <@ cache.InvalidateCalls.Count = 0 @>
+
+[<Fact>]
+let ``InvalidateFile without cache backend does not throw`` () =
+    let pipeline = CheckPipeline(nullChecker)
+    // No cache backend — should be a no-op without error
+    pipeline.InvalidateFile("/tmp/NoCacheFile.fs")
+
+// --- cancelAndDispose already-disposed CTS (lines 17-18) ---
+
+[<Fact>]
+let ``CancelPreviousCheck tolerates already-disposed CTS`` () =
+    let pipeline = CheckPipeline(nullChecker)
+    let cts = pipeline.CancelPreviousCheck("/tmp/Disposable.fs")
+    // Manually dispose the CTS before the pipeline tries to cancel it
+    cts.Dispose()
+    // This second call will try to cancel+dispose the first (already disposed) CTS
+    let newCts = pipeline.CancelPreviousCheck("/tmp/Disposable.fs")
+    test <@ not newCts.IsCancellationRequested @>
+
+// --- PrepareForRediscovery clears cache backend ---
+
+[<Fact>]
+let ``PrepareForRediscovery clears cache backend`` () =
+    let cache = InMemoryCache()
+    let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
+
+    let options = dummyOptions "/tmp/Cached.fsproj" [ "/tmp/Cached.fs" ]
+    pipeline.RegisterProject("/tmp/Cached.fsproj", options)
+    pipeline.PrepareForRediscovery()
+    test <@ cache.ClearCalls.Value = 1 @>
+
+// --- CheckProject with missing project (line 186) ---
+
+[<Fact>]
+let ``CheckProject returns None for missing project`` () =
+    let pipeline = CheckPipeline(nullChecker)
+    // Register a different project so the dictionary isn't empty
+    let options = dummyOptions "/tmp/Exists.fsproj" [ "/tmp/Exists.fs" ]
+    pipeline.RegisterProject("/tmp/Exists.fsproj", options)
+    let result = pipeline.CheckProject("/tmp/Missing.fsproj") |> Async.RunSynchronously
+    test <@ result = None @>
+
+// --- Cancellation during CheckFile (lines 174-176) ---
+
+[<Fact>]
+let ``CheckFile returns None when cancelled before FCS call`` () =
+    let pipeline = CheckPipeline(nullChecker)
+
+    let options = dummyOptions "/tmp/Cancel.fsproj" [ "/tmp/Cancel.fs" ]
+    pipeline.RegisterProject("/tmp/Cancel.fsproj", options)
+
+    let cts = new CancellationTokenSource()
+    cts.Cancel()
+
+    let result =
+        pipeline.CheckFile("/tmp/Cancel.fs", cts.Token) |> Async.RunSynchronously
+
+    test <@ result = None @>

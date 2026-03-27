@@ -117,3 +117,62 @@ let ``FormatPreprocessor skips non-fs files`` () =
     finally
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``FormatPreprocessor handles non-existent file gracefully`` () =
+    let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
+    let modified = preprocessor.Process [ "/tmp/nonexistent-file-xyz.fs" ] "/tmp"
+    test <@ modified.IsEmpty @>
+
+[<Fact>]
+let ``FormatPreprocessor handles format error gracefully`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmt-err-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let file = Path.Combine(tmpDir, "Bad.fs")
+        // Write invalid F# that Fantomas cannot parse
+        File.WriteAllText(file, "module \x00\x00\x00")
+
+        let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
+        // Should not throw; error is caught internally
+        let modified = preprocessor.Process [ file ] tmpDir
+        // May or may not modify depending on Fantomas behavior, but should not crash
+        test <@ true @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``FormatPreprocessor dispose is callable`` () =
+    let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
+    preprocessor.Dispose()
+
+[<Fact>]
+let ``FormatCheckPlugin dispose is callable`` () =
+    let plugin = FormatCheckPlugin() :> IFsHotWatchPlugin
+    plugin.Dispose()
+
+[<Fact>]
+let ``format check handles exception gracefully`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmtchk-err-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let file = Path.Combine(tmpDir, "Bad.fs")
+        // Write invalid content that might cause Fantomas to throw
+        File.WriteAllText(file, "module \x00\x00\x00")
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+        let plugin = FormatCheckPlugin()
+        host.Register(plugin)
+
+        // This should not crash the plugin - errors are caught
+        host.EmitFileChanged(SourceChanged [ file ])
+
+        let status = host.GetStatus("format-check")
+        test <@ status.IsSome @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)

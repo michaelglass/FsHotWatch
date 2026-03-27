@@ -386,3 +386,214 @@ let ``EmitFileCheckedParallel runs handlers concurrently`` () =
     // Both handlers ran and reached the barrier concurrently
     test <@ ref1.Value @>
     test <@ ref2.Value @>
+
+[<Fact>]
+let ``fileCheckedCapture RemoveHandler is a no-op`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let mutable receivedCount = 0
+
+    let plugin =
+        { new IFsHotWatchPlugin with
+            member _.Name = "remove-handler-test"
+
+            member _.Initialize(ctx) =
+                // Subscribe via the underlying IEvent (AddHandler path)
+                let handler =
+                    Handler<FileCheckResult>(fun _ _ -> receivedCount <- receivedCount + 1)
+
+                ctx.OnFileChecked.AddHandler(handler)
+                // RemoveHandler is a no-op, so handler should still fire
+                ctx.OnFileChecked.RemoveHandler(handler)
+
+            member _.Dispose() = () }
+
+    host.Register(plugin)
+
+    let dummyResult =
+        { File = "/tmp/test.fs"
+          Source = ""
+          ParseResults = Unchecked.defaultof<_>
+          CheckResults = Unchecked.defaultof<_>
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = 0L }
+
+    host.EmitFileChecked(dummyResult)
+    // Handler still fires because RemoveHandler is a no-op
+    test <@ receivedCount = 1 @>
+
+[<Fact>]
+let ``fileCheckedCapture Subscribe path works`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let mutable receivedFile = ""
+
+    let plugin =
+        { new IFsHotWatchPlugin with
+            member _.Name = "subscribe-test"
+
+            member _.Initialize(ctx) =
+                let observer =
+                    { new System.IObserver<FileCheckResult> with
+                        member _.OnNext(r) = receivedFile <- r.File
+                        member _.OnError(_) = ()
+                        member _.OnCompleted() = () }
+
+                let disposable = ctx.OnFileChecked.Subscribe(observer)
+                // Dispose is also a no-op, so handler should still fire
+                disposable.Dispose()
+
+            member _.Dispose() = () }
+
+    host.Register(plugin)
+
+    let dummyResult =
+        { File = "/tmp/subscribed.fs"
+          Source = ""
+          ParseResults = Unchecked.defaultof<_>
+          CheckResults = Unchecked.defaultof<_>
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = 0L }
+
+    host.EmitFileChecked(dummyResult)
+    test <@ receivedFile = "/tmp/subscribed.fs" @>
+
+[<Fact>]
+let ``plugin initialization failure sets Failed status`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let plugin =
+        { new IFsHotWatchPlugin with
+            member _.Name = "failing-plugin"
+            member _.Initialize(_ctx) = failwith "init exploded"
+            member _.Dispose() = () }
+
+    host.Register(plugin)
+    let status = host.GetStatus("failing-plugin")
+    test <@ status.IsSome @>
+
+    test
+        <@
+            match status.Value with
+            | Failed(msg, _) -> msg.Contains("init exploded")
+            | _ -> false
+        @>
+
+[<Fact>]
+let ``preprocessor exception sets Failed status`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let preprocessor =
+        { new IFsHotWatchPreprocessor with
+            member _.Name = "boom-pp"
+
+            member _.Process (_changedFiles: string list) (_repoRoot: string) =
+                failwith "preprocessor kaboom"
+
+            member _.Dispose() = () }
+
+    host.RegisterPreprocessor(preprocessor)
+    let modified = host.RunPreprocessors([ "src/Lib.fs" ])
+
+    // No modified files returned from a failing preprocessor
+    test <@ modified = [] @>
+
+    let status = host.GetStatus("boom-pp")
+    test <@ status.IsSome @>
+
+    test
+        <@
+            match status.Value with
+            | Failed(msg, _) -> msg.Contains("preprocessor kaboom")
+            | _ -> false
+        @>
+
+[<Fact>]
+let ``ReportErrors with version passes through to ledger`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    host.ReportErrors(
+        "fcs",
+        "/src/A.fs",
+        [ { Message = "v2 error"
+            Severity = "error"
+            Line = 1
+            Column = 0 } ],
+        version = 2L
+    )
+
+    // Stale version should be ignored
+    host.ReportErrors(
+        "fcs",
+        "/src/A.fs",
+        [ { Message = "v1 stale"
+            Severity = "error"
+            Line = 1
+            Column = 0 } ],
+        version = 1L
+    )
+
+    test <@ host.ErrorCount() = 1 @>
+    let errors = host.GetErrors()
+    let fileErrors = errors.["/src/A.fs"]
+    test <@ (snd fileErrors.[0]).Message = "v2 error" @>
+
+[<Fact>]
+let ``ClearErrors with version passes through to ledger`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    host.ReportErrors(
+        "fcs",
+        "/src/A.fs",
+        [ { Message = "error"
+            Severity = "error"
+            Line = 1
+            Column = 0 } ],
+        version = 2L
+    )
+
+    // Stale clear should be ignored
+    host.ClearErrors("fcs", "/src/A.fs", version = 1L)
+    test <@ host.HasErrors() @>
+
+    // Current version clear should work
+    host.ClearErrors("fcs", "/src/A.fs", version = 3L)
+    test <@ not (host.HasErrors()) @>
+
+[<Fact>]
+let ``OnStatusChanged event fires when plugin reports status`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let mutable statusEvents: (string * PluginStatus) list = []
+    host.OnStatusChanged.Add(fun (name, status) -> statusEvents <- (name, status) :: statusEvents)
+
+    let plugin =
+        { new IFsHotWatchPlugin with
+            member _.Name = "status-eventer"
+
+            member _.Initialize(ctx) =
+                ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                ctx.ReportStatus(Completed(box "done", DateTime.UtcNow))
+
+            member _.Dispose() = () }
+
+    host.Register(plugin)
+    // Should have received status events (Running then Completed, plus initial Idle set doesn't fire statusChanged)
+    test <@ statusEvents.Length >= 2 @>
+
+    test
+        <@
+            statusEvents
+            |> List.exists (fun (name, s) ->
+                name = "status-eventer"
+                && match s with
+                   | Running _ -> true
+                   | _ -> false)
+        @>
+
+    test
+        <@
+            statusEvents
+            |> List.exists (fun (name, s) ->
+                name = "status-eventer"
+                && match s with
+                   | Completed _ -> true
+                   | _ -> false)
+        @>
