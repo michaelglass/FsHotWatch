@@ -68,3 +68,65 @@ let ``Count returns total across all plugins and files`` () =
     ledger.Report("lint", "/src/A.fs", [ entry "a" "warning" 1; entry "b" "warning" 2 ])
     ledger.Report("analyzers", "/src/A.fs", [ entry "c" "error" 3 ])
     test <@ ledger.Count() = 3 @>
+
+[<Fact>]
+let ``Report ignores stale version`` () =
+    let ledger = ErrorLedger()
+
+    let newEntry =
+        { Message = "new"
+          Severity = "error"
+          Line = 1
+          Column = 0 }
+
+    let staleEntry =
+        { Message = "stale"
+          Severity = "error"
+          Line = 2
+          Column = 0 }
+
+    ledger.Report("fcs", "/tmp/Lib.fs", [ newEntry ], version = 2L)
+    ledger.Report("fcs", "/tmp/Lib.fs", [ staleEntry ], version = 1L)
+
+    let errors = ledger.GetAll()
+    let fileErrors = errors |> Map.tryFind "/tmp/Lib.fs" |> Option.defaultValue []
+    test <@ fileErrors.Length = 1 @>
+    test <@ (snd fileErrors.[0]).Message = "new" @>
+
+[<Fact>]
+let ``Clear ignores stale version`` () =
+    let ledger = ErrorLedger()
+
+    let e =
+        { Message = "error"
+          Severity = "error"
+          Line = 1
+          Column = 0 }
+
+    ledger.Report("fcs", "/tmp/Lib.fs", [ e ], version = 2L)
+    ledger.Clear("fcs", "/tmp/Lib.fs", version = 1L)
+
+    test <@ ledger.HasErrors() @>
+
+[<Fact>]
+let ``Report without version always updates`` () =
+    let ledger = ErrorLedger()
+
+    let entry1 =
+        { Message = "first"
+          Severity = "error"
+          Line = 1
+          Column = 0 }
+
+    let entry2 =
+        { Message = "second"
+          Severity = "error"
+          Line = 2
+          Column = 0 }
+
+    ledger.Report("fcs", "/tmp/Lib.fs", [ entry1 ], version = 5L)
+    ledger.Report("fcs", "/tmp/Lib.fs", [ entry2 ])
+
+    let errors = ledger.GetAll()
+    let fileErrors = errors |> Map.tryFind "/tmp/Lib.fs" |> Option.defaultValue []
+    test <@ (snd fileErrors.[0]).Message = "second" @>
