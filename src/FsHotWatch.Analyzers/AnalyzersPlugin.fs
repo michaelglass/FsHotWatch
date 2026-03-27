@@ -112,14 +112,29 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                                 let sourceText = result.Source |> SourceText.ofString
 
                                 let context =
-                                    createCliContext
-                                        result.File
-                                        sourceText
-                                        result.ParseResults
-                                        result.CheckResults
-                                        result.ProjectOptions
+                                    try
+                                        createCliContext
+                                            result.File
+                                            sourceText
+                                            result.ParseResults
+                                            result.CheckResults
+                                            result.ProjectOptions
+                                    with ex ->
+                                        Logging.error
+                                            "analyzers"
+                                            $"createCliContext failed for %s{result.File}: %s{ex.ToString()}"
 
-                                let! messages = client.RunAnalyzersSafely(context)
+                                        reraise ()
+
+                                let! messages =
+                                    try
+                                        client.RunAnalyzersSafely(context)
+                                    with ex ->
+                                        Logging.error
+                                            "analyzers"
+                                            $"RunAnalyzersSafely failed for %s{result.File}: %s{ex.ToString()}"
+
+                                        reraise ()
 
                                 let current = Volatile.Read(&diagnosticsByFile)
                                 Volatile.Write(&diagnosticsByFile, current |> Map.add result.File messages)
