@@ -5,6 +5,7 @@ open System.IO
 open System.Threading
 open FSharp.Analyzers.SDK
 open FSharp.Compiler.Text
+open System.Text.Json
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch
@@ -22,43 +23,61 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
     let semaphore = new SemaphoreSlim(concurrencyLimit, concurrencyLimit)
     let cts = new CancellationTokenSource()
 
+    // Cache invariant reflection artifacts lazily (CliContext ctor signature never changes at runtime,
+    // but the SDK assembly may not be fully loaded at plugin construction time in tests)
+    let cachedReflection =
+        lazy
+            let ctor = typeof<CliContext>.GetConstructors().[0]
+            let ctorParams = ctor.GetParameters()
+
+            if ctorParams.Length <> 8 then
+                failwith
+                    $"CliContext constructor has %d{ctorParams.Length} params (expected 8) — FSharp.Analyzers.SDK may have changed"
+
+            let ignoreRangesType = ctorParams.[7].ParameterType
+            let keyType = ignoreRangesType.GetGenericArguments().[0]
+            let valueType = ignoreRangesType.GetGenericArguments().[1]
+
+            let emptyIgnoreRanges =
+                typedefof<Map<_, _>>.MakeGenericType(keyType, valueType).GetProperty("Empty").GetValue(null)
+
+            let apoCtor = ctorParams.[6].ParameterType.GetConstructors() |> Array.tryHead
+            (ctor, ctorParams, emptyIgnoreRanges, apoCtor)
+
+    /// Construct CliContext via reflection to bypass FCS version mismatch.
+    /// All params are obj to prevent JIT from binding to wrong FCS assembly version.
     let createCliContext
-        fileName
-        sourceText
-        parseResults
-        checkResults
-        (projectOptions: FSharp.Compiler.CodeAnalysis.FSharpProjectOptions)
-        =
-        let ctor = typeof<CliContext>.GetConstructors().[0]
-        let ignoreRangesParam = ctor.GetParameters().[7].ParameterType
-        let keyType = ignoreRangesParam.GetGenericArguments().[0]
-        let valueType = ignoreRangesParam.GetGenericArguments().[1]
+        (fileName: obj)
+        (sourceText: obj)
+        (parseResults: obj)
+        (checkResults: obj)
+        (projectOptions: obj)
+        : CliContext =
+        let (ctor, _, emptyIgnoreRanges, apoCtor) = cachedReflection.Value
+        let poType = projectOptions.GetType()
 
-        let emptyIgnoreRanges =
-            typedefof<Map<_, _>>.MakeGenericType(keyType, valueType).GetProperty("Empty").GetValue(null)
-
-        // Construct AnalyzerProjectOptions via reflection (SDK type, not FCS type)
-        let apoType = ctor.GetParameters().[6].ParameterType
-        let apoCtor = apoType.GetConstructors() |> Array.tryHead
+        let getField name =
+            poType.GetProperty(name).GetValue(projectOptions)
 
         let analyzerProjectOptions =
             match apoCtor with
             | Some c ->
                 try
-                    // AnalyzerProjectOptions expects: tag, projectFileName, projectId, sourceFiles, referencedProjectsPath, loadTime, otherOptions
-                    let sourceFiles = projectOptions.SourceFiles |> Array.toList
-                    let otherOptions = projectOptions.OtherOptions |> Array.toList
+                    let sourceFiles = getField "SourceFiles" :?> string array |> Array.toList
+                    let otherOptions = getField "OtherOptions" :?> string array |> Array.toList
+                    let projectFileName = getField "ProjectFileName" :?> string
 
                     c.Invoke(
                         [| box 0 // tag for BackgroundCompilerOptions
-                           box projectOptions.ProjectFileName
+                           box projectFileName
                            box None // projectId
                            box sourceFiles
                            box ([]: string list) // referencedProjectsPath
-                           box System.DateTime.UtcNow
+                           box DateTime.UtcNow
                            box otherOptions |]
                     )
-                with _ ->
+                with ex ->
+                    Logging.warn "analyzers" $"AnalyzerProjectOptions ctor failed: %s{ex.Message}"
                     null
             | None -> null
 
@@ -68,7 +87,7 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                parseResults
                checkResults
                box None // typedTree
-               null // checkProjectResults — analyzers that need this will skip
+               null // checkProjectResults
                analyzerProjectOptions
                emptyIgnoreRanges |]
         )
@@ -109,29 +128,15 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
 
                         try
                             try
-                                Logging.info "analyzers" $"About to analyze %s{result.File}"
-                                let src = result.Source
-
-                                if isNull src then
-                                    Logging.error "analyzers" $"result.Source is null for %s{result.File}"
-
-                                let sourceText = src |> SourceText.ofString
-                                Logging.info "analyzers" $"SourceText created, calling createCliContext..."
+                                let sourceText = result.Source |> SourceText.ofString
 
                                 let context =
-                                    try
-                                        createCliContext
-                                            result.File
-                                            sourceText
-                                            result.ParseResults
-                                            result.CheckResults
-                                            result.ProjectOptions
-                                    with ex ->
-                                        Logging.error
-                                            "analyzers"
-                                            $"createCliContext failed for %s{result.File}: %s{ex.ToString()}"
-
-                                        reraise ()
+                                    createCliContext
+                                        (box result.File)
+                                        (box sourceText)
+                                        (box result.ParseResults)
+                                        (box result.CheckResults)
+                                        (box result.ProjectOptions)
 
                                 let! messages =
                                     try
@@ -190,7 +195,11 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                             currentDiags |> Map.toList |> List.sumBy (fun (_, msgs) -> msgs.Length)
 
                         return
-                            $"{{\"analyzers\": %d{currentLoaded}, \"files\": %d{currentDiags.Count}, \"diagnostics\": %d{totalDiags}}}"
+                            JsonSerializer.Serialize(
+                                {| analyzers = currentLoaded
+                                   files = currentDiags.Count
+                                   diagnostics = totalDiags |}
+                            )
                     }
             )
 
