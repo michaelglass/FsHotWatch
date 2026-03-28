@@ -9,19 +9,32 @@ open System.Text.Json
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch
+open FsHotWatch.AgentHost
 open FsHotWatch.Logging
 open FsHotWatch.Plugin
+
+type private AnalyzersState =
+    { DiagnosticsByFile: Map<string, AnalysisResult list>
+      LoadedCount: int
+      ProcessedCount: int
+      ErrorCount: int }
+
+type private AnalyzersMsg =
+    | AnalysisComplete of file: string * results: AnalysisResult list
+    | AnalysisFailed of file: string * error: string
+    | IncrementProcessed
+    | AddLoaded of int
 
 /// Hosts F# analyzers in-process using the warm checker's results.
 /// Uses reflection to construct CliContext, bypassing the FCS 43.10 vs 43.12
 /// type mismatch at compile time (the types are structurally identical).
 type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
-    let mutable diagnosticsByFile: Map<string, AnalysisResult list> = Map.empty
     let client = Client<CliAnalyzerAttribute, CliContext>()
-    let mutable loadedCount = 0
     let concurrencyLimit = defaultArg maxConcurrency 4
     let semaphore = new SemaphoreSlim(concurrencyLimit, concurrencyLimit)
     let cts = new CancellationTokenSource()
+
+    let mutable agent: Agent<AnalyzersState, AnalyzersMsg> option = None
 
     // Cache invariant reflection artifacts lazily (CliContext ctor signature never changes at runtime,
     // but the SDK assembly may not be fully loaded at plugin construction time in tests)
@@ -106,31 +119,61 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
         member _.Name = "analyzers"
 
         member _.Initialize(ctx) =
+            let initialState =
+                { DiagnosticsByFile = Map.empty
+                  LoadedCount = 0
+                  ProcessedCount = 0
+                  ErrorCount = 0 }
+
+            let theAgent =
+                createAgent<AnalyzersState, AnalyzersMsg>
+                    "analyzers"
+                    initialState
+                    (fun state msg ->
+                        async {
+                            match msg with
+                            | AddLoaded count ->
+                                return { state with LoadedCount = state.LoadedCount + count }
+                            | IncrementProcessed ->
+                                return
+                                    { state with
+                                        ProcessedCount = state.ProcessedCount + 1 }
+                            | AnalysisComplete(file, results) ->
+                                return
+                                    { state with
+                                        DiagnosticsByFile = state.DiagnosticsByFile |> Map.add file results }
+                            | AnalysisFailed(_file, _error) ->
+                                return { state with ErrorCount = state.ErrorCount + 1 }
+                        })
+
+            agent <- Some theAgent
+
             for path in analyzerPaths do
                 if Directory.Exists(path) then
                     let stats = client.LoadAnalyzers(path)
-                    Interlocked.Add(&loadedCount, stats.Analyzers) |> ignore
+                    theAgent.Post(AddLoaded stats.Analyzers)
 
-            Logging.info
-                "analyzers"
-                $"Loaded %d{Volatile.Read(&loadedCount)} analyzers from %d{analyzerPaths.Length} paths"
+            let loadedCount =
+                theAgent.GetState() |> Async.RunSynchronously |> _.LoadedCount
 
-            let mutable errorCount = 0
-            let mutable processedCount = 0
+            Logging.info "analyzers" $"Loaded %d{loadedCount} analyzers from %d{analyzerPaths.Length} paths"
 
             let reportCompleted () =
-                let currentDiags = Volatile.Read(&diagnosticsByFile)
+                let currentState = theAgent.GetState() |> Async.RunSynchronously
 
-                if Volatile.Read(&errorCount) > 0 then
+                if currentState.ErrorCount > 0 then
                     ctx.ReportStatus(
-                        Completed(box $"analyzed %d{currentDiags.Count} files, %d{errorCount} errors", DateTime.UtcNow)
+                        Completed(
+                            box $"analyzed %d{currentState.DiagnosticsByFile.Count} files, %d{currentState.ErrorCount} errors",
+                            DateTime.UtcNow
+                        )
                     )
                 else
-                    ctx.ReportStatus(Completed(box currentDiags, DateTime.UtcNow))
+                    ctx.ReportStatus(Completed(box currentState.DiagnosticsByFile, DateTime.UtcNow))
 
             ctx.OnFileChecked.Add(fun result ->
                 ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                Interlocked.Increment(&processedCount) |> ignore
+                theAgent.Post(IncrementProcessed)
 
                 if isNull (box result.CheckResults) then
                     Logging.warn "analyzers" $"Skipping %s{result.File} — no type check results"
@@ -161,8 +204,7 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
 
                                         reraise ()
 
-                                let current = Volatile.Read(&diagnosticsByFile)
-                                Volatile.Write(&diagnosticsByFile, current |> Map.add result.File messages)
+                                theAgent.Post(AnalysisComplete(result.File, messages))
 
                                 let entries =
                                     messages
@@ -193,7 +235,7 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
 
                                 reportCompleted ()
                             with ex ->
-                                Interlocked.Increment(&errorCount) |> ignore
+                                theAgent.Post(AnalysisFailed(result.File, ex.ToString()))
                                 Logging.error "analyzers" $"Error analyzing %s{result.File}: %s{ex.ToString()}"
                                 reportCompleted ()
                         finally
@@ -205,16 +247,17 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                 "diagnostics",
                 fun _args ->
                     async {
-                        let currentDiags = Volatile.Read(&diagnosticsByFile)
-                        let currentLoaded = Volatile.Read(&loadedCount)
+                        let! currentState = theAgent.GetState()
 
                         let totalDiags =
-                            currentDiags |> Map.toList |> List.sumBy (fun (_, msgs) -> msgs.Length)
+                            currentState.DiagnosticsByFile
+                            |> Map.toList
+                            |> List.sumBy (fun (_, msgs) -> msgs.Length)
 
                         return
                             JsonSerializer.Serialize(
-                                {| analyzers = currentLoaded
-                                   files = currentDiags.Count
+                                {| analyzers = currentState.LoadedCount
+                                   files = currentState.DiagnosticsByFile.Count
                                    diagnostics = totalDiags |}
                             )
                     }
