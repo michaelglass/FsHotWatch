@@ -295,8 +295,6 @@ type Daemon =
         mutable ScanGeneration: int64
         /// Semaphore ensuring only one scan runs at a time.
         ScanSemaphore: SemaphoreSlim
-        /// Disposes the debounce timer used for coalescing file change events.
-        DisposeDebounceTimer: unit -> unit
         /// Shared cancellation token ref for processChanges (set by RunWithIpc).
         CancellationTokenRef: CancellationToken ref
         /// Signalled when the daemon is ready to accept file change events.
@@ -495,7 +493,6 @@ type Daemon =
 
                 do! tcs.Task |> Async.AwaitTask
             finally
-                this.DisposeDebounceTimer()
                 this.Ready.Dispose()
         }
 
@@ -571,7 +568,6 @@ type Daemon =
                 with _ ->
                     ()
             finally
-                this.DisposeDebounceTimer()
                 this.Ready.Dispose()
         }
 
@@ -600,188 +596,164 @@ module Daemon =
         let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
         let loader = WorkspaceLoader.Create(toolsPath, [])
 
-        let pendingChanges = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
-        let mutable debounceTimer: System.Threading.Timer option = None
-        let debounceLock = obj ()
-
-        let suppressedFiles =
-            System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
-
-        let mutable processingChanges = 0
         let daemonCtRef = ref CancellationToken.None
 
-        let processChanges (_state: obj) =
-            if Interlocked.CompareExchange(&processingChanges, 1, 0) = 0 then
-                Async.Start(
+        let delayForChange change =
+            match change with
+            | ProjectChanged _
+            | SolutionChanged -> projectDebounceMs
+            | SourceChanged _ -> sourceDebounceMs
+
+        let processBatch (changes: FileChangeKind list) (suppressed: Set<string>) =
+            async {
+                let mutable sourceFiles = []
+                let mutable projFiles = []
+                let mutable hasSolution = false
+
+                for c in changes do
+                    match c with
+                    | SourceChanged files -> sourceFiles <- files @ sourceFiles
+                    | ProjectChanged files -> projFiles <- files @ projFiles
+                    | SolutionChanged -> hasSolution <- true
+
+                Logging.debug
+                    "daemon"
+                    $"processChanges: %d{sourceFiles.Length} source, %d{projFiles.Length} project, solution=%b{hasSolution}"
+
+                for f in sourceFiles do
+                    Logging.debug "daemon" $"source: %s{f}"
+
+                for f in projFiles do
+                    Logging.debug "daemon" $"project: %s{f}"
+
+                // Filter out files written by preprocessors (suppress re-trigger)
+                let filteredSourceFiles, remainingSuppressed =
+                    sourceFiles
+                    |> List.distinct
+                    |> List.fold
+                        (fun (accepted, sup) f ->
+                            if Set.contains f sup then
+                                Logging.debug "daemon" $"suppressed: %s{f}"
+                                (accepted, Set.remove f sup)
+                            else
+                                (f :: accepted, sup))
+                        ([], suppressed)
+
+                let allSourceFiles =
+                    filteredSourceFiles
+                    |> List.rev
+                    |> List.filter (fun f ->
+                        let changed = hasContentChanged f
+
+                        if not changed then
+                            Logging.debug "daemon" $"content unchanged: %s{f}"
+
+                        changed)
+
+                let projFilesChanged =
+                    projFiles
+                    |> List.distinct
+                    |> List.filter (fun f ->
+                        let changed = hasContentChanged f
+
+                        if not changed then
+                            Logging.debug "daemon" $"content unchanged: %s{f}"
+
+                        changed)
+
+                if hasSolution then
+                    host.EmitFileChanged(SolutionChanged)
+
+                if not projFilesChanged.IsEmpty || hasSolution then
+                    Logging.info "daemon" "Project/solution change detected — re-discovering projects"
+
+                    if not (isNull (box checker)) then
+                        checker.InvalidateAll()
+                        checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
+
+                    let! _ = rediscoverAndClearRemoved repoRoot loader graph pipeline host "daemon"
+
+                    Logging.info
+                        "daemon"
+                        $"Re-discovery complete: %d{graph.GetAllProjects().Length} projects, %d{pipeline.GetAllRegisteredFiles().Length} files"
+
+                    if not projFilesChanged.IsEmpty then
+                        host.EmitFileChanged(ProjectChanged projFilesChanged)
+
+                if not allSourceFiles.IsEmpty then
+                    let modifiedByPreprocessors = host.RunPreprocessors(allSourceFiles)
+
+                    let newSuppressed =
+                        modifiedByPreprocessors |> List.fold (fun s f -> Set.add f s) remainingSuppressed
+
+                    let changedProjects =
+                        allSourceFiles
+                        |> List.choose (fun f -> graph.GetProjectForFile(f))
+                        |> List.distinct
+
+                    let dependentProjectFiles =
+                        changedProjects
+                        |> List.collect (fun p -> graph.GetTransitiveDependents(p))
+                        |> List.distinct
+                        |> List.filter (fun p -> not (changedProjects |> List.contains p))
+                        |> List.collect (fun proj -> graph.GetSourceFiles(proj))
+
+                    let allFilesToCheck = (allSourceFiles @ dependentProjectFiles) |> List.distinct
+
+                    host.EmitFileChanged(SourceChanged allFilesToCheck)
+
+                    Logging.debug "daemon" $"Checking %d{allFilesToCheck.Length} files after change"
+
+                    for file in allFilesToCheck do
+                        let! result = pipeline.CheckFile(file, daemonCtRef.Value)
+
+                        match result with
+                        | Some checkResult ->
+                            Logging.debug "daemon" $"EmitFileChecked: %s{Path.GetFileName(file)}"
+                            do! host.EmitFileCheckedParallel(checkResult)
+                            reportFcsDiagnostics host checkResult
+
+                        | None -> ()
+
+                    return newSuppressed
+                else
+                    return remainingSuppressed
+            }
+
+        let changeAgent =
+            MailboxProcessor.Start(fun inbox ->
+                let rec idle (suppressed: Set<string>) =
                     async {
-                        try
-                            let changes = System.Collections.Generic.List<FileChangeKind>()
-                            let mutable item = Unchecked.defaultof<_>
+                        let! msg = inbox.Receive()
+                        let delayMs = delayForChange msg
+                        return! debouncing [ msg ] delayMs suppressed
+                    }
 
-                            while pendingChanges.TryTake(&item) do
-                                changes.Add(item)
+                and debouncing (pending: FileChangeKind list) (delayMs: int) (suppressed: Set<string>) =
+                    async {
+                        let! msg = inbox.TryReceive(delayMs)
 
-                            if changes.Count > 0 then
-                                let mutable sourceFiles = []
-                                let mutable projFiles = []
-                                let mutable hasSolution = false
+                        match msg with
+                        | Some change ->
+                            let newDelay = max delayMs (delayForChange change)
+                            return! debouncing (change :: pending) newDelay suppressed
+                        | None ->
+                            // Debounce expired — process batch
+                            try
+                                let! newSuppressed = processBatch (List.rev pending) suppressed
+                                return! idle newSuppressed
+                            with ex ->
+                                Logging.error "daemon" $"processChanges failed: %s{ex.ToString()}"
+                                return! idle suppressed
+                    }
 
-                                for c in changes do
-                                    match c with
-                                    | SourceChanged files -> sourceFiles <- files @ sourceFiles
-                                    | ProjectChanged files -> projFiles <- files @ projFiles
-                                    | SolutionChanged -> hasSolution <- true
-
-                                Logging.debug
-                                    "daemon"
-                                    $"processChanges: %d{sourceFiles.Length} source, %d{projFiles.Length} project, solution=%b{hasSolution}"
-
-                                for f in sourceFiles do
-                                    Logging.debug "daemon" $"source: %s{f}"
-
-                                for f in projFiles do
-                                    Logging.debug "daemon" $"project: %s{f}"
-
-                                // Filter out files written by preprocessors (suppress re-trigger)
-                                let allSourceFiles =
-                                    sourceFiles
-                                    |> List.distinct
-                                    |> List.filter (fun f ->
-                                        let suppressed =
-                                            match suppressedFiles.TryRemove(f) with
-                                            | true, _ -> true
-                                            | false, _ -> false
-
-                                        if suppressed then
-                                            Logging.debug "daemon" $"suppressed: %s{f}"
-
-                                        not suppressed)
-                                    |> List.filter (fun f ->
-                                        let changed = hasContentChanged f
-
-                                        if not changed then
-                                            Logging.debug "daemon" $"content unchanged: %s{f}"
-
-                                        changed)
-
-                                let projFilesChanged =
-                                    projFiles
-                                    |> List.distinct
-                                    |> List.filter (fun f ->
-                                        let changed = hasContentChanged f
-
-                                        if not changed then
-                                            Logging.debug "daemon" $"content unchanged: %s{f}"
-
-                                        changed)
-
-                                if hasSolution then
-                                    host.EmitFileChanged(SolutionChanged)
-
-                                if not projFilesChanged.IsEmpty || hasSolution then
-                                    Logging.info "daemon" "Project/solution change detected — re-discovering projects"
-
-                                    if not (isNull (box checker)) then
-                                        checker.InvalidateAll()
-                                        checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
-
-                                    let! _ = rediscoverAndClearRemoved repoRoot loader graph pipeline host "daemon"
-
-                                    Logging.info
-                                        "daemon"
-                                        $"Re-discovery complete: %d{graph.GetAllProjects().Length} projects, %d{pipeline.GetAllRegisteredFiles().Length} files"
-
-                                    if not projFilesChanged.IsEmpty then
-                                        host.EmitFileChanged(ProjectChanged projFilesChanged)
-
-                                if not allSourceFiles.IsEmpty then
-                                    let modifiedByPreprocessors = host.RunPreprocessors(allSourceFiles)
-
-                                    for file in modifiedByPreprocessors do
-                                        suppressedFiles.TryAdd(file, true) |> ignore
-
-                                    let changedProjects =
-                                        allSourceFiles
-                                        |> List.choose (fun f -> graph.GetProjectForFile(f))
-                                        |> List.distinct
-
-                                    let dependentProjectFiles =
-                                        changedProjects
-                                        |> List.collect (fun p -> graph.GetTransitiveDependents(p))
-                                        |> List.distinct
-                                        |> List.filter (fun p -> not (changedProjects |> List.contains p))
-                                        |> List.collect (fun proj -> graph.GetSourceFiles(proj))
-
-                                    let allFilesToCheck = (allSourceFiles @ dependentProjectFiles) |> List.distinct
-
-                                    host.EmitFileChanged(SourceChanged allFilesToCheck)
-
-                                    Logging.debug "daemon" $"Checking %d{allFilesToCheck.Length} files after change"
-
-                                    for file in allFilesToCheck do
-                                        let! result = pipeline.CheckFile(file, daemonCtRef.Value)
-
-                                        match result with
-                                        | Some checkResult ->
-                                            Logging.debug "daemon" $"EmitFileChecked: %s{Path.GetFileName(file)}"
-                                            do! host.EmitFileCheckedParallel(checkResult)
-                                            reportFcsDiagnostics host checkResult
-
-                                        | None -> ()
-                        finally
-                            Interlocked.Exchange(&processingChanges, 0) |> ignore
-
-                            // If items arrived during processing, re-arm the debounce timer
-                            if not pendingChanges.IsEmpty then
-                                lock debounceLock (fun () ->
-                                    match debounceTimer with
-                                    | Some timer ->
-                                        timer.Change(sourceDebounceMs, System.Threading.Timeout.Infinite) |> ignore
-                                    | None -> ())
-                    },
-                    daemonCtRef.Value
-                )
-
-        let mutable pendingDelayMs = 0
+                idle Set.empty)
 
         let onChange change =
             Logging.debug "watcher" $"%O{change}"
-
-            pendingChanges.Add(change)
-
-            let delayMs =
-                match change with
-                | ProjectChanged _
-                | SolutionChanged -> projectDebounceMs
-                | SourceChanged _ -> sourceDebounceMs
-
-            lock debounceLock (fun () ->
-                pendingDelayMs <- max pendingDelayMs delayMs
-
-                match debounceTimer with
-                | Some timer -> timer.Change(pendingDelayMs, System.Threading.Timeout.Infinite) |> ignore
-                | None ->
-                    debounceTimer <-
-                        Some(
-                            new System.Threading.Timer(
-                                System.Threading.TimerCallback(fun state ->
-                                    lock debounceLock (fun () -> pendingDelayMs <- 0)
-                                    processChanges state),
-                                null,
-                                pendingDelayMs,
-                                System.Threading.Timeout.Infinite
-                            )
-                        ))
+            changeAgent.Post(change)
 
         let watcher = FileWatcher.create repoRoot onChange
-
-        let disposeDebounceTimer () =
-            lock debounceLock (fun () ->
-                match debounceTimer with
-                | Some timer ->
-                    timer.Dispose()
-                    debounceTimer <- None
-                | None -> ())
 
         let jjGuard =
             match cacheKeyProvider with
@@ -798,7 +770,6 @@ module Daemon =
           ScanState = ScanIdle
           ScanGeneration = 0L
           ScanSemaphore = new SemaphoreSlim(1, 1)
-          DisposeDebounceTimer = disposeDebounceTimer
           CancellationTokenRef = daemonCtRef
           Ready = new ManualResetEventSlim(false)
           ScanSignal = ScanSignal()
