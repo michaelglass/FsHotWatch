@@ -24,8 +24,18 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
 
     let projectOptionsByFile = ConcurrentDictionary<string, FSharpProjectOptions>()
     let projectOptionsByProject = ConcurrentDictionary<string, FSharpProjectOptions>()
+    let projectOptionsHashCache = ConcurrentDictionary<string, string>()
     let fileTokens = ConcurrentDictionary<string, CancellationTokenSource>()
     let mutable nextVersion = 0L
+
+    let makeCacheKeyFast (filePath: string) (options: FSharpProjectOptions) : CacheKey =
+        let optionsHash =
+            match projectOptionsHashCache.TryGetValue(options.ProjectFileName) with
+            | true, hash -> hash
+            | false, _ -> getProjectOptionsHash options
+
+        { FileHash = keyProvider.GetFileHash(filePath)
+          ProjectOptionsHash = optionsHash }
 
     member _.NextVersion() = Interlocked.Increment(&nextVersion)
 
@@ -37,6 +47,7 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
         fileTokens.Clear()
         projectOptionsByFile.Clear()
         projectOptionsByProject.Clear()
+        projectOptionsHashCache.Clear()
         cacheBackend |> Option.iter (fun b -> b.Clear())
 
     /// Invalidate the cache entry for a file so the next CheckFile call re-runs FCS.
@@ -47,7 +58,7 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
         | Some backend ->
             match projectOptionsByFile.TryGetValue(absPath) with
             | true, options ->
-                let key = makeCacheKey keyProvider absPath options
+                let key = makeCacheKeyFast absPath options
                 backend.Invalidate(key)
                 Logging.debug "check" $"Cache invalidated: %s{System.IO.Path.GetFileName(absPath)}"
             | _ -> ()
@@ -56,6 +67,7 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
     /// Register project options for a project. Maps each source file to this project's options.
     member _.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
         projectOptionsByProject[projectPath] <- options
+        projectOptionsHashCache[projectPath] <- getProjectOptionsHash options
 
         for sourceFile in options.SourceFiles do
             projectOptionsByFile[sourceFile] <- options
@@ -109,7 +121,7 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
                 | true, options ->
                     // Check cache before running expensive FCS check
                     let cacheKey =
-                        cacheBackend |> Option.map (fun _ -> makeCacheKey keyProvider absPath options)
+                        cacheBackend |> Option.map (fun _ -> makeCacheKeyFast absPath options)
 
                     let cached =
                         match cacheBackend, cacheKey with
@@ -121,12 +133,9 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
                         // Full cache hit (e.g., InMemoryCache) — result has usable FCS data
                         Logging.debug "check" $"Cache hit: %s{Path.GetFileName(absPath)}"
                         return Some result
-                    | Some _ ->
-                        // Partial cache hit (e.g., FileCheckCache) — FCS types are null.
-                        // Skip plugin dispatch since plugins can't use null CheckResults.
-                        Logging.debug "check" $"Cache hit (skip): %s{Path.GetFileName(absPath)}"
-                        return None
-                    | None ->
+                    | _ ->
+                        // No cache or partial hit (FileCheckCache sentinel with null FCS types).
+                        // Fall through to FCS check so plugins get real data and cache warms up.
 
                         let source =
                             if File.Exists(absPath) then
