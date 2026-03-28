@@ -49,6 +49,21 @@ let private reportFcsDiagnostics (host: PluginHost) (checkResult: Events.FileChe
         else
             host.ReportErrors("fcs", checkResult.File, diagnostics, version = checkResult.Version)
 
+/// Fingerprint fsproj files by path + last-write-time. Used by ScanAll to skip
+/// expensive MSBuild re-evaluation when no project files have changed.
+let private fingerprintFsprojFiles (repoRoot: string) =
+    let searchDirs =
+        [ Path.Combine(repoRoot, "src"); Path.Combine(repoRoot, "tests") ]
+        |> List.filter Directory.Exists
+
+    searchDirs
+    |> List.collect (fun dir -> Directory.GetFiles(dir, "*.fsproj", SearchOption.AllDirectories) |> Array.toList)
+    |> List.filter (fun f ->
+        let n = f.Replace('\\', '/')
+        not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
+    |> List.map (fun f -> f, File.GetLastWriteTimeUtc(f).Ticks)
+    |> Set.ofList
+
 /// Discover .fsproj files and register them with the graph and pipeline.
 /// Uses Ionide.ProjInfo for MSBuild design-time evaluation to get real
 /// assembly references, NuGet packages, and compiler flags.
@@ -114,6 +129,31 @@ let private discoverAndRegisterProjects
         with ex ->
             sw.Stop()
             Logging.error "discover" $"MSBuild evaluation failed (%.1f{sw.Elapsed.TotalSeconds}s): %s{ex.Message}"
+    }
+
+/// Re-discover projects and clear FCS errors for any files that were removed.
+/// Returns the set of removed files.
+let private rediscoverAndClearRemoved
+    (repoRoot: string)
+    (loader: IWorkspaceLoader)
+    (graph: ProjectGraph)
+    (pipeline: CheckPipeline)
+    (host: PluginHost)
+    (logTag: string)
+    =
+    async {
+        let oldFiles = graph.GetAllFiles() |> Set.ofList
+        do! discoverAndRegisterProjects repoRoot loader graph pipeline
+        let newFiles = graph.GetAllFiles() |> Set.ofList
+        let removedFiles = Set.difference oldFiles newFiles
+
+        for file in removedFiles do
+            host.ClearErrors("fcs", file)
+
+        if not removedFiles.IsEmpty then
+            Logging.info logTag $"Cleared errors for %d{removedFiles.Count} removed files"
+
+        return removedFiles
     }
 
 /// Manages TaskCompletionSource instances for signal-based WaitForScan.
@@ -265,6 +305,9 @@ type Daemon =
         ScanSignal: ScanSignal
         /// Optional jj scan guard for content-addressed cache optimization.
         JjGuard: JjHelper.JjScanGuard option
+        /// Last fsproj fingerprint seen by ScanAll, used to skip re-discovery
+        /// when no project files have changed.
+        mutable LastFsprojFingerprint: Set<string * int64>
     }
 
     /// Register a plugin with the daemon's plugin host.
@@ -317,6 +360,27 @@ type Daemon =
             do! this.ScanSemaphore.WaitAsync(ct) |> Async.AwaitTask
 
             try
+                // Re-discover projects before scanning so that removed files/projects
+                // are cleared before results are returned to the client. Without this,
+                // a concurrent processChanges re-discovery (triggered by the file watcher
+                // with debounce delay) may complete AFTER the scan signals waiters,
+                // leaving stale FCS errors visible for one cycle.
+                // Guarded by fsproj fingerprint to skip expensive MSBuild evaluation
+                // when no project files have changed.
+                let currentFingerprint = fingerprintFsprojFiles this.RepoRoot
+
+                if currentFingerprint <> this.LastFsprojFingerprint then
+                    let! _ =
+                        rediscoverAndClearRemoved
+                            this.RepoRoot
+                            this.WorkspaceLoader
+                            this.Graph
+                            this.Pipeline
+                            this.Host
+                            "scan"
+
+                    this.LastFsprojFingerprint <- currentFingerprint
+
                 let registeredProjects = this.Pipeline.GetRegisteredProjects()
                 let files = this.Pipeline.GetAllRegisteredFiles()
                 let total = files.Length
@@ -617,22 +681,11 @@ module Daemon =
                                 if not projFilesChanged.IsEmpty || hasSolution then
                                     Logging.info "daemon" "Project/solution change detected — re-discovering projects"
 
-                                    let oldFiles = graph.GetAllFiles() |> Set.ofList
-
                                     if not (isNull (box checker)) then
                                         checker.InvalidateAll()
                                         checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
 
-                                    do! discoverAndRegisterProjects repoRoot loader graph pipeline
-
-                                    let newFiles = graph.GetAllFiles() |> Set.ofList
-                                    let removedFiles = Set.difference oldFiles newFiles
-
-                                    for file in removedFiles do
-                                        host.ClearErrors("fcs", file)
-
-                                    if not removedFiles.IsEmpty then
-                                        Logging.info "daemon" $"Cleared errors for %d{removedFiles.Count} removed files"
+                                    let! _ = rediscoverAndClearRemoved repoRoot loader graph pipeline host "daemon"
 
                                     Logging.info
                                         "daemon"
@@ -749,7 +802,8 @@ module Daemon =
           CancellationTokenRef = daemonCtRef
           Ready = new ManualResetEventSlim(false)
           ScanSignal = ScanSignal()
-          JjGuard = jjGuard }
+          JjGuard = jjGuard
+          LastFsprojFingerprint = Set.empty }
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     /// When cacheBackend or cacheKeyProvider are None, defaults to FileCheckCache + TimestampCacheKeyProvider.
