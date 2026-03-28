@@ -48,6 +48,7 @@
 
   <ItemGroup>
     <Compile Include="Logging.fs" />
+    <Compile Include="AgentHost.fs" />
     <Compile Include="Events.fs" />
     <Compile Include="ProcessHelper.fs" />
     <Compile Include="JjHelper.fs" />
