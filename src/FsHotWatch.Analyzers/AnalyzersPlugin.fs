@@ -126,25 +126,26 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                   ErrorCount = 0 }
 
             let theAgent =
-                createAgent<AnalyzersState, AnalyzersMsg>
-                    "analyzers"
-                    initialState
-                    (fun state msg ->
-                        async {
-                            match msg with
-                            | AddLoaded count ->
-                                return { state with LoadedCount = state.LoadedCount + count }
-                            | IncrementProcessed ->
-                                return
-                                    { state with
-                                        ProcessedCount = state.ProcessedCount + 1 }
-                            | AnalysisComplete(file, results) ->
-                                return
-                                    { state with
-                                        DiagnosticsByFile = state.DiagnosticsByFile |> Map.add file results }
-                            | AnalysisFailed(_file, _error) ->
-                                return { state with ErrorCount = state.ErrorCount + 1 }
-                        })
+                createAgent<AnalyzersState, AnalyzersMsg> "analyzers" initialState (fun state msg ->
+                    async {
+                        match msg with
+                        | AddLoaded count ->
+                            return
+                                { state with
+                                    LoadedCount = state.LoadedCount + count }
+                        | IncrementProcessed ->
+                            return
+                                { state with
+                                    ProcessedCount = state.ProcessedCount + 1 }
+                        | AnalysisComplete(file, results) ->
+                            return
+                                { state with
+                                    DiagnosticsByFile = state.DiagnosticsByFile |> Map.add file results }
+                        | AnalysisFailed(_file, _error) ->
+                            return
+                                { state with
+                                    ErrorCount = state.ErrorCount + 1 }
+                    })
 
             agent <- Some theAgent
 
@@ -153,8 +154,7 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                     let stats = client.LoadAnalyzers(path)
                     theAgent.Post(AddLoaded stats.Analyzers)
 
-            let loadedCount =
-                theAgent.GetState() |> Async.RunSynchronously |> _.LoadedCount
+            let loadedCount = theAgent.GetState() |> Async.RunSynchronously |> _.LoadedCount
 
             Logging.info "analyzers" $"Loaded %d{loadedCount} analyzers from %d{analyzerPaths.Length} paths"
 
@@ -164,7 +164,8 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                 if currentState.ErrorCount > 0 then
                     ctx.ReportStatus(
                         Completed(
-                            box $"analyzed %d{currentState.DiagnosticsByFile.Count} files, %d{currentState.ErrorCount} errors",
+                            box
+                                $"analyzed %d{currentState.DiagnosticsByFile.Count} files, %d{currentState.ErrorCount} errors",
                             DateTime.UtcNow
                         )
                     )
