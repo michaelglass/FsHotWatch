@@ -481,3 +481,178 @@ let ``WaitForComplete resolves when all plugins terminal`` () =
     let result = waitTask.Result
     // Should return status JSON
     test <@ result.Contains("{") @>
+
+// --- DaemonRpcTarget unit tests (no IPC pipe) ---
+
+[<Fact>]
+let ``DaemonRpcTarget.Shutdown calls RequestShutdown and returns message`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let mutable called = false
+
+    let config =
+        { defaultRpcConfig host with
+            RequestShutdown = fun () -> called <- true }
+
+    let target = DaemonRpcTarget(config)
+    let result = target.Shutdown()
+    test <@ result = "shutting down" @>
+    test <@ called @>
+
+[<Fact>]
+let ``DaemonRpcTarget.Scan returns generation and calls RequestScan with force`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let mutable capturedForce = false
+
+    let config =
+        { defaultRpcConfig host with
+            GetScanGeneration = fun () -> 42L
+            RequestScan = fun force -> capturedForce <- force }
+
+    let target = DaemonRpcTarget(config)
+
+    let result1 = target.Scan(false)
+    test <@ result1 = "scan started:42" @>
+    test <@ capturedForce = false @>
+
+    let result2 = target.Scan(true)
+    test <@ result2 = "scan started:42" @>
+    test <@ capturedForce = true @>
+
+[<Fact>]
+let ``DaemonRpcTarget.ScanStatus delegates to GetScanStatus`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let config =
+        { defaultRpcConfig host with
+            GetScanStatus = fun () -> "complete: 70 files checked in 15.5s" }
+
+    let target = DaemonRpcTarget(config)
+    test <@ target.ScanStatus() = "complete: 70 files checked in 15.5s" @>
+
+[<Fact>]
+let ``DaemonRpcTarget.GetErrors returns all errors when filter is empty`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let plugin =
+        { new IFsHotWatchPlugin with
+            member _.Name = "error-plugin"
+
+            member _.Initialize(ctx) =
+                ctx.ReportErrors
+                    "/tmp/test.fs"
+                    [ { Message = "bad code"
+                        Severity = "error"
+                        Line = 10
+                        Column = 5 } ]
+
+            member _.Dispose() = () }
+
+    host.Register(plugin)
+
+    let target = DaemonRpcTarget(defaultRpcConfig host)
+    let json = target.GetErrors("")
+    test <@ json.Contains("\"count\":1") @>
+    test <@ json.Contains("bad code") @>
+    test <@ json.Contains("error-plugin") @>
+
+[<Fact>]
+let ``DaemonRpcTarget.GetErrors filters by plugin name`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let plugin1 =
+        { new IFsHotWatchPlugin with
+            member _.Name = "lint"
+
+            member _.Initialize(ctx) =
+                ctx.ReportErrors
+                    "/tmp/a.fs"
+                    [ { Message = "lint issue"
+                        Severity = "warning"
+                        Line = 1
+                        Column = 0 } ]
+
+            member _.Dispose() = () }
+
+    let plugin2 =
+        { new IFsHotWatchPlugin with
+            member _.Name = "analyzers"
+
+            member _.Initialize(ctx) =
+                ctx.ReportErrors
+                    "/tmp/b.fs"
+                    [ { Message = "analyzer issue"
+                        Severity = "info"
+                        Line = 2
+                        Column = 0 } ]
+
+            member _.Dispose() = () }
+
+    host.Register(plugin1)
+    host.Register(plugin2)
+
+    let target = DaemonRpcTarget(defaultRpcConfig host)
+
+    let lintJson = target.GetErrors("lint")
+    test <@ lintJson.Contains("lint issue") @>
+    test <@ not (lintJson.Contains("analyzer issue")) @>
+
+    let analyzerJson = target.GetErrors("analyzers")
+    test <@ analyzerJson.Contains("analyzer issue") @>
+    test <@ not (analyzerJson.Contains("lint issue")) @>
+
+[<Fact>]
+let ``DaemonRpcTarget.GetErrors returns zero count when no errors`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let target = DaemonRpcTarget(defaultRpcConfig host)
+    let json = target.GetErrors("")
+    test <@ json.Contains("\"count\":0") @>
+
+[<Fact>]
+let ``DaemonRpcTarget.TriggerBuild calls config and returns status`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let mutable buildCalled = false
+
+    let config =
+        { defaultRpcConfig host with
+            TriggerBuild =
+                fun () ->
+                    async {
+                        buildCalled <- true
+                        return ()
+                    } }
+
+    let target = DaemonRpcTarget(config)
+    let result = target.TriggerBuild().Result
+    test <@ buildCalled @>
+    test <@ result.Contains("{") @>
+
+[<Fact>]
+let ``DaemonRpcTarget.FormatAll delegates to config`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let config =
+        { defaultRpcConfig host with
+            FormatAll = fun () -> async { return "formatted 5 files" } }
+
+    let target = DaemonRpcTarget(config)
+    let result = target.FormatAll().Result
+    test <@ result = "formatted 5 files" @>
+
+[<Fact>]
+let ``DaemonRpcTarget.InvalidateCache delegates to config`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let mutable capturedPath = ""
+
+    let config =
+        { defaultRpcConfig host with
+            InvalidateAndRecheck =
+                fun path ->
+                    async {
+                        capturedPath <- path
+                        return """{"status": "rechecked"}"""
+                    } }
+
+    let target = DaemonRpcTarget(config)
+    let result = target.InvalidateCache("/tmp/test.fs").Result
+    test <@ result.Contains("rechecked") @>
+    test <@ capturedPath = "/tmp/test.fs" @>
