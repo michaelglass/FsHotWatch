@@ -1,11 +1,11 @@
 module FsHotWatch.Tests.DaemonConfigTests
 
-open System
 open System.IO
 open System.Text.Json
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Cli.DaemonConfig
+open FsHotWatch.Tests.TestHelpers
 
 // --- Helper: defaults with known cache backend ---
 
@@ -394,84 +394,52 @@ let ``parseConfig with full configuration`` () =
 
 [<Fact>]
 let ``detectDefaultCacheBackend returns JjFileBackend when .jj exists`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"cfg-jj-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
-
-    try
+    withTempDir "cfg-jj" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
         let result = detectDefaultCacheBackend tmpDir
-        test <@ result = JjFileBackend @>
-    finally
-        Directory.Delete(tmpDir, true)
+        test <@ result = JjFileBackend @>)
 
 [<Fact>]
 let ``detectDefaultCacheBackend returns FileBackend when no .jj`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"cfg-nojj-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmpDir) |> ignore
-
-    try
+    withTempDir "cfg-nojj" (fun tmpDir ->
         let result = detectDefaultCacheBackend tmpDir
-        test <@ result = FileBackend @>
-    finally
-        Directory.Delete(tmpDir, true)
+        test <@ result = FileBackend @>)
 
 // --- createCacheComponents ---
 
 [<Fact>]
 let ``createCacheComponents NoCache returns None None`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"cfg-cc-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmpDir) |> ignore
-
-    try
+    withTempDir "cfg-cc" (fun tmpDir ->
         let (backend, keyProvider) = createCacheComponents tmpDir NoCache
         test <@ backend = None @>
-        test <@ keyProvider = None @>
-    finally
-        Directory.Delete(tmpDir, true)
+        test <@ keyProvider = None @>)
 
 [<Fact>]
 let ``createCacheComponents InMemoryOnly returns Some backend and Some keyProvider`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"cfg-cc-mem-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmpDir) |> ignore
-
-    try
+    withTempDir "cfg-cc-mem" (fun tmpDir ->
         let (backend, keyProvider) = createCacheComponents tmpDir (InMemoryOnly 100)
         test <@ backend.IsSome @>
-        test <@ keyProvider.IsSome @>
-    finally
-        Directory.Delete(tmpDir, true)
+        test <@ keyProvider.IsSome @>)
 
 [<Fact>]
 let ``createCacheComponents FileBackend returns Some backend and Some keyProvider`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"cfg-cc-file-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmpDir) |> ignore
-
-    try
+    withTempDir "cfg-cc-file" (fun tmpDir ->
         let (backend, keyProvider) = createCacheComponents tmpDir FileBackend
         test <@ backend.IsSome @>
-        test <@ keyProvider.IsSome @>
-    finally
-        Directory.Delete(tmpDir, true)
+        test <@ keyProvider.IsSome @>)
 
 [<Fact>]
 let ``createCacheComponents JjFileBackend returns Some backend and Some keyProvider`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"cfg-cc-jj-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmpDir) |> ignore
-
-    try
+    withTempDir "cfg-cc-jj" (fun tmpDir ->
         let (backend, keyProvider) = createCacheComponents tmpDir JjFileBackend
         test <@ backend.IsSome @>
-        test <@ keyProvider.IsSome @>
-    finally
-        Directory.Delete(tmpDir, true)
+        test <@ keyProvider.IsSome @>)
 
 // --- defaultConfigFor ---
 
 [<Fact>]
 let ``loadConfig with no config file returns expected defaults`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"cfg-def-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmpDir) |> ignore
-
-    try
+    withTempDir "cfg-def" (fun tmpDir ->
         let config = loadConfig tmpDir
         test <@ config.Build = Some {| Command = "dotnet"; Args = "build" |} @>
         test <@ config.Format = true @>
@@ -480,17 +448,11 @@ let ``loadConfig with no config file returns expected defaults`` () =
         test <@ config.Analyzers = None @>
         test <@ config.Tests = None @>
         test <@ config.Coverage = None @>
-        test <@ config.FileCommands = [] @>
-    finally
-        Directory.Delete(tmpDir, true)
+        test <@ config.FileCommands = [] @>)
 
 [<Fact>]
 let ``loadConfig with jj repo defaults to JjFileBackend`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"cfg-def-jj-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
-
-    try
+    withTempDir "cfg-def-jj" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
         let config = loadConfig tmpDir
-        test <@ config.Cache = JjFileBackend @>
-    finally
-        Directory.Delete(tmpDir, true)
+        test <@ config.Cache = JjFileBackend @>)
