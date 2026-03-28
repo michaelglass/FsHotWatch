@@ -102,7 +102,16 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
                            column = e.Column |}))
 
         let count = allErrors |> Map.fold (fun acc _ entries -> acc + entries.Length) 0
-        let result = {| count = count; files = allErrors |}
+
+        let statuses =
+            config.Host.GetAllStatuses()
+            |> Map.map (fun _name status -> formatStatus status)
+
+        let result =
+            {| count = count
+               files = allErrors
+               statuses = statuses |}
+
         JsonSerializer.Serialize(result)
 
     /// Wait for scan generation to advance past afterGeneration, then return the final status.
