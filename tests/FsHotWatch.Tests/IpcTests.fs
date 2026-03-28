@@ -656,3 +656,25 @@ let ``DaemonRpcTarget.InvalidateCache delegates to config`` () =
     let result = target.InvalidateCache("/tmp/test.fs").Result
     test <@ result.Contains("rechecked") @>
     test <@ capturedPath = "/tmp/test.fs" @>
+
+[<Fact>]
+let ``DaemonRpcTarget.GetErrors includes plugin statuses in response`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let plugin =
+        { new IFsHotWatchPlugin with
+            member _.Name = "test-prune"
+
+            member _.Initialize(ctx) =
+                ctx.ReportStatus(Failed("2 failed: Foo.Tests, Bar.Tests", System.DateTime(2025, 1, 1)))
+
+            member _.Dispose() = () }
+
+    host.Register(plugin)
+
+    let target = DaemonRpcTarget(defaultRpcConfig host)
+    let json = target.GetErrors("")
+    test <@ json.Contains("\"count\":0") @>
+    test <@ json.Contains("\"statuses\"") @>
+    test <@ json.Contains("test-prune") @>
+    test <@ json.Contains("Failed") @>
