@@ -157,9 +157,41 @@ let private rediscoverAndClearRemoved
     }
 
 /// Manages TaskCompletionSource instances for signal-based WaitForScan.
+[<NoComparison; NoEquality>]
+type private ScanSignalMsg =
+    | WaitFor of afterGen: int64 * TaskCompletionSource<unit>
+    | Signal of newGen: int64 * AsyncReplyChannel<unit>
+
 type ScanSignal() =
-    let mutable waiters: (int64 * TaskCompletionSource<unit>) list = []
-    let lockObj = obj ()
+    let agent =
+        MailboxProcessor.Start(fun inbox ->
+            let rec loop (waiters: (int64 * TaskCompletionSource<unit>) list) =
+                async {
+                    let! msg = inbox.Receive()
+
+                    match msg with
+                    | WaitFor(afterGeneration, tcs) ->
+                        Logging.debug "scan-signal" $"WaitFor(%d{afterGeneration}) — registering waiter"
+
+                        return! loop ((afterGeneration, tcs) :: waiters)
+
+                    | Signal(newGeneration, reply) ->
+                        let toSignal, remaining =
+                            waiters
+                            |> List.partition (fun (afterGen, _) -> afterGen < 0L || newGeneration > afterGen)
+
+                        Logging.debug
+                            "scan-signal"
+                            $"SignalGeneration(%d{newGeneration}) — resolving %d{toSignal.Length} waiters, %d{remaining.Length} remaining"
+
+                        for _, tcs in toSignal do
+                            tcs.TrySetResult(()) |> ignore
+
+                        reply.Reply(())
+                        return! loop remaining
+                }
+
+            loop [])
 
     /// Register a waiter that resolves when generation exceeds afterGeneration.
     /// If afterGeneration < 0, resolves on the next generation increment.
@@ -168,7 +200,6 @@ type ScanSignal() =
             if afterGeneration >= 0L then
                 currentGeneration > afterGeneration
             else
-                // Legacy path (afterGeneration < 0): resolve immediately if any scan has completed
                 currentGeneration > 0L
 
         if alreadySatisfied then
@@ -178,33 +209,15 @@ type ScanSignal() =
 
             Task.FromResult(())
         else
-            Logging.debug
-                "scan-signal"
-                $"WaitForGeneration(%d{afterGeneration}, %d{currentGeneration}) — registering waiter"
-
             let tcs =
                 TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
-            lock lockObj (fun () -> waiters <- (afterGeneration, tcs) :: waiters)
+            agent.Post(WaitFor(afterGeneration, tcs))
             tcs.Task
 
     /// Signal all waiters whose afterGeneration is now satisfied.
     member _.SignalGeneration(newGeneration: int64) =
-        let toSignal =
-            lock lockObj (fun () ->
-                let s, r =
-                    waiters
-                    |> List.partition (fun (afterGen, _) -> afterGen < 0L || newGeneration > afterGen)
-
-                Logging.debug
-                    "scan-signal"
-                    $"SignalGeneration(%d{newGeneration}) — resolving %d{s.Length} waiters, %d{r.Length} remaining"
-
-                waiters <- r
-                s)
-
-        for _, tcs in toSignal do
-            tcs.TrySetResult(()) |> ignore
+        agent.PostAndReply(fun reply -> Signal(newGeneration, reply))
 
 let private isTerminal (s: PluginStatus) =
     match s with
@@ -684,7 +697,8 @@ module Daemon =
                     let modifiedByPreprocessors = host.RunPreprocessors(allSourceFiles)
 
                     let newSuppressed =
-                        modifiedByPreprocessors |> List.fold (fun s f -> Set.add f s) remainingSuppressed
+                        modifiedByPreprocessors
+                        |> List.fold (fun s f -> Set.add f s) remainingSuppressed
 
                     let changedProjects =
                         allSourceFiles
