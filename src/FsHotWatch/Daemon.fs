@@ -219,6 +219,41 @@ type ScanSignal() =
     member _.SignalGeneration(newGeneration: int64) =
         agent.PostAndReply(fun reply -> Signal(newGeneration, reply))
 
+/// Messages handled by the scan agent.
+[<NoComparison; NoEquality>]
+type private ScanMsg =
+    | RequestScan of force: bool * CancellationToken * AsyncReplyChannel<unit>
+    | GetGeneration of AsyncReplyChannel<int64>
+    | GetStatus of AsyncReplyChannel<ScanState>
+    | SetStatus of ScanState * AsyncReplyChannel<unit>
+
+/// Internal state managed by the scan agent.
+type private ScanAgentState =
+    { ScanState: ScanState
+      Generation: int64
+      LastFingerprint: Set<string * int64> }
+
+/// Opaque handle to the scan MailboxProcessor.
+/// All interaction goes through private module-level functions.
+[<NoComparison; NoEquality>]
+type ScanAgent =
+    private
+        { Agent: MailboxProcessor<ScanMsg> }
+
+let private createScanAgent agent = { Agent = agent }
+
+let private requestScan (sa: ScanAgent) force ct =
+    sa.Agent.PostAndAsyncReply(fun ch -> RequestScan(force, ct, ch))
+
+let private getScanGeneration (sa: ScanAgent) =
+    sa.Agent.PostAndReply(fun ch -> GetGeneration ch)
+
+let private getScanStatus (sa: ScanAgent) =
+    sa.Agent.PostAndReply(fun ch -> GetStatus ch)
+
+let private setScanStatus (sa: ScanAgent) state =
+    sa.Agent.PostAndReply(fun ch -> SetStatus(state, ch))
+
 let private isTerminal (s: PluginStatus) =
     match s with
     | Running _ -> false
@@ -302,12 +337,8 @@ type Daemon =
         /// Cached MSBuild workspace loader (created once at startup to avoid
         /// accumulating MSBuild BuildManager instances on each re-discovery).
         WorkspaceLoader: IWorkspaceLoader
-        /// Current scan progress state.
-        mutable ScanState: ScanState
-        /// Monotonically increasing scan generation counter.
-        mutable ScanGeneration: int64
-        /// Semaphore ensuring only one scan runs at a time.
-        ScanSemaphore: SemaphoreSlim
+        /// MailboxProcessor that serializes scan requests (replaces SemaphoreSlim).
+        ScanAgent: ScanAgent
         /// Shared cancellation token ref for processChanges (set by RunWithIpc).
         CancellationTokenRef: CancellationToken ref
         /// Signalled when the daemon is ready to accept file change events.
@@ -316,9 +347,6 @@ type Daemon =
         ScanSignal: ScanSignal
         /// Optional jj scan guard for content-addressed cache optimization.
         JjGuard: JjHelper.JjScanGuard option
-        /// Last fsproj fingerprint seen by ScanAll, used to skip re-discovery
-        /// when no project files have changed.
-        mutable LastFsprojFingerprint: Set<string * int64>
     }
 
     /// Register a plugin with the daemon's plugin host.
@@ -333,10 +361,13 @@ type Daemon =
         this.Pipeline.RegisterProject(projectPath, options)
 
     /// Get current scan state.
-    member this.GetScanState() = this.ScanState
+    member this.GetScanState() = getScanStatus this.ScanAgent
 
     /// Get current scan generation (incremented after each completed scan).
-    member this.GetScanGeneration() = Volatile.Read(&this.ScanGeneration)
+    member this.GetScanGeneration() = getScanGeneration this.ScanAgent
+
+    /// Set scan state (internal, for testing).
+    member internal this.SetScanState(state: ScanState) = setScanStatus this.ScanAgent state
 
     /// Invalidate cache for a file, re-check it, and emit results to plugins.
     member this.InvalidateAndRecheck(filePath: string) =
@@ -368,129 +399,8 @@ type Daemon =
         async {
             let force = defaultArg force false
             let! ct = Async.CancellationToken
-            do! this.ScanSemaphore.WaitAsync(ct) |> Async.AwaitTask
 
-            try
-                // Re-discover projects before scanning so that removed files/projects
-                // are cleared before results are returned to the client. Without this,
-                // a concurrent processChanges re-discovery (triggered by the file watcher
-                // with debounce delay) may complete AFTER the scan signals waiters,
-                // leaving stale FCS errors visible for one cycle.
-                // Guarded by fsproj fingerprint to skip expensive MSBuild evaluation
-                // when no project files have changed.
-                let currentFingerprint = fingerprintFsprojFiles this.RepoRoot
-
-                if currentFingerprint <> this.LastFsprojFingerprint then
-                    let! _ =
-                        rediscoverAndClearRemoved
-                            this.RepoRoot
-                            this.WorkspaceLoader
-                            this.Graph
-                            this.Pipeline
-                            this.Host
-                            "scan"
-
-                    this.LastFsprojFingerprint <- currentFingerprint
-
-                let registeredProjects = this.Pipeline.GetRegisteredProjects()
-                let files = this.Pipeline.GetAllRegisteredFiles()
-                let total = files.Length
-                Logging.info "scan" $"%d{registeredProjects.Length} projects, %d{total} files registered"
-                let sw = System.Diagnostics.Stopwatch.StartNew()
-                this.ScanState <- Scanning(total, 0, System.DateTime.UtcNow)
-
-                if not files.IsEmpty then
-                    // jj guard: determine which files actually need checking (bypassed when force=true)
-                    let scanDecision =
-                        match this.JjGuard with
-                        | Some guard ->
-                            // Always call BeginScan to snapshot currentCommitId for CommitScanSuccess
-                            let decision = guard.BeginScan()
-
-                            if force then
-                                Logging.info "scan" "force scan: bypassing jj guard"
-                                JjHelper.CheckAll
-                            else
-                                decision
-                        | None -> JjHelper.CheckAll
-
-                    match scanDecision with
-                    | JjHelper.SkipAll -> Logging.info "scan" "jj guard: skipping all checks (commit unchanged)"
-                    | _ ->
-
-                        let filesToCheck =
-                            match scanDecision with
-                            | JjHelper.CheckSubset changedFiles ->
-                                let directlyChanged = files |> List.filter (fun f -> changedFiles.Contains(f))
-
-                                let dependentFiles =
-                                    directlyChanged
-                                    |> List.choose (fun f -> this.Graph.GetProjectForFile(f))
-                                    |> List.distinct
-                                    |> List.collect (fun p -> this.Graph.GetTransitiveDependents(p))
-                                    |> List.distinct
-                                    |> List.collect (fun proj -> this.Graph.GetSourceFiles(proj))
-
-                                (directlyChanged @ dependentFiles) |> List.distinct
-                            | _ -> files
-
-                        // Run preprocessors (e.g., formatter) before dispatching
-                        let modified = this.Host.RunPreprocessors(files)
-
-                        if modified.Length > 0 then
-                            Logging.info
-                                "scan"
-                                $"Preprocessors modified %d{modified.Length} files (watcher may re-trigger)"
-
-                        this.Host.EmitFileChanged(SourceChanged files)
-                        let mutable completed = 0
-
-                        let mutable checkedCount = 0
-                        let mutable skippedCount = 0
-
-                        let filesToCheckSet = Set.ofList filesToCheck
-
-                        // Check files in parallel tiers based on project dependency graph
-                        let tiers = this.Graph.GetParallelTiers()
-
-                        for tier in tiers do
-                            let tierFiles = tier |> List.collect (fun proj -> this.Graph.GetSourceFiles(proj))
-
-                            let! results =
-                                tierFiles
-                                |> List.map (fun file ->
-                                    if filesToCheckSet.Contains(file) then
-                                        this.Pipeline.CheckFile(file, ct)
-                                    else
-                                        async { return None })
-                                |> Async.Parallel
-
-                            for result in results do
-                                match result with
-                                | Some checkResult ->
-                                    checkedCount <- checkedCount + 1
-                                    do! this.Host.EmitFileCheckedParallel(checkResult)
-                                    reportFcsDiagnostics this.Host checkResult
-                                | None -> skippedCount <- skippedCount + 1
-
-                                completed <- completed + 1
-                                this.ScanState <- Scanning(total, completed, System.DateTime.UtcNow)
-
-                        Logging.info
-                            "scan"
-                            $"Checked %d{checkedCount} files (%d{tiers.Length} tiers), skipped %d{skippedCount}"
-
-                    // Commit jj guard after successful scan
-                    match this.JjGuard with
-                    | Some guard -> guard.CommitScanSuccess()
-                    | None -> ()
-
-                sw.Stop()
-                this.ScanState <- ScanComplete(total, sw.Elapsed)
-                Interlocked.Increment(&this.ScanGeneration) |> ignore
-                this.ScanSignal.SignalGeneration(Volatile.Read(&this.ScanGeneration))
-            finally
-                this.ScanSemaphore.Release() |> ignore
+            do! requestScan this.ScanAgent force ct
         }
 
     /// Run the daemon until cancellation is requested.
@@ -515,7 +425,9 @@ type Daemon =
 
     /// Format scan state as a human-readable string.
     member this.FormatScanStatus() =
-        match this.ScanState with
+        let scanState = getScanStatus this.ScanAgent
+
+        match scanState with
         | ScanIdle -> "idle"
         | Scanning(total, completed, _) ->
             let pct = if total > 0 then completed * 100 / total else 0
@@ -583,6 +495,135 @@ type Daemon =
             finally
                 this.Ready.Dispose()
         }
+
+/// Execute the full scan logic, returning the updated agent state.
+let private performScan
+    (host: PluginHost)
+    (pipeline: CheckPipeline)
+    (graph: ProjectGraph)
+    (repoRoot: string)
+    (loader: IWorkspaceLoader)
+    (jjGuard: JjHelper.JjScanGuard option)
+    (scanSignal: ScanSignal)
+    (state: ScanAgentState)
+    (force: bool)
+    (ct: CancellationToken)
+    =
+    async {
+        // Re-discover projects before scanning so that removed files/projects
+        // are cleared before results are returned to the client. Without this,
+        // a concurrent processChanges re-discovery (triggered by the file watcher
+        // with debounce delay) may complete AFTER the scan signals waiters,
+        // leaving stale FCS errors visible for one cycle.
+        // Guarded by fsproj fingerprint to skip expensive MSBuild evaluation
+        // when no project files have changed.
+        let currentFingerprint = fingerprintFsprojFiles repoRoot
+        let mutable lastFingerprint = state.LastFingerprint
+
+        if currentFingerprint <> state.LastFingerprint then
+            let! _ = rediscoverAndClearRemoved repoRoot loader graph pipeline host "scan"
+
+            lastFingerprint <- currentFingerprint
+
+        let registeredProjects = pipeline.GetRegisteredProjects()
+        let files = pipeline.GetAllRegisteredFiles()
+        let total = files.Length
+        Logging.info "scan" $"%d{registeredProjects.Length} projects, %d{total} files registered"
+        let sw = System.Diagnostics.Stopwatch.StartNew()
+        let mutable scanState: ScanState = Scanning(total, 0, System.DateTime.UtcNow)
+
+        if not files.IsEmpty then
+            // jj guard: determine which files actually need checking (bypassed when force=true)
+            let scanDecision =
+                match jjGuard with
+                | Some guard ->
+                    // Always call BeginScan to snapshot currentCommitId for CommitScanSuccess
+                    let decision = guard.BeginScan()
+
+                    if force then
+                        Logging.info "scan" "force scan: bypassing jj guard"
+                        JjHelper.CheckAll
+                    else
+                        decision
+                | None -> JjHelper.CheckAll
+
+            match scanDecision with
+            | JjHelper.SkipAll -> Logging.info "scan" "jj guard: skipping all checks (commit unchanged)"
+            | _ ->
+
+                let filesToCheck =
+                    match scanDecision with
+                    | JjHelper.CheckSubset changedFiles ->
+                        let directlyChanged = files |> List.filter (fun f -> changedFiles.Contains(f))
+
+                        let dependentFiles =
+                            directlyChanged
+                            |> List.choose (fun f -> graph.GetProjectForFile(f))
+                            |> List.distinct
+                            |> List.collect (fun p -> graph.GetTransitiveDependents(p))
+                            |> List.distinct
+                            |> List.collect (fun proj -> graph.GetSourceFiles(proj))
+
+                        (directlyChanged @ dependentFiles) |> List.distinct
+                    | _ -> files
+
+                // Run preprocessors (e.g., formatter) before dispatching
+                let modified = host.RunPreprocessors(files)
+
+                if modified.Length > 0 then
+                    Logging.info "scan" $"Preprocessors modified %d{modified.Length} files (watcher may re-trigger)"
+
+                host.EmitFileChanged(SourceChanged files)
+                let mutable completed = 0
+
+                let mutable checkedCount = 0
+                let mutable skippedCount = 0
+
+                let filesToCheckSet = Set.ofList filesToCheck
+
+                // Check files in parallel tiers based on project dependency graph
+                let tiers = graph.GetParallelTiers()
+
+                for tier in tiers do
+                    let tierFiles = tier |> List.collect (fun proj -> graph.GetSourceFiles(proj))
+
+                    let! results =
+                        tierFiles
+                        |> List.map (fun file ->
+                            if filesToCheckSet.Contains(file) then
+                                pipeline.CheckFile(file, ct)
+                            else
+                                async { return None })
+                        |> Async.Parallel
+
+                    for result in results do
+                        match result with
+                        | Some checkResult ->
+                            checkedCount <- checkedCount + 1
+                            do! host.EmitFileCheckedParallel(checkResult)
+                            reportFcsDiagnostics host checkResult
+                        | None -> skippedCount <- skippedCount + 1
+
+                        completed <- completed + 1
+                        scanState <- Scanning(total, completed, System.DateTime.UtcNow)
+
+                Logging.info "scan" $"Checked %d{checkedCount} files (%d{tiers.Length} tiers), skipped %d{skippedCount}"
+
+            // Commit jj guard after successful scan
+            match jjGuard with
+            | Some guard -> guard.CommitScanSuccess()
+            | None -> ()
+
+        sw.Stop()
+        let finalScanState = ScanComplete(total, sw.Elapsed)
+        let newGeneration = state.Generation + 1L
+        scanSignal.SignalGeneration(newGeneration)
+
+        return
+            { ScanState = finalScanState
+              Generation = newGeneration
+              LastFingerprint = lastFingerprint }
+    }
 
 /// Functions for creating and managing daemons.
 module Daemon =
@@ -774,6 +815,40 @@ module Daemon =
             | Some(:? JjCacheKeyProvider) -> Some(JjHelper.JjScanGuard(repoRoot))
             | _ -> None
 
+        let scanSignal = ScanSignal()
+
+        let scanAgent =
+            MailboxProcessor.Start(fun inbox ->
+                let rec loop (state: ScanAgentState) =
+                    async {
+                        let! msg = inbox.Receive()
+
+                        match msg with
+                        | GetGeneration reply ->
+                            reply.Reply(state.Generation)
+                            return! loop state
+
+                        | GetStatus reply ->
+                            reply.Reply(state.ScanState)
+                            return! loop state
+
+                        | SetStatus(newState, reply) ->
+                            reply.Reply(())
+                            return! loop { state with ScanState = newState }
+
+                        | RequestScan(force, ct, reply) ->
+                            let! newState =
+                                performScan host pipeline graph repoRoot loader jjGuard scanSignal state force ct
+
+                            reply.Reply(())
+                            return! loop newState
+                    }
+
+                loop
+                    { ScanState = ScanIdle
+                      Generation = 0L
+                      LastFingerprint = Set.empty })
+
         { Host = host
           Watcher = watcher
           Checker = checker
@@ -781,14 +856,11 @@ module Daemon =
           Graph = graph
           RepoRoot = repoRoot
           WorkspaceLoader = loader
-          ScanState = ScanIdle
-          ScanGeneration = 0L
-          ScanSemaphore = new SemaphoreSlim(1, 1)
+          ScanAgent = createScanAgent scanAgent
           CancellationTokenRef = daemonCtRef
           Ready = new ManualResetEventSlim(false)
-          ScanSignal = ScanSignal()
-          JjGuard = jjGuard
-          LastFsprojFingerprint = Set.empty }
+          ScanSignal = scanSignal
+          JjGuard = jjGuard }
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     /// When cacheBackend or cacheKeyProvider are None, defaults to FileCheckCache + TimestampCacheKeyProvider.
