@@ -144,6 +144,9 @@ type ProjectGraph() =
     /// Get all registered projects.
     member _.GetAllProjects() : string list = projectFiles.Keys |> Seq.toList
 
+    /// Get all registered file paths across all projects.
+    member _.GetAllFiles() : string list = fileToProject.Keys |> Seq.toList
+
     /// Group projects into parallel tiers where each tier's projects
     /// have all dependencies satisfied by earlier tiers.
     member this.GetParallelTiers() : string list list =

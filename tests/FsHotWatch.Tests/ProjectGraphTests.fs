@@ -263,3 +263,22 @@ let ``GetParallelTiers returns empty for empty graph`` () =
 let ``GetTopologicalOrder returns empty for empty graph`` () =
     let graph = ProjectGraph()
     test <@ graph.GetTopologicalOrder() = [] @>
+
+[<Fact>]
+let ``GetAllFiles returns all registered file paths`` () =
+    let graph = ProjectGraph()
+    graph.RegisterProject("/proj/A.fsproj", [ "/proj/A1.fs"; "/proj/A2.fs" ], [])
+    graph.RegisterProject("/proj/B.fsproj", [ "/proj/B1.fs" ], [])
+    let files = graph.GetAllFiles() |> Set.ofList
+    test <@ files.Count = 3 @>
+    test <@ files.Contains("/proj/A1.fs") @>
+    test <@ files.Contains("/proj/A2.fs") @>
+    test <@ files.Contains("/proj/B1.fs") @>
+
+[<Fact>]
+let ``GetAllFiles returns empty after PrepareForRediscovery`` () =
+    let graph = ProjectGraph()
+    graph.RegisterProject("/proj/A.fsproj", [ "/proj/A1.fs" ], [])
+    test <@ graph.GetAllFiles().Length = 1 @>
+    graph.PrepareForRediscovery()
+    test <@ graph.GetAllFiles().IsEmpty @>

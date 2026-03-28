@@ -617,11 +617,22 @@ module Daemon =
                                 if not projFilesChanged.IsEmpty || hasSolution then
                                     Logging.info "daemon" "Project/solution change detected — re-discovering projects"
 
+                                    let oldFiles = graph.GetAllFiles() |> Set.ofList
+
                                     if not (isNull (box checker)) then
                                         checker.InvalidateAll()
                                         checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
 
                                     do! discoverAndRegisterProjects repoRoot loader graph pipeline
+
+                                    let newFiles = graph.GetAllFiles() |> Set.ofList
+                                    let removedFiles = Set.difference oldFiles newFiles
+
+                                    for file in removedFiles do
+                                        host.ClearErrors("fcs", file)
+
+                                    if not removedFiles.IsEmpty then
+                                        Logging.info "daemon" $"Cleared errors for %d{removedFiles.Count} removed files"
 
                                     Logging.info
                                         "daemon"
