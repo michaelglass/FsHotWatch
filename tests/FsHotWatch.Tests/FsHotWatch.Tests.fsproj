@@ -12,6 +12,7 @@
   <ItemGroup>
     <Compile Include="TestHelpers.fs" />
     <Compile Include="AgentHostTests.fs" />
+    <Compile Include="LifecycleTests.fs" />
     <Compile Include="ErrorLedgerTests.fs" />
     <Compile Include="EventTests.fs" />
     <Compile Include="CheckCacheTests.fs" />
