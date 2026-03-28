@@ -485,8 +485,7 @@ let ``preprocessor exception sets Failed status`` () =
         { new IFsHotWatchPreprocessor with
             member _.Name = "boom-pp"
 
-            member _.Process (_changedFiles: string list) (_repoRoot: string) =
-                failwith "preprocessor kaboom"
+            member _.Process (_changedFiles: string list) (_repoRoot: string) = failwith "preprocessor kaboom"
 
             member _.Dispose() = () }
 

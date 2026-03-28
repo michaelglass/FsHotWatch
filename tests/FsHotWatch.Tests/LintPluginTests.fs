@@ -79,13 +79,13 @@ let ``dispose is callable`` () =
     plugin.Dispose()
 
 [<Fact>]
-let ``lint error path with empty source triggers failure`` () =
+let ``lint skips file with null ParseResults without crashing`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let plugin = LintPlugin()
     host.Register(plugin)
 
-    // Provide a source string but null ParseResults — the Ast access will throw
+    // Null ParseResults — lint should skip, not crash
     let fakeResult: FileCheckResult =
         { File = "/tmp/test/Empty.fs"
           Source = "module Empty"
@@ -94,15 +94,13 @@ let ``lint error path with empty source triggers failure`` () =
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L }
 
-    try
-        host.EmitFileChecked(fakeResult)
-    with _ ->
-        ()
+    // Should not throw
+    host.EmitFileChecked(fakeResult)
 
     let status = host.GetStatus("lint")
     test <@ status.IsSome @>
 
+    // Should be Running (set at start of handler), not Failed
     match status.Value with
-    | Failed _ -> ()
-    | Running _ -> ()
-    | other -> Assert.Fail($"Expected Failed or Running, got: %A{other}")
+    | Failed(msg, _) -> Assert.Fail($"Should not fail — got: %s{msg}")
+    | _ -> ()

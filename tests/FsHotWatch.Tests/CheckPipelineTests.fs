@@ -30,7 +30,8 @@ let private dummyOptions projectName sourceFiles =
 
 /// In-memory cache backend for testing
 type private InMemoryCache() =
-    let store = System.Collections.Concurrent.ConcurrentDictionary<string, FileCheckResult>()
+    let store =
+        System.Collections.Concurrent.ConcurrentDictionary<string, FileCheckResult>()
 
     member val InvalidateCalls = System.Collections.Generic.List<CacheKey>()
     member val ClearCalls = ref 0
@@ -52,7 +53,9 @@ type private InMemoryCache() =
             store.TryRemove(hash) |> ignore
             this.InvalidateCalls.Add(key)
 
-        member this.Clear() = incr this.ClearCalls; store.Clear()
+        member this.Clear() =
+            incr this.ClearCalls
+            store.Clear()
 
 [<Fact>]
 let ``CheckFile returns None when no project registered for the file`` () =
@@ -343,3 +346,10 @@ let ``CheckFile returns None when cancelled before FCS call`` () =
         pipeline.CheckFile("/tmp/Cancel.fs", cts.Token) |> Async.RunSynchronously
 
     test <@ result = None @>
+
+// --- Cache hit returns None (plugins can't use partial results) ---
+
+// Cache hit behavior is tested in IntegrationTests.fs:
+// - "file cache enables fast cold-start check" verifies FileCheckCache hits return None
+// - "cached check returns None because partial FCS results are unusable by plugins"
+// - These use real FCS with unique project options for proper isolation
