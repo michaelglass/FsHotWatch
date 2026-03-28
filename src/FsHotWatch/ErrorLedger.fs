@@ -42,75 +42,79 @@ type ErrorLedger() =
                     let! msg = inbox.Receive()
 
                     let newState =
-                        match msg with
-                        | Report(plugin, file, entries, version) ->
-                            let key = struct (plugin, file)
+                        try
+                            match msg with
+                            | Report(plugin, file, entries, version) ->
+                                let key = struct (plugin, file)
 
-                            let accepted, state' =
-                                match version with
-                                | Some v -> tryAcceptVersion key v state
-                                | None -> true, state
+                                let accepted, state' =
+                                    match version with
+                                    | Some v -> tryAcceptVersion key v state
+                                    | None -> true, state
 
-                            if accepted then
-                                if entries.IsEmpty then
+                                if accepted then
+                                    if entries.IsEmpty then
+                                        { state' with
+                                            Errors = Map.remove key state'.Errors }
+                                    else
+                                        { state' with
+                                            Errors = Map.add key entries state'.Errors }
+                                else
+                                    state'
+
+                            | Clear(plugin, file, version) ->
+                                let key = struct (plugin, file)
+
+                                let accepted, state' =
+                                    match version with
+                                    | Some v -> tryAcceptVersion key v state
+                                    | None -> true, state
+
+                                if accepted then
                                     { state' with
                                         Errors = Map.remove key state'.Errors }
                                 else
-                                    { state' with
-                                        Errors = Map.add key entries state'.Errors }
-                            else
-                                state'
+                                    state'
 
-                        | Clear(plugin, file, version) ->
-                            let key = struct (plugin, file)
+                            | ClearPlugin plugin ->
+                                let newErrors = state.Errors |> Map.filter (fun (struct (p, _)) _ -> p <> plugin)
 
-                            let accepted, state' =
-                                match version with
-                                | Some v -> tryAcceptVersion key v state
-                                | None -> true, state
+                                { state with Errors = newErrors }
 
-                            if accepted then
-                                { state' with
-                                    Errors = Map.remove key state'.Errors }
-                            else
-                                state'
+                            | GetAll rc ->
+                                let result =
+                                    state.Errors
+                                    |> Map.toSeq
+                                    |> Seq.collect (fun (struct (plugin, file), entries) ->
+                                        entries |> List.map (fun e -> file, (plugin, e)))
+                                    |> Seq.groupBy fst
+                                    |> Seq.map (fun (file, entries) -> file, entries |> Seq.map snd |> Seq.toList)
+                                    |> Map.ofSeq
 
-                        | ClearPlugin plugin ->
-                            let newErrors = state.Errors |> Map.filter (fun (struct (p, _)) _ -> p <> plugin)
+                                rc.Reply(result)
+                                state
 
-                            { state with Errors = newErrors }
+                            | GetByPlugin(pluginName, rc) ->
+                                let result =
+                                    state.Errors
+                                    |> Map.toSeq
+                                    |> Seq.choose (fun (struct (p, file), entries) ->
+                                        if p = pluginName then Some(file, entries) else None)
+                                    |> Map.ofSeq
 
-                        | GetAll rc ->
-                            let result =
-                                state.Errors
-                                |> Map.toSeq
-                                |> Seq.collect (fun (struct (plugin, file), entries) ->
-                                    entries |> List.map (fun e -> file, (plugin, e)))
-                                |> Seq.groupBy fst
-                                |> Seq.map (fun (file, entries) -> file, entries |> Seq.map snd |> Seq.toList)
-                                |> Map.ofSeq
+                                rc.Reply(result)
+                                state
 
-                            rc.Reply(result)
-                            state
+                            | HasErrors rc ->
+                                rc.Reply(not state.Errors.IsEmpty)
+                                state
 
-                        | GetByPlugin(pluginName, rc) ->
-                            let result =
-                                state.Errors
-                                |> Map.toSeq
-                                |> Seq.choose (fun (struct (p, file), entries) ->
-                                    if p = pluginName then Some(file, entries) else None)
-                                |> Map.ofSeq
-
-                            rc.Reply(result)
-                            state
-
-                        | HasErrors rc ->
-                            rc.Reply(not state.Errors.IsEmpty)
-                            state
-
-                        | GetCount rc ->
-                            let count = state.Errors |> Map.values |> Seq.sumBy List.length
-                            rc.Reply(count)
+                            | GetCount rc ->
+                                let count = state.Errors |> Map.values |> Seq.sumBy List.length
+                                rc.Reply(count)
+                                state
+                        with ex ->
+                            Logging.error "error-ledger" $"Agent failed: %s{ex.ToString()}"
                             state
 
                     return! loop newState

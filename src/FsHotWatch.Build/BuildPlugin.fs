@@ -64,8 +64,7 @@ type BuildPlugin(?command: string, ?args: string) =
                             ctx.EmitBuildCompleted(BuildFailed [ output ])
                             let lines = output.Split('\n')
 
-                            let summary =
-                                lines |> Array.skip (max 0 (lines.Length - 5)) |> String.concat "\n"
+                            let summary = lines |> Array.skip (max 0 (lines.Length - 5)) |> String.concat "\n"
 
                             ctx.ReportStatus(Failed($"Build failed: %s{summary}", DateTime.UtcNow))
                     with ex ->
@@ -85,34 +84,29 @@ type BuildPlugin(?command: string, ?args: string) =
                     Logging.error "build" $"Unexpected error: %s{ex.Message}"
                     agent.Post(BuildDone(Some(false, ex.Message)))
 
-            // We need a mutable ref to wire the agent to doBuild
             let agentRef = ref Unchecked.defaultof<Agent<BuildState, BuildMsg>>
 
             let agent =
-                createAgent<BuildState, BuildMsg>
-                    "build"
-                    { Phase = IdlePhase(Lifecycle.create None) }
-                    (fun state msg ->
-                        async {
-                            match msg, state.Phase with
-                            | FileChanged SolutionChanged, _ -> return state
-                            | FileChanged _, RunningPhase _ ->
-                                Logging.info "build" "Skipping: build already in progress"
-                                return state
-                            | FileChanged _, IdlePhase idle ->
-                                let running = Lifecycle.start idle
-                                let newState = { Phase = RunningPhase running }
-                                // Run the build synchronously within the handler so the agent
-                                // stays in RunningPhase while the build executes, causing
-                                // subsequent FileChanged messages to be skipped.
-                                doBuild agentRef.Value
-                                return newState
-                            | BuildDone result, RunningPhase running ->
-                                let completed = Lifecycle.complete result running
-                                return { Phase = IdlePhase completed }
-                            | BuildDone _, IdlePhase _ ->
-                                return state
-                        })
+                createAgent<BuildState, BuildMsg> "build" { Phase = IdlePhase(Lifecycle.create None) } (fun state msg ->
+                    async {
+                        match msg, state.Phase with
+                        | FileChanged SolutionChanged, _ -> return state
+                        | FileChanged _, RunningPhase _ ->
+                            Logging.info "build" "Skipping: build already in progress"
+                            return state
+                        | FileChanged _, IdlePhase idle ->
+                            let running = Lifecycle.start idle
+                            let newState = { Phase = RunningPhase running }
+                            // Run the build synchronously within the handler so the agent
+                            // stays in RunningPhase while the build executes, causing
+                            // subsequent FileChanged messages to be skipped.
+                            doBuild agentRef.Value
+                            return newState
+                        | BuildDone result, RunningPhase running ->
+                            let completed = Lifecycle.complete result running
+                            return { Phase = IdlePhase completed }
+                        | BuildDone _, IdlePhase _ -> return state
+                    })
 
             agentRef.Value <- agent
 
