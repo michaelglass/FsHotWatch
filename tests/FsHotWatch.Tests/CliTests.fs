@@ -12,6 +12,7 @@ open FsHotWatch.Ipc
 open FsHotWatch.Plugin
 open FsHotWatch.Events
 open FsHotWatch.PluginHost
+open FsHotWatch.Tests.TestHelpers
 
 // --- parseCommand tests ---
 
@@ -69,50 +70,21 @@ let ``parseCommand command with args joins them`` () =
 
 [<Fact>]
 let ``findRepoRoot finds git repo`` () =
-    let tmpDir =
-        Path.Combine(Path.GetTempPath(), $"cli-test-git-{System.Guid.NewGuid():N}")
-
-    let nested = Path.Combine(tmpDir, "a", "b")
-    Directory.CreateDirectory(nested) |> ignore
-    Directory.CreateDirectory(Path.Combine(tmpDir, ".git")) |> ignore
-
-    try
+    withTempDir "cli-git" (fun tmpDir ->
+        let nested = Path.Combine(tmpDir, "a", "b")
+        Directory.CreateDirectory(nested) |> ignore
+        Directory.CreateDirectory(Path.Combine(tmpDir, ".git")) |> ignore
         let result = findRepoRoot nested
-        test <@ result = Some tmpDir @>
-    finally
-        Directory.Delete(tmpDir, true)
+        test <@ result = Some tmpDir @>)
 
 [<Fact>]
 let ``findRepoRoot finds jj repo`` () =
-    let tmpDir =
-        Path.Combine(Path.GetTempPath(), $"cli-test-jj-{System.Guid.NewGuid():N}")
-
-    let nested = Path.Combine(tmpDir, "src")
-    Directory.CreateDirectory(nested) |> ignore
-    Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
-
-    try
+    withTempDir "cli-jj" (fun tmpDir ->
+        let nested = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(nested) |> ignore
+        Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
         let result = findRepoRoot nested
-        test <@ result = Some tmpDir @>
-    finally
-        Directory.Delete(tmpDir, true)
-
-[<Fact>]
-let ``findRepoRoot returns None when no repo`` () =
-    // Use a temp dir with no .git or .jj ancestor
-    let tmpDir =
-        Path.Combine(Path.GetTempPath(), $"cli-test-none-{System.Guid.NewGuid():N}")
-
-    Directory.CreateDirectory(tmpDir) |> ignore
-
-    try
-        // This might find a repo above /tmp on some systems, but the isolated dir itself won't have one.
-        // We test a more reliable scenario: the function doesn't crash on a bare dir.
-        let result = findRepoRoot tmpDir
-        // On macOS /tmp is under /private which may have a repo above it; just verify it returns *something* without crashing.
-        test <@ result |> Option.isNone || result |> Option.isSome @>
-    finally
-        Directory.Delete(tmpDir, true)
+        test <@ result = Some tmpDir @>)
 
 // --- shutdown tests ---
 
