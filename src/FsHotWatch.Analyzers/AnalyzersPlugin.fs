@@ -111,6 +111,10 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                     let stats = client.LoadAnalyzers(path)
                     Interlocked.Add(&loadedCount, stats.Analyzers) |> ignore
 
+            Logging.info
+                "analyzers"
+                $"Loaded %d{Volatile.Read(&loadedCount)} analyzers from %d{analyzerPaths.Length} paths"
+
             let mutable errorCount = 0
             let mutable processedCount = 0
 
@@ -177,6 +181,10 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                                                   Line = m.Range.StartLine
                                                   Column = m.Range.StartColumn })
                                         | Error _ -> [])
+
+                                Logging.debug
+                                    "analyzers"
+                                    $"Analyzed %s{Path.GetFileName result.File}: %d{entries.Length} diagnostics"
 
                                 if entries.IsEmpty then
                                     ctx.ClearErrors result.File
