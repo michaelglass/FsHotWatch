@@ -1403,22 +1403,17 @@ let ``file cache enables fast cold-start check`` () =
         test <@ cacheFiles.Length > 0 @>
 
         // --- Warm check (new pipeline, same cache dir = simulated cold restart) ---
+        // FileCheckCache stores only metadata (no FCS types). Partial cache hits
+        // fall through to FCS re-check so plugins get real data on daemon restart.
         let backend2 = FileCheckCache(cacheDir) :> ICheckCacheBackend
         let pipeline2 = CheckPipeline(checker, cacheBackend = backend2)
         pipeline2.RegisterProject("FsHotWatch", projOptions)
 
-        let sw2 = Stopwatch.StartNew()
         let result2 = pipeline2.CheckFile(sourceFile) |> Async.RunSynchronously
-        sw2.Stop()
 
-        // Cache hit returns None — file is unchanged, skip plugin dispatch.
-        // The cache stores only metadata (no FCS types), so returning Some
-        // would give plugins null CheckResults/ParseResults they can't use.
-        test <@ result2.IsNone @>
-
-        // Cache hit should be significantly faster than cold check
-        test <@ sw2.ElapsedMilliseconds < sw1.ElapsedMilliseconds @>
-        test <@ sw2.ElapsedMilliseconds < 50L @>
+        // Partial cache hit triggers FCS re-check — result has real CheckResults
+        test <@ result2.IsSome @>
+        test <@ not (isNull (box result2.Value.CheckResults)) @>
     finally
         if Directory.Exists(cacheDir) then
             Directory.Delete(cacheDir, true)
@@ -1455,15 +1450,14 @@ let ``cached check returns None because partial FCS results are unusable by plug
         test <@ cacheFiles.Length > 0 @>
 
         // Read from cache (new pipeline = cold restart)
+        // Partial cache hit (null FCS types) falls through to real FCS check
         let backend2 = FileCheckCache(cacheDir) :> ICheckCacheBackend
         let pipeline2 = CheckPipeline(checker, cacheBackend = backend2)
         pipeline2.RegisterProject("FsHotWatch", projOptions)
         let cached = pipeline2.CheckFile(sourceFile) |> Async.RunSynchronously
 
-        // Cache hit returns None — the cache can't restore FCS types (ParseResults,
-        // CheckResults), so returning Some would give plugins null references.
-        // None signals "file unchanged, skip plugin dispatch."
-        test <@ cached.IsNone @>
+        test <@ cached.IsSome @>
+        test <@ not (isNull (box cached.Value.CheckResults)) @>
     finally
         if Directory.Exists(cacheDir) then
             Directory.Delete(cacheDir, true)
