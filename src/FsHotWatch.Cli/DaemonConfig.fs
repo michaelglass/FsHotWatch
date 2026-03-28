@@ -297,8 +297,15 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
 
     // Lint plugin
     if config.Lint then
-        Logging.info "config" "Registering LintPlugin"
-        daemon.Register(FsHotWatch.Lint.LintPlugin.LintPlugin())
+        let lintConfigPath =
+            let p = Path.Combine(repoRoot, "fsharplint.json")
+            if File.Exists(p) then Some p else None
+
+        match lintConfigPath with
+        | Some path -> Logging.info "config" $"Registering LintPlugin with config: %s{path}"
+        | None -> Logging.info "config" "Registering LintPlugin (no fsharplint.json found)"
+
+        daemon.Register(FsHotWatch.Lint.LintPlugin.LintPlugin(?configPath = lintConfigPath))
 
     // Analyzers plugin
     match config.Analyzers with

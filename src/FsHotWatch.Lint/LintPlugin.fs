@@ -58,6 +58,10 @@ type LintPlugin(?configPath: string) =
 
                         match Lint.lintParsedSource lintParams parsedInfo with
                         | Lint.LintResult.Success warnings ->
+                            Logging.debug
+                                "lint"
+                                $"Linted %s{System.IO.Path.GetFileName result.File}: %d{warnings.Length} warnings"
+
                             let msgs = warnings |> List.map (fun w -> w.Details.Message)
                             let current = Volatile.Read(&warningsByFile)
                             Volatile.Write(&warningsByFile, current |> Map.add result.File msgs)
