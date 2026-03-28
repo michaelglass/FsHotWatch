@@ -4,12 +4,13 @@ open System
 open System.Diagnostics
 open System.IO
 open System.Text.Json
-open System.Threading
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch
 open FsHotWatch.Logging
 open FsHotWatch.ProcessHelper
+open FsHotWatch.Lifecycle
+open FsHotWatch.AgentHost
 open TestPrune.AstAnalyzer
 open TestPrune.Database
 open TestPrune.Extensions
@@ -32,6 +33,25 @@ type TestConfig =
         ClassJoin: string
     }
 
+type private TestRunPhase =
+    | TestsIdle of Lifecycle<Idle, TestResults option>
+    | TestsRunning of Lifecycle<Running, TestResults option>
+
+type private TestPruneState =
+    { PendingAnalysis: Map<string, AnalysisResult list>
+      SymbolSnapshot: Map<string, SymbolInfo list>
+      AffectedTests: TestMethodInfo list
+      ChangedFiles: string list
+      TestPhase: TestRunPhase
+      AnalysisRan: bool
+      PendingRerun: bool }
+
+type private TestPruneMsg =
+    | FileChecked of FileCheckResult
+    | BuildCompleted of BuildResult
+    | TestsFinished of TestResults
+    | RunTestsCommand of TestConfig list * string option * AsyncReplyChannel<TestResults>
+
 /// TestPrune plugin — re-indexes changed files using the warm FSharpChecker,
 /// reports which tests are affected, and optionally runs tests after build completes.
 type TestPrunePlugin
@@ -45,24 +65,6 @@ type TestPrunePlugin
         ?coverageArgs: string -> string
     ) =
     let db = Database.create dbPath
-
-    let pendingAnalysis =
-        System.Collections.Concurrent.ConcurrentDictionary<string, ResizeArray<AnalysisResult>>()
-
-    /// In-memory snapshot of per-file symbols, used by OnFileChecked for detectChanges.
-    /// Avoids reading from DB during concurrent RebuildProjects (which deletes then inserts,
-    /// causing readers to see 0 stored symbols and misclassify all as "Added").
-    let symbolSnapshot =
-        System.Collections.Concurrent.ConcurrentDictionary<string, SymbolInfo list>()
-
-    let mutable lastAffectedTests: TestMethodInfo list = []
-    let mutable lastChangedFiles: string list = []
-    let mutable lastTestResults: TestResults option = None
-
-    let mutable testsRunning = false
-    let mutable testsCompleted = false
-    let mutable analysisRan = false
-    let mutable pendingRerun = false
 
     let hasTestConfigs =
         testConfigs |> Option.map (List.isEmpty >> not) |> Option.defaultValue false
@@ -114,8 +116,6 @@ type TestPrunePlugin
         (affectedClasses: string list)
         (rawFilter: string option)
         =
-        Volatile.Write(&testsRunning, true)
-
         async {
             Logging.info "test-prune" $"executeTests starting with %d{configs.Length} configs"
             let sw = Stopwatch.StartNew()
@@ -209,14 +209,9 @@ type TestPrunePlugin
                 { Results = groupResults |> Map.ofList
                   Elapsed = sw.Elapsed }
 
-            Volatile.Write(&lastTestResults, Some testResults)
-
             match afterRun with
             | Some hook -> hook testResults
             | None -> ()
-
-            Volatile.Write(&testsRunning, false)
-            testsCompleted <- true
 
             Logging.info
                 "test-prune"
@@ -249,15 +244,16 @@ type TestPrunePlugin
         }
 
     /// Flush accumulated per-file analysis results to the DB in a single RebuildProjects
-    /// call. Batching all projects together ensures cross-project dependency edges resolve
-    /// correctly (all symbols inserted before any deps, in one transaction).
-    let flushPendingAnalysis () =
+    /// call. Pure function: takes state, returns updated state.
+    let flushPendingAnalysis (state: TestPruneState) =
         let allResults = ResizeArray<AnalysisResult>()
 
-        for projectName in pendingAnalysis.Keys |> Seq.toList do
-            match pendingAnalysis.TryRemove(projectName) with
-            | true, bag ->
-                let items = bag |> Seq.toList
+        let mutable newPending = state.PendingAnalysis
+
+        for projectName in state.PendingAnalysis |> Map.toList |> List.map fst do
+            match Map.tryFind projectName newPending with
+            | Some items ->
+                newPending <- Map.remove projectName newPending
 
                 let combined =
                     { Symbols = items |> List.collect (fun r -> r.Symbols)
@@ -266,137 +262,307 @@ type TestPrunePlugin
 
                 Logging.info "test-prune" $"Flushing %d{items.Length} files for %s{projectName} to DB"
                 allResults.Add(combined)
-            | false, _ -> ()
+            | None -> ()
 
         if allResults.Count > 0 then
             db.RebuildProjects(Seq.toList allResults)
 
-            // Update in-memory snapshot so concurrent OnFileChecked reads see the
-            // new symbols instead of hitting the DB mid-rebuild.
-            for result in allResults do
-                for (file, symbols) in result.Symbols |> List.groupBy (fun s -> s.SourceFile) do
-                    symbolSnapshot.[file] <- symbols
+        // Update in-memory snapshot so subsequent FileChecked reads see the
+        // new symbols instead of hitting the DB mid-rebuild.
+        let mutable newSnapshot = state.SymbolSnapshot
 
-    /// Run tests with impact-analysis filtering (called from OnBuildCompleted).
-    let runTests (ctx: PluginContext) (configs: TestConfig list) =
+        for result in allResults do
+            for (file, symbols) in result.Symbols |> List.groupBy (fun s -> s.SourceFile) do
+                newSnapshot <- Map.add file symbols newSnapshot
+
+        { state with
+            PendingAnalysis = newPending
+            SymbolSnapshot = newSnapshot }
+
+    /// Run tests with impact-analysis filtering (called from BuildCompleted handler).
+    let runTests
+        (ctx: PluginContext)
+        (configs: TestConfig list)
+        (state: TestPruneState)
+        (agent: Agent<TestPruneState, TestPruneMsg>)
+        =
         async {
-            // Flush accumulated analysis to DB before querying affected tests
-            flushPendingAnalysis ()
+            try
+                // Combine AST-based affected tests with extension results
+                let extensionClasses =
+                    match extensions with
+                    | Some exts ->
+                        exts
+                        |> List.collect (fun ext ->
+                            try
+                                ext.FindAffectedTests db state.ChangedFiles repoRoot
+                                |> List.map (fun t -> t.TestClass)
+                            with ex ->
+                                Logging.error "test-prune" $"Extension '%s{ext.Name}' failed: %s{ex.Message}"
+                                [])
+                    | None -> []
 
-            // Combine AST-based affected tests with extension results
-            let extensionClasses =
-                match extensions with
-                | Some exts ->
-                    let changedFiles = Volatile.Read(&lastChangedFiles)
+                let affectedClasses =
+                    let astClasses = state.AffectedTests |> List.map (fun t -> t.TestClass)
+                    (astClasses @ extensionClasses) |> List.distinct
 
-                    exts
-                    |> List.collect (fun ext ->
-                        try
-                            ext.FindAffectedTests db changedFiles repoRoot
-                            |> List.map (fun t -> t.TestClass)
-                        with ex ->
-                            Logging.error "test-prune" $"Extension '%s{ext.Name}' failed: %s{ex.Message}"
-                            [])
-                | None -> []
+                if affectedClasses.IsEmpty then
+                    Logging.info "test-prune" "No affected classes found — running all tests"
+                else
+                    Logging.info "test-prune" $"Affected classes: %A{affectedClasses}"
 
-            let affectedClasses =
-                let astClasses =
-                    Volatile.Read(&lastAffectedTests) |> List.map (fun t -> t.TestClass)
+                let! results = executeTests ctx configs affectedClasses None
+                agent.Post(TestsFinished results)
+            with ex ->
+                Logging.error "test-prune" $"runTests failed: %s{ex.Message}"
+                ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
 
-                (astClasses @ extensionClasses) |> List.distinct
+                // Post a dummy failed result so we transition back to idle
+                let failResult =
+                    { Results = Map.empty
+                      Elapsed = TimeSpan.Zero }
 
-            if affectedClasses.IsEmpty then
-                Logging.info "test-prune" "No affected classes found — running all tests"
-            else
-                Logging.info "test-prune" $"Affected classes: %A{affectedClasses}"
-
-            let! _ = executeTests ctx configs affectedClasses None
-            return ()
+                agent.Post(TestsFinished failResult)
         }
+
+    let initialState =
+        { PendingAnalysis = Map.empty
+          SymbolSnapshot = Map.empty
+          AffectedTests = []
+          ChangedFiles = []
+          TestPhase = TestsIdle(Lifecycle.create None)
+          AnalysisRan = false
+          PendingRerun = false }
 
     interface IFsHotWatchPlugin with
         member _.Name = "test-prune"
 
         member _.Initialize(ctx) =
+            let agentRef = ref Unchecked.defaultof<Agent<TestPruneState, TestPruneMsg>>
+
+            let agent =
+                createAgent<TestPruneState, TestPruneMsg> "test-prune" initialState (fun state msg ->
+                    async {
+                        match msg with
+                        | FileChecked result ->
+                            // Reset completed flag so new file changes can report status
+                            let isIdle =
+                                match state.TestPhase with
+                                | TestsIdle _ -> true
+                                | TestsRunning _ -> false
+
+                            if isIdle then
+                                ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
+
+                            try
+                                let relPath = Path.GetRelativePath(repoRoot, result.File).Replace('\\', '/')
+
+                                let newChangedFiles =
+                                    if not (state.ChangedFiles |> List.contains relPath) then
+                                        relPath :: state.ChangedFiles
+                                    else
+                                        state.ChangedFiles
+
+                                let! analysisResult =
+                                    analyzeSource ctx.Checker result.File result.Source result.ProjectOptions
+
+                                match analysisResult with
+                                | Ok analysisResult ->
+                                    let projectName =
+                                        result.ProjectOptions.ProjectFileName |> Path.GetFileNameWithoutExtension
+
+                                    let normalizedSymbols = normalizeSymbolPaths repoRoot analysisResult.Symbols
+
+                                    let fileAnalysis =
+                                        { Symbols = normalizedSymbols
+                                          Dependencies = analysisResult.Dependencies
+                                          TestMethods =
+                                            analysisResult.TestMethods
+                                            |> List.map (fun t -> { t with TestProject = projectName }) }
+
+                                    // Read stored symbols from the in-memory snapshot (populated after
+                                    // each flush). Falls back to DB for warm starts where the snapshot
+                                    // hasn't been populated yet.
+                                    let storedSymbols =
+                                        match Map.tryFind relPath state.SymbolSnapshot with
+                                        | Some symbols -> symbols
+                                        | None -> db.GetSymbolsInFile(relPath)
+
+                                    // Accumulate per-project; flush on BuildCompleted.
+                                    let existingForProject =
+                                        state.PendingAnalysis |> Map.tryFind projectName |> Option.defaultValue []
+
+                                    let newPending =
+                                        state.PendingAnalysis
+                                        |> Map.add projectName (existingForProject @ [ fileAnalysis ])
+
+                                    let changes = detectChanges normalizedSymbols storedSymbols
+                                    let changedNames = changedSymbolNames changes
+
+                                    Logging.info
+                                        "test-prune"
+                                        $"detectChanges for %s{relPath}: %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{normalizedSymbols.Length} current"
+
+                                    let newAffected =
+                                        if not changedNames.IsEmpty then
+                                            let affected = db.QueryAffectedTests(changedNames)
+
+                                            Logging.info
+                                                "test-prune"
+                                                $"QueryAffectedTests(%A{changedNames}): %d{affected.Length} affected tests"
+
+                                            affected
+                                        else
+                                            state.AffectedTests
+
+                                    let newState =
+                                        { state with
+                                            ChangedFiles = newChangedFiles
+                                            PendingAnalysis = newPending
+                                            AffectedTests = newAffected
+                                            AnalysisRan = true }
+
+                                    if isIdle then
+                                        ctx.ReportStatus(Completed(box newState.AffectedTests, DateTime.UtcNow))
+
+                                    return newState
+                                | Error msg ->
+                                    Logging.error "test-prune" $"Analysis failed for %s{relPath}: %s{msg}"
+
+                                    if isIdle then
+                                        ctx.ReportStatus(
+                                            PluginStatus.Failed($"Analysis failed: %s{msg}", DateTime.UtcNow)
+                                        )
+
+                                    return
+                                        { state with
+                                            ChangedFiles = newChangedFiles }
+                            with ex ->
+                                let isIdle =
+                                    match state.TestPhase with
+                                    | TestsIdle _ -> true
+                                    | TestsRunning _ -> false
+
+                                if isIdle then
+                                    ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+
+                                return state
+
+                        | BuildCompleted buildResult ->
+                            match buildResult with
+                            | BuildSucceeded ->
+                                match state.TestPhase with
+                                | TestsRunning _ ->
+                                    Logging.info
+                                        "test-prune"
+                                        "BuildSucceeded received but tests already running — will re-run after"
+
+                                    return { state with PendingRerun = true }
+                                | TestsIdle idle ->
+                                    Logging.info "test-prune" $"BuildSucceeded received, running tests"
+
+                                    ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
+
+                                    // Flush pending analysis to DB
+                                    let flushedState = flushPendingAnalysis state
+
+                                    let running = Lifecycle.start idle
+
+                                    let newState =
+                                        { flushedState with
+                                            TestPhase = TestsRunning running }
+
+                                    // Dispatch tests to thread pool
+                                    match testConfigs with
+                                    | Some configs when not configs.IsEmpty ->
+                                        async { do! runTests ctx configs newState agentRef.Value } |> Async.Start
+
+                                        return newState
+                                    | _ ->
+                                        // No test configs — flush only, transition back to idle
+                                        let idleAgain = Lifecycle.complete None running
+
+                                        return
+                                            { newState with
+                                                TestPhase = TestsIdle idleAgain }
+                            | BuildFailed _ -> return state
+
+                        | TestsFinished testResults ->
+                            if state.PendingRerun then
+                                Logging.info "test-prune" "Re-running tests (queued during previous run)"
+
+                                // Flush any new pending analysis
+                                let flushedState = flushPendingAnalysis { state with PendingRerun = false }
+
+                                match testConfigs with
+                                | Some configs when not configs.IsEmpty ->
+                                    async { do! runTests ctx configs flushedState agentRef.Value } |> Async.Start
+                                | _ -> ()
+
+                                return flushedState
+                            else
+                                match state.TestPhase with
+                                | TestsRunning running ->
+                                    let completed = Lifecycle.complete (Some testResults) running
+
+                                    return
+                                        { state with
+                                            TestPhase = TestsIdle completed
+                                            ChangedFiles = [] }
+                                | TestsIdle _ ->
+                                    // Unexpected but handle gracefully
+                                    return state
+
+                        | RunTestsCommand(configs, filter, replyChannel) ->
+                            match state.TestPhase with
+                            | TestsRunning _ ->
+                                // Create an empty "already running" result
+                                replyChannel.Reply(
+                                    { Results = Map.empty
+                                      Elapsed = TimeSpan.Zero }
+                                )
+
+                                return state
+                            | TestsIdle idle ->
+                                ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
+                                let running = Lifecycle.start idle
+
+                                let newState =
+                                    { state with
+                                        TestPhase = TestsRunning running }
+
+                                // Run tests directly (this is a command, so we want to return results)
+                                try
+                                    let! results = executeTests ctx configs [] filter
+                                    replyChannel.Reply(results)
+
+                                    let completed = Lifecycle.complete (Some results) running
+
+                                    return
+                                        { newState with
+                                            TestPhase = TestsIdle completed }
+                                with ex ->
+                                    Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
+                                    ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+
+                                    let failResult =
+                                        { Results = Map.empty
+                                          Elapsed = TimeSpan.Zero }
+
+                                    replyChannel.Reply(failResult)
+
+                                    let completed = Lifecycle.complete None running
+
+                                    return
+                                        { newState with
+                                            TestPhase = TestsIdle completed }
+                    })
+
+            agentRef.Value <- agent
+
             ctx.OnFileChecked.Add(fun result ->
-                // Reset completed flag so new file changes can report status
-                if Volatile.Read(&testsCompleted) && not (Volatile.Read(&testsRunning)) then
-                    Volatile.Write(&testsCompleted, false)
-
-                if not (Volatile.Read(&testsRunning)) && not (Volatile.Read(&testsCompleted)) then
-                    ctx.ReportStatus(Running(since = DateTime.UtcNow))
-
-                async {
-                    try
-                        let relPath = Path.GetRelativePath(repoRoot, result.File).Replace('\\', '/')
-
-                        let currentFiles = Volatile.Read(&lastChangedFiles)
-
-                        if not (currentFiles |> List.contains relPath) then
-                            Volatile.Write(&lastChangedFiles, relPath :: currentFiles)
-
-                        let! analysisResult = analyzeSource ctx.Checker result.File result.Source result.ProjectOptions
-
-                        match analysisResult with
-                        | Ok analysisResult ->
-                            let projectName =
-                                result.ProjectOptions.ProjectFileName |> Path.GetFileNameWithoutExtension
-
-                            let normalizedSymbols = normalizeSymbolPaths repoRoot analysisResult.Symbols
-
-                            let fileAnalysis =
-                                { Symbols = normalizedSymbols
-                                  Dependencies = analysisResult.Dependencies
-                                  TestMethods =
-                                    analysisResult.TestMethods
-                                    |> List.map (fun t -> { t with TestProject = projectName }) }
-
-                            // Read stored symbols from the in-memory snapshot (populated after
-                            // each flush). Falls back to DB for warm starts where the snapshot
-                            // hasn't been populated yet. This avoids the race where concurrent
-                            // RebuildProjects (delete-then-insert) causes GetSymbolsInFile to
-                            // return 0 symbols.
-                            let storedSymbols =
-                                match symbolSnapshot.TryGetValue(relPath) with
-                                | true, symbols -> symbols
-                                | false, _ -> db.GetSymbolsInFile(relPath)
-
-                            // Accumulate per-project; flush on OnBuildCompleted.
-                            // RebuildForProject deletes deps bidirectionally, so calling
-                            // it per-file destroys test→prod edges from earlier files.
-                            let bag = pendingAnalysis.GetOrAdd(projectName, fun _ -> ResizeArray<_>())
-
-                            bag.Add(fileAnalysis)
-                            let changes = detectChanges normalizedSymbols storedSymbols
-                            let changedNames = changedSymbolNames changes
-
-                            Logging.info
-                                "test-prune"
-                                $"detectChanges for %s{relPath}: %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{normalizedSymbols.Length} current"
-
-                            if not changedNames.IsEmpty then
-                                let affected = db.QueryAffectedTests(changedNames)
-
-                                Logging.info
-                                    "test-prune"
-                                    $"QueryAffectedTests(%A{changedNames}): %d{affected.Length} affected tests"
-
-                                Volatile.Write(&lastAffectedTests, affected)
-
-                            analysisRan <- true
-                        | Error msg ->
-                            Logging.error "test-prune" $"Analysis failed for %s{relPath}: %s{msg}"
-
-                            if not (Volatile.Read(&testsRunning)) then
-                                ctx.ReportStatus(PluginStatus.Failed($"Analysis failed: %s{msg}", DateTime.UtcNow))
-
-                        if not (Volatile.Read(&testsRunning)) then
-                            ctx.ReportStatus(Completed(box (Volatile.Read(&lastAffectedTests)), DateTime.UtcNow))
-                    with ex ->
-                        if not (Volatile.Read(&testsRunning)) then
-                            ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
-                }
-                |> Async.Start)
+                agent.Post(FileChecked result)
+                agent.GetState() |> Async.RunSynchronously |> ignore)
 
             // Subscribe to build completion for test execution
             match testConfigs with
@@ -404,51 +570,21 @@ type TestPrunePlugin
                 Logging.info "test-prune" $"Subscribing to OnBuildCompleted with %d{configs.Length} test configs"
 
                 ctx.OnBuildCompleted.Add(fun result ->
-                    match result with
-                    | BuildSucceeded ->
-                        if Volatile.Read(&testsRunning) then
-                            Logging.info
-                                "test-prune"
-                                "BuildSucceeded received but tests already running — will re-run after"
-
-                            Volatile.Write(&pendingRerun, true)
-                        else
-                            Logging.info
-                                "test-prune"
-                                $"BuildSucceeded received, running %d{configs.Length} test configs"
-
-                            ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                            Volatile.Write(&testsRunning, true)
-
-                            async {
-                                try
-                                    do! runTests ctx configs
-
-                                    if Volatile.Read(&pendingRerun) then
-                                        Volatile.Write(&pendingRerun, false)
-                                        Logging.info "test-prune" "Re-running tests (queued during previous run)"
-                                        do! runTests ctx configs
-                                with ex ->
-                                    Volatile.Write(&testsRunning, false)
-                                    Volatile.Write(&pendingRerun, false)
-                                    Logging.error "test-prune" $"runTests failed: %s{ex.Message}"
-                                    ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
-                            }
-                            |> Async.Start
-                    | BuildFailed _ -> ())
+                    agent.Post(BuildCompleted result)
+                    agent.GetState() |> Async.RunSynchronously |> ignore)
             | _ -> ()
 
             ctx.RegisterCommand(
                 "affected-tests",
                 fun _args ->
                     async {
-                        if not analysisRan then
+                        let! state = agent.GetState()
+
+                        if not state.AnalysisRan then
                             return "{\"status\": \"not analyzed\"}"
                         else
-                            let currentTests = Volatile.Read(&lastAffectedTests)
-
                             let tests =
-                                currentTests
+                                state.AffectedTests
                                 |> List.map (fun t ->
                                     $"{{\"project\": \"%s{t.TestProject}\", \"class\": \"%s{t.TestClass}\", \"method\": \"%s{t.TestMethod}\"}}")
                                 |> String.concat ", "
@@ -461,9 +597,10 @@ type TestPrunePlugin
                 "changed-files",
                 fun _args ->
                     async {
-                        let currentFiles = Volatile.Read(&lastChangedFiles)
+                        let! state = agent.GetState()
 
-                        let files = currentFiles |> List.map (fun f -> $"\"%s{f}\"") |> String.concat ", "
+                        let files =
+                            state.ChangedFiles |> List.map (fun f -> $"\"%s{f}\"") |> String.concat ", "
 
                         return $"[%s{files}]"
                     }
@@ -473,10 +610,12 @@ type TestPrunePlugin
                 "test-results",
                 fun _args ->
                     async {
-                        if Volatile.Read(&testsRunning) then
-                            return "{\"status\": \"running\"}"
-                        else
-                            match Volatile.Read(&lastTestResults) with
+                        let! state = agent.GetState()
+
+                        match state.TestPhase with
+                        | TestsRunning _ -> return "{\"status\": \"running\"}"
+                        | TestsIdle idle ->
+                            match Lifecycle.value idle with
                             | Some results -> return formatTestResultsJson results
                             | None -> return "{\"status\": \"not run\"}"
                     }
@@ -495,11 +634,11 @@ type TestPrunePlugin
                     "run-tests",
                     fun args ->
                         async {
-                            if Volatile.Read(&testsRunning) then
-                                return "{\"error\": \"tests already running\"}"
-                            else
-                                ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                            let! state = agent.GetState()
 
+                            match state.TestPhase with
+                            | TestsRunning _ -> return "{\"error\": \"tests already running\"}"
+                            | TestsIdle _ ->
                                 try
                                     let argStr = if args.Length > 0 then args.[0].Trim() else "{}"
 
@@ -537,9 +676,14 @@ type TestPrunePlugin
                                             | false, _ -> None
 
                                         // Resolve configs or produce an error
+                                        let lastResults =
+                                            match state.TestPhase with
+                                            | TestsIdle idle -> Lifecycle.value idle
+                                            | TestsRunning _ -> None
+
                                         let configsResult =
                                             if onlyFailed then
-                                                match Volatile.Read(&lastTestResults) with
+                                                match lastResults with
                                                 | Some prev ->
                                                     let failedNames =
                                                         prev.Results
@@ -566,10 +710,12 @@ type TestPrunePlugin
                                         | Ok configs when configs.IsEmpty ->
                                             return "{\"error\": \"no matching test projects\"}"
                                         | Ok configs ->
-                                            let! results = executeTests ctx configs [] filter
+                                            let! results =
+                                                agent.Mailbox.PostAndAsyncReply(fun ch ->
+                                                    Choice1Of2(RunTestsCommand(configs, filter, ch)))
+
                                             return formatTestResultsJson results
                                 with ex ->
-                                    Volatile.Write(&testsRunning, false)
                                     Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
                                     ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                                     return $"{{\"error\": %s{JsonSerializer.Serialize(ex.Message)}}}"
