@@ -169,26 +169,30 @@ type ScanSignal() =
                 async {
                     let! msg = inbox.Receive()
 
-                    match msg with
-                    | WaitFor(afterGeneration, tcs) ->
-                        Logging.debug "scan-signal" $"WaitFor(%d{afterGeneration}) — registering waiter"
+                    try
+                        match msg with
+                        | WaitFor(afterGeneration, tcs) ->
+                            Logging.debug "scan-signal" $"WaitFor(%d{afterGeneration}) — registering waiter"
 
-                        return! loop ((afterGeneration, tcs) :: waiters)
+                            return! loop ((afterGeneration, tcs) :: waiters)
 
-                    | Signal(newGeneration, reply) ->
-                        let toSignal, remaining =
-                            waiters
-                            |> List.partition (fun (afterGen, _) -> afterGen < 0L || newGeneration > afterGen)
+                        | Signal(newGeneration, reply) ->
+                            let toSignal, remaining =
+                                waiters
+                                |> List.partition (fun (afterGen, _) -> afterGen < 0L || newGeneration > afterGen)
 
-                        Logging.debug
-                            "scan-signal"
-                            $"SignalGeneration(%d{newGeneration}) — resolving %d{toSignal.Length} waiters, %d{remaining.Length} remaining"
+                            Logging.debug
+                                "scan-signal"
+                                $"SignalGeneration(%d{newGeneration}) — resolving %d{toSignal.Length} waiters, %d{remaining.Length} remaining"
 
-                        for _, tcs in toSignal do
-                            tcs.TrySetResult(()) |> ignore
+                            for _, tcs in toSignal do
+                                tcs.TrySetResult(()) |> ignore
 
-                        reply.Reply(())
-                        return! loop remaining
+                            reply.Reply(())
+                            return! loop remaining
+                    with ex ->
+                        Logging.error "scan-signal" $"Agent failed: %s{ex.ToString()}"
+                        return! loop waiters
                 }
 
             loop [])
@@ -837,11 +841,16 @@ module Daemon =
                             return! loop { state with ScanState = newState }
 
                         | RequestScan(force, ct, reply) ->
-                            let! newState =
-                                performScan host pipeline graph repoRoot loader jjGuard scanSignal state force ct
+                            try
+                                let! newState =
+                                    performScan host pipeline graph repoRoot loader jjGuard scanSignal state force ct
 
-                            reply.Reply(())
-                            return! loop newState
+                                reply.Reply(())
+                                return! loop newState
+                            with ex ->
+                                Logging.error "scan" $"performScan failed: %s{ex.ToString()}"
+                                reply.Reply(())
+                                return! loop state
                     }
 
                 loop

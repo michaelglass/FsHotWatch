@@ -12,8 +12,6 @@ type private FileCommandMsg = FileChanged of files: string list
 
 /// Runs a command when files matching a filter change.
 type FileCommandPlugin(name: string, fileFilter: string -> bool, command: string, args: string) =
-    let mutable agentRef: Agent<FileCommandState, FileCommandMsg> option = None
-
     interface IFsHotWatchPlugin with
         /// Returns the configured plugin name.
         member _.Name = name
@@ -49,8 +47,6 @@ type FileCommandPlugin(name: string, fileFilter: string -> bool, command: string
 
                                     return newState
                     })
-
-            agentRef <- Some agent
 
             ctx.OnFileChanged.Add(fun change ->
                 let files =

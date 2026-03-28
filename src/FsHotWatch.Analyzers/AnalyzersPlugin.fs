@@ -16,13 +16,11 @@ open FsHotWatch.Plugin
 type private AnalyzersState =
     { DiagnosticsByFile: Map<string, AnalysisResult list>
       LoadedCount: int
-      ProcessedCount: int
       ErrorCount: int }
 
 type private AnalyzersMsg =
     | AnalysisComplete of file: string * results: AnalysisResult list
     | AnalysisFailed of file: string * error: string
-    | IncrementProcessed
     | AddLoaded of int
 
 /// Hosts F# analyzers in-process using the warm checker's results.
@@ -33,8 +31,6 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
     let concurrencyLimit = defaultArg maxConcurrency 4
     let semaphore = new SemaphoreSlim(concurrencyLimit, concurrencyLimit)
     let cts = new CancellationTokenSource()
-
-    let mutable agent: Agent<AnalyzersState, AnalyzersMsg> option = None
 
     // Cache invariant reflection artifacts lazily (CliContext ctor signature never changes at runtime,
     // but the SDK assembly may not be fully loaded at plugin construction time in tests)
@@ -122,7 +118,6 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
             let initialState =
                 { DiagnosticsByFile = Map.empty
                   LoadedCount = 0
-                  ProcessedCount = 0
                   ErrorCount = 0 }
 
             let theAgent =
@@ -133,10 +128,6 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                             return
                                 { state with
                                     LoadedCount = state.LoadedCount + count }
-                        | IncrementProcessed ->
-                            return
-                                { state with
-                                    ProcessedCount = state.ProcessedCount + 1 }
                         | AnalysisComplete(file, results) ->
                             return
                                 { state with
@@ -146,8 +137,6 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                                 { state with
                                     ErrorCount = state.ErrorCount + 1 }
                     })
-
-            agent <- Some theAgent
 
             for path in analyzerPaths do
                 if Directory.Exists(path) then
@@ -174,7 +163,6 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
 
             ctx.OnFileChecked.Add(fun result ->
                 ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                theAgent.Post(IncrementProcessed)
 
                 if isNull (box result.CheckResults) then
                     Logging.warn "analyzers" $"Skipping %s{result.File} — no type check results"
