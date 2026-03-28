@@ -1,14 +1,18 @@
 module FsHotWatch.FileCommand.FileCommandPlugin
 
 open System
-open System.Threading
+open FsHotWatch.AgentHost
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.ProcessHelper
 
+type private FileCommandState = { LastResult: (bool * string) option }
+
+type private FileCommandMsg = FileChanged of files: string list
+
 /// Runs a command when files matching a filter change.
 type FileCommandPlugin(name: string, fileFilter: string -> bool, command: string, args: string) =
-    let mutable lastResult: (bool * string) option = None
+    let mutable agentRef: Agent<FileCommandState, FileCommandMsg> option = None
 
     interface IFsHotWatchPlugin with
         /// Returns the configured plugin name.
@@ -16,6 +20,38 @@ type FileCommandPlugin(name: string, fileFilter: string -> bool, command: string
 
         /// Subscribe to file changes and run the command on matching files; registers a status command.
         member _.Initialize(ctx) =
+            let agent =
+                createAgent $"FileCommand-%s{name}" { LastResult = None } (fun state msg ->
+                    async {
+                        match msg with
+                        | FileChanged files ->
+                            let matchingFiles = files |> List.filter fileFilter
+
+                            if matchingFiles.IsEmpty then
+                                return state
+                            else
+                                ctx.ReportStatus(Running(since = DateTime.UtcNow))
+
+                                try
+                                    let (success, output) = runProcess command args ctx.RepoRoot []
+                                    let newState = { LastResult = Some(success, output) }
+
+                                    if success then
+                                        ctx.ReportStatus(Completed(box newState.LastResult, DateTime.UtcNow))
+                                    else
+                                        ctx.ReportStatus(PluginStatus.Failed($"%s{name} failed", DateTime.UtcNow))
+
+                                    return newState
+                                with ex ->
+                                    let newState = { LastResult = Some(false, ex.Message) }
+
+                                    ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+
+                                    return newState
+                    })
+
+            agentRef <- Some agent
+
             ctx.OnFileChanged.Add(fun change ->
                 let files =
                     match change with
@@ -23,28 +59,18 @@ type FileCommandPlugin(name: string, fileFilter: string -> bool, command: string
                     | ProjectChanged files -> files
                     | SolutionChanged -> []
 
-                let matchingFiles = files |> List.filter fileFilter
-
-                if not matchingFiles.IsEmpty then
-                    ctx.ReportStatus(Running(since = DateTime.UtcNow))
-
-                    try
-                        let (success, output) = runProcess command args ctx.RepoRoot []
-                        Volatile.Write(&lastResult, Some(success, output))
-
-                        if success then
-                            ctx.ReportStatus(Completed(box (Volatile.Read(&lastResult)), DateTime.UtcNow))
-                        else
-                            ctx.ReportStatus(PluginStatus.Failed($"%s{name} failed", DateTime.UtcNow))
-                    with ex ->
-                        Volatile.Write(&lastResult, Some(false, ex.Message))
-                        ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow)))
+                if not files.IsEmpty then
+                    agent.Post(FileChanged files)
+                    // Wait for the agent to finish processing to preserve synchronous behavior.
+                    agent.GetState() |> Async.RunSynchronously |> ignore)
 
             ctx.RegisterCommand(
                 $"%s{name}-status",
                 fun _args ->
                     async {
-                        match Volatile.Read(&lastResult) with
+                        let! state = agent.GetState()
+
+                        match state.LastResult with
                         | Some(ok, _) ->
                             let passed = if ok then "true" else "false"
                             return $"{{\"passed\": %s{passed}}}"
