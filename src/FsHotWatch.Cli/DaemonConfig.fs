@@ -86,6 +86,187 @@ let private defaultConfigFor (repoRoot: string) =
       Coverage = None
       FileCommands = [] }
 
+/// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
+let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfiguration =
+    use doc = JsonDocument.Parse(json)
+    let root = doc.RootElement
+
+    let build =
+        match root.TryGetProperty("build") with
+        | true, v when v.ValueKind = JsonValueKind.False -> None
+        | true, v when v.ValueKind = JsonValueKind.Object ->
+            let cmd =
+                match v.TryGetProperty("command") with
+                | true, c -> c.GetString()
+                | _ -> "dotnet"
+
+            let args =
+                match v.TryGetProperty("args") with
+                | true, a -> a.GetString()
+                | _ -> "build"
+
+            Some {| Command = cmd; Args = args |}
+        | _ -> Some {| Command = "dotnet"; Args = "build" |}
+
+    let format =
+        match root.TryGetProperty("format") with
+        | true, v -> v.GetBoolean()
+        | _ -> true
+
+    let lint =
+        match root.TryGetProperty("lint") with
+        | true, v -> v.GetBoolean()
+        | _ -> true
+
+    let cache =
+        match root.TryGetProperty("cache") with
+        | true, v when v.ValueKind = JsonValueKind.False -> NoCache
+        | true, v when v.ValueKind = JsonValueKind.True -> defaults.Cache
+        | true, v when v.ValueKind = JsonValueKind.String ->
+            match v.GetString().ToLowerInvariant() with
+            | "memory" -> InMemoryOnly 500
+            | "file" -> FileBackend
+            | "jj" -> JjFileBackend
+            | "none"
+            | "false" -> NoCache
+            | other ->
+                Logging.warn "config" $"Unknown cache value '%s{other}', using default"
+                defaults.Cache
+        | _ -> defaults.Cache
+
+    let analyzers =
+        match root.TryGetProperty("analyzers") with
+        | true, v ->
+            let paths =
+                match v.TryGetProperty("paths") with
+                | true, arr -> arr.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList
+                | _ -> []
+
+            if paths.IsEmpty then None else Some {| Paths = paths |}
+        | _ -> None
+
+    let tests =
+        match root.TryGetProperty("tests") with
+        | true, v ->
+            let beforeRun =
+                match v.TryGetProperty("beforeRun") with
+                | true, br -> Some(br.GetString())
+                | _ -> None
+
+            let projects =
+                match v.TryGetProperty("projects") with
+                | true, arr ->
+                    arr.EnumerateArray()
+                    |> Seq.map (fun p ->
+                        let project =
+                            match p.TryGetProperty("project") with
+                            | true, v -> v.GetString()
+                            | _ -> "unknown"
+
+                        let command =
+                            match p.TryGetProperty("command") with
+                            | true, v -> v.GetString()
+                            | _ -> "dotnet"
+
+                        let args =
+                            match p.TryGetProperty("args") with
+                            | true, v -> v.GetString()
+                            | _ -> $"test --project %s{project}"
+
+                        let group =
+                            match p.TryGetProperty("group") with
+                            | true, v -> v.GetString()
+                            | _ -> "default"
+
+                        let env =
+                            match p.TryGetProperty("environment") with
+                            | true, envObj ->
+                                envObj.EnumerateObject()
+                                |> Seq.map (fun prop -> prop.Name, prop.Value.GetString())
+                                |> Seq.toList
+                            | _ -> []
+
+                        let filterTemplate =
+                            match p.TryGetProperty("filterTemplate") with
+                            | true, v -> Some(v.GetString())
+                            | _ -> None
+
+                        let classJoin =
+                            match p.TryGetProperty("classJoin") with
+                            | true, v -> v.GetString()
+                            | _ -> " "
+
+                        { Project = project
+                          Command = command
+                          Args = args
+                          Group = group
+                          Environment = env
+                          FilterTemplate = filterTemplate
+                          ClassJoin = classJoin })
+                    |> Seq.toList
+                | _ -> []
+
+            if projects.IsEmpty then
+                None
+            else
+                Some
+                    {| BeforeRun = beforeRun
+                       Projects = projects |}
+        | _ -> None
+
+    let coverage =
+        match root.TryGetProperty("coverage") with
+        | true, v ->
+            let dir =
+                match v.TryGetProperty("directory") with
+                | true, d -> d.GetString()
+                | _ -> "./coverage"
+
+            let thresholds =
+                match v.TryGetProperty("thresholdsFile") with
+                | true, t -> Some(t.GetString())
+                | _ -> None
+
+            Some
+                {| Directory = dir
+                   ThresholdsFile = thresholds |}
+        | _ -> None
+
+    let fileCommands =
+        match root.TryGetProperty("fileCommands") with
+        | true, arr ->
+            arr.EnumerateArray()
+            |> Seq.map (fun fc ->
+                let pattern =
+                    match fc.TryGetProperty("pattern") with
+                    | true, v -> v.GetString()
+                    | _ -> "*.fsx"
+
+                let command =
+                    match fc.TryGetProperty("command") with
+                    | true, v -> v.GetString()
+                    | _ -> "echo"
+
+                let args =
+                    match fc.TryGetProperty("args") with
+                    | true, v -> v.GetString()
+                    | _ -> ""
+
+                {| Pattern = pattern
+                   Command = command
+                   Args = args |})
+            |> Seq.toList
+        | _ -> []
+
+    { Build = build
+      Format = format
+      Lint = lint
+      Cache = cache
+      Analyzers = analyzers
+      Tests = tests
+      Coverage = coverage
+      FileCommands = fileCommands }
+
 /// Load config from .fs-hot-watch.json in repoRoot. Returns defaults if no file exists.
 let loadConfig (repoRoot: string) : DaemonConfiguration =
     let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
@@ -99,186 +280,7 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
 
         try
             let json = File.ReadAllText(configPath)
-            use doc = JsonDocument.Parse(json)
-            let root = doc.RootElement
-
-            let build =
-                match root.TryGetProperty("build") with
-                | true, v when v.ValueKind = JsonValueKind.False -> None
-                | true, v when v.ValueKind = JsonValueKind.Object ->
-                    let cmd =
-                        match v.TryGetProperty("command") with
-                        | true, c -> c.GetString()
-                        | _ -> "dotnet"
-
-                    let args =
-                        match v.TryGetProperty("args") with
-                        | true, a -> a.GetString()
-                        | _ -> "build"
-
-                    Some {| Command = cmd; Args = args |}
-                | _ -> Some {| Command = "dotnet"; Args = "build" |}
-
-            let format =
-                match root.TryGetProperty("format") with
-                | true, v -> v.GetBoolean()
-                | _ -> true
-
-            let lint =
-                match root.TryGetProperty("lint") with
-                | true, v -> v.GetBoolean()
-                | _ -> true
-
-            let cache =
-                match root.TryGetProperty("cache") with
-                | true, v when v.ValueKind = JsonValueKind.False -> NoCache
-                | true, v when v.ValueKind = JsonValueKind.True -> defaults.Cache
-                | true, v when v.ValueKind = JsonValueKind.String ->
-                    match v.GetString().ToLowerInvariant() with
-                    | "memory" -> InMemoryOnly 500
-                    | "file" -> FileBackend
-                    | "jj" -> JjFileBackend
-                    | "none"
-                    | "false" -> NoCache
-                    | other ->
-                        Logging.warn "config" $"Unknown cache value '%s{other}', using default"
-                        defaults.Cache
-                | _ -> defaults.Cache
-
-            let analyzers =
-                match root.TryGetProperty("analyzers") with
-                | true, v ->
-                    let paths =
-                        match v.TryGetProperty("paths") with
-                        | true, arr -> arr.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList
-                        | _ -> []
-
-                    if paths.IsEmpty then None else Some {| Paths = paths |}
-                | _ -> None
-
-            let tests =
-                match root.TryGetProperty("tests") with
-                | true, v ->
-                    let beforeRun =
-                        match v.TryGetProperty("beforeRun") with
-                        | true, br -> Some(br.GetString())
-                        | _ -> None
-
-                    let projects =
-                        match v.TryGetProperty("projects") with
-                        | true, arr ->
-                            arr.EnumerateArray()
-                            |> Seq.map (fun p ->
-                                let project =
-                                    match p.TryGetProperty("project") with
-                                    | true, v -> v.GetString()
-                                    | _ -> "unknown"
-
-                                let command =
-                                    match p.TryGetProperty("command") with
-                                    | true, v -> v.GetString()
-                                    | _ -> "dotnet"
-
-                                let args =
-                                    match p.TryGetProperty("args") with
-                                    | true, v -> v.GetString()
-                                    | _ -> $"test --project %s{project}"
-
-                                let group =
-                                    match p.TryGetProperty("group") with
-                                    | true, v -> v.GetString()
-                                    | _ -> "default"
-
-                                let env =
-                                    match p.TryGetProperty("environment") with
-                                    | true, envObj ->
-                                        envObj.EnumerateObject()
-                                        |> Seq.map (fun prop -> prop.Name, prop.Value.GetString())
-                                        |> Seq.toList
-                                    | _ -> []
-
-                                let filterTemplate =
-                                    match p.TryGetProperty("filterTemplate") with
-                                    | true, v -> Some(v.GetString())
-                                    | _ -> None
-
-                                let classJoin =
-                                    match p.TryGetProperty("classJoin") with
-                                    | true, v -> v.GetString()
-                                    | _ -> " "
-
-                                { Project = project
-                                  Command = command
-                                  Args = args
-                                  Group = group
-                                  Environment = env
-                                  FilterTemplate = filterTemplate
-                                  ClassJoin = classJoin })
-                            |> Seq.toList
-                        | _ -> []
-
-                    if projects.IsEmpty then
-                        None
-                    else
-                        Some
-                            {| BeforeRun = beforeRun
-                               Projects = projects |}
-                | _ -> None
-
-            let coverage =
-                match root.TryGetProperty("coverage") with
-                | true, v ->
-                    let dir =
-                        match v.TryGetProperty("directory") with
-                        | true, d -> d.GetString()
-                        | _ -> "./coverage"
-
-                    let thresholds =
-                        match v.TryGetProperty("thresholdsFile") with
-                        | true, t -> Some(t.GetString())
-                        | _ -> None
-
-                    Some
-                        {| Directory = dir
-                           ThresholdsFile = thresholds |}
-                | _ -> None
-
-            let fileCommands =
-                match root.TryGetProperty("fileCommands") with
-                | true, arr ->
-                    arr.EnumerateArray()
-                    |> Seq.map (fun fc ->
-                        let pattern =
-                            match fc.TryGetProperty("pattern") with
-                            | true, v -> v.GetString()
-                            | _ -> "*.fsx"
-
-                        let command =
-                            match fc.TryGetProperty("command") with
-                            | true, v -> v.GetString()
-                            | _ -> "echo"
-
-                        let args =
-                            match fc.TryGetProperty("args") with
-                            | true, v -> v.GetString()
-                            | _ -> ""
-
-                        {| Pattern = pattern
-                           Command = command
-                           Args = args |})
-                    |> Seq.toList
-                | _ -> []
-
-            let config =
-                { Build = build
-                  Format = format
-                  Lint = lint
-                  Cache = cache
-                  Analyzers = analyzers
-                  Tests = tests
-                  Coverage = coverage
-                  FileCommands = fileCommands }
-
+            let config = parseConfig json defaults
             Logging.info "config" "Loaded .fs-hot-watch.json"
             config
         with ex ->
