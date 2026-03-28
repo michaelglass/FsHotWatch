@@ -478,3 +478,299 @@ let ``decideDaemonAction starts fresh when daemon not running`` () =
 let ``decideDaemonAction starts fresh when not running even with matching hash`` () =
     let action = decideDaemonAction false "abc123" "abc123"
     test <@ action = StartFresh @>
+
+// --- parseCommand "test" variations ---
+
+[<Fact>]
+let ``parseCommand test with no flags returns empty JSON`` () =
+    test <@ parseCommand [ "test" ] = Test "{}" @>
+
+[<Fact>]
+let ``parseCommand test with --project returns projects JSON`` () =
+    let result = parseCommand [ "test"; "--project"; "MyProj" ]
+
+    match result with
+    | Test json -> test <@ json.Contains("\"projects\": [\"MyProj\"]") @>
+    | _ -> failwith "Expected Test command"
+
+[<Fact>]
+let ``parseCommand test with -p short flag returns projects JSON`` () =
+    let result = parseCommand [ "test"; "-p"; "MyProj" ]
+
+    match result with
+    | Test json -> test <@ json.Contains("\"projects\": [\"MyProj\"]") @>
+    | _ -> failwith "Expected Test command"
+
+[<Fact>]
+let ``parseCommand test with --filter returns filter JSON`` () =
+    let result = parseCommand [ "test"; "--filter"; "MyClass" ]
+
+    match result with
+    | Test json -> test <@ json.Contains("\"filter\": \"MyClass\"") @>
+    | _ -> failwith "Expected Test command"
+
+[<Fact>]
+let ``parseCommand test with -f short flag returns filter JSON`` () =
+    let result = parseCommand [ "test"; "-f"; "MyClass" ]
+
+    match result with
+    | Test json -> test <@ json.Contains("\"filter\": \"MyClass\"") @>
+    | _ -> failwith "Expected Test command"
+
+[<Fact>]
+let ``parseCommand test with --only-failed returns only-failed JSON`` () =
+    let result = parseCommand [ "test"; "--only-failed" ]
+
+    match result with
+    | Test json -> test <@ json.Contains("\"only-failed\": true") @>
+    | _ -> failwith "Expected Test command"
+
+[<Fact>]
+let ``parseCommand test with all flags combined`` () =
+    let result = parseCommand [ "test"; "-p"; "A"; "-f"; "B"; "--only-failed" ]
+
+    match result with
+    | Test json ->
+        test <@ json.Contains("\"only-failed\": true") @>
+        test <@ json.Contains("\"projects\": [\"A\"]") @>
+        test <@ json.Contains("\"filter\": \"B\"") @>
+    | _ -> failwith "Expected Test command"
+
+[<Fact>]
+let ``parseCommand test with unknown flags ignores them`` () =
+    let result = parseCommand [ "test"; "--unknown-flag" ]
+
+    match result with
+    | Test json -> test <@ json = "{}" @>
+    | _ -> failwith "Expected Test command"
+
+// --- runIpcWithExitCode exit code paths via executeCommand ---
+
+[<Fact>]
+let ``executeCommand Errors with count 0 returns exit code 0`` () =
+    let ipc =
+        { fakeIpc () with
+            GetErrors = fun _ _ -> async { return """{"count": 0}""" } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" fakeConfig
+
+    test <@ result = 0 @>
+
+[<Fact>]
+let ``executeCommand Errors with count 5 returns exit code 1`` () =
+    let ipc =
+        { fakeIpc () with
+            GetErrors = fun _ _ -> async { return """{"count": 5}""" } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" fakeConfig
+
+    test <@ result = 1 @>
+
+[<Fact>]
+let ``executeCommand Errors with error field returns exit code 1`` () =
+    let ipc =
+        { fakeIpc () with
+            GetErrors = fun _ _ -> async { return """{"error": "something went wrong"}""" } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" fakeConfig
+
+    test <@ result = 1 @>
+
+[<Fact>]
+let ``executeCommand Build with status passed returns exit code 0`` () =
+    let ipc =
+        { fakeIpc () with
+            TriggerBuild = fun _ -> async { return """{"status": "passed"}""" } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Build "" fakeConfig
+
+    test <@ result = 0 @>
+
+[<Fact>]
+let ``executeCommand Build with status failed returns exit code 1`` () =
+    let ipc =
+        { fakeIpc () with
+            TriggerBuild = fun _ -> async { return """{"status": "failed"}""" } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Build "" fakeConfig
+
+    test <@ result = 1 @>
+
+[<Fact>]
+let ``executeCommand Build with plain text returns exit code 0`` () =
+    let ipc =
+        { fakeIpc () with
+            TriggerBuild = fun _ -> async { return "build completed successfully" } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Build "" fakeConfig
+
+    test <@ result = 0 @>
+
+// --- executeCommand for Build, Test, Format, Lint, Errors, Check ---
+
+[<Fact>]
+let ``executeCommand Build calls triggerBuild`` () =
+    let mutable called = false
+
+    let ipc =
+        { fakeIpc () with
+            TriggerBuild =
+                fun _ ->
+                    async {
+                        called <- true
+                        return """{"count": 0}"""
+                    } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Build "" fakeConfig
+
+    test <@ result = 0 @>
+    test <@ called @>
+
+[<Fact>]
+let ``executeCommand Test calls runCommand with run-tests`` () =
+    let mutable cmdName = ""
+    let mutable cmdArgs = ""
+
+    let ipc =
+        { fakeIpc () with
+            RunCommand =
+                fun _ cmd args ->
+                    async {
+                        cmdName <- cmd
+                        cmdArgs <- args
+                        return """{"status": "passed"}"""
+                    } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Test """{"filter": "Foo"}""") "" fakeConfig
+
+    test <@ result = 0 @>
+    test <@ cmdName = "run-tests" @>
+    test <@ cmdArgs = """{"filter": "Foo"}""" @>
+
+[<Fact>]
+let ``executeCommand Format calls formatAll`` () =
+    let mutable called = false
+
+    let ipc =
+        { fakeIpc () with
+            FormatAll =
+                fun _ ->
+                    async {
+                        called <- true
+                        return "formatted 3 files"
+                    } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Format "" fakeConfig
+
+    test <@ result = 0 @>
+    test <@ called @>
+
+[<Fact>]
+let ``executeCommand Lint calls runCommand with lint`` () =
+    let mutable cmdName = ""
+
+    let ipc =
+        { fakeIpc () with
+            RunCommand =
+                fun _ cmd _ ->
+                    async {
+                        cmdName <- cmd
+                        return """{"count": 0}"""
+                    } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Lint "" fakeConfig
+
+    test <@ result = 0 @>
+    test <@ cmdName = "lint" @>
+
+[<Fact>]
+let ``executeCommand Errors calls getErrors`` () =
+    let mutable called = false
+
+    let ipc =
+        { fakeIpc () with
+            GetErrors =
+                fun _ _ ->
+                    async {
+                        called <- true
+                        return """{"count": 0}"""
+                    } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" fakeConfig
+
+    test <@ result = 0 @>
+    test <@ called @>
+
+[<Fact>]
+let ``executeCommand Check waits for scan and returns errors`` () =
+    let mutable waitForScanCalled = false
+    let mutable waitForCompleteCalled = false
+    let mutable getErrorsCalled = false
+
+    let ipc =
+        { fakeIpc () with
+            WaitForScan =
+                fun _ _ ->
+                    async {
+                        waitForScanCalled <- true
+                        return "idle"
+                    }
+            WaitForComplete =
+                fun _ ->
+                    async {
+                        waitForCompleteCalled <- true
+                        return "{}"
+                    }
+            GetErrors =
+                fun _ _ ->
+                    async {
+                        getErrorsCalled <- true
+                        return """{"count": 0}"""
+                    } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Check "" fakeConfig
+
+    test <@ result = 0 @>
+    test <@ waitForScanCalled @>
+    test <@ waitForCompleteCalled @>
+    test <@ getErrorsCalled @>
+
+// --- executeCommand for InvalidateCache ---
+
+[<Fact>]
+let ``executeCommand InvalidateCache calls invalidateCache with file path`` () =
+    let mutable calledWithPath = ""
+
+    let ipc =
+        { fakeIpc () with
+            InvalidateCache =
+                fun _ path ->
+                    async {
+                        calledWithPath <- path
+                        return """{"status": "rechecked"}"""
+                    } }
+
+    let result =
+        executeCommand
+            (fun _ -> Unchecked.defaultof<_>)
+            ipc
+            "/tmp"
+            "pipe"
+            (InvalidateCache "some/file.fs")
+            ""
+            fakeConfig
+
+    test <@ result = 0 @>
+    test <@ calledWithPath = "some/file.fs" @>
