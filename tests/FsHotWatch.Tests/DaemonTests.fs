@@ -421,7 +421,7 @@ let ``FormatScanStatus returns idle for ScanIdle`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let daemon = Daemon.createWith nullChecker tmpDir None None
-        daemon.ScanState <- ScanIdle
+        daemon.SetScanState(ScanIdle)
         test <@ daemon.FormatScanStatus() = "idle" @>)
 
 [<Fact>]
@@ -429,7 +429,7 @@ let ``FormatScanStatus returns progress for Scanning`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let daemon = Daemon.createWith nullChecker tmpDir None None
-        daemon.ScanState <- Scanning(10, 5, DateTime.UtcNow)
+        daemon.SetScanState(Scanning(10, 5, DateTime.UtcNow))
         let status = daemon.FormatScanStatus()
         test <@ status.Contains("5/10") @>
         test <@ status.Contains("50%") @>)
@@ -439,7 +439,7 @@ let ``FormatScanStatus returns complete for ScanComplete`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let daemon = Daemon.createWith nullChecker tmpDir None None
-        daemon.ScanState <- ScanComplete(70, TimeSpan.FromSeconds(15.5))
+        daemon.SetScanState(ScanComplete(70, TimeSpan.FromSeconds(15.5)))
         let status = daemon.FormatScanStatus()
         test <@ status.Contains("70 files") @>
         test <@ status.Contains("15.5s") @>)
