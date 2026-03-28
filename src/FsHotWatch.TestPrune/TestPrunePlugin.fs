@@ -338,14 +338,17 @@ type TestPrunePlugin
                                     analysisResult.TestMethods
                                     |> List.map (fun t -> { t with TestProject = projectName }) }
 
+                            // Read stored symbols BEFORE adding to pendingAnalysis.
+                            // flushPendingAnalysis (called by OnBuildCompleted) drains pendingAnalysis
+                            // and writes to DB — reading first ensures we diff against the old state.
+                            let storedSymbols = db.GetSymbolsInFile(relPath)
+
                             // Accumulate per-project; flush on OnBuildCompleted.
                             // RebuildForProject deletes deps bidirectionally, so calling
                             // it per-file destroys test→prod edges from earlier files.
                             let bag = pendingAnalysis.GetOrAdd(projectName, fun _ -> ResizeArray<_>())
 
                             bag.Add(fileAnalysis)
-
-                            let storedSymbols = db.GetSymbolsInFile(relPath)
                             let changes = detectChanges normalizedSymbols storedSymbols
                             let changedNames = changedSymbolNames changes
 
