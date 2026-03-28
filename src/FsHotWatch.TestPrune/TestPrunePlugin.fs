@@ -49,6 +49,12 @@ type TestPrunePlugin
     let pendingAnalysis =
         System.Collections.Concurrent.ConcurrentDictionary<string, ResizeArray<AnalysisResult>>()
 
+    /// In-memory snapshot of per-file symbols, used by OnFileChecked for detectChanges.
+    /// Avoids reading from DB during concurrent RebuildProjects (which deletes then inserts,
+    /// causing readers to see 0 stored symbols and misclassify all as "Added").
+    let symbolSnapshot =
+        System.Collections.Concurrent.ConcurrentDictionary<string, SymbolInfo list>()
+
     let mutable lastAffectedTests: TestMethodInfo list = []
     let mutable lastChangedFiles: string list = []
     let mutable lastTestResults: TestResults option = None
@@ -56,6 +62,7 @@ type TestPrunePlugin
     let mutable testsRunning = false
     let mutable testsCompleted = false
     let mutable analysisRan = false
+    let mutable pendingRerun = false
 
     let hasTestConfigs =
         testConfigs |> Option.map (List.isEmpty >> not) |> Option.defaultValue false
@@ -264,6 +271,12 @@ type TestPrunePlugin
         if allResults.Count > 0 then
             db.RebuildProjects(Seq.toList allResults)
 
+            // Update in-memory snapshot so concurrent OnFileChecked reads see the
+            // new symbols instead of hitting the DB mid-rebuild.
+            for result in allResults do
+                for (file, symbols) in result.Symbols |> List.groupBy (fun s -> s.SourceFile) do
+                    symbolSnapshot.[file] <- symbols
+
     /// Run tests with impact-analysis filtering (called from OnBuildCompleted).
     let runTests (ctx: PluginContext) (configs: TestConfig list) =
         async {
@@ -338,10 +351,15 @@ type TestPrunePlugin
                                     analysisResult.TestMethods
                                     |> List.map (fun t -> { t with TestProject = projectName }) }
 
-                            // Read stored symbols BEFORE adding to pendingAnalysis.
-                            // flushPendingAnalysis (called by OnBuildCompleted) drains pendingAnalysis
-                            // and writes to DB — reading first ensures we diff against the old state.
-                            let storedSymbols = db.GetSymbolsInFile(relPath)
+                            // Read stored symbols from the in-memory snapshot (populated after
+                            // each flush). Falls back to DB for warm starts where the snapshot
+                            // hasn't been populated yet. This avoids the race where concurrent
+                            // RebuildProjects (delete-then-insert) causes GetSymbolsInFile to
+                            // return 0 symbols.
+                            let storedSymbols =
+                                match symbolSnapshot.TryGetValue(relPath) with
+                                | true, symbols -> symbols
+                                | false, _ -> db.GetSymbolsInFile(relPath)
 
                             // Accumulate per-project; flush on OnBuildCompleted.
                             // RebuildForProject deletes deps bidirectionally, so calling
@@ -385,8 +403,6 @@ type TestPrunePlugin
             | Some configs when not configs.IsEmpty ->
                 Logging.info "test-prune" $"Subscribing to OnBuildCompleted with %d{configs.Length} test configs"
 
-                let mutable pendingRerun = false
-
                 ctx.OnBuildCompleted.Add(fun result ->
                     match result with
                     | BuildSucceeded ->
@@ -395,7 +411,7 @@ type TestPrunePlugin
                                 "test-prune"
                                 "BuildSucceeded received but tests already running — will re-run after"
 
-                            pendingRerun <- true
+                            Volatile.Write(&pendingRerun, true)
                         else
                             Logging.info
                                 "test-prune"
@@ -408,13 +424,13 @@ type TestPrunePlugin
                                 try
                                     do! runTests ctx configs
 
-                                    if pendingRerun then
-                                        pendingRerun <- false
+                                    if Volatile.Read(&pendingRerun) then
+                                        Volatile.Write(&pendingRerun, false)
                                         Logging.info "test-prune" "Re-running tests (queued during previous run)"
                                         do! runTests ctx configs
                                 with ex ->
                                     Volatile.Write(&testsRunning, false)
-                                    pendingRerun <- false
+                                    Volatile.Write(&pendingRerun, false)
                                     Logging.error "test-prune" $"runTests failed: %s{ex.Message}"
                                     ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                             }
