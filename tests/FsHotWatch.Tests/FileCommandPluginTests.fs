@@ -119,8 +119,7 @@ let ``command runs on ProjectChanged with matching files`` () =
 let ``command ignores SolutionChanged`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin =
-        FileCommandPlugin("sln-watcher", (fun _ -> true), "echo", "hello")
+    let plugin = FileCommandPlugin("sln-watcher", (fun _ -> true), "echo", "hello")
 
     host.Register(plugin)
 
@@ -134,8 +133,7 @@ let ``command ignores SolutionChanged`` () =
 let ``command reports Failed status on command failure`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin =
-        FileCommandPlugin("fail-cmd", (fun _ -> true), "false", "")
+    let plugin = FileCommandPlugin("fail-cmd", (fun _ -> true), "false", "")
 
     host.Register(plugin)
 
@@ -176,8 +174,7 @@ let ``command reports Failed status on exception`` () =
 let ``status command returns not run when no files matched`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin =
-        FileCommandPlugin("no-match", (fun _ -> false), "echo", "hello")
+    let plugin = FileCommandPlugin("no-match", (fun _ -> false), "echo", "hello")
 
     host.Register(plugin)
 
@@ -192,8 +189,7 @@ let ``status command returns not run when no files matched`` () =
 let ``status command returns false when command failed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin =
-        FileCommandPlugin("fail-status", (fun _ -> true), "false", "")
+    let plugin = FileCommandPlugin("fail-status", (fun _ -> true), "false", "")
 
     host.Register(plugin)
 

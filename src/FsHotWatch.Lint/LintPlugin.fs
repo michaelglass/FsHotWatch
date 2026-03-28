@@ -40,41 +40,45 @@ type LintPlugin(?configPath: string) =
                 ctx.ReportStatus(Running(since = System.DateTime.UtcNow))
 
                 try
-                    let typeCheckResults =
-                        if isNull (box result.CheckResults) then
-                            None
-                        else
-                            Some result.CheckResults
+                    if isNull (box result.ParseResults) then
+                        Logging.warn "lint" $"Skipping %s{result.File} — no parse results"
+                    else
 
-                    let parsedInfo: Lint.ParsedFileInformation =
-                        { Ast = result.ParseResults.ParseTree
-                          Source = result.Source
-                          TypeCheckResults = typeCheckResults
-                          ProjectCheckResults = None }
+                        let typeCheckResults =
+                            if isNull (box result.CheckResults) then
+                                None
+                            else
+                                Some result.CheckResults
 
-                    match Lint.lintParsedSource lintParams parsedInfo with
-                    | Lint.LintResult.Success warnings ->
-                        let msgs = warnings |> List.map (fun w -> w.Details.Message)
-                        let current = Volatile.Read(&warningsByFile)
-                        Volatile.Write(&warningsByFile, current |> Map.add result.File msgs)
+                        let parsedInfo: Lint.ParsedFileInformation =
+                            { Ast = result.ParseResults.ParseTree
+                              Source = result.Source
+                              TypeCheckResults = typeCheckResults
+                              ProjectCheckResults = None }
 
-                        if warnings.IsEmpty then
-                            ctx.ClearErrors result.File
-                        else
-                            let entries =
-                                warnings
-                                |> List.map (fun w ->
-                                    { Message = w.Details.Message
-                                      Severity = "warning"
-                                      Line = w.Details.Range.StartLine
-                                      Column = w.Details.Range.StartColumn })
+                        match Lint.lintParsedSource lintParams parsedInfo with
+                        | Lint.LintResult.Success warnings ->
+                            let msgs = warnings |> List.map (fun w -> w.Details.Message)
+                            let current = Volatile.Read(&warningsByFile)
+                            Volatile.Write(&warningsByFile, current |> Map.add result.File msgs)
 
-                            ctx.ReportErrors result.File entries
+                            if warnings.IsEmpty then
+                                ctx.ClearErrors result.File
+                            else
+                                let entries =
+                                    warnings
+                                    |> List.map (fun w ->
+                                        { Message = w.Details.Message
+                                          Severity = "warning"
+                                          Line = w.Details.Range.StartLine
+                                          Column = w.Details.Range.StartColumn })
 
-                        ctx.ReportStatus(Completed(box (Volatile.Read(&warningsByFile)), System.DateTime.UtcNow))
-                    | Lint.LintResult.Failure failure ->
-                        let msg = $"Lint failed for %s{result.File}: %A{failure}"
-                        ctx.ReportStatus(PluginStatus.Failed(msg, System.DateTime.UtcNow))
+                                ctx.ReportErrors result.File entries
+
+                            ctx.ReportStatus(Completed(box (Volatile.Read(&warningsByFile)), System.DateTime.UtcNow))
+                        | Lint.LintResult.Failure failure ->
+                            let msg = $"Lint failed for %s{result.File}: %A{failure}"
+                            ctx.ReportStatus(PluginStatus.Failed(msg, System.DateTime.UtcNow))
                 with ex ->
                     ctx.ReportStatus(PluginStatus.Failed(ex.Message, System.DateTime.UtcNow)))
 

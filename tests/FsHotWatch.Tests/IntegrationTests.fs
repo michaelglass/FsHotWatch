@@ -754,8 +754,7 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
 
         match status.Value with
         | Completed _ -> ()
-        | PluginStatus.Failed(msg, _) ->
-            Assert.True(true, $"Analyzers failed gracefully: {msg}")
+        | PluginStatus.Failed(msg, _) -> Assert.True(true, $"Analyzers failed gracefully: {msg}")
         | other -> Assert.Fail($"Unexpected status: %A{other}")
     | None -> Assert.True(true, "Skipped: FCS could not check file")
 
@@ -1412,8 +1411,10 @@ let ``file cache enables fast cold-start check`` () =
         let result2 = pipeline2.CheckFile(sourceFile) |> Async.RunSynchronously
         sw2.Stop()
 
-        test <@ result2.IsSome @>
-        test <@ result2.Value.File = Path.GetFullPath(sourceFile) @>
+        // Cache hit returns None — file is unchanged, skip plugin dispatch.
+        // The cache stores only metadata (no FCS types), so returning Some
+        // would give plugins null CheckResults/ParseResults they can't use.
+        test <@ result2.IsNone @>
 
         // Cache hit should be significantly faster than cold check
         test <@ sw2.ElapsedMilliseconds < sw1.ElapsedMilliseconds @>
@@ -1423,7 +1424,7 @@ let ``file cache enables fast cold-start check`` () =
             Directory.Delete(cacheDir, true)
 
 [<Fact>]
-let ``cached check result has null FCS types but valid metadata`` () =
+let ``cached check returns None because partial FCS results are unusable by plugins`` () =
     let repoRoot = findRepoRoot ()
 
     let cacheDir =
@@ -1446,23 +1447,23 @@ let ``cached check result has null FCS types but valid metadata`` () =
         let backend1 = FileCheckCache(cacheDir) :> ICheckCacheBackend
         let pipeline1 = CheckPipeline(checker, cacheBackend = backend1)
         pipeline1.RegisterProject("FsHotWatch", projOptions)
-        pipeline1.CheckFile(sourceFile) |> Async.RunSynchronously |> ignore
+        let warm = pipeline1.CheckFile(sourceFile) |> Async.RunSynchronously
+        test <@ warm.IsSome @>
+
+        // Verify cache file was written
+        let cacheFiles = Directory.GetFiles(cacheDir, "*.json")
+        test <@ cacheFiles.Length > 0 @>
 
         // Read from cache (new pipeline = cold restart)
         let backend2 = FileCheckCache(cacheDir) :> ICheckCacheBackend
         let pipeline2 = CheckPipeline(checker, cacheBackend = backend2)
         pipeline2.RegisterProject("FsHotWatch", projOptions)
-        let result = pipeline2.CheckFile(sourceFile) |> Async.RunSynchronously
+        let cached = pipeline2.CheckFile(sourceFile) |> Async.RunSynchronously
 
-        test <@ result.IsSome @>
-        let r = result.Value
-
-        // File path preserved
-        test <@ r.File = Path.GetFullPath(sourceFile) @>
-
-        // FCS types are null (can't serialize)
-        test <@ isNull (box r.CheckResults) @>
-        test <@ isNull (box r.ParseResults) @>
+        // Cache hit returns None — the cache can't restore FCS types (ParseResults,
+        // CheckResults), so returning Some would give plugins null references.
+        // None signals "file unchanged, skip plugin dispatch."
+        test <@ cached.IsNone @>
     finally
         if Directory.Exists(cacheDir) then
             Directory.Delete(cacheDir, true)

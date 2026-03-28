@@ -117,9 +117,15 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
                         | _ -> None
 
                     match cached with
-                    | Some result ->
+                    | Some result when not (isNull (box result.CheckResults)) ->
+                        // Full cache hit (e.g., InMemoryCache) — result has usable FCS data
                         Logging.debug "check" $"Cache hit: %s{Path.GetFileName(absPath)}"
                         return Some result
+                    | Some _ ->
+                        // Partial cache hit (e.g., FileCheckCache) — FCS types are null.
+                        // Skip plugin dispatch since plugins can't use null CheckResults.
+                        Logging.debug "check" $"Cache hit (skip): %s{Path.GetFileName(absPath)}"
+                        return None
                     | None ->
 
                         let source =
