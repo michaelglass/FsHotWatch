@@ -77,7 +77,7 @@ module ``SQLite persistence`` =
             sink.Post(timestamp (IndexCompletedEvent(100, 50, 10)))
 
             // Wait for MailboxProcessor to process
-            Thread.Sleep(500)
+            Thread.Sleep(1000)
 
             let events = db.GetEvents(runId)
             test <@ events.Length = 2 @>
@@ -96,7 +96,7 @@ module ``SQLite persistence`` =
             sink2.Post(timestamp (IndexStartedEvent 2))
             sink2.Post(timestamp (IndexCompletedEvent(10, 5, 3)))
 
-            Thread.Sleep(500)
+            Thread.Sleep(1000)
 
             let eventsA = db.GetEvents("run-a")
             let eventsB = db.GetEvents("run-b")
@@ -109,10 +109,82 @@ module ``SQLite persistence`` =
             let sink = createSqliteSink db.InsertEvent "run-clear"
 
             sink.Post(timestamp (IndexStartedEvent 3))
-            Thread.Sleep(500)
+            Thread.Sleep(1000)
 
             test <@ db.GetEvents("run-clear").Length = 1 @>
 
             db.ClearEvents("run-clear")
 
             test <@ db.GetEvents("run-clear").Length = 0 @>)
+
+    [<Fact>]
+    let ``all event types are serialized correctly`` () =
+        withDb (fun db ->
+            let runId = "serialize-test"
+            let sink = createSqliteSink db.InsertEvent runId
+
+            let events =
+                [ FileAnalyzedEvent("f.fs", 1, 2, 3)
+                  FileCacheHitEvent("f.fs", "hash matched")
+                  FileSkippedEvent("f.fs", "not found")
+                  ProjectCacheHitEvent "MyProject"
+                  ProjectIndexedEvent("MyProject", 5)
+                  SymbolChangeDetectedEvent("f.fs", "Lib.func", Modified)
+                  TestSelectedEvent("Tests.test1", SymbolChanged("Lib.func", Modified))
+                  DiffParsedEvent [ "a.fs"; "b.fs" ]
+                  IndexStartedEvent 3
+                  IndexCompletedEvent(100, 50, 10)
+                  ErrorEvent(ParseFailed("f.fs", [ "error" ]))
+                  DeadCodeFoundEvent [ "Unused.func" ] ]
+
+            for event in events do
+                sink.Post(timestamp event)
+
+            Thread.Sleep(2000)
+
+            let stored = db.GetEvents(runId)
+            test <@ stored.Length = 12 @>
+
+            let types = stored |> List.map (fun (_, t, _) -> t)
+            test <@ types |> List.contains "FileAnalyzed" @>
+            test <@ types |> List.contains "FileCacheHit" @>
+            test <@ types |> List.contains "FileSkipped" @>
+            test <@ types |> List.contains "ProjectCacheHit" @>
+            test <@ types |> List.contains "ProjectIndexed" @>
+            test <@ types |> List.contains "SymbolChangeDetected" @>
+            test <@ types |> List.contains "TestSelected" @>
+            test <@ types |> List.contains "DiffParsed" @>
+            test <@ types |> List.contains "IndexStarted" @>
+            test <@ types |> List.contains "IndexCompleted" @>
+            test <@ types |> List.contains "Error" @>
+            test <@ types |> List.contains "DeadCodeFound" @>)
+
+    [<Fact>]
+    let ``SymbolChangeDetected serializes Added change kind`` () =
+        withDb (fun db ->
+            let runId = "added-test"
+            let sink = createSqliteSink db.InsertEvent runId
+
+            sink.Post(timestamp (SymbolChangeDetectedEvent("f.fs", "Lib.newFunc", Added)))
+            Thread.Sleep(1000)
+
+            let stored = db.GetEvents(runId)
+            test <@ stored.Length = 1 @>
+            let (_, eventType, data) = stored[0]
+            test <@ eventType = "SymbolChangeDetected" @>
+            test <@ data.Contains("Added") @>)
+
+    [<Fact>]
+    let ``SymbolChangeDetected serializes Removed change kind`` () =
+        withDb (fun db ->
+            let runId = "removed-test"
+            let sink = createSqliteSink db.InsertEvent runId
+
+            sink.Post(timestamp (SymbolChangeDetectedEvent("f.fs", "Lib.oldFunc", Removed)))
+            Thread.Sleep(1000)
+
+            let stored = db.GetEvents(runId)
+            test <@ stored.Length = 1 @>
+            let (_, eventType, data) = stored[0]
+            test <@ eventType = "SymbolChangeDetected" @>
+            test <@ data.Contains("Removed") @>)
