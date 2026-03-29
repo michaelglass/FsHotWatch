@@ -385,7 +385,7 @@ type Daemon =
 
             match result with
             | Some checkResult ->
-                do! this.Host.EmitFileCheckedParallel(checkResult)
+                this.Host.EmitFileChecked(checkResult)
                 reportFcsDiagnostics this.Host checkResult
 
                 return
@@ -608,7 +608,7 @@ let private performScan
                         match result with
                         | Some checkResult ->
                             checkedCount <- checkedCount + 1
-                            do! host.EmitFileCheckedParallel(checkResult)
+                            host.EmitFileChecked(checkResult)
                             reportFcsDiagnostics host checkResult
                         | None -> skippedCount <- skippedCount + 1
 
@@ -775,7 +775,7 @@ module Daemon =
                         match result with
                         | Some checkResult ->
                             Logging.debug "daemon" $"EmitFileChecked: %s{Path.GetFileName(file)}"
-                            do! host.EmitFileCheckedParallel(checkResult)
+                            host.EmitFileChecked(checkResult)
                             reportFcsDiagnostics host checkResult
 
                         | None -> ()
