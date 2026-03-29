@@ -26,6 +26,7 @@
         <Compile Include="Domain.fs" />
         <Compile Include="AstAnalyzer.fs" />
         <Compile Include="Database.fs" />
+        <Compile Include="Ports.fs" />
         <Compile Include="DiffParser.fs" />
         <Compile Include="SymbolDiff.fs" />
         <Compile Include="ImpactAnalysis.fs" />
