@@ -377,16 +377,10 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
 
         Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"
 
-        let plugin =
-            TestPrunePlugin(
-                dbPath,
-                repoRoot,
-                testConfigs = testConfigs,
-                ?beforeRun = beforeRun,
-                ?coverageArgs = coverageArgs
-            )
+        let handler =
+            create dbPath repoRoot (Some testConfigs) None beforeRun None coverageArgs
 
-        daemon.Register(plugin)
+        daemon.RegisterHandler(handler)
     | None -> ()
 
     // Coverage plugin (after tests)

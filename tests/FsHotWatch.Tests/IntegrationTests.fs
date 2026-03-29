@@ -19,6 +19,8 @@ module LintPlugin = FsHotWatch.Lint.LintPlugin
 open FsHotWatch.Fantomas.FormatCheckPlugin
 open FsHotWatch.TestPrune.TestPrunePlugin
 
+module TestPrunePlugin = FsHotWatch.TestPrune.TestPrunePlugin
+
 module AnalyzersPlugin = FsHotWatch.Analyzers.AnalyzersPlugin
 open FsHotWatch.Build
 
@@ -114,12 +116,12 @@ let ``all plugins receive events when checking a file`` () =
     // Register all four plugins
     let dbPath = Path.Combine(Path.GetTempPath(), $"fshw-inttest-{Guid.NewGuid():N}.db")
 
-    let testPrune = TestPrunePlugin(dbPath, repoRoot)
+    let testPrune = TestPrunePlugin.create dbPath repoRoot None None None None None
     let lint = LintPlugin.create None
     let fantomas = createFormatCheck ()
     let analyzers = AnalyzersPlugin.create []
 
-    host.Register(testPrune)
+    host.RegisterHandler(testPrune)
     host.RegisterHandler(lint)
     host.RegisterHandler(fantomas)
     host.RegisterHandler(analyzers)
@@ -948,11 +950,13 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
                 FilterTemplate = None
                 ClassJoin = " " } ]
 
-        let plugin = TestPrunePlugin(dbPath, "/tmp", testConfigs = testConfigs)
-        host.Register(plugin)
+        let handler =
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None
+
+        host.RegisterHandler(handler)
 
         host.EmitBuildCompleted(BuildSucceeded)
-        waitForStatusSettled host "test-prune" 10000
+        waitForTerminalStatus host "test-prune" 10000
 
         let cmdResult = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ cmdResult.IsSome @>
@@ -999,11 +1003,13 @@ let ``TestPrunePlugin with failing test reports failure`` () =
                 FilterTemplate = None
                 ClassJoin = " " } ]
 
-        let plugin = TestPrunePlugin(dbPath, "/tmp", testConfigs = testConfigs)
-        host.Register(plugin)
+        let handler =
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None
+
+        host.RegisterHandler(handler)
 
         host.EmitBuildCompleted(BuildSucceeded)
-        waitForStatusSettled host "test-prune" 10000
+        waitForTerminalStatus host "test-prune" 10000
 
         let cmdResult = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ cmdResult.IsSome @>
@@ -1273,8 +1279,10 @@ let ``Full pipeline: format → build → test → coverage`` () =
                 FilterTemplate = None
                 ClassJoin = " " } ]
 
-        let testPrunePlugin = TestPrunePlugin(dbPath, "/tmp", testConfigs = testConfigs)
-        host.Register(testPrunePlugin)
+        let testPruneHandler =
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None
+
+        host.RegisterHandler(testPruneHandler)
 
         // Register CoveragePlugin
         let coverageHandler = CoveragePlugin.create covDir None None
@@ -1407,8 +1415,10 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
                 FilterTemplate = None
                 ClassJoin = " " } ]
 
-        let plugin = TestPrunePlugin(dbPath, "/tmp", testConfigs = testConfigs)
-        host.Register(plugin)
+        let handler =
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None
+
+        host.RegisterHandler(handler)
 
         // Emit two BuildSucceeded events rapidly — the testsRunning guard should queue the second
         host.EmitBuildCompleted(BuildSucceeded)
