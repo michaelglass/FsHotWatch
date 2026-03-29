@@ -11,6 +11,25 @@ let waitUntil (condition: unit -> bool) (timeoutMs: int) =
     while not (condition ()) && DateTime.UtcNow < deadline do
         Thread.Sleep(50)
 
+/// Poll until the plugin reaches a terminal status (Completed or Failed).
+let waitForTerminalStatus (host: FsHotWatch.PluginHost.PluginHost) (pluginName: string) (timeoutMs: int) =
+    waitUntil
+        (fun () ->
+            match host.GetStatus(pluginName) with
+            | Some(FsHotWatch.Events.Completed _)
+            | Some(FsHotWatch.Events.Failed _) -> true
+            | _ -> false)
+        timeoutMs
+
+/// Poll until the plugin status is no longer Running, with a timeout.
+let waitForSettled (host: FsHotWatch.PluginHost.PluginHost) (pluginName: string) (timeoutMs: int) =
+    waitUntil
+        (fun () ->
+            match host.GetStatus(pluginName) with
+            | Some(FsHotWatch.Events.Running _) -> false
+            | _ -> true)
+        timeoutMs
+
 /// Create a temp directory with the given prefix, run the body, then clean up.
 /// Returns the result of the body function.
 let withTempDir (prefix: string) (body: string -> 'a) =

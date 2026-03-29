@@ -29,21 +29,10 @@ let private withTmpDir (prefix: string) (f: string -> unit) =
             ()
 
 let private waitForPluginIdle (host: PluginHost) (pluginName: string) (timeoutSecs: float) =
-    waitUntil
-        (fun () ->
-            match host.GetStatus(pluginName) with
-            | Some(Running _) -> false
-            | _ -> true)
-        (int (timeoutSecs * 1000.0))
+    waitForSettled host pluginName (int (timeoutSecs * 1000.0))
 
 let private waitForPluginTerminal (host: PluginHost) (pluginName: string) (timeoutSecs: float) =
-    waitUntil
-        (fun () ->
-            match host.GetStatus(pluginName) with
-            | Some(Completed _)
-            | Some(Failed _) -> true
-            | _ -> false)
-        (int (timeoutSecs * 1000.0))
+    waitForTerminalStatus host pluginName (int (timeoutSecs * 1000.0))
 
 [<Fact>]
 let ``plugin has correct name`` () =

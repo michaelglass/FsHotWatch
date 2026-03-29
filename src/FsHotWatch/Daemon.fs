@@ -162,7 +162,7 @@ let private rediscoverAndClearRemoved
 [<NoComparison; NoEquality>]
 type private ScanSignalMsg =
     | WaitFor of afterGen: int64 * TaskCompletionSource<unit>
-    | Signal of newGen: int64 * AsyncReplyChannel<unit>
+    | Signal of newGen: int64
 
 type ScanSignal() =
     let agent =
@@ -178,7 +178,7 @@ type ScanSignal() =
 
                             return! loop ((afterGeneration, tcs) :: waiters)
 
-                        | Signal(newGeneration, reply) ->
+                        | Signal newGeneration ->
                             let toSignal, remaining =
                                 waiters
                                 |> List.partition (fun (afterGen, _) -> afterGen < 0L || newGeneration > afterGen)
@@ -190,7 +190,6 @@ type ScanSignal() =
                             for _, tcs in toSignal do
                                 tcs.TrySetResult(()) |> ignore
 
-                            reply.Reply(())
                             return! loop remaining
                     with ex ->
                         Logging.error "scan-signal" $"Agent failed: %s{ex.ToString()}"
@@ -222,16 +221,11 @@ type ScanSignal() =
             tcs.Task
 
     /// Signal all waiters whose afterGeneration is now satisfied.
-    member _.SignalGeneration(newGeneration: int64) =
-        agent.PostAndReply(fun reply -> Signal(newGeneration, reply))
+    member _.SignalGeneration(newGeneration: int64) = agent.Post(Signal newGeneration)
 
 /// Messages handled by the scan agent.
 [<NoComparison; NoEquality>]
-type private ScanMsg =
-    | RequestScan of force: bool * CancellationToken * AsyncReplyChannel<unit>
-    | GetGeneration of AsyncReplyChannel<int64>
-    | GetStatus of AsyncReplyChannel<ScanState>
-    | SetStatus of ScanState * AsyncReplyChannel<unit>
+type private ScanMsg = RequestScan of force: bool * CancellationToken * AsyncReplyChannel<unit>
 
 /// Internal state managed by the scan agent.
 type private ScanAgentState =
@@ -240,25 +234,31 @@ type private ScanAgentState =
       LastFingerprint: Set<string * int64> }
 
 /// Opaque handle to the scan MailboxProcessor.
-/// All interaction goes through private module-level functions.
+/// Read-only state (ScanState, Generation) is stored in mutable fields updated
+/// via Volatile.Write by the agent handler, readable without mailbox round-trip.
 [<NoComparison; NoEquality>]
 type ScanAgent =
     private
-        { Agent: MailboxProcessor<ScanMsg> }
+        { Agent: MailboxProcessor<ScanMsg>
+          mutable CurrentState: ScanState
+          mutable CurrentGeneration: int64 }
 
-let private createScanAgent agent = { Agent = agent }
+    member this.GetScanState() = Volatile.Read(&this.CurrentState)
+    member this.GetGeneration() = Volatile.Read(&this.CurrentGeneration)
+
+let private createScanAgent agent =
+    { Agent = agent
+      CurrentState = ScanIdle
+      CurrentGeneration = 0L }
 
 let private requestScan (sa: ScanAgent) force ct =
     sa.Agent.PostAndAsyncReply(fun ch -> RequestScan(force, ct, ch))
 
-let private getScanGeneration (sa: ScanAgent) =
-    sa.Agent.PostAndReply(fun ch -> GetGeneration ch)
+let private getScanGeneration (sa: ScanAgent) = sa.GetGeneration()
 
-let private getScanStatus (sa: ScanAgent) =
-    sa.Agent.PostAndReply(fun ch -> GetStatus ch)
+let private getScanStatus (sa: ScanAgent) = sa.GetScanState()
 
-let private setScanStatus (sa: ScanAgent) state =
-    sa.Agent.PostAndReply(fun ch -> SetStatus(state, ch))
+let private setScanStatus (sa: ScanAgent) state = Volatile.Write(&sa.CurrentState, state)
 
 let private isTerminal (s: PluginStatus) =
     match s with
@@ -829,29 +829,27 @@ module Daemon =
 
         let scanSignal = ScanSignal()
 
-        let scanAgent =
+        // Mutable ref allows the agent loop (which starts immediately) to
+        // update volatile fields on the wrapper created after MailboxProcessor.Start.
+        let scanAgentRef: ScanAgent option ref = ref None
+
+        let scanMailbox =
             MailboxProcessor.Start(fun inbox ->
                 let rec loop (state: ScanAgentState) =
                     async {
                         let! msg = inbox.Receive()
 
                         match msg with
-                        | GetGeneration reply ->
-                            reply.Reply(state.Generation)
-                            return! loop state
-
-                        | GetStatus reply ->
-                            reply.Reply(state.ScanState)
-                            return! loop state
-
-                        | SetStatus(newState, reply) ->
-                            reply.Reply(())
-                            return! loop { state with ScanState = newState }
-
                         | RequestScan(force, ct, reply) ->
                             try
                                 let! newState =
                                     performScan host pipeline graph repoRoot loader jjGuard scanSignal state force ct
+
+                                match scanAgentRef.Value with
+                                | Some sa ->
+                                    Volatile.Write(&sa.CurrentState, newState.ScanState)
+                                    Volatile.Write(&sa.CurrentGeneration, newState.Generation)
+                                | None -> ()
 
                                 reply.Reply(())
                                 return! loop newState
@@ -866,6 +864,9 @@ module Daemon =
                       Generation = 0L
                       LastFingerprint = Set.empty })
 
+        let scanAgentWrapper = createScanAgent scanMailbox
+        scanAgentRef.Value <- Some scanAgentWrapper
+
         { Host = host
           Watcher = watcher
           Checker = checker
@@ -873,7 +874,7 @@ module Daemon =
           Graph = graph
           RepoRoot = repoRoot
           WorkspaceLoader = loader
-          ScanAgent = createScanAgent scanAgent
+          ScanAgent = scanAgentWrapper
           CancellationTokenRef = daemonCtRef
           Ready = new ManualResetEventSlim(false)
           ScanSignal = scanSignal
