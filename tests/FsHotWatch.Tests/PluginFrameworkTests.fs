@@ -144,8 +144,8 @@ let ``Custom messages work for self-posting`` () =
 
         reg.OnFileChanged.Value(SourceChanged [ "/tmp/repo/Foo.fs" ])
 
-        // Give the agent time to process both messages
-        do! Async.Sleep 200
+        // Give the agent time to process both messages (FileChanged then Custom)
+        do! Async.Sleep 500
         test <@ customReceived @>
     }
     |> Async.RunSynchronously

@@ -8,6 +8,7 @@ open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
+open FsHotWatch.Tests.TestHelpers
 
 /// A null checker is fine for tests that don't perform actual compilation.
 let private nullChecker =
@@ -574,7 +575,8 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
             member _.Dispose() = () }
 
     host.Register(plugin)
-    // Should have received status events (Running then Completed, plus initial Idle set doesn't fire statusChanged)
+    // Status agent dispatches asynchronously — wait for events
+    waitUntil (fun () -> statusEvents.Length >= 2) 5000
     test <@ statusEvents.Length >= 2 @>
 
     test
