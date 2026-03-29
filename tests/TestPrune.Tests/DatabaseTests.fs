@@ -459,6 +459,54 @@ module ``Route handler round-trip`` =
             let files = db.GetAllHandlerSourceFiles()
             test <@ files = Set.empty @>)
 
+module ``RebuildProjects with cache keys`` =
+
+    [<Fact>]
+    let ``RebuildProjects stores fileKeys and projectKeys atomically`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Mod.func"
+                        Kind = Function
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "" } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildProjects(
+                [ result ],
+                fileKeys = [ ("src/Mod.fs", "file-key-abc") ],
+                projectKeys = [ ("MyProject", "proj-key-123") ]
+            )
+
+            test <@ db.GetFileKey "src/Mod.fs" = Some "file-key-abc" @>
+            test <@ db.GetProjectKey "MyProject" = Some "proj-key-123" @>)
+
+    [<Fact>]
+    let ``RebuildProjects without optional keys does not clear existing keys`` () =
+        withDb (fun db ->
+            db.SetFileKey("src/Existing.fs", "existing-key")
+            db.SetProjectKey("ExistingProj", "existing-proj-key")
+
+            let result =
+                { Symbols =
+                    [ { FullName = "New.func"
+                        Kind = Function
+                        SourceFile = "src/New.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "" } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildProjects([ result ])
+
+            // Pre-existing keys should still be there
+            test <@ db.GetFileKey "src/Existing.fs" = Some "existing-key" @>
+            test <@ db.GetProjectKey "ExistingProj" = Some "existing-proj-key" @>)
+
 module ``Empty database queries`` =
 
     [<Fact>]
@@ -622,6 +670,158 @@ module ``File key storage`` =
             db.SetFileKey("src/B.fs", "key-b")
             test <@ db.GetFileKey "src/A.fs" = Some "key-a" @>
             test <@ db.GetFileKey "src/B.fs" = Some "key-b" @>)
+
+module ``symbolKindToString and round-trip`` =
+
+    [<Fact>]
+    let ``Property kind round-trips through database`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Mod.MyProp"
+                        Kind = Property
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = "" } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildProjects([ result ])
+
+            let symbols = db.GetSymbolsInFile "src/Mod.fs"
+            test <@ symbols.Length = 1 @>
+            test <@ symbols[0].Kind = Property @>
+            test <@ symbols[0].FullName = "Mod.MyProp" @>)
+
+    [<Fact>]
+    let ``DuCase kind round-trips through database`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Mod.MyDU.CaseA"
+                        Kind = DuCase
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = "" } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildProjects([ result ])
+
+            let symbols = db.GetSymbolsInFile "src/Mod.fs"
+            test <@ symbols.Length = 1 @>
+            test <@ symbols[0].Kind = DuCase @>)
+
+    [<Fact>]
+    let ``Module kind round-trips through database`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Mod"
+                        Kind = Module
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = "" } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildProjects([ result ])
+
+            let symbols = db.GetSymbolsInFile "src/Mod.fs"
+            test <@ symbols.Length = 1 @>
+            test <@ symbols[0].Kind = Module @>)
+
+module ``depKindToString and round-trip`` =
+
+    [<Fact>]
+    let ``UsesType dep kind round-trips through database`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "" }
+                      { FullName = "Lib.MyType"
+                        Kind = Type
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "" } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Lib.MyType"
+                        Kind = UsesType } ]
+                  TestMethods = [] }
+
+            db.RebuildProjects([ result ])
+
+            let deps = db.GetDependenciesFromFile "tests/Tests.fs"
+            test <@ deps.Length = 1 @>
+            test <@ deps[0].Kind = UsesType @>)
+
+    [<Fact>]
+    let ``PatternMatches dep kind round-trips through database`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "" }
+                      { FullName = "Lib.Case1"
+                        Kind = DuCase
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "" } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Lib.Case1"
+                        Kind = PatternMatches } ]
+                  TestMethods = [] }
+
+            db.RebuildProjects([ result ])
+
+            let deps = db.GetDependenciesFromFile "tests/Tests.fs"
+            test <@ deps.Length = 1 @>
+            test <@ deps[0].Kind = PatternMatches @>)
+
+    [<Fact>]
+    let ``References dep kind round-trips through database`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "" }
+                      { FullName = "Lib.someVal"
+                        Kind = Value
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "" } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Lib.someVal"
+                        Kind = References } ]
+                  TestMethods = [] }
+
+            db.RebuildProjects([ result ])
+
+            let deps = db.GetDependenciesFromFile "tests/Tests.fs"
+            test <@ deps.Length = 1 @>
+            test <@ deps[0].Kind = References @>)
 
 module ``GetDependenciesFromFile`` =
 

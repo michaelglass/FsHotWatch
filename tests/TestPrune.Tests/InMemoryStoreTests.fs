@@ -2,6 +2,7 @@ module TestPrune.Tests.InMemoryStoreTests
 
 open Xunit
 open Swensen.Unquote
+open TestPrune.AstAnalyzer
 open TestPrune.InMemoryStore
 open TestPrune.Tests.TestHelpers
 
@@ -105,3 +106,102 @@ module ``InMemoryStore basics`` =
         test <@ store.GetTestMethodsInFile "any.fs" |> List.isEmpty @>
         test <@ store.QueryAffectedTests [ "Any.symbol" ] |> List.isEmpty @>
         test <@ store.GetReachableSymbols [] |> Set.isEmpty @>
+
+    [<Fact>]
+    let ``GetFileKey always returns None`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        test <@ store.GetFileKey "src/Lib.fs" = None @>
+        test <@ store.GetFileKey "nonexistent.fs" = None @>
+
+    [<Fact>]
+    let ``GetProjectKey always returns None`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        test <@ store.GetProjectKey "MyProject" = None @>
+        test <@ store.GetProjectKey "nonexistent" = None @>
+
+    [<Fact>]
+    let ``GetReachableSymbols with empty list returns empty`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        test <@ store.GetReachableSymbols [] |> Set.isEmpty @>
+
+    [<Fact>]
+    let ``transitive closure handles cycles without infinite loop`` () =
+        // Build a graph with a cycle: A -> B -> C -> A
+        let cycleGraph =
+            { Symbols =
+                [ { FullName = "Mod.A"
+                    Kind = Function
+                    SourceFile = "src/Mod.fs"
+                    LineStart = 1
+                    LineEnd = 3
+                    ContentHash = "" }
+                  { FullName = "Mod.B"
+                    Kind = Function
+                    SourceFile = "src/Mod.fs"
+                    LineStart = 4
+                    LineEnd = 6
+                    ContentHash = "" }
+                  { FullName = "Mod.C"
+                    Kind = Function
+                    SourceFile = "src/Mod.fs"
+                    LineStart = 7
+                    LineEnd = 9
+                    ContentHash = "" } ]
+              Dependencies =
+                [ { FromSymbol = "Mod.A"
+                    ToSymbol = "Mod.B"
+                    Kind = Calls }
+                  { FromSymbol = "Mod.B"
+                    ToSymbol = "Mod.C"
+                    Kind = Calls }
+                  { FromSymbol = "Mod.C"
+                    ToSymbol = "Mod.A"
+                    Kind = Calls } ]
+              TestMethods = [] }
+
+        let store = fromAnalysisResults [ cycleGraph ]
+        // Forward reachability from A should reach all three
+        let reachable = store.GetReachableSymbols [ "Mod.A" ]
+        test <@ reachable.Contains "Mod.A" @>
+        test <@ reachable.Contains "Mod.B" @>
+        test <@ reachable.Contains "Mod.C" @>
+
+    [<Fact>]
+    let ``dependency from unknown symbol uses empty-string file grouping`` () =
+        // A dependency whose FromSymbol is not in the symbol list
+        // exercises the Option.defaultValue "" path
+        let graph =
+            { Symbols =
+                [ { FullName = "Mod.Target"
+                    Kind = Function
+                    SourceFile = "src/Mod.fs"
+                    LineStart = 1
+                    LineEnd = 3
+                    ContentHash = "" } ]
+              Dependencies =
+                [ { FromSymbol = "Unknown.Source"
+                    ToSymbol = "Mod.Target"
+                    Kind = Calls } ]
+              TestMethods = [] }
+
+        let store = fromAnalysisResults [ graph ]
+        // The dep from Unknown.Source gets grouped under "" file key
+        let depsFromEmpty = store.GetDependenciesFromFile ""
+        test <@ depsFromEmpty.Length = 1 @>
+        test <@ depsFromEmpty[0].FromSymbol = "Unknown.Source" @>
+
+    [<Fact>]
+    let ``test method from unknown symbol uses empty-string file grouping`` () =
+        let graph =
+            { Symbols = []
+              Dependencies = []
+              TestMethods =
+                [ { SymbolFullName = "Unknown.test1"
+                    TestProject = "Proj"
+                    TestClass = "Tests"
+                    TestMethod = "test1" } ] }
+
+        let store = fromAnalysisResults [ graph ]
+        let testsFromEmpty = store.GetTestMethodsInFile ""
+        test <@ testsFromEmpty.Length = 1 @>
+        test <@ testsFromEmpty[0].TestMethod = "test1" @>

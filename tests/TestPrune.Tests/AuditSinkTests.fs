@@ -179,3 +179,20 @@ module ``SQLite persistence`` =
             let (_, eventType, data) = stored[0]
             test <@ eventType = "SymbolChangeDetected" @>
             test <@ data.Contains("Removed") @>)
+
+    [<Fact>]
+    let ``createSqliteSink error handler does not crash on insert failure`` () =
+        // Create a sink with an insertEvent that always throws
+        let failingInsert (_runId: string, _ts: string, _eventType: string, _data: string) =
+            failwith "Simulated insert failure"
+
+        let sink = createSqliteSink failingInsert "fail-run"
+
+        // Post an event — the error handler should catch the exception and eprintfn
+        sink.Post(timestamp (IndexStartedEvent 1))
+        sink.Flush()
+
+        // If we reach here without an exception, the error handler worked.
+        // Post another event to confirm the mailbox processor is still alive.
+        sink.Post(timestamp (IndexCompletedEvent(1, 0, 0)))
+        sink.Flush()
