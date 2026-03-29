@@ -3,6 +3,7 @@ module TestPrune.Tests.SymbolDiffTests
 open Xunit
 open Swensen.Unquote
 open TestPrune.AstAnalyzer
+open TestPrune.Domain
 open TestPrune.SymbolDiff
 
 let private mkSymbol name kind lineStart lineEnd =
@@ -28,7 +29,7 @@ module ``No changes`` =
         let symbols =
             [ mkSymbol "Mod.funcA" Function 1 5; mkSymbol "Mod.funcB" Function 7 12 ]
 
-        let changes = detectChanges symbols symbols
+        let changes, _events = detectChanges symbols symbols
         test <@ changes |> List.isEmpty @>
 
 module ``Function body changed`` =
@@ -38,7 +39,7 @@ module ``Function body changed`` =
         let current = [ mkSymbol "Mod.funcA" Function 1 8 ]
         let stored = [ mkSymbol "Mod.funcA" Function 1 5 ]
 
-        let changes = detectChanges current stored
+        let changes, _events = detectChanges current stored
         test <@ changes = [ Modified "Mod.funcA" ] @>
 
 module ``New function added`` =
@@ -50,7 +51,7 @@ module ``New function added`` =
 
         let stored = [ mkSymbol "Mod.funcA" Function 1 5 ]
 
-        let changes = detectChanges current stored
+        let changes, _events = detectChanges current stored
         test <@ changes = [ Added "Mod.funcB" ] @>
 
 module ``Function removed`` =
@@ -62,7 +63,7 @@ module ``Function removed`` =
         let stored =
             [ mkSymbol "Mod.funcA" Function 1 5; mkSymbol "Mod.funcB" Function 7 12 ]
 
-        let changes = detectChanges current stored
+        let changes, _events = detectChanges current stored
         test <@ changes = [ Removed "Mod.funcB" ] @>
 
 module ``DU case added to existing type`` =
@@ -77,7 +78,7 @@ module ``DU case added to existing type`` =
         let stored =
             [ mkSymbol "Domain.MyDU" Type 1 3; mkSymbol "Domain.MyDU.CaseA" DuCase 2 2 ]
 
-        let changes = detectChanges current stored
+        let changes, _events = detectChanges current stored
         test <@ changes |> List.length = 2 @>
 
         test <@ changes |> List.contains (Modified "Domain.MyDU") @>
@@ -95,7 +96,7 @@ module ``Multiple changes in one file`` =
         let stored =
             [ mkSymbol "Mod.funcA" Function 1 5; mkSymbol "Mod.funcB" Function 7 12 ] // removed
 
-        let changes = detectChanges current stored
+        let changes, _events = detectChanges current stored
         test <@ changes |> List.length = 3 @>
 
         test <@ changes |> List.contains (Modified "Mod.funcA") @>
@@ -114,7 +115,7 @@ module ``Only whitespace changes`` =
         let stored =
             [ mkSymbol "Mod.funcA" Function 1 5; mkSymbol "Mod.funcB" Function 7 12 ]
 
-        let changes = detectChanges current stored
+        let changes, _events = detectChanges current stored
         test <@ changes |> List.isEmpty @>
 
 module ``Comment shift does not produce false Modified`` =
@@ -124,7 +125,7 @@ module ``Comment shift does not produce false Modified`` =
         let current = [ mkSymbolWithHash "Mod.funcA" Function 5 10 "hash-a" ]
         let stored = [ mkSymbolWithHash "Mod.funcA" Function 1 6 "hash-a" ]
 
-        let changes = detectChanges current stored
+        let changes, _events = detectChanges current stored
         test <@ changes |> List.isEmpty @>
 
     [<Fact>]
@@ -132,7 +133,7 @@ module ``Comment shift does not produce false Modified`` =
         let current = [ mkSymbolWithHash "Mod.funcA" Function 1 5 "hash-new" ]
         let stored = [ mkSymbolWithHash "Mod.funcA" Function 1 5 "hash-old" ]
 
-        let changes = detectChanges current stored
+        let changes, _events = detectChanges current stored
         test <@ changes = [ Modified "Mod.funcA" ] @>
 
 module ``changedSymbolNames extracts names`` =
@@ -143,3 +144,35 @@ module ``changedSymbolNames extracts names`` =
 
         let names = changedSymbolNames changes
         test <@ names = [ "Mod.funcA"; "Mod.funcB"; "Mod.funcC" ] @>
+
+module ``Event emission`` =
+
+    [<Fact>]
+    let ``modified symbol emits SymbolChangeDetectedEvent`` () =
+        let stored =
+            [ { FullName = "Lib.func"
+                Kind = Function
+                SourceFile = "src/Lib.fs"
+                LineStart = 1
+                LineEnd = 5
+                ContentHash = "old" } ]
+
+        let current =
+            [ { FullName = "Lib.func"
+                Kind = Function
+                SourceFile = "src/Lib.fs"
+                LineStart = 1
+                LineEnd = 5
+                ContentHash = "new" } ]
+
+        let changes, events = detectChanges current stored
+        test <@ changes.Length = 1 @>
+
+        let changeEvents =
+            events
+            |> List.choose (fun e ->
+                match e with
+                | SymbolChangeDetectedEvent _ -> Some e
+                | _ -> None)
+
+        test <@ changeEvents.Length = 1 @>

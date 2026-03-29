@@ -116,7 +116,7 @@ let ``counter starts at zero`` () =
                     else
                         s)
 
-            let changes = detectChanges modifiedSymbols storedSymbols
+            let changes, _events = detectChanges modifiedSymbols storedSymbols
             let changedNames = changedSymbolNames changes
 
             // Only "add" should be changed
@@ -177,7 +177,7 @@ let testMethod () = helperFunc 5 |> ignore
                     else
                         s)
 
-            let changes = detectChanges modifiedSymbols storedSymbols
+            let changes, _events = detectChanges modifiedSymbols storedSymbols
             let changedNames = changedSymbolNames changes
 
             test
@@ -241,7 +241,7 @@ let testDescribe () = describe (Circle 1.0) |> ignore
                     else
                         s)
 
-            let changes = detectChanges modifiedSymbols storedSymbols
+            let changes, _events = detectChanges modifiedSymbols storedSymbols
             let changedNames = changedSymbolNames changes
 
             test

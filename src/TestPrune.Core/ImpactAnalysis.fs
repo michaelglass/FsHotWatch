@@ -54,13 +54,7 @@ let selectTests
                         let currentSymbols =
                             currentSymbolsByFile |> Map.tryFind file |> Option.defaultValue []
 
-                        let fileChanges = detectChanges currentSymbols storedSymbols
-
-                        let changeEvents =
-                            fileChanges
-                            |> List.map (fun change ->
-                                let symbolName = changedSymbolNames [ change ] |> List.head
-                                SymbolChangeDetectedEvent(file, symbolName, changeKindStr change))
+                        let fileChanges, changeEvents = detectChanges currentSymbols storedSymbols
 
                         (newFile, changes @ fileChanges, events @ changeEvents))
                 (false, [], [])
