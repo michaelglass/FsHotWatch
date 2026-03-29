@@ -4,6 +4,7 @@ open System
 open Xunit
 open Swensen.Unquote
 open TestPrune.AstAnalyzer
+open TestPrune.Domain
 open TestPrune.ImpactAnalysis
 open TestPrune.Tests.TestHelpers
 
@@ -65,7 +66,7 @@ module ``Changed symbol with dependent test`` =
                           LineEnd = 10
                           ContentHash = "changed" } ] ]
 
-            let result =
+            let result, _events =
                 selectTests db.GetSymbolsInFile db.QueryAffectedTests [ "src/Lib.fs" ] currentSymbols
 
             match result with
@@ -92,7 +93,7 @@ module ``Changed symbol with transitive dependent test`` =
                           LineEnd = 8
                           ContentHash = "changed" } ] ]
 
-            let result =
+            let result, _events =
                 selectTests db.GetSymbolsInFile db.QueryAffectedTests [ "src/Domain.fs" ] currentSymbols
 
             match result with
@@ -119,7 +120,7 @@ module ``Changed symbol with no dependent tests`` =
                           LineEnd = 10
                           ContentHash = "changed" } ] ]
 
-            let result =
+            let result, _events =
                 selectTests db.GetSymbolsInFile db.QueryAffectedTests [ "src/Other.fs" ] currentSymbols
 
             match result with
@@ -193,7 +194,7 @@ module ``Multiple changed symbols`` =
                           LineEnd = 18
                           ContentHash = "changed-b" } ] ]
 
-            let result =
+            let result, _events =
                 selectTests db.GetSymbolsInFile db.QueryAffectedTests [ "src/Lib.fs" ] currentSymbols
 
             match result with
@@ -211,7 +212,9 @@ module ``No changes`` =
     let ``empty changed files returns empty subset`` () =
         withDb (fun db ->
             db.RebuildProjects([ standardGraph ])
-            let result = selectTests db.GetSymbolsInFile db.QueryAffectedTests [] Map.empty
+
+            let result, _events =
+                selectTests db.GetSymbolsInFile db.QueryAffectedTests [] Map.empty
 
             match result with
             | RunSubset tests -> test <@ tests |> List.isEmpty @>
@@ -235,7 +238,7 @@ module ``New file not indexed`` =
                           LineEnd = 5
                           ContentHash = "" } ] ]
 
-            let result =
+            let result, _events =
                 selectTests db.GetSymbolsInFile db.QueryAffectedTests [ "src/NewModule.fs" ] currentSymbols
 
             match result with
@@ -249,7 +252,7 @@ module ``fsproj changed`` =
         withDb (fun db ->
             db.RebuildProjects([ standardGraph ])
 
-            let result =
+            let result, _events =
                 selectTests db.GetSymbolsInFile db.QueryAffectedTests [ "src/MyProject.fsproj" ] Map.empty
 
             match result with
@@ -261,7 +264,8 @@ module ``Empty changed files`` =
     [<Fact>]
     let ``empty list returns empty subset`` () =
         withDb (fun db ->
-            let result = selectTests db.GetSymbolsInFile db.QueryAffectedTests [] Map.empty
+            let result, _events =
+                selectTests db.GetSymbolsInFile db.QueryAffectedTests [] Map.empty
 
             match result with
             | RunSubset tests -> test <@ tests |> List.isEmpty @>
@@ -277,7 +281,7 @@ module ``File with no stored symbols and no current symbols`` =
             // "src/Empty.fs" was never indexed (no stored symbols) and has no current symbols either
             let currentSymbols = Map.ofList [ "src/Empty.fs", [] ]
 
-            let result =
+            let result, _events =
                 selectTests db.GetSymbolsInFile db.QueryAffectedTests [ "src/Empty.fs" ] currentSymbols
 
             match result with
@@ -294,7 +298,7 @@ module ``File that had symbols but now has none`` =
             // src/Lib.fs has stored symbols (Lib.funcB) but current symbols list is empty — all removed
             let currentSymbols = Map.ofList [ "src/Lib.fs", [] ]
 
-            let result =
+            let result, _events =
                 selectTests db.GetSymbolsInFile db.QueryAffectedTests [ "src/Lib.fs" ] currentSymbols
 
             match result with
@@ -302,3 +306,65 @@ module ``File that had symbols but now has none`` =
                 test <@ tests.Length = 1 @>
                 test <@ tests[0].TestMethod = "testA" @>
             | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{reason}")
+
+module ``Event emission`` =
+
+    [<Fact>]
+    let ``symbol change emits SymbolChangeDetectedEvent`` () =
+        withDb (fun db ->
+            db.RebuildProjects([ standardGraph ])
+
+            let currentSymbols =
+                Map.ofList
+                    [ "src/Lib.fs",
+                      [ { FullName = "Lib.funcB"
+                          Kind = Function
+                          SourceFile = "src/Lib.fs"
+                          LineStart = 1
+                          LineEnd = 10
+                          ContentHash = "changed" } ] ]
+
+            let _result, events =
+                selectTests db.GetSymbolsInFile db.QueryAffectedTests [ "src/Lib.fs" ] currentSymbols
+
+            let symbolChangeEvents =
+                events
+                |> List.choose (fun e ->
+                    match e with
+                    | SymbolChangeDetectedEvent(file, name, kind) -> Some(file, name, kind)
+                    | _ -> None)
+
+            test <@ symbolChangeEvents.Length >= 1 @>
+
+            test
+                <@
+                    symbolChangeEvents
+                    |> List.exists (fun (file, name, _kind) -> file = "src/Lib.fs" && name = "Lib.funcB")
+                @>)
+
+    [<Fact>]
+    let ``fsproj change emits no symbol events`` () =
+        withDb (fun db ->
+            db.RebuildProjects([ standardGraph ])
+
+            let _result, events =
+                selectTests db.GetSymbolsInFile db.QueryAffectedTests [ "src/MyProject.fsproj" ] Map.empty
+
+            let symbolChangeEvents =
+                events
+                |> List.choose (fun e ->
+                    match e with
+                    | SymbolChangeDetectedEvent _ -> Some e
+                    | _ -> None)
+
+            test <@ symbolChangeEvents |> List.isEmpty @>)
+
+    [<Fact>]
+    let ``empty changes emits no events`` () =
+        withDb (fun db ->
+            db.RebuildProjects([ standardGraph ])
+
+            let _result, events =
+                selectTests db.GetSymbolsInFile db.QueryAffectedTests [] Map.empty
+
+            test <@ events |> List.isEmpty @>)

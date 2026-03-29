@@ -1,6 +1,7 @@
 module TestPrune.ImpactAnalysis
 
 open TestPrune.AstAnalyzer
+open TestPrune.Domain
 open TestPrune.SymbolDiff
 
 /// Result of test impact analysis: either a subset of affected tests or run-all with a reason.
@@ -19,20 +20,26 @@ let selectTests
     (queryAffectedTests: string list -> TestMethodInfo list)
     (changedFiles: string list)
     (currentSymbolsByFile: Map<string, SymbolInfo list>)
-    : TestSelection =
+    : TestSelection * AnalysisEvent list =
     if changedFiles.IsEmpty then
-        RunSubset []
+        RunSubset [], []
     elif DiffParser.hasFsprojChanges changedFiles then
-        RunAll "fsproj file changed"
+        RunAll "fsproj file changed", []
     else
         let fsFiles =
             changedFiles
             |> List.filter (fun f -> not (f.EndsWith(".fsproj", System.StringComparison.OrdinalIgnoreCase)))
 
-        let (hasNewFile, allChangedNames) =
+        let changeKindStr change =
+            match change with
+            | Modified _ -> "Modified"
+            | Added _ -> "Added"
+            | Removed _ -> "Removed"
+
+        let (hasNewFile, allChanges, symbolEvents) =
             fsFiles
             |> List.fold
-                (fun (newFile, changedNames) file ->
+                (fun (newFile, changes, events) file ->
                     let storedSymbols = getStoredSymbols file
 
                     if storedSymbols.IsEmpty then
@@ -40,20 +47,38 @@ let selectTests
                             currentSymbolsByFile |> Map.tryFind file |> Option.defaultValue []
 
                         if not currentSymbols.IsEmpty then
-                            (true, changedNames)
+                            (true, changes, events)
                         else
-                            (newFile, changedNames)
+                            (newFile, changes, events)
                     else
                         let currentSymbols =
                             currentSymbolsByFile |> Map.tryFind file |> Option.defaultValue []
 
-                        let changes = detectChanges currentSymbols storedSymbols
-                        let names = changedSymbolNames changes
-                        (newFile, changedNames @ names))
-                (false, [])
+                        let fileChanges = detectChanges currentSymbols storedSymbols
+
+                        let changeEvents =
+                            fileChanges
+                            |> List.map (fun change ->
+                                let symbolName = changedSymbolNames [ change ] |> List.head
+                                SymbolChangeDetectedEvent(file, symbolName, changeKindStr change))
+
+                        (newFile, changes @ fileChanges, events @ changeEvents))
+                (false, [], [])
 
         if hasNewFile then
-            RunAll "new file not yet indexed"
+            RunAll "new file not yet indexed", symbolEvents
         else
+            let allChangedNames = changedSymbolNames allChanges
             let affectedTests = queryAffectedTests allChangedNames
-            RunSubset affectedTests
+
+            let testEvents =
+                affectedTests
+                |> List.map (fun testMethod ->
+                    let name, kind =
+                        match allChanges with
+                        | change :: _ -> changedSymbolNames [ change ] |> List.head, changeKindStr change
+                        | [] -> "", "Modified"
+
+                    TestSelectedEvent(testMethod.SymbolFullName, SymbolChanged(name, kind)))
+
+            RunSubset affectedTests, symbolEvents @ testEvents

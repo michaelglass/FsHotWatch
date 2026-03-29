@@ -463,7 +463,7 @@ let analyzeChanges
                 let failedFiles = parseFailures |> List.rev |> String.concat ", "
                 Ok(RunAll $"could not parse: %s{failedFiles}", changedFiles)
             else
-                let selection =
+                let selection, _events =
                     selectTests db.GetSymbolsInFile db.QueryAffectedTests changedFiles currentSymbolsByFile
 
                 Ok(selection, changedFiles)
