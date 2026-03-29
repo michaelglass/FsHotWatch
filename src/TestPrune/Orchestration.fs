@@ -6,8 +6,10 @@ open System.Security.Cryptography
 open System.Text
 open FSharp.Compiler.CodeAnalysis
 open TestPrune.AstAnalyzer
+open TestPrune.AuditSink
 open TestPrune.Database
 open TestPrune.DiffParser
+open TestPrune.Domain
 open TestPrune.ImpactAnalysis
 open TestPrune.DeadCode
 open TestPrune.ProjectLoader
@@ -124,7 +126,8 @@ type ProjectResult =
       TestCount: int
       SkippedFiles: int
       AnalyzedFiles: int
-      TotalFiles: int }
+      TotalFiles: int
+      Events: AnalysisEvent list }
 
 /// Sort project infos into topological levels based on project references.
 let topoLevels
@@ -180,7 +183,8 @@ let indexProject
               TestCount = 0
               SkippedFiles = 0
               AnalyzedFiles = 0
-              TotalFiles = compileFiles.Length }
+              TotalFiles = compileFiles.Length
+              Events = [ ProjectCacheHitEvent projName ] }
         | _ ->
             let projOptions = lazy (getOptions checker fsprojPath)
 
@@ -191,6 +195,7 @@ let indexProject
             let mutable firstChangedIndex = None
             let mutable localFileKeys = []
             let mutable localSkippedFiles = 0
+            let mutable localEvents = []
 
             let results =
                 compileFiles
@@ -215,6 +220,7 @@ let indexProject
 
                         if cached then
                             localSkippedFiles <- localSkippedFiles + 1
+                            localEvents <- FileCacheHitEvent(relPath, "file unchanged") :: localEvents
 
                             Some
                                 {| Symbols = db.GetSymbolsInFile(relPath)
@@ -235,11 +241,20 @@ let indexProject
 
                                 localFileKeys <- (relPath, fileKey) :: localFileKeys
 
+                                let symbols = normalizeSymbolPaths repoRoot result.Symbols
+                                let deps = result.Dependencies
+
+                                let testMethods =
+                                    result.TestMethods |> List.map (fun t -> { t with TestProject = projName })
+
+                                localEvents <-
+                                    FileAnalyzedEvent(relPath, symbols.Length, deps.Length, testMethods.Length)
+                                    :: localEvents
+
                                 Some
-                                    {| Symbols = normalizeSymbolPaths repoRoot result.Symbols
-                                       Dependencies = result.Dependencies
-                                       TestMethods =
-                                        result.TestMethods |> List.map (fun t -> { t with TestProject = projName }) |}
+                                    {| Symbols = symbols
+                                       Dependencies = deps
+                                       TestMethods = testMethods |}
                             | Error msg ->
                                 eprintfn $"  Warning: %s{sourceFile}: %s{msg}"
                                 None)
@@ -255,6 +270,9 @@ let indexProject
             eprintfn
                 $"  %s{projName}: %d{combined.Symbols.Length} symbols, %d{combined.Dependencies.Length} deps, %d{combined.TestMethods.Length} tests (%d{analyzedFiles}/%d{fileCount} files analyzed)"
 
+            let allEvents =
+                (ProjectIndexedEvent(projName, fileCount) :: localEvents) |> List.rev
+
             { ProjectName = projName
               ProjectPath = fsprojPath
               Analysis = if analyzedFiles > 0 then Some combined else None
@@ -266,7 +284,8 @@ let indexProject
               TestCount = combined.TestMethods.Length
               SkippedFiles = localSkippedFiles
               AnalyzedFiles = analyzedFiles
-              TotalFiles = fileCount }
+              TotalFiles = fileCount
+              Events = allEvents }
     with ex ->
         eprintfn $"  Error processing %s{projName}: %s{ex.Message}"
 
@@ -281,7 +300,8 @@ let indexProject
           TestCount = 0
           SkippedFiles = 0
           AnalyzedFiles = 0
-          TotalFiles = 0 }
+          TotalFiles = 0
+          Events = [] }
 
 /// Run the index command with injectable build runner and project options provider.
 let runIndexWith
@@ -290,6 +310,7 @@ let runIndexWith
     (repoRoot: string)
     (checker: FSharpChecker)
     (parallelism: int)
+    (auditSink: AuditSink)
     : int =
     let dbPath = Path.Combine(repoRoot, ".test-prune.db")
     let db = Database.create dbPath
@@ -319,6 +340,8 @@ let runIndexWith
 
         let levels = topoLevels projectPathSet projectInfos
 
+        auditSink.Post(timestamp (IndexStartedEvent projectInfos.Length))
+
         let mutable allProjectResults = []
         let mutable reindexedSet = Set.empty
 
@@ -333,6 +356,10 @@ let runIndexWith
                     |> fun tasks -> Async.Parallel(tasks, maxDegreeOfParallelism = parallelism)
                     |> Async.RunSynchronously
                     |> Array.toList
+
+            for r in levelResults do
+                for event in r.Events do
+                    auditSink.Post(timestamp event)
 
             let newReindexed =
                 levelResults
@@ -367,6 +394,8 @@ let runIndexWith
         if skippedFiles > 0 then
             eprintfn $"Skipped %d{skippedFiles} unchanged file(s)"
 
+        auditSink.Post(timestamp (IndexCompletedEvent(totalSymbols, totalDeps, totalTests)))
+
         0
 
 type DiffProvider = unit -> Result<string, string>
@@ -377,11 +406,14 @@ let analyzeChanges
     (repoRoot: string)
     (db: Database)
     (checker: FSharpChecker)
+    (auditSink: AuditSink)
     : Result<TestSelection * string list, string> =
     match getDiff () with
     | Error msg -> Error msg
     | Ok diffText ->
         let changedFiles = parseChangedFiles diffText
+
+        auditSink.Post(timestamp (DiffParsedEvent changedFiles))
 
         if changedFiles.IsEmpty then
             Ok(RunSubset [], [])
@@ -411,13 +443,16 @@ let analyzeChanges
                 let failedFiles = parseFailures |> List.rev |> String.concat ", "
                 Ok(RunAll $"could not parse: %s{failedFiles}", changedFiles)
             else
-                let selection, _events =
+                let selection, events =
                     selectTests db.GetSymbolsInFile db.QueryAffectedTests changedFiles currentSymbolsByFile
+
+                for event in events do
+                    auditSink.Post(timestamp event)
 
                 Ok(selection, changedFiles)
 
 /// Run the status command with an injectable diff provider.
-let runStatusWith (getDiff: DiffProvider) (repoRoot: string) : int =
+let runStatusWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink) : int =
     let dbPath = Path.Combine(repoRoot, ".test-prune.db")
 
     if not (File.Exists(dbPath)) then
@@ -427,7 +462,7 @@ let runStatusWith (getDiff: DiffProvider) (repoRoot: string) : int =
         let db = Database.create dbPath
         let checker = FSharpChecker.Create()
 
-        match analyzeChanges getDiff repoRoot db checker with
+        match analyzeChanges getDiff repoRoot db checker auditSink with
         | Error msg ->
             eprintfn $"Error: %s{msg}"
             1
@@ -463,7 +498,7 @@ let runStatusWith (getDiff: DiffProvider) (repoRoot: string) : int =
                 0
 
 /// Run the run command with an injectable diff provider.
-let runRunWith (getDiff: DiffProvider) (repoRoot: string) : int =
+let runRunWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink) : int =
     let dbPath = Path.Combine(repoRoot, ".test-prune.db")
 
     if not (File.Exists(dbPath)) then
@@ -473,7 +508,7 @@ let runRunWith (getDiff: DiffProvider) (repoRoot: string) : int =
         let db = Database.create dbPath
         let checker = FSharpChecker.Create()
 
-        match analyzeChanges getDiff repoRoot db checker with
+        match analyzeChanges getDiff repoRoot db checker auditSink with
         | Error msg ->
             eprintfn $"Error: %s{msg}"
             1
@@ -522,7 +557,7 @@ let runRunWith (getDiff: DiffProvider) (repoRoot: string) : int =
                 exitCode
 
 /// Run the dead-code command: detect unreachable symbols from entry points.
-let runDeadCode (repoRoot: string) (entryPatterns: string list) (includeTests: bool) : int =
+let runDeadCode (repoRoot: string) (entryPatterns: string list) (includeTests: bool) (auditSink: AuditSink) : int =
     let dbPath = Path.Combine(repoRoot, ".test-prune.db")
 
     if not (File.Exists(dbPath)) then
@@ -535,7 +570,10 @@ let runDeadCode (repoRoot: string) (entryPatterns: string list) (includeTests: b
         let entryPoints = findEntryPoints allNames entryPatterns
         let reachable = db.GetReachableSymbols(entryPoints)
         let testMethodNames = db.GetTestMethodSymbolNames()
-        let result, _events = findDeadCode allSymbols reachable testMethodNames includeTests
+        let result, events = findDeadCode allSymbols reachable testMethodNames includeTests
+
+        for event in events do
+            auditSink.Post(timestamp event)
 
         printfn "Dead code analysis:"
         printfn $"  Total symbols: %d{result.TotalSymbols}"

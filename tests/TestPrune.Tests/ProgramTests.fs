@@ -4,6 +4,7 @@ open System
 open System.IO
 open Xunit
 open Swensen.Unquote
+open TestPrune.AuditSink
 open TestPrune.Program
 open TestPrune.Orchestration
 open TestPrune.AstAnalyzer
@@ -257,7 +258,7 @@ module ``analyzeChanges`` =
             let checker = makeChecker ()
             let fakeDiff: DiffProvider = fun () -> Error "not a repo"
 
-            let result = analyzeChanges fakeDiff tmp db checker
+            let result = analyzeChanges fakeDiff tmp db checker (createNoopSink ())
             test <@ Result.isError result @>
 
             match result with
@@ -278,7 +279,7 @@ module ``analyzeChanges`` =
             let checker = makeChecker ()
             let fakeDiff: DiffProvider = fun () -> Ok ""
 
-            let result = analyzeChanges fakeDiff tmp db checker
+            let result = analyzeChanges fakeDiff tmp db checker (createNoopSink ())
 
             match result with
             | Ok(RunSubset [], _) -> ()
@@ -308,7 +309,7 @@ module ``analyzeChanges`` =
 
             let fakeDiff: DiffProvider = fun () -> Ok fsprojDiff
 
-            let result = analyzeChanges fakeDiff tmp db checker
+            let result = analyzeChanges fakeDiff tmp db checker (createNoopSink ())
 
             match result with
             | Ok(RunAll _, _) -> ()
@@ -340,7 +341,7 @@ module ``runDeadCode`` =
         Directory.CreateDirectory(tmpDir) |> ignore
 
         try
-            test <@ runDeadCode tmpDir [ "*.main" ] false = 1 @>
+            test <@ runDeadCode tmpDir [ "*.main" ] false (createNoopSink ()) = 1 @>
         finally
             Directory.Delete(tmpDir, true)
 
@@ -355,7 +356,7 @@ module ``runDeadCode`` =
         Console.SetOut(sw)
 
         try
-            test <@ runDeadCode tmpDir [ "*.main" ] false = 0 @>
+            test <@ runDeadCode tmpDir [ "*.main" ] false (createNoopSink ()) = 0 @>
         finally
             Console.SetOut(oldOut)
             Directory.Delete(tmpDir, true)
@@ -374,7 +375,7 @@ module ``runStatusWith`` =
             Console.SetError(sw)
 
             try
-                test <@ runStatusWith fakeDiff tmpDir = 1 @>
+                test <@ runStatusWith fakeDiff tmpDir (createNoopSink ()) = 1 @>
             finally
                 Console.SetError(oldErr)
         finally
@@ -392,7 +393,7 @@ module ``runStatusWith`` =
         Console.SetOut(sw)
 
         try
-            test <@ runStatusWith fakeDiff tmpDir = 0 @>
+            test <@ runStatusWith fakeDiff tmpDir (createNoopSink ()) = 0 @>
         finally
             Console.SetOut(oldOut)
             Directory.Delete(tmpDir, true)
@@ -409,7 +410,7 @@ module ``runStatusWith`` =
         Console.SetError(sw)
 
         try
-            test <@ runStatusWith fakeDiff tmpDir = 1 @>
+            test <@ runStatusWith fakeDiff tmpDir (createNoopSink ()) = 1 @>
         finally
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)
@@ -426,7 +427,7 @@ module ``runRunWith`` =
         Console.SetError(sw)
 
         try
-            test <@ runRunWith fakeDiff tmpDir = 1 @>
+            test <@ runRunWith fakeDiff tmpDir (createNoopSink ()) = 1 @>
         finally
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)
@@ -443,7 +444,7 @@ module ``runRunWith`` =
         Console.SetOut(sw)
 
         try
-            test <@ runRunWith fakeDiff tmpDir = 0 @>
+            test <@ runRunWith fakeDiff tmpDir (createNoopSink ()) = 0 @>
         finally
             Console.SetOut(oldOut)
             Directory.Delete(tmpDir, true)
@@ -491,7 +492,7 @@ module ``runIndexWith`` =
         Console.SetError(sw)
 
         try
-            test <@ runIndexWith failBuild scriptOptions tmpDir testChecker 1 = 1 @>
+            test <@ runIndexWith failBuild scriptOptions tmpDir testChecker 1 (createNoopSink ()) = 1 @>
         finally
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)
@@ -521,7 +522,9 @@ module ``runIndexWith`` =
         Console.SetError(sw)
 
         try
-            let exitCode = runIndexWith successBuild scriptOptions tmpDir testChecker 1
+            let exitCode =
+                runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ())
+
             test <@ exitCode = 0 @>
 
             // Verify the DB was populated
@@ -542,7 +545,7 @@ module ``runIndexWith`` =
         Console.SetError(sw)
 
         try
-            test <@ runIndexWith successBuild scriptOptions tmpDir testChecker 1 = 0 @>
+            test <@ runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ()) = 0 @>
         finally
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)
@@ -570,7 +573,8 @@ module ``runIndexWith`` =
 
         try
             // First index populates the hash
-            runIndexWith successBuild scriptOptions tmpDir testChecker 1 |> ignore
+            runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ())
+            |> ignore
 
             // Second index with a getOptions that would fail if called
             let mutable getOptionsCalled = false
@@ -580,7 +584,9 @@ module ``runIndexWith`` =
                     getOptionsCalled <- true
                     scriptOptions checker fsprojPath
 
-            let exitCode = runIndexWith successBuild trackingOptions tmpDir testChecker 1
+            let exitCode =
+                runIndexWith successBuild trackingOptions tmpDir testChecker 1 (createNoopSink ())
+
             test <@ exitCode = 0 @>
             test <@ getOptionsCalled = false @>
         finally
@@ -610,7 +616,8 @@ module ``runIndexWith`` =
 
         try
             // First index: analyzes Lib.fs
-            runIndexWith successBuild scriptOptions tmpDir testChecker 1 |> ignore
+            runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ())
+            |> ignore
 
             let dbPath = Path.Combine(tmpDir, ".test-prune.db")
             let db = Database.create dbPath
@@ -635,7 +642,8 @@ module ``runIndexWith`` =
             File.WriteAllText(Path.Combine(srcDir, "Lib2.fs"), "module Lib2\nlet mul x y = x * y\n")
 
             // Second index: project hash changed (new file), but Lib.fs unchanged
-            runIndexWith successBuild scriptOptions tmpDir testChecker 1 |> ignore
+            runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ())
+            |> ignore
 
             // Lib.fs file key should be unchanged (it was loaded from cache, not re-analyzed)
             test <@ db.GetFileKey(relPath) = originalFileKey @>
@@ -723,14 +731,15 @@ module ``Example solution integration`` =
             Console.SetError(oldErr)
 
     let private indexExample (root: string) =
-        suppressError (fun () -> runIndexWith successBuild scriptOptions root exampleChecker 1)
+        suppressError (fun () -> runIndexWith successBuild scriptOptions root exampleChecker 1 (createNoopSink ()))
         |> ignore
 
     [<Fact>]
     let ``runIndexWith indexes the example solution`` () =
         withExampleCopy (fun root ->
             let exitCode =
-                suppressError (fun () -> runIndexWith successBuild scriptOptions root exampleChecker 1)
+                suppressError (fun () ->
+                    runIndexWith successBuild scriptOptions root exampleChecker 1 (createNoopSink ()))
 
             test <@ exitCode = 0 @>
 
@@ -757,7 +766,10 @@ module ``Example solution integration`` =
             indexExample root
 
             let fakeDiff: DiffProvider = fun () -> Ok ""
-            let exitCode = suppressError (fun () -> runStatusWith fakeDiff root)
+
+            let exitCode =
+                suppressError (fun () -> runStatusWith fakeDiff root (createNoopSink ()))
+
             test <@ exitCode = 0 @>)
 
     [<Fact>]
@@ -774,7 +786,10 @@ module ``Example solution integration`` =
                 + "+new\n"
 
             let fakeDiff: DiffProvider = fun () -> Ok fsprojDiff
-            let exitCode = suppressError (fun () -> runStatusWith fakeDiff root)
+
+            let exitCode =
+                suppressError (fun () -> runStatusWith fakeDiff root (createNoopSink ()))
+
             test <@ exitCode = 0 @>)
 
     [<Fact>]
@@ -783,5 +798,8 @@ module ``Example solution integration`` =
             indexExample root
 
             let fakeDiff: DiffProvider = fun () -> Ok ""
-            let exitCode = suppressError (fun () -> runRunWith fakeDiff root)
+
+            let exitCode =
+                suppressError (fun () -> runRunWith fakeDiff root (createNoopSink ()))
+
             test <@ exitCode = 0 @>)

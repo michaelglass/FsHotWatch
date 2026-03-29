@@ -3,6 +3,7 @@ module TestPrune.Program
 open System
 open System.Diagnostics
 open System.IO
+open TestPrune.AuditSink
 open TestPrune.Orchestration
 open TestPrune.ProjectLoader
 
@@ -107,7 +108,8 @@ let dotnetBuildRunner: BuildRunner =
 /// Run the index command: build projects, then parse with real project options.
 let runIndex (repoRoot: string) (parallelism: int) : int =
     let checker = createChecker ()
-    runIndexWith dotnetBuildRunner getProjectOptions repoRoot checker parallelism
+    let auditSink = createNoopSink ()
+    runIndexWith dotnetBuildRunner getProjectOptions repoRoot checker parallelism auditSink
 
 /// Get jj diff output.
 let jjDiffProvider: DiffProvider =
@@ -132,10 +134,14 @@ let jjDiffProvider: DiffProvider =
             Error $"Failed to run jj: %s{ex.Message}"
 
 /// Run the status command: show what would run without executing.
-let runStatus (repoRoot: string) : int = runStatusWith jjDiffProvider repoRoot
+let runStatus (repoRoot: string) : int =
+    let auditSink = createNoopSink ()
+    runStatusWith jjDiffProvider repoRoot auditSink
 
 /// Run the run command: determine and execute affected tests.
-let runRun (repoRoot: string) : int = runRunWith jjDiffProvider repoRoot
+let runRun (repoRoot: string) : int =
+    let auditSink = createNoopSink ()
+    runRunWith jjDiffProvider repoRoot auditSink
 
 let runCommand (parsed: ParsedCommand) : int =
     let repoRoot =
@@ -153,7 +159,9 @@ let runCommand (parsed: ParsedCommand) : int =
     | Index -> runIndex repoRoot parsed.Parallelism
     | Run -> runRun repoRoot
     | Status -> runStatus repoRoot
-    | DeadCodeCmd(patterns, includeTests) -> runDeadCode repoRoot patterns includeTests
+    | DeadCodeCmd(patterns, includeTests) ->
+        let auditSink = createNoopSink ()
+        runDeadCode repoRoot patterns includeTests auditSink
     | Help ->
         showHelp ()
         0
