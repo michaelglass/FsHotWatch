@@ -46,8 +46,15 @@ let ``command does not run for non-matching files`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    // Give the agent time to process the event (it should be a no-op)
-    System.Threading.Thread.Sleep(200)
+    // No matching files — wait briefly for agent to process the no-op
+    waitUntil
+        (fun () ->
+            match host.GetStatus("run-scripts") with
+            | Some(Completed _)
+            | Some(Failed _) -> true
+            | _ -> false)
+        1000
+    |> ignore
 
     let status = host.GetStatus("run-scripts")
     test <@ status.IsSome @>
@@ -134,8 +141,14 @@ let ``command ignores SolutionChanged`` () =
 
     host.EmitFileChanged(SolutionChanged "test.sln")
 
-    // Give the agent time to process the event (it should be a no-op)
-    System.Threading.Thread.Sleep(200)
+    // SolutionChanged is ignored — poll briefly; will time out at Idle (expected)
+    waitUntil
+        (fun () ->
+            match host.GetStatus("sln-watcher") with
+            | Some(Completed _)
+            | Some(Failed _) -> true
+            | _ -> false)
+        1000
 
     let status = host.GetStatus("sln-watcher")
     test <@ status.IsSome @>
@@ -202,8 +215,14 @@ let ``status command returns not run when no files matched`` () =
     // No files match, so command never runs
     host.EmitFileChanged(SourceChanged [ "file.txt" ])
 
-    // Give the agent time to process the event (it should be a no-op)
-    System.Threading.Thread.Sleep(200)
+    // No matching files — poll briefly; will time out at Idle (expected)
+    waitUntil
+        (fun () ->
+            match host.GetStatus("no-match") with
+            | Some(Completed _)
+            | Some(Failed _) -> true
+            | _ -> false)
+        1000
 
     let result = host.RunCommand("no-match-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>

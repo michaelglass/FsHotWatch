@@ -307,5 +307,5 @@ module IpcClient =
 
             pipe.ConnectAsync(500).Wait()
             true
-        with _ ->
+        with _ex ->
             false

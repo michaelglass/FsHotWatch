@@ -135,8 +135,14 @@ let ``coverage plugin skips check when no test results`` () =
 
     host.EmitTestCompleted(testResults)
 
-    // Give the agent time to process
-    System.Threading.Thread.Sleep(200)
+    // Empty results — handler returns early. Poll briefly; will time out at Idle (expected)
+    waitUntil
+        (fun () ->
+            match host.GetStatus("coverage") with
+            | Some(Completed _)
+            | Some(Failed _) -> true
+            | _ -> false)
+        1000
 
     // Status should remain Idle since the handler returns early
     let status = host.GetStatus("coverage")

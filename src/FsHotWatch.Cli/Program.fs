@@ -265,12 +265,12 @@ let private killStaleDaemon (repoRoot: string) =
                 eprintfn "  Killing stale daemon (PID %d)..." pid
                 proc.Kill()
                 proc.WaitForExit(5000) |> ignore
-            with _ ->
-                ()
+            with ex ->
+                eprintfn "  Could not kill PID %d: %s" pid ex.Message
 
             File.Delete(pidPath)
-        with _ ->
-            ()
+        with ex ->
+            eprintfn "  Could not clean up stale daemon: %s" ex.Message
 
 let private startFreshDaemon
     (ipc: IpcOps)
@@ -329,8 +329,8 @@ let private ensureDaemon (ipc: IpcOps) (repoRoot: string) (pipeName: string) (ex
         try
             ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
             Thread.Sleep(1000)
-        with _ ->
-            ()
+        with ex ->
+            eprintfn "  Shutdown request failed: %s" ex.Message
 
         killStaleDaemon repoRoot
         startFreshDaemon ipc repoRoot pipeName currentHash extraArgs

@@ -131,11 +131,12 @@ let create (analyzerPaths: string list) : PluginHandler<AnalyzersState, Analyzer
                 | FileChecked result ->
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
-                    if isNull (box result.CheckResults) then
+                    match result.CheckResults with
+                    | None ->
                         warn "analyzers" $"Skipping %s{result.File} — no type check results"
                         ctx.ReportStatus(Completed(DateTime.UtcNow))
                         return state
-                    else
+                    | Some checkResults ->
                         // Dispatch analysis to thread pool, semaphore-gated
                         async {
                             do! semaphore.WaitAsync(cts.Token) |> Async.AwaitTask
@@ -149,7 +150,7 @@ let create (analyzerPaths: string list) : PluginHandler<AnalyzersState, Analyzer
                                             (box result.File)
                                             (box sourceText)
                                             (box result.ParseResults)
-                                            (box result.CheckResults)
+                                            (box checkResults)
                                             (box result.ProjectOptions)
 
                                     let! messages =

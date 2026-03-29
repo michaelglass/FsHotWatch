@@ -21,7 +21,9 @@ open FsHotWatch.Watcher
 
 /// Extract FCS diagnostics from check results and report to the error ledger.
 let private reportFcsDiagnostics (host: PluginHost) (checkResult: Events.FileCheckResult) =
-    if not (isNull (box checkResult.CheckResults)) then
+    match checkResult.CheckResults with
+    | None -> ()
+    | Some checkResults ->
         // FCS per-file diagnostics are noisy: TreatWarningsAsErrors promotes CE-related
         // warnings (FS1182 from SqlHydra, etc.) to errors that the real build handles
         // via #nowarn. The build plugin provides authoritative compilation diagnostics.
@@ -29,7 +31,7 @@ let private reportFcsDiagnostics (host: PluginHost) (checkResult: Events.FileChe
         let suppressedCodes = set [ 1182 ] // SqlHydra CE "value unused"
 
         let diagnostics =
-            checkResult.CheckResults.Diagnostics
+            checkResults.Diagnostics
             |> Array.choose (fun d ->
                 if suppressedCodes.Contains(d.ErrorNumber) then
                     None
@@ -498,8 +500,8 @@ type Daemon =
 
                 try
                     ipcTask.Wait(System.TimeSpan.FromSeconds(1.0)) |> ignore
-                with _ ->
-                    ()
+                with ex ->
+                    Logging.debug "daemon" $"IPC shutdown: %s{ex.Message}"
             finally
                 this.Ready.Dispose()
         }

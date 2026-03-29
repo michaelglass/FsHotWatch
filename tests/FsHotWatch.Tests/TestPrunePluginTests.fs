@@ -83,7 +83,7 @@ let ``test-prune error path sets Failed status on null check results`` () =
         { File = "/tmp/nonexistent/Fake.fs"
           Source = ""
           ParseResults = Unchecked.defaultof<_>
-          CheckResults = Unchecked.defaultof<_>
+          CheckResults = None
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L }
 
@@ -128,7 +128,7 @@ let ``changed-files tracks files after emit with valid relative path`` () =
             { File = fakeFile
               Source = "module Lib\nlet x = 1\n"
               ParseResults = Unchecked.defaultof<_>
-              CheckResults = Unchecked.defaultof<_>
+              CheckResults = None
               ProjectOptions = Unchecked.defaultof<_>
               Version = 0L }
 
@@ -157,7 +157,7 @@ let ``duplicate file checks do not duplicate in changed-files list`` () =
             { File = fakeFile
               Source = "module Dup\n"
               ParseResults = Unchecked.defaultof<_>
-              CheckResults = Unchecked.defaultof<_>
+              CheckResults = None
               ProjectOptions = Unchecked.defaultof<_>
               Version = 0L }
 
@@ -269,7 +269,8 @@ let ``extension error is caught and does not crash plugin`` () =
         host.RegisterHandler(handler)
 
         host.EmitBuildCompleted(BuildSucceeded)
-        System.Threading.Thread.Sleep(500)
+
+        waitForPluginTerminal host "test-prune" 5.0
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>)
@@ -350,7 +351,8 @@ let ``plugin reports Running status on FileChecked after tests complete`` () =
 
         // Trigger build -> test run
         host.EmitBuildCompleted(BuildSucceeded)
-        System.Threading.Thread.Sleep(500)
+
+        waitForPluginTerminal host "test-prune" 5.0
 
         // After tests complete, emit a FileChecked — should transition away from test-run status
         let fakeFile = Path.Combine(tmpDir, "New.fs")
@@ -360,7 +362,7 @@ let ``plugin reports Running status on FileChecked after tests complete`` () =
             { File = fakeFile
               Source = "module New"
               ParseResults = Unchecked.defaultof<_>
-              CheckResults = Unchecked.defaultof<_>
+              CheckResults = None
               ProjectOptions = Unchecked.defaultof<_>
               Version = 0L }
 
@@ -463,7 +465,8 @@ let ``run-tests with only-failed reruns failed projects`` () =
 
         // First run — Fails project will fail
         host.EmitBuildCompleted(BuildSucceeded)
-        System.Threading.Thread.Sleep(500)
+
+        waitForPluginTerminal host "test-prune" 5.0
 
         // Now rerun only failed — should only run "Fails", not "Passes"
         let result =
@@ -753,8 +756,15 @@ let testOtherStuff () =
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith "lib CheckFile failed"
 
-        // Framework dispatches async — give the agent time to process
-        System.Threading.Thread.Sleep(500)
+        // Wait for the agent to process the FileChecked message
+        waitUntil
+            (fun () ->
+                let result = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
+
+                match result with
+                | Some json -> json.Contains("Lib.fsx")
+                | None -> false)
+            5000
 
         // Emit tests file
         let testsResult = pipeline.CheckFile(testsFile) |> Async.RunSynchronously
@@ -763,8 +773,15 @@ let testOtherStuff () =
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith "tests CheckFile failed"
 
-        // Give the agent time to process
-        System.Threading.Thread.Sleep(500)
+        // Wait for the agent to process the FileChecked message
+        waitUntil
+            (fun () ->
+                let result = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
+
+                match result with
+                | Some json -> json.Contains("Tests.fsx")
+                | None -> false)
+            5000
 
         // Wait for analysis
         waitForPluginIdle host "test-prune" 10.0

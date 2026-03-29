@@ -41,7 +41,7 @@ let ``lint error path sets Failed status on null check results`` () =
         { File = "/tmp/nonexistent/Fake.fs"
           Source = ""
           ParseResults = Unchecked.defaultof<_>
-          CheckResults = Unchecked.defaultof<_>
+          CheckResults = None
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L }
 
@@ -92,7 +92,7 @@ let ``lint skips file with null ParseResults without crashing`` () =
         { File = "/tmp/test/Empty.fs"
           Source = "module Empty"
           ParseResults = Unchecked.defaultof<_>
-          CheckResults = Unchecked.defaultof<_>
+          CheckResults = None
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L }
 

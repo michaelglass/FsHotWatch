@@ -10,6 +10,18 @@ open FsHotWatch.Ipc
 open FsHotWatch.PluginHost
 open FsHotWatch.Plugin
 open FsHotWatch.Events
+open FsHotWatch.Tests.TestHelpers
+
+/// Poll until IPC server is accepting connections.
+let private waitForServer (pipeName: string) =
+    waitUntil
+        (fun () ->
+            try
+                IpcClient.getStatus pipeName |> Async.RunSynchronously |> ignore
+                true
+            with _ ->
+                false)
+        5000
 
 let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
     { Host = host
@@ -41,7 +53,7 @@ let ``server responds to GetStatus`` () =
     let serverTask =
         Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
-    Thread.Sleep(500)
+    waitForServer pipeName
 
     try
         let result = IpcClient.getStatus pipeName |> Async.RunSynchronously
@@ -74,7 +86,7 @@ let ``server responds to RunCommand`` () =
     let serverTask =
         Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
-    Thread.Sleep(500)
+    waitForServer pipeName
 
     try
         let result = IpcClient.runCommand pipeName "greet" "" |> Async.RunSynchronously
@@ -104,7 +116,7 @@ let ``GetPluginStatus returns specific plugin's status`` () =
     let serverTask =
         Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
-    Thread.Sleep(500)
+    waitForServer pipeName
 
     try
         let result =
@@ -128,7 +140,7 @@ let ``GetPluginStatus returns not found for unknown plugin`` () =
     let serverTask =
         Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
-    Thread.Sleep(500)
+    waitForServer pipeName
 
     try
         let result =
@@ -170,7 +182,7 @@ let ``RunCommand with plugin that returns a result`` () =
     let serverTask =
         Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
-    Thread.Sleep(500)
+    waitForServer pipeName
 
     try
         let result =
@@ -194,7 +206,7 @@ let ``RunCommand returns unknown command for non-existent command`` () =
     let serverTask =
         Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
-    Thread.Sleep(500)
+    waitForServer pipeName
 
     try
         let result =
@@ -256,7 +268,7 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
     let serverTask =
         Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
 
-    Thread.Sleep(500)
+    waitForServer pipeName
 
     try
         let result = IpcClient.getStatus pipeName |> Async.RunSynchronously

@@ -369,7 +369,7 @@ let ``EmitFileChecked dispatches to old-style plugin handlers`` () =
         { File = "/tmp/test.fs"
           Source = ""
           ParseResults = Unchecked.defaultof<_>
-          CheckResults = Unchecked.defaultof<_>
+          CheckResults = None
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L }
 
@@ -402,7 +402,7 @@ let ``fileChecked RemoveHandler removes the handler`` () =
         { File = "/tmp/test.fs"
           Source = ""
           ParseResults = Unchecked.defaultof<_>
-          CheckResults = Unchecked.defaultof<_>
+          CheckResults = None
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L }
 
@@ -430,7 +430,7 @@ let ``fileChecked Subscribe path works`` () =
         { File = "/tmp/subscribed.fs"
           Source = ""
           ParseResults = Unchecked.defaultof<_>
-          CheckResults = Unchecked.defaultof<_>
+          CheckResults = None
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L }
 

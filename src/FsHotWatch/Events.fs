@@ -36,8 +36,8 @@ type FileCheckResult =
         Source: string
         /// FCS parse results (AST).
         ParseResults: FSharpParseFileResults
-        /// FCS type-check results (symbols, diagnostics).
-        CheckResults: FSharpCheckFileResults
+        /// FCS type-check results (symbols, diagnostics). None if check was aborted.
+        CheckResults: FSharpCheckFileResults option
         /// FSharpProjectOptions used when checking this file.
         ProjectOptions: FSharpProjectOptions
         /// Monotonic version counter — higher means newer.

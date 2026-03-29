@@ -17,8 +17,10 @@ let runProcess (command: string) (args: string) (workDir: string) (env: (string 
     use proc = Process.Start(psi)
     let stdoutTask = proc.StandardOutput.ReadToEndAsync()
     let stderrTask = proc.StandardError.ReadToEndAsync()
-    let stdout = stdoutTask |> Async.AwaitTask |> Async.RunSynchronously
-    let stderr = stderrTask |> Async.AwaitTask |> Async.RunSynchronously
+    // Await both concurrently to avoid deadlock when either buffer fills
+    System.Threading.Tasks.Task.WaitAll(stdoutTask, stderrTask)
+    let stdout = stdoutTask.Result
+    let stderr = stderrTask.Result
     proc.WaitForExit()
     let output = $"%s{stdout}\n%s{stderr}".Trim()
     (proc.ExitCode = 0, output)
