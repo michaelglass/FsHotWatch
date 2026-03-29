@@ -11,15 +11,20 @@ open FsHotWatch.ProcessHelper
 open FsHotWatch.Lifecycle
 open FsHotWatch.AgentHost
 
+type private BuildOutcome =
+    | NotBuilt
+    | BuildPassed of output: string
+    | BuildOutputFailed of output: string
+
 type private BuildPhase =
-    | IdlePhase of Lifecycle<Idle, (bool * string) option>
-    | RunningPhase of Lifecycle<Running, (bool * string) option>
+    | IdlePhase of Lifecycle<Idle, BuildOutcome>
+    | RunningPhase of Lifecycle<Running, BuildOutcome>
 
 type private BuildState = { Phase: BuildPhase }
 
 type private BuildMsg =
     | FileChanged of FileChangeKind
-    | BuildDone of (bool * string) option
+    | BuildDone of BuildOutcome
 
 /// Runs a build command when source files change and emits BuildCompleted events.
 /// Debounces rapid file changes — waits for 2s of quiet before building.
@@ -41,19 +46,17 @@ type BuildPlugin(?command: string, ?args: string) =
 
                     try
                         let (success, output) = runProcess buildCommand buildArgs ctx.RepoRoot []
-                        let result = Some(success, output)
-                        agent.Post(BuildDone result)
 
                         if success then
+                            agent.Post(BuildDone(BuildPassed output))
                             Logging.info "build" "Build succeeded"
-                        else
-                            Logging.error "build" "Build FAILED"
-
-                        if success then
                             ctx.ClearErrors "<build>"
                             ctx.EmitBuildCompleted(BuildSucceeded)
                             ctx.ReportStatus(Completed(DateTime.UtcNow))
                         else
+                            agent.Post(BuildDone(BuildOutputFailed output))
+                            Logging.error "build" "Build FAILED"
+
                             ctx.ReportErrors
                                 "<build>"
                                 [ { Message = output
@@ -68,8 +71,7 @@ type BuildPlugin(?command: string, ?args: string) =
 
                             ctx.ReportStatus(Failed($"Build failed: %s{summary}", DateTime.UtcNow))
                     with ex ->
-                        let result = Some(false, ex.Message)
-                        agent.Post(BuildDone result)
+                        agent.Post(BuildDone(BuildOutputFailed ex.Message))
 
                         ctx.ReportErrors
                             "<build>"
@@ -82,31 +84,34 @@ type BuildPlugin(?command: string, ?args: string) =
                         ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                 with ex ->
                     Logging.error "build" $"Unexpected error: %s{ex.Message}"
-                    agent.Post(BuildDone(Some(false, ex.Message)))
+                    agent.Post(BuildDone(BuildOutputFailed ex.Message))
 
             let agentRef = ref Unchecked.defaultof<Agent<BuildState, BuildMsg>>
 
             let agent =
-                createAgent<BuildState, BuildMsg> "build" { Phase = IdlePhase(Lifecycle.create None) } (fun state msg ->
-                    async {
-                        match msg, state.Phase with
-                        | FileChanged(SolutionChanged _), _ -> return state
-                        | FileChanged _, RunningPhase _ ->
-                            Logging.info "build" "Skipping: build already in progress"
-                            return state
-                        | FileChanged _, IdlePhase idle ->
-                            let running = Lifecycle.start idle
-                            let newState = { Phase = RunningPhase running }
-                            // Run the build synchronously within the handler so the agent
-                            // stays in RunningPhase while the build executes, causing
-                            // subsequent FileChanged messages to be skipped.
-                            doBuild agentRef.Value
-                            return newState
-                        | BuildDone result, RunningPhase running ->
-                            let completed = Lifecycle.complete result running
-                            return { Phase = IdlePhase completed }
-                        | BuildDone _, IdlePhase _ -> return state
-                    })
+                createAgent<BuildState, BuildMsg>
+                    "build"
+                    { Phase = IdlePhase(Lifecycle.create NotBuilt) }
+                    (fun state msg ->
+                        async {
+                            match msg, state.Phase with
+                            | FileChanged(SolutionChanged _), _ -> return state
+                            | FileChanged _, RunningPhase _ ->
+                                Logging.info "build" "Skipping: build already in progress"
+                                return state
+                            | FileChanged _, IdlePhase idle ->
+                                let running = Lifecycle.start idle
+                                let newState = { Phase = RunningPhase running }
+                                // Run the build synchronously within the handler so the agent
+                                // stays in RunningPhase while the build executes, causing
+                                // subsequent FileChanged messages to be skipped.
+                                doBuild agentRef.Value
+                                return newState
+                            | BuildDone result, RunningPhase running ->
+                                let completed = Lifecycle.complete result running
+                                return { Phase = IdlePhase completed }
+                            | BuildDone _, IdlePhase _ -> return state
+                        })
 
             agentRef.Value <- agent
 
@@ -130,16 +135,23 @@ type BuildPlugin(?command: string, ?args: string) =
                             | RunningPhase running -> Lifecycle.value running
 
                         match lastResult with
-                        | Some(ok, output) ->
-                            let status = if ok then "passed" else "failed"
+                        | BuildPassed output ->
                             let lines = output.Split('\n')
 
                             let truncated =
                                 lines |> Array.skip (max 0 (lines.Length - 200)) |> String.concat "\n"
 
                             let escapedOutput = JsonSerializer.Serialize(truncated)
-                            return $"{{\"status\": \"%s{status}\", \"output\": %s{escapedOutput}}}"
-                        | None -> return "{\"status\": \"not run\"}"
+                            return $"{{\"status\": \"passed\", \"output\": %s{escapedOutput}}}"
+                        | BuildOutputFailed output ->
+                            let lines = output.Split('\n')
+
+                            let truncated =
+                                lines |> Array.skip (max 0 (lines.Length - 200)) |> String.concat "\n"
+
+                            let escapedOutput = JsonSerializer.Serialize(truncated)
+                            return $"{{\"status\": \"failed\", \"output\": %s{escapedOutput}}}"
+                        | NotBuilt -> return "{\"status\": \"not run\"}"
                     }
             )
 
