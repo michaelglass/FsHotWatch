@@ -1,9 +1,16 @@
 module FsHotWatch.ErrorLedger
 
+/// Diagnostic severity levels for error entries.
+type DiagnosticSeverity =
+    | Error
+    | Warning
+    | Info
+    | Hint
+
 /// A single diagnostic entry from a plugin.
 type ErrorEntry =
     { Message: string
-      Severity: string
+      Severity: DiagnosticSeverity
       Line: int
       Column: int }
 

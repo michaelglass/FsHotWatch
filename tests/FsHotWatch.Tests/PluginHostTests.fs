@@ -283,7 +283,7 @@ let ``plugin can report and query errors via host`` () =
                 ctx.ReportErrors
                     "/src/A.fs"
                     [ { Message = "bad"
-                        Severity = "warning"
+                        Severity = DiagnosticSeverity.Warning
                         Line = 1
                         Column = 0 } ]
 
@@ -308,7 +308,7 @@ let ``plugin ClearErrors removes errors from ledger`` () =
                 ctx.ReportErrors
                     "/src/B.fs"
                     [ { Message = "oops"
-                        Severity = "error"
+                        Severity = DiagnosticSeverity.Error
                         Line = 5
                         Column = 0 } ]
 
@@ -333,7 +333,7 @@ let ``GetErrorsByPlugin returns only that plugin's errors`` () =
                 ctx.ReportErrors
                     file
                     [ { Message = msg
-                        Severity = "error"
+                        Severity = DiagnosticSeverity.Error
                         Line = 1
                         Column = 0 } ]
 
@@ -513,7 +513,7 @@ let ``ReportErrors with version passes through to ledger`` () =
         "fcs",
         "/src/A.fs",
         [ { Message = "v2 error"
-            Severity = "error"
+            Severity = DiagnosticSeverity.Error
             Line = 1
             Column = 0 } ],
         version = 2L
@@ -524,7 +524,7 @@ let ``ReportErrors with version passes through to ledger`` () =
         "fcs",
         "/src/A.fs",
         [ { Message = "v1 stale"
-            Severity = "error"
+            Severity = DiagnosticSeverity.Error
             Line = 1
             Column = 0 } ],
         version = 1L
@@ -543,7 +543,7 @@ let ``ClearErrors with version passes through to ledger`` () =
         "fcs",
         "/src/A.fs",
         [ { Message = "error"
-            Severity = "error"
+            Severity = DiagnosticSeverity.Error
             Line = 1
             Column = 0 } ],
         version = 2L

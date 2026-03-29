@@ -13,7 +13,7 @@ let private entry msg sev line =
 [<Fact>]
 let ``Report adds errors and GetAll returns them grouped by file`` () =
     let ledger = ErrorLedger()
-    ledger.Report("lint", "/src/A.fs", [ entry "bad" "warning" 1 ])
+    ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
     let all = ledger.GetAll()
     test <@ all.ContainsKey "/src/A.fs" @>
     test <@ all.["/src/A.fs"].Length = 1 @>
@@ -21,22 +21,22 @@ let ``Report adds errors and GetAll returns them grouped by file`` () =
 [<Fact>]
 let ``Clear removes errors for plugin and file`` () =
     let ledger = ErrorLedger()
-    ledger.Report("lint", "/src/A.fs", [ entry "bad" "warning" 1 ])
+    ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
     ledger.Clear("lint", "/src/A.fs")
     test <@ not (ledger.HasErrors()) @>
 
 [<Fact>]
 let ``Report with empty list clears errors`` () =
     let ledger = ErrorLedger()
-    ledger.Report("lint", "/src/A.fs", [ entry "bad" "warning" 1 ])
+    ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
     ledger.Report("lint", "/src/A.fs", [])
     test <@ not (ledger.HasErrors()) @>
 
 [<Fact>]
 let ``GetByPlugin filters to specific plugin`` () =
     let ledger = ErrorLedger()
-    ledger.Report("lint", "/src/A.fs", [ entry "lint-warn" "warning" 1 ])
-    ledger.Report("analyzers", "/src/A.fs", [ entry "analyzer-err" "error" 2 ])
+    ledger.Report("lint", "/src/A.fs", [ entry "lint-warn" DiagnosticSeverity.Warning 1 ])
+    ledger.Report("analyzers", "/src/A.fs", [ entry "analyzer-err" DiagnosticSeverity.Error 2 ])
     let lintOnly = ledger.GetByPlugin("lint")
     test <@ lintOnly.Count = 1 @>
     test <@ lintOnly.["/src/A.fs"].[0].Message = "lint-warn" @>
@@ -44,8 +44,8 @@ let ``GetByPlugin filters to specific plugin`` () =
 [<Fact>]
 let ``Multiple plugins for same file accumulate independently`` () =
     let ledger = ErrorLedger()
-    ledger.Report("lint", "/src/A.fs", [ entry "lint" "warning" 1 ])
-    ledger.Report("analyzers", "/src/A.fs", [ entry "analyze" "error" 2 ])
+    ledger.Report("lint", "/src/A.fs", [ entry "lint" DiagnosticSeverity.Warning 1 ])
+    ledger.Report("analyzers", "/src/A.fs", [ entry "analyze" DiagnosticSeverity.Error 2 ])
     let all = ledger.GetAll()
     test <@ all.["/src/A.fs"].Length = 2 @>
     ledger.Clear("lint", "/src/A.fs")
@@ -55,9 +55,9 @@ let ``Multiple plugins for same file accumulate independently`` () =
 [<Fact>]
 let ``ClearPlugin removes all errors for a plugin`` () =
     let ledger = ErrorLedger()
-    ledger.Report("lint", "/src/A.fs", [ entry "a" "warning" 1 ])
-    ledger.Report("lint", "/src/B.fs", [ entry "b" "warning" 2 ])
-    ledger.Report("analyzers", "/src/A.fs", [ entry "c" "error" 3 ])
+    ledger.Report("lint", "/src/A.fs", [ entry "a" DiagnosticSeverity.Warning 1 ])
+    ledger.Report("lint", "/src/B.fs", [ entry "b" DiagnosticSeverity.Warning 2 ])
+    ledger.Report("analyzers", "/src/A.fs", [ entry "c" DiagnosticSeverity.Error 3 ])
     ledger.ClearPlugin("lint")
     test <@ ledger.Count() = 1 @>
     test <@ ledger.GetByPlugin("lint").IsEmpty @>
@@ -65,8 +65,15 @@ let ``ClearPlugin removes all errors for a plugin`` () =
 [<Fact>]
 let ``Count returns total across all plugins and files`` () =
     let ledger = ErrorLedger()
-    ledger.Report("lint", "/src/A.fs", [ entry "a" "warning" 1; entry "b" "warning" 2 ])
-    ledger.Report("analyzers", "/src/A.fs", [ entry "c" "error" 3 ])
+
+    ledger.Report(
+        "lint",
+        "/src/A.fs",
+        [ entry "a" DiagnosticSeverity.Warning 1
+          entry "b" DiagnosticSeverity.Warning 2 ]
+    )
+
+    ledger.Report("analyzers", "/src/A.fs", [ entry "c" DiagnosticSeverity.Error 3 ])
     test <@ ledger.Count() = 3 @>
 
 [<Fact>]
@@ -75,13 +82,13 @@ let ``Report ignores stale version`` () =
 
     let newEntry =
         { Message = "new"
-          Severity = "error"
+          Severity = DiagnosticSeverity.Error
           Line = 1
           Column = 0 }
 
     let staleEntry =
         { Message = "stale"
-          Severity = "error"
+          Severity = DiagnosticSeverity.Error
           Line = 2
           Column = 0 }
 
@@ -99,7 +106,7 @@ let ``Clear ignores stale version`` () =
 
     let e =
         { Message = "error"
-          Severity = "error"
+          Severity = DiagnosticSeverity.Error
           Line = 1
           Column = 0 }
 
@@ -114,13 +121,13 @@ let ``Report without version always updates`` () =
 
     let entry1 =
         { Message = "first"
-          Severity = "error"
+          Severity = DiagnosticSeverity.Error
           Line = 1
           Column = 0 }
 
     let entry2 =
         { Message = "second"
-          Severity = "error"
+          Severity = DiagnosticSeverity.Error
           Line = 2
           Column = 0 }
 
@@ -137,13 +144,13 @@ let ``Report accepts newer version after initial versioned report`` () =
 
     let entry1 =
         { Message = "first"
-          Severity = "error"
+          Severity = DiagnosticSeverity.Error
           Line = 1
           Column = 0 }
 
     let entry2 =
         { Message = "updated"
-          Severity = "error"
+          Severity = DiagnosticSeverity.Error
           Line = 2
           Column = 0 }
 
@@ -162,13 +169,13 @@ let ``Report accepts equal version as update`` () =
 
     let entry1 =
         { Message = "first"
-          Severity = "error"
+          Severity = DiagnosticSeverity.Error
           Line = 1
           Column = 0 }
 
     let entry2 =
         { Message = "same-version-update"
-          Severity = "error"
+          Severity = DiagnosticSeverity.Error
           Line = 2
           Column = 0 }
 
@@ -187,7 +194,7 @@ let ``Clear accepts newer version after initial versioned report`` () =
 
     let entry1 =
         { Message = "error"
-          Severity = "error"
+          Severity = DiagnosticSeverity.Error
           Line = 1
           Column = 0 }
 

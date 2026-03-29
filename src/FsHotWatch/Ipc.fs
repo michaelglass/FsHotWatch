@@ -9,6 +9,14 @@ open StreamJsonRpc
 open FsHotWatch.Logging
 open FsHotWatch.PluginHost
 open FsHotWatch.Events
+open FsHotWatch.ErrorLedger
+
+let private severityToString (severity: DiagnosticSeverity) =
+    match severity with
+    | DiagnosticSeverity.Error -> "error"
+    | DiagnosticSeverity.Warning -> "warning"
+    | DiagnosticSeverity.Info -> "info"
+    | DiagnosticSeverity.Hint -> "hint"
 
 let private formatStatus (status: PluginStatus) =
     match status with
@@ -87,7 +95,7 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
                     |> List.map (fun (plugin, e) ->
                         {| plugin = plugin
                            message = e.Message
-                           severity = e.Severity
+                           severity = severityToString e.Severity
                            line = e.Line
                            column = e.Column |}))
             else
@@ -97,7 +105,7 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
                     |> List.map (fun e ->
                         {| plugin = pluginFilter
                            message = e.Message
-                           severity = e.Severity
+                           severity = severityToString e.Severity
                            line = e.Line
                            column = e.Column |}))
 
