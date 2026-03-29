@@ -80,8 +80,41 @@ module ``parseArgs`` =
             <@
                 result = Ok
                     { Command = Index
-                      RepoRoot = Some "/some/path" }
+                      RepoRoot = Some "/some/path"
+                      Parallelism = System.Environment.ProcessorCount }
             @>
+
+    [<Fact>]
+    let ``--parallelism flag sets parallelism`` () =
+        let result = parseArgs [| "--parallelism"; "4"; "index" |]
+
+        match result with
+        | Ok parsed -> test <@ parsed.Parallelism = 4 @>
+        | Error msg -> failwith msg
+
+    [<Fact>]
+    let ``--parallelism with invalid value returns error`` () =
+        let result = parseArgs [| "--parallelism"; "abc"; "index" |]
+
+        match result with
+        | Error _ -> ()
+        | Ok _ -> failwith "Expected error"
+
+    [<Fact>]
+    let ``--parallelism with zero returns error`` () =
+        let result = parseArgs [| "--parallelism"; "0"; "index" |]
+
+        match result with
+        | Error _ -> ()
+        | Ok _ -> failwith "Expected error"
+
+    [<Fact>]
+    let ``--parallelism with negative returns error`` () =
+        let result = parseArgs [| "--parallelism"; "-1"; "index" |]
+
+        match result with
+        | Error _ -> ()
+        | Ok _ -> failwith "Expected error"
 
     [<Fact>]
     let ``no --repo flag leaves RepoRoot as None`` () =
@@ -457,7 +490,7 @@ module ``runIndexWith`` =
         Console.SetError(sw)
 
         try
-            test <@ runIndexWith failBuild scriptOptions tmpDir testChecker = 1 @>
+            test <@ runIndexWith failBuild scriptOptions tmpDir testChecker 1 = 1 @>
         finally
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)
@@ -487,7 +520,7 @@ module ``runIndexWith`` =
         Console.SetError(sw)
 
         try
-            let exitCode = runIndexWith successBuild scriptOptions tmpDir testChecker
+            let exitCode = runIndexWith successBuild scriptOptions tmpDir testChecker 1
             test <@ exitCode = 0 @>
 
             // Verify the DB was populated
@@ -508,7 +541,7 @@ module ``runIndexWith`` =
         Console.SetError(sw)
 
         try
-            test <@ runIndexWith successBuild scriptOptions tmpDir testChecker = 0 @>
+            test <@ runIndexWith successBuild scriptOptions tmpDir testChecker 1 = 0 @>
         finally
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)
@@ -536,7 +569,7 @@ module ``runIndexWith`` =
 
         try
             // First index populates the hash
-            runIndexWith successBuild scriptOptions tmpDir testChecker |> ignore
+            runIndexWith successBuild scriptOptions tmpDir testChecker 1 |> ignore
 
             // Second index with a getOptions that would fail if called
             let mutable getOptionsCalled = false
@@ -546,7 +579,7 @@ module ``runIndexWith`` =
                     getOptionsCalled <- true
                     scriptOptions checker fsprojPath
 
-            let exitCode = runIndexWith successBuild trackingOptions tmpDir testChecker
+            let exitCode = runIndexWith successBuild trackingOptions tmpDir testChecker 1
             test <@ exitCode = 0 @>
             test <@ getOptionsCalled = false @>
         finally
@@ -576,7 +609,7 @@ module ``runIndexWith`` =
 
         try
             // First index: analyzes Lib.fs
-            runIndexWith successBuild scriptOptions tmpDir testChecker |> ignore
+            runIndexWith successBuild scriptOptions tmpDir testChecker 1 |> ignore
 
             let dbPath = Path.Combine(tmpDir, ".test-prune.db")
             let db = Database.create dbPath
@@ -601,7 +634,7 @@ module ``runIndexWith`` =
             File.WriteAllText(Path.Combine(srcDir, "Lib2.fs"), "module Lib2\nlet mul x y = x * y\n")
 
             // Second index: project hash changed (new file), but Lib.fs unchanged
-            runIndexWith successBuild scriptOptions tmpDir testChecker |> ignore
+            runIndexWith successBuild scriptOptions tmpDir testChecker 1 |> ignore
 
             // Lib.fs file key should be unchanged (it was loaded from cache, not re-analyzed)
             test <@ db.GetFileKey(relPath) = originalFileKey @>
@@ -689,14 +722,14 @@ module ``Example solution integration`` =
             Console.SetError(oldErr)
 
     let private indexExample (root: string) =
-        suppressError (fun () -> runIndexWith successBuild scriptOptions root exampleChecker)
+        suppressError (fun () -> runIndexWith successBuild scriptOptions root exampleChecker 1)
         |> ignore
 
     [<Fact>]
     let ``runIndexWith indexes the example solution`` () =
         withExampleCopy (fun root ->
             let exitCode =
-                suppressError (fun () -> runIndexWith successBuild scriptOptions root exampleChecker)
+                suppressError (fun () -> runIndexWith successBuild scriptOptions root exampleChecker 1)
 
             test <@ exitCode = 0 @>
 

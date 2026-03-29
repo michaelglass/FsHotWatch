@@ -33,20 +33,26 @@ let rec private parseDeadCodeFlags (args: string list) (acc: string list) (inclu
 
 type ParsedCommand =
     { Command: Command
-      RepoRoot: string option }
+      RepoRoot: string option
+      Parallelism: int }
 
 let rec private parseGlobalFlags
     (args: string list)
     (repoRoot: string option)
-    : Result<string list * string option, string> =
+    (parallelism: int option)
+    : Result<string list * string option * int, string> =
     match args with
-    | "--repo" :: path :: rest -> parseGlobalFlags rest (Some path)
-    | _ -> Ok(args, repoRoot)
+    | "--repo" :: path :: rest -> parseGlobalFlags rest (Some path) parallelism
+    | "--parallelism" :: n :: rest ->
+        match System.Int32.TryParse(n) with
+        | true, value when value > 0 -> parseGlobalFlags rest repoRoot (Some value)
+        | _ -> Error $"Invalid parallelism value: %s{n}"
+    | _ -> Ok(args, repoRoot, parallelism |> Option.defaultValue Environment.ProcessorCount)
 
 let parseArgs (args: string array) : Result<ParsedCommand, string> =
-    match parseGlobalFlags (args |> Array.toList) None with
+    match parseGlobalFlags (args |> Array.toList) None None with
     | Error msg -> Error msg
-    | Ok(commandArgs, repoRoot) ->
+    | Ok(commandArgs, repoRoot, parallelism) ->
         let cmdResult =
             match commandArgs with
             | [] -> Ok Help
@@ -63,7 +69,11 @@ let parseArgs (args: string array) : Result<ParsedCommand, string> =
             | [ "-h" ] -> Ok Help
             | unknown :: _ -> Error $"Unknown command: %s{unknown}"
 
-        cmdResult |> Result.map (fun cmd -> { Command = cmd; RepoRoot = repoRoot })
+        cmdResult
+        |> Result.map (fun cmd ->
+            { Command = cmd
+              RepoRoot = repoRoot
+              Parallelism = parallelism })
 
 let showHelp () =
     printfn "TestPrune - Test impact analysis tool"
@@ -71,7 +81,8 @@ let showHelp () =
     printfn "Usage: test-prune [--repo <path>] <command>"
     printfn ""
     printfn "Global options:"
-    printfn "  --repo <path>  Use <path> as the repo root (default: auto-detect from cwd)"
+    printfn "  --repo <path>         Use <path> as the repo root (default: auto-detect from cwd)"
+    printfn "  --parallelism <n>     Max parallel project analyses (default: processor count)"
     printfn ""
     printfn "Commands:"
     printfn "  index      Build the dependency graph from source"
@@ -201,6 +212,7 @@ let runIndexWith
     (getOptions: ProjectOptionsProvider)
     (repoRoot: string)
     (checker: FSharpChecker)
+    (parallelism: int)
     : int =
     let dbPath = Path.Combine(repoRoot, ".test-prune.db")
     let db = Database.create dbPath
@@ -386,7 +398,7 @@ let runIndexWith
                 else
                     level
                     |> List.map (fun proj -> async { return indexProject reindexedSet proj })
-                    |> Async.Parallel
+                    |> fun tasks -> Async.Parallel(tasks, maxDegreeOfParallelism = parallelism)
                     |> Async.RunSynchronously
                     |> Array.toList
 
@@ -445,9 +457,9 @@ let dotnetBuildRunner: BuildRunner =
         buildProc.ExitCode
 
 /// Run the index command: build projects, then parse with real project options.
-let runIndex (repoRoot: string) : int =
+let runIndex (repoRoot: string) (parallelism: int) : int =
     let checker = createChecker ()
-    runIndexWith dotnetBuildRunner getProjectOptions repoRoot checker
+    runIndexWith dotnetBuildRunner getProjectOptions repoRoot checker parallelism
 
 type DiffProvider = unit -> Result<string, string>
 
@@ -679,7 +691,7 @@ let runCommand (parsed: ParsedCommand) : int =
                 "" // unreachable
 
     match parsed.Command with
-    | Index -> runIndex repoRoot
+    | Index -> runIndex repoRoot parsed.Parallelism
     | Run -> runRun repoRoot
     | Status -> runStatus repoRoot
     | DeadCodeCmd(patterns, includeTests) -> runDeadCode repoRoot patterns includeTests
