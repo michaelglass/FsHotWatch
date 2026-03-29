@@ -17,7 +17,8 @@ let private runDeadCode (db: Database) (patterns: string list) (includeTests: bo
     let entryPoints = findEntryPoints allNames patterns
     let reachable = db.GetReachableSymbols(entryPoints)
     let testMethodNames = db.GetTestMethodSymbolNames()
-    findDeadCode allSymbols reachable testMethodNames includeTests
+    let result, _events = findDeadCode allSymbols reachable testMethodNames includeTests
+    result
 
 let checker = FSharpChecker.Create()
 

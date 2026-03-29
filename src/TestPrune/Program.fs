@@ -593,7 +593,7 @@ let runDeadCode (repoRoot: string) (entryPatterns: string list) (includeTests: b
         let entryPoints = findEntryPoints allNames entryPatterns
         let reachable = db.GetReachableSymbols(entryPoints)
         let testMethodNames = db.GetTestMethodSymbolNames()
-        let result = findDeadCode allSymbols reachable testMethodNames includeTests
+        let result, _events = findDeadCode allSymbols reachable testMethodNames includeTests
 
         printfn "Dead code analysis:"
         printfn $"  Total symbols: %d{result.TotalSymbols}"

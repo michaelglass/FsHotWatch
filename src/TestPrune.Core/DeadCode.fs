@@ -2,6 +2,7 @@ module TestPrune.DeadCode
 
 open System
 open TestPrune.AstAnalyzer
+open TestPrune.Domain
 
 /// Result of dead code analysis containing total, reachable, and unreachable symbol counts.
 type DeadCodeResult =
@@ -39,7 +40,7 @@ let findDeadCode
     (reachable: Set<string>)
     (testMethodNames: Set<string>)
     (includeTests: bool)
-    : DeadCodeResult =
+    : DeadCodeResult * AnalysisEvent list =
     let allNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
 
     // Find unreachable symbol names
@@ -80,6 +81,11 @@ let findDeadCode
         unreachableSymbols
         |> List.filter (fun s -> not (isLocal s) && not (isContainedByAnother s))
 
-    { TotalSymbols = allNames.Count
-      ReachableSymbols = reachable.Count
-      UnreachableSymbols = shallowest }
+    let result =
+        { TotalSymbols = allNames.Count
+          ReachableSymbols = reachable.Count
+          UnreachableSymbols = shallowest }
+
+    let events = [ DeadCodeFoundEvent(shallowest |> List.map (fun s -> s.FullName)) ]
+
+    result, events

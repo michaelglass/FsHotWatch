@@ -5,6 +5,7 @@ open Swensen.Unquote
 open TestPrune.AstAnalyzer
 open TestPrune.Database
 open TestPrune.DeadCode
+open TestPrune.Domain
 open TestPrune.Tests.TestHelpers
 
 let private runDeadCode (db: Database) (patterns: string list) (includeTests: bool) =
@@ -42,7 +43,7 @@ module ``All symbols reachable`` =
 
             db.RebuildProjects([ graph ])
 
-            let result = runDeadCode db [ "*.Program.main" ] false
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
 
             test <@ result.UnreachableSymbols |> List.isEmpty @>
             test <@ result.TotalSymbols = 2 @>
@@ -81,7 +82,7 @@ module ``Unreachable function detected`` =
 
             db.RebuildProjects([ graph ])
 
-            let result = runDeadCode db [ "*.Program.main" ] false
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
 
             test <@ result.UnreachableSymbols.Length = 1 @>
             test <@ result.UnreachableSymbols[0].FullName = "App.Lib.unusedHelper" @>)
@@ -131,7 +132,7 @@ module ``Transitive reachability`` =
 
             db.RebuildProjects([ graph ])
 
-            let result = runDeadCode db [ "*.Program.main" ] false
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
 
             test <@ result.UnreachableSymbols |> List.isEmpty @>
             test <@ result.ReachableSymbols = 4 @>)
@@ -164,7 +165,7 @@ module ``Test methods excluded`` =
 
             db.RebuildProjects([ graph ])
 
-            let result = runDeadCode db [ "*.Program.main" ] false
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
 
             // Test method is unreachable from production entry but should be excluded
             test <@ result.UnreachableSymbols |> List.isEmpty @>)
@@ -199,7 +200,7 @@ module ``Module symbols excluded`` =
 
             db.RebuildProjects([ graph ])
 
-            let result = runDeadCode db [ "*.Program.main" ] false
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
 
             // Module excluded, but the orphan function should still be reported
             let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
@@ -241,7 +242,7 @@ module ``Only shallowest unreachable reported`` =
 
             db.RebuildProjects([ graph ])
 
-            let result = runDeadCode db [ "*.Program.main" ] false
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
 
             let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
             test <@ names = [ "App.Lib.unusedFunc" ] @>)
@@ -274,7 +275,7 @@ module ``Only shallowest unreachable reported`` =
 
             db.RebuildProjects([ graph ])
 
-            let result = runDeadCode db [ "*.Program.main" ] false
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
 
             let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
             // innerFunc starts at same line as outerFunc but is shorter, so it's contained
@@ -308,7 +309,7 @@ module ``Only shallowest unreachable reported`` =
 
             db.RebuildProjects([ graph ])
 
-            let result = runDeadCode db [ "*.Program.main" ] false
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
 
             let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
             // Both are top-level, neither contains the other
@@ -342,7 +343,7 @@ module ``Only shallowest unreachable reported`` =
 
             db.RebuildProjects([ graph ])
 
-            let result = runDeadCode db [ "*.Program.main" ] false
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
 
             // Local bindings/params (no dot in name) should not be reported
             test <@ result.UnreachableSymbols |> List.isEmpty @>)
@@ -375,7 +376,7 @@ module ``Only shallowest unreachable reported`` =
 
             db.RebuildProjects([ graph ])
 
-            let result = runDeadCode db [ "*.Program.main" ] false
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
 
             let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
             test <@ names = [ "App.Lib.deadA"; "App.Lib.deadB" ] @>)
@@ -404,7 +405,7 @@ module ``Test file symbols excluded`` =
 
             db.RebuildProjects([ graph ])
 
-            let result = runDeadCode db [ "*.Program.main" ] false
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
 
             // TestHelpers.setup is in tests/ directory, should be excluded
             test <@ result.UnreachableSymbols |> List.isEmpty @>)
@@ -431,7 +432,7 @@ module ``Test file symbols excluded`` =
 
             db.RebuildProjects([ graph ])
 
-            let result = runDeadCode db [ "*.Program.main" ] true
+            let result, _events = runDeadCode db [ "*.Program.main" ] true
 
             let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
             test <@ names = [ "TestHelpers.setup" ] @>)
@@ -472,7 +473,7 @@ module ``Test file symbols excluded`` =
             db.RebuildProjects([ graph ])
 
             // Use test method as entry point, include tests in report
-            let result = runDeadCode db [ "Tests.MyTest.testSomething" ] true
+            let result, _events = runDeadCode db [ "Tests.MyTest.testSomething" ] true
 
             let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
             // setup is reachable from the test entry point, only unusedHelper is dead
@@ -503,7 +504,7 @@ module ``matchesPattern — both wildcards (true, true)`` =
             db.RebuildProjects([ graph ])
 
             // *Route* should match App.MyRouteHandler and make it reachable
-            let result = runDeadCode db [ "*Route*" ] false
+            let result, _events = runDeadCode db [ "*Route*" ] false
 
             let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
             test <@ names = [ "App.Unrelated" ] @>)
@@ -531,7 +532,7 @@ module ``matchesPattern — both wildcards (true, true)`` =
             db.RebuildProjects([ graph ])
 
             // *Route* must not match App.Unrelated
-            let result = runDeadCode db [ "*Route*" ] false
+            let result, _events = runDeadCode db [ "*Route*" ] false
 
             let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
             test <@ names |> List.contains "App.Unrelated" @>)
@@ -561,7 +562,7 @@ module ``matchesPattern — start wildcard only (true, false)`` =
             db.RebuildProjects([ graph ])
 
             // *.main matches Program.main, making it the sole entry point
-            let result = runDeadCode db [ "*.main" ] false
+            let result, _events = runDeadCode db [ "*.main" ] false
 
             let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
             test <@ names = [ "App.Lib.helper" ] @>)
@@ -589,7 +590,7 @@ module ``matchesPattern — start wildcard only (true, false)`` =
             db.RebuildProjects([ graph ])
 
             // *.main must not match App.Lib.helper
-            let result = runDeadCode db [ "*.main" ] false
+            let result, _events = runDeadCode db [ "*.main" ] false
 
             let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
             test <@ names |> List.contains "App.Lib.helper" @>)
@@ -619,7 +620,7 @@ module ``matchesPattern — end wildcard only (false, true)`` =
             db.RebuildProjects([ graph ])
 
             // App.* must not match Other.Lib.helper
-            let result = runDeadCode db [ "App.*" ] false
+            let result, _events = runDeadCode db [ "App.*" ] false
 
             let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
             test <@ names |> List.contains "Other.Lib.helper" @>)
@@ -649,7 +650,7 @@ module ``matchesPattern — exact match (false, false)`` =
             db.RebuildProjects([ graph ])
 
             // Exact pattern must not match App.Lib.helper
-            let result = runDeadCode db [ "App.Program.main" ] false
+            let result, _events = runDeadCode db [ "App.Program.main" ] false
 
             let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
             test <@ names |> List.contains "App.Lib.helper" @>)
@@ -679,7 +680,7 @@ module ``matchesPattern — exact match (false, false)`` =
 
             db.RebuildProjects([ graph ])
 
-            let result = runDeadCode db [ "App.Program.main" ] false
+            let result, _events = runDeadCode db [ "App.Program.main" ] false
 
             test <@ result.UnreachableSymbols |> List.isEmpty @>)
 
@@ -719,7 +720,7 @@ module ``DU case symbols excluded`` =
 
             db.RebuildProjects([ graph ])
 
-            let result = runDeadCode db [ "*.Program.main" ] false
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
 
             let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
             // Type reported, but DU cases excluded
@@ -752,7 +753,7 @@ module ``No matching entry points`` =
 
             db.RebuildProjects([ graph ])
 
-            let result = runDeadCode db [ "*.nonexistent" ] false
+            let result, _events = runDeadCode db [ "*.nonexistent" ] false
 
             test <@ result.ReachableSymbols = 0 @>
             test <@ result.UnreachableSymbols.Length = 2 @>)
@@ -799,7 +800,7 @@ module ``Multiple entry point patterns`` =
 
             db.RebuildProjects([ graph ])
 
-            let result = runDeadCode db [ "*.handler"; "*.run" ] false
+            let result, _events = runDeadCode db [ "*.handler"; "*.run" ] false
 
             let deadNames = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
             // handler, run, and shared.helper all reachable; only Orphan.dead is dead
@@ -833,6 +834,51 @@ module ``matchesPattern — prefix positive`` =
             db.RebuildProjects([ graph ])
 
             // App.* matches App.Program.main, reachability follows to App.Lib.helper
-            let result = runDeadCode db [ "App.*" ] false
+            let result, _events = runDeadCode db [ "App.*" ] false
 
             test <@ result.UnreachableSymbols |> List.isEmpty @>)
+
+module ``Event emission`` =
+
+    [<Fact>]
+    let ``dead code emits DeadCodeFoundEvent with symbol names`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Program.main"
+                        Kind = Function
+                        SourceFile = "src/App/Program.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "" }
+                      { FullName = "App.Lib.usedHelper"
+                        Kind = Function
+                        SourceFile = "src/App/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "" }
+                      { FullName = "App.Lib.unusedHelper"
+                        Kind = Function
+                        SourceFile = "src/App/Lib.fs"
+                        LineStart = 7
+                        LineEnd = 12
+                        ContentHash = "" } ]
+                  Dependencies =
+                    [ { FromSymbol = "App.Program.main"
+                        ToSymbol = "App.Lib.usedHelper"
+                        Kind = Calls } ]
+                  TestMethods = [] }
+
+            db.RebuildProjects([ graph ])
+
+            let _result, events = runDeadCode db [ "*.Program.main" ] false
+
+            let deadCodeEvents =
+                events
+                |> List.choose (fun e ->
+                    match e with
+                    | DeadCodeFoundEvent names -> Some names
+                    | _ -> None)
+
+            test <@ deadCodeEvents.Length = 1 @>
+            test <@ deadCodeEvents[0] = [ "App.Lib.unusedHelper" ] @>)
