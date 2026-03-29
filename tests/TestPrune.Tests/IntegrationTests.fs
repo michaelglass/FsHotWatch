@@ -11,6 +11,14 @@ open TestPrune.SymbolDiff
 open TestPrune.ImpactAnalysis
 open TestPrune.Tests.TestHelpers
 
+let private runDeadCode (db: Database) (patterns: string list) (includeTests: bool) =
+    let allSymbols = db.GetAllSymbols()
+    let allNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
+    let entryPoints = findEntryPoints allNames patterns
+    let reachable = db.GetReachableSymbols(entryPoints)
+    let testMethodNames = db.GetTestMethodSymbolNames()
+    findDeadCode allSymbols reachable testMethodNames includeTests
+
 let checker = FSharpChecker.Create()
 
 let analyze source =
@@ -334,7 +342,7 @@ let deadFunc x = x * 2
 
             db.RebuildProjects([ analysis ])
 
-            let deadResult = findDeadCode db [ "*.main" ] false
+            let deadResult = runDeadCode db [ "*.main" ] false
 
             let deadNames = deadResult.UnreachableSymbols |> List.map (fun s -> s.FullName)
 
@@ -380,7 +388,7 @@ let orphan x = x - 1
 
             db.RebuildProjects([ analysis ])
 
-            let deadResult = findDeadCode db [ "*.topFunc" ] false
+            let deadResult = runDeadCode db [ "*.topFunc" ] false
 
             let deadNames = deadResult.UnreachableSymbols |> List.map (fun s -> s.FullName)
 
@@ -433,7 +441,7 @@ let main () = area (Circle 1.0) |> ignore
 
             db.RebuildProjects([ analysis ])
 
-            let deadResult = findDeadCode db [ "*.main" ] false
+            let deadResult = runDeadCode db [ "*.main" ] false
 
             let deadNames = deadResult.UnreachableSymbols |> List.map (fun s -> s.FullName)
 

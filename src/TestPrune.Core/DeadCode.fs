@@ -2,7 +2,6 @@ module TestPrune.DeadCode
 
 open System
 open TestPrune.AstAnalyzer
-open TestPrune.Database
 
 /// Result of dead code analysis containing total, reachable, and unreachable symbol counts.
 type DeadCodeResult =
@@ -28,25 +27,23 @@ let private matchesPattern (pattern: string) (name: string) =
         name.StartsWith(prefix, StringComparison.Ordinal)
     | false, false -> name = pattern
 
+/// Match entry point patterns against all symbol names and return the matching names.
+let findEntryPoints (allNames: Set<string>) (entryPointPatterns: string list) : string list =
+    allNames
+    |> Set.filter (fun name -> entryPointPatterns |> List.exists (fun pat -> matchesPattern pat name))
+    |> Set.toList
+
 /// Find symbols that are not reachable from the given entry point patterns.
-let findDeadCode (db: Database) (entryPointPatterns: string list) (includeTests: bool) : DeadCodeResult =
-    let allSymbols = db.GetAllSymbols()
+let findDeadCode
+    (allSymbols: SymbolInfo list)
+    (reachable: Set<string>)
+    (testMethodNames: Set<string>)
+    (includeTests: bool)
+    : DeadCodeResult =
     let allNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
-
-    // Match entry point patterns against all symbol names
-    let entryPoints =
-        allNames
-        |> Set.filter (fun name -> entryPointPatterns |> List.exists (fun pat -> matchesPattern pat name))
-        |> Set.toList
-
-    // Get all symbols reachable from entry points
-    let reachable = db.GetReachableSymbols(entryPoints)
 
     // Find unreachable symbol names
     let unreachableNames = allNames - reachable
-
-    // Get test method symbol names to exclude
-    let testMethodNames = db.GetTestMethodSymbolNames()
 
     // Filter to unreachable symbols, excluding:
     // - Test methods (they're test entry points)
