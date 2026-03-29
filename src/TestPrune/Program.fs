@@ -181,6 +181,20 @@ let createChecker () =
         parallelReferenceResolution = true
     )
 
+type ProjectResult =
+    { ProjectName: string
+      ProjectPath: string
+      Analysis: AnalysisResult option
+      FileKeys: (string * string) list
+      ProjectKey: (string * string) option
+      Reindexed: bool
+      SymbolCount: int
+      DepCount: int
+      TestCount: int
+      SkippedFiles: int
+      AnalyzedFiles: int
+      TotalFiles: int }
+
 /// Run the index command with injectable build runner and project options provider.
 let runIndexWith
     (buildRunner: BuildRunner)
@@ -201,13 +215,6 @@ let runIndexWith
         eprintfn "Build failed — cannot index"
         1
     else
-        let mutable totalSymbols = 0
-        let mutable totalDeps = 0
-        let mutable totalTests = 0
-
-        let mutable skippedProjects = 0
-        let mutable skippedFiles = 0
-
         let projectInfos =
             projectFiles
             |> List.choose (fun fsprojPath ->
@@ -218,9 +225,6 @@ let runIndexWith
                 with ex ->
                     eprintfn $"  Error parsing %s{fsprojPath}: %s{ex.Message}"
                     None)
-
-        let reindexedProjects =
-            System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
 
         let projectPathSet = projectInfos |> List.map (fun (p, _, _) -> p) |> Set.ofList
 
@@ -242,23 +246,33 @@ let runIndexWith
 
         let levels = topoLevels projectInfos Set.empty
 
-        let allFileKeys = System.Collections.Concurrent.ConcurrentBag<string * string>()
-        let allProjectKeys = System.Collections.Concurrent.ConcurrentBag<string * string>()
-
-        let indexProject (fsprojPath: string, compileFiles, projectRefs) : AnalysisResult option =
+        let indexProject
+            (reindexedSet: Set<string>)
+            (fsprojPath: string, compileFiles: string list, projectRefs: string list)
+            : ProjectResult =
             let projName = Path.GetFileNameWithoutExtension(fsprojPath)
 
             try
                 let hash = computeProjectHash compileFiles
 
-                let depReindexed =
-                    projectRefs |> List.exists (fun r -> reindexedProjects.ContainsKey(r))
+                let depReindexed = projectRefs |> List.exists reindexedSet.Contains
 
                 match db.GetProjectKey(projName) with
                 | Some stored when stored = hash && not depReindexed ->
-                    Threading.Interlocked.Increment(&skippedProjects) |> ignore
                     eprintfn $"  %s{projName}: unchanged, skipping"
-                    None
+
+                    { ProjectName = projName
+                      ProjectPath = fsprojPath
+                      Analysis = None
+                      FileKeys = []
+                      ProjectKey = None
+                      Reindexed = false
+                      SymbolCount = 0
+                      DepCount = 0
+                      TestCount = 0
+                      SkippedFiles = 0
+                      AnalyzedFiles = 0
+                      TotalFiles = compileFiles.Length }
                 | _ ->
                     let projOptions = lazy (getOptions checker fsprojPath)
 
@@ -267,6 +281,8 @@ let runIndexWith
 
                     let mutable analyzedFiles = 0
                     let mutable firstChangedIndex = None
+                    let mutable localFileKeys = []
+                    let mutable localSkippedFiles = 0
 
                     let results =
                         compileFiles
@@ -290,7 +306,7 @@ let runIndexWith
                                        | _ -> false
 
                                 if cached then
-                                    Threading.Interlocked.Increment(&skippedFiles) |> ignore
+                                    localSkippedFiles <- localSkippedFiles + 1
 
                                     Some
                                         {| Symbols = db.GetSymbolsInFile(relPath)
@@ -309,7 +325,7 @@ let runIndexWith
                                         if firstChangedIndex.IsNone then
                                             firstChangedIndex <- Some idx
 
-                                        allFileKeys.Add(relPath, fileKey)
+                                        localFileKeys <- (relPath, fileKey) :: localFileKeys
 
                                         Some
                                             {| Symbols = normalizeSymbolPaths repoRoot result.Symbols
@@ -327,43 +343,77 @@ let runIndexWith
                           Dependencies = results |> List.collect (fun r -> r.Dependencies)
                           TestMethods = results |> List.collect (fun r -> r.TestMethods) }
 
-                    allProjectKeys.Add(projName, hash)
-                    reindexedProjects.TryAdd(fsprojPath, true) |> ignore
-                    Threading.Interlocked.Add(&totalSymbols, combined.Symbols.Length) |> ignore
-                    Threading.Interlocked.Add(&totalDeps, combined.Dependencies.Length) |> ignore
-                    Threading.Interlocked.Add(&totalTests, combined.TestMethods.Length) |> ignore
-
                     let fileCount = compileFiles.Length
 
                     eprintfn
                         $"  %s{projName}: %d{combined.Symbols.Length} symbols, %d{combined.Dependencies.Length} deps, %d{combined.TestMethods.Length} tests (%d{analyzedFiles}/%d{fileCount} files analyzed)"
 
-                    if analyzedFiles > 0 then Some combined else None
+                    { ProjectName = projName
+                      ProjectPath = fsprojPath
+                      Analysis = if analyzedFiles > 0 then Some combined else None
+                      FileKeys = localFileKeys |> List.rev
+                      ProjectKey = Some(projName, hash)
+                      Reindexed = true
+                      SymbolCount = combined.Symbols.Length
+                      DepCount = combined.Dependencies.Length
+                      TestCount = combined.TestMethods.Length
+                      SkippedFiles = localSkippedFiles
+                      AnalyzedFiles = analyzedFiles
+                      TotalFiles = fileCount }
             with ex ->
                 eprintfn $"  Error processing %s{projName}: %s{ex.Message}"
-                None
 
-        let mutable allResults = []
+                { ProjectName = projName
+                  ProjectPath = fsprojPath
+                  Analysis = None
+                  FileKeys = []
+                  ProjectKey = None
+                  Reindexed = false
+                  SymbolCount = 0
+                  DepCount = 0
+                  TestCount = 0
+                  SkippedFiles = 0
+                  AnalyzedFiles = 0
+                  TotalFiles = 0 }
+
+        let mutable allProjectResults = []
+        let mutable reindexedSet = Set.empty
 
         for level in levels do
             let levelResults =
                 if level.Length = 1 then
-                    [ indexProject level.Head ]
+                    [ indexProject reindexedSet level.Head ]
                 else
                     level
-                    |> List.map (fun proj -> async { return indexProject proj })
+                    |> List.map (fun proj -> async { return indexProject reindexedSet proj })
                     |> Async.Parallel
                     |> Async.RunSynchronously
                     |> Array.toList
 
-            allResults <- allResults @ (levelResults |> List.choose id)
+            let newReindexed =
+                levelResults
+                |> List.choose (fun r -> if r.Reindexed then Some r.ProjectPath else None)
+                |> Set.ofList
+
+            reindexedSet <- Set.union reindexedSet newReindexed
+            allProjectResults <- allProjectResults @ levelResults
+
+        let allResults = allProjectResults |> List.choose (fun r -> r.Analysis)
+        let allFileKeys = allProjectResults |> List.collect (fun r -> r.FileKeys)
+        let allProjectKeys = allProjectResults |> List.choose (fun r -> r.ProjectKey)
+        let totalSymbols = allProjectResults |> List.sumBy (fun r -> r.SymbolCount)
+        let totalDeps = allProjectResults |> List.sumBy (fun r -> r.DepCount)
+        let totalTests = allProjectResults |> List.sumBy (fun r -> r.TestCount)
+
+        let skippedProjects =
+            allProjectResults
+            |> List.filter (fun r -> r.Analysis.IsNone && not r.Reindexed)
+            |> List.length
+
+        let skippedFiles = allProjectResults |> List.sumBy (fun r -> r.SkippedFiles)
 
         if not allResults.IsEmpty then
-            db.RebuildProjects(
-                allResults,
-                fileKeys = (allFileKeys |> Seq.toList),
-                projectKeys = (allProjectKeys |> Seq.toList)
-            )
+            db.RebuildProjects(allResults, fileKeys = allFileKeys, projectKeys = allProjectKeys)
 
         eprintfn $"Indexed %d{totalSymbols} symbols, %d{totalDeps} dependencies, %d{totalTests} test methods"
 
