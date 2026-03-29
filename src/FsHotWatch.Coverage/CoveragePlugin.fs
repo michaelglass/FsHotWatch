@@ -27,7 +27,7 @@ type CoverageResult =
 
 type CoverageState = { Results: CoverageResult list }
 
-let loadThresholds (thresholdsFile: string option) : Map<string, CoverageThreshold> =
+let private loadThresholds (thresholdsFile: string option) : Map<string, CoverageThreshold> =
     match thresholdsFile with
     | Some path when File.Exists(path) ->
         try
@@ -53,7 +53,7 @@ let loadThresholds (thresholdsFile: string option) : Map<string, CoverageThresho
             Map.empty
     | _ -> Map.empty
 
-let parseCoberturaXml (path: string) : (float * float) option =
+let private parseCoberturaXml (path: string) : (float * float) option =
     try
         let doc = XDocument.Load(path)
         let root = doc.Root
