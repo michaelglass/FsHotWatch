@@ -394,12 +394,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
     | Some cov ->
         Logging.info "config" $"Registering CoveragePlugin: %s{cov.Directory}"
 
-        daemon.Register(
-            FsHotWatch.Coverage.CoveragePlugin.CoveragePlugin(
-                coverageDir = cov.Directory,
-                ?thresholdsFile = cov.ThresholdsFile
-            )
-        )
+        daemon.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create cov.Directory cov.ThresholdsFile None)
     | None -> ()
 
     // File commands

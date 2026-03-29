@@ -20,7 +20,9 @@ open FsHotWatch.Fantomas.FormatCheckPlugin
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.Analyzers.AnalyzersPlugin
 open FsHotWatch.Build.BuildPlugin
-open FsHotWatch.Coverage.CoveragePlugin
+
+module CoveragePlugin = FsHotWatch.Coverage.CoveragePlugin
+
 open FsHotWatch.FileCommand.FileCommandPlugin
 open FsHotWatch.CheckCache
 open FsHotWatch.Tests.TestHelpers
@@ -1036,14 +1038,21 @@ let ``CoveragePlugin succeeds when coverage above threshold`` () =
 
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-        let plugin = CoveragePlugin(tmpDir, thresholdsFile = thresholdsPath)
-        host.Register(plugin)
+        let handler = CoveragePlugin.create tmpDir (Some thresholdsPath) None
+        host.RegisterHandler(handler)
 
         let testResults =
             { Results = Map.ofList [ "TestProject", TestsPassed "ok" ]
               Elapsed = TimeSpan.FromSeconds(1.0) }
 
         host.EmitTestCompleted(testResults)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
 
         let status = host.GetStatus("coverage")
         test <@ status.IsSome @>
@@ -1076,14 +1085,21 @@ let ``CoveragePlugin fails when coverage below threshold`` () =
 
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-        let plugin = CoveragePlugin(tmpDir, thresholdsFile = thresholdsPath)
-        host.Register(plugin)
+        let handler = CoveragePlugin.create tmpDir (Some thresholdsPath) None
+        host.RegisterHandler(handler)
 
         let testResults =
             { Results = Map.ofList [ "TestProject", TestsPassed "ok" ]
               Elapsed = TimeSpan.FromSeconds(1.0) }
 
         host.EmitTestCompleted(testResults)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(PluginStatus.Failed _) -> true
+                | _ -> false)
+            5000
 
         let status = host.GetStatus("coverage")
         test <@ status.IsSome @>
@@ -1107,14 +1123,21 @@ let ``CoveragePlugin reports no files found`` () =
 
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-        let plugin = CoveragePlugin(tmpDir)
-        host.Register(plugin)
+        let handler = CoveragePlugin.create tmpDir None None
+        host.RegisterHandler(handler)
 
         let testResults =
             { Results = Map.ofList [ "TestProject", TestsPassed "ok" ]
               Elapsed = TimeSpan.FromSeconds(1.0) }
 
         host.EmitTestCompleted(testResults)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(PluginStatus.Failed _) -> true
+                | _ -> false)
+            5000
 
         let status = host.GetStatus("coverage")
         test <@ status.IsSome @>
@@ -1238,8 +1261,8 @@ let ``Full pipeline: format → build → test → coverage`` () =
         host.Register(testPrunePlugin)
 
         // Register CoveragePlugin
-        let coveragePlugin = CoveragePlugin(covDir)
-        host.Register(coveragePlugin)
+        let coverageHandler = CoveragePlugin.create covDir None None
+        host.RegisterHandler(coverageHandler)
 
         // Create a temp .fs file and run preprocessors on it
         let fsFile = Path.Combine(tmpDir, "Temp.fs")

@@ -8,18 +8,14 @@ open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
 open FsHotWatch.Coverage.CoveragePlugin
-
-[<Fact>]
-let ``plugin has correct name`` () =
-    let plugin = CoveragePlugin("/tmp/nonexistent") :> IFsHotWatchPlugin
-    test <@ plugin.Name = "coverage" @>
+open FsHotWatch.Tests.TestHelpers
 
 [<Fact>]
 let ``coverage command returns empty initially`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin = CoveragePlugin("/tmp/nonexistent")
-    host.Register(plugin)
+    let handler = create "/tmp/nonexistent" None None
+    host.RegisterHandler(handler)
 
     let result = host.RunCommand("coverage", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
@@ -40,14 +36,21 @@ let ``coverage plugin reads Cobertura XML`` () =
 
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let plugin = CoveragePlugin(tmpDir, afterCheck = (fun () -> checkDone <- true))
-        host.Register(plugin)
+        let handler = create tmpDir None (Some(fun () -> checkDone <- true))
+        host.RegisterHandler(handler)
 
         let testResults =
             { Results = Map.ofList [ "TestProject", TestsPassed "ok" ]
               Elapsed = TimeSpan.FromSeconds(1.0) }
 
         host.EmitTestCompleted(testResults)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
 
         test <@ checkDone @>
 
@@ -88,14 +91,21 @@ let ``coverage plugin fails when below threshold`` () =
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let plugin = CoveragePlugin(tmpDir, thresholdsFile = thresholdsPath)
-        host.Register(plugin)
+        let handler = create tmpDir (Some thresholdsPath) None
+        host.RegisterHandler(handler)
 
         let testResults =
             { Results = Map.ofList [ "MyProject", TestsPassed "ok" ]
               Elapsed = TimeSpan.FromSeconds(1.0) }
 
         host.EmitTestCompleted(testResults)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Failed _) -> true
+                | _ -> false)
+            5000
 
         let status = host.GetStatus("coverage")
         test <@ status.IsSome @>
@@ -116,14 +126,17 @@ let ``coverage plugin fails when below threshold`` () =
 let ``coverage plugin skips check when no test results`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin = CoveragePlugin("/tmp/nonexistent")
-    host.Register(plugin)
+    let handler = create "/tmp/nonexistent" None None
+    host.RegisterHandler(handler)
 
     let testResults =
         { Results = Map.empty
           Elapsed = TimeSpan.FromSeconds(0.0) }
 
     host.EmitTestCompleted(testResults)
+
+    // Give the agent time to process
+    System.Threading.Thread.Sleep(200)
 
     // Status should remain Idle since the handler returns early
     let status = host.GetStatus("coverage")
@@ -134,14 +147,21 @@ let ``coverage plugin skips check when no test results`` () =
 let ``coverage plugin reports Failed when coverage dir does not exist`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin = CoveragePlugin("/tmp/nonexistent-cov-dir-xyz")
-    host.Register(plugin)
+    let handler = create "/tmp/nonexistent-cov-dir-xyz" None None
+    host.RegisterHandler(handler)
 
     let testResults =
         { Results = Map.ofList [ "TestProject", TestsPassed "ok" ]
           Elapsed = TimeSpan.FromSeconds(1.0) }
 
     host.EmitTestCompleted(testResults)
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("coverage") with
+            | Some(Failed _) -> true
+            | _ -> false)
+        5000
 
     let status = host.GetStatus("coverage")
     test <@ status.IsSome @>
@@ -170,14 +190,21 @@ let ``coverage plugin handles threshold file with missing branch property`` () =
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let plugin = CoveragePlugin(tmpDir, thresholdsFile = thresholdsPath)
-        host.Register(plugin)
+        let handler = create tmpDir (Some thresholdsPath) None
+        host.RegisterHandler(handler)
 
         let testResults =
             { Results = Map.ofList [ "Proj", TestsPassed "ok" ]
               Elapsed = TimeSpan.FromSeconds(1.0) }
 
         host.EmitTestCompleted(testResults)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
 
         let status = host.GetStatus("coverage")
         test <@ status.IsSome @>
@@ -211,14 +238,21 @@ let ``coverage plugin handles threshold file with missing line property`` () =
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let plugin = CoveragePlugin(tmpDir, thresholdsFile = thresholdsPath)
-        host.Register(plugin)
+        let handler = create tmpDir (Some thresholdsPath) None
+        host.RegisterHandler(handler)
 
         let testResults =
             { Results = Map.ofList [ "Proj", TestsPassed "ok" ]
               Elapsed = TimeSpan.FromSeconds(1.0) }
 
         host.EmitTestCompleted(testResults)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
 
         let status = host.GetStatus("coverage")
         test <@ status.IsSome @>
@@ -251,14 +285,21 @@ let ``coverage plugin handles invalid thresholds JSON`` () =
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let plugin = CoveragePlugin(tmpDir, thresholdsFile = thresholdsPath)
-        host.Register(plugin)
+        let handler = create tmpDir (Some thresholdsPath) None
+        host.RegisterHandler(handler)
 
         let testResults =
             { Results = Map.ofList [ "TestProject", TestsPassed "ok" ]
               Elapsed = TimeSpan.FromSeconds(1.0) }
 
         host.EmitTestCompleted(testResults)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
 
         // Invalid JSON falls back to Map.empty, so no thresholds => all pass
         let status = host.GetStatus("coverage")
@@ -289,16 +330,22 @@ let ``coverage plugin handles non-existent thresholds file`` () =
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let plugin =
-            CoveragePlugin(tmpDir, thresholdsFile = "/tmp/nonexistent-thresholds-xyz.json")
+        let handler = create tmpDir (Some "/tmp/nonexistent-thresholds-xyz.json") None
 
-        host.Register(plugin)
+        host.RegisterHandler(handler)
 
         let testResults =
             { Results = Map.ofList [ "TestProject", TestsPassed "ok" ]
               Elapsed = TimeSpan.FromSeconds(1.0) }
 
         host.EmitTestCompleted(testResults)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
 
         let status = host.GetStatus("coverage")
         test <@ status.IsSome @>
@@ -328,14 +375,21 @@ let ``coverage plugin handles XML with missing attributes`` () =
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let plugin = CoveragePlugin(tmpDir)
-        host.Register(plugin)
+        let handler = create tmpDir None None
+        host.RegisterHandler(handler)
 
         let testResults =
             { Results = Map.ofList [ "TestProject", TestsPassed "ok" ]
               Elapsed = TimeSpan.FromSeconds(1.0) }
 
         host.EmitTestCompleted(testResults)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
 
         let status = host.GetStatus("coverage")
         test <@ status.IsSome @>
@@ -368,14 +422,21 @@ let ``coverage plugin handles invalid XML file`` () =
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let plugin = CoveragePlugin(tmpDir)
-        host.Register(plugin)
+        let handler = create tmpDir None None
+        host.RegisterHandler(handler)
 
         let testResults =
             { Results = Map.ofList [ "TestProject", TestsPassed "ok" ]
               Elapsed = TimeSpan.FromSeconds(1.0) }
 
         host.EmitTestCompleted(testResults)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
 
         // Invalid XML is skipped by parseCoberturaXml (returns None)
         // but there are coverage files found, so it goes to allPass check with empty results
@@ -393,8 +454,3 @@ let ``coverage plugin handles invalid XML file`` () =
             Directory.Delete(tmpDir, true)
         with _ ->
             ()
-
-[<Fact>]
-let ``coverage plugin dispose is callable`` () =
-    let plugin = CoveragePlugin("/tmp") :> IFsHotWatchPlugin
-    plugin.Dispose()
