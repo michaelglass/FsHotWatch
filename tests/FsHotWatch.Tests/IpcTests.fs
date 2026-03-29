@@ -235,7 +235,7 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
             member _.Name = "completed-p"
 
             member _.Initialize(ctx) =
-                ctx.ReportStatus(Completed(box "result", System.DateTime(2025, 1, 2)))
+                ctx.ReportStatus(Completed(System.DateTime(2025, 1, 2)))
 
             member _.Dispose() = () }
 
@@ -300,7 +300,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
             member _.Name = "c"
 
             member _.Initialize(ctx) =
-                ctx.ReportStatus(Completed(box 42, System.DateTime(2025, 6, 16)))
+                ctx.ReportStatus(Completed(System.DateTime(2025, 6, 16)))
 
             member _.Dispose() = () }
 

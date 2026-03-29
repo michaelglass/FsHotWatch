@@ -354,7 +354,7 @@ let ``plugin reports Running status on FileChecked after tests complete`` () =
         test <@ status.IsSome @>
 
         match status.Value with
-        | Completed(data, _) when (data :? FsHotWatch.Events.TestResults) ->
+        | Completed _ ->
             Assert.Fail("Expected status to change after new FileChecked, not remain as test-run Completed")
         | _ -> ())
 

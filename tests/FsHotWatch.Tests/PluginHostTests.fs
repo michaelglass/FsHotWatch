@@ -569,7 +569,7 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
 
             member _.Initialize(ctx) =
                 ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                ctx.ReportStatus(Completed(box "done", DateTime.UtcNow))
+                ctx.ReportStatus(Completed(DateTime.UtcNow))
 
             member _.Dispose() = () }
 

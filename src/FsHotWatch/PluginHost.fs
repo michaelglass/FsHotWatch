@@ -88,7 +88,7 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
             try
                 let modified = preprocessor.Process files repoRoot
                 modifiedFiles <- modified @ modifiedFiles
-                statuses[preprocessor.Name] <- Completed(box modified, System.DateTime.UtcNow)
+                statuses[preprocessor.Name] <- Completed(System.DateTime.UtcNow)
             with ex ->
                 statuses[preprocessor.Name] <- Failed(ex.Message, System.DateTime.UtcNow)
 

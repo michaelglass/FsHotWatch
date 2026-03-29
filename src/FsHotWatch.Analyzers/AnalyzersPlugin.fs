@@ -151,15 +151,9 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                 let currentState = theAgent.GetState() |> Async.RunSynchronously
 
                 if currentState.ErrorCount > 0 then
-                    ctx.ReportStatus(
-                        Completed(
-                            box
-                                $"analyzed %d{currentState.DiagnosticsByFile.Count} files, %d{currentState.ErrorCount} errors",
-                            DateTime.UtcNow
-                        )
-                    )
+                    ctx.ReportStatus(Completed(DateTime.UtcNow))
                 else
-                    ctx.ReportStatus(Completed(box currentState.DiagnosticsByFile, DateTime.UtcNow))
+                    ctx.ReportStatus(Completed(DateTime.UtcNow))
 
             ctx.OnFileChecked.Add(fun result ->
                 ctx.ReportStatus(Running(since = DateTime.UtcNow))

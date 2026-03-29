@@ -22,7 +22,7 @@ let private formatStatus (status: PluginStatus) =
     match status with
     | Idle -> "Idle"
     | Running since -> $"Running since {since:O}"
-    | Completed(_, at) -> $"Completed at {at:O}"
+    | Completed at -> $"Completed at {at:O}"
     | Failed(error, at) -> $"Failed at {at:O}: {error}"
 
 /// Configuration record for DaemonRpcTarget.
