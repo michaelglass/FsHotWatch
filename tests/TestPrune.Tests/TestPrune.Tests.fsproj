@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <Compile Include="TestHelpers.fs" />
+    <Compile Include="DomainTests.fs" />
     <Compile Include="FcsTests.fs" />
     <Compile Include="AstAnalyzerTests.fs" />
     <Compile Include="DatabaseTests.fs" />

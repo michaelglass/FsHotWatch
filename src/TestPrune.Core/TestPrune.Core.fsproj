@@ -23,6 +23,7 @@
     </ItemGroup>
 
     <ItemGroup>
+        <Compile Include="Domain.fs" />
         <Compile Include="AstAnalyzer.fs" />
         <Compile Include="Database.fs" />
         <Compile Include="DiffParser.fs" />
