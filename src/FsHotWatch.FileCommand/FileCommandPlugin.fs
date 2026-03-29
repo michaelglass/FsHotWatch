@@ -6,7 +6,12 @@ open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.ProcessHelper
 
-type private FileCommandState = { LastResult: (bool * string) option }
+type private CommandResult =
+    | NotRun
+    | Succeeded of output: string
+    | CommandFailed of output: string
+
+type private FileCommandState = { LastResult: CommandResult }
 
 type private FileCommandMsg = FileChanged of files: string list
 
@@ -19,7 +24,7 @@ type FileCommandPlugin(name: string, fileFilter: string -> bool, command: string
         /// Subscribe to file changes and run the command on matching files; registers a status command.
         member _.Initialize(ctx) =
             let agent =
-                createAgent $"FileCommand-%s{name}" { LastResult = None } (fun state msg ->
+                createAgent $"FileCommand-%s{name}" { LastResult = NotRun } (fun state msg ->
                     async {
                         match msg with
                         | FileChanged files ->
@@ -32,20 +37,16 @@ type FileCommandPlugin(name: string, fileFilter: string -> bool, command: string
 
                                 try
                                     let (success, output) = runProcess command args ctx.RepoRoot []
-                                    let newState = { LastResult = Some(success, output) }
 
                                     if success then
                                         ctx.ReportStatus(Completed(DateTime.UtcNow))
+                                        return { LastResult = Succeeded output }
                                     else
                                         ctx.ReportStatus(PluginStatus.Failed($"%s{name} failed", DateTime.UtcNow))
-
-                                    return newState
+                                        return { LastResult = CommandFailed output }
                                 with ex ->
-                                    let newState = { LastResult = Some(false, ex.Message) }
-
                                     ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
-
-                                    return newState
+                                    return { LastResult = CommandFailed ex.Message }
                     })
 
             ctx.OnFileChanged.Add(fun change ->
@@ -67,10 +68,9 @@ type FileCommandPlugin(name: string, fileFilter: string -> bool, command: string
                         let! state = agent.GetState()
 
                         match state.LastResult with
-                        | Some(ok, _) ->
-                            let passed = if ok then "true" else "false"
-                            return $"{{\"passed\": %s{passed}}}"
-                        | None -> return "{\"status\": \"not run\"}"
+                        | Succeeded _ -> return "{\"passed\": true}"
+                        | CommandFailed _ -> return "{\"passed\": false}"
+                        | NotRun -> return "{\"status\": \"not run\"}"
                     }
             )
 
