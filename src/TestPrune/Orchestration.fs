@@ -12,6 +12,7 @@ open TestPrune.DiffParser
 open TestPrune.Domain
 open TestPrune.ImpactAnalysis
 open TestPrune.DeadCode
+open TestPrune.Ports
 open TestPrune.ProjectLoader
 open TestPrune.TestRunner
 
@@ -155,7 +156,7 @@ let topoLevels
 /// Index a single project, returning its analysis results.
 let indexProject
     (repoRoot: string)
-    (db: Database)
+    (store: SymbolStore)
     (getOptions: ProjectOptionsProvider)
     (checker: FSharpChecker)
     (reindexedSet: Set<string>)
@@ -168,7 +169,7 @@ let indexProject
 
         let depReindexed = projectRefs |> List.exists reindexedSet.Contains
 
-        match db.GetProjectKey(projName) with
+        match store.GetProjectKey(projName) with
         | Some stored when stored = hash && not depReindexed ->
             eprintfn $"  %s{projName}: unchanged, skipping"
 
@@ -214,7 +215,7 @@ let indexProject
 
                         let cached =
                             not forcedByCompilationOrder
-                            && match db.GetFileKey(relPath) with
+                            && match store.GetFileKey(relPath) with
                                | Some stored when stored = fileKey -> true
                                | _ -> false
 
@@ -223,9 +224,9 @@ let indexProject
                             localEvents <- FileCacheHitEvent(relPath, "file unchanged") :: localEvents
 
                             Some
-                                {| Symbols = db.GetSymbolsInFile(relPath)
-                                   Dependencies = db.GetDependenciesFromFile(relPath)
-                                   TestMethods = db.GetTestMethodsInFile(relPath) |}
+                                {| Symbols = store.GetSymbolsInFile(relPath)
+                                   Dependencies = store.GetDependenciesFromFile(relPath)
+                                   TestMethods = store.GetTestMethodsInFile(relPath) |}
                         else
                             let source = File.ReadAllText(sourceFile)
 
@@ -314,6 +315,8 @@ let runIndexWith
     : int =
     let dbPath = Path.Combine(repoRoot, ".test-prune.db")
     let db = Database.create dbPath
+    let store = toSymbolStore db
+    let sink = toSymbolSink db
 
     let projectFiles = findProjectFiles repoRoot
     eprintfn $"Found %d{projectFiles.Length} projects"
@@ -348,11 +351,11 @@ let runIndexWith
         for level in levels do
             let levelResults =
                 if level.Length = 1 then
-                    [ indexProject repoRoot db getOptions checker reindexedSet level.Head ]
+                    [ indexProject repoRoot store getOptions checker reindexedSet level.Head ]
                 else
                     level
                     |> List.map (fun proj ->
-                        async { return indexProject repoRoot db getOptions checker reindexedSet proj })
+                        async { return indexProject repoRoot store getOptions checker reindexedSet proj })
                     |> fun tasks -> Async.Parallel(tasks, maxDegreeOfParallelism = parallelism)
                     |> Async.RunSynchronously
                     |> Array.toList
@@ -384,7 +387,7 @@ let runIndexWith
         let skippedFiles = allProjectResults |> List.sumBy (fun r -> r.SkippedFiles)
 
         if not allResults.IsEmpty then
-            db.RebuildProjects(allResults, fileKeys = allFileKeys, projectKeys = allProjectKeys)
+            sink.RebuildProjects allResults allFileKeys allProjectKeys
 
         eprintfn $"Indexed %d{totalSymbols} symbols, %d{totalDeps} dependencies, %d{totalTests} test methods"
 
@@ -404,7 +407,7 @@ type DiffProvider = unit -> Result<string, string>
 let analyzeChanges
     (getDiff: DiffProvider)
     (repoRoot: string)
-    (db: Database)
+    (store: SymbolStore)
     (checker: FSharpChecker)
     (auditSink: AuditSink)
     : Result<TestSelection * string list, string> =
@@ -444,7 +447,7 @@ let analyzeChanges
                 Ok(RunAll $"could not parse: %s{failedFiles}", changedFiles)
             else
                 let selection, events =
-                    selectTests db.GetSymbolsInFile db.QueryAffectedTests changedFiles currentSymbolsByFile
+                    selectTests store.GetSymbolsInFile store.QueryAffectedTests changedFiles currentSymbolsByFile
 
                 for event in events do
                     auditSink.Post(timestamp event)
@@ -460,9 +463,10 @@ let runStatusWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSi
         1
     else
         let db = Database.create dbPath
+        let store = toSymbolStore db
         let checker = FSharpChecker.Create()
 
-        match analyzeChanges getDiff repoRoot db checker auditSink with
+        match analyzeChanges getDiff repoRoot store checker auditSink with
         | Error msg ->
             eprintfn $"Error: %s{msg}"
             1
@@ -506,9 +510,10 @@ let runRunWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink)
         1
     else
         let db = Database.create dbPath
+        let store = toSymbolStore db
         let checker = FSharpChecker.Create()
 
-        match analyzeChanges getDiff repoRoot db checker auditSink with
+        match analyzeChanges getDiff repoRoot store checker auditSink with
         | Error msg ->
             eprintfn $"Error: %s{msg}"
             1
@@ -565,11 +570,12 @@ let runDeadCode (repoRoot: string) (entryPatterns: string list) (includeTests: b
         1
     else
         let db = Database.create dbPath
-        let allSymbols = db.GetAllSymbols()
+        let store = toSymbolStore db
+        let allSymbols = store.GetAllSymbols()
         let allNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
         let entryPoints = findEntryPoints allNames entryPatterns
-        let reachable = db.GetReachableSymbols(entryPoints)
-        let testMethodNames = db.GetTestMethodSymbolNames()
+        let reachable = store.GetReachableSymbols(entryPoints)
+        let testMethodNames = store.GetTestMethodSymbolNames()
         let result, events = findDeadCode allSymbols reachable testMethodNames includeTests
 
         for event in events do

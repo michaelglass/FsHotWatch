@@ -10,6 +10,7 @@ open TestPrune.Orchestration
 open TestPrune.AstAnalyzer
 open TestPrune.Database
 open TestPrune.ImpactAnalysis
+open TestPrune.Ports
 open TestPrune.ProjectLoader
 open System.Reflection
 open FSharp.Compiler.CodeAnalysis
@@ -258,7 +259,8 @@ module ``analyzeChanges`` =
             let checker = makeChecker ()
             let fakeDiff: DiffProvider = fun () -> Error "not a repo"
 
-            let result = analyzeChanges fakeDiff tmp db checker (createNoopSink ())
+            let store = toSymbolStore db
+            let result = analyzeChanges fakeDiff tmp store checker (createNoopSink ())
             test <@ Result.isError result @>
 
             match result with
@@ -278,8 +280,9 @@ module ``analyzeChanges`` =
             let db = Database.create dbPath
             let checker = makeChecker ()
             let fakeDiff: DiffProvider = fun () -> Ok ""
+            let store = toSymbolStore db
 
-            let result = analyzeChanges fakeDiff tmp db checker (createNoopSink ())
+            let result = analyzeChanges fakeDiff tmp store checker (createNoopSink ())
 
             match result with
             | Ok(RunSubset [], _) -> ()
@@ -308,8 +311,9 @@ module ``analyzeChanges`` =
                 + " </Project>\n"
 
             let fakeDiff: DiffProvider = fun () -> Ok fsprojDiff
+            let store = toSymbolStore db
 
-            let result = analyzeChanges fakeDiff tmp db checker (createNoopSink ())
+            let result = analyzeChanges fakeDiff tmp store checker (createNoopSink ())
 
             match result with
             | Ok(RunAll _, _) -> ()
