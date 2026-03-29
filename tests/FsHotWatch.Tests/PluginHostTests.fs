@@ -348,24 +348,15 @@ let ``GetErrorsByPlugin returns only that plugin's errors`` () =
     test <@ aErrors.ContainsKey "/src/A.fs" @>
 
 [<Fact>]
-let ``EmitFileCheckedParallel runs handlers concurrently`` () =
+let ``EmitFileChecked dispatches to old-style plugin handlers`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
-    // Both handlers enter simultaneously, proving concurrency.
-    // If sequential, handler2 would never reach the barrier before timeout.
-    let barrier = new CountdownEvent(2)
-    let mutable handler1Entered = false
-    let mutable handler2Entered = false
 
     let makePlugin name (setter: bool ref) =
         { new IFsHotWatchPlugin with
             member _.Name = name
 
             member _.Initialize(ctx) =
-                ctx.OnFileChecked.Add(fun _ ->
-                    setter.Value <- true
-                    barrier.Signal() |> ignore
-                    // Wait for both to be running before completing
-                    barrier.Wait(5000) |> ignore)
+                ctx.OnFileChecked.Add(fun _ -> setter.Value <- true)
 
             member _.Dispose() = () }
 
@@ -382,14 +373,13 @@ let ``EmitFileCheckedParallel runs handlers concurrently`` () =
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L }
 
-    host.EmitFileCheckedParallel(dummyResult) |> Async.RunSynchronously
+    host.EmitFileChecked(dummyResult)
 
-    // Both handlers ran and reached the barrier concurrently
     test <@ ref1.Value @>
     test <@ ref2.Value @>
 
 [<Fact>]
-let ``fileCheckedCapture RemoveHandler is a no-op`` () =
+let ``fileChecked RemoveHandler removes the handler`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let mutable receivedCount = 0
 
@@ -398,12 +388,10 @@ let ``fileCheckedCapture RemoveHandler is a no-op`` () =
             member _.Name = "remove-handler-test"
 
             member _.Initialize(ctx) =
-                // Subscribe via the underlying IEvent (AddHandler path)
                 let handler =
                     Handler<FileCheckResult>(fun _ _ -> receivedCount <- receivedCount + 1)
 
                 ctx.OnFileChecked.AddHandler(handler)
-                // RemoveHandler is a no-op, so handler should still fire
                 ctx.OnFileChecked.RemoveHandler(handler)
 
             member _.Dispose() = () }
@@ -419,11 +407,11 @@ let ``fileCheckedCapture RemoveHandler is a no-op`` () =
           Version = 0L }
 
     host.EmitFileChecked(dummyResult)
-    // Handler still fires because RemoveHandler is a no-op
-    test <@ receivedCount = 1 @>
+    // Handler was removed, so it should not fire
+    test <@ receivedCount = 0 @>
 
 [<Fact>]
-let ``fileCheckedCapture Subscribe path works`` () =
+let ``fileChecked Subscribe path works`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let mutable receivedFile = ""
 
@@ -432,15 +420,7 @@ let ``fileCheckedCapture Subscribe path works`` () =
             member _.Name = "subscribe-test"
 
             member _.Initialize(ctx) =
-                let observer =
-                    { new System.IObserver<FileCheckResult> with
-                        member _.OnNext(r) = receivedFile <- r.File
-                        member _.OnError(_) = ()
-                        member _.OnCompleted() = () }
-
-                let disposable = ctx.OnFileChecked.Subscribe(observer)
-                // Dispose is also a no-op, so handler should still fire
-                disposable.Dispose()
+                ctx.OnFileChecked.Add(fun r -> receivedFile <- r.File)
 
             member _.Dispose() = () }
 

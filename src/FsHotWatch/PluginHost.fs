@@ -21,21 +21,7 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
     let testCompleted = Event<TestResults>()
     let statusChanged = Event<string * PluginStatus>()
 
-    let fileCheckedHandlers = ConcurrentBag<FileCheckResult -> unit>()
-
-    /// IEvent wrapper that captures handlers into a bag for parallel dispatch.
-    let fileCheckedCapture =
-        { new IEvent<Handler<FileCheckResult>, FileCheckResult> with
-            member _.AddHandler(handler) =
-                fileCheckedHandlers.Add(fun r -> handler.Invoke(null, r))
-
-            member _.RemoveHandler(_handler) = ()
-
-            member _.Subscribe(observer) =
-                fileCheckedHandlers.Add(fun r -> observer.OnNext(r))
-
-                { new System.IDisposable with
-                    member _.Dispose() = () } }
+    let fileChecked = Event<FileCheckResult>()
 
     let ledger = ErrorLedger()
     let commands = ConcurrentDictionary<string, CommandHandler>()
@@ -70,7 +56,7 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
               RepoRoot = repoRoot
               OnFileChanged = fileChanged.Publish
               OnBuildCompleted = buildCompleted.Publish
-              OnFileChecked = fileCheckedCapture
+              OnFileChecked = fileChecked.Publish
               OnProjectChecked = projectChecked.Publish
               OnTestCompleted = testCompleted.Publish
               ReportStatus =
@@ -198,34 +184,14 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
     member _.ClearErrors(pluginName: string, filePath: string, ?version: int64) =
         ledger.Clear(pluginName, filePath, ?version = version)
 
-    /// Emit a file checked event to all registered plugins (synchronous, sequential).
+    /// Emit a file checked event to all registered plugins.
     member _.EmitFileChecked(result: FileCheckResult) =
-        for handler in fileCheckedHandlers.ToArray() do
-            handler result
+        fileChecked.Trigger(result)
 
         for p in registeredPlugins do
             match p.OnFileChecked with
             | Some f -> f result
             | None -> ()
-
-    /// Emit a file checked event to all registered plugins in parallel.
-    /// Each handler runs as an independent async computation.
-    member _.EmitFileCheckedParallel(result: FileCheckResult) : Async<unit> =
-        async {
-            let handlers = fileCheckedHandlers.ToArray()
-
-            if handlers.Length > 0 then
-                do!
-                    handlers
-                    |> Array.map (fun handler -> async { handler result })
-                    |> Async.Parallel
-                    |> Async.Ignore
-
-            for p in registeredPlugins do
-                match p.OnFileChecked with
-                | Some f -> f result
-                | None -> ()
-        }
 
     /// Emit a project checked event to all registered plugins.
     member _.EmitProjectChecked(result: ProjectCheckResult) = projectChecked.Trigger(result)
