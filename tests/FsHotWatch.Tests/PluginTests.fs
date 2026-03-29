@@ -2,19 +2,15 @@ module FsHotWatch.Tests.PluginTests
 
 open Xunit
 open Swensen.Unquote
-open FsHotWatch.Plugin
-
-type FakePlugin() =
-    let mutable initialized = false
-
-    interface IFsHotWatchPlugin with
-        member _.Name = "fake"
-        member _.Initialize(_ctx) = initialized <- true
-        member _.Dispose() = ()
-
-    member _.IsInitialized = initialized
+open FsHotWatch.PluginFramework
 
 [<Fact>]
 let ``plugin has a name`` () =
-    let plugin = FakePlugin() :> IFsHotWatchPlugin
-    test <@ plugin.Name = "fake" @>
+    let handler =
+        { Name = "fake"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands = []
+          Subscriptions = PluginSubscriptions.none }
+
+    Assert.Equal("fake", handler.Name)

@@ -8,7 +8,7 @@ open Swensen.Unquote
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Ipc
 open FsHotWatch.PluginHost
-open FsHotWatch.Plugin
+open FsHotWatch.PluginFramework
 open FsHotWatch.Events
 open FsHotWatch.Tests.TestHelpers
 
@@ -42,13 +42,14 @@ let ``server responds to GetStatus`` () =
     let cts = new CancellationTokenSource()
 
     // Register a plugin so there's something in status
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "test-plugin"
-            member _.Initialize(ctx) = ctx.ReportStatus(Idle)
-            member _.Dispose() = () }
+    let handler =
+        { Name = "test-plugin"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands = []
+          Subscriptions = PluginSubscriptions.none }
 
-    host.Register(plugin)
+    host.RegisterHandler(handler)
 
     let serverTask =
         Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
@@ -72,16 +73,14 @@ let ``server responds to RunCommand`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let cts = new CancellationTokenSource()
 
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "greeter"
+    let handler =
+        { Name = "greeter"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands = [ "greet", fun _state _args -> async { return "hello world" } ]
+          Subscriptions = PluginSubscriptions.none }
 
-            member _.Initialize(ctx) =
-                ctx.RegisterCommand("greet", fun _args -> async { return "hello world" })
-
-            member _.Dispose() = () }
-
-    host.Register(plugin)
+    host.RegisterHandler(handler)
 
     let serverTask =
         Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
@@ -105,13 +104,14 @@ let ``GetPluginStatus returns specific plugin's status`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let cts = new CancellationTokenSource()
 
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "status-plugin"
-            member _.Initialize(ctx) = ctx.ReportStatus(Idle)
-            member _.Dispose() = () }
+    let handler =
+        { Name = "status-plugin"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands = []
+          Subscriptions = PluginSubscriptions.none }
 
-    host.Register(plugin)
+    host.RegisterHandler(handler)
 
     let serverTask =
         Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
@@ -161,23 +161,20 @@ let ``RunCommand with plugin that returns a result`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let cts = new CancellationTokenSource()
 
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "echo-plugin"
+    let handler =
+        { Name = "echo-plugin"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands =
+            [ "echo",
+              fun _state args ->
+                  async {
+                      let msg = if args.Length > 0 then args.[0] else "empty"
+                      return $"echoed: {msg}"
+                  } ]
+          Subscriptions = PluginSubscriptions.none }
 
-            member _.Initialize(ctx) =
-                ctx.RegisterCommand(
-                    "echo",
-                    fun args ->
-                        async {
-                            let msg = if args.Length > 0 then args.[0] else "empty"
-                            return $"echoed: {msg}"
-                        }
-                )
-
-            member _.Dispose() = () }
-
-    host.Register(plugin)
+    host.RegisterHandler(handler)
 
     let serverTask =
         Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
@@ -227,43 +224,48 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let cts = new CancellationTokenSource()
 
-    let idlePlugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "idle-p"
-            member _.Initialize(ctx) = ctx.ReportStatus(Idle)
-            member _.Dispose() = () }
+    let makeStatusHandler name (reportFn: PluginCtx<unit> -> unit) =
+        { Name = name
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ -> reportFn ctx
+                    | _ -> ()
 
-    let runningPlugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "running-p"
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChanged = true } }
 
-            member _.Initialize(ctx) =
-                ctx.ReportStatus(Running(since = System.DateTime(2025, 1, 1)))
+    host.RegisterHandler(makeStatusHandler "idle-p" (fun ctx -> ctx.ReportStatus(Idle)))
 
-            member _.Dispose() = () }
+    host.RegisterHandler(
+        makeStatusHandler "running-p" (fun ctx -> ctx.ReportStatus(Running(since = System.DateTime(2025, 1, 1))))
+    )
 
-    let completedPlugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "completed-p"
+    host.RegisterHandler(
+        makeStatusHandler "completed-p" (fun ctx -> ctx.ReportStatus(Completed(System.DateTime(2025, 1, 2))))
+    )
 
-            member _.Initialize(ctx) =
-                ctx.ReportStatus(Completed(System.DateTime(2025, 1, 2)))
+    host.RegisterHandler(
+        makeStatusHandler "failed-p" (fun ctx ->
+            ctx.ReportStatus(Failed("something broke", System.DateTime(2025, 1, 3))))
+    )
 
-            member _.Dispose() = () }
+    // Trigger status updates
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    let failedPlugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "failed-p"
-
-            member _.Initialize(ctx) =
-                ctx.ReportStatus(Failed("something broke", System.DateTime(2025, 1, 3)))
-
-            member _.Dispose() = () }
-
-    host.Register(idlePlugin)
-    host.Register(runningPlugin)
-    host.Register(completedPlugin)
-    host.Register(failedPlugin)
+    // Wait for all plugins to process their events
+    waitUntil
+        (fun () ->
+            match host.GetStatus("failed-p") with
+            | Some(Failed _) -> true
+            | _ -> false)
+        5000
 
     let serverTask =
         Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
@@ -292,43 +294,45 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
 let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let p1 =
-        { new IFsHotWatchPlugin with
-            member _.Name = "a"
-            member _.Initialize(ctx) = ctx.ReportStatus(Idle)
-            member _.Dispose() = () }
+    let makeStatusHandler name (reportFn: PluginCtx<unit> -> unit) =
+        { Name = name
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ -> reportFn ctx
+                    | _ -> ()
 
-    let p2 =
-        { new IFsHotWatchPlugin with
-            member _.Name = "b"
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChanged = true } }
 
-            member _.Initialize(ctx) =
-                ctx.ReportStatus(Running(since = System.DateTime(2025, 6, 15)))
+    host.RegisterHandler(makeStatusHandler "a" (fun ctx -> ctx.ReportStatus(Idle)))
 
-            member _.Dispose() = () }
+    host.RegisterHandler(
+        makeStatusHandler "b" (fun ctx -> ctx.ReportStatus(Running(since = System.DateTime(2025, 6, 15))))
+    )
 
-    let p3 =
-        { new IFsHotWatchPlugin with
-            member _.Name = "c"
+    host.RegisterHandler(makeStatusHandler "c" (fun ctx -> ctx.ReportStatus(Completed(System.DateTime(2025, 6, 16)))))
 
-            member _.Initialize(ctx) =
-                ctx.ReportStatus(Completed(System.DateTime(2025, 6, 16)))
+    host.RegisterHandler(
+        makeStatusHandler "d" (fun ctx -> ctx.ReportStatus(Failed("oops", System.DateTime(2025, 6, 17))))
+    )
 
-            member _.Dispose() = () }
+    // Trigger status updates
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    let p4 =
-        { new IFsHotWatchPlugin with
-            member _.Name = "d"
-
-            member _.Initialize(ctx) =
-                ctx.ReportStatus(Failed("oops", System.DateTime(2025, 6, 17)))
-
-            member _.Dispose() = () }
-
-    host.Register(p1)
-    host.Register(p2)
-    host.Register(p3)
-    host.Register(p4)
+    // Wait for all to process
+    waitUntil
+        (fun () ->
+            match host.GetStatus("d") with
+            | Some(Failed _) -> true
+            | _ -> false)
+        5000
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
 
@@ -355,23 +359,20 @@ let ``DaemonRpcTarget.RunCommand returns unknown command for missing command`` (
 let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "cmd-test"
+    let handler =
+        { Name = "cmd-test"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands =
+            [ "hello",
+              fun _state args ->
+                  async {
+                      let arg = if args.Length > 0 then args.[0] else "world"
+                      return $"hello {arg}"
+                  } ]
+          Subscriptions = PluginSubscriptions.none }
 
-            member _.Initialize(ctx) =
-                ctx.RegisterCommand(
-                    "hello",
-                    fun args ->
-                        async {
-                            let arg = if args.Length > 0 then args.[0] else "world"
-                            return $"hello {arg}"
-                        }
-                )
-
-            member _.Dispose() = () }
-
-    host.Register(plugin)
+    host.RegisterHandler(handler)
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
 
@@ -393,23 +394,37 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
 let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let p1 =
-        { new IFsHotWatchPlugin with
-            member _.Name = "idle-test"
-            member _.Initialize(ctx) = ctx.ReportStatus(Idle)
-            member _.Dispose() = () }
+    let makeStatusHandler name (reportFn: PluginCtx<unit> -> unit) =
+        { Name = name
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ -> reportFn ctx
+                    | _ -> ()
 
-    let p2 =
-        { new IFsHotWatchPlugin with
-            member _.Name = "failed-test"
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChanged = true } }
 
-            member _.Initialize(ctx) =
-                ctx.ReportStatus(Failed("bad", System.DateTime(2025, 1, 1)))
+    host.RegisterHandler(makeStatusHandler "idle-test" (fun ctx -> ctx.ReportStatus(Idle)))
 
-            member _.Dispose() = () }
+    host.RegisterHandler(
+        makeStatusHandler "failed-test" (fun ctx -> ctx.ReportStatus(Failed("bad", System.DateTime(2025, 1, 1))))
+    )
 
-    host.Register(p1)
-    host.Register(p2)
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("failed-test") with
+            | Some(Failed _) -> true
+            | _ -> false)
+        5000
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
 
@@ -547,21 +562,14 @@ let ``DaemonRpcTarget.ScanStatus delegates to GetScanStatus`` () =
 let ``DaemonRpcTarget.GetErrors returns all errors when filter is empty`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "error-plugin"
-
-            member _.Initialize(ctx) =
-                ctx.ReportErrors
-                    "/tmp/test.fs"
-                    [ { Message = "bad code"
-                        Severity = DiagnosticSeverity.Error
-                        Line = 10
-                        Column = 5 } ]
-
-            member _.Dispose() = () }
-
-    host.Register(plugin)
+    host.ReportErrors(
+        "error-plugin",
+        "/tmp/test.fs",
+        [ { Message = "bad code"
+            Severity = DiagnosticSeverity.Error
+            Line = 10
+            Column = 5 } ]
+    )
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
     let json = target.GetErrors("")
@@ -573,36 +581,23 @@ let ``DaemonRpcTarget.GetErrors returns all errors when filter is empty`` () =
 let ``DaemonRpcTarget.GetErrors filters by plugin name`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin1 =
-        { new IFsHotWatchPlugin with
-            member _.Name = "lint"
+    host.ReportErrors(
+        "lint",
+        "/tmp/a.fs",
+        [ { Message = "lint issue"
+            Severity = DiagnosticSeverity.Warning
+            Line = 1
+            Column = 0 } ]
+    )
 
-            member _.Initialize(ctx) =
-                ctx.ReportErrors
-                    "/tmp/a.fs"
-                    [ { Message = "lint issue"
-                        Severity = DiagnosticSeverity.Warning
-                        Line = 1
-                        Column = 0 } ]
-
-            member _.Dispose() = () }
-
-    let plugin2 =
-        { new IFsHotWatchPlugin with
-            member _.Name = "analyzers"
-
-            member _.Initialize(ctx) =
-                ctx.ReportErrors
-                    "/tmp/b.fs"
-                    [ { Message = "analyzer issue"
-                        Severity = DiagnosticSeverity.Info
-                        Line = 2
-                        Column = 0 } ]
-
-            member _.Dispose() = () }
-
-    host.Register(plugin1)
-    host.Register(plugin2)
+    host.ReportErrors(
+        "analyzers",
+        "/tmp/b.fs",
+        [ { Message = "analyzer issue"
+            Severity = DiagnosticSeverity.Info
+            Line = 2
+            Column = 0 } ]
+    )
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
 
@@ -675,16 +670,33 @@ let ``DaemonRpcTarget.InvalidateCache delegates to config`` () =
 let ``DaemonRpcTarget.GetErrors includes plugin statuses in response`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "test-prune"
+    let handler =
+        { Name = "test-prune"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        ctx.ReportStatus(Failed("2 failed: Foo.Tests, Bar.Tests", System.DateTime(2025, 1, 1)))
+                    | _ -> ()
 
-            member _.Initialize(ctx) =
-                ctx.ReportStatus(Failed("2 failed: Foo.Tests, Bar.Tests", System.DateTime(2025, 1, 1)))
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChanged = true } }
 
-            member _.Dispose() = () }
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    host.Register(plugin)
+    waitUntil
+        (fun () ->
+            match host.GetStatus("test-prune") with
+            | Some(Failed _) -> true
+            | _ -> false)
+        5000
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
     let json = target.GetErrors("")
