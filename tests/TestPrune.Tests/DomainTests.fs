@@ -41,7 +41,7 @@ let ``AnalysisError.describe DatabaseError includes operation`` () =
 
 [<Fact>]
 let ``SelectionReason.describe SymbolChanged includes symbol and kind`` () =
-    let reason = SymbolChanged("MyModule.myFunc", "Modified")
+    let reason = SymbolChanged("MyModule.myFunc", Modified)
     let msg = SelectionReason.describe reason
     test <@ msg.Contains("MyModule.myFunc") @>
     test <@ msg.Contains("Modified") @>

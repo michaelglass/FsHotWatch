@@ -18,8 +18,13 @@ module AnalysisError =
         | ProjectBuildFailed(project, exitCode) -> $"Project build failed for '%s{project}' (exit code %d{exitCode})"
         | DatabaseError(operation, ex) -> $"Database error during '%s{operation}': %s{ex.Message}"
 
+type ChangeKind =
+    | Modified
+    | Added
+    | Removed
+
 type SelectionReason =
-    | SymbolChanged of symbolName: string * changeKind: string
+    | SymbolChanged of symbolName: string * change: ChangeKind
     | TransitiveDependency of chain: string list
     | FsprojChanged of file: string
     | NewFileNotIndexed of file: string
@@ -28,7 +33,7 @@ type SelectionReason =
 module SelectionReason =
     let describe (reason: SelectionReason) =
         match reason with
-        | SymbolChanged(symbolName, changeKind) -> $"Symbol '%s{symbolName}' was %s{changeKind}"
+        | SymbolChanged(symbolName, change) -> $"Symbol '%s{symbolName}' was %A{change}"
         | TransitiveDependency chain ->
             let path = chain |> String.concat " -> "
             $"Transitive dependency: %s{path}"
@@ -42,7 +47,7 @@ type AnalysisEvent =
     | FileSkippedEvent of file: string * reason: string
     | ProjectCacheHitEvent of project: string
     | ProjectIndexedEvent of project: string * fileCount: int
-    | SymbolChangeDetectedEvent of file: string * symbolName: string * changeKind: string
+    | SymbolChangeDetectedEvent of file: string * symbolName: string * change: ChangeKind
     | TestSelectedEvent of testMethod: string * reason: SelectionReason
     | DiffParsedEvent of changedFiles: string list
     | IndexStartedEvent of projectCount: int

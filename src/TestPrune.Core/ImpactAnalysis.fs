@@ -25,12 +25,6 @@ let selectTests
             changedFiles
             |> List.filter (fun f -> not (f.EndsWith(".fsproj", System.StringComparison.OrdinalIgnoreCase)))
 
-        let changeKindStr change =
-            match change with
-            | Modified _ -> "Modified"
-            | Added _ -> "Added"
-            | Removed _ -> "Removed"
-
         let (hasNewFile, allChanges, symbolEvents) =
             fsFiles
             |> List.fold
@@ -65,8 +59,8 @@ let selectTests
                 |> List.map (fun testMethod ->
                     let name, kind =
                         match allChanges with
-                        | change :: _ -> changedSymbolNames [ change ] |> List.head, changeKindStr change
-                        | [] -> "", "Modified"
+                        | change :: _ -> changedSymbolNames [ change ] |> List.head, SymbolDiff.changeKind change
+                        | [] -> "", Domain.Modified
 
                     TestSelectedEvent(testMethod.SymbolFullName, SymbolChanged(name, kind)))
 

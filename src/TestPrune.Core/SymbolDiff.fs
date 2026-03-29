@@ -9,6 +9,13 @@ type SymbolChange =
     | Added of symbolName: string
     | Removed of symbolName: string
 
+/// Convert a SymbolChange to its corresponding ChangeKind.
+let changeKind (change: SymbolChange) : ChangeKind =
+    match change with
+    | Modified _ -> Domain.Modified
+    | Added _ -> Domain.Added
+    | Removed _ -> Domain.Removed
+
 /// Compare current symbols (from re-parsing) against stored symbols (from DB).
 /// A symbol is "changed" if:
 /// - It exists in both but content hash differs (Modified)
@@ -54,16 +61,13 @@ let detectChanges
     let events =
         changes
         |> List.map (fun change ->
-            match change with
-            | Modified name ->
-                let sourceFile = currentByName[name].SourceFile
-                SymbolChangeDetectedEvent(sourceFile, name, "Modified")
-            | Added name ->
-                let sourceFile = currentByName[name].SourceFile
-                SymbolChangeDetectedEvent(sourceFile, name, "Added")
-            | Removed name ->
-                let sourceFile = storedByName[name].SourceFile
-                SymbolChangeDetectedEvent(sourceFile, name, "Removed"))
+            let name, sourceFile =
+                match change with
+                | Modified n
+                | Added n -> n, currentByName[n].SourceFile
+                | Removed n -> n, storedByName[n].SourceFile
+
+            SymbolChangeDetectedEvent(sourceFile, name, changeKind change))
 
     changes, events
 

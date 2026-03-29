@@ -91,12 +91,12 @@ let computeFileKey (filePath: string) : string =
 let computeProjectHash (sourceFiles: string list) : string =
     let entries =
         sourceFiles
-        |> List.filter File.Exists
-        |> List.sort
-        |> List.map (fun path ->
-            let info = FileInfo(path)
-            let mtime = info.LastWriteTimeUtc.ToString("o")
-            $"%s{path}:%d{info.Length}:%s{mtime}")
+        |> List.map FileInfo
+        |> List.filter (fun fi -> fi.Exists)
+        |> List.sortBy (fun fi -> fi.FullName)
+        |> List.map (fun fi ->
+            let mtime = fi.LastWriteTimeUtc.ToString("o")
+            $"%s{fi.FullName}:%d{fi.Length}:%s{mtime}")
 
     let combined = String.concat "\n" entries
     let bytes = SHA256.HashData(Encoding.UTF8.GetBytes(combined))
@@ -453,8 +453,12 @@ let analyzeChanges
 
                 Ok(selection, changedFiles)
 
-/// Run the status command with an injectable diff provider.
-let runStatusWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink) : int =
+let private withAnalysis
+    (getDiff: DiffProvider)
+    (repoRoot: string)
+    (auditSink: AuditSink)
+    (f: TestSelection * string list -> int)
+    : int =
     let dbPath = Path.Combine(repoRoot, ".test-prune.db")
 
     if not (File.Exists(dbPath)) then
@@ -469,96 +473,86 @@ let runStatusWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSi
         | Error msg ->
             eprintfn $"Error: %s{msg}"
             1
-        | Ok(selection, changedFiles) ->
-            printfn $"Changed files: %d{changedFiles.Length}"
+        | Ok result -> f result
 
-            for f in changedFiles do
-                printfn $"  %s{f}"
+/// Run the status command with an injectable diff provider.
+let runStatusWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink) : int =
+    withAnalysis getDiff repoRoot auditSink (fun (selection, changedFiles) ->
+        printfn $"Changed files: %d{changedFiles.Length}"
 
-            match selection with
-            | RunSubset [] ->
-                printfn "No tests affected."
-                0
-            | RunSubset tests ->
-                printfn $"Would run %d{tests.Length} test(s):"
+        for f in changedFiles do
+            printfn $"  %s{f}"
 
-                let byProject = tests |> List.groupBy (fun t -> t.TestProject)
+        match selection with
+        | RunSubset [] ->
+            printfn "No tests affected."
+            0
+        | RunSubset tests ->
+            printfn $"Would run %d{tests.Length} test(s):"
 
-                for (projName, projTests) in byProject do
-                    printfn $"  %s{projName}:"
+            let byProject = tests |> List.groupBy (fun t -> t.TestProject)
 
-                    let byClass = projTests |> List.groupBy (fun t -> t.TestClass)
+            for (projName, projTests) in byProject do
+                printfn $"  %s{projName}:"
 
-                    for (cls, methods) in byClass do
-                        printfn $"    %s{cls}"
+                let byClass = projTests |> List.groupBy (fun t -> t.TestClass)
 
-                        for m in methods do
-                            printfn $"      - %s{m.TestMethod}"
+                for (cls, methods) in byClass do
+                    printfn $"    %s{cls}"
 
-                0
-            | RunAll reason ->
-                printfn $"Would run ALL tests (reason: %s{reason})"
-                0
+                    for m in methods do
+                        printfn $"      - %s{m.TestMethod}"
+
+            0
+        | RunAll reason ->
+            printfn $"Would run ALL tests (reason: %s{reason})"
+            0)
 
 /// Run the run command with an injectable diff provider.
 let runRunWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink) : int =
-    let dbPath = Path.Combine(repoRoot, ".test-prune.db")
+    withAnalysis getDiff repoRoot auditSink (fun (selection, _changedFiles) ->
+        match selection with
+        | RunSubset [] ->
+            printfn "No tests affected — nothing to run."
+            0
+        | RunAll reason ->
+            eprintfn $"Running ALL tests (reason: %s{reason})"
+            let testProjects = discoverTestProjects repoRoot
+            let mutable exitCode = 0
 
-    if not (File.Exists(dbPath)) then
-        eprintfn "No index found. Run 'test-prune index' first."
-        1
-    else
-        let db = Database.create dbPath
-        let store = toSymbolStore db
-        let checker = createChecker ()
+            for projPath in testProjects do
+                let dll = findTestDll projPath
+                eprintfn $"Running: %s{Path.GetFileName(projPath)}"
+                let result = runAllTests dll
+                printfn "%s" result.Output
 
-        match analyzeChanges getDiff repoRoot store checker auditSink with
-        | Error msg ->
-            eprintfn $"Error: %s{msg}"
-            1
-        | Ok(selection, _changedFiles) ->
-            match selection with
-            | RunSubset [] ->
-                printfn "No tests affected — nothing to run."
-                0
-            | RunAll reason ->
-                eprintfn $"Running ALL tests (reason: %s{reason})"
-                let testProjects = discoverTestProjects repoRoot
-                let mutable exitCode = 0
+                if result.ExitCode <> 0 then
+                    exitCode <- result.ExitCode
 
-                for projPath in testProjects do
+            exitCode
+        | RunSubset tests ->
+            let byProject = tests |> List.groupBy (fun t -> t.TestProject)
+            let projects = discoverTestProjects repoRoot
+            let mutable exitCode = 0
+
+            for (projName, projTests) in byProject do
+                let classes = projTests |> List.map (fun t -> t.TestClass) |> List.distinct
+
+                match
+                    projects
+                    |> List.tryFind (fun p -> Path.GetFileNameWithoutExtension(p) = projName)
+                with
+                | Some projPath ->
                     let dll = findTestDll projPath
-                    eprintfn $"Running: %s{Path.GetFileName(projPath)}"
-                    let result = runAllTests dll
+                    eprintfn $"Running %d{classes.Length} class(es) in %s{projName}"
+                    let result = runFilteredTests dll classes
                     printfn "%s" result.Output
 
                     if result.ExitCode <> 0 then
                         exitCode <- result.ExitCode
+                | None -> eprintfn $"WARNING: project %s{projName} not found"
 
-                exitCode
-            | RunSubset tests ->
-                let byProject = tests |> List.groupBy (fun t -> t.TestProject)
-                let projects = discoverTestProjects repoRoot
-                let mutable exitCode = 0
-
-                for (projName, projTests) in byProject do
-                    let classes = projTests |> List.map (fun t -> t.TestClass) |> List.distinct
-
-                    match
-                        projects
-                        |> List.tryFind (fun p -> Path.GetFileNameWithoutExtension(p) = projName)
-                    with
-                    | Some projPath ->
-                        let dll = findTestDll projPath
-                        eprintfn $"Running %d{classes.Length} class(es) in %s{projName}"
-                        let result = runFilteredTests dll classes
-                        printfn "%s" result.Output
-
-                        if result.ExitCode <> 0 then
-                            exitCode <- result.ExitCode
-                    | None -> eprintfn $"WARNING: project %s{projName} not found"
-
-                exitCode
+            exitCode)
 
 /// Run the dead-code command: detect unreachable symbols from entry points.
 let runDeadCode (repoRoot: string) (entryPatterns: string list) (includeTests: bool) (auditSink: AuditSink) : int =
