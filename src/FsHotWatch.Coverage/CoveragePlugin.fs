@@ -7,7 +7,7 @@ open System.Xml.Linq
 open FsHotWatch.Events
 open FsHotWatch
 open FsHotWatch.Logging
-open FsHotWatch.Plugin
+open FsHotWatch.PluginFramework
 
 /// Line and branch coverage thresholds for a project.
 type CoverageThreshold = { Line: float; Branch: float }
@@ -25,141 +25,148 @@ type CoverageResult =
         MeetsThreshold: bool
     }
 
-/// Checks coverage thresholds after tests complete.
-/// Reads Cobertura XML reports from coverageDir and compares against thresholds.
-type CoveragePlugin(coverageDir: string, ?thresholdsFile: string, ?afterCheck: unit -> unit) =
-    let mutable lastResults: CoverageResult list = []
+type CoverageState = { Results: CoverageResult list }
 
-    let loadThresholds () : Map<string, CoverageThreshold> =
-        match thresholdsFile with
-        | Some path when File.Exists(path) ->
-            try
-                let json = File.ReadAllText(path)
-                let doc = JsonDocument.Parse(json)
-
-                doc.RootElement.EnumerateObject()
-                |> Seq.map (fun prop ->
-                    let line =
-                        match prop.Value.TryGetProperty("line") with
-                        | true, el -> el.GetDouble()
-                        | false, _ -> 0.0
-
-                    let branch =
-                        match prop.Value.TryGetProperty("branch") with
-                        | true, el -> el.GetDouble()
-                        | false, _ -> 0.0
-
-                    prop.Name, { Line = line; Branch = branch })
-                |> Map.ofSeq
-            with _ ->
-                Map.empty
-        | _ -> Map.empty
-
-    let parseCoberturaXml (path: string) : (float * float) option =
+let loadThresholds (thresholdsFile: string option) : Map<string, CoverageThreshold> =
+    match thresholdsFile with
+    | Some path when File.Exists(path) ->
         try
-            let doc = XDocument.Load(path)
-            let root = doc.Root
+            let json = File.ReadAllText(path)
+            let doc = JsonDocument.Parse(json)
 
-            let lineRate =
-                match root.Attribute(XName.Get "line-rate") with
-                | null -> 0.0
-                | attr -> Double.Parse(attr.Value) * 100.0
+            doc.RootElement.EnumerateObject()
+            |> Seq.map (fun prop ->
+                let line =
+                    match prop.Value.TryGetProperty("line") with
+                    | true, el -> el.GetDouble()
+                    | false, _ -> 0.0
 
-            let branchRate =
-                match root.Attribute(XName.Get "branch-rate") with
-                | null -> 0.0
-                | attr -> Double.Parse(attr.Value) * 100.0
+                let branch =
+                    match prop.Value.TryGetProperty("branch") with
+                    | true, el -> el.GetDouble()
+                    | false, _ -> 0.0
 
-            Some(lineRate, branchRate)
+                prop.Name, { Line = line; Branch = branch })
+            |> Map.ofSeq
         with _ ->
-            None
+            Map.empty
+    | _ -> Map.empty
 
-    interface IFsHotWatchPlugin with
-        /// Returns "coverage".
-        member _.Name = "coverage"
+let parseCoberturaXml (path: string) : (float * float) option =
+    try
+        let doc = XDocument.Load(path)
+        let root = doc.Root
 
-        /// Subscribe to test completion and check coverage thresholds; registers the "coverage" command.
-        member _.Initialize(ctx) =
-            ctx.OnTestCompleted.Add(fun testResults ->
-                if testResults.Results.IsEmpty then
-                    Logging.warn "coverage" "No test results, skipping coverage check"
-                else
-                    ctx.ReportStatus(Running(since = DateTime.UtcNow))
+        let lineRate =
+            match root.Attribute(XName.Get "line-rate") with
+            | null -> 0.0
+            | attr -> Double.Parse(attr.Value) * 100.0
 
-                    try
-                        let thresholds = loadThresholds ()
+        let branchRate =
+            match root.Attribute(XName.Get "branch-rate") with
+            | null -> 0.0
+            | attr -> Double.Parse(attr.Value) * 100.0
 
-                        let coverageFiles =
-                            if Directory.Exists(coverageDir) then
-                                Directory.GetFiles(coverageDir, "*.xml", SearchOption.AllDirectories)
-                                |> Array.filter (fun f ->
-                                    f.EndsWith("cobertura.xml", StringComparison.OrdinalIgnoreCase))
-                                |> Array.toList
-                            else
-                                []
+        Some(lineRate, branchRate)
+    with _ ->
+        None
 
-                        let results =
-                            coverageFiles
-                            |> List.choose (fun xmlPath ->
-                                match parseCoberturaXml xmlPath with
-                                | Some(lineRate, branchRate) ->
-                                    let projectName = Path.GetDirectoryName(xmlPath) |> Path.GetFileName
+/// Creates a framework plugin handler that checks coverage thresholds after tests complete.
+let create
+    (coverageDir: string)
+    (thresholdsFile: string option)
+    (afterCheck: (unit -> unit) option)
+    : PluginHandler<CoverageState, unit> =
+    { Name = "coverage"
+      Init = { Results = [] }
+      Update =
+        fun ctx state event ->
+            async {
+                match event with
+                | TestCompleted testResults ->
+                    if testResults.Results.IsEmpty then
+                        Logging.warn "coverage" "No test results, skipping coverage check"
+                        return state
+                    else
+                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
-                                    let meetsThreshold =
-                                        match thresholds |> Map.tryFind projectName with
-                                        | Some threshold ->
-                                            lineRate >= threshold.Line && branchRate >= threshold.Branch
-                                        | None -> true
+                        try
+                            let thresholds = loadThresholds thresholdsFile
 
-                                    Some
-                                        { Project = projectName
-                                          LineRate = lineRate
-                                          BranchRate = branchRate
-                                          MeetsThreshold = meetsThreshold }
-                                | None -> None)
+                            let coverageFiles =
+                                if Directory.Exists(coverageDir) then
+                                    Directory.GetFiles(coverageDir, "*.xml", SearchOption.AllDirectories)
+                                    |> Array.filter (fun f ->
+                                        f.EndsWith("cobertura.xml", StringComparison.OrdinalIgnoreCase))
+                                    |> Array.toList
+                                else
+                                    []
 
-                        lastResults <- results
+                            let results =
+                                coverageFiles
+                                |> List.choose (fun xmlPath ->
+                                    match parseCoberturaXml xmlPath with
+                                    | Some(lineRate, branchRate) ->
+                                        let projectName = Path.GetDirectoryName(xmlPath) |> Path.GetFileName
 
-                        if coverageFiles.IsEmpty then
-                            ctx.ReportStatus(
-                                PluginStatus.Failed($"No coverage files found in %s{coverageDir}", DateTime.UtcNow)
-                            )
-                        else
-                            let allPass = results |> List.forall (fun r -> r.MeetsThreshold)
+                                        let meetsThreshold =
+                                            match thresholds |> Map.tryFind projectName with
+                                            | Some threshold ->
+                                                lineRate >= threshold.Line && branchRate >= threshold.Branch
+                                            | None -> true
 
-                            match afterCheck with
-                            | Some hook -> hook ()
-                            | None -> ()
+                                        Some
+                                            { Project = projectName
+                                              LineRate = lineRate
+                                              BranchRate = branchRate
+                                              MeetsThreshold = meetsThreshold }
+                                    | None -> None)
 
-                            if allPass then
-                                ctx.ReportStatus(Completed(DateTime.UtcNow))
-                            else
-                                let failures =
-                                    results
-                                    |> List.filter (fun r -> not r.MeetsThreshold)
-                                    |> List.map (fun r ->
-                                        $"%s{r.Project}: line=%.1f{r.LineRate}%% branch=%.1f{r.BranchRate}%%")
-                                    |> String.concat "; "
-
+                            if coverageFiles.IsEmpty then
                                 ctx.ReportStatus(
-                                    PluginStatus.Failed($"Coverage below threshold: %s{failures}", DateTime.UtcNow)
+                                    PluginStatus.Failed($"No coverage files found in %s{coverageDir}", DateTime.UtcNow)
                                 )
-                    with ex ->
-                        ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow)))
 
-            ctx.RegisterCommand(
-                "coverage",
-                fun _args ->
-                    async {
-                        let entries =
-                            lastResults
-                            |> List.map (fun r ->
-                                $"\"%s{r.Project}\": {{\"line\": %.1f{r.LineRate}, \"branch\": %.1f{r.BranchRate}, \"pass\": %b{r.MeetsThreshold}}}")
-                            |> String.concat ", "
+                                return { Results = results }
+                            else
+                                let allPass = results |> List.forall (fun r -> r.MeetsThreshold)
 
-                        return $"{{%s{entries}}}"
-                    }
-            )
+                                match afterCheck with
+                                | Some hook -> hook ()
+                                | None -> ()
 
-        /// No resources to dispose.
-        member _.Dispose() = ()
+                                if allPass then
+                                    ctx.ReportStatus(Completed(DateTime.UtcNow))
+                                else
+                                    let failures =
+                                        results
+                                        |> List.filter (fun r -> not r.MeetsThreshold)
+                                        |> List.map (fun r ->
+                                            $"%s{r.Project}: line=%.1f{r.LineRate}%% branch=%.1f{r.BranchRate}%%")
+                                        |> String.concat "; "
+
+                                    ctx.ReportStatus(
+                                        PluginStatus.Failed($"Coverage below threshold: %s{failures}", DateTime.UtcNow)
+                                    )
+
+                                return { Results = results }
+                        with ex ->
+                            ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+                            return state
+                | _ -> return state
+            }
+      Commands =
+        [ "coverage",
+          fun state _args ->
+              async {
+                  let entries =
+                      state.Results
+                      |> List.map (fun r ->
+                          $"\"%s{r.Project}\": {{\"line\": %.1f{r.LineRate}, \"branch\": %.1f{r.BranchRate}, \"pass\": %b{r.MeetsThreshold}}}")
+                      |> String.concat ", "
+
+                  return $"{{%s{entries}}}"
+              } ]
+      Subscriptions =
+        { PluginSubscriptions.none with
+            TestCompleted = true } }
