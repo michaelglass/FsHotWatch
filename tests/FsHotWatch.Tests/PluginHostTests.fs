@@ -7,6 +7,7 @@ open Swensen.Unquote
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.Plugin
+open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 open FsHotWatch.Tests.TestHelpers
 
@@ -14,52 +15,47 @@ open FsHotWatch.Tests.TestHelpers
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
 
-type RecordingPlugin() =
-    let mutable fileChanges = []
-
-    interface IFsHotWatchPlugin with
-        member _.Name = "recorder"
-
-        member _.Initialize(ctx) =
-            ctx.OnFileChanged.Add(fun change -> fileChanges <- change :: fileChanges)
-
-        member _.Dispose() = ()
-
-    member _.FileChanges = fileChanges |> List.rev
-
 [<Fact>]
 let ``plugin receives file change events`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
-    let plugin = RecordingPlugin()
-    host.Register(plugin)
+    let mutable fileChanges: FileChangeKind list = []
+
+    let handler =
+        { Name = "recorder"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | FileChanged c -> fileChanges <- c :: fileChanges
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChanged = true } }
+
+    host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    test <@ plugin.FileChanges.Length = 1 @>
+    waitUntil (fun () -> fileChanges.Length >= 1) 5000
+    test <@ fileChanges.Length = 1 @>
 
 [<Fact>]
 let ``plugin registers command`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
-    let mutable called = false
 
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "cmd-test"
+    let handler =
+        { Name = "cmd-test"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands = [ "greet", fun _state _args -> async { return "hello" } ]
+          Subscriptions = PluginSubscriptions.none }
 
-            member _.Initialize(ctx) =
-                ctx.RegisterCommand(
-                    "greet",
-                    fun _args ->
-                        async {
-                            called <- true
-                            return "hello"
-                        }
-                )
-
-            member _.Dispose() = () }
-
-    host.Register(plugin)
+    host.RegisterHandler(handler)
     let result = host.RunCommand("greet", [||]) |> Async.RunSynchronously
     test <@ result = Some "hello" @>
-    test <@ called @>
 
 [<Fact>]
 let ``RunCommand returns None for unknown command`` () =
@@ -71,16 +67,27 @@ let ``RunCommand returns None for unknown command`` () =
 let ``plugin reports status`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "status-test"
+    let handler =
+        { Name = "status-test"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ -> ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                    | _ -> ()
 
-            member _.Initialize(ctx) =
-                ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChanged = true } }
 
-            member _.Dispose() = () }
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+    waitUntil (fun () -> (host.GetStatus("status-test")) <> Some Idle) 5000
 
-    host.Register(plugin)
     let status = host.GetStatus("status-test")
     test <@ status.IsSome @>
 
@@ -95,20 +102,15 @@ let ``plugin reports status`` () =
 let ``GetAllStatuses returns all plugin statuses`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
-    let p1 =
-        { new IFsHotWatchPlugin with
-            member _.Name = "a"
-            member _.Initialize(ctx) = ctx.ReportStatus(Idle)
-            member _.Dispose() = () }
+    let makeHandler name =
+        { Name = name
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands = []
+          Subscriptions = PluginSubscriptions.none }
 
-    let p2 =
-        { new IFsHotWatchPlugin with
-            member _.Name = "b"
-            member _.Initialize(ctx) = ctx.ReportStatus(Idle)
-            member _.Dispose() = () }
-
-    host.Register(p1)
-    host.Register(p2)
+    host.RegisterHandler(makeHandler "a")
+    host.RegisterHandler(makeHandler "b")
     let all = host.GetAllStatuses()
     test <@ all.Count = 2 @>
     test <@ all |> Map.containsKey "a" @>
@@ -119,17 +121,26 @@ let ``EmitBuildCompleted reaches plugins`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let mutable receivedBuild: BuildResult option = None
 
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "build-listener"
+    let handler =
+        { Name = "build-listener"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted result -> receivedBuild <- Some result
+                    | _ -> ()
 
-            member _.Initialize(ctx) =
-                ctx.OnBuildCompleted.Add(fun result -> receivedBuild <- Some result)
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                BuildCompleted = true } }
 
-            member _.Dispose() = () }
-
-    host.Register(plugin)
+    host.RegisterHandler(handler)
     host.EmitBuildCompleted(BuildSucceeded)
+    waitUntil (fun () -> receivedBuild.IsSome) 5000
     test <@ receivedBuild = Some BuildSucceeded @>
 
 [<Fact>]
@@ -137,18 +148,27 @@ let ``EmitBuildCompleted with failure reaches plugins`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let mutable receivedBuild: BuildResult option = None
 
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "build-fail-listener"
+    let handler =
+        { Name = "build-fail-listener"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted result -> receivedBuild <- Some result
+                    | _ -> ()
 
-            member _.Initialize(ctx) =
-                ctx.OnBuildCompleted.Add(fun result -> receivedBuild <- Some result)
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                BuildCompleted = true } }
 
-            member _.Dispose() = () }
-
-    host.Register(plugin)
+    host.RegisterHandler(handler)
     let errors = [ "error CS0001: Something broke" ]
     host.EmitBuildCompleted(BuildFailed errors)
+    waitUntil (fun () -> receivedBuild.IsSome) 5000
 
     test
         <@
@@ -156,30 +176,6 @@ let ``EmitBuildCompleted with failure reaches plugins`` () =
             | Some(BuildFailed _) -> true
             | _ -> false
         @>
-
-[<Fact>]
-let ``EmitProjectChecked reaches plugins`` () =
-    let host = PluginHost.create nullChecker "/tmp/test"
-    let mutable receivedProject: ProjectCheckResult option = None
-
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "project-check-listener"
-
-            member _.Initialize(ctx) =
-                ctx.OnProjectChecked.Add(fun result -> receivedProject <- Some result)
-
-            member _.Dispose() = () }
-
-    host.Register(plugin)
-
-    let result =
-        { Project = "/tmp/test/Test.fsproj"
-          FileResults = Map.empty }
-
-    host.EmitProjectChecked(result)
-    test <@ receivedProject.IsSome @>
-    test <@ receivedProject.Value.Project = "/tmp/test/Test.fsproj" @>
 
 [<Fact>]
 let ``preprocessor runs before events are dispatched`` () =
@@ -253,21 +249,30 @@ let ``multiple plugins receive the same event`` () =
     let mutable received2 = false
     let mutable received3 = false
 
-    let makePlugin name (setter: unit -> unit) =
-        { new IFsHotWatchPlugin with
-            member _.Name = name
+    let makeHandler name (setter: unit -> unit) =
+        { Name = name
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ -> setter ()
+                    | _ -> ()
 
-            member _.Initialize(ctx) =
-                ctx.OnFileChanged.Add(fun _ -> setter ())
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChanged = true } }
 
-            member _.Dispose() = () }
-
-    host.Register(makePlugin "p1" (fun () -> received1 <- true))
-    host.Register(makePlugin "p2" (fun () -> received2 <- true))
-    host.Register(makePlugin "p3" (fun () -> received3 <- true))
+    host.RegisterHandler(makeHandler "p1" (fun () -> received1 <- true))
+    host.RegisterHandler(makeHandler "p2" (fun () -> received2 <- true))
+    host.RegisterHandler(makeHandler "p3" (fun () -> received3 <- true))
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
+    waitUntil (fun () -> received1 && received2 && received3) 5000
     test <@ received1 @>
     test <@ received2 @>
     test <@ received3 @>
@@ -276,21 +281,32 @@ let ``multiple plugins receive the same event`` () =
 let ``plugin can report and query errors via host`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "error-reporter"
+    let handler =
+        { Name = "error-reporter"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        ctx.ReportErrors
+                            "/src/A.fs"
+                            [ { Message = "bad"
+                                Severity = DiagnosticSeverity.Warning
+                                Line = 1
+                                Column = 0 } ]
+                    | _ -> ()
 
-            member _.Initialize(ctx) =
-                ctx.ReportErrors
-                    "/src/A.fs"
-                    [ { Message = "bad"
-                        Severity = DiagnosticSeverity.Warning
-                        Line = 1
-                        Column = 0 } ]
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChanged = true } }
 
-            member _.Dispose() = () }
-
-    host.Register(plugin)
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+    waitUntil (fun () -> host.HasErrors()) 5000
     test <@ host.HasErrors() @>
     test <@ host.ErrorCount() = 1 @>
     let errors = host.GetErrors()
@@ -299,71 +315,95 @@ let ``plugin can report and query errors via host`` () =
 [<Fact>]
 let ``plugin ClearErrors removes errors from ledger`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
-    let mutable clearFn: (string -> unit) option = None
 
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "clear-test"
+    let handler =
+        { Name = "clear-test"
+          Init = false
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ when not state ->
+                        ctx.ReportErrors
+                            "/src/B.fs"
+                            [ { Message = "oops"
+                                Severity = DiagnosticSeverity.Error
+                                Line = 5
+                                Column = 0 } ]
 
-            member _.Initialize(ctx) =
-                ctx.ReportErrors
-                    "/src/B.fs"
-                    [ { Message = "oops"
-                        Severity = DiagnosticSeverity.Error
-                        Line = 5
-                        Column = 0 } ]
+                        return true
+                    | FileChanged _ when state ->
+                        ctx.ClearErrors "/src/B.fs"
+                        return state
+                    | _ -> return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChanged = true } }
 
-                clearFn <- Some ctx.ClearErrors
-
-            member _.Dispose() = () }
-
-    host.Register(plugin)
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+    waitUntil (fun () -> host.HasErrors()) 5000
     test <@ host.HasErrors() @>
-    clearFn.Value "/src/B.fs"
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+    waitUntil (fun () -> not (host.HasErrors())) 5000
     test <@ not (host.HasErrors()) @>
 
 [<Fact>]
 let ``GetErrorsByPlugin returns only that plugin's errors`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
-    let makeErrorPlugin name file msg =
-        { new IFsHotWatchPlugin with
-            member _.Name = name
+    // Use direct ledger reporting via host for simplicity
+    host.ReportErrors(
+        "pluginA",
+        "/src/A.fs",
+        [ { Message = "from A"
+            Severity = DiagnosticSeverity.Error
+            Line = 1
+            Column = 0 } ]
+    )
 
-            member _.Initialize(ctx) =
-                ctx.ReportErrors
-                    file
-                    [ { Message = msg
-                        Severity = DiagnosticSeverity.Error
-                        Line = 1
-                        Column = 0 } ]
+    host.ReportErrors(
+        "pluginB",
+        "/src/B.fs",
+        [ { Message = "from B"
+            Severity = DiagnosticSeverity.Error
+            Line = 1
+            Column = 0 } ]
+    )
 
-            member _.Dispose() = () }
-
-    host.Register(makeErrorPlugin "pluginA" "/src/A.fs" "from A")
-    host.Register(makeErrorPlugin "pluginB" "/src/B.fs" "from B")
     test <@ host.ErrorCount() = 2 @>
     let aErrors = host.GetErrorsByPlugin("pluginA")
     test <@ aErrors.Count = 1 @>
     test <@ aErrors.ContainsKey "/src/A.fs" @>
 
 [<Fact>]
-let ``EmitFileChecked dispatches to old-style plugin handlers`` () =
+let ``EmitFileChecked dispatches to framework plugin handlers`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
-
-    let makePlugin name (setter: bool ref) =
-        { new IFsHotWatchPlugin with
-            member _.Name = name
-
-            member _.Initialize(ctx) =
-                ctx.OnFileChecked.Add(fun _ -> setter.Value <- true)
-
-            member _.Dispose() = () }
 
     let ref1 = ref false
     let ref2 = ref false
-    host.Register(makePlugin "p1" ref1)
-    host.Register(makePlugin "p2" ref2)
+
+    let makeHandler name (r: bool ref) =
+        { Name = name
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | FileChecked _ -> r.Value <- true
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChecked = true } }
+
+    host.RegisterHandler(makeHandler "p1" ref1)
+    host.RegisterHandler(makeHandler "p2" ref2)
 
     let dummyResult =
         { File = "/tmp/test.fs"
@@ -375,88 +415,9 @@ let ``EmitFileChecked dispatches to old-style plugin handlers`` () =
 
     host.EmitFileChecked(dummyResult)
 
+    waitUntil (fun () -> ref1.Value && ref2.Value) 5000
     test <@ ref1.Value @>
     test <@ ref2.Value @>
-
-[<Fact>]
-let ``fileChecked RemoveHandler removes the handler`` () =
-    let host = PluginHost.create nullChecker "/tmp/test"
-    let mutable receivedCount = 0
-
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "remove-handler-test"
-
-            member _.Initialize(ctx) =
-                let handler =
-                    Handler<FileCheckResult>(fun _ _ -> receivedCount <- receivedCount + 1)
-
-                ctx.OnFileChecked.AddHandler(handler)
-                ctx.OnFileChecked.RemoveHandler(handler)
-
-            member _.Dispose() = () }
-
-    host.Register(plugin)
-
-    let dummyResult =
-        { File = "/tmp/test.fs"
-          Source = ""
-          ParseResults = Unchecked.defaultof<_>
-          CheckResults = None
-          ProjectOptions = Unchecked.defaultof<_>
-          Version = 0L }
-
-    host.EmitFileChecked(dummyResult)
-    // Handler was removed, so it should not fire
-    test <@ receivedCount = 0 @>
-
-[<Fact>]
-let ``fileChecked Subscribe path works`` () =
-    let host = PluginHost.create nullChecker "/tmp/test"
-    let mutable receivedFile = ""
-
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "subscribe-test"
-
-            member _.Initialize(ctx) =
-                ctx.OnFileChecked.Add(fun r -> receivedFile <- r.File)
-
-            member _.Dispose() = () }
-
-    host.Register(plugin)
-
-    let dummyResult =
-        { File = "/tmp/subscribed.fs"
-          Source = ""
-          ParseResults = Unchecked.defaultof<_>
-          CheckResults = None
-          ProjectOptions = Unchecked.defaultof<_>
-          Version = 0L }
-
-    host.EmitFileChecked(dummyResult)
-    test <@ receivedFile = "/tmp/subscribed.fs" @>
-
-[<Fact>]
-let ``plugin initialization failure sets Failed status`` () =
-    let host = PluginHost.create nullChecker "/tmp/test"
-
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "failing-plugin"
-            member _.Initialize(_ctx) = failwith "init exploded"
-            member _.Dispose() = () }
-
-    host.Register(plugin)
-    let status = host.GetStatus("failing-plugin")
-    test <@ status.IsSome @>
-
-    test
-        <@
-            match status.Value with
-            | Failed(msg, _) -> msg.Contains("init exploded")
-            | _ -> false
-        @>
 
 [<Fact>]
 let ``preprocessor exception sets Failed status`` () =
@@ -544,20 +505,32 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
     let mutable statusEvents: (string * PluginStatus) list = []
     host.OnStatusChanged.Add(fun (name, status) -> statusEvents <- (name, status) :: statusEvents)
 
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "status-eventer"
+    let handler =
+        { Name = "status-eventer"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                    | _ -> ()
 
-            member _.Initialize(ctx) =
-                ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                ctx.ReportStatus(Completed(DateTime.UtcNow))
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChanged = true } }
 
-            member _.Dispose() = () }
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    host.Register(plugin)
     // Status agent dispatches asynchronously — wait for events
-    waitUntil (fun () -> statusEvents.Length >= 2) 5000
-    test <@ statusEvents.Length >= 2 @>
+    // Initial Idle from RegisterHandler + Running + Completed = at least 3
+    waitUntil (fun () -> statusEvents.Length >= 3) 5000
+    test <@ statusEvents.Length >= 3 @>
 
     test
         <@

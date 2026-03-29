@@ -10,6 +10,7 @@ open FsHotWatch.Logging
 open FsHotWatch.ProcessHelper
 open FsHotWatch.Lifecycle
 open FsHotWatch.PluginFramework
+open FsHotWatch.StringHelpers
 open TestPrune.AstAnalyzer
 open TestPrune.Database
 open TestPrune.Extensions
@@ -48,14 +49,6 @@ type TestPruneState =
 type TestPruneMsg = TestsFinished of TestResults
 
 let private formatTestResultsJson (results: TestResults) =
-    let truncate (s: string) =
-        let lines = s.Split('\n')
-
-        if lines.Length <= 200 then
-            s
-        else
-            lines |> Array.skip (lines.Length - 200) |> String.concat "\n"
-
     let projects =
         results.Results
         |> Map.toList
@@ -66,7 +59,7 @@ let private formatTestResultsJson (results: TestResults) =
                 | TestsFailed o -> ("failed", o)
 
             let escapedName = JsonSerializer.Serialize(name)
-            let escapedOutput = JsonSerializer.Serialize(truncate output)
+            let escapedOutput = JsonSerializer.Serialize(truncateOutput 200 output)
             $"{{\"project\": %s{escapedName}, \"status\": \"%s{status}\", \"output\": %s{escapedOutput}}}")
         |> String.concat ", "
 

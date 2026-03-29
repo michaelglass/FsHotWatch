@@ -66,11 +66,6 @@ type PluginStatus =
     /// Plugin encountered an error.
     | Failed of error: string * at: System.DateTime
 
-/// Named plugin status for serialization.
-[<NoComparison>]
-type PluginResult =
-    { PluginName: string
-      Status: PluginStatus }
 
 /// Result of a single test project execution.
 type TestResult =

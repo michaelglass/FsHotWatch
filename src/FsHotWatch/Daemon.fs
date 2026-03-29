@@ -355,9 +355,6 @@ type Daemon =
         JjGuard: JjHelper.JjScanGuard option
     }
 
-    /// Register a plugin with the daemon's plugin host.
-    member this.Register(plugin: IFsHotWatchPlugin) = this.Host.Register(plugin)
-
     /// Register a declarative framework-managed plugin handler.
     member this.RegisterHandler<'State, 'Msg>(handler: PluginFramework.PluginHandler<'State, 'Msg>) =
         this.Host.RegisterHandler(handler)
@@ -733,6 +730,7 @@ module Daemon =
                 if not projFilesChanged.IsEmpty || hasSolution then
                     Logging.info "daemon" "Project/solution change detected — re-discovering projects"
 
+                    // Guard: tests may pass Unchecked.defaultof for checker
                     if not (isNull (box checker)) then
                         checker.InvalidateAll()
                         checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
