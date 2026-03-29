@@ -109,13 +109,18 @@ let private readAll (reader: SqliteDataReader) (f: SqliteDataReader -> 'T) : 'T 
 let private openConnection (dbPath: string) =
     let connStr = $"Data Source=%s{dbPath}"
     let conn = new SqliteConnection(connStr)
-    conn.Open()
 
-    use pragmaCmd = conn.CreateCommand()
-    pragmaCmd.CommandText <- "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;"
-    pragmaCmd.ExecuteNonQuery() |> ignore
+    try
+        conn.Open()
 
-    conn
+        use pragmaCmd = conn.CreateCommand()
+        pragmaCmd.CommandText <- "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;"
+        pragmaCmd.ExecuteNonQuery() |> ignore
+
+        conn
+    with ex ->
+        conn.Dispose()
+        raise ex
 
 /// SQLite-backed dependency graph storage.
 type Database(dbPath: string) =

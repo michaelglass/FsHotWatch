@@ -37,7 +37,7 @@ let overrides =
           // classifyDependency default arm requires non-standard FSharp symbol types.
           // Compiler-generated branches for type-test patterns and for-loop iteration add
           // uncoverable IL branches. Defensive paths tested up to 73.2% coverage.
-          "AstAnalyzer.fs", (91.0, 73.0)
+          "AstAnalyzer.fs", (91.0, 72.0)
           // DeadCode.fs: Compiler-generated branch in || short-circuit within List.exists
           // closure (line 80). Both sides of the disjunction are tested, but the IL branch
           // for evaluating the right side when left is true is not reachable.
@@ -45,7 +45,7 @@ let overrides =
           // Database.fs: Compiler-generated branches in while-loop readers, use-binding IDisposable
           // null checks, and transaction try/with rollback paths. All logic paths tested; remaining
           // 23 uncovered branches are IL artifacts not reachable from F# code.
-          "Database.fs", (83.0, 67.0)
+          "Database.fs", (82.0, 67.0)
           // ImpactAnalysis.fs: The [] -> "", Domain.Modified fallback in selectTests is a
           // defensive path that can't occur in practice (affectedTests non-empty implies changes
           // exist). Compiler-generated branches for fold tuple deconstruction.

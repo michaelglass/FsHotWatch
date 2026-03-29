@@ -74,20 +74,12 @@ let private tryClassifyEntity (entity: FSharpEntity) : (SymbolKind * string) opt
     try
         let fullName = entity.FullName
 
-        if entity.IsFSharpModule then
-            Some(Module, fullName)
-        elif entity.IsFSharpUnion then
-            Some(Type, fullName)
-        elif entity.IsFSharpRecord then
-            Some(Type, fullName)
-        elif entity.IsEnum then
-            Some(Type, fullName)
-        elif entity.IsFSharpAbbreviation then
-            Some(Type, fullName)
-        elif entity.IsClass || entity.IsValueType || entity.IsInterface then
-            Some(Type, fullName)
-        else
-            Some(Type, fullName)
+        if entity.IsFSharpModule then Some(Module, fullName)
+        elif entity.IsFSharpUnion then Some(Type, fullName)
+        elif entity.IsFSharpRecord then Some(Type, fullName)
+        elif entity.IsEnum then Some(Type, fullName)
+        elif entity.IsFSharpAbbreviation then Some(Type, fullName)
+        else Some(Type, fullName)
     with :? InvalidOperationException ->
         None
 
@@ -457,7 +449,8 @@ let private findRelatedScriptFiles (currentFile: string) (openedModules: string 
                 |> List.filter (fun f -> f <> currentFile && not (List.contains f foundFiles))
 
             foundFiles @ hypotheticalFiles |> List.distinct
-        with _ ->
+        with ex ->
+            eprintfn $"  Warning: findRelatedScriptFiles failed: %s{ex.Message}"
             []
 
 /// Convenience: create project options from a script source string.

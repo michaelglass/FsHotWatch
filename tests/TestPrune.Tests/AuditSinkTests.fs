@@ -1,7 +1,6 @@
 module TestPrune.Tests.AuditSinkTests
 
 open System
-open System.Threading
 open Xunit
 open Swensen.Unquote
 open TestPrune.Domain
@@ -12,15 +11,8 @@ module ``AuditSink basics`` =
     [<Fact>]
     let ``posted events are persisted in order`` () =
         let received = System.Collections.Generic.List<Timestamped<AnalysisEvent>>()
-        let gate = new ManualResetEventSlim(false)
 
-        let persist event =
-            async {
-                received.Add(event)
-
-                if received.Count = 2 then
-                    gate.Set()
-            }
+        let persist event = async { received.Add(event) }
 
         let sink = createAuditSink persist
 
@@ -34,8 +26,8 @@ module ``AuditSink basics`` =
 
         sink.Post(event1)
         sink.Post(event2)
+        sink.Flush()
 
-        test <@ gate.Wait(TimeSpan.FromSeconds(5.0)) @>
         test <@ received.Count = 2 @>
         test <@ received[0].Event = IndexStartedEvent 5 @>
         test <@ received[1].Event = IndexCompletedEvent(100, 50, 10) @>

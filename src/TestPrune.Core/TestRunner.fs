@@ -76,7 +76,8 @@ let discoverTestProjects (repoRoot: string) : string list =
             try
                 let content = File.ReadAllText(path)
                 content.Contains("xunit", StringComparison.OrdinalIgnoreCase)
-            with _ ->
-                false)
+            with
+            | :? System.IO.IOException
+            | :? System.UnauthorizedAccessException -> false)
         |> Array.toList
         |> List.sort
