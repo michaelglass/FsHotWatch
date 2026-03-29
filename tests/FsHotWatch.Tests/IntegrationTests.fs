@@ -9,6 +9,7 @@ open Swensen.Unquote
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Text
 open FsHotWatch.CheckPipeline
+open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
@@ -772,7 +773,7 @@ let ``AnalyzersPlugin produces warning on wildcard DU match`` () =
             let errors = host.GetErrorsByPlugin("analyzers")
             let allEntries = errors |> Map.toList |> List.collect snd
             test <@ allEntries.Length > 0 @>
-            test <@ allEntries |> List.exists (fun e -> e.Severity = "warning") @>
+            test <@ allEntries |> List.exists (fun e -> e.Severity = DiagnosticSeverity.Warning) @>
         | PluginStatus.Failed(msg, _) -> Assert.Fail($"Analyzer should succeed but failed: {msg}")
         | other -> Assert.Fail($"Unexpected status: %A{other}"))
 

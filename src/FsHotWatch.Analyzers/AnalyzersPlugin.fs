@@ -205,13 +205,13 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                                                 { Message = m.Message
                                                   Severity =
                                                     match m.Severity with
-                                                    | Severity.Error -> "error"
-                                                    | Severity.Warning -> "warning"
-                                                    | Severity.Info -> "info"
-                                                    | Severity.Hint -> "hint"
+                                                    | Severity.Error -> DiagnosticSeverity.Error
+                                                    | Severity.Warning -> DiagnosticSeverity.Warning
+                                                    | Severity.Info -> DiagnosticSeverity.Info
+                                                    | Severity.Hint -> DiagnosticSeverity.Hint
                                                   Line = m.Range.StartLine
                                                   Column = m.Range.StartColumn })
-                                        | Error _ -> [])
+                                        | Result.Error _ -> [])
 
                                 Logging.debug
                                     "analyzers"

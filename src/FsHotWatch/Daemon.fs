@@ -38,7 +38,7 @@ let private reportFcsDiagnostics (host: PluginHost) (checkResult: Events.FileChe
                     | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error ->
                         Some
                             { Message = d.Message
-                              Severity = "error"
+                              Severity = DiagnosticSeverity.Error
                               Line = d.StartLine
                               Column = d.StartColumn }
                     | _ -> None)
