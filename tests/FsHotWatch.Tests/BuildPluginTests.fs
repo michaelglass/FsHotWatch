@@ -7,22 +7,7 @@ open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
 open FsHotWatch.Build
-
-let private waitUntil (timeoutMs: int) (predicate: unit -> bool) =
-    let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
-
-    while not (predicate ()) && DateTime.UtcNow < deadline do
-        System.Threading.Thread.Sleep(50)
-
-let private waitForBuildDone (host: PluginHost) (pluginName: string) (timeoutMs: int) =
-    let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
-    let mutable done' = false
-
-    while not done' && DateTime.UtcNow < deadline do
-        match host.GetStatus(pluginName) with
-        | Some(PluginStatus.Completed _)
-        | Some(PluginStatus.Failed _) -> done' <- true
-        | _ -> System.Threading.Thread.Sleep(50)
+open FsHotWatch.Tests.TestHelpers
 
 [<Fact>]
 let ``plugin has correct name`` () =
@@ -61,7 +46,7 @@ let ``build plugin emits BuildCompleted on successful build`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    waitForBuildDone host "build" 5000
+    waitForTerminalStatus host "build" 5000
 
     test <@ receivedBuild = Some BuildSucceeded @>
 
@@ -84,7 +69,7 @@ let ``build-status command returns passed true after successful build`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    waitForBuildDone host "build" 5000
+    waitForTerminalStatus host "build" 5000
 
     let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
@@ -99,7 +84,7 @@ let ``build-status command returns failed after failed build`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    waitForBuildDone host "build" 5000
+    waitForTerminalStatus host "build" 5000
 
     let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
@@ -114,7 +99,7 @@ let ``build plugin reports Failed status on failed build`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    waitForBuildDone host "build" 5000
+    waitForTerminalStatus host "build" 5000
 
     let status = host.GetStatus("build")
     test <@ status.IsSome @>
@@ -147,7 +132,7 @@ let ``build plugin emits BuildFailed on failed build`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    waitForBuildDone host "build" 5000
+    waitForTerminalStatus host "build" 5000
 
     test
         <@
@@ -165,7 +150,7 @@ let ``build plugin reports errors on failed build`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    waitForBuildDone host "build" 5000
+    waitForTerminalStatus host "build" 5000
 
     test <@ host.HasErrors() @>
 
@@ -180,7 +165,7 @@ let ``build plugin handles exception from runProcess`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    waitForBuildDone host "build" 5000
+    waitForTerminalStatus host "build" 5000
 
     let status = host.GetStatus("build")
     test <@ status.IsSome @>
@@ -216,7 +201,7 @@ let ``build plugin ignores SolutionChanged events`` () =
     host.EmitFileChanged(SolutionChanged "test.sln")
 
     // SolutionChanged is ignored — poll briefly; will time out (expected)
-    waitUntil 200 (fun () -> receivedBuild.IsSome)
+    waitUntil (fun () -> receivedBuild.IsSome) 200
 
     test <@ receivedBuild = None @>
 
@@ -241,6 +226,6 @@ let ``build plugin triggers on ProjectChanged`` () =
 
     host.EmitFileChanged(ProjectChanged [ "src/Lib.fsproj" ])
 
-    waitForBuildDone host "build" 5000
+    waitForTerminalStatus host "build" 5000
 
     test <@ receivedBuild = Some BuildSucceeded @>

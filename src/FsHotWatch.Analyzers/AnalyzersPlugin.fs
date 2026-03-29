@@ -17,8 +17,7 @@ type AnalyzersMsg =
 
 type AnalyzersState =
     { DiagnosticsByFile: Map<string, ErrorEntry list>
-      LoadedCount: int
-      ErrorCount: int }
+      LoadedCount: int }
 
 /// Creates a framework plugin handler that hosts F# analyzers in-process
 /// using the warm checker's results.
@@ -122,8 +121,7 @@ let create (analyzerPaths: string list) : PluginHandler<AnalyzersState, Analyzer
     { Name = "analyzers"
       Init =
         { DiagnosticsByFile = Map.empty
-          LoadedCount = loadedCount
-          ErrorCount = 0 }
+          LoadedCount = loadedCount }
       Update =
         fun ctx state event ->
             async {
@@ -208,10 +206,7 @@ let create (analyzerPaths: string list) : PluginHandler<AnalyzersState, Analyzer
                             DiagnosticsByFile = state.DiagnosticsByFile |> Map.add file entries }
                 | Custom(AnalysisFailed(_file, _error)) ->
                     ctx.ReportStatus(Completed(DateTime.UtcNow))
-
-                    return
-                        { state with
-                            ErrorCount = state.ErrorCount + 1 }
+                    return state
                 | _ -> return state
             }
       Commands =

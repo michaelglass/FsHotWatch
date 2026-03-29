@@ -53,24 +53,7 @@ let private findRepoRoot () =
 
 /// Poll until the plugin status is no longer Running, with a timeout.
 let private waitForStatusSettled (host: PluginHost) (pluginName: string) (timeoutMs: int) =
-    let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
-    let mutable settled = false
-
-    while not settled && DateTime.UtcNow < deadline do
-        match host.GetStatus(pluginName) with
-        | Some(Running _) -> Threading.Thread.Sleep(50)
-        | _ -> settled <- true
-
-/// Poll until the plugin reaches a terminal status (Completed or Failed).
-let private waitForTerminalStatus (host: PluginHost) (pluginName: string) (timeoutMs: int) =
-    let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
-    let mutable done' = false
-
-    while not done' && DateTime.UtcNow < deadline do
-        match host.GetStatus(pluginName) with
-        | Some(Completed _)
-        | Some(Failed _) -> done' <- true
-        | _ -> Threading.Thread.Sleep(50)
+    waitForSettled host pluginName timeoutMs
 
 // ---------------------------------------------------------------------------
 // Helper: build the ExampleAnalyzer once (thread-safe, shared across tests)

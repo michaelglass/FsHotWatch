@@ -471,8 +471,9 @@ let ``WaitForScan legacy path blocks on cold daemon`` () =
     let signal = FsHotWatch.Daemon.ScanSignal()
     let task = signal.WaitForGeneration(-1L, 0L)
     test <@ not task.IsCompleted @>
-    // Signal generation 1 — should resolve
+    // Signal generation 1 — should resolve (Post is fire-and-forget, so wait for completion)
     signal.SignalGeneration(1L)
+    task.Wait(System.TimeSpan.FromSeconds(5.0)) |> ignore
     test <@ task.IsCompleted @>
 
 [<Fact>]

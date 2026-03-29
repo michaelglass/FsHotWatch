@@ -49,6 +49,13 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
 
     let registeredPlugins = ResizeArray<PluginFramework.RegisteredPlugin>()
 
+    /// Dispatch a payload to all registered plugins that have a matching handler.
+    let dispatchToRegistered (selector: PluginFramework.RegisteredPlugin -> ('a -> unit) option) (payload: 'a) =
+        for p in registeredPlugins do
+            match selector p with
+            | Some f -> f payload
+            | None -> ()
+
     /// Register a plugin, wiring up its context and calling Initialize.
     member _.Register(plugin: IFsHotWatchPlugin) =
         let ctx =
@@ -75,19 +82,11 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
               EmitBuildCompleted =
                 fun result ->
                     buildCompleted.Trigger(result)
-
-                    for p in registeredPlugins do
-                        match p.OnBuildCompleted with
-                        | Some f -> f result
-                        | None -> ()
+                    dispatchToRegistered (fun p -> p.OnBuildCompleted) result
               EmitTestCompleted =
                 fun results ->
                     testCompleted.Trigger(results)
-
-                    for p in registeredPlugins do
-                        match p.OnTestCompleted with
-                        | Some f -> f results
-                        | None -> ()
+                    dispatchToRegistered (fun p -> p.OnTestCompleted) results
               ReportErrors = fun file errors -> ledger.Report(plugin.Name, file, errors)
               ClearErrors = fun file -> ledger.Clear(plugin.Name, file) }
 
@@ -119,18 +118,10 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
                 (fun name file -> ledger.Clear(name, file))
                 (fun result ->
                     buildCompleted.Trigger(result)
-
-                    for p in registeredPlugins do
-                        match p.OnBuildCompleted with
-                        | Some f -> f result
-                        | None -> ())
+                    dispatchToRegistered (fun p -> p.OnBuildCompleted) result)
                 (fun results ->
                     testCompleted.Trigger(results)
-
-                    for p in registeredPlugins do
-                        match p.OnTestCompleted with
-                        | Some f -> f results
-                        | None -> ())
+                    dispatchToRegistered (fun p -> p.OnTestCompleted) results)
                 (fun cmd -> commands[fst cmd] <- snd cmd)
                 handler
 
@@ -161,20 +152,12 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
     /// Emit a file change event to all registered plugins.
     member _.EmitFileChanged(change: FileChangeKind) =
         fileChanged.Trigger(change)
-
-        for p in registeredPlugins do
-            match p.OnFileChanged with
-            | Some f -> f change
-            | None -> ()
+        dispatchToRegistered (fun p -> p.OnFileChanged) change
 
     /// Emit a build completed event to all registered plugins.
     member _.EmitBuildCompleted(result: BuildResult) =
         buildCompleted.Trigger(result)
-
-        for p in registeredPlugins do
-            match p.OnBuildCompleted with
-            | Some f -> f result
-            | None -> ()
+        dispatchToRegistered (fun p -> p.OnBuildCompleted) result
 
     /// Report errors to the ledger on behalf of a named source (e.g., "fcs").
     member _.ReportErrors(pluginName: string, filePath: string, entries: ErrorEntry list, ?version: int64) =
@@ -187,11 +170,7 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
     /// Emit a file checked event to all registered plugins.
     member _.EmitFileChecked(result: FileCheckResult) =
         fileChecked.Trigger(result)
-
-        for p in registeredPlugins do
-            match p.OnFileChecked with
-            | Some f -> f result
-            | None -> ()
+        dispatchToRegistered (fun p -> p.OnFileChecked) result
 
     /// Emit a project checked event to all registered plugins.
     member _.EmitProjectChecked(result: ProjectCheckResult) = projectChecked.Trigger(result)
@@ -199,11 +178,7 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
     /// Emit a test completed event to all registered plugins.
     member _.EmitTestCompleted(results: TestResults) =
         testCompleted.Trigger(results)
-
-        for p in registeredPlugins do
-            match p.OnTestCompleted with
-            | Some f -> f results
-            | None -> ()
+        dispatchToRegistered (fun p -> p.OnTestCompleted) results
 
     /// Run a registered command by name. Returns None if the command is unknown.
     member _.RunCommand(name: string, args: string array) : Async<string option> =
