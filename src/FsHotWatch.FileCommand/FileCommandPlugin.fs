@@ -53,7 +53,7 @@ type FileCommandPlugin(name: string, fileFilter: string -> bool, command: string
                     match change with
                     | SourceChanged files -> files
                     | ProjectChanged files -> files
-                    | SolutionChanged -> []
+                    | SolutionChanged _ -> []
 
                 if not files.IsEmpty then
                     agent.Post(FileChanged files)

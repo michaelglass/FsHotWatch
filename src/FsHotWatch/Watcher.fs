@@ -61,7 +61,7 @@ let internal classifyChange (path: string) =
     let ext = Path.GetExtension(path).ToLowerInvariant()
 
     if ext = ".sln" || ext = ".slnx" then
-        SolutionChanged
+        SolutionChanged path
     elif ext = ".fsproj" || ext = ".props" then
         ProjectChanged [ path ]
     else
