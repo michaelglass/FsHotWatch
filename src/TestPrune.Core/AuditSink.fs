@@ -36,7 +36,14 @@ let private serializeEvent (event: AnalysisEvent) : string * string =
     | FileSkippedEvent(file, reason) -> "FileSkipped", $"%s{file}|%s{reason}"
     | ProjectCacheHitEvent project -> "ProjectCacheHit", project
     | ProjectIndexedEvent(project, fileCount) -> "ProjectIndexed", $"%s{project}|%d{fileCount}"
-    | SymbolChangeDetectedEvent(file, name, change) -> "SymbolChangeDetected", $"%s{file}|%s{name}|%A{change}"
+    | SymbolChangeDetectedEvent(file, name, change) ->
+        let kind =
+            match change with
+            | Modified -> "Modified"
+            | Added -> "Added"
+            | Removed -> "Removed"
+
+        "SymbolChangeDetected", $"%s{file}|%s{name}|%s{kind}"
     | TestSelectedEvent(testMethod, reason) -> "TestSelected", $"%s{testMethod}|%s{SelectionReason.describe reason}"
     | DiffParsedEvent files -> "DiffParsed", (files |> String.concat "|")
     | IndexStartedEvent count -> "IndexStarted", $"%d{count}"
@@ -49,9 +56,12 @@ let private serializeEvent (event: AnalysisEvent) : string * string =
 let createSqliteSink (insertEvent: string * string * string * string -> unit) (runId: string) : AuditSink =
     createAuditSink (fun event ->
         async {
-            let ts = event.Timestamp.ToString("o")
-            let eventType, eventData = serializeEvent event.Event
-            insertEvent (runId, ts, eventType, eventData)
+            try
+                let ts = event.Timestamp.ToString("o")
+                let eventType, eventData = serializeEvent event.Event
+                insertEvent (runId, ts, eventType, eventData)
+            with ex ->
+                eprintfn $"AuditSink: failed to persist event: %s{ex.Message}"
         })
 
 /// Wrap an event with the current timestamp.

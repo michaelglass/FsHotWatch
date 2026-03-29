@@ -49,8 +49,11 @@ let selectTests
 
                         let fileChanges, changeEvents = detectChanges currentSymbols storedSymbols
 
-                        (newFile, changes @ fileChanges, events @ changeEvents))
+                        (newFile, fileChanges :: changes, changeEvents :: events))
                 (None, [], [])
+
+        let allChanges = allChanges |> List.rev |> List.collect id
+        let symbolEvents = symbolEvents |> List.rev |> List.collect id
 
         match newFile with
         | Some file -> RunAll(NewFileNotIndexed file), symbolEvents
@@ -63,7 +66,7 @@ let selectTests
                 |> List.map (fun testMethod ->
                     let name, kind =
                         match allChanges with
-                        | change :: _ -> changedSymbolNames [ change ] |> List.head, SymbolDiff.changeKind change
+                        | change :: _ -> SymbolDiff.symbolName change, SymbolDiff.changeKind change
                         | [] -> "", Domain.Modified
 
                     TestSelectedEvent(testMethod.SymbolFullName, SymbolChanged(name, kind)))

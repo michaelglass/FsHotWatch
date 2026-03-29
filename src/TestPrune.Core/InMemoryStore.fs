@@ -11,22 +11,17 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
 
     let symbolsByFile = allSymbols |> List.groupBy (fun s -> s.SourceFile) |> Map.ofList
 
+    let symbolFileMap =
+        allSymbols |> List.map (fun s -> s.FullName, s.SourceFile) |> Map.ofList
+
     let depsByFile =
         allDeps
-        |> List.groupBy (fun d ->
-            allSymbols
-            |> List.tryFind (fun s -> s.FullName = d.FromSymbol)
-            |> Option.map (fun s -> s.SourceFile)
-            |> Option.defaultValue "")
+        |> List.groupBy (fun d -> symbolFileMap |> Map.tryFind d.FromSymbol |> Option.defaultValue "")
         |> Map.ofList
 
     let testsByFile =
         allTests
-        |> List.groupBy (fun t ->
-            allSymbols
-            |> List.tryFind (fun s -> s.FullName = t.SymbolFullName)
-            |> Option.map (fun s -> s.SourceFile)
-            |> Option.defaultValue "")
+        |> List.groupBy (fun t -> symbolFileMap |> Map.tryFind t.SymbolFullName |> Option.defaultValue "")
         |> Map.ofList
 
     // Build adjacency list for transitive queries
@@ -43,6 +38,7 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
         |> Map.map (fun _ deps -> deps |> List.map (fun d -> d.FromSymbol) |> Set.ofList)
 
     let testMethodNames = allTests |> List.map (fun t -> t.SymbolFullName) |> Set.ofList
+    let allSymbolNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
 
     // Transitive closure: follow edges from seeds
     let transitiveClosure (edges: Map<string, Set<string>>) (seeds: string list) : Set<string> =
@@ -74,7 +70,7 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
             // Return test methods among the affected
             allTests |> List.filter (fun t -> Set.contains t.SymbolFullName affected)
       GetAllSymbols = fun () -> allSymbols
-      GetAllSymbolNames = fun () -> allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
+      GetAllSymbolNames = fun () -> allSymbolNames
       GetReachableSymbols =
         fun entryPoints ->
             // Forward reachability from entry points

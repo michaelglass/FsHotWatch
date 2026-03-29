@@ -2,48 +2,8 @@ module TestPrune.Tests.InMemoryStoreTests
 
 open Xunit
 open Swensen.Unquote
-open TestPrune.AstAnalyzer
 open TestPrune.InMemoryStore
-
-/// Standard test graph: testA -> funcB -> TypeC
-let private standardGraph =
-    { Symbols =
-        [ { FullName = "Tests.testA"
-            Kind = Function
-            SourceFile = "tests/Tests.fs"
-            LineStart = 1
-            LineEnd = 5
-            ContentHash = "" }
-          { FullName = "Lib.funcB"
-            Kind = Function
-            SourceFile = "src/Lib.fs"
-            LineStart = 1
-            LineEnd = 5
-            ContentHash = "" }
-          { FullName = "Domain.TypeC"
-            Kind = Type
-            SourceFile = "src/Domain.fs"
-            LineStart = 1
-            LineEnd = 3
-            ContentHash = "" }
-          { FullName = "Other.unrelated"
-            Kind = Function
-            SourceFile = "src/Other.fs"
-            LineStart = 1
-            LineEnd = 5
-            ContentHash = "" } ]
-      Dependencies =
-        [ { FromSymbol = "Tests.testA"
-            ToSymbol = "Lib.funcB"
-            Kind = Calls }
-          { FromSymbol = "Lib.funcB"
-            ToSymbol = "Domain.TypeC"
-            Kind = UsesType } ]
-      TestMethods =
-        [ { SymbolFullName = "Tests.testA"
-            TestProject = "MyTests"
-            TestClass = "Tests"
-            TestMethod = "testA" } ] }
+open TestPrune.Tests.TestHelpers
 
 module ``InMemoryStore basics`` =
 

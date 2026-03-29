@@ -108,9 +108,13 @@ let dotnetBuildRunner: BuildRunner =
 
 let private createAuditSinkForRepo (repoRoot: string) =
     let dbPath = Path.Combine(repoRoot, ".test-prune.db")
-    let db = Database.create dbPath
-    let runId = System.Guid.NewGuid().ToString("N").[..7]
-    createSqliteSink db.InsertEvent runId
+
+    if File.Exists(dbPath) then
+        let db = Database.create dbPath
+        let runId = System.Guid.NewGuid().ToString("N").[..7]
+        createSqliteSink db.InsertEvent runId
+    else
+        createNoopSink ()
 
 /// Run the index command: build projects, then parse with real project options.
 let runIndex (repoRoot: string) (parallelism: int) : int =

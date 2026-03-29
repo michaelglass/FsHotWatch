@@ -2,6 +2,7 @@ module TestPrune.Tests.TestHelpers
 
 open System
 open System.IO
+open TestPrune.AstAnalyzer
 open TestPrune.Database
 open TestPrune.DeadCode
 open TestPrune.Domain
@@ -32,6 +33,46 @@ let runDeadCode (db: Database) (patterns: string list) (includeTests: bool) =
     let reachable = db.GetReachableSymbols(entryPoints)
     let testMethodNames = db.GetTestMethodSymbolNames()
     findDeadCode allSymbols reachable testMethodNames includeTests
+
+/// Standard test graph: testA -> funcB -> TypeC, plus an unrelated symbol.
+let standardGraph =
+    { Symbols =
+        [ { FullName = "Tests.testA"
+            Kind = Function
+            SourceFile = "tests/Tests.fs"
+            LineStart = 1
+            LineEnd = 5
+            ContentHash = "" }
+          { FullName = "Lib.funcB"
+            Kind = Function
+            SourceFile = "src/Lib.fs"
+            LineStart = 1
+            LineEnd = 5
+            ContentHash = "" }
+          { FullName = "Domain.TypeC"
+            Kind = Type
+            SourceFile = "src/Domain.fs"
+            LineStart = 1
+            LineEnd = 3
+            ContentHash = "" }
+          { FullName = "Other.unrelated"
+            Kind = Function
+            SourceFile = "src/Other.fs"
+            LineStart = 1
+            LineEnd = 5
+            ContentHash = "" } ]
+      Dependencies =
+        [ { FromSymbol = "Tests.testA"
+            ToSymbol = "Lib.funcB"
+            Kind = Calls }
+          { FromSymbol = "Lib.funcB"
+            ToSymbol = "Domain.TypeC"
+            Kind = UsesType } ]
+      TestMethods =
+        [ { SymbolFullName = "Tests.testA"
+            TestProject = "MyTests"
+            TestClass = "Tests"
+            TestMethod = "testA" } ] }
 
 let withDbPath (f: string -> Database -> unit) =
     let path = tempDbPath ()

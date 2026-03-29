@@ -71,11 +71,12 @@ let detectChanges
 
     changes, events
 
+/// Extract the symbol name from a single SymbolChange.
+let symbolName (change: SymbolChange) : string =
+    match change with
+    | Modified name
+    | Added name
+    | Removed name -> name
+
 /// Extract just the symbol names from changes.
-let changedSymbolNames (changes: SymbolChange list) : string list =
-    changes
-    |> List.map (fun change ->
-        match change with
-        | Modified name -> name
-        | Added name -> name
-        | Removed name -> name)
+let changedSymbolNames (changes: SymbolChange list) : string list = changes |> List.map symbolName
