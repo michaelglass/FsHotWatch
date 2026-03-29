@@ -518,8 +518,8 @@ let computeTest () =
 """
 
 /// Emit a file through the CheckPipeline and wait for the plugin's async analysis to settle.
-/// analyzeSource inside OnFileChecked runs async — the caller must not trigger
-/// BuildSucceeded (which flushes pendingAnalysis) until the analysis completes.
+/// Uses the changed-files command to deterministically detect when the agent has processed
+/// the FileChecked message (no sleeps).
 let private emitFileAndWait
     (checker: FSharpChecker)
     (pipeline: CheckPipeline)
@@ -537,16 +537,18 @@ let private emitFileAndWait
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith $"CheckFile returned None for {filePath}"
 
-        // Framework dispatches async — give the agent a moment to start processing
-        System.Threading.Thread.Sleep(100)
+        // Poll changed-files command until the file appears — deterministic proof
+        // that the FileChecked message was processed by the agent.
+        let fileName = Path.GetFileName(filePath)
 
-        let deadline = DateTime.UtcNow.AddSeconds(10.0)
-        let mutable settled = false
+        waitUntil
+            (fun () ->
+                let result = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
 
-        while not settled && DateTime.UtcNow < deadline do
-            match host.GetStatus("test-prune") with
-            | Some(Running _) -> System.Threading.Thread.Sleep(50)
-            | _ -> settled <- true
+                match result with
+                | Some json -> json.Contains(fileName)
+                | None -> false)
+            10000
     }
 
 [<Fact>]
@@ -577,15 +579,15 @@ let ``after scan and build, test methods are in the sqlite database`` () =
 
         host.EmitBuildCompleted(BuildSucceeded)
 
-        // Wait for tests to complete (terminal status)
-        let deadline = DateTime.UtcNow.AddSeconds(15.0)
-        let mutable done' = false
+        // Poll test-results until tests have actually run (not "running" or "not run")
+        waitUntil
+            (fun () ->
+                let r = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
 
-        while not done' && DateTime.UtcNow < deadline do
-            match host.GetStatus("test-prune") with
-            | Some(Completed _)
-            | Some(Failed _) -> done' <- true
-            | _ -> System.Threading.Thread.Sleep(50)
+                match r with
+                | Some json -> not (json.Contains("running")) && not (json.Contains("not run"))
+                | None -> false)
+            15000
 
         let db = Database.create dbPath
         let relPath = Path.GetRelativePath(tmpDir, testFile).Replace('\\', '/')
@@ -752,7 +754,7 @@ let testOtherStuff () =
         | None -> failwith "lib CheckFile failed"
 
         // Framework dispatches async — give the agent time to process
-        System.Threading.Thread.Sleep(100)
+        System.Threading.Thread.Sleep(500)
 
         // Emit tests file
         let testsResult = pipeline.CheckFile(testsFile) |> Async.RunSynchronously
@@ -762,7 +764,7 @@ let testOtherStuff () =
         | None -> failwith "tests CheckFile failed"
 
         // Give the agent time to process
-        System.Threading.Thread.Sleep(100)
+        System.Threading.Thread.Sleep(500)
 
         // Wait for analysis
         waitForPluginIdle host "test-prune" 10.0
@@ -801,7 +803,7 @@ let validate (cfg: Config) = cfg.Value.Length > 0
             | None -> ()
 
             if not (affectedTests.Contains("testValidateTrue")) then
-                System.Threading.Thread.Sleep(100)
+                System.Threading.Thread.Sleep(500)
 
         test <@ affectedTests.Contains("testValidateTrue") @>
         test <@ affectedTests.Contains("testValidateFalse") @>
