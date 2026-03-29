@@ -21,6 +21,7 @@
     <Compile Include="DeadCodeTests.fs" />
     <Compile Include="AuditSinkTests.fs" />
     <Compile Include="PortsTests.fs" />
+    <Compile Include="InMemoryStoreTests.fs" />
     <Compile Include="IntegrationTests.fs" />
     <Compile Include="ProgramTests.fs" />
     <Compile Include="TestRunnerTests.fs" />
