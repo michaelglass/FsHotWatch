@@ -48,10 +48,20 @@ let private schema =
         key TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS analysis_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        event_data TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_symbols_by_file ON symbols (source_file);
     CREATE INDEX IF NOT EXISTS idx_deps_to ON dependencies (to_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_deps_from ON dependencies (from_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_route_handlers_source ON route_handlers (handler_source_file);
+    CREATE INDEX IF NOT EXISTS idx_events_run_id ON analysis_events(run_id);
+    CREATE INDEX IF NOT EXISTS idx_events_type ON analysis_events(event_type);
     """
 
 let private symbolKindToString (kind: SymbolKind) =
@@ -553,6 +563,41 @@ type Database(dbPath: string) =
             { FromSymbol = r.GetString(0)
               ToSymbol = r.GetString(1)
               Kind = stringToDepKind (r.GetString(2)) })
+
+    /// Insert an audit event into the analysis_events table.
+    member _.InsertEvent(runId: string, timestamp: string, eventType: string, eventData: string) =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            "INSERT INTO analysis_events (run_id, timestamp, event_type, event_data) VALUES (@runId, @ts, @type, @data)"
+
+        cmd.Parameters.AddWithValue("@runId", runId) |> ignore
+        cmd.Parameters.AddWithValue("@ts", timestamp) |> ignore
+        cmd.Parameters.AddWithValue("@type", eventType) |> ignore
+        cmd.Parameters.AddWithValue("@data", eventData) |> ignore
+        cmd.ExecuteNonQuery() |> ignore
+
+    /// Get all events for a given run ID, ordered by insertion order.
+    member _.GetEvents(runId: string) : (string * string * string) list =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            "SELECT timestamp, event_type, event_data FROM analysis_events WHERE run_id = @runId ORDER BY id"
+
+        cmd.Parameters.AddWithValue("@runId", runId) |> ignore
+        use reader = cmd.ExecuteReader()
+
+        readAll reader (fun r -> r.GetString(0), r.GetString(1), r.GetString(2))
+
+    /// Delete all events for a given run ID.
+    member _.ClearEvents(runId: string) =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- "DELETE FROM analysis_events WHERE run_id = @runId"
+        cmd.Parameters.AddWithValue("@runId", runId) |> ignore
+        cmd.ExecuteNonQuery() |> ignore
 
     /// Get test methods whose symbol is defined in the given source file.
     member _.GetTestMethodsInFile(sourceFile: string) : TestMethodInfo list =

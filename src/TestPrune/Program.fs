@@ -4,6 +4,7 @@ open System
 open System.Diagnostics
 open System.IO
 open TestPrune.AuditSink
+open TestPrune.Database
 open TestPrune.Orchestration
 open TestPrune.ProjectLoader
 
@@ -105,10 +106,16 @@ let dotnetBuildRunner: BuildRunner =
         buildProc.WaitForExit()
         buildProc.ExitCode
 
+let private createAuditSinkForRepo (repoRoot: string) =
+    let dbPath = Path.Combine(repoRoot, ".test-prune.db")
+    let db = Database.create dbPath
+    let runId = System.Guid.NewGuid().ToString("N").[..7]
+    createSqliteSink db.InsertEvent runId
+
 /// Run the index command: build projects, then parse with real project options.
 let runIndex (repoRoot: string) (parallelism: int) : int =
     let checker = createChecker ()
-    let auditSink = createNoopSink ()
+    let auditSink = createAuditSinkForRepo repoRoot
     runIndexWith dotnetBuildRunner getProjectOptions repoRoot checker parallelism auditSink
 
 /// Get jj diff output.
@@ -135,12 +142,12 @@ let jjDiffProvider: DiffProvider =
 
 /// Run the status command: show what would run without executing.
 let runStatus (repoRoot: string) : int =
-    let auditSink = createNoopSink ()
+    let auditSink = createAuditSinkForRepo repoRoot
     runStatusWith jjDiffProvider repoRoot auditSink
 
 /// Run the run command: determine and execute affected tests.
 let runRun (repoRoot: string) : int =
-    let auditSink = createNoopSink ()
+    let auditSink = createAuditSinkForRepo repoRoot
     runRunWith jjDiffProvider repoRoot auditSink
 
 let runCommand (parsed: ParsedCommand) : int =
@@ -160,7 +167,7 @@ let runCommand (parsed: ParsedCommand) : int =
     | Run -> runRun repoRoot
     | Status -> runStatus repoRoot
     | DeadCodeCmd(patterns, includeTests) ->
-        let auditSink = createNoopSink ()
+        let auditSink = createAuditSinkForRepo repoRoot
         runDeadCode repoRoot patterns includeTests auditSink
     | Help ->
         showHelp ()
