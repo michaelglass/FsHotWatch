@@ -6,6 +6,7 @@ open Xunit
 open Swensen.Unquote
 open TestPrune.AstAnalyzer
 open TestPrune.Database
+open TestPrune.Ports
 open TestPrune.Extensions
 open TestPrune.Falco
 
@@ -43,9 +44,10 @@ let private withTestSetup
                 File.WriteAllText(Path.Combine(testDir, fileName), content)
 
         let extension = FalcoRouteExtension(integrationTestProject, integrationTestSubDir)
+        let routeStore = toRouteStore db
 
         let result =
-            (extension :> ITestPruneExtension).FindAffectedTests db changedFiles tempDir
+            (extension :> ITestPruneExtension).FindAffectedTests routeStore changedFiles tempDir
 
         f result
     finally
@@ -92,9 +94,10 @@ module ``debug db roundtrip`` =
             test <@ files.Length = 1 @>
 
             let extension = FalcoRouteExtension("IntTests", "tests/IntTests")
+            let routeStore = toRouteStore db
 
             let result =
-                (extension :> ITestPruneExtension).FindAffectedTests db [ "src/Handlers/Users.fs" ] tempDir
+                (extension :> ITestPruneExtension).FindAffectedTests routeStore [ "src/Handlers/Users.fs" ] tempDir
 
             test <@ result.Length = 1 @>
         finally

@@ -1,6 +1,6 @@
 module TestPrune.Extensions
 
-open TestPrune.Database
+open TestPrune.Ports
 
 /// Result from an extension's test selection.
 type AffectedTest =
@@ -16,4 +16,5 @@ type ITestPruneExtension =
 
     /// Given a list of changed source files (repo-relative paths),
     /// return test classes that should be re-run.
-    abstract FindAffectedTests: db: Database -> changedFiles: string list -> repoRoot: string -> AffectedTest list
+    abstract FindAffectedTests:
+        routeStore: RouteStore -> changedFiles: string list -> repoRoot: string -> AffectedTest list

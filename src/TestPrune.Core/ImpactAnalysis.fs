@@ -10,11 +10,6 @@ type TestSelection =
     | RunAll of reason: string
 
 /// Given changed files, determine which tests to run.
-/// 1. Check for .fsproj changes -> RunAll
-/// 2. For each changed file, get stored symbols and current symbols
-/// 3. Detect changed symbols via SymbolDiff
-/// 4. Query DB for transitively dependent test methods
-/// 5. If any file is new (not indexed) -> RunAll (conservative)
 let selectTests
     (getStoredSymbols: string -> SymbolInfo list)
     (queryAffectedTests: string list -> TestMethodInfo list)

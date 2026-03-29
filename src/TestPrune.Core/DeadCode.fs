@@ -67,12 +67,15 @@ let findDeadCode
     // full body ranges are available).
     let isLocal (s: SymbolInfo) = not (s.FullName.Contains('.'))
 
+    let symbolsByFile = allSymbols |> List.groupBy (fun s -> s.SourceFile) |> Map.ofList
+
     let isContainedByAnother (s: SymbolInfo) =
-        allSymbols
+        symbolsByFile
+        |> Map.tryFind s.SourceFile
+        |> Option.defaultValue []
         |> List.exists (fun parent ->
             parent.Kind <> Module
             && parent.Kind <> DuCase
-            && parent.SourceFile = s.SourceFile
             && parent.LineStart <= s.LineStart
             && parent.LineEnd >= s.LineEnd
             && (parent.LineStart <> s.LineStart || parent.LineEnd <> s.LineEnd))

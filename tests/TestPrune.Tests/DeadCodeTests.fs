@@ -8,14 +8,6 @@ open TestPrune.DeadCode
 open TestPrune.Domain
 open TestPrune.Tests.TestHelpers
 
-let private runDeadCode (db: Database) (patterns: string list) (includeTests: bool) =
-    let allSymbols = db.GetAllSymbols()
-    let allNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
-    let entryPoints = findEntryPoints allNames patterns
-    let reachable = db.GetReachableSymbols(entryPoints)
-    let testMethodNames = db.GetTestMethodSymbolNames()
-    findDeadCode allSymbols reachable testMethodNames includeTests
-
 module ``All symbols reachable`` =
 
     [<Fact>]

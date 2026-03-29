@@ -53,5 +53,3 @@ type AnalysisEvent =
 type Timestamped<'a> =
     { Timestamp: System.DateTimeOffset
       Event: 'a }
-
-type AnalysisConfig = { Parallelism: int; RepoRoot: string }

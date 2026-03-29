@@ -3,7 +3,7 @@ namespace TestPrune.Falco
 open System
 open System.IO
 open System.Text.RegularExpressions
-open TestPrune.Database
+open TestPrune.Ports
 open TestPrune.Extensions
 
 /// Route-based integration test filtering.
@@ -56,14 +56,14 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
     interface ITestPruneExtension with
         member _.Name = "Falco Routes"
 
-        member _.FindAffectedTests (db: Database) (changedFiles: string list) (repoRoot: string) =
-            let handlerSourceFiles = db.GetAllHandlerSourceFiles()
+        member _.FindAffectedTests (routeStore: RouteStore) (changedFiles: string list) (repoRoot: string) =
+            let handlerSourceFiles = routeStore.GetAllHandlerSourceFiles()
 
             let affectedUrlPatterns =
                 changedFiles
                 |> List.collect (fun file ->
                     if handlerSourceFiles |> Set.contains file then
-                        db.GetUrlPatternsForSourceFile(file)
+                        routeStore.GetUrlPatternsForSourceFile(file)
                     else
                         [])
                 |> List.distinct

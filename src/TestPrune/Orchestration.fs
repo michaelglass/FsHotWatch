@@ -34,6 +34,12 @@ let findRepoRoot (startDir: string) : string option =
 
     walk startDir
 
+let private isOutputPath (path: string) =
+    let n = path.Replace('\\', '/')
+
+    n.Contains("/obj/", StringComparison.Ordinal)
+    || n.Contains("/bin/", StringComparison.Ordinal)
+
 /// Find all .fs files in src/ and tests/ directories, excluding obj/ and bin/.
 let findSourceFiles (repoRoot: string) : string list =
     let searchDirs = [ Path.Combine(repoRoot, "src"); Path.Combine(repoRoot, "tests") ]
@@ -41,11 +47,7 @@ let findSourceFiles (repoRoot: string) : string list =
     searchDirs
     |> List.filter Directory.Exists
     |> List.collect (fun dir -> Directory.GetFiles(dir, "*.fs", SearchOption.AllDirectories) |> Array.toList)
-    |> List.filter (fun path ->
-        let normalized = path.Replace('\\', '/')
-
-        not (normalized.Contains("/obj/", StringComparison.Ordinal))
-        && not (normalized.Contains("/bin/", StringComparison.Ordinal)))
+    |> List.filter (fun path -> not (isOutputPath path))
     |> List.sort
 
 /// Parse a single .fs file with FCS, returning analysis result or error message.
@@ -71,11 +73,7 @@ let findProjectFiles (repoRoot: string) : string list =
             |> Array.toList
         else
             [])
-    |> List.filter (fun p ->
-        let n = p.Replace('\\', '/')
-
-        not (n.Contains("/obj/", StringComparison.Ordinal))
-        && not (n.Contains("/bin/", StringComparison.Ordinal)))
+    |> List.filter (fun p -> not (isOutputPath p))
 
 /// Builds the solution. Returns exit code (0 = success).
 type BuildRunner = string -> int
@@ -370,8 +368,9 @@ let runIndexWith
                 |> Set.ofList
 
             reindexedSet <- Set.union reindexedSet newReindexed
-            allProjectResults <- allProjectResults @ levelResults
+            allProjectResults <- levelResults :: allProjectResults
 
+        let allProjectResults = allProjectResults |> List.rev |> List.collect id
         let allResults = allProjectResults |> List.choose (fun r -> r.Analysis)
         let allFileKeys = allProjectResults |> List.collect (fun r -> r.FileKeys)
         let allProjectKeys = allProjectResults |> List.choose (fun r -> r.ProjectKey)
@@ -464,7 +463,7 @@ let runStatusWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSi
     else
         let db = Database.create dbPath
         let store = toSymbolStore db
-        let checker = FSharpChecker.Create()
+        let checker = createChecker ()
 
         match analyzeChanges getDiff repoRoot store checker auditSink with
         | Error msg ->
@@ -511,7 +510,7 @@ let runRunWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink)
     else
         let db = Database.create dbPath
         let store = toSymbolStore db
-        let checker = FSharpChecker.Create()
+        let checker = createChecker ()
 
         match analyzeChanges getDiff repoRoot store checker auditSink with
         | Error msg ->
@@ -572,7 +571,7 @@ let runDeadCode (repoRoot: string) (entryPatterns: string list) (includeTests: b
         let db = Database.create dbPath
         let store = toSymbolStore db
         let allSymbols = store.GetAllSymbols()
-        let allNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
+        let allNames = store.GetAllSymbolNames()
         let entryPoints = findEntryPoints allNames entryPatterns
         let reachable = store.GetReachableSymbols(entryPoints)
         let testMethodNames = store.GetTestMethodSymbolNames()
