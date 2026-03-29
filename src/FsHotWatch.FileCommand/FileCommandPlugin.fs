@@ -35,7 +35,7 @@ type FileCommandPlugin(name: string, fileFilter: string -> bool, command: string
                                     let newState = { LastResult = Some(success, output) }
 
                                     if success then
-                                        ctx.ReportStatus(Completed(box newState.LastResult, DateTime.UtcNow))
+                                        ctx.ReportStatus(Completed(DateTime.UtcNow))
                                     else
                                         ctx.ReportStatus(PluginStatus.Failed($"%s{name} failed", DateTime.UtcNow))
 

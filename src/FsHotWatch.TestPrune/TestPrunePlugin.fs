@@ -227,7 +227,7 @@ type TestPrunePlugin
                     | _ -> false)
 
             if allPassed then
-                ctx.ReportStatus(Completed(box testResults, DateTime.UtcNow))
+                ctx.ReportStatus(Completed(DateTime.UtcNow))
             else
                 let failedProjects =
                     testResults.Results
@@ -423,7 +423,7 @@ type TestPrunePlugin
                                             AnalysisRan = true }
 
                                     if isIdle then
-                                        ctx.ReportStatus(Completed(box newState.AffectedTests, DateTime.UtcNow))
+                                        ctx.ReportStatus(Completed(DateTime.UtcNow))
 
                                     return newState
                                 | Error msg ->

@@ -132,7 +132,7 @@ type CoveragePlugin(coverageDir: string, ?thresholdsFile: string, ?afterCheck: u
                             | None -> ()
 
                             if allPass then
-                                ctx.ReportStatus(Completed(box results, DateTime.UtcNow))
+                                ctx.ReportStatus(Completed(DateTime.UtcNow))
                             else
                                 let failures =
                                     results

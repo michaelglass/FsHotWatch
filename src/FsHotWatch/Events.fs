@@ -62,7 +62,7 @@ type PluginStatus =
     /// Plugin is currently processing.
     | Running of since: System.DateTime
     /// Plugin finished processing successfully.
-    | Completed of result: obj * at: System.DateTime
+    | Completed of at: System.DateTime
     /// Plugin encountered an error.
     | Failed of error: string * at: System.DateTime
 
