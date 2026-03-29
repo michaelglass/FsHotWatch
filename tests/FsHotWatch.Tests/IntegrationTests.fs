@@ -13,7 +13,9 @@ open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
-open FsHotWatch.Lint.LintPlugin
+
+module LintPlugin = FsHotWatch.Lint.LintPlugin
+
 open FsHotWatch.Fantomas.FormatCheckPlugin
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.Analyzers.AnalyzersPlugin
@@ -98,12 +100,12 @@ let ``all plugins receive events when checking a file`` () =
     let dbPath = Path.Combine(Path.GetTempPath(), $"fshw-inttest-{Guid.NewGuid():N}.db")
 
     let testPrune = TestPrunePlugin(dbPath, repoRoot)
-    let lint = LintPlugin()
+    let lint = LintPlugin.create None
     let fantomas = FormatCheckPlugin()
     let analyzers = AnalyzersPlugin([])
 
     host.Register(testPrune)
-    host.Register(lint)
+    host.RegisterHandler(lint)
     host.Register(fantomas)
     host.Register(analyzers)
 
@@ -300,8 +302,8 @@ let x = 5
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let lint = LintPlugin()
-        host.Register(lint)
+        let lint = LintPlugin.create None
+        host.RegisterHandler(lint)
 
         try
             let result = checkTempFile checker filePath
@@ -309,6 +311,14 @@ let x = 5
             match result with
             | Some checkResult ->
                 host.EmitFileChecked(checkResult)
+
+                waitUntil
+                    (fun () ->
+                        match host.GetStatus("lint") with
+                        | Some(Completed _)
+                        | Some(PluginStatus.Failed _) -> true
+                        | _ -> false)
+                    5000
 
                 let status = host.GetStatus("lint")
                 test <@ status.IsSome @>
@@ -597,8 +607,8 @@ let ``LintPlugin reports no warnings on clean code`` () =
         FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
     let host = PluginHost.create checker repoRoot
-    let lint = LintPlugin()
-    host.Register(lint)
+    let lint = LintPlugin.create None
+    host.RegisterHandler(lint)
 
     // Events.fs from FsHotWatch itself should be clean
     let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
@@ -617,6 +627,14 @@ let ``LintPlugin reports no warnings on clean code`` () =
     match result with
     | Some checkResult ->
         host.EmitFileChecked(checkResult)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("lint") with
+                | Some(Completed _)
+                | Some(PluginStatus.Failed _) -> true
+                | _ -> false)
+            5000
 
         let status = host.GetStatus("lint")
         test <@ status.IsSome @>
@@ -637,8 +655,8 @@ let ``LintPlugin reports warnings on code with issues`` () =
         FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
     let host = PluginHost.create checker repoRoot
-    let lint = LintPlugin()
-    host.Register(lint)
+    let lint = LintPlugin.create None
+    host.RegisterHandler(lint)
 
     let badCode =
         """module Temp
@@ -652,6 +670,14 @@ let x = 5
             match result with
             | Some checkResult ->
                 host.EmitFileChecked(checkResult)
+
+                waitUntil
+                    (fun () ->
+                        match host.GetStatus("lint") with
+                        | Some(Completed _)
+                        | Some(PluginStatus.Failed _) -> true
+                        | _ -> false)
+                    5000
 
                 let cmdResult = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
                 test <@ cmdResult.IsSome @>

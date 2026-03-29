@@ -6,18 +6,19 @@ open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
 open FsHotWatch.Lint.LintPlugin
+open FsHotWatch.Tests.TestHelpers
 
 [<Fact>]
 let ``plugin has correct name`` () =
-    let plugin = LintPlugin() :> IFsHotWatchPlugin
-    test <@ plugin.Name = "lint" @>
+    let handler = create None
+    test <@ handler.Name = "lint" @>
 
 [<Fact>]
 let ``warnings command returns zeroes when no files checked`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin = LintPlugin()
-    host.Register(plugin)
+    let handler = create None
+    host.RegisterHandler(handler)
 
     let result = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
@@ -26,17 +27,15 @@ let ``warnings command returns zeroes when no files checked`` () =
 
 [<Fact>]
 let ``LintPlugin with configPath sets up lint params`` () =
-    let plugin =
-        LintPlugin(configPath = "/tmp/nonexistent-config.json") :> IFsHotWatchPlugin
-
-    test <@ plugin.Name = "lint" @>
+    let handler = create (Some "/tmp/nonexistent-config.json")
+    test <@ handler.Name = "lint" @>
 
 [<Fact>]
 let ``lint error path sets Failed status on null check results`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin = LintPlugin()
-    host.Register(plugin)
+    let handler = create None
+    host.RegisterHandler(handler)
 
     let fakeResult: FileCheckResult =
         { File = "/tmp/nonexistent/Fake.fs"
@@ -51,6 +50,14 @@ let ``lint error path sets Failed status on null check results`` () =
     with _ ->
         ()
 
+    waitUntil
+        (fun () ->
+            match host.GetStatus("lint") with
+            | Some(Failed _)
+            | Some(Running _) -> true
+            | _ -> false)
+        3000
+
     let status = host.GetStatus("lint")
     test <@ status.IsSome @>
 
@@ -63,8 +70,8 @@ let ``lint error path sets Failed status on null check results`` () =
 let ``warnings command with args passes through`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin = LintPlugin()
-    host.Register(plugin)
+    let handler = create None
+    host.RegisterHandler(handler)
 
     // The warnings command ignores args, but verify it handles non-empty args
     let result =
@@ -74,16 +81,11 @@ let ``warnings command with args passes through`` () =
     test <@ result.Value.Contains("\"files\": 0") @>
 
 [<Fact>]
-let ``dispose is callable`` () =
-    let plugin = LintPlugin() :> IFsHotWatchPlugin
-    plugin.Dispose()
-
-[<Fact>]
 let ``lint skips file with null ParseResults without crashing`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin = LintPlugin()
-    host.Register(plugin)
+    let handler = create None
+    host.RegisterHandler(handler)
 
     // Null ParseResults — lint should skip, not crash
     let fakeResult: FileCheckResult =
@@ -96,6 +98,13 @@ let ``lint skips file with null ParseResults without crashing`` () =
 
     // Should not throw
     host.EmitFileChecked(fakeResult)
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("lint") with
+            | Some _ -> true
+            | None -> false)
+        3000
 
     let status = host.GetStatus("lint")
     test <@ status.IsSome @>
