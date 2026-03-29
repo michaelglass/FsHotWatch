@@ -23,6 +23,7 @@ open FsHotWatch.Build.BuildPlugin
 open FsHotWatch.Coverage.CoveragePlugin
 open FsHotWatch.FileCommand.FileCommandPlugin
 open FsHotWatch.CheckCache
+open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.FileCheckCache
 open FsHotWatch.Tests.TestHelpers
 
@@ -101,12 +102,12 @@ let ``all plugins receive events when checking a file`` () =
 
     let testPrune = TestPrunePlugin(dbPath, repoRoot)
     let lint = LintPlugin.create None
-    let fantomas = FormatCheckPlugin()
+    let fantomas = createFormatCheck ()
     let analyzers = AnalyzersPlugin([])
 
     host.Register(testPrune)
     host.RegisterHandler(lint)
-    host.Register(fantomas)
+    host.RegisterHandler(fantomas)
     host.Register(analyzers)
 
     // Check the file via the pipeline
@@ -347,10 +348,17 @@ let ``format check plugin detects unformatted code`` () =
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let fantomas = FormatCheckPlugin()
-        host.Register(fantomas)
+        let fantomas = createFormatCheck ()
+        host.RegisterHandler(fantomas)
 
         host.EmitFileChanged(SourceChanged [ filePath ])
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("format-check") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
 
         let status = host.GetStatus("format-check")
         test <@ status.IsSome @>
@@ -372,10 +380,17 @@ let ``format check plugin passes on well-formatted code`` () =
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let fantomas = FormatCheckPlugin()
-        host.Register(fantomas)
+        let fantomas = createFormatCheck ()
+        host.RegisterHandler(fantomas)
 
         host.EmitFileChanged(SourceChanged [ filePath ])
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("format-check") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
 
         let status = host.GetStatus("format-check")
         test <@ status.IsSome @>
@@ -394,8 +409,8 @@ let ``plugin status reflects running to completed lifecycle`` () =
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let fantomas = FormatCheckPlugin()
-        host.Register(fantomas)
+        let fantomas = createFormatCheck ()
+        host.RegisterHandler(fantomas)
 
         // Before any event, plugin status is Idle (initialized on register)
         let beforeStatus = host.GetStatus("format-check")
@@ -404,12 +419,19 @@ let ``plugin status reflects running to completed lifecycle`` () =
         // Trigger an event
         host.EmitFileChanged(SourceChanged [ filePath ])
 
-        // After event, status should be Completed (format-check is synchronous)
+        waitUntil
+            (fun () ->
+                match host.GetStatus("format-check") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
+
+        // After event, status should be Completed
         let afterStatus = host.GetStatus("format-check")
         test <@ afterStatus.IsSome @>
 
         match afterStatus.Value with
-        | Completed _ -> () // Expected lifecycle: None -> Running -> Completed
+        | Completed _ -> () // Expected lifecycle: Idle -> Running -> Completed
         | other -> Assert.Fail($"Expected Completed, got: %A{other}"))
 
 [<Fact>]
@@ -443,11 +465,18 @@ let ``multiple file changes are debounced into one batch by SourceChanged`` () =
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let fantomas = FormatCheckPlugin()
-        host.Register(fantomas)
+        let fantomas = createFormatCheck ()
+        host.RegisterHandler(fantomas)
 
         // Emit all files as a single batched SourceChanged event
         host.EmitFileChanged(SourceChanged files)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("format-check") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
 
         let status = host.GetStatus("format-check")
         test <@ status.IsSome @>

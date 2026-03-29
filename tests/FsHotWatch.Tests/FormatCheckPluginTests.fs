@@ -8,18 +8,19 @@ open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
 open FsHotWatch.Fantomas.FormatCheckPlugin
+open FsHotWatch.Tests.TestHelpers
 
 [<Fact>]
 let ``plugin has correct name`` () =
-    let plugin = FormatCheckPlugin() :> IFsHotWatchPlugin
-    test <@ plugin.Name = "format-check" @>
+    let handler = createFormatCheck ()
+    test <@ handler.Name = "format-check" @>
 
 [<Fact>]
 let ``unformatted command returns zero count when no files processed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin = FormatCheckPlugin()
-    host.Register(plugin)
+    let handler = createFormatCheck ()
+    host.RegisterHandler(handler)
 
     let result = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
@@ -29,12 +30,19 @@ let ``unformatted command returns zero count when no files processed`` () =
 let ``format check handles non-source change events without crashing`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin = FormatCheckPlugin()
-    host.Register(plugin)
+    let handler = createFormatCheck ()
+    host.RegisterHandler(handler)
 
     // ProjectChanged and SolutionChanged should not crash the plugin
     host.EmitFileChanged(ProjectChanged [ "/tmp/Test.fsproj" ])
     host.EmitFileChanged(SolutionChanged "test.sln")
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("format-check") with
+            | Some(Completed _) -> true
+            | _ -> false)
+        5000
 
     // The plugin still sets Completed status (empty unformatted set)
     let status = host.GetStatus("format-check")
@@ -48,15 +56,21 @@ let ``format check handles non-source change events without crashing`` () =
 let ``format check handles non-existent source file gracefully`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin = FormatCheckPlugin()
-    host.Register(plugin)
+    let handler = createFormatCheck ()
+    host.RegisterHandler(handler)
 
     // Emit a SourceChanged with a file that doesn't exist — File.Exists check
     // should cause it to be skipped (no crash)
     host.EmitFileChanged(SourceChanged [ "/tmp/nonexistent/Fake.fs" ])
 
-    // The plugin sets Completed at the end of the event handler regardless,
-    // but the non-existent file should not be in the unformatted set
+    waitUntil
+        (fun () ->
+            match host.GetStatus("format-check") with
+            | Some(Completed _) -> true
+            | _ -> false)
+        5000
+
+    // The non-existent file should not be in the unformatted set
     let result = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
     test <@ result.Value.Contains("\"count\": 0") @>
@@ -147,11 +161,6 @@ let ``FormatPreprocessor dispose is callable`` () =
     preprocessor.Dispose()
 
 [<Fact>]
-let ``FormatCheckPlugin dispose is callable`` () =
-    let plugin = FormatCheckPlugin() :> IFsHotWatchPlugin
-    plugin.Dispose()
-
-[<Fact>]
 let ``format check handles exception gracefully`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmtchk-err-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
@@ -163,11 +172,19 @@ let ``format check handles exception gracefully`` () =
 
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let plugin = FormatCheckPlugin()
-        host.Register(plugin)
+        let handler = createFormatCheck ()
+        host.RegisterHandler(handler)
 
         // This should not crash the plugin - errors are caught
         host.EmitFileChanged(SourceChanged [ file ])
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("format-check") with
+                | Some(Completed _)
+                | Some(PluginStatus.Failed _) -> true
+                | _ -> false)
+            5000
 
         let status = host.GetStatus("format-check")
         test <@ status.IsSome @>

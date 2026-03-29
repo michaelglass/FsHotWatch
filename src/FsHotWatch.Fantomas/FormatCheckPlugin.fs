@@ -1,9 +1,12 @@
 module FsHotWatch.Fantomas.FormatCheckPlugin
 
+open System
 open System.IO
 open FsHotWatch
+open FsHotWatch.Events
 open FsHotWatch.Logging
 open FsHotWatch.Plugin
+open FsHotWatch.PluginFramework
 open Fantomas.Core
 
 /// Format-on-save preprocessor. Runs before other plugins receive events.
@@ -37,47 +40,59 @@ type FormatPreprocessor() =
 
         member _.Dispose() = ()
 
+/// State for the format-check framework plugin.
+type FormatCheckState = { Unformatted: Set<string> }
+
 /// Read-only format check plugin (reports unformatted files without modifying them).
 /// Use this instead of FormatPreprocessor if you don't want auto-formatting.
-type FormatCheckPlugin() =
-    let mutable unformatted: Set<string> = Set.empty
-
-    interface IFsHotWatchPlugin with
-        member _.Name = "format-check"
-
-        member _.Initialize(ctx) =
-            ctx.OnFileChanged.Add(fun change ->
-                try
+let createFormatCheck () : PluginHandler<FormatCheckState, unit> =
+    { Name = "format-check"
+      Init = { Unformatted = Set.empty }
+      Update =
+        fun ctx state event ->
+            async {
+                match event with
+                | FileChanged change ->
                     let files =
                         match change with
-                        | FsHotWatch.Events.SourceChanged files -> files
+                        | SourceChanged files -> files
                         | _ -> []
 
+                    ctx.ReportStatus(Running(since = DateTime.UtcNow))
+
+                    let mutable newUnformatted = state.Unformatted
+                    let mutable failed = false
+
                     for file in files do
-                        if File.Exists(file) then
-                            ctx.ReportStatus(FsHotWatch.Events.Running(since = System.DateTime.UtcNow))
-                            let source = File.ReadAllText(file)
-                            let isSignature = file.EndsWith(".fsi")
+                        if File.Exists(file) && not failed then
+                            try
+                                let source = File.ReadAllText(file)
+                                let isSignature = file.EndsWith(".fsi")
 
-                            let formatted =
-                                CodeFormatter.FormatDocumentAsync(isSignature, source) |> Async.RunSynchronously
+                                let formatted =
+                                    CodeFormatter.FormatDocumentAsync(isSignature, source) |> Async.RunSynchronously
 
-                            if formatted.Code <> source then
-                                unformatted <- unformatted |> Set.add file
-                            else
-                                unformatted <- unformatted |> Set.remove file
+                                if formatted.Code <> source then
+                                    newUnformatted <- newUnformatted |> Set.add file
+                                else
+                                    newUnformatted <- newUnformatted |> Set.remove file
+                            with ex ->
+                                ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+                                failed <- true
 
-                    ctx.ReportStatus(FsHotWatch.Events.Completed(System.DateTime.UtcNow))
-                with ex ->
-                    ctx.ReportStatus(FsHotWatch.Events.PluginStatus.Failed(ex.Message, System.DateTime.UtcNow)))
+                    if not failed then
+                        ctx.ReportStatus(Completed(DateTime.UtcNow))
 
-            ctx.RegisterCommand(
-                "unformatted",
-                fun _args ->
-                    async {
-                        let files = unformatted |> Set.toList |> String.concat ", "
-                        return $"{{\"count\": %d{unformatted.Count}, \"files\": \"%s{files}\"}}"
-                    }
-            )
-
-        member _.Dispose() = ()
+                    return { Unformatted = newUnformatted }
+                | _ -> return state
+            }
+      Commands =
+        [ "unformatted",
+          fun state _args ->
+              async {
+                  let files = state.Unformatted |> Set.toList |> String.concat ", "
+                  return $"{{\"count\": %d{state.Unformatted.Count}, \"files\": \"%s{files}\"}}"
+              } ]
+      Subscriptions =
+        { PluginSubscriptions.none with
+            FileChanged = true } }
