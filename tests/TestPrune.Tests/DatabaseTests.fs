@@ -487,9 +487,25 @@ module ``RebuildProjects with cache keys`` =
     [<Fact>]
     let ``RebuildProjects without optional keys does not clear existing keys`` () =
         withDb (fun db ->
-            db.SetFileKey("src/Existing.fs", "existing-key")
-            db.SetProjectKey("ExistingProj", "existing-proj-key")
+            // Seed existing keys via RebuildProjects
+            let seedResult =
+                { Symbols =
+                    [ { FullName = "Existing.func"
+                        Kind = Function
+                        SourceFile = "src/Existing.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "" } ]
+                  Dependencies = []
+                  TestMethods = [] }
 
+            db.RebuildProjects(
+                [ seedResult ],
+                fileKeys = [ ("src/Existing.fs", "existing-key") ],
+                projectKeys = [ ("ExistingProj", "existing-proj-key") ]
+            )
+
+            // Now rebuild with a different project, no optional keys
             let result =
                 { Symbols =
                     [ { FullName = "New.func"
@@ -618,58 +634,6 @@ module ``Project key storage`` =
         withDb (fun db ->
             let hash = db.GetProjectKey "MyProject"
             test <@ hash = None @>)
-
-    [<Fact>]
-    let ``SetProjectKey then GetProjectKey round-trips`` () =
-        withDb (fun db ->
-            db.SetProjectKey("MyProject", "abc123")
-            let hash = db.GetProjectKey "MyProject"
-            test <@ hash = Some "abc123" @>)
-
-    [<Fact>]
-    let ``SetProjectKey overwrites previous hash`` () =
-        withDb (fun db ->
-            db.SetProjectKey("MyProject", "old-hash")
-            db.SetProjectKey("MyProject", "new-hash")
-            let hash = db.GetProjectKey "MyProject"
-            test <@ hash = Some "new-hash" @>)
-
-    [<Fact>]
-    let ``hashes are per-project`` () =
-        withDb (fun db ->
-            db.SetProjectKey("ProjectA", "hash-a")
-            db.SetProjectKey("ProjectB", "hash-b")
-            test <@ db.GetProjectKey "ProjectA" = Some "hash-a" @>
-            test <@ db.GetProjectKey "ProjectB" = Some "hash-b" @>)
-
-module ``File key storage`` =
-
-    [<Fact>]
-    let ``GetFileKey returns None when no key stored`` () =
-        withDb (fun db ->
-            let key = db.GetFileKey "src/Mod.fs"
-            test <@ key = None @>)
-
-    [<Fact>]
-    let ``SetFileKey then GetFileKey round-trips`` () =
-        withDb (fun db ->
-            db.SetFileKey("src/Mod.fs", "abc123")
-            test <@ db.GetFileKey "src/Mod.fs" = Some "abc123" @>)
-
-    [<Fact>]
-    let ``SetFileKey overwrites previous key`` () =
-        withDb (fun db ->
-            db.SetFileKey("src/Mod.fs", "old")
-            db.SetFileKey("src/Mod.fs", "new")
-            test <@ db.GetFileKey "src/Mod.fs" = Some "new" @>)
-
-    [<Fact>]
-    let ``keys are per-file`` () =
-        withDb (fun db ->
-            db.SetFileKey("src/A.fs", "key-a")
-            db.SetFileKey("src/B.fs", "key-b")
-            test <@ db.GetFileKey "src/A.fs" = Some "key-a" @>
-            test <@ db.GetFileKey "src/B.fs" = Some "key-b" @>)
 
 module ``symbolKindToString and round-trip`` =
 

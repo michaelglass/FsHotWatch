@@ -168,42 +168,6 @@ module ``findRepoRoot`` =
             if Directory.Exists(tmp) then
                 Directory.Delete(tmp, true)
 
-module ``findSourceFiles`` =
-
-    [<Fact>]
-    let ``finds files in src and tests, excludes obj and bin`` () =
-        let tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
-
-        try
-            let srcFile = Path.Combine(tmp, "src", "MyProj", "Lib.fs")
-            let testFile = Path.Combine(tmp, "tests", "MyProj.Tests", "Tests.fs")
-            let objFile = Path.Combine(tmp, "src", "MyProj", "obj", "Generated.fs")
-            let binFile = Path.Combine(tmp, "tests", "MyProj.Tests", "bin", "Output.fs")
-
-            for f in [ srcFile; testFile; objFile; binFile ] do
-                Directory.CreateDirectory(Path.GetDirectoryName(f)) |> ignore
-                File.WriteAllText(f, "// empty")
-
-            let result = findSourceFiles tmp
-            test <@ result |> List.exists (fun p -> p.Contains("Lib.fs")) @>
-            test <@ result |> List.exists (fun p -> p.Contains("Tests.fs")) @>
-            test <@ result |> List.forall (fun p -> not (p.Contains("/obj/"))) @>
-            test <@ result |> List.forall (fun p -> not (p.Contains("/bin/"))) @>
-        finally
-            if Directory.Exists(tmp) then
-                Directory.Delete(tmp, true)
-
-    [<Fact>]
-    let ``returns empty when src and tests dirs do not exist`` () =
-        let tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
-
-        try
-            Directory.CreateDirectory(tmp) |> ignore
-            test <@ findSourceFiles tmp |> List.isEmpty @>
-        finally
-            if Directory.Exists(tmp) then
-                Directory.Delete(tmp, true)
-
 module ``findProjectFiles`` =
 
     [<Fact>]

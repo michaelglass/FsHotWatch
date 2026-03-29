@@ -40,16 +40,6 @@ let private isOutputPath (path: string) =
     n.Contains("/obj/", StringComparison.Ordinal)
     || n.Contains("/bin/", StringComparison.Ordinal)
 
-/// Find all .fs files in src/ and tests/ directories, excluding obj/ and bin/.
-let findSourceFiles (repoRoot: string) : string list =
-    let searchDirs = [ Path.Combine(repoRoot, "src"); Path.Combine(repoRoot, "tests") ]
-
-    searchDirs
-    |> List.filter Directory.Exists
-    |> List.collect (fun dir -> Directory.GetFiles(dir, "*.fs", SearchOption.AllDirectories) |> Array.toList)
-    |> List.filter (fun path -> not (isOutputPath path))
-    |> List.sort
-
 /// Parse a single .fs file with FCS, returning analysis result or error message.
 let parseFile (checker: FSharpChecker) (filePath: string) : Result<AnalysisResult, string> =
     try

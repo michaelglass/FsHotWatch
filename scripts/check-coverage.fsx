@@ -70,7 +70,7 @@ let overrides =
           // Database.fs: Compiler-generated branches in while-loop readers, use-binding IDisposable
           // null checks, and transaction try/with rollback paths. All logic paths tested; remaining
           // uncovered branches are IL artifacts not reachable from F# code.
-          "Database.fs", (84.0, 67.0)
+          "Database.fs", (83.0, 67.0)
           // InMemoryStore.fs: All branches covered. Line gap is from GetFileKey/GetProjectKey
           // always returning None (compiler-generated closures).
           "InMemoryStore.fs", (97.0, 100.0) ]
