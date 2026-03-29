@@ -50,8 +50,7 @@ module ``noopSink`` =
             { Timestamp = DateTimeOffset.UtcNow
               Event = IndexStartedEvent 1 }
         )
-        // Allow time for processing
-        Thread.Sleep(100)
+// NoopSink.Post is synchronous no-op, nothing to wait for
 
 module ``timestamp helper`` =
 
@@ -76,8 +75,7 @@ module ``SQLite persistence`` =
             sink.Post(timestamp (IndexStartedEvent 5))
             sink.Post(timestamp (IndexCompletedEvent(100, 50, 10)))
 
-            // Wait for MailboxProcessor to process
-            Thread.Sleep(1000)
+            sink.Flush()
 
             let events = db.GetEvents(runId)
             test <@ events.Length = 2 @>
@@ -96,7 +94,8 @@ module ``SQLite persistence`` =
             sink2.Post(timestamp (IndexStartedEvent 2))
             sink2.Post(timestamp (IndexCompletedEvent(10, 5, 3)))
 
-            Thread.Sleep(1000)
+            sink1.Flush()
+            sink2.Flush()
 
             let eventsA = db.GetEvents("run-a")
             let eventsB = db.GetEvents("run-b")
@@ -109,7 +108,7 @@ module ``SQLite persistence`` =
             let sink = createSqliteSink db.InsertEvent "run-clear"
 
             sink.Post(timestamp (IndexStartedEvent 3))
-            Thread.Sleep(1000)
+            sink.Flush()
 
             test <@ db.GetEvents("run-clear").Length = 1 @>
 
@@ -140,7 +139,7 @@ module ``SQLite persistence`` =
             for event in events do
                 sink.Post(timestamp event)
 
-            Thread.Sleep(2000)
+            sink.Flush()
 
             let stored = db.GetEvents(runId)
             test <@ stored.Length = 12 @>
@@ -166,7 +165,7 @@ module ``SQLite persistence`` =
             let sink = createSqliteSink db.InsertEvent runId
 
             sink.Post(timestamp (SymbolChangeDetectedEvent("f.fs", "Lib.newFunc", Added)))
-            Thread.Sleep(1000)
+            sink.Flush()
 
             let stored = db.GetEvents(runId)
             test <@ stored.Length = 1 @>
@@ -181,7 +180,7 @@ module ``SQLite persistence`` =
             let sink = createSqliteSink db.InsertEvent runId
 
             sink.Post(timestamp (SymbolChangeDetectedEvent("f.fs", "Lib.oldFunc", Removed)))
-            Thread.Sleep(1000)
+            sink.Flush()
 
             let stored = db.GetEvents(runId)
             test <@ stored.Length = 1 @>

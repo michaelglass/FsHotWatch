@@ -2,32 +2,37 @@ module TestPrune.AuditSink
 
 open TestPrune.Domain
 
-/// Audit event sink — either an active MailboxProcessor or a no-op that discards events.
-type AuditSink =
-    | ActiveSink of MailboxProcessor<Timestamped<AnalysisEvent>>
-    | NoopSink
+/// Audit event sink that receives timestamped analysis events.
+type AuditSink internal (post: Timestamped<AnalysisEvent> -> unit, flush: unit -> unit) =
+    member _.Post(event) = post event
+    /// Wait until all previously posted events have been processed.
+    member _.Flush() = flush ()
 
-    member this.Post(event) =
-        match this with
-        | ActiveSink mbp -> mbp.Post(event)
-        | NoopSink -> ()
+type private SinkMessage =
+    | Event of Timestamped<AnalysisEvent>
+    | Flush of AsyncReplyChannel<unit>
 
 /// Create an audit sink that persists events using the given function.
 let createAuditSink (persist: Timestamped<AnalysisEvent> -> Async<unit>) : AuditSink =
-    ActiveSink(
+    let mbp =
         MailboxProcessor.Start(fun inbox ->
             let rec loop () =
                 async {
-                    let! event = inbox.Receive()
-                    do! persist event
+                    let! msg = inbox.Receive()
+
+                    match msg with
+                    | Event event -> do! persist event
+                    | Flush reply -> reply.Reply()
+
                     return! loop ()
                 }
 
             loop ())
-    )
+
+    AuditSink((fun event -> mbp.Post(Event event)), (fun () -> mbp.PostAndAsyncReply(Flush) |> Async.RunSynchronously))
 
 /// Create a no-op audit sink that discards all events without starting a thread.
-let createNoopSink () : AuditSink = NoopSink
+let createNoopSink () : AuditSink = AuditSink(ignore, ignore)
 
 let private serializeEvent (event: AnalysisEvent) : string * string =
     match event with
