@@ -24,6 +24,7 @@
 
     <ItemGroup>
         <Compile Include="ProjectLoader.fs" />
+        <Compile Include="Orchestration.fs" />
         <Compile Include="Program.fs" />
     </ItemGroup>
 

@@ -5,6 +5,7 @@ open System.IO
 open Xunit
 open Swensen.Unquote
 open TestPrune.Program
+open TestPrune.Orchestration
 open TestPrune.AstAnalyzer
 open TestPrune.Database
 open TestPrune.ImpactAnalysis
