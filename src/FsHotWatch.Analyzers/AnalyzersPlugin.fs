@@ -8,27 +8,25 @@ open FSharp.Compiler.Text
 open System.Text.Json
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
-open FsHotWatch
-open FsHotWatch.AgentHost
 open FsHotWatch.Logging
-open FsHotWatch.Plugin
+open FsHotWatch.PluginFramework
 
-type private AnalyzersState =
-    { DiagnosticsByFile: Map<string, AnalysisResult list>
+type AnalyzersMsg =
+    | AnalysisComplete of file: string * entries: ErrorEntry list
+    | AnalysisFailed of file: string * error: string
+
+type AnalyzersState =
+    { DiagnosticsByFile: Map<string, ErrorEntry list>
       LoadedCount: int
       ErrorCount: int }
 
-type private AnalyzersMsg =
-    | AnalysisComplete of file: string * results: AnalysisResult list
-    | AnalysisFailed of file: string * error: string
-    | AddLoaded of int
-
-/// Hosts F# analyzers in-process using the warm checker's results.
+/// Creates a framework plugin handler that hosts F# analyzers in-process
+/// using the warm checker's results.
 /// Uses reflection to construct CliContext, bypassing the FCS 43.10 vs 43.12
 /// type mismatch at compile time (the types are structurally identical).
-type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
+let create (analyzerPaths: string list) : PluginHandler<AnalyzersState, AnalyzersMsg> =
     let client = Client<CliAnalyzerAttribute, CliContext>()
-    let concurrencyLimit = defaultArg maxConcurrency 4
+    let concurrencyLimit = 4
     let semaphore = new SemaphoreSlim(concurrencyLimit, concurrencyLimit)
     let cts = new CancellationTokenSource()
 
@@ -95,7 +93,7 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
                            box otherOptions |]
                     )
                 with ex ->
-                    Logging.warn "analyzers" $"AnalyzerProjectOptions ctor failed: %s{ex.Message}"
+                    warn "analyzers" $"AnalyzerProjectOptions ctor failed: %s{ex.Message}"
                     null
             | None -> null
 
@@ -111,142 +109,126 @@ type AnalyzersPlugin(analyzerPaths: string list, ?maxConcurrency: int) =
         )
         :?> CliContext
 
-    interface IFsHotWatchPlugin with
-        member _.Name = "analyzers"
+    // Load analyzers eagerly during create
+    let mutable loadedCount = 0
 
-        member _.Initialize(ctx) =
-            let initialState =
-                { DiagnosticsByFile = Map.empty
-                  LoadedCount = 0
-                  ErrorCount = 0 }
+    for path in analyzerPaths do
+        if Directory.Exists(path) then
+            let stats = client.LoadAnalyzers(path)
+            loadedCount <- loadedCount + stats.Analyzers
 
-            let theAgent =
-                createAgent<AnalyzersState, AnalyzersMsg> "analyzers" initialState (fun state msg ->
-                    async {
-                        match msg with
-                        | AddLoaded count ->
-                            return
-                                { state with
-                                    LoadedCount = state.LoadedCount + count }
-                        | AnalysisComplete(file, results) ->
-                            return
-                                { state with
-                                    DiagnosticsByFile = state.DiagnosticsByFile |> Map.add file results }
-                        | AnalysisFailed(_file, _error) ->
-                            return
-                                { state with
-                                    ErrorCount = state.ErrorCount + 1 }
-                    })
+    info "analyzers" $"Loaded %d{loadedCount} analyzers from %d{analyzerPaths.Length} paths"
 
-            for path in analyzerPaths do
-                if Directory.Exists(path) then
-                    let stats = client.LoadAnalyzers(path)
-                    theAgent.Post(AddLoaded stats.Analyzers)
+    { Name = "analyzers"
+      Init =
+        { DiagnosticsByFile = Map.empty
+          LoadedCount = loadedCount
+          ErrorCount = 0 }
+      Update =
+        fun ctx state event ->
+            async {
+                match event with
+                | FileChecked result ->
+                    ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
-            let loadedCount = theAgent.GetState() |> Async.RunSynchronously |> _.LoadedCount
+                    if isNull (box result.CheckResults) then
+                        warn "analyzers" $"Skipping %s{result.File} — no type check results"
+                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                        return state
+                    else
+                        // Dispatch analysis to thread pool, semaphore-gated
+                        async {
+                            do! semaphore.WaitAsync(cts.Token) |> Async.AwaitTask
 
-            Logging.info "analyzers" $"Loaded %d{loadedCount} analyzers from %d{analyzerPaths.Length} paths"
-
-            let reportCompleted () =
-                let currentState = theAgent.GetState() |> Async.RunSynchronously
-
-                if currentState.ErrorCount > 0 then
-                    ctx.ReportStatus(Completed(DateTime.UtcNow))
-                else
-                    ctx.ReportStatus(Completed(DateTime.UtcNow))
-
-            ctx.OnFileChecked.Add(fun result ->
-                ctx.ReportStatus(Running(since = DateTime.UtcNow))
-
-                if isNull (box result.CheckResults) then
-                    Logging.warn "analyzers" $"Skipping %s{result.File} — no type check results"
-                    reportCompleted ()
-                else
-                    async {
-                        do! semaphore.WaitAsync(cts.Token) |> Async.AwaitTask
-
-                        try
                             try
-                                let sourceText = result.Source |> SourceText.ofString
+                                try
+                                    let sourceText = result.Source |> SourceText.ofString
 
-                                let context =
-                                    createCliContext
-                                        (box result.File)
-                                        (box sourceText)
-                                        (box result.ParseResults)
-                                        (box result.CheckResults)
-                                        (box result.ProjectOptions)
+                                    let context =
+                                        createCliContext
+                                            (box result.File)
+                                            (box sourceText)
+                                            (box result.ParseResults)
+                                            (box result.CheckResults)
+                                            (box result.ProjectOptions)
 
-                                let! messages =
-                                    try
-                                        client.RunAnalyzersSafely(context)
-                                    with ex ->
-                                        Logging.error
-                                            "analyzers"
-                                            $"RunAnalyzersSafely failed for %s{result.File}: %s{ex.ToString()}"
+                                    let! messages =
+                                        try
+                                            client.RunAnalyzersSafely(context)
+                                        with ex ->
+                                            error
+                                                "analyzers"
+                                                $"RunAnalyzersSafely failed for %s{result.File}: %s{ex.ToString()}"
 
-                                        reraise ()
+                                            reraise ()
 
-                                theAgent.Post(AnalysisComplete(result.File, messages))
+                                    let entries =
+                                        messages
+                                        |> List.collect (fun ar ->
+                                            match ar.Output with
+                                            | Ok msgs ->
+                                                msgs
+                                                |> List.map (fun m ->
+                                                    { Message = m.Message
+                                                      Severity =
+                                                        match m.Severity with
+                                                        | Severity.Error -> DiagnosticSeverity.Error
+                                                        | Severity.Warning -> DiagnosticSeverity.Warning
+                                                        | Severity.Info -> DiagnosticSeverity.Info
+                                                        | Severity.Hint -> DiagnosticSeverity.Hint
+                                                      Line = m.Range.StartLine
+                                                      Column = m.Range.StartColumn })
+                                            | Result.Error _ -> [])
 
-                                let entries =
-                                    messages
-                                    |> List.collect (fun ar ->
-                                        match ar.Output with
-                                        | Ok msgs ->
-                                            msgs
-                                            |> List.map (fun m ->
-                                                { Message = m.Message
-                                                  Severity =
-                                                    match m.Severity with
-                                                    | Severity.Error -> DiagnosticSeverity.Error
-                                                    | Severity.Warning -> DiagnosticSeverity.Warning
-                                                    | Severity.Info -> DiagnosticSeverity.Info
-                                                    | Severity.Hint -> DiagnosticSeverity.Hint
-                                                  Line = m.Range.StartLine
-                                                  Column = m.Range.StartColumn })
-                                        | Result.Error _ -> [])
+                                    debug
+                                        "analyzers"
+                                        $"Analyzed %s{Path.GetFileName result.File}: %d{entries.Length} diagnostics"
 
-                                Logging.debug
-                                    "analyzers"
-                                    $"Analyzed %s{Path.GetFileName result.File}: %d{entries.Length} diagnostics"
+                                    if entries.IsEmpty then
+                                        ctx.ClearErrors result.File
+                                    else
+                                        ctx.ReportErrors result.File entries
 
-                                if entries.IsEmpty then
-                                    ctx.ClearErrors result.File
-                                else
-                                    ctx.ReportErrors result.File entries
+                                    ctx.Post(AnalysisComplete(result.File, entries))
+                                with ex ->
+                                    ctx.Post(AnalysisFailed(result.File, ex.ToString()))
+                                    error "analyzers" $"Error analyzing %s{result.File}: %s{ex.ToString()}"
+                            finally
+                                semaphore.Release() |> ignore
+                        }
+                        |> fun a -> Async.Start(a, cts.Token)
 
-                                reportCompleted ()
-                            with ex ->
-                                theAgent.Post(AnalysisFailed(result.File, ex.ToString()))
-                                Logging.error "analyzers" $"Error analyzing %s{result.File}: %s{ex.ToString()}"
-                                reportCompleted ()
-                        finally
-                            semaphore.Release() |> ignore
-                    }
-                    |> fun a -> Async.Start(a, cts.Token))
+                        return state
+                | Custom(AnalysisComplete(file, entries)) ->
+                    ctx.ReportStatus(Completed(DateTime.UtcNow))
 
-            ctx.RegisterCommand(
-                "diagnostics",
-                fun _args ->
-                    async {
-                        let! currentState = theAgent.GetState()
+                    return
+                        { state with
+                            DiagnosticsByFile = state.DiagnosticsByFile |> Map.add file entries }
+                | Custom(AnalysisFailed(_file, _error)) ->
+                    ctx.ReportStatus(Completed(DateTime.UtcNow))
 
-                        let totalDiags =
-                            currentState.DiagnosticsByFile
-                            |> Map.toList
-                            |> List.sumBy (fun (_, msgs) -> msgs.Length)
+                    return
+                        { state with
+                            ErrorCount = state.ErrorCount + 1 }
+                | _ -> return state
+            }
+      Commands =
+        [ "diagnostics",
+          fun state _args ->
+              async {
+                  let totalDiags =
+                      state.DiagnosticsByFile
+                      |> Map.toList
+                      |> List.sumBy (fun (_, entries) -> entries.Length)
 
-                        return
-                            JsonSerializer.Serialize(
-                                {| analyzers = currentState.LoadedCount
-                                   files = currentState.DiagnosticsByFile.Count
-                                   diagnostics = totalDiags |}
-                            )
-                    }
-            )
-
-        member _.Dispose() =
-            cts.Cancel()
-            cts.Dispose()
-            semaphore.Dispose()
+                  return
+                      JsonSerializer.Serialize(
+                          {| analyzers = state.LoadedCount
+                             files = state.DiagnosticsByFile.Count
+                             diagnostics = totalDiags |}
+                      )
+              } ]
+      Subscriptions =
+        { PluginSubscriptions.none with
+            FileChecked = true } }
