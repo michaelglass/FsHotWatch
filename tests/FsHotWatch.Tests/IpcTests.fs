@@ -5,6 +5,7 @@ open System.Threading
 open System.Threading.Tasks
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.ErrorLedger
 open FsHotWatch.Ipc
 open FsHotWatch.PluginHost
 open FsHotWatch.Plugin
@@ -541,7 +542,7 @@ let ``DaemonRpcTarget.GetErrors returns all errors when filter is empty`` () =
                 ctx.ReportErrors
                     "/tmp/test.fs"
                     [ { Message = "bad code"
-                        Severity = "error"
+                        Severity = DiagnosticSeverity.Error
                         Line = 10
                         Column = 5 } ]
 
@@ -567,7 +568,7 @@ let ``DaemonRpcTarget.GetErrors filters by plugin name`` () =
                 ctx.ReportErrors
                     "/tmp/a.fs"
                     [ { Message = "lint issue"
-                        Severity = "warning"
+                        Severity = DiagnosticSeverity.Warning
                         Line = 1
                         Column = 0 } ]
 
@@ -581,7 +582,7 @@ let ``DaemonRpcTarget.GetErrors filters by plugin name`` () =
                 ctx.ReportErrors
                     "/tmp/b.fs"
                     [ { Message = "analyzer issue"
-                        Severity = "info"
+                        Severity = DiagnosticSeverity.Info
                         Line = 2
                         Column = 0 } ]
 

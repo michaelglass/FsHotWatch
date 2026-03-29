@@ -80,7 +80,7 @@ type LintPlugin(?configPath: string) =
                                             warnings
                                             |> List.map (fun w ->
                                                 { Message = w.Details.Message
-                                                  Severity = "warning"
+                                                  Severity = DiagnosticSeverity.Warning
                                                   Line = w.Details.Range.StartLine
                                                   Column = w.Details.Range.StartColumn })
 

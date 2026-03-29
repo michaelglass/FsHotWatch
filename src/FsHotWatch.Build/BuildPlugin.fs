@@ -57,7 +57,7 @@ type BuildPlugin(?command: string, ?args: string) =
                             ctx.ReportErrors
                                 "<build>"
                                 [ { Message = output
-                                    Severity = "error"
+                                    Severity = DiagnosticSeverity.Error
                                     Line = 0
                                     Column = 0 } ]
 
@@ -74,7 +74,7 @@ type BuildPlugin(?command: string, ?args: string) =
                         ctx.ReportErrors
                             "<build>"
                             [ { Message = ex.Message
-                                Severity = "error"
+                                Severity = DiagnosticSeverity.Error
                                 Line = 0
                                 Column = 0 } ]
 
