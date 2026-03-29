@@ -90,7 +90,7 @@ type BuildPlugin(?command: string, ?args: string) =
                 createAgent<BuildState, BuildMsg> "build" { Phase = IdlePhase(Lifecycle.create None) } (fun state msg ->
                     async {
                         match msg, state.Phase with
-                        | FileChanged SolutionChanged, _ -> return state
+                        | FileChanged(SolutionChanged _), _ -> return state
                         | FileChanged _, RunningPhase _ ->
                             Logging.info "build" "Skipping: build already in progress"
                             return state
@@ -116,7 +116,7 @@ type BuildPlugin(?command: string, ?args: string) =
                 | ProjectChanged _ ->
                     agent.Post(FileChanged change)
                     agent.GetState() |> Async.RunSynchronously |> ignore
-                | SolutionChanged -> ())
+                | SolutionChanged _ -> ())
 
             ctx.RegisterCommand(
                 "build-status",

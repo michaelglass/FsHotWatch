@@ -184,7 +184,7 @@ let ``build plugin ignores SolutionChanged events`` () =
     host.Register(recorder)
     host.Register(plugin)
 
-    host.EmitFileChanged(SolutionChanged)
+    host.EmitFileChanged(SolutionChanged "test.sln")
 
     test <@ receivedBuild = None @>
 

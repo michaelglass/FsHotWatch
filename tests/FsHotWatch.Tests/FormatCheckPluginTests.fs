@@ -34,7 +34,7 @@ let ``format check handles non-source change events without crashing`` () =
 
     // ProjectChanged and SolutionChanged should not crash the plugin
     host.EmitFileChanged(ProjectChanged [ "/tmp/Test.fsproj" ])
-    host.EmitFileChanged(SolutionChanged)
+    host.EmitFileChanged(SolutionChanged "test.sln")
 
     // The plugin still sets Completed status (empty unformatted set)
     let status = host.GetStatus("format-check")

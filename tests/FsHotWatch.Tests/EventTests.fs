@@ -8,7 +8,7 @@ open FsHotWatch.Events
 let ``FileChangeKind constructors work`` () =
     let source = SourceChanged [ "src/Lib.fs" ]
     let proj = ProjectChanged [ "src/Lib.fsproj" ]
-    let sln = SolutionChanged
+    let sln = SolutionChanged "test.sln"
 
     test
         <@
@@ -27,7 +27,7 @@ let ``FileChangeKind constructors work`` () =
     test
         <@
             match sln with
-            | SolutionChanged -> true
+            | SolutionChanged _ -> true
             | _ -> false
         @>
 
