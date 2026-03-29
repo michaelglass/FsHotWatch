@@ -5,6 +5,7 @@ open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginFramework
+open FsHotWatch.Tests.TestHelpers
 
 /// Create an FSharpChecker for tests.
 let private checker = FSharp.Compiler.CodeAnalysis.FSharpChecker.Create()
@@ -32,36 +33,32 @@ let private registerDefault handler = registerWith handler None
 
 [<Fact>]
 let ``registered plugin dispatches FileChanged`` () =
-    async {
-        let mutable received = false
+    let mutable registeredCmd: (string * CommandHandler) option = None
 
-        let handler =
-            { Name = "test-fc"
-              Init = ()
-              Update =
-                fun _ctx _state event ->
-                    async {
-                        match event with
-                        | FileChanged _ -> received <- true
-                        | _ -> ()
+    let handler =
+        { Name = "test-fc"
+          Init = false
+          Update =
+            fun _ctx _state event ->
+                async {
+                    match event with
+                    | FileChanged _ -> return true
+                    | _ -> return _state
+                }
+          Commands = [ "was-called", fun state _args -> async { return $"%b{state}" } ]
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChanged = true } }
 
-                        return ()
-                    }
-              Commands = []
-              Subscriptions =
-                { PluginSubscriptions.none with
-                    FileChanged = true } }
+    let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
 
-        let reg = registerDefault handler
+    test <@ reg.OnFileChanged.IsSome @>
+    reg.OnFileChanged.Value(SourceChanged [ "/tmp/repo/Foo.fs" ])
 
-        test <@ reg.OnFileChanged.IsSome @>
-        reg.OnFileChanged.Value(SourceChanged [ "/tmp/repo/Foo.fs" ])
-
-        // Give the agent time to process
-        do! Async.Sleep 100
-        test <@ received @>
-    }
-    |> Async.RunSynchronously
+    // Poll the command deterministically — it queues behind the FileChanged message
+    let (_, cmdHandler) = registeredCmd.Value
+    let result = cmdHandler [||] |> Async.RunSynchronously
+    test <@ result = "true" @>
 
 [<Fact>]
 let ``registered plugin skips unsubscribed events`` () =
@@ -120,6 +117,8 @@ let ``Custom messages work for self-posting`` () =
     async {
         let mutable customReceived = false
 
+        let mutable registeredCmd: (string * CommandHandler) option = None
+
         let handler =
             { Name = "test-custom"
               Init = false
@@ -135,17 +134,24 @@ let ``Custom messages work for self-posting`` () =
                             return true
                         | _ -> return state
                     }
-              Commands = []
+              Commands = [ "got-custom", fun state _args -> async { return $"%b{state}" } ]
               Subscriptions =
                 { PluginSubscriptions.none with
                     FileChanged = true } }
 
-        let reg = registerDefault handler
+        let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
 
         reg.OnFileChanged.Value(SourceChanged [ "/tmp/repo/Foo.fs" ])
 
-        // Give the agent time to process both messages (FileChanged then Custom)
-        do! Async.Sleep 500
+        // Poll command deterministically — queues behind FileChanged AND Custom messages
+        let (_, cmdHandler) = registeredCmd.Value
+
+        waitUntil
+            (fun () ->
+                let r = cmdHandler [||] |> Async.RunSynchronously
+                r = "true")
+            5000
+
         test <@ customReceived @>
     }
     |> Async.RunSynchronously
@@ -176,15 +182,17 @@ let ``handler errors are recovered`` () =
 
         let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
 
-        // First: throw
+        // First: throw. Second: normal — should still work.
         reg.OnFileChanged.Value(SourceChanged [ "/throw" ])
-        do! Async.Sleep 100
-
-        // Second: normal — should still work
         reg.OnFileChanged.Value(SourceChanged [ "/ok" ])
-        do! Async.Sleep 100
 
-        // State should be 1 (only the second event incremented)
+        // Poll command — deterministic, queues behind both messages
+        waitUntil
+            (fun () ->
+                let r = registeredCmd.Value [||] |> Async.RunSynchronously
+                r = "1")
+            5000
+
         let! result = registeredCmd.Value [||]
         test <@ result = "1" @>
         test <@ callCount = 2 @>
