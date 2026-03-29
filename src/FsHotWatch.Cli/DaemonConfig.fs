@@ -410,11 +410,6 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         let fileFilter (path: string) =
             path.EndsWith(pattern.TrimStart('*'), StringComparison.OrdinalIgnoreCase)
 
-        daemon.Register(
-            FsHotWatch.FileCommand.FileCommandPlugin.FileCommandPlugin(
-                name = $"file-cmd-%s{fc.Pattern}",
-                fileFilter = fileFilter,
-                command = fc.Command,
-                args = fc.Args
-            )
+        daemon.RegisterHandler(
+            FsHotWatch.FileCommand.FileCommandPlugin.create $"file-cmd-%s{fc.Pattern}" fileFilter fc.Command fc.Args
         )
