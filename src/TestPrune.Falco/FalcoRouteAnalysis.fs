@@ -20,26 +20,31 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
         let pattern = escaped.Replace(placeholder, "[^/]+")
         Regex($"(?:^|[\"'/])%s{pattern}(?:[\"'?#\\s]|$)", RegexOptions.Compiled)
 
+    let classPattern = Regex(@"^type\s+(\w+)\s*\(", RegexOptions.Multiline)
+
+    let modulePattern =
+        Regex(@"^module\s+(?:``[^`]+``|[\w.]+\.)?(\w+)\s*=", RegexOptions.Multiline)
+
     let findTestClassesInFiles (testFiles: string list) (regexes: Regex list) : string list =
-        let mutable matchedClasses = Set.empty
-
-        for testFile in testFiles do
+        testFiles
+        |> List.collect (fun testFile ->
             let content = File.ReadAllText(testFile)
-            let hasMatch = regexes |> List.exists (fun regex -> regex.IsMatch(content))
 
-            if hasMatch then
-                let classPattern = Regex(@"^type\s+(\w+)\s*\(", RegexOptions.Multiline)
+            if regexes |> List.exists (fun regex -> regex.IsMatch(content)) then
+                let classes =
+                    classPattern.Matches(content)
+                    |> Seq.map (fun m -> m.Groups.[1].Value)
+                    |> Seq.toList
 
-                let modulePattern =
-                    Regex(@"^module\s+(?:``[^`]+``|[\w.]+\.)?(\w+)\s*=", RegexOptions.Multiline)
+                let modules =
+                    modulePattern.Matches(content)
+                    |> Seq.map (fun m -> m.Groups.[1].Value)
+                    |> Seq.toList
 
-                for m in classPattern.Matches(content) do
-                    matchedClasses <- matchedClasses |> Set.add m.Groups.[1].Value
-
-                for m in modulePattern.Matches(content) do
-                    matchedClasses <- matchedClasses |> Set.add m.Groups.[1].Value
-
-        matchedClasses |> Set.toList
+                classes @ modules
+            else
+                [])
+        |> List.distinct
 
     let findTestFiles (repoRoot: string) : string list =
         let testDir = Path.Combine(repoRoot, integrationTestDir)

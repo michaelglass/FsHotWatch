@@ -190,74 +190,86 @@ let indexProject
             let projSnapshot =
                 lazy (createProjectSnapshot (projOptions.Force()) |> Async.RunSynchronously)
 
-            let mutable analyzedFiles = 0
-            let mutable firstChangedIndex = None
-            let mutable localFileKeys = []
-            let mutable localSkippedFiles = 0
-            let mutable localEvents = []
-
-            let results =
+            let finalAcc =
                 compileFiles
-                |> List.mapi (fun idx sourceFile ->
-                    if not (File.Exists(sourceFile)) then
-                        None
-                    else
-                        let relPath = Path.GetRelativePath(repoRoot, sourceFile).Replace('\\', '/')
-
-                        let fileKey = computeFileKey sourceFile
-
-                        let forcedByCompilationOrder =
-                            match firstChangedIndex with
-                            | Some firstIdx when idx > firstIdx -> true
-                            | _ -> false
-
-                        let cached =
-                            not forcedByCompilationOrder
-                            && match store.GetFileKey(relPath) with
-                               | Some stored when stored = fileKey -> true
-                               | _ -> false
-
-                        if cached then
-                            localSkippedFiles <- localSkippedFiles + 1
-                            localEvents <- FileCacheHitEvent(relPath, "file unchanged") :: localEvents
-
-                            Some
-                                {| Symbols = store.GetSymbolsInFile(relPath)
-                                   Dependencies = store.GetDependenciesFromFile(relPath)
-                                   TestMethods = store.GetTestMethodsInFile(relPath) |}
+                |> List.fold
+                    (fun
+                        (idx, analyzedFiles, firstChangedIndex: int option, fileKeys, skippedFiles, events, results)
+                        sourceFile ->
+                        if not (File.Exists(sourceFile)) then
+                            (idx + 1, analyzedFiles, firstChangedIndex, fileKeys, skippedFiles, events, results)
                         else
-                            let source = File.ReadAllText(sourceFile)
+                            let relPath = Path.GetRelativePath(repoRoot, sourceFile).Replace('\\', '/')
 
-                            match
-                                analyzeSourceWithSnapshot checker sourceFile source (projSnapshot.Force())
-                                |> Async.RunSynchronously
-                            with
-                            | Ok result ->
-                                analyzedFiles <- analyzedFiles + 1
+                            let fileKey = computeFileKey sourceFile
 
-                                if firstChangedIndex.IsNone then
-                                    firstChangedIndex <- Some idx
+                            let forcedByCompilationOrder =
+                                match firstChangedIndex with
+                                | Some firstIdx when idx > firstIdx -> true
+                                | _ -> false
 
-                                localFileKeys <- (relPath, fileKey) :: localFileKeys
+                            let cached =
+                                not forcedByCompilationOrder
+                                && match store.GetFileKey(relPath) with
+                                   | Some stored when stored = fileKey -> true
+                                   | _ -> false
 
-                                let symbols = normalizeSymbolPaths repoRoot result.Symbols
-                                let deps = result.Dependencies
+                            if cached then
+                                let r =
+                                    {| Symbols = store.GetSymbolsInFile(relPath)
+                                       Dependencies = store.GetDependenciesFromFile(relPath)
+                                       TestMethods = store.GetTestMethodsInFile(relPath) |}
 
-                                let testMethods =
-                                    result.TestMethods |> List.map (fun t -> { t with TestProject = projName })
+                                (idx + 1,
+                                 analyzedFiles,
+                                 firstChangedIndex,
+                                 fileKeys,
+                                 skippedFiles + 1,
+                                 FileCacheHitEvent(relPath, "file unchanged") :: events,
+                                 r :: results)
+                            else
+                                let source = File.ReadAllText(sourceFile)
 
-                                localEvents <-
-                                    FileAnalyzedEvent(relPath, symbols.Length, deps.Length, testMethods.Length)
-                                    :: localEvents
+                                match
+                                    analyzeSourceWithSnapshot checker sourceFile source (projSnapshot.Force())
+                                    |> Async.RunSynchronously
+                                with
+                                | Ok result ->
+                                    let newFirstChanged =
+                                        if firstChangedIndex.IsNone then
+                                            Some idx
+                                        else
+                                            firstChangedIndex
 
-                                Some
-                                    {| Symbols = symbols
-                                       Dependencies = deps
-                                       TestMethods = testMethods |}
-                            | Error msg ->
-                                eprintfn $"  Warning: %s{sourceFile}: %s{msg}"
-                                None)
-                |> List.choose id
+                                    let symbols = normalizeSymbolPaths repoRoot result.Symbols
+                                    let deps = result.Dependencies
+
+                                    let testMethods =
+                                        result.TestMethods |> List.map (fun t -> { t with TestProject = projName })
+
+                                    let r =
+                                        {| Symbols = symbols
+                                           Dependencies = deps
+                                           TestMethods = testMethods |}
+
+                                    (idx + 1,
+                                     analyzedFiles + 1,
+                                     newFirstChanged,
+                                     (relPath, fileKey) :: fileKeys,
+                                     skippedFiles,
+                                     FileAnalyzedEvent(relPath, symbols.Length, deps.Length, testMethods.Length)
+                                     :: events,
+                                     r :: results)
+                                | Error msg ->
+                                    eprintfn $"  Warning: %s{sourceFile}: %s{msg}"
+
+                                    (idx + 1, analyzedFiles, firstChangedIndex, fileKeys, skippedFiles, events, results))
+                    (0, 0, None, [], 0, [], [])
+
+            let (_idx, analyzedFiles, _firstChangedIndex, localFileKeys, localSkippedFiles, localEvents, revResults) =
+                finalAcc
+
+            let results = revResults |> List.rev
 
             let combined =
                 { Symbols = results |> List.collect (fun r -> r.Symbols)

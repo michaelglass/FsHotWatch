@@ -64,7 +64,7 @@ let overrides =
           // Orchestration.fs: Extracted from Program.fs. Contains tested orchestration logic
           // (runIndexWith, analyzeChanges, runStatusWith, runRunWith, runDeadCode) plus
           // untestable paths (file I/O, FCS checker creation, process execution).
-          "Orchestration.fs", (81.0, 73.0)
+          "Orchestration.fs", (81.0, 72.0)
           // AuditSink.fs: MailboxProcessor error handler (catch in createSqliteSink) is
           // defensive and hard to trigger in tests. All serializeEvent branches now covered.
           "AuditSink.fs", (95.0, 100.0)

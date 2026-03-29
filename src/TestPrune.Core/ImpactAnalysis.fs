@@ -61,14 +61,13 @@ let selectTests
             let allChangedNames = changedSymbolNames allChanges
             let affectedTests = queryAffectedTests allChangedNames
 
+            let selectionReason =
+                match allChanges with
+                | [ change ] -> SymbolChanged(SymbolDiff.symbolName change, SymbolDiff.changeKind change)
+                | _ -> TransitiveDependency(allChanges |> List.map SymbolDiff.symbolName)
+
             let testEvents =
                 affectedTests
-                |> List.map (fun testMethod ->
-                    let name, kind =
-                        match allChanges with
-                        | change :: _ -> SymbolDiff.symbolName change, SymbolDiff.changeKind change
-                        | [] -> "", Domain.Modified
-
-                    TestSelectedEvent(testMethod.SymbolFullName, SymbolChanged(name, kind)))
+                |> List.map (fun testMethod -> TestSelectedEvent(testMethod.SymbolFullName, selectionReason))
 
             RunSubset affectedTests, symbolEvents @ testEvents
