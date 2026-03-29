@@ -463,7 +463,9 @@ let analyzeChanges
                 let failedFiles = parseFailures |> List.rev |> String.concat ", "
                 Ok(RunAll $"could not parse: %s{failedFiles}", changedFiles)
             else
-                let selection = selectTests db changedFiles currentSymbolsByFile
+                let selection =
+                    selectTests db.GetSymbolsInFile db.QueryAffectedTests changedFiles currentSymbolsByFile
+
                 Ok(selection, changedFiles)
 
 /// Run the status command with an injectable diff provider.

@@ -278,7 +278,8 @@ let f x = x
                           LineEnd = 5
                           ContentHash = "" } ] ]
 
-            let result = selectTests db [ "src/NewModule.fs" ] currentSymbols
+            let result =
+                selectTests db.GetSymbolsInFile db.QueryAffectedTests [ "src/NewModule.fs" ] currentSymbols
 
             match result with
             | RunAll _ -> ()
@@ -304,7 +305,7 @@ let f x = x
 
             db.RebuildProjects([ analysis ])
 
-            let result = selectTests db [] Map.empty
+            let result = selectTests db.GetSymbolsInFile db.QueryAffectedTests [] Map.empty
 
             match result with
             | RunSubset tests -> test <@ tests |> List.isEmpty @>

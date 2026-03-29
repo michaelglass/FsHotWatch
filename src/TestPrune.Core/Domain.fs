@@ -51,6 +51,7 @@ type AnalysisEvent =
     | DeadCodeFoundEvent of symbolNames: string list
 
 type Timestamped<'a> =
-    { Timestamp: System.DateTimeOffset; Event: 'a }
+    { Timestamp: System.DateTimeOffset
+      Event: 'a }
 
 type AnalysisConfig = { Parallelism: int; RepoRoot: string }

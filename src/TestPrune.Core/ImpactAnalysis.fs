@@ -1,7 +1,6 @@
 module TestPrune.ImpactAnalysis
 
 open TestPrune.AstAnalyzer
-open TestPrune.Database
 open TestPrune.SymbolDiff
 
 /// Result of test impact analysis: either a subset of affected tests or run-all with a reason.
@@ -16,7 +15,8 @@ type TestSelection =
 /// 4. Query DB for transitively dependent test methods
 /// 5. If any file is new (not indexed) -> RunAll (conservative)
 let selectTests
-    (db: Database)
+    (getStoredSymbols: string -> SymbolInfo list)
+    (queryAffectedTests: string list -> TestMethodInfo list)
     (changedFiles: string list)
     (currentSymbolsByFile: Map<string, SymbolInfo list>)
     : TestSelection =
@@ -33,7 +33,7 @@ let selectTests
             fsFiles
             |> List.fold
                 (fun (newFile, changedNames) file ->
-                    let storedSymbols = db.GetSymbolsInFile file
+                    let storedSymbols = getStoredSymbols file
 
                     if storedSymbols.IsEmpty then
                         let currentSymbols =
@@ -55,5 +55,5 @@ let selectTests
         if hasNewFile then
             RunAll "new file not yet indexed"
         else
-            let affectedTests = db.QueryAffectedTests allChangedNames
+            let affectedTests = queryAffectedTests allChangedNames
             RunSubset affectedTests
