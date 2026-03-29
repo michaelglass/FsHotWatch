@@ -7,6 +7,12 @@ open FsHotWatch.Events
 open FsHotWatch.Logging
 open FsHotWatch.Plugin
 
+[<NoComparison; NoEquality>]
+type private StatusMsg =
+    | SetStatus of name: string * PluginStatus
+    | GetStatus of name: string * AsyncReplyChannel<PluginStatus option>
+    | GetAll of AsyncReplyChannel<Map<string, PluginStatus>>
+
 /// Manages plugin lifecycle, event dispatch, command registration, and status tracking.
 type PluginHost(checker: FSharpChecker, repoRoot: string) =
     let fileChanged = Event<FileChangeKind>()
@@ -33,8 +39,29 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
 
     let ledger = ErrorLedger()
     let commands = ConcurrentDictionary<string, CommandHandler>()
-    let statuses = ConcurrentDictionary<string, PluginStatus>()
     let preprocessors = ConcurrentBag<IFsHotWatchPreprocessor>()
+
+    let statusAgent =
+        MailboxProcessor.Start(fun inbox ->
+            let rec loop (statuses: Map<string, PluginStatus>) =
+                async {
+                    let! msg = inbox.Receive()
+
+                    match msg with
+                    | SetStatus(name, status) ->
+                        statusChanged.Trigger(name, status)
+                        return! loop (Map.add name status statuses)
+                    | GetStatus(name, ch) ->
+                        ch.Reply(Map.tryFind name statuses)
+                        return! loop statuses
+                    | GetAll ch ->
+                        ch.Reply(statuses)
+                        return! loop statuses
+                }
+
+            loop Map.empty)
+
+    let registeredPlugins = ResizeArray<PluginFramework.RegisteredPlugin>()
 
     /// Register a plugin, wiring up its context and calling Initialize.
     member _.Register(plugin: IFsHotWatchPlugin) =
@@ -57,25 +84,50 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
 
                     Logging.debug plugin.Name $"→ %s{statusName}"
 
-                    statuses[plugin.Name] <- status
-                    statusChanged.Trigger(plugin.Name, status)
+                    statusAgent.Post(SetStatus(plugin.Name, status))
               RegisterCommand = fun (name, handler) -> commands[name] <- handler
               EmitBuildCompleted = fun result -> buildCompleted.Trigger(result)
               EmitTestCompleted = fun results -> testCompleted.Trigger(results)
               ReportErrors = fun file errors -> ledger.Report(plugin.Name, file, errors)
               ClearErrors = fun file -> ledger.Clear(plugin.Name, file) }
 
-        statuses[plugin.Name] <- Idle
+        statusAgent.Post(SetStatus(plugin.Name, Idle))
 
         try
             plugin.Initialize(ctx)
         with ex ->
             Logging.error "plugin-host" $"Failed to initialize plugin '%s{plugin.Name}': %s{ex.Message}"
-            statuses[plugin.Name] <- Failed(ex.Message, System.DateTime.UtcNow)
+            statusAgent.Post(SetStatus(plugin.Name, Failed(ex.Message, System.DateTime.UtcNow)))
+
+    /// Register a declarative framework-managed plugin handler.
+    member this.RegisterHandler<'State, 'Msg>(handler: PluginFramework.PluginHandler<'State, 'Msg>) =
+        let plugin =
+            PluginFramework.registerHandler
+                checker
+                repoRoot
+                (fun name status ->
+                    statusAgent.Post(SetStatus(name, status))
+
+                    Logging.debug
+                        name
+                        (match status with
+                         | Idle -> "Idle"
+                         | Running _ -> "Running"
+                         | Completed _ -> "Completed"
+                         | Failed(e, _) -> $"Failed: %s{e.Substring(0, min 80 e.Length)}"))
+                (fun name file entries -> ledger.Report(name, file, entries))
+                (fun name file -> ledger.Clear(name, file))
+                (fun result -> buildCompleted.Trigger(result))
+                (fun results -> testCompleted.Trigger(results))
+                (fun cmd -> commands[fst cmd] <- snd cmd)
+                handler
+
+        statusAgent.Post(SetStatus(plugin.Name, Idle))
+        registeredPlugins.Add(plugin)
 
     /// Register a preprocessor (runs before events are dispatched).
     member _.RegisterPreprocessor(preprocessor: IFsHotWatchPreprocessor) =
-        statuses[preprocessor.Name] <- Idle
+        statusAgent.Post(SetStatus(preprocessor.Name, Idle))
         preprocessors.Add(preprocessor)
 
     /// Run all preprocessors on the given files. Returns files that were modified.
@@ -83,22 +135,34 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
         let mutable modifiedFiles = []
 
         for preprocessor in preprocessors do
-            statuses[preprocessor.Name] <- Running(since = System.DateTime.UtcNow)
+            statusAgent.Post(SetStatus(preprocessor.Name, Running(since = System.DateTime.UtcNow)))
 
             try
                 let modified = preprocessor.Process files repoRoot
                 modifiedFiles <- modified @ modifiedFiles
-                statuses[preprocessor.Name] <- Completed(System.DateTime.UtcNow)
+                statusAgent.Post(SetStatus(preprocessor.Name, Completed(System.DateTime.UtcNow)))
             with ex ->
-                statuses[preprocessor.Name] <- Failed(ex.Message, System.DateTime.UtcNow)
+                statusAgent.Post(SetStatus(preprocessor.Name, Failed(ex.Message, System.DateTime.UtcNow)))
 
         modifiedFiles |> List.distinct
 
     /// Emit a file change event to all registered plugins.
-    member _.EmitFileChanged(change: FileChangeKind) = fileChanged.Trigger(change)
+    member _.EmitFileChanged(change: FileChangeKind) =
+        fileChanged.Trigger(change)
+
+        for p in registeredPlugins do
+            match p.OnFileChanged with
+            | Some f -> f change
+            | None -> ()
 
     /// Emit a build completed event to all registered plugins.
-    member _.EmitBuildCompleted(result: BuildResult) = buildCompleted.Trigger(result)
+    member _.EmitBuildCompleted(result: BuildResult) =
+        buildCompleted.Trigger(result)
+
+        for p in registeredPlugins do
+            match p.OnBuildCompleted with
+            | Some f -> f result
+            | None -> ()
 
     /// Report errors to the ledger on behalf of a named source (e.g., "fcs").
     member _.ReportErrors(pluginName: string, filePath: string, entries: ErrorEntry list, ?version: int64) =
@@ -113,6 +177,11 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
         for handler in fileCheckedHandlers.ToArray() do
             handler result
 
+        for p in registeredPlugins do
+            match p.OnFileChecked with
+            | Some f -> f result
+            | None -> ()
+
     /// Emit a file checked event to all registered plugins in parallel.
     /// Each handler runs as an independent async computation.
     member _.EmitFileCheckedParallel(result: FileCheckResult) : Async<unit> =
@@ -125,13 +194,24 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
                     |> Array.map (fun handler -> async { handler result })
                     |> Async.Parallel
                     |> Async.Ignore
+
+            for p in registeredPlugins do
+                match p.OnFileChecked with
+                | Some f -> f result
+                | None -> ()
         }
 
     /// Emit a project checked event to all registered plugins.
     member _.EmitProjectChecked(result: ProjectCheckResult) = projectChecked.Trigger(result)
 
     /// Emit a test completed event to all registered plugins.
-    member _.EmitTestCompleted(results: TestResults) = testCompleted.Trigger(results)
+    member _.EmitTestCompleted(results: TestResults) =
+        testCompleted.Trigger(results)
+
+        for p in registeredPlugins do
+            match p.OnTestCompleted with
+            | Some f -> f results
+            | None -> ()
 
     /// Run a registered command by name. Returns None if the command is unknown.
     member _.RunCommand(name: string, args: string array) : Async<string option> =
@@ -145,13 +225,11 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
 
     /// Get the status of a specific plugin by name.
     member _.GetStatus(pluginName: string) : PluginStatus option =
-        match statuses.TryGetValue(pluginName) with
-        | true, status -> Some status
-        | false, _ -> None
+        statusAgent.PostAndReply(fun ch -> GetStatus(pluginName, ch))
 
     /// Get all plugin statuses as an immutable map.
     member _.GetAllStatuses() : Map<string, PluginStatus> =
-        statuses |> Seq.map (fun kvp -> kvp.Key, kvp.Value) |> Map.ofSeq
+        statusAgent.PostAndReply(fun ch -> GetAll ch)
 
     /// Get all errors grouped by file path.
     member _.GetErrors() = ledger.GetAll()
