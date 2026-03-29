@@ -48,7 +48,8 @@ let loadThresholds (thresholdsFile: string option) : Map<string, CoverageThresho
 
                 prop.Name, { Line = line; Branch = branch })
             |> Map.ofSeq
-        with _ ->
+        with ex ->
+            Logging.warn "coverage" $"Failed to parse thresholds file: %s{ex.Message}"
             Map.empty
     | _ -> Map.empty
 
@@ -68,7 +69,8 @@ let parseCoberturaXml (path: string) : (float * float) option =
             | attr -> Double.Parse(attr.Value) * 100.0
 
         Some(lineRate, branchRate)
-    with _ ->
+    with ex ->
+        Logging.warn "coverage" $"Failed to parse Cobertura XML %s{path}: %s{ex.Message}"
         None
 
 /// Creates a framework plugin handler that checks coverage thresholds after tests complete.

@@ -3,6 +3,7 @@
 module FsHotWatch.FileCheckCache
 
 open System.IO
+open FsHotWatch.Logging
 open System.Text.Json
 open FsHotWatch.Events
 open FsHotWatch.CheckCache
@@ -37,10 +38,11 @@ type FileCheckCache(cacheDir: string) =
                     { File = entry.File
                       Source = ""
                       ParseResults = Unchecked.defaultof<_>
-                      CheckResults = Unchecked.defaultof<_>
+                      CheckResults = None
                       ProjectOptions = Unchecked.defaultof<_>
                       Version = entry.Version }
-            with _ ->
+            with ex ->
+                Logging.debug "cache" $"FileCheckCache TryGet failed: %s{ex.Message}"
                 None
 
         member _.Set (key: CacheKey) (result: FileCheckResult) : unit =

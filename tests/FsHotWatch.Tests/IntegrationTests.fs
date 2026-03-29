@@ -1211,7 +1211,14 @@ let ``FileCommandPlugin ignores non-matching files`` () =
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    System.Threading.Thread.Sleep(200)
+    // No matching files — poll briefly; will time out at Idle (expected)
+    waitUntil
+        (fun () ->
+            match host.GetStatus("fsx-runner") with
+            | Some(PluginStatus.Completed _)
+            | Some(PluginStatus.Failed _) -> true
+            | _ -> false)
+        1000
 
     let status = host.GetStatus("fsx-runner")
     test <@ status.IsSome @>
@@ -1377,10 +1384,17 @@ let ``BuildPlugin does not run concurrent builds`` () =
     host.Register(recorder)
     host.RegisterHandler(handler)
 
-    // Emit two FileChanged events rapidly — the building guard should prevent the second build
+    // Emit two FileChanged events — the building guard should prevent the second build
     host.EmitFileChanged(SourceChanged [ "src/A.fs" ])
 
-    System.Threading.Thread.Sleep(100)
+    // Wait until first build is running before emitting second event
+    waitUntil
+        (fun () ->
+            match host.GetStatus("build") with
+            | Some(PluginStatus.Running _) -> true
+            | _ -> false)
+        5000
+
     host.EmitFileChanged(SourceChanged [ "src/B.fs" ])
 
     waitForTerminalStatus host "build" 5000
@@ -1420,9 +1434,17 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
 
         host.RegisterHandler(handler)
 
-        // Emit two BuildSucceeded events rapidly — the testsRunning guard should queue the second
+        // Emit two BuildSucceeded events — the testsRunning guard should queue the second
         host.EmitBuildCompleted(BuildSucceeded)
-        System.Threading.Thread.Sleep(100)
+
+        // Wait until first test run is active before emitting second event
+        waitUntil
+            (fun () ->
+                match host.GetStatus("test-prune") with
+                | Some(PluginStatus.Running _) -> true
+                | _ -> false)
+            5000
+
         host.EmitBuildCompleted(BuildSucceeded)
 
         // Wait for async test execution to complete (sleep 1 + potential re-run)
@@ -1511,7 +1533,7 @@ let ``file cache enables fast cold-start check`` () =
 
         // Partial cache hit triggers FCS re-check — result has real CheckResults
         test <@ result2.IsSome @>
-        test <@ not (isNull (box result2.Value.CheckResults)) @>
+        test <@ result2.Value.CheckResults.IsSome @>
     finally
         if Directory.Exists(cacheDir) then
             Directory.Delete(cacheDir, true)
@@ -1555,7 +1577,7 @@ let ``cached check returns None because partial FCS results are unusable by plug
         let cached = pipeline2.CheckFile(sourceFile) |> Async.RunSynchronously
 
         test <@ cached.IsSome @>
-        test <@ not (isNull (box cached.Value.CheckResults)) @>
+        test <@ cached.Value.CheckResults.IsSome @>
     finally
         if Directory.Exists(cacheDir) then
             Directory.Delete(cacheDir, true)

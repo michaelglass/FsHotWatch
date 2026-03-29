@@ -65,7 +65,8 @@ type JjScanGuard(repoRoot: string, ?getCommitId: unit -> string option, ?getDiff
                 if id.Length > 0 then Some id else None
             else
                 None
-        with _ ->
+        with ex ->
+            Logging.debug "jj" $"Could not read commit ID: %s{ex.Message}"
             None
 
     let truncId (id: string) =

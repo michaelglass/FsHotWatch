@@ -135,7 +135,7 @@ let private makeTestResult (file: string) (version: int64) : FileCheckResult =
     { File = file
       Source = "test"
       ParseResults = Unchecked.defaultof<_>
-      CheckResults = Unchecked.defaultof<_>
+      CheckResults = None
       ProjectOptions = Unchecked.defaultof<_>
       Version = version }
 
