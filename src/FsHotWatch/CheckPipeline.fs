@@ -129,7 +129,7 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
                         | _ -> None
 
                     match cached with
-                    | Some result when not (isNull (box result.CheckResults)) ->
+                    | Some result when result.CheckResults.IsSome ->
                         // Full cache hit (e.g., InMemoryCache) — result has usable FCS data
                         Logging.debug "check" $"Cache hit: %s{Path.GetFileName(absPath)}"
                         return Some result
@@ -166,7 +166,7 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
                                     { File = absPath
                                       Source = source
                                       ParseResults = parseResults
-                                      CheckResults = checkResults
+                                      CheckResults = Some checkResults
                                       ProjectOptions = options
                                       Version = version }
 
@@ -183,7 +183,7 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
                                         { File = absPath
                                           Source = source
                                           ParseResults = parseResults
-                                          CheckResults = Unchecked.defaultof<_>
+                                          CheckResults = None
                                           ProjectOptions = options
                                           Version = version }
                         with ex ->

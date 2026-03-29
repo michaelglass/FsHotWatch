@@ -36,7 +36,7 @@ let ``analyzer error path does not crash`` () =
         { File = "/tmp/nonexistent/Fake.fs"
           Source = ""
           ParseResults = Unchecked.defaultof<_>
-          CheckResults = Unchecked.defaultof<_>
+          CheckResults = None
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L }
 

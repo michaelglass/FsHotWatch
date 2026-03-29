@@ -215,8 +215,8 @@ let ``build plugin ignores SolutionChanged events`` () =
 
     host.EmitFileChanged(SolutionChanged "test.sln")
 
-    // Give a small window — should NOT trigger
-    System.Threading.Thread.Sleep(200)
+    // SolutionChanged is ignored — poll briefly; will time out (expected)
+    waitUntil 200 (fun () -> receivedBuild.IsSome)
 
     test <@ receivedBuild = None @>
 

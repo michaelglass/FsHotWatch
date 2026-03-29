@@ -14,6 +14,17 @@ open FsHotWatch.Events
 open FsHotWatch.PluginHost
 open FsHotWatch.Tests.TestHelpers
 
+/// Poll until IPC server is accepting connections.
+let private waitForIpcServer (pipeName: string) =
+    waitUntil
+        (fun () ->
+            try
+                IpcClient.getStatus pipeName |> Async.RunSynchronously |> ignore
+                true
+            with _ ->
+                false)
+        5000
+
 // --- parseCommand tests ---
 
 [<Fact>]
@@ -97,7 +108,7 @@ let ``shutdown via IPC stops the daemon`` () =
 
     let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None
     let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
-    Thread.Sleep(500)
+    waitForIpcServer pipeName
 
     try
         let result = IpcClient.shutdown pipeName |> Async.RunSynchronously
@@ -161,7 +172,7 @@ let ``CLI status query works against running daemon`` () =
 
     daemon.Register(plugin)
     let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
-    Thread.Sleep(500)
+    waitForIpcServer pipeName
 
     try
         let result = IpcClient.getStatus pipeName |> Async.RunSynchronously
@@ -198,7 +209,7 @@ let ``CLI plugin status query works against running daemon`` () =
 
     daemon.Register(plugin)
     let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
-    Thread.Sleep(500)
+    waitForIpcServer pipeName
 
     try
         let result = IpcClient.getPluginStatus pipeName "my-lint" |> Async.RunSynchronously
@@ -241,7 +252,7 @@ let ``CLI command proxying works against running daemon`` () =
 
     daemon.Register(plugin)
     let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
-    Thread.Sleep(500)
+    waitForIpcServer pipeName
 
     try
         let result =

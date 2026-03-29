@@ -44,11 +44,7 @@ let create (lintConfigPath: string option) : PluginHandler<LintState, unit> =
                         return state
                     else
 
-                        let typeCheckResults =
-                            if isNull (box result.CheckResults) then
-                                None
-                            else
-                                Some result.CheckResults
+                        let typeCheckResults = result.CheckResults
 
                         let parsedInfo: Lint.ParsedFileInformation =
                             { Ast = result.ParseResults.ParseTree

@@ -3,6 +3,7 @@ module FsHotWatch.CheckCache
 open System
 open System.IO
 open System.Security.Cryptography
+open FsHotWatch.Logging
 open System.Text
 open FSharp.Compiler.CodeAnalysis
 open FsHotWatch.Events
@@ -45,7 +46,8 @@ type TimestampCacheKeyProvider() =
             try
                 let info = FileInfo(normalizedPath)
                 sha256Hex $"%s{normalizedPath}:%d{info.Length}:%d{info.LastWriteTimeUtc.Ticks}"
-            with _ ->
+            with ex ->
+                Logging.debug "cache" $"Could not stat %s{normalizedPath}: %s{ex.Message}"
                 sha256Hex $"unreadable:%s{normalizedPath}"
 
 /// Computes ProjectOptionsHash from FSharpProjectOptions
