@@ -22,6 +22,7 @@ open FsHotWatch.Coverage.CoveragePlugin
 open FsHotWatch.FileCommand.FileCommandPlugin
 open FsHotWatch.CheckCache
 open FsHotWatch.FileCheckCache
+open FsHotWatch.Tests.TestHelpers
 
 let private findRepoRoot () =
     let assemblyDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)
@@ -1082,12 +1083,16 @@ let ``CoveragePlugin reports no files found`` () =
 [<Fact>]
 let ``FileCommandPlugin runs command for matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let plugin =
-        FileCommandPlugin("fsx-runner", (fun f -> f.EndsWith(".fsx")), "echo", "hello")
-
-    host.Register(plugin)
+    let handler = create "fsx-runner" (fun f -> f.EndsWith(".fsx")) "echo" "hello"
+    host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "scripts/build.fsx" ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("fsx-runner") with
+            | Some(Completed _) -> true
+            | _ -> false)
+        5000
 
     let status = host.GetStatus("fsx-runner")
     test <@ status.IsSome @>
@@ -1102,12 +1107,11 @@ let ``FileCommandPlugin runs command for matching files`` () =
 [<Fact>]
 let ``FileCommandPlugin ignores non-matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let plugin =
-        FileCommandPlugin("fsx-runner", (fun f -> f.EndsWith(".fsx")), "echo", "hello")
-
-    host.Register(plugin)
+    let handler = create "fsx-runner" (fun f -> f.EndsWith(".fsx")) "echo" "hello"
+    host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    System.Threading.Thread.Sleep(200)
 
     let status = host.GetStatus("fsx-runner")
     test <@ status.IsSome @>
@@ -1116,12 +1120,16 @@ let ``FileCommandPlugin ignores non-matching files`` () =
 [<Fact>]
 let ``FileCommandPlugin reports failure on bad command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let plugin =
-        FileCommandPlugin("fsx-runner", (fun f -> f.EndsWith(".fsx")), "false", "")
-
-    host.Register(plugin)
+    let handler = create "fsx-runner" (fun f -> f.EndsWith(".fsx")) "false" ""
+    host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "scripts/build.fsx" ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("fsx-runner") with
+            | Some(PluginStatus.Failed _) -> true
+            | _ -> false)
+        5000
 
     let status = host.GetStatus("fsx-runner")
     test <@ status.IsSome @>

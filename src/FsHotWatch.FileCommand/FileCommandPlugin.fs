@@ -1,78 +1,69 @@
 module FsHotWatch.FileCommand.FileCommandPlugin
 
 open System
-open FsHotWatch.AgentHost
 open FsHotWatch.Events
-open FsHotWatch.Plugin
+open FsHotWatch.PluginFramework
 open FsHotWatch.ProcessHelper
 
-type private CommandResult =
+type CommandResult =
     | NotRun
     | Succeeded of output: string
     | CommandFailed of output: string
 
-type private FileCommandState = { LastResult: CommandResult }
+type FileCommandState = { LastResult: CommandResult }
 
-type private FileCommandMsg = FileChanged of files: string list
+/// Creates a framework plugin handler that runs a command when files matching a filter change.
+let create
+    (name: string)
+    (fileFilter: string -> bool)
+    (command: string)
+    (args: string)
+    : PluginHandler<FileCommandState, unit> =
+    { Name = name
+      Init = { LastResult = NotRun }
+      Update =
+        fun ctx state event ->
+            async {
+                match event with
+                | FileChanged change ->
+                    let files =
+                        match change with
+                        | SourceChanged f -> f
+                        | ProjectChanged f -> f
+                        | SolutionChanged _ -> []
 
-/// Runs a command when files matching a filter change.
-type FileCommandPlugin(name: string, fileFilter: string -> bool, command: string, args: string) =
-    interface IFsHotWatchPlugin with
-        /// Returns the configured plugin name.
-        member _.Name = name
+                    let matching = files |> List.filter fileFilter
 
-        /// Subscribe to file changes and run the command on matching files; registers a status command.
-        member _.Initialize(ctx) =
-            let agent =
-                createAgent $"FileCommand-%s{name}" { LastResult = NotRun } (fun state msg ->
-                    async {
-                        match msg with
-                        | FileChanged files ->
-                            let matchingFiles = files |> List.filter fileFilter
+                    if matching.IsEmpty then
+                        return state
+                    else
+                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
-                            if matchingFiles.IsEmpty then
-                                return state
+                        try
+                            let (success, output) = runProcess command args ctx.RepoRoot []
+
+                            let result = if success then Succeeded output else CommandFailed output
+
+                            if success then
+                                ctx.ReportStatus(Completed(DateTime.UtcNow))
                             else
-                                ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                                ctx.ReportStatus(PluginStatus.Failed($"%s{name} failed", DateTime.UtcNow))
 
-                                try
-                                    let (success, output) = runProcess command args ctx.RepoRoot []
-
-                                    if success then
-                                        ctx.ReportStatus(Completed(DateTime.UtcNow))
-                                        return { LastResult = Succeeded output }
-                                    else
-                                        ctx.ReportStatus(PluginStatus.Failed($"%s{name} failed", DateTime.UtcNow))
-                                        return { LastResult = CommandFailed output }
-                                with ex ->
-                                    ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
-                                    return { LastResult = CommandFailed ex.Message }
-                    })
-
-            ctx.OnFileChanged.Add(fun change ->
-                let files =
-                    match change with
-                    | SourceChanged files -> files
-                    | ProjectChanged files -> files
-                    | SolutionChanged _ -> []
-
-                if not files.IsEmpty then
-                    agent.Post(FileChanged files)
-                    // Wait for the agent to finish processing to preserve synchronous behavior.
-                    agent.GetState() |> Async.RunSynchronously |> ignore)
-
-            ctx.RegisterCommand(
-                $"%s{name}-status",
-                fun _args ->
-                    async {
-                        let! state = agent.GetState()
-
-                        match state.LastResult with
-                        | Succeeded _ -> return "{\"passed\": true}"
-                        | CommandFailed _ -> return "{\"passed\": false}"
-                        | NotRun -> return "{\"status\": \"not run\"}"
-                    }
-            )
-
-        /// No resources to dispose.
-        member _.Dispose() = ()
+                            return { LastResult = result }
+                        with ex ->
+                            ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+                            return { LastResult = CommandFailed ex.Message }
+                | _ -> return state
+            }
+      Commands =
+        [ $"%s{name}-status",
+          fun state _args ->
+              async {
+                  match state.LastResult with
+                  | Succeeded _ -> return "{\"passed\": true}"
+                  | CommandFailed _ -> return "{\"passed\": false}"
+                  | NotRun -> return "{\"status\": \"not run\"}"
+              } ]
+      Subscriptions =
+        { PluginSubscriptions.none with
+            FileChanged = true } }

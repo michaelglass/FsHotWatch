@@ -6,24 +6,27 @@ open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
 open FsHotWatch.FileCommand.FileCommandPlugin
+open FsHotWatch.Tests.TestHelpers
 
 [<Fact>]
 let ``plugin has correct name`` () =
-    let plugin =
-        FileCommandPlugin("run-scripts", (fun f -> f.EndsWith(".fsx")), "echo", "hello") :> IFsHotWatchPlugin
-
-    test <@ plugin.Name = "run-scripts" @>
+    let handler = create "run-scripts" (fun f -> f.EndsWith(".fsx")) "echo" "hello"
+    test <@ handler.Name = "run-scripts" @>
 
 [<Fact>]
 let ``command runs when matching files change`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let plugin =
-        FileCommandPlugin("run-scripts", (fun f -> f.EndsWith(".fsx")), "echo", "hello")
-
-    host.Register(plugin)
+    let handler = create "run-scripts" (fun f -> f.EndsWith(".fsx")) "echo" "hello"
+    host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "scripts/build.fsx" ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("run-scripts") with
+            | Some(Completed _) -> true
+            | _ -> false)
+        5000
 
     let status = host.GetStatus("run-scripts")
     test <@ status.IsSome @>
@@ -38,13 +41,13 @@ let ``command runs when matching files change`` () =
 [<Fact>]
 let ``command does not run for non-matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let plugin =
-        FileCommandPlugin("run-scripts", (fun f -> f.EndsWith(".fsx")), "echo", "hello")
-
-    host.Register(plugin)
+    let handler = create "run-scripts" (fun f -> f.EndsWith(".fsx")) "echo" "hello"
+    host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    // Give the agent time to process the event (it should be a no-op)
+    System.Threading.Thread.Sleep(200)
 
     let status = host.GetStatus("run-scripts")
     test <@ status.IsSome @>
@@ -53,13 +56,17 @@ let ``command does not run for non-matching files`` () =
 [<Fact>]
 let ``command captures stdout output`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let plugin =
-        FileCommandPlugin("echo-test", (fun _ -> true), "echo", "captured-output")
-
-    host.Register(plugin)
+    let handler = create "echo-test" (fun _ -> true) "echo" "captured-output"
+    host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "anything.txt" ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("echo-test") with
+            | Some(Completed _) -> true
+            | _ -> false)
+        5000
 
     let result = host.RunCommand("echo-test-status", [||]) |> Async.RunSynchronously
 
@@ -69,13 +76,17 @@ let ``command captures stdout output`` () =
 [<Fact>]
 let ``command with environment variables`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let plugin =
-        FileCommandPlugin("env-test", (fun _ -> true), "echo", "env-test-output")
-
-    host.Register(plugin)
+    let handler = create "env-test" (fun _ -> true) "echo" "env-test-output"
+    host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "file.txt" ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("env-test") with
+            | Some(Completed _) -> true
+            | _ -> false)
+        5000
 
     let status = host.GetStatus("env-test")
     test <@ status.IsSome @>
@@ -88,22 +99,22 @@ let ``command with environment variables`` () =
         @>
 
 [<Fact>]
-let ``dispose is callable`` () =
-    let plugin =
-        FileCommandPlugin("disposable", (fun _ -> true), "echo", "hello") :> IFsHotWatchPlugin
-
-    plugin.Dispose()
-
-[<Fact>]
 let ``command runs on ProjectChanged with matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin =
-        FileCommandPlugin("proj-watcher", (fun f -> f.EndsWith(".fsproj")), "echo", "project changed")
+    let handler =
+        create "proj-watcher" (fun f -> f.EndsWith(".fsproj")) "echo" "project changed"
 
-    host.Register(plugin)
+    host.RegisterHandler(handler)
 
     host.EmitFileChanged(ProjectChanged [ "src/Lib.fsproj" ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("proj-watcher") with
+            | Some(Completed _) -> true
+            | _ -> false)
+        5000
 
     let status = host.GetStatus("proj-watcher")
     test <@ status.IsSome @>
@@ -118,12 +129,13 @@ let ``command runs on ProjectChanged with matching files`` () =
 [<Fact>]
 let ``command ignores SolutionChanged`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let plugin = FileCommandPlugin("sln-watcher", (fun _ -> true), "echo", "hello")
-
-    host.Register(plugin)
+    let handler = create "sln-watcher" (fun _ -> true) "echo" "hello"
+    host.RegisterHandler(handler)
 
     host.EmitFileChanged(SolutionChanged "test.sln")
+
+    // Give the agent time to process the event (it should be a no-op)
+    System.Threading.Thread.Sleep(200)
 
     let status = host.GetStatus("sln-watcher")
     test <@ status.IsSome @>
@@ -132,12 +144,17 @@ let ``command ignores SolutionChanged`` () =
 [<Fact>]
 let ``command reports Failed status on command failure`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let plugin = FileCommandPlugin("fail-cmd", (fun _ -> true), "false", "")
-
-    host.Register(plugin)
+    let handler = create "fail-cmd" (fun _ -> true) "false" ""
+    host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "file.txt" ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("fail-cmd") with
+            | Some(Failed _) -> true
+            | _ -> false)
+        5000
 
     let status = host.GetStatus("fail-cmd")
     test <@ status.IsSome @>
@@ -153,12 +170,18 @@ let ``command reports Failed status on command failure`` () =
 let ``command reports Failed status on exception`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let plugin =
-        FileCommandPlugin("bad-cmd", (fun _ -> true), "this-command-does-not-exist-xyz", "")
+    let handler = create "bad-cmd" (fun _ -> true) "this-command-does-not-exist-xyz" ""
 
-    host.Register(plugin)
+    host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "file.txt" ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("bad-cmd") with
+            | Some(Failed _) -> true
+            | _ -> false)
+        5000
 
     let status = host.GetStatus("bad-cmd")
     test <@ status.IsSome @>
@@ -173,13 +196,14 @@ let ``command reports Failed status on exception`` () =
 [<Fact>]
 let ``status command returns not run when no files matched`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let plugin = FileCommandPlugin("no-match", (fun _ -> false), "echo", "hello")
-
-    host.Register(plugin)
+    let handler = create "no-match" (fun _ -> false) "echo" "hello"
+    host.RegisterHandler(handler)
 
     // No files match, so command never runs
     host.EmitFileChanged(SourceChanged [ "file.txt" ])
+
+    // Give the agent time to process the event (it should be a no-op)
+    System.Threading.Thread.Sleep(200)
 
     let result = host.RunCommand("no-match-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
@@ -188,12 +212,17 @@ let ``status command returns not run when no files matched`` () =
 [<Fact>]
 let ``status command returns false when command failed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let plugin = FileCommandPlugin("fail-status", (fun _ -> true), "false", "")
-
-    host.Register(plugin)
+    let handler = create "fail-status" (fun _ -> true) "false" ""
+    host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "file.txt" ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("fail-status") with
+            | Some(Failed _) -> true
+            | _ -> false)
+        5000
 
     let result = host.RunCommand("fail-status-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
