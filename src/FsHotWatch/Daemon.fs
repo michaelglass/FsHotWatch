@@ -356,6 +356,10 @@ type Daemon =
     /// Register a plugin with the daemon's plugin host.
     member this.Register(plugin: IFsHotWatchPlugin) = this.Host.Register(plugin)
 
+    /// Register a declarative framework-managed plugin handler.
+    member this.RegisterHandler<'State, 'Msg>(handler: PluginFramework.PluginHandler<'State, 'Msg>) =
+        this.Host.RegisterHandler(handler)
+
     /// Register a preprocessor (e.g., formatter) that runs before events are dispatched.
     member this.RegisterPreprocessor(preprocessor: IFsHotWatchPreprocessor) =
         this.Host.RegisterPreprocessor(preprocessor)
