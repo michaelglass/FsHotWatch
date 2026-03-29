@@ -12,6 +12,7 @@ open FsHotWatch.CheckPipeline
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.Plugin
+open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 
 module LintPlugin = FsHotWatch.Lint.LintPlugin
@@ -845,22 +846,31 @@ let ``BuildPlugin succeeds with echo command`` () =
     let mutable receivedBuild: BuildResult option = None
 
     let recorder =
-        { new IFsHotWatchPlugin with
-            member _.Name = "build-recorder"
+        { Name = "build-recorder"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted r -> receivedBuild <- Some r
+                    | _ -> ()
 
-            member _.Initialize(ctx) =
-                ctx.OnBuildCompleted.Add(fun r -> receivedBuild <- Some r)
-
-            member _.Dispose() = () }
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                BuildCompleted = true } }
 
     let handler = BuildPlugin.create "echo" "build ok" []
-    host.Register(recorder)
+    host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
     waitForTerminalStatus host "build" 5000
 
+    waitUntil (fun () -> receivedBuild.IsSome) 5000
     test <@ receivedBuild = Some BuildSucceeded @>
 
     let status = host.GetStatus("build")
@@ -879,21 +889,31 @@ let ``BuildPlugin fails with false command`` () =
     let mutable receivedBuild: BuildResult option = None
 
     let recorder =
-        { new IFsHotWatchPlugin with
-            member _.Name = "build-recorder"
+        { Name = "build-recorder"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted r -> receivedBuild <- Some r
+                    | _ -> ()
 
-            member _.Initialize(ctx) =
-                ctx.OnBuildCompleted.Add(fun r -> receivedBuild <- Some r)
-
-            member _.Dispose() = () }
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                BuildCompleted = true } }
 
     let handler = BuildPlugin.create "false" "" []
-    host.Register(recorder)
+    host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
     waitForTerminalStatus host "build" 5000
+
+    waitUntil (fun () -> receivedBuild.IsSome) 5000
 
     test
         <@
@@ -1354,17 +1374,25 @@ let ``BuildPlugin does not run concurrent builds`` () =
     let mutable buildCount = 0
 
     let recorder =
-        { new IFsHotWatchPlugin with
-            member _.Name = "build-counter"
+        { Name = "build-counter"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted _ -> buildCount <- buildCount + 1
+                    | _ -> ()
 
-            member _.Initialize(ctx) =
-                ctx.OnBuildCompleted.Add(fun _ -> buildCount <- buildCount + 1)
-
-            member _.Dispose() = () }
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                BuildCompleted = true } }
 
     // Use /bin/sleep 1 as a slow build command so the second emit arrives while the first is running
     let handler = BuildPlugin.create "/bin/sleep" "1" []
-    host.Register(recorder)
+    host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
     // Emit two FileChanged events — the building guard should prevent the second build

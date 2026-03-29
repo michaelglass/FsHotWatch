@@ -8,6 +8,7 @@ open FsHotWatch.Logging
 open FsHotWatch.ProcessHelper
 open FsHotWatch.Lifecycle
 open FsHotWatch.PluginFramework
+open FsHotWatch.StringHelpers
 
 type BuildOutcome =
     | NotBuilt
@@ -83,10 +84,7 @@ let create (command: string) (args: string) (environment: (string * string) list
                     match outcome with
                     | BuildPassed _ -> ctx.ReportStatus(Completed(DateTime.UtcNow))
                     | BuildOutputFailed output ->
-                        let lines = output.Split('\n')
-
-                        let summary = lines |> Array.skip (max 0 (lines.Length - 5)) |> String.concat "\n"
-
+                        let summary = truncateOutput 5 output
                         ctx.ReportStatus(PluginStatus.Failed($"Build failed: %s{summary}", DateTime.UtcNow))
                     | NotBuilt -> ()
 
@@ -107,20 +105,10 @@ let create (command: string) (args: string) (environment: (string * string) list
 
                   match lastResult with
                   | BuildPassed output ->
-                      let lines = output.Split('\n')
-
-                      let truncated =
-                          lines |> Array.skip (max 0 (lines.Length - 200)) |> String.concat "\n"
-
-                      let escapedOutput = JsonSerializer.Serialize(truncated)
+                      let escapedOutput = JsonSerializer.Serialize(truncateOutput 200 output)
                       return $"{{\"status\": \"passed\", \"output\": %s{escapedOutput}}}"
                   | BuildOutputFailed output ->
-                      let lines = output.Split('\n')
-
-                      let truncated =
-                          lines |> Array.skip (max 0 (lines.Length - 200)) |> String.concat "\n"
-
-                      let escapedOutput = JsonSerializer.Serialize(truncated)
+                      let escapedOutput = JsonSerializer.Serialize(truncateOutput 200 output)
                       return $"{{\"status\": \"failed\", \"output\": %s{escapedOutput}}}"
                   | NotBuilt -> return "{\"status\": \"not run\"}"
               } ]

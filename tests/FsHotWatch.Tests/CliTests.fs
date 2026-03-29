@@ -9,7 +9,7 @@ open FsHotWatch.Cli.DaemonConfig
 open FsHotWatch.Cli.Program
 open FsHotWatch.Daemon
 open FsHotWatch.Ipc
-open FsHotWatch.Plugin
+open FsHotWatch.PluginFramework
 open FsHotWatch.Events
 open FsHotWatch.PluginHost
 open FsHotWatch.Tests.TestHelpers
@@ -164,13 +164,14 @@ let ``CLI status query works against running daemon`` () =
 
     let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None
 
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "test-plugin"
-            member _.Initialize(ctx) = ctx.ReportStatus(Idle)
-            member _.Dispose() = () }
+    let handler =
+        { Name = "test-plugin"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands = []
+          Subscriptions = PluginSubscriptions.none }
 
-    daemon.Register(plugin)
+    daemon.RegisterHandler(handler)
     let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
     waitForIpcServer pipeName
 
@@ -198,18 +199,35 @@ let ``CLI plugin status query works against running daemon`` () =
 
     let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None
 
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "my-lint"
+    let handler =
+        { Name = "my-lint"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ -> ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                    | _ -> ()
 
-            member _.Initialize(ctx) =
-                ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChanged = true } }
 
-            member _.Dispose() = () }
-
-    daemon.Register(plugin)
+    daemon.RegisterHandler(handler)
+    // Trigger a FileChanged so the plugin reports Running status
+    daemon.Host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
     let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
     waitForIpcServer pipeName
+    // Wait for the plugin to update
+    waitUntil
+        (fun () ->
+            match daemon.Host.GetStatus("my-lint") with
+            | Some(Running _) -> true
+            | _ -> false)
+        5000
 
     try
         let result = IpcClient.getPluginStatus pipeName "my-lint" |> Async.RunSynchronously
@@ -234,23 +252,20 @@ let ``CLI command proxying works against running daemon`` () =
 
     let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None
 
-    let plugin =
-        { new IFsHotWatchPlugin with
-            member _.Name = "greeter"
+    let handler =
+        { Name = "greeter"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands =
+            [ "greet",
+              fun _state args ->
+                  async {
+                      let name = if args.Length > 0 then args.[0] else "world"
+                      return $"hello {name}"
+                  } ]
+          Subscriptions = PluginSubscriptions.none }
 
-            member _.Initialize(ctx) =
-                ctx.RegisterCommand(
-                    "greet",
-                    fun args ->
-                        async {
-                            let name = if args.Length > 0 then args.[0] else "world"
-                            return $"hello {name}"
-                        }
-                )
-
-            member _.Dispose() = () }
-
-    daemon.Register(plugin)
+    daemon.RegisterHandler(handler)
     let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
     waitForIpcServer pipeName
 

@@ -4,7 +4,7 @@ open System
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
-open FsHotWatch.Plugin
+open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 open FsHotWatch.Build
 open FsHotWatch.Tests.TestHelpers
@@ -32,22 +32,31 @@ let ``build plugin emits BuildCompleted on successful build`` () =
     let mutable receivedBuild: BuildResult option = None
 
     let recorder =
-        { new IFsHotWatchPlugin with
-            member _.Name = "build-recorder"
+        { Name = "build-recorder"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted result -> receivedBuild <- Some result
+                    | _ -> ()
 
-            member _.Initialize(ctx) =
-                ctx.OnBuildCompleted.Add(fun result -> receivedBuild <- Some result)
-
-            member _.Dispose() = () }
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                BuildCompleted = true } }
 
     let handler = BuildPlugin.create "echo" "build succeeded" []
-    host.Register(recorder)
+    host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
     waitForTerminalStatus host "build" 5000
 
+    waitUntil (fun () -> receivedBuild.IsSome) 5000
     test <@ receivedBuild = Some BuildSucceeded @>
 
     let status = host.GetStatus("build")
@@ -118,21 +127,31 @@ let ``build plugin emits BuildFailed on failed build`` () =
     let mutable receivedBuild: BuildResult option = None
 
     let recorder =
-        { new IFsHotWatchPlugin with
-            member _.Name = "build-recorder"
+        { Name = "build-recorder"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted result -> receivedBuild <- Some result
+                    | _ -> ()
 
-            member _.Initialize(ctx) =
-                ctx.OnBuildCompleted.Add(fun result -> receivedBuild <- Some result)
-
-            member _.Dispose() = () }
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                BuildCompleted = true } }
 
     let handler = BuildPlugin.create "false" "" []
-    host.Register(recorder)
+    host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
     waitForTerminalStatus host "build" 5000
+
+    waitUntil (fun () -> receivedBuild.IsSome) 5000
 
     test
         <@
@@ -186,16 +205,24 @@ let ``build plugin ignores SolutionChanged events`` () =
     let mutable receivedBuild: BuildResult option = None
 
     let recorder =
-        { new IFsHotWatchPlugin with
-            member _.Name = "build-recorder"
+        { Name = "build-recorder"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted result -> receivedBuild <- Some result
+                    | _ -> ()
 
-            member _.Initialize(ctx) =
-                ctx.OnBuildCompleted.Add(fun result -> receivedBuild <- Some result)
-
-            member _.Dispose() = () }
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                BuildCompleted = true } }
 
     let handler = BuildPlugin.create "echo" "build succeeded" []
-    host.Register(recorder)
+    host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SolutionChanged "test.sln")
@@ -212,20 +239,29 @@ let ``build plugin triggers on ProjectChanged`` () =
     let mutable receivedBuild: BuildResult option = None
 
     let recorder =
-        { new IFsHotWatchPlugin with
-            member _.Name = "build-recorder"
+        { Name = "build-recorder"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted result -> receivedBuild <- Some result
+                    | _ -> ()
 
-            member _.Initialize(ctx) =
-                ctx.OnBuildCompleted.Add(fun result -> receivedBuild <- Some result)
-
-            member _.Dispose() = () }
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                BuildCompleted = true } }
 
     let handler = BuildPlugin.create "echo" "build succeeded" []
-    host.Register(recorder)
+    host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(ProjectChanged [ "src/Lib.fsproj" ])
 
     waitForTerminalStatus host "build" 5000
 
+    waitUntil (fun () -> receivedBuild.IsSome) 5000
     test <@ receivedBuild = Some BuildSucceeded @>

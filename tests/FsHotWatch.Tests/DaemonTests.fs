@@ -7,7 +7,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.Daemon
 open FsHotWatch.Events
-open FsHotWatch.Plugin
+open FsHotWatch.PluginFramework
 open FsHotWatch.Tests.TestHelpers
 
 /// A null checker is fine for tests that don't perform actual compilation.
@@ -62,12 +62,11 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
     withTempDir "daemon" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src")
         Directory.CreateDirectory(srcDir) |> ignore
-        let mutable sourceChangedEvents: string list list = []
         let cts = new CancellationTokenSource()
         let daemon = Daemon.createWith nullChecker tmpDir None None
 
         let preprocessor =
-            { new IFsHotWatchPreprocessor with
+            { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
                 member _.Name = "test-formatter"
 
                 member _.Process (changedFiles: string list) (_repoRoot: string) = changedFiles
@@ -76,19 +75,26 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
 
         daemon.RegisterPreprocessor(preprocessor)
 
-        let plugin =
-            { new IFsHotWatchPlugin with
-                member _.Name = "suppression-recorder"
+        let mutable sourceChangedEvents: string list list = []
 
-                member _.Initialize(ctx) =
-                    ctx.OnFileChanged.Add(fun change ->
-                        match change with
-                        | SourceChanged files -> sourceChangedEvents <- files :: sourceChangedEvents
-                        | _ -> ())
+        let handler =
+            { Name = "suppression-recorder"
+              Init = ()
+              Update =
+                fun _ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged(SourceChanged files) -> sourceChangedEvents <- files :: sourceChangedEvents
+                        | _ -> ()
 
-                member _.Dispose() = () }
+                        return state
+                    }
+              Commands = []
+              Subscriptions =
+                { PluginSubscriptions.none with
+                    FileChanged = true } }
 
-        daemon.Register(plugin)
+        daemon.RegisterHandler(handler)
 
         let host = daemon.Host
         let testFiles = [ Path.Combine(srcDir, "Fmt.fs") ]
@@ -104,20 +110,28 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
 let ``daemon dispatches file change events to plugins`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let mutable receivedChanges = []
+        let mutable receivedChanges: FileChangeKind list = []
         let cts = new CancellationTokenSource()
         let daemon = Daemon.createWith nullChecker tmpDir None None
 
-        let plugin =
-            { new IFsHotWatchPlugin with
-                member _.Name = "test-recorder"
+        let handler =
+            { Name = "test-recorder"
+              Init = ()
+              Update =
+                fun _ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged change -> receivedChanges <- change :: receivedChanges
+                        | _ -> ()
 
-                member _.Initialize(ctx) =
-                    ctx.OnFileChanged.Add(fun change -> receivedChanges <- change :: receivedChanges)
+                        return state
+                    }
+              Commands = []
+              Subscriptions =
+                { PluginSubscriptions.none with
+                    FileChanged = true } }
 
-                member _.Dispose() = () }
-
-        daemon.Register(plugin)
+        daemon.RegisterHandler(handler)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
         waitForDaemonReady (Path.Combine(tmpDir, "src")) (fun () -> receivedChanges.Length)
@@ -145,16 +159,24 @@ let ``daemon debounces rapid file changes into one batch`` () =
         let cts = new CancellationTokenSource()
         let daemon = Daemon.createWith nullChecker tmpDir None None
 
-        let plugin =
-            { new IFsHotWatchPlugin with
-                member _.Name = "debounce-recorder"
+        let handler =
+            { Name = "debounce-recorder"
+              Init = ()
+              Update =
+                fun _ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged change -> receivedChanges <- change :: receivedChanges
+                        | _ -> ()
 
-                member _.Initialize(ctx) =
-                    ctx.OnFileChanged.Add(fun change -> receivedChanges <- change :: receivedChanges)
+                        return state
+                    }
+              Commands = []
+              Subscriptions =
+                { PluginSubscriptions.none with
+                    FileChanged = true } }
 
-                member _.Dispose() = () }
-
-        daemon.Register(plugin)
+        daemon.RegisterHandler(handler)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
         waitForDaemonReady (Path.Combine(tmpDir, "src")) (fun () -> receivedChanges.Length)
@@ -210,16 +232,24 @@ let ``daemon handles ProjectChanged events`` () =
         let cts = new CancellationTokenSource()
         let daemon = Daemon.createWith nullChecker tmpDir None None
 
-        let plugin =
-            { new IFsHotWatchPlugin with
-                member _.Name = "project-recorder"
+        let handler =
+            { Name = "project-recorder"
+              Init = ()
+              Update =
+                fun _ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged change -> receivedChanges <- change :: receivedChanges
+                        | _ -> ()
 
-                member _.Initialize(ctx) =
-                    ctx.OnFileChanged.Add(fun change -> receivedChanges <- change :: receivedChanges)
+                        return state
+                    }
+              Commands = []
+              Subscriptions =
+                { PluginSubscriptions.none with
+                    FileChanged = true } }
 
-                member _.Dispose() = () }
-
-        daemon.Register(plugin)
+        daemon.RegisterHandler(handler)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
         waitForDaemonReady (Path.Combine(tmpDir, "src")) (fun () -> receivedChanges.Length)
@@ -262,16 +292,24 @@ let ``daemon handles SolutionChanged events`` () =
         let cts = new CancellationTokenSource()
         let daemon = Daemon.createWith nullChecker tmpDir None None
 
-        let plugin =
-            { new IFsHotWatchPlugin with
-                member _.Name = "solution-recorder"
+        let handler =
+            { Name = "solution-recorder"
+              Init = ()
+              Update =
+                fun _ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged change -> receivedChanges <- change :: receivedChanges
+                        | _ -> ()
 
-                member _.Initialize(ctx) =
-                    ctx.OnFileChanged.Add(fun change -> receivedChanges <- change :: receivedChanges)
+                        return state
+                    }
+              Commands = []
+              Subscriptions =
+                { PluginSubscriptions.none with
+                    FileChanged = true } }
 
-                member _.Dispose() = () }
-
-        daemon.Register(plugin)
+        daemon.RegisterHandler(handler)
 
         let task = Async.StartAsTask(daemon.Run(cts.Token))
         waitForDaemonReady (Path.Combine(tmpDir, "src")) (fun () -> receivedChanges.Length)
@@ -366,13 +404,14 @@ let ``daemon RunWithIpc responds to IPC queries`` () =
         let pipeName = $"fshw-test-{Guid.NewGuid():N}"
         let daemon = Daemon.createWith nullChecker tmpDir None None
 
-        let plugin =
-            { new IFsHotWatchPlugin with
-                member _.Name = "ipc-test"
-                member _.Initialize(ctx) = ctx.ReportStatus(Idle)
-                member _.Dispose() = () }
+        let handler =
+            { Name = "ipc-test"
+              Init = ()
+              Update = fun _ctx state _event -> async { return state }
+              Commands = []
+              Subscriptions = PluginSubscriptions.none }
 
-        daemon.Register(plugin)
+        daemon.RegisterHandler(handler)
 
         let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore

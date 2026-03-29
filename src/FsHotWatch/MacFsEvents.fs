@@ -49,6 +49,7 @@ let private ItemModified = 0x00001000u
 let private ItemIsFile = 0x00010000u
 
 // ─── Callback delegate ──────────────────────────────────────────────
+[<UnmanagedFunctionPointer(CallingConvention.Cdecl)>]
 type private FSEventStreamCallback =
     delegate of
         streamRef: nativeint *
@@ -152,6 +153,7 @@ type FsEventStream(directories: string list, onFileEvent: string -> unit, latenc
         FSEventStreamCallback(fun _streamRef _clientInfo numEvents eventPaths eventFlags _eventIds ->
             if not (Volatile.Read(&disposed)) then
                 let count = int numEvents
+                debug "fsevents" $"callback fired: %d{count} events"
 
                 for i in 0 .. count - 1 do
                     let flags = uint32 (Marshal.ReadInt32(eventFlags + nativeint (i * 4)))
@@ -164,7 +166,11 @@ type FsEventStream(directories: string list, onFileEvent: string -> unit, latenc
                             try
                                 onFileEvent path
                             with ex ->
-                                debug "fsevents" $"callback exception: %s{ex.Message}")
+                                debug "fsevents" $"callback exception: %s{ex.Message}"
+                    else
+                        let pathPtr = Marshal.ReadIntPtr(eventPaths, i * IntPtr.Size)
+                        let path = Marshal.PtrToStringUTF8(pathPtr)
+                        debug "fsevents" $"filtered event: flags=0x%08X{flags} path=%s{path}")
 
     let cleanup () =
         if streamRef <> nativeint 0 then
@@ -227,6 +233,13 @@ type FsEventStream(directories: string list, onFileEvent: string -> unit, latenc
 
             if not (FSEventStreamStart(streamRef)) then
                 failwith "FSEventStreamStart returned false — failed to start FSEvents stream"
+
+            info
+                "fsevents"
+                $"FSEventStream started: watching %d{directories.Length} dirs, latency=%.3f{latencySeconds}s"
+
+            for dir in directories do
+                info "fsevents" $"  watching: %s{dir}"
         with ex ->
             cleanup ()
             raise ex

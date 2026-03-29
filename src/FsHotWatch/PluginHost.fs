@@ -15,13 +15,7 @@ type private StatusMsg =
 
 /// Manages plugin lifecycle, event dispatch, command registration, and status tracking.
 type PluginHost(checker: FSharpChecker, repoRoot: string) =
-    let fileChanged = Event<FileChangeKind>()
-    let buildCompleted = Event<BuildResult>()
-    let projectChecked = Event<ProjectCheckResult>()
-    let testCompleted = Event<TestResults>()
     let statusChanged = Event<string * PluginStatus>()
-
-    let fileChecked = Event<FileCheckResult>()
 
     let ledger = ErrorLedger()
     let commands = ConcurrentDictionary<string, CommandHandler>()
@@ -56,48 +50,6 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
             | Some f -> f payload
             | None -> ()
 
-    /// Register a plugin, wiring up its context and calling Initialize.
-    member _.Register(plugin: IFsHotWatchPlugin) =
-        let ctx =
-            { Checker = checker
-              RepoRoot = repoRoot
-              OnFileChanged = fileChanged.Publish
-              OnBuildCompleted = buildCompleted.Publish
-              OnFileChecked = fileChecked.Publish
-              OnProjectChecked = projectChecked.Publish
-              OnTestCompleted = testCompleted.Publish
-              ReportStatus =
-                fun status ->
-                    let statusName =
-                        match status with
-                        | Idle -> "Idle"
-                        | Running _ -> "Running"
-                        | Completed _ -> "Completed"
-                        | Failed(e, _) -> $"Failed: %s{e.Substring(0, min 80 e.Length)}"
-
-                    Logging.debug plugin.Name $"→ %s{statusName}"
-
-                    statusAgent.Post(SetStatus(plugin.Name, status))
-              RegisterCommand = fun (name, handler) -> commands[name] <- handler
-              EmitBuildCompleted =
-                fun result ->
-                    buildCompleted.Trigger(result)
-                    dispatchToRegistered (fun p -> p.OnBuildCompleted) result
-              EmitTestCompleted =
-                fun results ->
-                    testCompleted.Trigger(results)
-                    dispatchToRegistered (fun p -> p.OnTestCompleted) results
-              ReportErrors = fun file errors -> ledger.Report(plugin.Name, file, errors)
-              ClearErrors = fun file -> ledger.Clear(plugin.Name, file) }
-
-        statusAgent.Post(SetStatus(plugin.Name, Idle))
-
-        try
-            plugin.Initialize(ctx)
-        with ex ->
-            Logging.error "plugin-host" $"Failed to initialize plugin '%s{plugin.Name}': %s{ex.Message}"
-            statusAgent.Post(SetStatus(plugin.Name, Failed(ex.Message, System.DateTime.UtcNow)))
-
     /// Register a declarative framework-managed plugin handler.
     member this.RegisterHandler<'State, 'Msg>(handler: PluginFramework.PluginHandler<'State, 'Msg>) =
         let plugin =
@@ -116,12 +68,8 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
                          | Failed(e, _) -> $"Failed: %s{e.Substring(0, min 80 e.Length)}"))
                 (fun name file entries -> ledger.Report(name, file, entries))
                 (fun name file -> ledger.Clear(name, file))
-                (fun result ->
-                    buildCompleted.Trigger(result)
-                    dispatchToRegistered (fun p -> p.OnBuildCompleted) result)
-                (fun results ->
-                    testCompleted.Trigger(results)
-                    dispatchToRegistered (fun p -> p.OnTestCompleted) results)
+                (fun result -> dispatchToRegistered (fun p -> p.OnBuildCompleted) result)
+                (fun results -> dispatchToRegistered (fun p -> p.OnTestCompleted) results)
                 (fun cmd -> commands[fst cmd] <- snd cmd)
                 handler
 
@@ -151,12 +99,10 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
 
     /// Emit a file change event to all registered plugins.
     member _.EmitFileChanged(change: FileChangeKind) =
-        fileChanged.Trigger(change)
         dispatchToRegistered (fun p -> p.OnFileChanged) change
 
     /// Emit a build completed event to all registered plugins.
     member _.EmitBuildCompleted(result: BuildResult) =
-        buildCompleted.Trigger(result)
         dispatchToRegistered (fun p -> p.OnBuildCompleted) result
 
     /// Report errors to the ledger on behalf of a named source (e.g., "fcs").
@@ -169,15 +115,10 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
 
     /// Emit a file checked event to all registered plugins.
     member _.EmitFileChecked(result: FileCheckResult) =
-        fileChecked.Trigger(result)
         dispatchToRegistered (fun p -> p.OnFileChecked) result
-
-    /// Emit a project checked event to all registered plugins.
-    member _.EmitProjectChecked(result: ProjectCheckResult) = projectChecked.Trigger(result)
 
     /// Emit a test completed event to all registered plugins.
     member _.EmitTestCompleted(results: TestResults) =
-        testCompleted.Trigger(results)
         dispatchToRegistered (fun p -> p.OnTestCompleted) results
 
     /// Run a registered command by name. Returns None if the command is unknown.

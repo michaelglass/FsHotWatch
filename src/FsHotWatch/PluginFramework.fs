@@ -90,8 +90,6 @@ type RegisteredPlugin =
         OnBuildCompleted: (BuildResult -> unit) option
         /// Handler for test completed events, if subscribed.
         OnTestCompleted: (TestResults -> unit) option
-        /// Dispose plugin resources.
-        Dispose: unit -> unit
     }
 
 /// Register a declarative plugin handler, returning a type-erased RegisteredPlugin.
@@ -177,5 +175,4 @@ let registerHandler
         if handler.Subscriptions.TestCompleted then
             Some(fun r -> post (TestCompleted r))
         else
-            None
-      Dispose = fun () -> () }
+            None }
