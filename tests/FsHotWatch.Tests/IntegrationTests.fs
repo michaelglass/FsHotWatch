@@ -19,7 +19,7 @@ module LintPlugin = FsHotWatch.Lint.LintPlugin
 open FsHotWatch.Fantomas.FormatCheckPlugin
 open FsHotWatch.TestPrune.TestPrunePlugin
 open FsHotWatch.Analyzers.AnalyzersPlugin
-open FsHotWatch.Build.BuildPlugin
+open FsHotWatch.Build
 
 module CoveragePlugin = FsHotWatch.Coverage.CoveragePlugin
 
@@ -57,6 +57,17 @@ let private waitForStatusSettled (host: PluginHost) (pluginName: string) (timeou
         match host.GetStatus(pluginName) with
         | Some(Running _) -> Threading.Thread.Sleep(50)
         | _ -> settled <- true
+
+/// Poll until the plugin reaches a terminal status (Completed or Failed).
+let private waitForTerminalStatus (host: PluginHost) (pluginName: string) (timeoutMs: int) =
+    let deadline = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
+    let mutable done' = false
+
+    while not done' && DateTime.UtcNow < deadline do
+        match host.GetStatus(pluginName) with
+        | Some(Completed _)
+        | Some(Failed _) -> done' <- true
+        | _ -> Threading.Thread.Sleep(50)
 
 // ---------------------------------------------------------------------------
 // Helper: build the ExampleAnalyzer once (thread-safe, shared across tests)
@@ -856,11 +867,13 @@ let ``BuildPlugin succeeds with echo command`` () =
 
             member _.Dispose() = () }
 
-    let plugin = BuildPlugin(command = "echo", args = "build ok")
+    let handler = BuildPlugin.create "echo" "build ok" []
     host.Register(recorder)
-    host.Register(plugin)
+    host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    waitForTerminalStatus host "build" 5000
 
     test <@ receivedBuild = Some BuildSucceeded @>
 
@@ -888,11 +901,13 @@ let ``BuildPlugin fails with false command`` () =
 
             member _.Dispose() = () }
 
-    let plugin = BuildPlugin(command = "false", args = "")
+    let handler = BuildPlugin.create "false" "" []
     host.Register(recorder)
-    host.Register(plugin)
+    host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    waitForTerminalStatus host "build" 5000
 
     test
         <@
@@ -1244,8 +1259,8 @@ let ``Full pipeline: format → build → test → coverage`` () =
         host.RegisterPreprocessor(preprocessor)
 
         // Register BuildPlugin (echo for success)
-        let buildPlugin = BuildPlugin(command = "echo", args = "build ok")
-        host.Register(buildPlugin)
+        let buildHandler = BuildPlugin.create "echo" "build ok" []
+        host.RegisterHandler(buildHandler)
 
         // Register TestPrunePlugin with echo test command
         let testConfigs =
@@ -1274,6 +1289,9 @@ let ``Full pipeline: format → build → test → coverage`` () =
         // Emit FileChanged — triggers build plugin
         host.EmitFileChanged(SourceChanged [ fsFile ])
 
+        // Build now runs on thread pool — wait for it to settle
+        waitForTerminalStatus host "build" 5000
+
         // Build should succeed (echo), which triggers test-prune tests,
         // which emit TestCompleted, which triggers coverage
         let buildStatus = host.GetStatus("build")
@@ -1286,7 +1304,7 @@ let ``Full pipeline: format → build → test → coverage`` () =
                 | _ -> false
             @>
 
-        waitForStatusSettled host "test-prune" 10000
+        waitForTerminalStatus host "test-prune" 10000
 
         let testStatus = host.GetStatus("test-prune")
         test <@ testStatus.IsSome @>
@@ -1299,7 +1317,7 @@ let ``Full pipeline: format → build → test → coverage`` () =
             @>
 
         // Coverage is triggered by TestCompleted — wait for it too
-        waitForStatusSettled host "coverage" 10000
+        waitForTerminalStatus host "coverage" 10000
 
         let covStatus = host.GetStatus("coverage")
         test <@ covStatus.IsSome @>
@@ -1346,18 +1364,17 @@ let ``BuildPlugin does not run concurrent builds`` () =
             member _.Dispose() = () }
 
     // Use /bin/sleep 1 as a slow build command so the second emit arrives while the first is running
-    let plugin = BuildPlugin(command = "/bin/sleep", args = "1")
+    let handler = BuildPlugin.create "/bin/sleep" "1" []
     host.Register(recorder)
-    host.Register(plugin)
+    host.RegisterHandler(handler)
 
     // Emit two FileChanged events rapidly — the building guard should prevent the second build
-    let t1 =
-        async { host.EmitFileChanged(SourceChanged [ "src/A.fs" ]) }
-        |> Async.StartAsTask
+    host.EmitFileChanged(SourceChanged [ "src/A.fs" ])
 
     System.Threading.Thread.Sleep(100)
     host.EmitFileChanged(SourceChanged [ "src/B.fs" ])
-    t1.Wait()
+
+    waitForTerminalStatus host "build" 5000
 
     // Only one build should have completed — the guard skipped the second
     test <@ buildCount = 1 @>

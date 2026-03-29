@@ -86,8 +86,22 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
 
                     statusAgent.Post(SetStatus(plugin.Name, status))
               RegisterCommand = fun (name, handler) -> commands[name] <- handler
-              EmitBuildCompleted = fun result -> buildCompleted.Trigger(result)
-              EmitTestCompleted = fun results -> testCompleted.Trigger(results)
+              EmitBuildCompleted =
+                fun result ->
+                    buildCompleted.Trigger(result)
+
+                    for p in registeredPlugins do
+                        match p.OnBuildCompleted with
+                        | Some f -> f result
+                        | None -> ()
+              EmitTestCompleted =
+                fun results ->
+                    testCompleted.Trigger(results)
+
+                    for p in registeredPlugins do
+                        match p.OnTestCompleted with
+                        | Some f -> f results
+                        | None -> ()
               ReportErrors = fun file errors -> ledger.Report(plugin.Name, file, errors)
               ClearErrors = fun file -> ledger.Clear(plugin.Name, file) }
 
@@ -117,8 +131,20 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
                          | Failed(e, _) -> $"Failed: %s{e.Substring(0, min 80 e.Length)}"))
                 (fun name file entries -> ledger.Report(name, file, entries))
                 (fun name file -> ledger.Clear(name, file))
-                (fun result -> buildCompleted.Trigger(result))
-                (fun results -> testCompleted.Trigger(results))
+                (fun result ->
+                    buildCompleted.Trigger(result)
+
+                    for p in registeredPlugins do
+                        match p.OnBuildCompleted with
+                        | Some f -> f result
+                        | None -> ())
+                (fun results ->
+                    testCompleted.Trigger(results)
+
+                    for p in registeredPlugins do
+                        match p.OnTestCompleted with
+                        | Some f -> f results
+                        | None -> ())
                 (fun cmd -> commands[fst cmd] <- snd cmd)
                 handler
 
