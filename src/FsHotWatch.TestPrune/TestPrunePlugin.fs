@@ -36,6 +36,7 @@ type TestConfig =
 type private TestRunPhase =
     | TestsIdle of Lifecycle<Idle, TestResults option>
     | TestsRunning of Lifecycle<Running, TestResults option>
+    | TestsRunningRerunQueued of Lifecycle<Running, TestResults option>
 
 type private TestPruneState =
     { PendingAnalysis: Map<string, AnalysisResult list>
@@ -43,8 +44,7 @@ type private TestPruneState =
       AffectedTests: TestMethodInfo list
       ChangedFiles: string list
       TestPhase: TestRunPhase
-      AnalysisRan: bool
-      PendingRerun: bool }
+      AnalysisRan: bool }
 
 type private TestPruneMsg =
     | FileChecked of FileCheckResult
@@ -331,8 +331,7 @@ type TestPrunePlugin
           AffectedTests = []
           ChangedFiles = []
           TestPhase = TestsIdle(Lifecycle.create None)
-          AnalysisRan = false
-          PendingRerun = false }
+          AnalysisRan = false }
 
     interface IFsHotWatchPlugin with
         member _.Name = "test-prune"
@@ -349,7 +348,8 @@ type TestPrunePlugin
                             let isIdle =
                                 match state.TestPhase with
                                 | TestsIdle _ -> true
-                                | TestsRunning _ -> false
+                                | TestsRunning _
+                                | TestsRunningRerunQueued _ -> false
 
                             if isIdle then
                                 ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
@@ -441,7 +441,8 @@ type TestPrunePlugin
                                 let isIdle =
                                     match state.TestPhase with
                                     | TestsIdle _ -> true
-                                    | TestsRunning _ -> false
+                                    | TestsRunning _
+                                    | TestsRunningRerunQueued _ -> false
 
                                 if isIdle then
                                     ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
@@ -452,12 +453,15 @@ type TestPrunePlugin
                             match buildResult with
                             | BuildSucceeded ->
                                 match state.TestPhase with
-                                | TestsRunning _ ->
+                                | TestsRunning running
+                                | TestsRunningRerunQueued running ->
                                     Logging.info
                                         "test-prune"
                                         "BuildSucceeded received but tests already running — will re-run after"
 
-                                    return { state with PendingRerun = true }
+                                    return
+                                        { state with
+                                            TestPhase = TestsRunningRerunQueued running }
                                 | TestsIdle idle ->
                                     Logging.info "test-prune" $"BuildSucceeded received, running tests"
 
@@ -488,11 +492,15 @@ type TestPrunePlugin
                             | BuildFailed _ -> return state
 
                         | TestsFinished testResults ->
-                            if state.PendingRerun then
+                            match state.TestPhase with
+                            | TestsRunningRerunQueued running ->
                                 Logging.info "test-prune" "Re-running tests (queued during previous run)"
 
                                 // Flush any new pending analysis
-                                let flushedState = flushPendingAnalysis { state with PendingRerun = false }
+                                let flushedState =
+                                    flushPendingAnalysis
+                                        { state with
+                                            TestPhase = TestsRunning running }
 
                                 match testConfigs with
                                 | Some configs when not configs.IsEmpty ->
@@ -500,22 +508,21 @@ type TestPrunePlugin
                                 | _ -> ()
 
                                 return flushedState
-                            else
-                                match state.TestPhase with
-                                | TestsRunning running ->
-                                    let completed = Lifecycle.complete (Some testResults) running
+                            | TestsRunning running ->
+                                let completed = Lifecycle.complete (Some testResults) running
 
-                                    return
-                                        { state with
-                                            TestPhase = TestsIdle completed
-                                            ChangedFiles = [] }
-                                | TestsIdle _ ->
-                                    // Unexpected but handle gracefully
-                                    return state
+                                return
+                                    { state with
+                                        TestPhase = TestsIdle completed
+                                        ChangedFiles = [] }
+                            | TestsIdle _ ->
+                                // Unexpected but handle gracefully
+                                return state
 
                         | RunTestsCommand(configs, filter, replyChannel) ->
                             match state.TestPhase with
-                            | TestsRunning _ ->
+                            | TestsRunning _
+                            | TestsRunningRerunQueued _ ->
                                 // Create an empty "already running" result
                                 replyChannel.Reply(
                                     { Results = Map.empty
@@ -613,7 +620,8 @@ type TestPrunePlugin
                         let! state = agent.GetState()
 
                         match state.TestPhase with
-                        | TestsRunning _ -> return "{\"status\": \"running\"}"
+                        | TestsRunning _
+                        | TestsRunningRerunQueued _ -> return "{\"status\": \"running\"}"
                         | TestsIdle idle ->
                             match Lifecycle.value idle with
                             | Some results -> return formatTestResultsJson results
@@ -637,7 +645,8 @@ type TestPrunePlugin
                             let! state = agent.GetState()
 
                             match state.TestPhase with
-                            | TestsRunning _ -> return "{\"error\": \"tests already running\"}"
+                            | TestsRunning _
+                            | TestsRunningRerunQueued _ -> return "{\"error\": \"tests already running\"}"
                             | TestsIdle _ ->
                                 try
                                     let argStr = if args.Length > 0 then args.[0].Trim() else "{}"
@@ -679,7 +688,8 @@ type TestPrunePlugin
                                         let lastResults =
                                             match state.TestPhase with
                                             | TestsIdle idle -> Lifecycle.value idle
-                                            | TestsRunning _ -> None
+                                            | TestsRunning _
+                                            | TestsRunningRerunQueued _ -> None
 
                                         let configsResult =
                                             if onlyFailed then
