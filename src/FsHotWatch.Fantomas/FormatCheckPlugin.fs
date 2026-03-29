@@ -67,7 +67,7 @@ type FormatCheckPlugin() =
                             else
                                 unformatted <- unformatted |> Set.remove file
 
-                    ctx.ReportStatus(FsHotWatch.Events.Completed(box unformatted, System.DateTime.UtcNow))
+                    ctx.ReportStatus(FsHotWatch.Events.Completed(System.DateTime.UtcNow))
                 with ex ->
                     ctx.ReportStatus(FsHotWatch.Events.PluginStatus.Failed(ex.Message, System.DateTime.UtcNow)))
 

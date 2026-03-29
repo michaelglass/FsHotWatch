@@ -87,7 +87,7 @@ type LintPlugin(?configPath: string) =
                                         ctx.ReportErrors result.File entries
 
                                     let newState = { WarningsByFile = newWarnings }
-                                    ctx.ReportStatus(Completed(box newState.WarningsByFile, System.DateTime.UtcNow))
+                                    ctx.ReportStatus(Completed(System.DateTime.UtcNow))
                                     return newState
                                 | Lint.LintResult.Failure failure ->
                                     let msg = $"Lint failed for %s{result.File}: %A{failure}"

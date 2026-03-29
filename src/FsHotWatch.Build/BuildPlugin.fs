@@ -52,7 +52,7 @@ type BuildPlugin(?command: string, ?args: string) =
                         if success then
                             ctx.ClearErrors "<build>"
                             ctx.EmitBuildCompleted(BuildSucceeded)
-                            ctx.ReportStatus(Completed(box result, DateTime.UtcNow))
+                            ctx.ReportStatus(Completed(DateTime.UtcNow))
                         else
                             ctx.ReportErrors
                                 "<build>"
