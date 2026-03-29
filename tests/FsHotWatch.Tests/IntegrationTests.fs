@@ -18,7 +18,8 @@ module LintPlugin = FsHotWatch.Lint.LintPlugin
 
 open FsHotWatch.Fantomas.FormatCheckPlugin
 open FsHotWatch.TestPrune.TestPrunePlugin
-open FsHotWatch.Analyzers.AnalyzersPlugin
+
+module AnalyzersPlugin = FsHotWatch.Analyzers.AnalyzersPlugin
 open FsHotWatch.Build
 
 module CoveragePlugin = FsHotWatch.Coverage.CoveragePlugin
@@ -116,12 +117,12 @@ let ``all plugins receive events when checking a file`` () =
     let testPrune = TestPrunePlugin(dbPath, repoRoot)
     let lint = LintPlugin.create None
     let fantomas = createFormatCheck ()
-    let analyzers = AnalyzersPlugin([])
+    let analyzers = AnalyzersPlugin.create []
 
     host.Register(testPrune)
     host.RegisterHandler(lint)
     host.RegisterHandler(fantomas)
-    host.Register(analyzers)
+    host.RegisterHandler(analyzers)
 
     // Check the file via the pipeline
     let result = pipeline.CheckFile(sourceFile) |> Async.RunSynchronously
@@ -197,13 +198,13 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let analyzerPaths =
         [ gResearchPath; customAnalyzerPath ] |> List.filter Directory.Exists
 
-    let analyzers = AnalyzersPlugin(analyzerPaths)
+    let analyzers = AnalyzersPlugin.create analyzerPaths
 
     let checker =
         FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
     let host = PluginHost.create checker repoRoot
-    host.Register(analyzers)
+    host.RegisterHandler(analyzers)
 
     // Check Events.fs — it has match expressions the wildcard analyzer might inspect
     let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
@@ -224,8 +225,8 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     | Some checkResult -> host.EmitFileChecked(checkResult)
     | None -> failwith "Failed to check file"
 
-    // The analyzers plugin now runs async — wait for it to settle
-    waitForStatusSettled host "analyzers" 10000
+    // The analyzers plugin now runs async via the framework agent — wait for terminal status
+    waitForTerminalStatus host "analyzers" 10000
 
     // The analyzers plugin should have completed (or failed gracefully)
     let status = host.GetStatus("analyzers")
@@ -286,8 +287,8 @@ let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> stri
         FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
     let host = PluginHost.create checker repoRoot
-    let analyzers = AnalyzersPlugin([ analyzerPath ])
-    host.Register(analyzers)
+    let analyzers = AnalyzersPlugin.create [ analyzerPath ]
+    host.RegisterHandler(analyzers)
 
     withTempFsFile source (fun _dir tmpFile ->
         let result = checkTempFile checker tmpFile
@@ -295,7 +296,7 @@ let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> stri
         match result with
         | Some checkResult ->
             host.EmitFileChecked(checkResult)
-            waitForStatusSettled host "analyzers" 10000
+            waitForTerminalStatus host "analyzers" 10000
             assertResult host tmpFile
         | None -> Assert.Fail("FCS failed to check file"))
 
@@ -740,8 +741,8 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
         FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
     let host = PluginHost.create checker repoRoot
-    let analyzers = AnalyzersPlugin([])
-    host.Register(analyzers)
+    let analyzers = AnalyzersPlugin.create []
+    host.RegisterHandler(analyzers)
 
     let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
     let source = File.ReadAllText(sourceFile)
@@ -760,7 +761,7 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
     | Some checkResult ->
         host.EmitFileChecked(checkResult)
 
-        waitForStatusSettled host "analyzers" 10000
+        waitForTerminalStatus host "analyzers" 10000
 
         let status = host.GetStatus("analyzers")
         test <@ status.IsSome @>
@@ -780,8 +781,8 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
         FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
     let host = PluginHost.create checker repoRoot
-    let analyzers = AnalyzersPlugin([ analyzerPath ])
-    host.Register(analyzers)
+    let analyzers = AnalyzersPlugin.create [ analyzerPath ]
+    host.RegisterHandler(analyzers)
 
     let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
     let source = File.ReadAllText(sourceFile)
@@ -800,7 +801,7 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
     | Some checkResult ->
         host.EmitFileChecked(checkResult)
 
-        waitForStatusSettled host "analyzers" 10000
+        waitForTerminalStatus host "analyzers" 10000
 
         let status = host.GetStatus("analyzers")
         test <@ status.IsSome @>
