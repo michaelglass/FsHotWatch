@@ -123,7 +123,7 @@ let ``command ignores SolutionChanged`` () =
 
     host.Register(plugin)
 
-    host.EmitFileChanged(SolutionChanged)
+    host.EmitFileChanged(SolutionChanged "test.sln")
 
     let status = host.GetStatus("sln-watcher")
     test <@ status.IsSome @>

@@ -659,20 +659,22 @@ module Daemon =
         let delayForChange change =
             match change with
             | ProjectChanged _
-            | SolutionChanged -> projectDebounceMs
+            | SolutionChanged _ -> projectDebounceMs
             | SourceChanged _ -> sourceDebounceMs
 
         let processBatch (changes: FileChangeKind list) (suppressed: Set<string>) =
             async {
                 let mutable sourceFiles = []
                 let mutable projFiles = []
-                let mutable hasSolution = false
+                let mutable solutionFile = None
 
                 for c in changes do
                     match c with
                     | SourceChanged files -> sourceFiles <- files @ sourceFiles
                     | ProjectChanged files -> projFiles <- files @ projFiles
-                    | SolutionChanged -> hasSolution <- true
+                    | SolutionChanged f -> solutionFile <- Some f
+
+                let hasSolution = solutionFile.IsSome
 
                 Logging.debug
                     "daemon"
@@ -720,7 +722,7 @@ module Daemon =
                         changed)
 
                 if hasSolution then
-                    host.EmitFileChanged(SolutionChanged)
+                    host.EmitFileChanged(SolutionChanged solutionFile.Value)
 
                 if not projFilesChanged.IsEmpty || hasSolution then
                     Logging.info "daemon" "Project/solution change detected — re-discovering projects"
