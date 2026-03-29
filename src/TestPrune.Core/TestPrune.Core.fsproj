@@ -31,6 +31,7 @@
         <Compile Include="ImpactAnalysis.fs" />
         <Compile Include="DeadCode.fs" />
         <Compile Include="Extensions.fs" />
+        <Compile Include="AuditSink.fs" />
         <Compile Include="TestRunner.fs" />
     </ItemGroup>
 

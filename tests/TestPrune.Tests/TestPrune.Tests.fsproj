@@ -19,6 +19,7 @@
     <Compile Include="SymbolDiffTests.fs" />
     <Compile Include="ImpactAnalysisTests.fs" />
     <Compile Include="DeadCodeTests.fs" />
+    <Compile Include="AuditSinkTests.fs" />
     <Compile Include="IntegrationTests.fs" />
     <Compile Include="ProgramTests.fs" />
     <Compile Include="TestRunnerTests.fs" />
