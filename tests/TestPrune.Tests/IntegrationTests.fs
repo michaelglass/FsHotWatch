@@ -8,6 +8,7 @@ open TestPrune.AstAnalyzer
 open TestPrune.Database
 open TestPrune.DeadCode
 open TestPrune.SymbolDiff
+open TestPrune.Domain
 open TestPrune.ImpactAnalysis
 open TestPrune.Tests.TestHelpers
 
@@ -313,7 +314,7 @@ let f x = x
 
             match result with
             | RunSubset tests -> test <@ tests |> List.isEmpty @>
-            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{reason}")
+            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{SelectionReason.describe reason}")
 
 module ``Dead code — full pipeline`` =
 

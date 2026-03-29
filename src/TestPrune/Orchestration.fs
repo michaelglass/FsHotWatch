@@ -443,7 +443,7 @@ let analyzeChanges
 
             if not parseFailures.IsEmpty then
                 let failedFiles = parseFailures |> List.rev |> String.concat ", "
-                Ok(RunAll $"could not parse: %s{failedFiles}", changedFiles)
+                Ok(RunAll(AnalysisFailedFallback failedFiles), changedFiles)
             else
                 let selection, events =
                     selectTests store.GetSymbolsInFile store.QueryAffectedTests changedFiles currentSymbolsByFile
@@ -505,7 +505,7 @@ let runStatusWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSi
 
             0
         | RunAll reason ->
-            printfn $"Would run ALL tests (reason: %s{reason})"
+            printfn $"Would run ALL tests (reason: %s{SelectionReason.describe reason})"
             0)
 
 /// Run the run command with an injectable diff provider.
@@ -516,7 +516,7 @@ let runRunWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink)
             printfn "No tests affected — nothing to run."
             0
         | RunAll reason ->
-            eprintfn $"Running ALL tests (reason: %s{reason})"
+            eprintfn $"Running ALL tests (reason: %s{SelectionReason.describe reason})"
             let testProjects = discoverTestProjects repoRoot
             let mutable exitCode = 0
 

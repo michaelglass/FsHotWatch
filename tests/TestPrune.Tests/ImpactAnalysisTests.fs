@@ -73,7 +73,7 @@ module ``Changed symbol with dependent test`` =
             | RunSubset tests ->
                 test <@ tests.Length = 1 @>
                 test <@ tests[0].TestMethod = "testA" @>
-            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{reason}")
+            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{SelectionReason.describe reason}")
 
 module ``Changed symbol with transitive dependent test`` =
 
@@ -100,7 +100,7 @@ module ``Changed symbol with transitive dependent test`` =
             | RunSubset tests ->
                 test <@ tests.Length = 1 @>
                 test <@ tests[0].TestMethod = "testA" @>
-            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{reason}")
+            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{SelectionReason.describe reason}")
 
 module ``Changed symbol with no dependent tests`` =
 
@@ -125,7 +125,7 @@ module ``Changed symbol with no dependent tests`` =
 
             match result with
             | RunSubset tests -> test <@ tests |> List.isEmpty @>
-            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{reason}")
+            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{SelectionReason.describe reason}")
 
 module ``Multiple changed symbols`` =
 
@@ -204,7 +204,7 @@ module ``Multiple changed symbols`` =
                 let methods = tests |> List.map (fun t -> t.TestMethod) |> Set.ofList
 
                 test <@ methods = set [ "test1"; "test2" ] @>
-            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{reason}")
+            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{SelectionReason.describe reason}")
 
 module ``No changes`` =
 
@@ -218,7 +218,7 @@ module ``No changes`` =
 
             match result with
             | RunSubset tests -> test <@ tests |> List.isEmpty @>
-            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{reason}")
+            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{SelectionReason.describe reason}")
 
 module ``New file not indexed`` =
 
@@ -256,8 +256,8 @@ module ``fsproj changed`` =
                 selectTests db.GetSymbolsInFile db.QueryAffectedTests [ "src/MyProject.fsproj" ] Map.empty
 
             match result with
-            | RunAll reason -> test <@ reason.Contains("fsproj", StringComparison.Ordinal) @>
-            | RunSubset _ -> failwith "Expected RunAll for fsproj change")
+            | RunAll(FsprojChanged _) -> ()
+            | other -> failwith $"Expected RunAll(FsprojChanged _), got %A{other}")
 
 module ``Empty changed files`` =
 
@@ -269,7 +269,7 @@ module ``Empty changed files`` =
 
             match result with
             | RunSubset tests -> test <@ tests |> List.isEmpty @>
-            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{reason}")
+            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{SelectionReason.describe reason}")
 
 module ``File with no stored symbols and no current symbols`` =
 
@@ -286,7 +286,7 @@ module ``File with no stored symbols and no current symbols`` =
 
             match result with
             | RunSubset tests -> test <@ tests |> List.isEmpty @>
-            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{reason}")
+            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{SelectionReason.describe reason}")
 
 module ``File that had symbols but now has none`` =
 
@@ -305,7 +305,7 @@ module ``File that had symbols but now has none`` =
             | RunSubset tests ->
                 test <@ tests.Length = 1 @>
                 test <@ tests[0].TestMethod = "testA" @>
-            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{reason}")
+            | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{SelectionReason.describe reason}")
 
 module ``Event emission`` =
 

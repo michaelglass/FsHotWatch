@@ -7,7 +7,7 @@ open TestPrune.SymbolDiff
 /// Result of test impact analysis: either a subset of affected tests or run-all with a reason.
 type TestSelection =
     | RunSubset of TestMethodInfo list
-    | RunAll of reason: string
+    | RunAll of reason: SelectionReason
 
 /// Given changed files, determine which tests to run.
 let selectTests
@@ -19,13 +19,17 @@ let selectTests
     if changedFiles.IsEmpty then
         RunSubset [], []
     elif DiffParser.hasFsprojChanges changedFiles then
-        RunAll "fsproj file changed", []
+        let fsprojFile =
+            changedFiles
+            |> List.find (fun f -> f.EndsWith(".fsproj", System.StringComparison.OrdinalIgnoreCase))
+
+        RunAll(FsprojChanged fsprojFile), []
     else
         let fsFiles =
             changedFiles
             |> List.filter (fun f -> not (f.EndsWith(".fsproj", System.StringComparison.OrdinalIgnoreCase)))
 
-        let (hasNewFile, allChanges, symbolEvents) =
+        let (newFile, allChanges, symbolEvents) =
             fsFiles
             |> List.fold
                 (fun (newFile, changes, events) file ->
@@ -36,7 +40,7 @@ let selectTests
                             currentSymbolsByFile |> Map.tryFind file |> Option.defaultValue []
 
                         if not currentSymbols.IsEmpty then
-                            (true, changes, events)
+                            (Some file, changes, events)
                         else
                             (newFile, changes, events)
                     else
@@ -46,11 +50,11 @@ let selectTests
                         let fileChanges, changeEvents = detectChanges currentSymbols storedSymbols
 
                         (newFile, changes @ fileChanges, events @ changeEvents))
-                (false, [], [])
+                (None, [], [])
 
-        if hasNewFile then
-            RunAll "new file not yet indexed", symbolEvents
-        else
+        match newFile with
+        | Some file -> RunAll(NewFileNotIndexed file), symbolEvents
+        | None ->
             let allChangedNames = changedSymbolNames allChanges
             let affectedTests = queryAffectedTests allChangedNames
 
