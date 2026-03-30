@@ -11,6 +11,28 @@ let waitUntil (condition: unit -> bool) (timeoutMs: int) =
     while not (condition ()) && DateTime.UtcNow < deadline do
         Thread.Sleep(50)
 
+/// Run `write` every 2s until `hasEvent` returns true or timeout expires.
+/// Use this for FSEvents tests: brand-new temp directories can have 4-20s cold-start
+/// latency, and after a large initial event batch, fseventsd may batch subsequent events
+/// for 15-30s regardless of kFSEventStreamCreateFlagNoDefer. Repeated writes ensure the
+/// event fires as soon as fseventsd is ready, without relying on fixed timeouts.
+let probeLoop (write: int -> unit) (hasEvent: unit -> bool) (timeoutMs: int) =
+    let overall = DateTime.UtcNow.AddMilliseconds(float timeoutMs)
+    let mutable probe = 0
+
+    while not (hasEvent ()) && DateTime.UtcNow < overall do
+        write probe
+        probe <- probe + 1
+        // Poll for up to 2s per write before retrying
+        let batchEnd = min overall (DateTime.UtcNow.AddMilliseconds(2000.0))
+
+        while not (hasEvent ()) && DateTime.UtcNow < batchEnd do
+            Thread.Sleep(50)
+
+/// Repeatedly write probe files to a directory every 2s until hasEvent returns true.
+let probeUntilEvent (dir: string) (hasEvent: unit -> bool) (timeoutMs: int) =
+    probeLoop (fun n -> File.WriteAllText(Path.Combine(dir, $"_fshw-probe-{n}.fs"), $"// probe {n}")) hasEvent timeoutMs
+
 /// Poll until the plugin reaches a terminal status (Completed or Failed).
 let waitForTerminalStatus (host: FsHotWatch.PluginHost.PluginHost) (pluginName: string) (timeoutMs: int) =
     waitUntil

@@ -16,9 +16,6 @@ let private CoreServicesLib =
 let private CoreFoundationLib =
     "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
 
-[<Literal>]
-let private LibSystem = "/usr/lib/libSystem.B.dylib"
-
 // ─── Constants ──────────────────────────────────────────────────────
 [<Literal>]
 let private kFSEventStreamEventIdSinceNow = 0xFFFFFFFFFFFFFFFFUL
@@ -77,6 +74,15 @@ extern nativeint private CFArrayCreate(nativeint alloc, nativeint[] values, nati
 [<DllImport(CoreFoundationLib)>]
 extern void private CFRelease(nativeint cf)
 
+[<DllImport(CoreFoundationLib)>]
+extern nativeint private CFRunLoopGetCurrent()
+
+[<DllImport(CoreFoundationLib)>]
+extern void private CFRunLoopRun()
+
+[<DllImport(CoreFoundationLib)>]
+extern void private CFRunLoopStop(nativeint runLoop)
+
 // ─── P/Invoke: FSEvents (CoreServices) ──────────────────────────────
 [<DllImport(CoreServicesLib)>]
 extern nativeint private FSEventStreamCreate(
@@ -90,7 +96,7 @@ extern nativeint private FSEventStreamCreate(
 )
 
 [<DllImport(CoreServicesLib)>]
-extern void private FSEventStreamSetDispatchQueue(nativeint streamRef, nativeint queue)
+extern void private FSEventStreamScheduleWithRunLoop(nativeint streamRef, nativeint runLoop, nativeint runLoopMode)
 
 [<DllImport(CoreServicesLib)>]
 extern [<return: MarshalAs(UnmanagedType.U1)>] bool private FSEventStreamStart(nativeint streamRef)
@@ -103,13 +109,6 @@ extern void private FSEventStreamInvalidate(nativeint streamRef)
 
 [<DllImport(CoreServicesLib)>]
 extern void private FSEventStreamRelease(nativeint streamRef)
-
-// ─── P/Invoke: libdispatch ──────────────────────────────────────────
-[<DllImport(LibSystem)>]
-extern nativeint private dispatch_queue_create([<MarshalAs(UnmanagedType.LPUTF8Str)>] string label, nativeint attr)
-
-[<DllImport(LibSystem)>]
-extern void private dispatch_release(nativeint queue)
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -143,7 +142,13 @@ let private isFileChangeEvent (flags: uint32) =
 
 /// Managed wrapper around a native FSEventStream.
 /// Watches the given directories for file-level events and invokes the callback
-/// with each changed file path. Uses a GCD dispatch queue for event delivery.
+/// with each changed file path.
+///
+/// Uses FSEventStreamScheduleWithRunLoop on a dedicated background thread that
+/// runs CFRunLoopRun(). This is required for event delivery in .NET CLI processes,
+/// which have no CoreFoundation run loop running by default. FSEventStreamSetDispatchQueue
+/// (GCD-based) fails silently on macOS 15 without an active CFRunLoop in the process,
+/// because FSEvents' internal Mach port sources require a run loop consumer.
 type FsEventStream
     (
         directories: string list,
@@ -153,7 +158,8 @@ type FsEventStream
     ) =
     let mutable disposed = false
     let mutable streamRef = nativeint 0
-    let mutable queueRef = nativeint 0
+    let mutable runLoopRef = nativeint 0
+    let mutable runLoopModeRef = nativeint 0
     let mutable callbackHandle = Unchecked.defaultof<GCHandle>
     let mutable cfStringRefs: nativeint array = [||]
     let mutable cfArrayRef = nativeint 0
@@ -195,12 +201,21 @@ type FsEventStream
         if streamRef <> nativeint 0 then
             FSEventStreamStop(streamRef)
             FSEventStreamInvalidate(streamRef)
+
+            // Stop the dedicated run loop so its thread exits CFRunLoopRun()
+            let rl = Volatile.Read(&runLoopRef)
+
+            if rl <> nativeint 0 then
+                CFRunLoopStop(rl)
+
             FSEventStreamRelease(streamRef)
             streamRef <- nativeint 0
 
-        if queueRef <> nativeint 0 then
-            dispatch_release (queueRef)
-            queueRef <- nativeint 0
+        runLoopRef <- nativeint 0
+
+        if runLoopModeRef <> nativeint 0 then
+            CFRelease(runLoopModeRef)
+            runLoopModeRef <- nativeint 0
 
         for s in cfStringRefs do
             if s <> nativeint 0 then
@@ -243,13 +258,43 @@ type FsEventStream
             if streamRef = nativeint 0 then
                 failwith "FSEventStreamCreate returned null — failed to create FSEvents stream"
 
-            queueRef <- dispatch_queue_create ("com.fshotwatch.fsevents", nativeint 0)
+            // kCFRunLoopDefaultMode is a CFString constant — create it by value
+            runLoopModeRef <- CFStringCreateWithCString(nativeint 0, "kCFRunLoopDefaultMode", kCFStringEncodingUTF8)
 
-            if queueRef = nativeint 0 then
-                failwith "dispatch_queue_create returned null — failed to create dispatch queue"
+            if runLoopModeRef = nativeint 0 then
+                failwith "CFStringCreateWithCString returned null — failed to create kCFRunLoopDefaultMode"
 
-            FSEventStreamSetDispatchQueue(streamRef, queueRef)
+            // Start a dedicated background thread that owns the CFRunLoop for event delivery.
+            // FSEventStreamScheduleWithRunLoop requires an active CFRunLoop to pump events;
+            // CFRunLoopRun() on this thread provides that pump.
+            let capturedStreamRef = streamRef
+            let capturedModeRef = runLoopModeRef
+            let runLoopReady = new ManualResetEventSlim(false)
 
+            let runLoopThread =
+                Thread(fun () ->
+                    // Get this thread's run loop — must be called from the thread that will run it
+                    let rl = CFRunLoopGetCurrent()
+                    Volatile.Write(&runLoopRef, rl)
+
+                    // Schedule the stream on this thread's run loop before signalling
+                    FSEventStreamScheduleWithRunLoop(capturedStreamRef, rl, capturedModeRef)
+
+                    // Signal the constructor that scheduling is complete
+                    runLoopReady.Set()
+
+                    // Block here, pumping CFRunLoop events until CFRunLoopStop() is called in cleanup()
+                    CFRunLoopRun()
+                    debug "fsevents" "CFRunLoopRun() returned — run loop thread exiting")
+
+            runLoopThread.IsBackground <- true
+            runLoopThread.Name <- "com.fshotwatch.fsevents.runloop"
+            runLoopThread.Start()
+
+            // Wait until the run loop thread has scheduled the stream
+            runLoopReady.Wait()
+
+            // Start the stream — safe to call from any thread once the stream is scheduled
             if not (FSEventStreamStart(streamRef)) then
                 failwith "FSEventStreamStart returned false — failed to start FSEvents stream"
 
@@ -274,7 +319,7 @@ type FsEventStream
                 cleanup ()
 
 /// Create an FsEventStream watching the given directories.
-/// The callback is invoked on a GCD background thread with each changed file path.
+/// The callback is invoked on the dedicated CFRunLoop thread with each changed file path.
 let create (directories: string list) (onFileEvent: string -> unit) =
     new FsEventStream(directories, onFileEvent, None, 0.05)
 
