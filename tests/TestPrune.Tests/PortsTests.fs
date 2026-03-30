@@ -19,7 +19,8 @@ module ``SymbolStore from Database`` =
                         SourceFile = "src/Lib.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "abc" } ]
+                        ContentHash = "abc"
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods = [] }
 
@@ -51,7 +52,8 @@ module ``SymbolSink from Database`` =
                         SourceFile = "src/Lib.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "abc" } ]
+                        ContentHash = "abc"
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods = [] }
 

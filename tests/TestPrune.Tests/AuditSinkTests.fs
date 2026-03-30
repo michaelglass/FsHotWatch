@@ -42,7 +42,7 @@ module ``noopSink`` =
             { Timestamp = DateTimeOffset.UtcNow
               Event = IndexStartedEvent 1 }
         )
-// NoopSink.Post is synchronous no-op, nothing to wait for
+        // NoopSink.Post is synchronous no-op, nothing to wait for
 
 module ``timestamp helper`` =
 

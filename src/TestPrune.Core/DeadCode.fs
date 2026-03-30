@@ -10,6 +10,19 @@ type DeadCodeResult =
       ReachableSymbols: int
       UnreachableSymbols: SymbolInfo list }
 
+type UnreachabilityReason =
+    | NoIncomingEdges
+    | DisconnectedFromEntryPoints of incomingFrom: string list
+
+type UnreachableSymbolInfo =
+    { Symbol: SymbolInfo
+      Reason: UnreachabilityReason }
+
+type VerboseDeadCodeResult =
+    { TotalSymbols: int
+      ReachableSymbols: int
+      UnreachableSymbols: UnreachableSymbolInfo list }
+
 /// Check whether a symbol name matches a wildcard pattern.
 /// Supports * at start, end, or both (e.g., "*.main", "Prog.*", "*Route*").
 let private matchesPattern (pattern: string) (name: string) =
@@ -59,7 +72,8 @@ let findDeadCode
             && s.Kind <> Module
             && s.Kind <> DuCase
             && (includeTests
-                || not (s.SourceFile.StartsWith("tests/", StringComparison.Ordinal))))
+                || not (s.SourceFile.StartsWith("tests/", StringComparison.Ordinal)))
+            && not s.IsExtern)
 
     // Filter out local bindings and parameters — symbols without a dot in their
     // name are locals that aren't independently actionable. Also filter symbols
@@ -84,7 +98,7 @@ let findDeadCode
         unreachableSymbols
         |> List.filter (fun s -> not (isLocal s) && not (isContainedByAnother s))
 
-    let result =
+    let result: DeadCodeResult =
         { TotalSymbols = allNames.Count
           ReachableSymbols = reachable.Count
           UnreachableSymbols = shallowest }
@@ -92,3 +106,31 @@ let findDeadCode
     let events = [ DeadCodeFoundEvent(shallowest |> List.map (fun s -> s.FullName)) ]
 
     result, events
+
+/// Find dead code with verbose reasons for why each symbol is unreachable.
+let findDeadCodeVerbose
+    (allSymbols: SymbolInfo list)
+    (reachable: Set<string>)
+    (testMethodNames: Set<string>)
+    (includeTests: bool)
+    (getIncomingEdges: string -> string list)
+    : VerboseDeadCodeResult * AnalysisEvent list =
+    let result, events = findDeadCode allSymbols reachable testMethodNames includeTests
+
+    let verboseUnreachable =
+        result.UnreachableSymbols
+        |> List.map (fun s ->
+            let incoming = getIncomingEdges s.FullName
+
+            let reason =
+                if List.isEmpty incoming then
+                    NoIncomingEdges
+                else
+                    DisconnectedFromEntryPoints incoming
+
+            { Symbol = s; Reason = reason })
+
+    { TotalSymbols = result.TotalSymbols
+      ReachableSymbols = result.ReachableSymbols
+      UnreachableSymbols = verboseUnreachable },
+    events

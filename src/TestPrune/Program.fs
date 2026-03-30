@@ -12,14 +12,15 @@ type Command =
     | Index
     | Run
     | Status
-    | DeadCodeCmd of entryPatterns: string list * includeTests: bool
+    | DeadCodeCmd of entryPatterns: string list * includeTests: bool * verbose: bool
     | Help
 
-let rec private parseDeadCodeFlags (args: string list) (acc: string list) (includeTests: bool) =
+let rec private parseDeadCodeFlags (args: string list) (acc: string list) (includeTests: bool) (verbose: bool) =
     match args with
-    | "--entry" :: pattern :: rest -> parseDeadCodeFlags rest (pattern :: acc) includeTests
-    | "--include-tests" :: rest -> parseDeadCodeFlags rest acc true
-    | [] -> Ok(acc |> List.rev, includeTests)
+    | "--entry" :: pattern :: rest -> parseDeadCodeFlags rest (pattern :: acc) includeTests verbose
+    | "--include-tests" :: rest -> parseDeadCodeFlags rest acc true verbose
+    | "--verbose" :: rest -> parseDeadCodeFlags rest acc includeTests true
+    | [] -> Ok(acc |> List.rev, includeTests, verbose)
     | unknown :: _ -> Error $"Unknown flag: %s{unknown}"
 
 type ParsedCommand =
@@ -51,9 +52,9 @@ let parseArgs (args: string array) : Result<ParsedCommand, string> =
             | [ "run" ] -> Ok Run
             | [ "status" ] -> Ok Status
             | "dead-code" :: rest ->
-                match parseDeadCodeFlags rest [] false with
-                | Ok([], includeTests) -> Ok(DeadCodeCmd(defaultEntryPatterns, includeTests))
-                | Ok(patterns, includeTests) -> Ok(DeadCodeCmd(patterns, includeTests))
+                match parseDeadCodeFlags rest [] false false with
+                | Ok([], includeTests, verbose) -> Ok(DeadCodeCmd(defaultEntryPatterns, includeTests, verbose))
+                | Ok(patterns, includeTests, verbose) -> Ok(DeadCodeCmd(patterns, includeTests, verbose))
                 | Error msg -> Error msg
             | [ "help" ]
             | [ "--help" ]
@@ -86,6 +87,7 @@ let showHelp () =
     printfn "  --entry <pattern>   Add entry point pattern (repeatable)"
     printfn "                      Default: *.main, *.Program.*, *.Routes.*, *.Scheduler.*"
     printfn "  --include-tests     Include symbols from test files in dead code report"
+    printfn "  --verbose           Show why each symbol is unreachable"
 
 /// Default build runner: runs `dotnet build` on the solution.
 let dotnetBuildRunner: BuildRunner =
@@ -170,9 +172,9 @@ let runCommand (parsed: ParsedCommand) : int =
     | Index -> runIndex repoRoot parsed.Parallelism
     | Run -> runRun repoRoot
     | Status -> runStatus repoRoot
-    | DeadCodeCmd(patterns, includeTests) ->
+    | DeadCodeCmd(patterns, includeTests, verbose) ->
         let auditSink = createAuditSinkForRepo repoRoot
-        runDeadCode repoRoot patterns includeTests auditSink
+        runDeadCode repoRoot patterns includeTests verbose auditSink
     | Help ->
         showHelp ()
         0

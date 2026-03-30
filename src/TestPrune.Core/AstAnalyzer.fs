@@ -27,7 +27,8 @@ type SymbolInfo =
       SourceFile: string
       LineStart: int
       LineEnd: int
-      ContentHash: string }
+      ContentHash: string
+      IsExtern: bool }
 
 /// The kind of edge in a dependency graph (calls, uses type, pattern match, etc.).
 type DependencyKind =
@@ -124,6 +125,71 @@ module internal TestHelpers =
     let testTryClassifyMemberOrFunction = tryClassifyMemberOrFunction
     let testTryClassifyUnionCase = tryClassifyUnionCase
 
+let private tryGetUnionParentType (symbol: FSharpSymbol) : string option =
+    match symbol with
+    | :? FSharpUnionCase as uc ->
+        try
+            Some uc.ReturnType.TypeDefinition.FullName
+        with :? InvalidOperationException ->
+            None
+    | _ -> None
+
+/// Recursively extract all concrete type argument entity full names from a type.
+let private extractGenericTypeArgs (fsharpType: FSharpType) : string list =
+    let rec collect (t: FSharpType) =
+        try
+            [ if t.HasTypeDefinition && not t.TypeDefinition.IsFSharpModule then
+                  yield t.TypeDefinition.FullName
+              for arg in t.GenericArguments do
+                  yield! collect arg ]
+        with :? InvalidOperationException ->
+            []
+
+    try
+        if fsharpType.IsGenericParameter then
+            []
+        else
+            fsharpType.GenericArguments
+            |> Seq.toList
+            |> List.collect collect
+    with :? InvalidOperationException ->
+        []
+
+/// Extract generic type argument edges from a symbol use's full type.
+let private tryGetGenericTypeArgEdges (symbol: FSharpSymbol) : string list =
+    match symbol with
+    | :? FSharpMemberOrFunctionOrValue as mfv ->
+        try
+            extractGenericTypeArgs mfv.FullType
+        with :? InvalidOperationException ->
+            []
+    | :? FSharpEntity as entity ->
+        try
+            entity.GenericParameters |> ignore
+            []
+        with :? InvalidOperationException ->
+            []
+    | _ -> []
+
+/// When a record field is used, extract the containing record type's full name.
+let private tryGetRecordTypeFromField (symbol: FSharpSymbol) : string option =
+    match symbol with
+    | :? FSharpMemberOrFunctionOrValue as mfv ->
+        try
+            match mfv.DeclaringEntity with
+            | Some entity when entity.IsFSharpRecord -> Some entity.FullName
+            | _ -> None
+        with :? InvalidOperationException ->
+            None
+    | :? FSharpField as f ->
+        try
+            match f.DeclaringEntity with
+            | Some entity when entity.IsFSharpRecord -> Some entity.FullName
+            | _ -> None
+        with :? InvalidOperationException ->
+            None
+    | _ -> None
+
 let private classifyDependency (symbol: FSharpSymbol) : DependencyKind =
     match symbol with
     | :? FSharpEntity -> UsesType
@@ -158,6 +224,15 @@ let private isTestAttribute (mfv: FSharpMemberOrFunctionOrValue) : bool =
         |> Seq.exists (fun attr ->
             let name = attr.AttributeType.DisplayName
             knownTestAttributes |> Set.contains name)
+    with :? InvalidOperationException ->
+        false
+
+let private isDllImport (mfv: FSharpMemberOrFunctionOrValue) : bool =
+    try
+        mfv.Attributes
+        |> Seq.exists (fun attr ->
+            let name = attr.AttributeType.DisplayName
+            name = "DllImportAttribute" || name = "DllImport")
     with :? InvalidOperationException ->
         false
 
@@ -258,12 +333,18 @@ let private extractResults
                     if u.IsFromDefinition then
                         classifySymbol u.Symbol
                         |> Option.map (fun (kind, fullName) ->
+                            let isExtern =
+                                match u.Symbol with
+                                | :? FSharpMemberOrFunctionOrValue as mfv -> isDllImport mfv
+                                | _ -> false
+
                             { FullName = fullName
                               Kind = kind
                               SourceFile = sourceFileName
                               LineStart = u.Range.StartLine
                               LineEnd = u.Range.EndLine
-                              ContentHash = hashSourceLines source u.Range.StartLine u.Range.EndLine },
+                              ContentHash = hashSourceLines source u.Range.StartLine u.Range.EndLine
+                              IsExtern = isExtern },
                             u)
                     else
                         None)
@@ -306,23 +387,74 @@ let private extractResults
 
             let dependencies =
                 allUses
-                |> List.choose (fun u ->
+                |> List.collect (fun u ->
                     if u.IsFromDefinition then
-                        None
+                        []
                     else
+                        // Handle FSharpField uses (e.g. record construction { Name = "Alice" })
+                        // which are not covered by classifySymbol
+                        let fieldRecordEdge =
+                            match u.Symbol with
+                            | :? FSharpField ->
+                                match tryGetRecordTypeFromField u.Symbol with
+                                | Some recName ->
+                                    match findEnclosing u.Range with
+                                    | Some enclosingSi when enclosingSi.FullName <> recName ->
+                                        [ { FromSymbol = enclosingSi.FullName
+                                            ToSymbol = recName
+                                            Kind = UsesType } ]
+                                    | _ -> []
+                                | None -> []
+                            | _ -> []
+
                         match classifySymbol u.Symbol with
-                        | None -> None
+                        | None -> fieldRecordEdge
                         | Some(_, usedFullName) ->
                             match findEnclosing u.Range with
-                            | None -> None
+                            | None -> fieldRecordEdge
                             | Some enclosingSi ->
                                 if enclosingSi.FullName = usedFullName then
-                                    None
+                                    fieldRecordEdge
                                 else
-                                    Some
+                                    let primary =
                                         { FromSymbol = enclosingSi.FullName
                                           ToSymbol = usedFullName
-                                          Kind = classifyDependency u.Symbol })
+                                          Kind = classifyDependency u.Symbol }
+
+                                    let parentEdge =
+                                        tryGetUnionParentType u.Symbol
+                                        |> Option.bind (fun parentName ->
+                                            if parentName = enclosingSi.FullName || parentName = usedFullName then
+                                                None
+                                            else
+                                                Some
+                                                    { FromSymbol = enclosingSi.FullName
+                                                      ToSymbol = parentName
+                                                      Kind = UsesType })
+
+                                    let genericArgEdges =
+                                        tryGetGenericTypeArgEdges u.Symbol
+                                        |> List.choose (fun argName ->
+                                            if argName = enclosingSi.FullName || argName = usedFullName then
+                                                None
+                                            else
+                                                Some
+                                                    { FromSymbol = enclosingSi.FullName
+                                                      ToSymbol = argName
+                                                      Kind = UsesType })
+
+                                    let recordTypeEdge =
+                                        tryGetRecordTypeFromField u.Symbol
+                                        |> Option.bind (fun recName ->
+                                            if recName = enclosingSi.FullName || recName = usedFullName then
+                                                None
+                                            else
+                                                Some
+                                                    { FromSymbol = enclosingSi.FullName
+                                                      ToSymbol = recName
+                                                      Kind = UsesType })
+
+                                    primary :: (parentEdge |> Option.toList) @ genericArgEdges @ (recordTypeEdge |> Option.toList))
                 |> List.distinct
 
             let testMethods =

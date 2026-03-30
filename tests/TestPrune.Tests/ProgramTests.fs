@@ -47,23 +47,23 @@ module ``parseArgs`` =
 
     [<Fact>]
     let ``dead-code command with defaults`` () =
-        test <@ cmd [| "dead-code" |] = Ok(DeadCodeCmd(defaultEntryPatterns, false)) @>
+        test <@ cmd [| "dead-code" |] = Ok(DeadCodeCmd(defaultEntryPatterns, false, false)) @>
 
     [<Fact>]
     let ``dead-code command with custom entry patterns`` () =
         let result = cmd [| "dead-code"; "--entry"; "*.main"; "--entry"; "*.Routes.*" |]
 
-        test <@ result = Ok(DeadCodeCmd([ "*.main"; "*.Routes.*" ], false)) @>
+        test <@ result = Ok(DeadCodeCmd([ "*.main"; "*.Routes.*" ], false, false)) @>
 
     [<Fact>]
     let ``dead-code command with --include-tests`` () =
-        test <@ cmd [| "dead-code"; "--include-tests" |] = Ok(DeadCodeCmd(defaultEntryPatterns, true)) @>
+        test <@ cmd [| "dead-code"; "--include-tests" |] = Ok(DeadCodeCmd(defaultEntryPatterns, true, false)) @>
 
     [<Fact>]
     let ``dead-code command with --entry and --include-tests`` () =
         let result = cmd [| "dead-code"; "--entry"; "*.main"; "--include-tests" |]
 
-        test <@ result = Ok(DeadCodeCmd([ "*.main" ], true)) @>
+        test <@ result = Ok(DeadCodeCmd([ "*.main" ], true, false)) @>
 
     [<Fact>]
     let ``dead-code command with unknown flag returns Error`` () =
@@ -309,7 +309,7 @@ module ``runDeadCode`` =
         Directory.CreateDirectory(tmpDir) |> ignore
 
         try
-            test <@ runDeadCode tmpDir [ "*.main" ] false (createNoopSink ()) = 1 @>
+            test <@ runDeadCode tmpDir [ "*.main" ] false false (createNoopSink ()) = 1 @>
         finally
             Directory.Delete(tmpDir, true)
 
@@ -324,7 +324,7 @@ module ``runDeadCode`` =
         Console.SetOut(sw)
 
         try
-            test <@ runDeadCode tmpDir [ "*.main" ] false (createNoopSink ()) = 0 @>
+            test <@ runDeadCode tmpDir [ "*.main" ] false false (createNoopSink ()) = 0 @>
         finally
             Console.SetOut(oldOut)
             Directory.Delete(tmpDir, true)

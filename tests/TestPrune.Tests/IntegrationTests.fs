@@ -280,7 +280,8 @@ let f x = x
                           SourceFile = "src/NewModule.fs"
                           LineStart = 1
                           LineEnd = 5
-                          ContentHash = "" } ] ]
+                          ContentHash = ""
+                          IsExtern = false } ] ]
 
             let result, _events =
                 selectTests db.GetSymbolsInFile db.QueryAffectedTests [ "src/NewModule.fs" ] currentSymbols

@@ -23,7 +23,8 @@ module ``Changed symbol with dependent test`` =
                       SourceFile = "src/Lib.fs"
                       LineStart = 1
                       LineEnd = 10
-                      ContentHash = "changed" } ] ]
+                      ContentHash = "changed"
+                      IsExtern = false } ] ]
 
         let result, _events =
             selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/Lib.fs" ] currentSymbols
@@ -49,7 +50,8 @@ module ``Changed symbol with transitive dependent test`` =
                       SourceFile = "src/Domain.fs"
                       LineStart = 1
                       LineEnd = 8
-                      ContentHash = "changed" } ] ]
+                      ContentHash = "changed"
+                      IsExtern = false } ] ]
 
         let result, _events =
             selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/Domain.fs" ] currentSymbols
@@ -75,7 +77,8 @@ module ``Changed symbol with no dependent tests`` =
                       SourceFile = "src/Other.fs"
                       LineStart = 1
                       LineEnd = 10
-                      ContentHash = "changed" } ] ]
+                      ContentHash = "changed"
+                      IsExtern = false } ] ]
 
         let result, _events =
             selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/Other.fs" ] currentSymbols
@@ -95,25 +98,29 @@ module ``Multiple changed symbols`` =
                     SourceFile = "tests/Tests.fs"
                     LineStart = 1
                     LineEnd = 3
-                    ContentHash = "" }
+                    ContentHash = ""
+                    IsExtern = false }
                   { FullName = "Tests.test2"
                     Kind = Function
                     SourceFile = "tests/Tests.fs"
                     LineStart = 5
                     LineEnd = 8
-                    ContentHash = "" }
+                    ContentHash = ""
+                    IsExtern = false }
                   { FullName = "Lib.funcA"
                     Kind = Function
                     SourceFile = "src/Lib.fs"
                     LineStart = 1
                     LineEnd = 5
-                    ContentHash = "" }
+                    ContentHash = ""
+                    IsExtern = false }
                   { FullName = "Lib.funcB"
                     Kind = Function
                     SourceFile = "src/Lib.fs"
                     LineStart = 7
                     LineEnd = 12
-                    ContentHash = "" } ]
+                    ContentHash = ""
+                    IsExtern = false } ]
               Dependencies =
                 [ { FromSymbol = "Tests.test1"
                     ToSymbol = "Lib.funcA"
@@ -142,13 +149,15 @@ module ``Multiple changed symbols`` =
                       SourceFile = "src/Lib.fs"
                       LineStart = 1
                       LineEnd = 8
-                      ContentHash = "changed-a" }
+                      ContentHash = "changed-a"
+                      IsExtern = false }
                     { FullName = "Lib.funcB"
                       Kind = Function
                       SourceFile = "src/Lib.fs"
                       LineStart = 10
                       LineEnd = 18
-                      ContentHash = "changed-b" } ] ]
+                      ContentHash = "changed-b"
+                      IsExtern = false } ] ]
 
         let result, _events =
             selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/Lib.fs" ] currentSymbols
@@ -190,7 +199,8 @@ module ``New file not indexed`` =
                       SourceFile = "src/NewModule.fs"
                       LineStart = 1
                       LineEnd = 5
-                      ContentHash = "" } ] ]
+                      ContentHash = ""
+                      IsExtern = false } ] ]
 
         let result, _events =
             selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/NewModule.fs" ] currentSymbols
@@ -273,7 +283,8 @@ module ``Event emission`` =
                       SourceFile = "src/Lib.fs"
                       LineStart = 1
                       LineEnd = 10
-                      ContentHash = "changed" } ] ]
+                      ContentHash = "changed"
+                      IsExtern = false } ] ]
 
         let _result, events =
             selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/Lib.fs" ] currentSymbols

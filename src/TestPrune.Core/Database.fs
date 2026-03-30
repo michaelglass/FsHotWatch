@@ -14,6 +14,7 @@ let private schema =
         line_start INTEGER NOT NULL,
         line_end INTEGER NOT NULL,
         content_hash TEXT NOT NULL DEFAULT '',
+        is_extern INTEGER NOT NULL DEFAULT 0,
         indexed_at TEXT NOT NULL
     );
 
@@ -160,13 +161,8 @@ type Database(dbPath: string) =
                 use delCmd = conn.CreateCommand()
                 delCmd.Transaction <- txn
 
-                delCmd.CommandText <-
-                    $"""
-                    DELETE FROM dependencies WHERE from_symbol_id IN (SELECT id FROM symbols WHERE source_file IN (%s{placeholders}))
-                        OR to_symbol_id IN (SELECT id FROM symbols WHERE source_file IN (%s{placeholders}));
-                    DELETE FROM test_methods WHERE symbol_id IN (SELECT id FROM symbols WHERE source_file IN (%s{placeholders}));
-                    DELETE FROM symbols WHERE source_file IN (%s{placeholders});
-                    """
+                // ON DELETE CASCADE on dependencies and test_methods handles child rows
+                delCmd.CommandText <- $"DELETE FROM symbols WHERE source_file IN (%s{placeholders})"
 
                 sourceFiles
                 |> List.iteri (fun i file -> delCmd.Parameters.AddWithValue($"@f%d{i}", file) |> ignore)
@@ -180,8 +176,8 @@ type Database(dbPath: string) =
 
             insCmd.CommandText <-
                 """
-                INSERT OR REPLACE INTO symbols (full_name, kind, source_file, line_start, line_end, content_hash, indexed_at)
-                VALUES (@fullName, @kind, @sourceFile, @lineStart, @lineEnd, @contentHash, @indexedAt)
+                INSERT OR REPLACE INTO symbols (full_name, kind, source_file, line_start, line_end, content_hash, is_extern, indexed_at)
+                VALUES (@fullName, @kind, @sourceFile, @lineStart, @lineEnd, @contentHash, @isExtern, @indexedAt)
                 """
 
             let pFullName = insCmd.Parameters.Add("@fullName", SqliteType.Text)
@@ -190,6 +186,7 @@ type Database(dbPath: string) =
             let pLineStart = insCmd.Parameters.Add("@lineStart", SqliteType.Integer)
             let pLineEnd = insCmd.Parameters.Add("@lineEnd", SqliteType.Integer)
             let pContentHash = insCmd.Parameters.Add("@contentHash", SqliteType.Text)
+            let pIsExtern = insCmd.Parameters.Add("@isExtern", SqliteType.Integer)
             let pIndexedAt = insCmd.Parameters.Add("@indexedAt", SqliteType.Text)
 
             for result in results do
@@ -200,6 +197,7 @@ type Database(dbPath: string) =
                     pLineStart.Value <- sym.LineStart
                     pLineEnd.Value <- sym.LineEnd
                     pContentHash.Value <- sym.ContentHash
+                    pIsExtern.Value <- if sym.IsExtern then 1 else 0
                     pIndexedAt.Value <- now
                     insCmd.ExecuteNonQuery() |> ignore
 
@@ -336,7 +334,7 @@ type Database(dbPath: string) =
 
         cmd.CommandText <-
             """
-            SELECT full_name, kind, source_file, line_start, line_end, content_hash
+            SELECT full_name, kind, source_file, line_start, line_end, content_hash, is_extern
             FROM symbols WHERE source_file = @sourceFile
             ORDER BY line_start
             """
@@ -351,7 +349,8 @@ type Database(dbPath: string) =
               SourceFile = r.GetString(2)
               LineStart = r.GetInt32(3)
               LineEnd = r.GetInt32(4)
-              ContentHash = r.GetString(5) })
+              ContentHash = r.GetString(5)
+              IsExtern = r.GetInt32(6) = 1 })
 
     /// Return the set of all symbol full names.
     member _.GetAllSymbolNames() : Set<string> =
@@ -369,7 +368,7 @@ type Database(dbPath: string) =
 
         cmd.CommandText <-
             """
-            SELECT full_name, kind, source_file, line_start, line_end, content_hash
+            SELECT full_name, kind, source_file, line_start, line_end, content_hash, is_extern
             FROM symbols ORDER BY source_file, line_start
             """
 
@@ -381,7 +380,8 @@ type Database(dbPath: string) =
               SourceFile = r.GetString(2)
               LineStart = r.GetInt32(3)
               LineEnd = r.GetInt32(4)
-              ContentHash = r.GetString(5) })
+              ContentHash = r.GetString(5)
+              IsExtern = r.GetInt32(6) = 1 })
 
     /// Return the set of symbol names that are test methods.
     member _.GetTestMethodSymbolNames() : Set<string> =
@@ -523,6 +523,24 @@ type Database(dbPath: string) =
         use reader = cmd.ExecuteReader()
 
         if reader.Read() then Some(reader.GetString(0)) else None
+
+    /// Get the names of symbols that have edges pointing TO the given symbol.
+    member _.GetIncomingEdges(symbolName: string) : string list =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            """
+            SELECT s_from.full_name
+            FROM dependencies d
+            JOIN symbols s_to ON s_to.id = d.to_symbol_id
+            JOIN symbols s_from ON s_from.id = d.from_symbol_id
+            WHERE s_to.full_name = @name
+            """
+
+        cmd.Parameters.AddWithValue("@name", symbolName) |> ignore
+        use reader = cmd.ExecuteReader()
+        readAll reader (fun r -> r.GetString(0))
 
     /// Get dependencies originating from symbols defined in the given source file.
     member _.GetDependenciesFromFile(sourceFile: string) : Dependency list =

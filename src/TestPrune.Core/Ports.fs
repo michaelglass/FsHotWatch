@@ -14,7 +14,8 @@ type SymbolStore =
       GetAllSymbols: unit -> SymbolInfo list
       GetAllSymbolNames: unit -> Set<string>
       GetReachableSymbols: string list -> Set<string>
-      GetTestMethodSymbolNames: unit -> Set<string> }
+      GetTestMethodSymbolNames: unit -> Set<string>
+      GetIncomingEdges: string -> string list }
 
 /// Port for writing symbol data to storage.
 type SymbolSink =
@@ -31,7 +32,8 @@ let toSymbolStore (db: Database) : SymbolStore =
       GetAllSymbols = db.GetAllSymbols
       GetAllSymbolNames = fun () -> db.GetAllSymbolNames()
       GetReachableSymbols = db.GetReachableSymbols
-      GetTestMethodSymbolNames = db.GetTestMethodSymbolNames }
+      GetTestMethodSymbolNames = db.GetTestMethodSymbolNames
+      GetIncomingEdges = db.GetIncomingEdges }
 
 /// Port for reading route handler data from storage.
 type RouteStore =

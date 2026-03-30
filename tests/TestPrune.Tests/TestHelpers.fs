@@ -26,6 +26,14 @@ let withDb (f: Database -> unit) =
     finally
         cleanupDb path
 
+let runDeadCodeVerbose (db: Database) (patterns: string list) (includeTests: bool) =
+    let allSymbols = db.GetAllSymbols()
+    let allNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
+    let entryPoints = findEntryPoints allNames patterns
+    let reachable = db.GetReachableSymbols(entryPoints)
+    let testMethodNames = db.GetTestMethodSymbolNames()
+    findDeadCodeVerbose allSymbols reachable testMethodNames includeTests db.GetIncomingEdges
+
 let runDeadCode (db: Database) (patterns: string list) (includeTests: bool) =
     let allSymbols = db.GetAllSymbols()
     let allNames = allSymbols |> List.map (fun s -> s.FullName) |> Set.ofList
@@ -42,25 +50,29 @@ let standardGraph =
             SourceFile = "tests/Tests.fs"
             LineStart = 1
             LineEnd = 5
-            ContentHash = "" }
+            ContentHash = ""
+            IsExtern = false }
           { FullName = "Lib.funcB"
             Kind = Function
             SourceFile = "src/Lib.fs"
             LineStart = 1
             LineEnd = 5
-            ContentHash = "" }
+            ContentHash = ""
+            IsExtern = false }
           { FullName = "Domain.TypeC"
             Kind = Type
             SourceFile = "src/Domain.fs"
             LineStart = 1
             LineEnd = 3
-            ContentHash = "" }
+            ContentHash = ""
+            IsExtern = false }
           { FullName = "Other.unrelated"
             Kind = Function
             SourceFile = "src/Other.fs"
             LineStart = 1
             LineEnd = 5
-            ContentHash = "" } ]
+            ContentHash = ""
+            IsExtern = false } ]
       Dependencies =
         [ { FromSymbol = "Tests.testA"
             ToSymbol = "Lib.funcB"

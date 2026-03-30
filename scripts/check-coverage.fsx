@@ -42,10 +42,6 @@ let overrides =
           // closure (line 80). Both sides of the disjunction are tested, but the IL branch
           // for evaluating the right side when left is true is not reachable.
           "DeadCode.fs", (100.0, 80.0)
-          // Database.fs: Compiler-generated branches in while-loop readers, use-binding IDisposable
-          // null checks, and transaction try/with rollback paths. All logic paths tested; remaining
-          // 23 uncovered branches are IL artifacts not reachable from F# code.
-          "Database.fs", (82.0, 67.0)
           // ImpactAnalysis.fs: The [] -> "", Domain.Modified fallback in selectTests is a
           // defensive path that can't occur in practice (affectedTests non-empty implies changes
           // exist). Compiler-generated branches for fold tuple deconstruction.

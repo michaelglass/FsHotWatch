@@ -12,7 +12,8 @@ let private mkSymbol name kind lineStart lineEnd =
       SourceFile = "src/Test.fs"
       LineStart = lineStart
       LineEnd = lineEnd
-      ContentHash = $"%s{name}:%d{lineStart}-%d{lineEnd}" }
+      ContentHash = $"%s{name}:%d{lineStart}-%d{lineEnd}"
+      IsExtern = false }
 
 let private mkSymbolWithHash name kind lineStart lineEnd hash =
     { FullName = name
@@ -20,7 +21,8 @@ let private mkSymbolWithHash name kind lineStart lineEnd hash =
       SourceFile = "src/Test.fs"
       LineStart = lineStart
       LineEnd = lineEnd
-      ContentHash = hash }
+      ContentHash = hash
+      IsExtern = false }
 
 module ``No changes`` =
 
@@ -155,7 +157,8 @@ module ``Event emission`` =
                 SourceFile = "src/Lib.fs"
                 LineStart = 1
                 LineEnd = 5
-                ContentHash = "old" } ]
+                ContentHash = "old"
+                IsExtern = false } ]
 
         let current =
             [ { FullName = "Lib.func"
@@ -163,7 +166,8 @@ module ``Event emission`` =
                 SourceFile = "src/Lib.fs"
                 LineStart = 1
                 LineEnd = 5
-                ContentHash = "new" } ]
+                ContentHash = "new"
+                IsExtern = false } ]
 
         let changes, events = detectChanges current stored
         test <@ changes.Length = 1 @>

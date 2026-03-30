@@ -1240,3 +1240,176 @@ module M =
 
             test <@ hasModule @>
         | Error e -> failwith $"analysis failed: {e}"
+
+module ``DU parent type edge from case usage`` =
+
+    [<Fact>]
+    let ``pattern matching on DU case creates edge to parent type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Shape =
+    | Circle of float
+    | Square of float
+
+let process s =
+    match s with
+    | Circle r -> r
+    | Square s -> s
+"""
+
+        let deps = result.Dependencies
+
+        let hasEdgeToShape =
+            deps
+            |> List.exists (fun d ->
+                d.FromSymbol.EndsWith("process", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Shape", StringComparison.Ordinal)
+                && d.Kind = UsesType)
+
+        test <@ hasEdgeToShape @>
+
+    [<Fact>]
+    let ``constructing DU case creates edge to parent type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Msg =
+    | Increment
+    | Decrement
+
+let init () = Increment
+"""
+
+        let deps = result.Dependencies
+
+        let hasEdgeToMsg =
+            deps
+            |> List.exists (fun d ->
+                d.FromSymbol.EndsWith("init", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Msg", StringComparison.Ordinal)
+                && d.Kind = UsesType)
+
+        test <@ hasEdgeToMsg @>
+
+module ``Generic type parameter edges`` =
+
+    [<Fact>]
+    let ``using generic type with concrete arg creates edge to arg type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type MyData = { Value: int }
+
+let items : list<MyData> = []
+"""
+
+        let deps = result.Dependencies
+        let hasEdgeToMyData =
+            deps
+            |> List.exists (fun d ->
+                d.FromSymbol.EndsWith("items", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("MyData", StringComparison.Ordinal)
+                && d.Kind = UsesType)
+
+        test <@ hasEdgeToMyData @>
+
+    [<Fact>]
+    let ``function with generic return type creates edge to type arg`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Config = { Host: string }
+
+let loadConfigs () : Config list = []
+"""
+
+        let deps = result.Dependencies
+        let hasEdgeToConfig =
+            deps
+            |> List.exists (fun d ->
+                d.FromSymbol.EndsWith("loadConfigs", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Config", StringComparison.Ordinal))
+
+        test <@ hasEdgeToConfig @>
+
+    [<Fact>]
+    let ``multiple generic args each get edges`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Key = { Id: int }
+type Val = { Data: string }
+
+let lookup : Map<Key, Val> = Map.empty
+"""
+
+        let deps = result.Dependencies
+        let hasEdgeToKey =
+            deps
+            |> List.exists (fun d ->
+                d.FromSymbol.EndsWith("lookup", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Key", StringComparison.Ordinal))
+        let hasEdgeToVal =
+            deps
+            |> List.exists (fun d ->
+                d.FromSymbol.EndsWith("lookup", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Val", StringComparison.Ordinal))
+
+        test <@ hasEdgeToKey @>
+        test <@ hasEdgeToVal @>
+
+module ``Record type edge from field usage`` =
+
+    [<Fact>]
+    let ``constructing record via fields creates edge to record type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Person = { Name: string; Age: int }
+
+let makePerson () = { Name = "Alice"; Age = 30 }
+"""
+
+        let deps = result.Dependencies
+        let hasEdgeToPerson =
+            deps
+            |> List.exists (fun d ->
+                d.FromSymbol.EndsWith("makePerson", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Person", StringComparison.Ordinal)
+                && d.Kind = UsesType)
+
+        test <@ hasEdgeToPerson @>
+
+    [<Fact>]
+    let ``accessing record field creates edge to record type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Config = { Host: string; Port: int }
+
+let getHost (c: Config) = c.Host
+"""
+
+        let deps = result.Dependencies
+        let configEdges =
+            deps
+            |> List.filter (fun d ->
+                d.FromSymbol.EndsWith("getHost", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Config", StringComparison.Ordinal))
+
+        test <@ configEdges.Length >= 1 @>

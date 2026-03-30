@@ -20,13 +20,15 @@ module ``All symbols reachable`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.helper"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.helper"
@@ -53,19 +55,22 @@ module ``Unreachable function detected`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.usedHelper"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.unusedHelper"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 7
                         LineEnd = 12
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.usedHelper"
@@ -91,25 +96,29 @@ module ``Transitive reachability`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.funcA"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.funcB"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 7
                         LineEnd = 12
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Domain.TypeC"
                         Kind = Type
                         SourceFile = "src/App/Domain.fs"
                         LineStart = 1
                         LineEnd = 3
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.funcA"
@@ -141,13 +150,15 @@ module ``Test methods excluded`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "Tests.MyTests.testSomething"
                         Kind = Function
                         SourceFile = "tests/Tests.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods =
                     [ { SymbolFullName = "Tests.MyTests.testSomething"
@@ -174,19 +185,22 @@ module ``Module symbols excluded`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.OldModule"
                         Kind = Module
                         SourceFile = "src/App/OldModule.fs"
                         LineStart = 1
                         LineEnd = 20
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.OldModule.orphanFunc"
                         Kind = Function
                         SourceFile = "src/App/OldModule.fs"
                         LineStart = 3
                         LineEnd = 8
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods = [] }
 
@@ -210,25 +224,29 @@ module ``Only shallowest unreachable reported`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.unusedFunc"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 1
                         LineEnd = 10
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "localHelper"
                         Kind = Value
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 3
                         LineEnd = 3
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "depCmd"
                         Kind = Value
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 5
                         LineEnd = 5
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods = [] }
 
@@ -249,19 +267,22 @@ module ``Only shallowest unreachable reported`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.outerFunc"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 1
                         LineEnd = 10
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.innerFunc"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods = [] }
 
@@ -283,19 +304,22 @@ module ``Only shallowest unreachable reported`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.unusedFunc"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.unusedValue"
                         Kind = Value
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 7
                         LineEnd = 7
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods = [] }
 
@@ -317,19 +341,22 @@ module ``Only shallowest unreachable reported`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "localVar"
                         Kind = Value
                         SourceFile = "src/App/Program.fs"
                         LineStart = 3
                         LineEnd = 3
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "_param"
                         Kind = Value
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 1
                         LineEnd = 1
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods = [] }
 
@@ -350,19 +377,22 @@ module ``Only shallowest unreachable reported`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.deadA"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.deadB"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 7
                         LineEnd = 12
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods = [] }
 
@@ -385,13 +415,15 @@ module ``Test file symbols excluded`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "TestHelpers.setup"
                         Kind = Function
                         SourceFile = "tests/TestHelpers.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods = [] }
 
@@ -412,13 +444,15 @@ module ``Test file symbols excluded`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "TestHelpers.setup"
                         Kind = Function
                         SourceFile = "tests/TestHelpers.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods = [] }
 
@@ -439,19 +473,22 @@ module ``Test file symbols excluded`` =
                         SourceFile = "tests/Tests.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "TestHelpers.setup"
                         Kind = Function
                         SourceFile = "tests/TestHelpers.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "TestHelpers.unusedHelper"
                         Kind = Function
                         SourceFile = "tests/TestHelpers.fs"
                         LineStart = 7
                         LineEnd = 12
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies =
                     [ { FromSymbol = "Tests.MyTest.testSomething"
                         ToSymbol = "TestHelpers.setup"
@@ -483,13 +520,15 @@ module ``matchesPattern — both wildcards (true, true)`` =
                         SourceFile = "src/App/Routes.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Unrelated"
                         Kind = Function
                         SourceFile = "src/App/Other.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods = [] }
 
@@ -511,13 +550,15 @@ module ``matchesPattern — both wildcards (true, true)`` =
                         SourceFile = "src/App/Routes.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Unrelated"
                         Kind = Function
                         SourceFile = "src/App/Other.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods = [] }
 
@@ -541,13 +582,15 @@ module ``matchesPattern — start wildcard only (true, false)`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.helper"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods = [] }
 
@@ -569,13 +612,15 @@ module ``matchesPattern — start wildcard only (true, false)`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.helper"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods = [] }
 
@@ -599,13 +644,15 @@ module ``matchesPattern — end wildcard only (false, true)`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "Other.Lib.helper"
                         Kind = Function
                         SourceFile = "src/Other/Lib.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods = [] }
 
@@ -629,13 +676,15 @@ module ``matchesPattern — exact match (false, false)`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.helper"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods = [] }
 
@@ -657,13 +706,15 @@ module ``matchesPattern — exact match (false, false)`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.helper"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.helper"
@@ -688,25 +739,29 @@ module ``DU case symbols excluded`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Shape"
                         Kind = Type
                         SourceFile = "src/App/Domain.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Shape.Circle"
                         Kind = DuCase
                         SourceFile = "src/App/Domain.fs"
                         LineStart = 2
                         LineEnd = 2
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Shape.Square"
                         Kind = DuCase
                         SourceFile = "src/App/Domain.fs"
                         LineStart = 3
                         LineEnd = 3
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies = []
                   TestMethods = [] }
 
@@ -730,13 +785,15 @@ module ``No matching entry points`` =
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.funcB"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 7
                         LineEnd = 12
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies =
                     [ { FromSymbol = "App.Lib.funcA"
                         ToSymbol = "App.Lib.funcB"
@@ -762,25 +819,29 @@ module ``Multiple entry point patterns`` =
                         SourceFile = "src/App/Api.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Worker.run"
                         Kind = Function
                         SourceFile = "src/App/Worker.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Shared.helper"
                         Kind = Function
                         SourceFile = "src/App/Shared.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Orphan.dead"
                         Kind = Function
                         SourceFile = "src/App/Orphan.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies =
                     [ { FromSymbol = "App.Api.handler"
                         ToSymbol = "App.Shared.helper"
@@ -810,13 +871,15 @@ module ``matchesPattern — prefix positive`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.helper"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.helper"
@@ -842,19 +905,22 @@ module ``Event emission`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.usedHelper"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 1
                         LineEnd = 5
-                        ContentHash = "" }
+                        ContentHash = ""
+                        IsExtern = false }
                       { FullName = "App.Lib.unusedHelper"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 7
                         LineEnd = 12
-                        ContentHash = "" } ]
+                        ContentHash = ""
+                        IsExtern = false } ]
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.usedHelper"
@@ -874,3 +940,459 @@ module ``Event emission`` =
 
             test <@ deadCodeEvents.Length = 1 @>
             test <@ deadCodeEvents[0] = [ "App.Lib.unusedHelper" ] @>)
+
+module ``DllImport symbols excluded`` =
+
+    [<Fact>]
+    let ``extern functions are not reported as dead code`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Program.main"
+                        Kind = Function
+                        SourceFile = "src/App/Program.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Native.nativeFunc"
+                        Kind = Function
+                        SourceFile = "src/App/Native.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = ""
+                        IsExtern = true } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildProjects([ graph ])
+
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
+
+            test <@ result.UnreachableSymbols |> List.isEmpty @>)
+
+module ``Verbose diagnostics`` =
+
+    [<Fact>]
+    let ``symbol with no incoming edges reports NoIncomingEdges`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Program.main"
+                        Kind = Function
+                        SourceFile = "src/App/Program.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Lib.orphan"
+                        Kind = Function
+                        SourceFile = "src/App/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = [] }
+
+            db.RebuildProjects([ graph ])
+
+            let result, _events = runDeadCodeVerbose db [ "*.Program.main" ] false
+
+            test <@ result.UnreachableSymbols.Length = 1 @>
+            let sym = result.UnreachableSymbols[0]
+            test <@ sym.Symbol.FullName = "App.Lib.orphan" @>
+            test <@ sym.Reason = NoIncomingEdges @>)
+
+    [<Fact>]
+    let ``symbol called only from unreachable code reports DisconnectedFromEntryPoints`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Program.main"
+                        Kind = Function
+                        SourceFile = "src/App/Program.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Island.root"
+                        Kind = Function
+                        SourceFile = "src/App/Island.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Island.helper"
+                        Kind = Function
+                        SourceFile = "src/App/Island.fs"
+                        LineStart = 7
+                        LineEnd = 12
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "App.Island.root"
+                        ToSymbol = "App.Island.helper"
+                        Kind = Calls } ]
+                  TestMethods = [] }
+
+            db.RebuildProjects([ graph ])
+
+            let result, _events = runDeadCodeVerbose db [ "*.Program.main" ] false
+
+            // root: lines 1-5, helper: lines 7-12 — NOT contained, both reported
+            test <@ result.UnreachableSymbols.Length = 2 @>
+
+            let root =
+                result.UnreachableSymbols
+                |> List.find (fun s -> s.Symbol.FullName = "App.Island.root")
+
+            let helper =
+                result.UnreachableSymbols
+                |> List.find (fun s -> s.Symbol.FullName = "App.Island.helper")
+
+            // root has NO incoming edges
+            test <@ root.Reason = NoIncomingEdges @>
+
+            // helper HAS an incoming edge from root, but root is unreachable
+            test
+                <@
+                    match helper.Reason with
+                    | DisconnectedFromEntryPoints _ -> true
+                    | _ -> false
+                @>)
+
+module ``DU type reachable via case usage`` =
+
+    [<Fact>]
+    let ``DU type is reachable when its cases are pattern matched`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Program.main"
+                        Kind = Function
+                        SourceFile = "src/App/Program.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Domain.Shape"
+                        Kind = Type
+                        SourceFile = "src/App/Domain.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Domain.Shape.Circle"
+                        Kind = DuCase
+                        SourceFile = "src/App/Domain.fs"
+                        LineStart = 2
+                        LineEnd = 2
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Lib.process"
+                        Kind = Function
+                        SourceFile = "src/App/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "App.Program.main"
+                        ToSymbol = "App.Lib.process"
+                        Kind = Calls }
+                      { FromSymbol = "App.Lib.process"
+                        ToSymbol = "App.Domain.Shape.Circle"
+                        Kind = PatternMatches }
+                      { FromSymbol = "App.Lib.process"
+                        ToSymbol = "App.Domain.Shape"
+                        Kind = UsesType } ]
+                  TestMethods = [] }
+
+            db.RebuildProjects([ graph ])
+
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
+
+            test <@ result.UnreachableSymbols |> List.isEmpty @>)
+
+module ``Generic type arg reachable`` =
+
+    [<Fact>]
+    let ``type used as generic parameter is reachable`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Program.main"
+                        Kind = Function
+                        SourceFile = "src/App/Program.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Domain.Config"
+                        Kind = Type
+                        SourceFile = "src/App/Domain.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Lib.loadAll"
+                        Kind = Function
+                        SourceFile = "src/App/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "App.Program.main"
+                        ToSymbol = "App.Lib.loadAll"
+                        Kind = Calls }
+                      { FromSymbol = "App.Lib.loadAll"
+                        ToSymbol = "App.Domain.Config"
+                        Kind = UsesType } ]
+                  TestMethods = [] }
+
+            db.RebuildProjects([ graph ])
+
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
+
+            test <@ result.UnreachableSymbols |> List.isEmpty @>)
+
+module ``Record type reachable via field usage`` =
+
+    [<Fact>]
+    let ``record type is reachable when its fields are used`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Program.main"
+                        Kind = Function
+                        SourceFile = "src/App/Program.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Domain.Person"
+                        Kind = Type
+                        SourceFile = "src/App/Domain.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Lib.greet"
+                        Kind = Function
+                        SourceFile = "src/App/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "App.Program.main"
+                        ToSymbol = "App.Lib.greet"
+                        Kind = Calls }
+                      { FromSymbol = "App.Lib.greet"
+                        ToSymbol = "App.Domain.Person"
+                        Kind = UsesType } ]
+                  TestMethods = [] }
+
+            db.RebuildProjects([ graph ])
+
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
+
+            test <@ result.UnreachableSymbols |> List.isEmpty @>)
+
+module ``Edge coverage for test impact`` =
+
+    [<Fact>]
+    let ``changed DU type affects test that pattern matches its cases`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Domain.Shape"
+                        Kind = Type
+                        SourceFile = "src/App/Domain.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Domain.Shape.Circle"
+                        Kind = DuCase
+                        SourceFile = "src/App/Domain.fs"
+                        LineStart = 2
+                        LineEnd = 2
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Lib.process"
+                        Kind = Function
+                        SourceFile = "src/App/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Tests.ShapeTests.test_process"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.ShapeTests.test_process"
+                        ToSymbol = "App.Lib.process"
+                        Kind = Calls }
+                      { FromSymbol = "App.Lib.process"
+                        ToSymbol = "App.Domain.Shape.Circle"
+                        Kind = PatternMatches }
+                      { FromSymbol = "App.Lib.process"
+                        ToSymbol = "App.Domain.Shape"
+                        Kind = UsesType } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.ShapeTests.test_process"
+                        TestProject = "Tests"
+                        TestClass = "ShapeTests"
+                        TestMethod = "test_process" } ] }
+
+            db.RebuildProjects([ graph ])
+
+            let affected = db.QueryAffectedTests([ "App.Domain.Shape" ])
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "test_process" @>)
+
+    [<Fact>]
+    let ``changed type used as generic arg affects test that uses the generic`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Domain.Config"
+                        Kind = Type
+                        SourceFile = "src/App/Domain.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Lib.loadConfigs"
+                        Kind = Function
+                        SourceFile = "src/App/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Tests.ConfigTests.test_load"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.ConfigTests.test_load"
+                        ToSymbol = "App.Lib.loadConfigs"
+                        Kind = Calls }
+                      { FromSymbol = "App.Lib.loadConfigs"
+                        ToSymbol = "App.Domain.Config"
+                        Kind = UsesType } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.ConfigTests.test_load"
+                        TestProject = "Tests"
+                        TestClass = "ConfigTests"
+                        TestMethod = "test_load" } ] }
+
+            db.RebuildProjects([ graph ])
+
+            let affected = db.QueryAffectedTests([ "App.Domain.Config" ])
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "test_load" @>)
+
+    [<Fact>]
+    let ``changed symbol affects two test classes`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Shared.helper"
+                        Kind = Function
+                        SourceFile = "src/App/Shared.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Tests.AlphaTests.test_alpha"
+                        Kind = Function
+                        SourceFile = "tests/Alpha.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Tests.BetaTests.test_beta"
+                        Kind = Function
+                        SourceFile = "tests/Beta.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.AlphaTests.test_alpha"
+                        ToSymbol = "App.Shared.helper"
+                        Kind = Calls }
+                      { FromSymbol = "Tests.BetaTests.test_beta"
+                        ToSymbol = "App.Shared.helper"
+                        Kind = Calls } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.AlphaTests.test_alpha"
+                        TestProject = "Tests"
+                        TestClass = "AlphaTests"
+                        TestMethod = "test_alpha" }
+                      { SymbolFullName = "Tests.BetaTests.test_beta"
+                        TestProject = "Tests"
+                        TestClass = "BetaTests"
+                        TestMethod = "test_beta" } ] }
+
+            db.RebuildProjects([ graph ])
+
+            let affected = db.QueryAffectedTests([ "App.Shared.helper" ])
+            let methods = affected |> List.map (fun t -> t.TestMethod) |> List.sort
+            test <@ methods = [ "test_alpha"; "test_beta" ] @>)
+
+    [<Fact>]
+    let ``changed record type affects test via field usage edge`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Domain.Person"
+                        Kind = Type
+                        SourceFile = "src/App/Domain.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Lib.greet"
+                        Kind = Function
+                        SourceFile = "src/App/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Tests.GreetTests.test_greet"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.GreetTests.test_greet"
+                        ToSymbol = "App.Lib.greet"
+                        Kind = Calls }
+                      { FromSymbol = "App.Lib.greet"
+                        ToSymbol = "App.Domain.Person"
+                        Kind = UsesType } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.GreetTests.test_greet"
+                        TestProject = "Tests"
+                        TestClass = "GreetTests"
+                        TestMethod = "test_greet" } ] }
+
+            db.RebuildProjects([ graph ])
+
+            let affected = db.QueryAffectedTests([ "App.Domain.Person" ])
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "test_greet" @>)
