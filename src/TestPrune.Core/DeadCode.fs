@@ -19,8 +19,7 @@ type UnreachableSymbolInfo =
       Reason: UnreachabilityReason }
 
 type VerboseDeadCodeResult =
-    { TotalSymbols: int
-      ReachableSymbols: int
+    { Base: DeadCodeResult
       UnreachableSymbols: UnreachableSymbolInfo list }
 
 /// Check whether a symbol name matches a wildcard pattern.
@@ -113,14 +112,17 @@ let findDeadCodeVerbose
     (reachable: Set<string>)
     (testMethodNames: Set<string>)
     (includeTests: bool)
-    (getIncomingEdges: string -> string list)
+    (getIncomingEdgesBatch: string list -> Map<string, string list>)
     : VerboseDeadCodeResult * AnalysisEvent list =
     let result, events = findDeadCode allSymbols reachable testMethodNames includeTests
+
+    let unreachableNames = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
+    let incomingEdgesMap = getIncomingEdgesBatch unreachableNames
 
     let verboseUnreachable =
         result.UnreachableSymbols
         |> List.map (fun s ->
-            let incoming = getIncomingEdges s.FullName
+            let incoming = incomingEdgesMap |> Map.tryFind s.FullName |> Option.defaultValue []
 
             let reason =
                 if List.isEmpty incoming then
@@ -130,7 +132,6 @@ let findDeadCodeVerbose
 
             { Symbol = s; Reason = reason })
 
-    { TotalSymbols = result.TotalSymbols
-      ReachableSymbols = result.ReachableSymbols
+    { Base = result
       UnreachableSymbols = verboseUnreachable },
     events

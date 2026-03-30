@@ -76,8 +76,11 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
             // Forward reachability from entry points
             transitiveClosure forwardEdges entryPoints
       GetTestMethodSymbolNames = fun () -> testMethodNames
-      GetIncomingEdges =
-        fun symbolName ->
-            allDeps
-            |> List.filter (fun d -> d.ToSymbol = symbolName)
-            |> List.map (fun d -> d.FromSymbol) }
+      GetIncomingEdgesBatch =
+        fun symbolNames ->
+            symbolNames
+            |> List.choose (fun name ->
+                reverseEdges
+                |> Map.tryFind name
+                |> Option.map (fun froms -> name, Set.toList froms))
+            |> Map.ofList }

@@ -457,3 +457,600 @@ let main () = area (Circle 1.0) |> ignore
                     |> List.exists (fun n -> n.EndsWith("Square", StringComparison.Ordinal))
                     |> not
                 @>)
+
+module ``SymbolDiff — real source change detection`` =
+
+    [<Fact>]
+    let ``function body change detected`` () =
+        let v1 =
+            analyze
+                """
+module M
+let compute x = x + 1
+"""
+
+        let v2 =
+            analyze
+                """
+module M
+let compute x = x * 2 + 1
+"""
+
+        let v1Symbols = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let v2Symbols = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let changes, _ = detectChanges v2Symbols v1Symbols
+        let names = changedSymbolNames changes
+        test <@ names |> List.exists (fun n -> n.EndsWith("compute", StringComparison.Ordinal)) @>
+
+    [<Fact>]
+    let ``record field added detected`` () =
+        let v1 =
+            analyze
+                """
+module M
+type Config = { Host: string }
+"""
+
+        let v2 =
+            analyze
+                """
+module M
+type Config = { Host: string; Port: int }
+"""
+
+        let v1Symbols = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let v2Symbols = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let changes, _ = detectChanges v2Symbols v1Symbols
+        let names = changedSymbolNames changes
+        test <@ names |> List.exists (fun n -> n.EndsWith("Config", StringComparison.Ordinal)) @>
+
+    [<Fact>]
+    let ``DU case added detected`` () =
+        let v1 =
+            analyze
+                """
+module M
+type Shape =
+    | Circle of float
+    | Square of float
+"""
+
+        let v2 =
+            analyze
+                """
+module M
+type Shape =
+    | Circle of float
+    | Square of float
+    | Triangle of float * float
+"""
+
+        let v1Symbols = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let v2Symbols = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let changes, _ = detectChanges v2Symbols v1Symbols
+        let names = changedSymbolNames changes
+        // Shape type itself should be Modified (line range changed)
+        test <@ names |> List.exists (fun n -> n.EndsWith("Shape", StringComparison.Ordinal)) @>
+        // Triangle should be Added
+        test <@ changes |> List.exists (fun c -> match c with SymbolChange.Added n -> n.EndsWith("Triangle", StringComparison.Ordinal) | _ -> false) @>
+
+    [<Fact>]
+    let ``DU case removed detected`` () =
+        let v1 =
+            analyze
+                """
+module M
+type Msg =
+    | Increment
+    | Decrement
+    | Reset
+"""
+
+        let v2 =
+            analyze
+                """
+module M
+type Msg =
+    | Increment
+    | Decrement
+"""
+
+        let v1Symbols = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let v2Symbols = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let changes, _ = detectChanges v2Symbols v1Symbols
+        // Reset should be Removed
+        test <@ changes |> List.exists (fun c -> match c with SymbolChange.Removed n -> n.EndsWith("Reset", StringComparison.Ordinal) | _ -> false) @>
+
+    [<Fact>]
+    let ``attribute added to function detected`` () =
+        let v1 =
+            analyze
+                """
+module M
+open System
+let oldFunc x = x + 1
+"""
+
+        let v2 =
+            analyze
+                """
+module M
+open System
+[<Obsolete>]
+let oldFunc x = x + 1
+"""
+
+        let v1Symbols = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let v2Symbols = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let changes, _ = detectChanges v2Symbols v1Symbols
+        let names = changedSymbolNames changes
+        test <@ names |> List.exists (fun n -> n.EndsWith("oldFunc", StringComparison.Ordinal)) @>
+
+    [<Fact>]
+    let ``identical source produces no changes`` () =
+        let source =
+            """
+module M
+let f x = x + 1
+let g y = y * 2
+"""
+
+        let r1 = analyze source
+        let r2 = analyze source
+        let s1 = r1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let s2 = r2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let changes, _ = detectChanges s2 s1
+        test <@ changes |> List.isEmpty @>
+
+module ``Impact analysis — change affects zero tests`` =
+
+    [<Fact>]
+    let ``changing isolated function selects no tests`` () =
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+let isolated x = x + 1
+let used x = x * 2
+
+[<Fact>]
+let myTest () = used 5 |> ignore
+"""
+
+            let result = analyze source
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" }) }
+
+            db.RebuildProjects([ analysis ])
+
+            // Change `isolated` — no test depends on it
+            let storedSymbols = db.GetSymbolsInFile "src/M.fs"
+
+            let modifiedSymbols =
+                storedSymbols
+                |> List.map (fun s ->
+                    if s.FullName.EndsWith("isolated", StringComparison.Ordinal) then
+                        { s with ContentHash = "modified" }
+                    else
+                        s)
+
+            let changes, _ = detectChanges modifiedSymbols storedSymbols
+            let changedNames = changedSymbolNames changes
+            let affected = db.QueryAffectedTests changedNames
+            test <@ affected |> List.isEmpty @>)
+
+module ``Impact analysis — change affects two test classes`` =
+
+    [<Fact>]
+    let ``changing shared helper selects both tests`` () =
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+let sharedHelper x = x + 1
+
+let wrapperA x = sharedHelper x
+let wrapperB x = sharedHelper (x * 2)
+
+[<Fact>]
+let testAlpha () = wrapperA 1 |> ignore
+
+[<Fact>]
+let testBeta () = wrapperB 2 |> ignore
+"""
+
+            let result = analyze source
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" }) }
+
+            db.RebuildProjects([ analysis ])
+
+            // Change sharedHelper — both tests depend on it transitively
+            let storedSymbols = db.GetSymbolsInFile "src/M.fs"
+
+            let modifiedSymbols =
+                storedSymbols
+                |> List.map (fun s ->
+                    if s.FullName.EndsWith("sharedHelper", StringComparison.Ordinal) then
+                        { s with ContentHash = "modified" }
+                    else
+                        s)
+
+            let changes, _ = detectChanges modifiedSymbols storedSymbols
+            let changedNames = changedSymbolNames changes
+            let affected = db.QueryAffectedTests changedNames
+            let testNames = affected |> List.map (fun t -> t.TestMethod) |> List.sort
+            test <@ testNames = [ "testAlpha"; "testBeta" ] @>)
+
+module ``Impact analysis — generic type parameter change affects test`` =
+
+    [<Fact>]
+    let ``changing type used as generic arg selects dependent test`` () =
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+type Config = { Host: string; Port: int }
+
+let loadConfigs () : Config list = []
+
+[<Fact>]
+let testLoad () = loadConfigs () |> ignore
+"""
+
+            let result = analyze source
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" }) }
+
+            db.RebuildProjects([ analysis ])
+
+            // Change Config type — test uses loadConfigs which returns Config list
+            let storedSymbols = db.GetSymbolsInFile "src/M.fs"
+
+            let modifiedSymbols =
+                storedSymbols
+                |> List.map (fun s ->
+                    if s.FullName.EndsWith("Config", StringComparison.Ordinal) && s.Kind = Type then
+                        { s with ContentHash = "modified" }
+                    else
+                        s)
+
+            let changes, _ = detectChanges modifiedSymbols storedSymbols
+            let changedNames = changedSymbolNames changes
+            let affected = db.QueryAffectedTests changedNames
+            test <@ affected.Length >= 1 @>
+            test <@ affected |> List.exists (fun t -> t.TestMethod = "testLoad") @>)
+
+module ``Impact analysis — record field construction affects test`` =
+
+    [<Fact>]
+    let ``changing record type selects test that constructs it`` () =
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+type Person = { Name: string; Age: int }
+
+let makePerson () = { Name = "Alice"; Age = 30 }
+
+[<Fact>]
+let testMake () = makePerson () |> ignore
+"""
+
+            let result = analyze source
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" }) }
+
+            db.RebuildProjects([ analysis ])
+
+            let storedSymbols = db.GetSymbolsInFile "src/M.fs"
+
+            let modifiedSymbols =
+                storedSymbols
+                |> List.map (fun s ->
+                    if s.FullName.EndsWith("Person", StringComparison.Ordinal) && s.Kind = Type then
+                        { s with ContentHash = "modified" }
+                    else
+                        s)
+
+            let changes, _ = detectChanges modifiedSymbols storedSymbols
+            let changedNames = changedSymbolNames changes
+            let affected = db.QueryAffectedTests changedNames
+            test <@ affected.Length >= 1 @>
+            test <@ affected |> List.exists (fun t -> t.TestMethod = "testMake") @>)
+
+module ``Impact analysis — DU parent type change affects test via case usage`` =
+
+    [<Fact>]
+    let ``changing DU type selects test that pattern matches its cases`` () =
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+type Color =
+    | Red
+    | Green
+    | Blue
+
+let describe c =
+    match c with
+    | Red -> "red"
+    | Green -> "green"
+    | Blue -> "blue"
+
+[<Fact>]
+let testDescribe () = describe Red |> ignore
+"""
+
+            let result = analyze source
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" }) }
+
+            db.RebuildProjects([ analysis ])
+
+            // Change Color type — test depends on describe which pattern matches Color cases
+            let storedSymbols = db.GetSymbolsInFile "src/M.fs"
+
+            let modifiedSymbols =
+                storedSymbols
+                |> List.map (fun s ->
+                    if s.FullName.EndsWith("Color", StringComparison.Ordinal) && s.Kind = Type then
+                        { s with ContentHash = "modified" }
+                    else
+                        s)
+
+            let changes, _ = detectChanges modifiedSymbols storedSymbols
+            let changedNames = changedSymbolNames changes
+            let affected = db.QueryAffectedTests changedNames
+            test <@ affected.Length >= 1 @>
+            test <@ affected |> List.exists (fun t -> t.TestMethod = "testDescribe") @>)
+
+module ``Impact analysis — four hop transitive chain`` =
+
+    [<Fact>]
+    let ``change at depth 4 selects test through full chain`` () =
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+let depth4 x = x + 1
+let depth3 x = depth4 x
+let depth2 x = depth3 x
+let depth1 x = depth2 x
+
+[<Fact>]
+let testDeep () = depth1 5 |> ignore
+"""
+
+            let result = analyze source
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" }) }
+
+            db.RebuildProjects([ analysis ])
+
+            // Change depth4 — 4 hops away from testDeep
+            let storedSymbols = db.GetSymbolsInFile "src/M.fs"
+
+            let modifiedSymbols =
+                storedSymbols
+                |> List.map (fun s ->
+                    if s.FullName.EndsWith("depth4", StringComparison.Ordinal) then
+                        { s with ContentHash = "modified" }
+                    else
+                        s)
+
+            let changes, _ = detectChanges modifiedSymbols storedSymbols
+            let changedNames = changedSymbolNames changes
+            let affected = db.QueryAffectedTests changedNames
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "testDeep" @>)
+
+module ``Impact analysis — mixed edge types`` =
+
+    [<Fact>]
+    let ``test selected through function call AND type usage AND pattern match`` () =
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+type Result =
+    | Ok of int
+    | Err of string
+
+type Config = { Timeout: int }
+
+let helper (c: Config) = c.Timeout
+let process (c: Config) =
+    match Ok (helper c) with
+    | Ok v -> v
+    | Err _ -> 0
+
+[<Fact>]
+let testProcess () =
+    let c = { Timeout = 5 }
+    process c |> ignore
+"""
+
+            let result = analyze source
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" }) }
+
+            db.RebuildProjects([ analysis ])
+
+            // Change Config — test depends through: testProcess -> process -> helper -> Config
+            let storedSymbols = db.GetSymbolsInFile "src/M.fs"
+
+            let modifiedSymbols =
+                storedSymbols
+                |> List.map (fun s ->
+                    if s.FullName.EndsWith("Config", StringComparison.Ordinal) && s.Kind = Type then
+                        { s with ContentHash = "modified" }
+                    else
+                        s)
+
+            let changes, _ = detectChanges modifiedSymbols storedSymbols
+            let changedNames = changedSymbolNames changes
+            let affected = db.QueryAffectedTests changedNames
+            test <@ affected.Length >= 1 @>
+            test <@ affected |> List.exists (fun t -> t.TestMethod = "testProcess") @>)
+
+module ``Dead code — generic type parameter keeps type alive`` =
+
+    [<Fact>]
+    let ``type used only as generic argument is not dead`` () =
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+type MyData = { Value: int }
+
+let loadAll () : MyData list = []
+let main () = loadAll () |> ignore
+"""
+
+            let result = analyze source
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = [] }
+
+            db.RebuildProjects([ analysis ])
+
+            let deadResult = runDeadCodeResult db [ "*.main" ] false
+            let deadNames = deadResult.UnreachableSymbols |> List.map (fun s -> s.FullName)
+
+            // MyData should NOT be dead — it's used as generic arg in list<MyData>
+            test
+                <@
+                    deadNames
+                    |> List.exists (fun n -> n.EndsWith("MyData", StringComparison.Ordinal))
+                    |> not
+                @>)
+
+module ``Dead code — record type kept alive by field construction`` =
+
+    [<Fact>]
+    let ``record type used only via field construction is not dead`` () =
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+type Settings = { Verbose: bool; MaxRetries: int }
+
+let defaultSettings () = { Verbose = false; MaxRetries = 3 }
+let main () = defaultSettings () |> ignore
+"""
+
+            let result = analyze source
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = [] }
+
+            db.RebuildProjects([ analysis ])
+
+            let deadResult = runDeadCodeResult db [ "*.main" ] false
+            let deadNames = deadResult.UnreachableSymbols |> List.map (fun s -> s.FullName)
+
+            test
+                <@
+                    deadNames
+                    |> List.exists (fun n -> n.EndsWith("Settings", StringComparison.Ordinal))
+                    |> not
+                @>)
+
+module ``Dead code — DU type kept alive by case pattern match`` =
+
+    [<Fact>]
+    let ``DU type used only via case matching is not dead`` () =
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+type Direction =
+    | North
+    | South
+    | East
+    | West
+
+let isVertical d =
+    match d with
+    | North | South -> true
+    | East | West -> false
+
+let main () = isVertical North |> ignore
+"""
+
+            let result = analyze source
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = [] }
+
+            db.RebuildProjects([ analysis ])
+
+            let deadResult = runDeadCodeResult db [ "*.main" ] false
+            let deadNames = deadResult.UnreachableSymbols |> List.map (fun s -> s.FullName)
+
+            // Direction type should NOT be dead — it's the parent of matched cases
+            test
+                <@
+                    deadNames
+                    |> List.exists (fun n -> n.EndsWith("Direction", StringComparison.Ordinal))
+                    |> not
+                @>)

@@ -149,9 +149,7 @@ let private extractGenericTypeArgs (fsharpType: FSharpType) : string list =
         if fsharpType.IsGenericParameter then
             []
         else
-            fsharpType.GenericArguments
-            |> Seq.toList
-            |> List.collect collect
+            fsharpType.GenericArguments |> Seq.toList |> List.collect collect
     with :? InvalidOperationException ->
         []
 
@@ -161,12 +159,6 @@ let private tryGetGenericTypeArgEdges (symbol: FSharpSymbol) : string list =
     | :? FSharpMemberOrFunctionOrValue as mfv ->
         try
             extractGenericTypeArgs mfv.FullType
-        with :? InvalidOperationException ->
-            []
-    | :? FSharpEntity as entity ->
-        try
-            entity.GenericParameters |> ignore
-            []
         with :? InvalidOperationException ->
             []
     | _ -> []
@@ -218,23 +210,18 @@ let private knownTestAttributes =
           "TestMethod"
           "DataTestMethod" ]
 
-let private isTestAttribute (mfv: FSharpMemberOrFunctionOrValue) : bool =
+let private hasAttribute (predicate: string -> bool) (mfv: FSharpMemberOrFunctionOrValue) : bool =
     try
         mfv.Attributes
-        |> Seq.exists (fun attr ->
-            let name = attr.AttributeType.DisplayName
-            knownTestAttributes |> Set.contains name)
+        |> Seq.exists (fun attr -> predicate attr.AttributeType.DisplayName)
     with :? InvalidOperationException ->
         false
 
-let private isDllImport (mfv: FSharpMemberOrFunctionOrValue) : bool =
-    try
-        mfv.Attributes
-        |> Seq.exists (fun attr ->
-            let name = attr.AttributeType.DisplayName
-            name = "DllImportAttribute" || name = "DllImport")
-    with :? InvalidOperationException ->
-        false
+let private isTestAttribute =
+    hasAttribute (fun name -> knownTestAttributes |> Set.contains name)
+
+let private isDllImport =
+    hasAttribute (fun name -> name = "DllImportAttribute" || name = "DllImport")
 
 let private extractTestClass (fullName: string) : string * string =
     match fullName.LastIndexOf('.') with
@@ -292,9 +279,7 @@ let collectModuleBindingRanges (tree: ParsedInput) : (string * range) list =
     results |> Seq.toList
 
 /// Hash the source lines between startLine and endLine (1-based, inclusive).
-let private hashSourceLines (source: string) (startLine: int) (endLine: int) : string =
-    let lines = source.Split('\n')
-
+let private hashSourceLines (lines: string array) (startLine: int) (endLine: int) : string =
     let start = max 0 (startLine - 1)
     let end' = min lines.Length endLine
     let slice = lines[start .. end' - 1]
@@ -326,6 +311,7 @@ let private extractResults
         | FSharpCheckFileAnswer.Aborted -> Error "Type checking aborted"
         | FSharpCheckFileAnswer.Succeeded checkResults ->
             let allUses = checkResults.GetAllUsesOfAllSymbolsInFile() |> Seq.toList
+            let sourceLines = source.Split('\n')
 
             let definitions =
                 allUses
@@ -343,7 +329,7 @@ let private extractResults
                               SourceFile = sourceFileName
                               LineStart = u.Range.StartLine
                               LineEnd = u.Range.EndLine
-                              ContentHash = hashSourceLines source u.Range.StartLine u.Range.EndLine
+                              ContentHash = hashSourceLines sourceLines u.Range.StartLine u.Range.EndLine
                               IsExtern = isExtern },
                             u)
                     else
@@ -370,20 +356,27 @@ let private extractResults
                 definitions
                 |> List.choose (fun (symbolInfo, _) -> if isModuleLevel symbolInfo then Some symbolInfo else None)
 
-            let findEnclosing (useRange: range) =
-                let candidates =
-                    moduleBindingRanges
-                    |> List.filter (fun (_, bindingRange) ->
-                        useRange.StartLine >= bindingRange.StartLine
-                        && useRange.EndLine <= bindingRange.EndLine)
-                    |> List.sortByDescending (fun (_, r) -> r.StartLine)
+            // Pre-sort binding ranges by start line descending for efficient lookup
+            let sortedBindingRanges =
+                moduleBindingRanges
+                |> List.sortByDescending (fun (_, r) -> r.StartLine)
+                |> Array.ofList
 
-                match candidates |> List.tryHead with
-                | None -> None
-                | Some(name, _) ->
-                    definitions
-                    |> List.tryFind (fun (si, _) -> si.FullName.EndsWith(name, StringComparison.Ordinal))
-                    |> Option.map fst
+            // Pre-build a map from binding name suffix to SymbolInfo for O(1) lookup
+            let definitionsByName =
+                definitions
+                |> List.choose (fun (si, _) ->
+                    moduleBindingRanges
+                    |> List.tryFind (fun (name, _) -> si.FullName.EndsWith(name, StringComparison.Ordinal))
+                    |> Option.map (fun (name, _) -> name, si))
+                |> Map.ofList
+
+            let findEnclosing (useRange: range) =
+                sortedBindingRanges
+                |> Array.tryFind (fun (_, bindingRange) ->
+                    useRange.StartLine >= bindingRange.StartLine
+                    && useRange.EndLine <= bindingRange.EndLine)
+                |> Option.bind (fun (name, _) -> definitionsByName |> Map.tryFind name)
 
             let dependencies =
                 allUses
@@ -454,8 +447,11 @@ let private extractResults
                                                       ToSymbol = recName
                                                       Kind = UsesType })
 
-                                    primary :: (parentEdge |> Option.toList) @ genericArgEdges @ (recordTypeEdge |> Option.toList))
-                |> List.distinct
+                                    primary :: (parentEdge |> Option.toList)
+                                    @ genericArgEdges
+                                    @ (recordTypeEdge |> Option.toList))
+                |> Seq.distinct
+                |> Seq.toList
 
             let testMethods =
                 allUses

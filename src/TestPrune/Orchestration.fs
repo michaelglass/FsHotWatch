@@ -578,30 +578,36 @@ let runDeadCode
         let reachable = store.GetReachableSymbols(entryPoints)
         let testMethodNames = store.GetTestMethodSymbolNames()
 
-        if verbose then
-            let result, events =
-                findDeadCodeVerbose allSymbols reachable testMethodNames includeTests store.GetIncomingEdges
+        let getIncomingBatch =
+            if verbose then
+                store.GetIncomingEdgesBatch
+            else
+                fun _ -> Map.empty
 
-            for event in events do
-                auditSink.Post(timestamp event)
+        let result, events =
+            findDeadCodeVerbose allSymbols reachable testMethodNames includeTests getIncomingBatch
 
-            printfn "Dead code analysis:"
-            printfn $"  Total symbols: %d{result.TotalSymbols}"
-            printfn $"  Reachable: %d{result.ReachableSymbols}"
-            printfn $"  Potentially unreachable: %d{result.UnreachableSymbols.Length}"
+        for event in events do
+            auditSink.Post(timestamp event)
 
-            if not result.UnreachableSymbols.IsEmpty then
-                printfn ""
+        printfn "Dead code analysis:"
+        printfn $"  Total symbols: %d{result.Base.TotalSymbols}"
+        printfn $"  Reachable: %d{result.Base.ReachableSymbols}"
+        printfn $"  Potentially unreachable: %d{result.UnreachableSymbols.Length}"
 
-                let byFile =
-                    result.UnreachableSymbols
-                    |> List.groupBy (fun u -> u.Symbol.SourceFile)
-                    |> List.sortBy fst
+        if not result.UnreachableSymbols.IsEmpty then
+            printfn ""
 
-                for (file, symbols) in byFile do
-                    printfn $"  %s{file} (%d{symbols.Length} unreachable):"
+            let byFile =
+                result.UnreachableSymbols
+                |> List.groupBy (fun u -> u.Symbol.SourceFile)
+                |> List.sortBy fst
 
-                    for u in symbols |> List.sortBy (fun u -> u.Symbol.LineStart) do
+            for (file, symbols) in byFile do
+                printfn $"  %s{file} (%d{symbols.Length} unreachable):"
+
+                for u in symbols |> List.sortBy (fun u -> u.Symbol.LineStart) do
+                    if verbose then
                         let reason =
                             match u.Reason with
                             | NoIncomingEdges -> "no incoming edges"
@@ -616,31 +622,7 @@ let runDeadCode
 
                         printfn
                             $"    - %s{u.Symbol.FullName} (%A{u.Symbol.Kind}, line %d{u.Symbol.LineStart}) \u2014 %s{reason}"
+                    else
+                        printfn $"    - %s{u.Symbol.FullName} (%A{u.Symbol.Kind}, line %d{u.Symbol.LineStart})"
 
-            0
-        else
-            let result, events = findDeadCode allSymbols reachable testMethodNames includeTests
-
-            for event in events do
-                auditSink.Post(timestamp event)
-
-            printfn "Dead code analysis:"
-            printfn $"  Total symbols: %d{result.TotalSymbols}"
-            printfn $"  Reachable: %d{result.ReachableSymbols}"
-            printfn $"  Potentially unreachable: %d{result.UnreachableSymbols.Length}"
-
-            if not result.UnreachableSymbols.IsEmpty then
-                printfn ""
-
-                let byFile =
-                    result.UnreachableSymbols
-                    |> List.groupBy (fun s -> s.SourceFile)
-                    |> List.sortBy fst
-
-                for (file, symbols) in byFile do
-                    printfn $"  %s{file} (%d{symbols.Length} unreachable):"
-
-                    for s in symbols |> List.sortBy (fun s -> s.LineStart) do
-                        printfn $"    - %s{s.FullName} (%A{s.Kind}, line %d{s.LineStart})"
-
-            0
+        0

@@ -524,23 +524,36 @@ type Database(dbPath: string) =
 
         if reader.Read() then Some(reader.GetString(0)) else None
 
-    /// Get the names of symbols that have edges pointing TO the given symbol.
-    member _.GetIncomingEdges(symbolName: string) : string list =
-        use conn = openConnection dbPath
-        use cmd = conn.CreateCommand()
+    /// Get incoming edges for a batch of symbol names (who depends on each).
+    member _.GetIncomingEdgesBatch(symbolNames: string list) : Map<string, string list> =
+        if symbolNames.IsEmpty then
+            Map.empty
+        else
+            use conn = openConnection dbPath
 
-        cmd.CommandText <-
-            """
-            SELECT s_from.full_name
-            FROM dependencies d
-            JOIN symbols s_to ON s_to.id = d.to_symbol_id
-            JOIN symbols s_from ON s_from.id = d.from_symbol_id
-            WHERE s_to.full_name = @name
-            """
+            let paramNames = symbolNames |> List.mapi (fun i _ -> $"@p%d{i}")
+            let placeholders = String.Join(", ", paramNames)
 
-        cmd.Parameters.AddWithValue("@name", symbolName) |> ignore
-        use reader = cmd.ExecuteReader()
-        readAll reader (fun r -> r.GetString(0))
+            use cmd = conn.CreateCommand()
+
+            cmd.CommandText <-
+                $"""
+                SELECT s_to.full_name, s_from.full_name
+                FROM dependencies d
+                JOIN symbols s_to ON s_to.id = d.to_symbol_id
+                JOIN symbols s_from ON s_from.id = d.from_symbol_id
+                WHERE s_to.full_name IN (%s{placeholders})
+                """
+
+            symbolNames
+            |> List.iteri (fun i name -> cmd.Parameters.AddWithValue($"@p%d{i}", name) |> ignore)
+
+            use reader = cmd.ExecuteReader()
+
+            readAll reader (fun r -> r.GetString(0), r.GetString(1))
+            |> List.groupBy fst
+            |> List.map (fun (k, vs) -> k, vs |> List.map snd)
+            |> Map.ofList
 
     /// Get dependencies originating from symbols defined in the given source file.
     member _.GetDependenciesFromFile(sourceFile: string) : Dependency list =

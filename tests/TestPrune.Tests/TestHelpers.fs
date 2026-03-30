@@ -32,7 +32,7 @@ let runDeadCodeVerbose (db: Database) (patterns: string list) (includeTests: boo
     let entryPoints = findEntryPoints allNames patterns
     let reachable = db.GetReachableSymbols(entryPoints)
     let testMethodNames = db.GetTestMethodSymbolNames()
-    findDeadCodeVerbose allSymbols reachable testMethodNames includeTests db.GetIncomingEdges
+    findDeadCodeVerbose allSymbols reachable testMethodNames includeTests db.GetIncomingEdgesBatch
 
 let runDeadCode (db: Database) (patterns: string list) (includeTests: bool) =
     let allSymbols = db.GetAllSymbols()

@@ -1311,6 +1311,7 @@ let items : list<MyData> = []
 """
 
         let deps = result.Dependencies
+
         let hasEdgeToMyData =
             deps
             |> List.exists (fun d ->
@@ -1333,6 +1334,7 @@ let loadConfigs () : Config list = []
 """
 
         let deps = result.Dependencies
+
         let hasEdgeToConfig =
             deps
             |> List.exists (fun d ->
@@ -1355,11 +1357,13 @@ let lookup : Map<Key, Val> = Map.empty
 """
 
         let deps = result.Dependencies
+
         let hasEdgeToKey =
             deps
             |> List.exists (fun d ->
                 d.FromSymbol.EndsWith("lookup", StringComparison.Ordinal)
                 && d.ToSymbol.EndsWith("Key", StringComparison.Ordinal))
+
         let hasEdgeToVal =
             deps
             |> List.exists (fun d ->
@@ -1384,6 +1388,7 @@ let makePerson () = { Name = "Alice"; Age = 30 }
 """
 
         let deps = result.Dependencies
+
         let hasEdgeToPerson =
             deps
             |> List.exists (fun d ->
@@ -1406,6 +1411,7 @@ let getHost (c: Config) = c.Host
 """
 
         let deps = result.Dependencies
+
         let configEdges =
             deps
             |> List.filter (fun d ->
