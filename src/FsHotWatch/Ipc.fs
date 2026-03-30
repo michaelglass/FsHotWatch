@@ -136,19 +136,22 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
         task {
             let statuses = config.Host.GetAllStatuses()
 
-            let statusMap =
+            let running =
                 statuses
-                |> Map.map (fun _ s ->
+                |> Map.toList
+                |> List.choose (fun (name, s) ->
                     match s with
-                    | Events.Running _ -> "Running"
-                    | Events.Completed _ -> "Completed"
-                    | Events.Failed _ -> "Failed"
-                    | Events.Idle -> "Idle")
+                    | Events.Running _ -> Some name
+                    | _ -> None)
 
-            Logging.debug "rpc" $"WaitForComplete() called, statuses: %A{statusMap}"
+            match running with
+            | [] -> Logging.info "rpc" $"WaitForComplete() called — all plugins already terminal"
+            | plugins ->
+                let joined = plugins |> String.concat ", "
+                Logging.info "rpc" $"WaitForComplete() called — waiting for: %s{joined}"
 
             do! config.WaitForAllTerminal()
-            Logging.debug "rpc" "WaitForComplete() resolved"
+            Logging.info "rpc" "WaitForComplete() resolved"
             return this.GetStatus()
         }
 
