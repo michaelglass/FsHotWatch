@@ -532,7 +532,14 @@ type Shape =
         // Shape type itself should be Modified (line range changed)
         test <@ names |> List.exists (fun n -> n.EndsWith("Shape", StringComparison.Ordinal)) @>
         // Triangle should be Added
-        test <@ changes |> List.exists (fun c -> match c with SymbolChange.Added n -> n.EndsWith("Triangle", StringComparison.Ordinal) | _ -> false) @>
+        test
+            <@
+                changes
+                |> List.exists (fun c ->
+                    match c with
+                    | SymbolChange.Added n -> n.EndsWith("Triangle", StringComparison.Ordinal)
+                    | _ -> false)
+            @>
 
     [<Fact>]
     let ``DU case removed detected`` () =
@@ -559,7 +566,14 @@ type Msg =
         let v2Symbols = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
         let changes, _ = detectChanges v2Symbols v1Symbols
         // Reset should be Removed
-        test <@ changes |> List.exists (fun c -> match c with SymbolChange.Removed n -> n.EndsWith("Reset", StringComparison.Ordinal) | _ -> false) @>
+        test
+            <@
+                changes
+                |> List.exists (fun c ->
+                    match c with
+                    | SymbolChange.Removed n -> n.EndsWith("Reset", StringComparison.Ordinal)
+                    | _ -> false)
+            @>
 
     [<Fact>]
     let ``attribute added to function detected`` () =
@@ -601,6 +615,171 @@ let g y = y * 2
         let s2 = r2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
         let changes, _ = detectChanges s2 s1
         test <@ changes |> List.isEmpty @>
+
+    [<Fact>]
+    let ``adding line comment to function body produces no changes`` () =
+        let v1 =
+            analyze
+                """
+module M
+let compute x =
+    x + 1
+"""
+
+        let v2 =
+            analyze
+                """
+module M
+let compute x =
+    // increment by one
+    x + 1
+"""
+
+        let s1 = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let s2 = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let changes, _ = detectChanges s2 s1
+        test <@ changes |> List.isEmpty @>
+
+    [<Fact>]
+    let ``adding block comment to function body produces no changes`` () =
+        let v1 =
+            analyze
+                """
+module M
+let compute x =
+    x + 1
+"""
+
+        let v2 =
+            analyze
+                """
+module M
+let compute x =
+    (* this is a block comment *)
+    x + 1
+"""
+
+        let s1 = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let s2 = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let changes, _ = detectChanges s2 s1
+        test <@ changes |> List.isEmpty @>
+
+    [<Fact>]
+    let ``adding line comment to type definition produces no changes`` () =
+        let v1 =
+            analyze
+                """
+module M
+type Shape =
+    | Circle of float
+    | Square of float
+"""
+
+        let v2 =
+            analyze
+                """
+module M
+type Shape =
+    // circle variant
+    | Circle of float
+    // square variant
+    | Square of float
+"""
+
+        let s1 = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let s2 = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let changes, _ = detectChanges s2 s1
+        test <@ changes |> List.isEmpty @>
+
+    [<Fact>]
+    let ``double-slash inside string literal is not stripped`` () =
+        // Changing a non-comment part of the body should still detect as a change
+        let v1 =
+            analyze
+                """
+module M
+let getUrl () = "http://example.com/v1"
+"""
+
+        let v2 =
+            analyze
+                """
+module M
+let getUrl () = "http://example.com/v2"
+"""
+
+        let s1 = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let s2 = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let changes, _ = detectChanges s2 s1
+        let names = changedSymbolNames changes
+        test <@ names |> List.exists (fun n -> n.EndsWith("getUrl", StringComparison.Ordinal)) @>
+
+    [<Fact>]
+    let ``escape sequence in string literal does not affect stripping`` () =
+        let v1 =
+            analyze
+                """
+module M
+let msg () = "hello\nworld"
+"""
+
+        let v2 =
+            analyze
+                """
+module M
+let msg () = "hello\nworld"
+// a comment
+"""
+
+        let s1 = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let s2 = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let changes, _ = detectChanges s2 s1
+        test <@ changes |> List.isEmpty @>
+
+    [<Fact>]
+    let ``nested block comments produce no changes`` () =
+        let v1 =
+            analyze
+                """
+module M
+let compute x = x + 1
+"""
+
+        let v2 =
+            analyze
+                """
+module M
+let compute x =
+    (* outer (* nested *) comment *)
+    x + 1
+"""
+
+        let s1 = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let s2 = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let changes, _ = detectChanges s2 s1
+        test <@ changes |> List.isEmpty @>
+
+    [<Fact>]
+    let ``verbatim string content is preserved and affects hash`` () =
+        let v1 =
+            analyze
+                """
+module M
+let path () = @"C:\old\path"
+"""
+
+        let v2 =
+            analyze
+                """
+module M
+let path () = @"C:\new\path"
+"""
+
+        let s1 = v1.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let s2 = v2.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+        let changes, _ = detectChanges s2 s1
+        let names = changedSymbolNames changes
+        test <@ names |> List.exists (fun n -> n.EndsWith("path", StringComparison.Ordinal)) @>
 
 module ``Impact analysis — change affects zero tests`` =
 

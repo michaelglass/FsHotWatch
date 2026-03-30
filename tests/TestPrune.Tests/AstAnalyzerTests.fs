@@ -303,41 +303,6 @@ let main args =
     config + host
 """
 
-        // Debug: print ranges from parsed AST
-        let checker2 = FSharp.Compiler.CodeAnalysis.FSharpChecker.Create()
-        let fileName = "/tmp/AstAnalyzerTest.fsx"
-
-        let src =
-            """
-module M
-
-let helper x = x + 1
-
-let main args =
-    let config = helper 1
-    let host = helper 2
-    config + host
-"""
-
-        let options2 = getScriptOptions checker2 fileName src |> Async.RunSynchronously
-        let sourceText = FSharp.Compiler.Text.SourceText.ofString src
-
-        let parseResults, _ =
-            checker2.ParseAndCheckFileInProject(fileName, 0, sourceText, options2)
-            |> Async.RunSynchronously
-
-        let ranges = collectModuleBindingRanges parseResults.ParseTree
-
-        for name, r in ranges do
-            printfn "RANGE: %s -> %d:%d - %d:%d" name r.StartLine r.StartColumn r.EndLine r.EndColumn
-
-        // Debug: print all dependencies and symbols
-        for d in result.Dependencies do
-            printfn "DEP: %s -> %s (%A)" d.FromSymbol d.ToSymbol d.Kind
-
-        for s in result.Symbols do
-            printfn "SYM: %s (%A) lines %d-%d" s.FullName s.Kind s.LineStart s.LineEnd
-
         // Both calls to `helper` should be attributed to `main`, not to `config` or `host`
         let mainCallsHelper =
             result.Dependencies

@@ -237,6 +237,24 @@ let private extractBindingName (pat: SynPat) : string option =
     | SynPat.Named(ident = SynIdent(id, _)) -> Some id.idText
     | _ -> None // INT-WILDCARD-001:ok — SynPat has many cases; we only extract names from LongIdent/Named
 
+/// Walk all module declarations in an impl file, recursing into nested modules.
+let private walkImplDecls (tree: ParsedInput) (visitDecl: SynModuleDecl -> unit) =
+    let rec walk (decl: SynModuleDecl) =
+        visitDecl decl
+
+        match decl with
+        | SynModuleDecl.NestedModule(decls = decls) ->
+            for d in decls do
+                walk d
+        | _ -> () // INT-WILDCARD-001:ok — SynModuleDecl has many cases; we only recurse into NestedModule
+
+    match tree with
+    | ParsedInput.ImplFile(ParsedImplFileInput(contents = modules)) ->
+        for SynModuleOrNamespace(decls = decls) in modules do
+            for d in decls do
+                walk d
+    | ParsedInput.SigFile _ -> ()
+
 /// Walk the parsed AST to collect module-level binding names and their full ranges.
 /// Each binding's range covers from the `let` keyword to the end of its body,
 /// which correctly encompasses nested local bindings.
@@ -245,45 +263,138 @@ let collectModuleBindingRanges (tree: ParsedInput) : (string * range) list =
 
     let walkBinding (binding: SynBinding) =
         match binding with
-        | SynBinding(headPat = headPat; expr = bodyExpr; range = bindingRange) ->
+        | SynBinding(attributes = attributes; headPat = headPat; expr = bodyExpr; range = bindingRange) ->
             match extractBindingName headPat with
             | Some n ->
                 // The binding's `range` only covers the pattern (e.g. `let main args =`).
                 // We need a range that spans from the binding start to the end of the body
                 // so that nested local `let` bindings are contained within their parent.
-                let fullRange =
-                    Range.mkRange bindingRange.FileName bindingRange.Start bodyExpr.Range.End
+                // Also include preceding attributes so that attribute changes affect the hash.
+                let rangeStart =
+                    match attributes with
+                    | first :: _ -> first.Range.Start
+                    | [] -> bindingRange.Start
+
+                let fullRange = Range.mkRange bindingRange.FileName rangeStart bodyExpr.Range.End
 
                 results.Add(n, fullRange)
             | None -> ()
 
-    let rec walkDecl (decl: SynModuleDecl) =
+    walkImplDecls tree (fun decl ->
         match decl with
         | SynModuleDecl.Let(bindings = bindings) ->
             for binding in bindings do
                 walkBinding binding
-        | SynModuleDecl.NestedModule(decls = decls) ->
-            for d in decls do
-                walkDecl d
-        | _ -> () // INT-WILDCARD-001:ok — SynModuleDecl has many cases; we only walk Let and NestedModule
-
-    match tree with
-    | ParsedInput.ImplFile(ParsedImplFileInput(contents = modules)) ->
-        for moduleOrNs in modules do
-            match moduleOrNs with
-            | SynModuleOrNamespace(decls = decls) ->
-                for d in decls do
-                    walkDecl d
-    | ParsedInput.SigFile _ -> ()
+        | _ -> ())
 
     results |> Seq.toList
 
-/// Hash the source lines between startLine and endLine (1-based, inclusive).
+/// Walk the parsed AST to collect type definition names and their full ranges.
+/// Each type's range covers from the `type` keyword through all cases/fields/members.
+let collectTypeDefnRanges (tree: ParsedInput) : (string * range) list =
+    let results = ResizeArray()
+
+    walkImplDecls tree (fun decl ->
+        match decl with
+        | SynModuleDecl.Types(typeDefns = typeDefns) ->
+            for SynTypeDefn(typeInfo = SynComponentInfo(longId = ids); range = fullRange) in typeDefns do
+                let name = ids |> List.map (fun id -> id.idText) |> String.concat "."
+                results.Add(name, fullRange)
+        | _ -> ())
+
+    results |> Seq.toList
+
+/// Compiled regex for collapsing whitespace runs — cached to avoid per-call recompilation.
+let private whitespaceRun =
+    System.Text.RegularExpressions.Regex(@"\s{2,}", System.Text.RegularExpressions.RegexOptions.Compiled)
+
+/// Strip F# // and (* *) comments from a flat source string.
+/// Preserves newlines so callers can split by line. String literals are left intact.
+let private stripComments (flat: string) : string =
+    let result = System.Text.StringBuilder(flat.Length)
+    let mutable depth = 0 // nesting depth for (* *) block comments
+    let mutable inLineComment = false
+    let mutable inString = false
+    let mutable inVerbatimString = false // @"..."
+    let mutable i = 0
+
+    while i < flat.Length do
+        let c = flat[i]
+        let next = if i + 1 < flat.Length then flat[i + 1] else '\000'
+
+        if inLineComment then
+            if c = '\n' then
+                result.Append('\n') |> ignore
+                inLineComment <- false
+        elif depth > 0 then
+            // Inside block comment — preserve newlines for line-number stability
+            if c = '(' && next = '*' then
+                depth <- depth + 1
+                i <- i + 1
+            elif c = '*' && next = ')' then
+                depth <- depth - 1
+                i <- i + 1
+            elif c = '\n' then
+                result.Append('\n') |> ignore
+        elif inVerbatimString then
+            result.Append(c) |> ignore
+
+            if c = '"' then
+                if next = '"' then
+                    result.Append(next) |> ignore
+                    i <- i + 1
+                else
+                    inVerbatimString <- false
+        elif inString then
+            result.Append(c) |> ignore
+
+            if c = '\\' && next <> '\000' then
+                result.Append(next) |> ignore
+                i <- i + 1
+            elif c = '"' then
+                inString <- false
+        elif c = '/' && next = '/' then
+            inLineComment <- true
+            i <- i + 1
+        elif c = '(' && next = '*' then
+            depth <- depth + 1
+            i <- i + 1
+        elif c = '@' && next = '"' then
+            inVerbatimString <- true
+            result.Append(c) |> ignore
+            result.Append(next) |> ignore
+            i <- i + 1
+        elif c = '"' then
+            inString <- true
+            result.Append(c) |> ignore
+        else
+            result.Append(c) |> ignore
+
+        i <- i + 1
+
+    result.ToString()
+
+/// Hash the source lines between startLine and endLine (1-based, inclusive),
+/// stripping comments and normalizing whitespace so that comment-only changes
+/// and layout-only changes (e.g. reformatting to add a comment block) don't
+/// affect the hash.
 let private hashSourceLines (lines: string array) (startLine: int) (endLine: int) : string =
     let start = max 0 (startLine - 1)
     let end' = min lines.Length endLine
-    let slice = lines[start .. end' - 1]
-    let content = String.concat "\n" slice
+    let flat = lines[start .. end' - 1] |> String.concat "\n"
+    let stripped = stripComments flat
+    // Join non-empty trimmed lines with a single space, then collapse internal
+    // whitespace sequences. This makes `let f x = x + 1` hash identically to
+    //   let f x =
+    //       x + 1
+    // so that reformatting to add a comment does not trigger a change.
+    let tokens =
+        stripped.Split('\n')
+        |> Array.map _.Trim()
+        |> Array.filter (fun l -> l.Length > 0)
+
+    let joined = String.concat " " tokens
+    let content = whitespaceRun.Replace(joined, " ")
 
     let bytes =
         System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(content))
@@ -313,6 +424,19 @@ let private extractResults
             let allUses = checkResults.GetAllUsesOfAllSymbolsInFile() |> Seq.toList
             let sourceLines = source.Split('\n')
 
+            let moduleBindingRanges = collectModuleBindingRanges parseResults.ParseTree
+            let typeDefnRanges = collectTypeDefnRanges parseResults.ParseTree
+
+            // Pre-build Maps keyed by simple (unqualified) name for O(log M) range lookup
+            // rather than O(M) List.tryFind scans per symbol.
+            let moduleBindingRangeMap = moduleBindingRanges |> Map.ofList
+            let typeDefnRangeMap = typeDefnRanges |> Map.ofList
+
+            // Extract the last dot-delimited component of a fully-qualified name.
+            let inline shortName (n: string) =
+                let i = n.LastIndexOf('.')
+                if i >= 0 then n.[i + 1 ..] else n
+
             let definitions =
                 allUses
                 |> List.choose (fun u ->
@@ -324,18 +448,37 @@ let private extractResults
                                 | :? FSharpMemberOrFunctionOrValue as mfv -> isDllImport mfv
                                 | _ -> false
 
+                            // Use AST-derived ranges for hashing when available:
+                            // - Type symbols: use full SynTypeDefn range (includes all DU cases, record fields)
+                            // - Function/Value symbols: use binding range (includes attributes)
+                            // - Fallback: use FCS's u.Range
+                            let hashStart, hashEnd =
+                                let sn = shortName fullName
+
+                                match kind with
+                                | Type ->
+                                    typeDefnRangeMap
+                                    |> Map.tryFind sn
+                                    |> Option.map (fun r -> r.StartLine, r.EndLine)
+                                    |> Option.defaultValue (u.Range.StartLine, u.Range.EndLine)
+                                | Function
+                                | Value ->
+                                    moduleBindingRangeMap
+                                    |> Map.tryFind sn
+                                    |> Option.map (fun r -> r.StartLine, r.EndLine)
+                                    |> Option.defaultValue (u.Range.StartLine, u.Range.EndLine)
+                                | _ -> u.Range.StartLine, u.Range.EndLine
+
                             { FullName = fullName
                               Kind = kind
                               SourceFile = sourceFileName
                               LineStart = u.Range.StartLine
                               LineEnd = u.Range.EndLine
-                              ContentHash = hashSourceLines sourceLines u.Range.StartLine u.Range.EndLine
+                              ContentHash = hashSourceLines sourceLines hashStart hashEnd
                               IsExtern = isExtern },
                             u)
                     else
                         None)
-
-            let moduleBindingRanges = collectModuleBindingRanges parseResults.ParseTree
 
             let isModuleLevel (symbolInfo: SymbolInfo) =
                 // A symbol is module-level if:
@@ -347,10 +490,7 @@ let private extractResults
                 | DuCase
                 | Property -> true
                 | Function
-                | Value ->
-                    // Check if this symbol's name is in the set of module-level binding names.
-                    moduleBindingRanges
-                    |> List.exists (fun (name, _) -> symbolInfo.FullName.EndsWith(name, StringComparison.Ordinal))
+                | Value -> moduleBindingRangeMap |> Map.containsKey (shortName symbolInfo.FullName)
 
             let symbols =
                 definitions
@@ -362,13 +502,16 @@ let private extractResults
                 |> List.sortByDescending (fun (_, r) -> r.StartLine)
                 |> Array.ofList
 
-            // Pre-build a map from binding name suffix to SymbolInfo for O(1) lookup
+            // Pre-build a map from binding short name to SymbolInfo for O(log N) lookup
             let definitionsByName =
                 definitions
                 |> List.choose (fun (si, _) ->
-                    moduleBindingRanges
-                    |> List.tryFind (fun (name, _) -> si.FullName.EndsWith(name, StringComparison.Ordinal))
-                    |> Option.map (fun (name, _) -> name, si))
+                    let sn = shortName si.FullName
+
+                    if moduleBindingRangeMap |> Map.containsKey sn then
+                        Some(sn, si)
+                    else
+                        None)
                 |> Map.ofList
 
             let findEnclosing (useRange: range) =

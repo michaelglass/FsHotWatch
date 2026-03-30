@@ -209,3 +209,32 @@ module ``InMemoryStore basics`` =
         let testsFromEmpty = store.GetTestMethodsInFile ""
         test <@ testsFromEmpty.Length = 1 @>
         test <@ testsFromEmpty[0].TestMethod = "test1" @>
+
+    [<Fact>]
+    let ``GetIncomingEdgesBatch returns incoming edges for known symbols`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        // funcB and TypeC have incoming edges; testA has none
+        let result = store.GetIncomingEdgesBatch [ "Lib.funcB"; "Domain.TypeC" ]
+        test <@ result.ContainsKey "Lib.funcB" @>
+        test <@ result["Lib.funcB"] |> List.contains "Tests.testA" @>
+        test <@ result.ContainsKey "Domain.TypeC" @>
+        test <@ result["Domain.TypeC"] |> List.contains "Lib.funcB" @>
+
+    [<Fact>]
+    let ``GetIncomingEdgesBatch skips symbols with no incoming edges`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        // testA is a root with no incoming edges — should be absent from result
+        let result = store.GetIncomingEdgesBatch [ "Tests.testA" ]
+        test <@ not (result.ContainsKey "Tests.testA") @>
+
+    [<Fact>]
+    let ``GetIncomingEdgesBatch with empty list returns empty map`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let result = store.GetIncomingEdgesBatch []
+        test <@ result.IsEmpty @>
+
+    [<Fact>]
+    let ``GetIncomingEdgesBatch with unknown symbol returns empty map`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let result = store.GetIncomingEdgesBatch [ "NonExistent.func" ]
+        test <@ result.IsEmpty @>

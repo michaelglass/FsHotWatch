@@ -9,6 +9,7 @@ open TestPrune.Program
 open TestPrune.Orchestration
 open TestPrune.AstAnalyzer
 open TestPrune.Database
+open TestPrune.Domain
 open TestPrune.ImpactAnalysis
 open TestPrune.Ports
 open TestPrune.ProjectLoader
@@ -325,6 +326,219 @@ module ``runDeadCode`` =
 
         try
             test <@ runDeadCode tmpDir [ "*.main" ] false false (createNoopSink ()) = 0 @>
+        finally
+            Console.SetOut(oldOut)
+            Directory.Delete(tmpDir, true)
+
+    let private makeDbWithSymbols (tmpDir: string) (symbols: SymbolInfo list) (deps: Dependency list) =
+        let dbPath = Path.Combine(tmpDir, ".test-prune.db")
+        let db = Database.create dbPath
+
+        let result: AnalysisResult =
+            { Symbols = symbols
+              Dependencies = deps
+              TestMethods = [] }
+
+        db.RebuildProjects([ result ])
+        db
+
+    [<Fact>]
+    let ``prints unreachable symbols in non-verbose mode`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+
+        let symbols =
+            [ { FullName = "Lib.entryFunc"
+                Kind = Function
+                SourceFile = "src/Lib.fs"
+                LineStart = 1
+                LineEnd = 3
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "Lib.deadFunc"
+                Kind = Function
+                SourceFile = "src/Lib.fs"
+                LineStart = 5
+                LineEnd = 8
+                ContentHash = ""
+                IsExtern = false } ]
+
+        makeDbWithSymbols tmpDir symbols [] |> ignore
+        let sw = new System.IO.StringWriter()
+        let oldOut = Console.Out
+        Console.SetOut(sw)
+
+        try
+            let result = runDeadCode tmpDir [ "Lib.entryFunc" ] false false (createNoopSink ())
+            let output = sw.ToString()
+            test <@ result = 0 @>
+            test <@ output.Contains("deadFunc") @>
+            // Non-verbose: no "no incoming edges" or "has edges from" text
+            test <@ not (output.Contains("no incoming edges")) @>
+        finally
+            Console.SetOut(oldOut)
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``verbose mode shows NoIncomingEdges reason`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+
+        let symbols =
+            [ { FullName = "Lib.entryFunc"
+                Kind = Function
+                SourceFile = "src/Lib.fs"
+                LineStart = 1
+                LineEnd = 3
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "Lib.orphan"
+                Kind = Function
+                SourceFile = "src/Lib.fs"
+                LineStart = 5
+                LineEnd = 8
+                ContentHash = ""
+                IsExtern = false } ]
+
+        makeDbWithSymbols tmpDir symbols [] |> ignore
+        let sw = new System.IO.StringWriter()
+        let oldOut = Console.Out
+        Console.SetOut(sw)
+
+        try
+            let result = runDeadCode tmpDir [ "Lib.entryFunc" ] false true (createNoopSink ())
+            let output = sw.ToString()
+            test <@ result = 0 @>
+            test <@ output.Contains("orphan") @>
+            test <@ output.Contains("no incoming edges") @>
+        finally
+            Console.SetOut(oldOut)
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``verbose mode shows DisconnectedFromEntryPoints reason`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+
+        let symbols =
+            [ { FullName = "Lib.entryFunc"
+                Kind = Function
+                SourceFile = "src/Lib.fs"
+                LineStart = 1
+                LineEnd = 3
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "Lib.caller"
+                Kind = Function
+                SourceFile = "src/Lib.fs"
+                LineStart = 5
+                LineEnd = 8
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "Lib.target"
+                Kind = Function
+                SourceFile = "src/Lib.fs"
+                LineStart = 10
+                LineEnd = 13
+                ContentHash = ""
+                IsExtern = false } ]
+
+        let deps =
+            [ { FromSymbol = "Lib.caller"
+                ToSymbol = "Lib.target"
+                Kind = Calls } ]
+
+        makeDbWithSymbols tmpDir symbols deps |> ignore
+        let sw = new System.IO.StringWriter()
+        let oldOut = Console.Out
+        Console.SetOut(sw)
+
+        try
+            // entryFunc is reachable; caller and target are disconnected islands
+            let result = runDeadCode tmpDir [ "Lib.entryFunc" ] false true (createNoopSink ())
+            let output = sw.ToString()
+            test <@ result = 0 @>
+            // target has an incoming edge from caller, so reason is DisconnectedFromEntryPoints
+            test <@ output.Contains("has edges from") @>
+        finally
+            Console.SetOut(oldOut)
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``verbose mode truncates long incoming edge lists`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+
+        let symbols =
+            [ { FullName = "Lib.entryFunc"
+                Kind = Function
+                SourceFile = "src/Lib.fs"
+                LineStart = 1
+                LineEnd = 3
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "Lib.target"
+                Kind = Function
+                SourceFile = "src/Lib.fs"
+                LineStart = 5
+                LineEnd = 8
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "Lib.callerA"
+                Kind = Function
+                SourceFile = "src/Lib.fs"
+                LineStart = 10
+                LineEnd = 13
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "Lib.callerB"
+                Kind = Function
+                SourceFile = "src/Lib.fs"
+                LineStart = 14
+                LineEnd = 17
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "Lib.callerC"
+                Kind = Function
+                SourceFile = "src/Lib.fs"
+                LineStart = 18
+                LineEnd = 21
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "Lib.callerD"
+                Kind = Function
+                SourceFile = "src/Lib.fs"
+                LineStart = 22
+                LineEnd = 25
+                ContentHash = ""
+                IsExtern = false } ]
+
+        // 4 callers -> target (more than 3, so truncation kicks in)
+        let deps =
+            [ { FromSymbol = "Lib.callerA"
+                ToSymbol = "Lib.target"
+                Kind = Calls }
+              { FromSymbol = "Lib.callerB"
+                ToSymbol = "Lib.target"
+                Kind = Calls }
+              { FromSymbol = "Lib.callerC"
+                ToSymbol = "Lib.target"
+                Kind = Calls }
+              { FromSymbol = "Lib.callerD"
+                ToSymbol = "Lib.target"
+                Kind = Calls } ]
+
+        makeDbWithSymbols tmpDir symbols deps |> ignore
+        let sw = new System.IO.StringWriter()
+        let oldOut = Console.Out
+        Console.SetOut(sw)
+
+        try
+            let result = runDeadCode tmpDir [ "Lib.entryFunc" ] false true (createNoopSink ())
+            let output = sw.ToString()
+            test <@ result = 0 @>
+            // >3 incoming edges should result in truncated list with "..."
+            test <@ output.Contains("...") @>
         finally
             Console.SetOut(oldOut)
             Directory.Delete(tmpDir, true)
