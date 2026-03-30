@@ -504,9 +504,9 @@ type Daemon =
                 this.CancellationTokenRef.Value <- cts.Token
                 this.Ready.Set()
 
-                // Discover projects and perform initial full scan (force bypasses jj guard
-                // since plugins have no state from previous daemon runs)
-                do! this.DiscoverAndRegisterProjects()
+                // Initial full scan — performScan handles discovery when LastFingerprint
+                // differs from current (always true on first run since it starts empty).
+                // force bypasses jj guard since plugins have no state from previous daemon runs.
                 do! this.ScanAll(force = true)
 
                 let tcs = System.Threading.Tasks.TaskCompletionSource<unit>()
