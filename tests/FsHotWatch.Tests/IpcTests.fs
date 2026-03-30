@@ -10,6 +10,7 @@ open FsHotWatch.Ipc
 open FsHotWatch.PluginHost
 open FsHotWatch.PluginFramework
 open FsHotWatch.Events
+open FsHotWatch.Daemon
 open FsHotWatch.Tests.TestHelpers
 
 /// Poll until IPC server is accepting connections.
@@ -704,3 +705,49 @@ let ``DaemonRpcTarget.GetErrors includes plugin statuses in response`` () =
     test <@ json.Contains("\"statuses\"") @>
     test <@ json.Contains("test-prune") @>
     test <@ json.Contains("Failed") @>
+
+[<Fact>]
+let ``WaitForComplete times out when plugin stays Running`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let handler =
+        { Name = "stuck-plugin"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ -> ctx.ReportStatus(Running(since = System.DateTime(2025, 1, 1)))
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChanged = true } }
+
+    host.RegisterHandler(handler)
+
+    // Put plugin into Running state
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("stuck-plugin") with
+            | Some(Running _) -> true
+            | _ -> false)
+        5000
+
+    let config =
+        { defaultRpcConfig host with
+            WaitForAllTerminal = waitForAllTerminal host (System.TimeSpan.FromMilliseconds(200.0)) }
+
+    let target = DaemonRpcTarget(config)
+
+    let ex =
+        Assert.ThrowsAsync<System.TimeoutException>(fun () -> target.WaitForComplete() :> Task)
+        |> Async.AwaitTask
+        |> Async.RunSynchronously
+
+    test <@ ex.Message.Contains("timed out") @>
