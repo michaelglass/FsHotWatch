@@ -16,18 +16,6 @@ open TestPrune.Extensions
 open TestPrune.SymbolDiff
 open FsHotWatch.Tests.TestHelpers
 
-let private withTmpDir (prefix: string) (f: string -> unit) =
-    let dir = Path.Combine(Path.GetTempPath(), $"{prefix}-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(dir) |> ignore
-
-    try
-        f dir
-    finally
-        try
-            Directory.Delete(dir, true)
-        with _ ->
-            ()
-
 let private waitForPluginIdle (host: PluginHost) (pluginName: string) (timeoutSecs: float) =
     waitForSettled host pluginName (int (timeoutSecs * 1000.0))
 
@@ -101,7 +89,7 @@ let ``test-prune error path sets Failed status on null check results`` () =
 
 [<Fact>]
 let ``changed-files tracks files after emit with valid relative path`` () =
-    withTmpDir "tp-test" (fun tmpDir ->
+    withTempDir "tp-test" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
@@ -131,7 +119,7 @@ let ``changed-files tracks files after emit with valid relative path`` () =
 
 [<Fact>]
 let ``duplicate file checks do not duplicate in changed-files list`` () =
-    withTmpDir "tp-dup" (fun tmpDir ->
+    withTempDir "tp-dup" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
@@ -193,7 +181,7 @@ let ``plugin with testConfigs subscribes to OnBuildCompleted`` () =
 
 [<Fact>]
 let ``extension contributes affected test classes during test run`` () =
-    withTmpDir "tp-ext" (fun tmpDir ->
+    withTempDir "tp-ext" (fun tmpDir ->
         let mutable extensionCalled = false
 
         let fakeExtension =
@@ -234,7 +222,7 @@ let ``extension contributes affected test classes during test run`` () =
 
 [<Fact>]
 let ``extension error is caught and does not crash plugin`` () =
-    withTmpDir "tp-ext-err" (fun tmpDir ->
+    withTempDir "tp-ext-err" (fun tmpDir ->
         let failingExtension =
             { new ITestPruneExtension with
                 member _.Name = "failing-extension"
@@ -267,7 +255,7 @@ let ``extension error is caught and does not crash plugin`` () =
 [<Fact>]
 let ``database read-before-write preserves previous symbols for diffing`` () =
     // RebuildForProject must happen AFTER GetSymbolsInFile to get previous state for diffing.
-    withTmpDir "tp-db" (fun tmpDir ->
+    withTempDir "tp-db" (fun tmpDir ->
         let db = Database.create (Path.Combine(tmpDir, "test.db"))
 
         let symbol1: SymbolInfo =
@@ -324,7 +312,7 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
 
 [<Fact>]
 let ``FileChecked does not report Completed when testConfigs are provided (error path)`` () =
-    withTmpDir "tp-no-complete" (fun tmpDir ->
+    withTempDir "tp-no-complete" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
         let configs =
@@ -358,19 +346,14 @@ let ``FileChecked does not report Completed when testConfigs are provided (error
         with _ ->
             ()
 
-        // Wait for the plugin to process the FileChecked event
-        let deadline = DateTime.UtcNow.AddSeconds(5.0)
-        let mutable processed = false
-
-        while not processed && DateTime.UtcNow < deadline do
-            match host.GetStatus("test-prune") with
-            | Some(Running _)
-            | Some(Completed _)
-            | Some(Failed _) -> processed <- true
-            | _ -> System.Threading.Thread.Sleep(50)
-
-        // Give a little extra time for any status transition
-        System.Threading.Thread.Sleep(200)
+        waitUntil
+            (fun () ->
+                match host.GetStatus("test-prune") with
+                | Some(Running _)
+                | Some(Completed _)
+                | Some(Failed _) -> true
+                | _ -> false)
+            5000
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
@@ -386,7 +369,7 @@ let ``FileChecked does not report Completed when testConfigs are provided (error
 
 [<Fact>]
 let ``FileChecked reports terminal status when no testConfigs (analysis-only mode, error path)`` () =
-    withTmpDir "tp-complete-no-configs" (fun tmpDir ->
+    withTempDir "tp-complete-no-configs" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
@@ -411,15 +394,7 @@ let ``FileChecked reports terminal status when no testConfigs (analysis-only mod
         with _ ->
             ()
 
-        // Wait for the plugin to reach a terminal status
-        let deadline = DateTime.UtcNow.AddSeconds(5.0)
-        let mutable terminal = false
-
-        while not terminal && DateTime.UtcNow < deadline do
-            match host.GetStatus("test-prune") with
-            | Some(Completed _)
-            | Some(Failed _) -> terminal <- true
-            | _ -> System.Threading.Thread.Sleep(50)
+        waitForPluginTerminal host "test-prune" 5.0
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
@@ -432,7 +407,7 @@ let ``FileChecked reports terminal status when no testConfigs (analysis-only mod
 
 [<Fact>]
 let ``plugin reports Running status on FileChecked after tests complete`` () =
-    withTmpDir "tp-reset" (fun tmpDir ->
+    withTempDir "tp-reset" (fun tmpDir ->
         let configs =
             [ { Project = "TestProject"
                 Command = "echo"
@@ -487,7 +462,7 @@ let ``plugin reports Running status on FileChecked after tests complete`` () =
 
 [<Fact>]
 let ``run-tests command runs all projects and returns results`` () =
-    withTmpDir "tp-run" (fun tmpDir ->
+    withTempDir "tp-run" (fun tmpDir ->
         let configs =
             [ { Project = "TestProject"
                 Command = "echo"
@@ -508,7 +483,7 @@ let ``run-tests command runs all projects and returns results`` () =
 
 [<Fact>]
 let ``run-tests with project filter runs only named project`` () =
-    withTmpDir "tp-run-proj" (fun tmpDir ->
+    withTempDir "tp-run-proj" (fun tmpDir ->
         let configs =
             [ { Project = "Alpha"
                 Command = "echo"
@@ -539,7 +514,7 @@ let ``run-tests with project filter runs only named project`` () =
 
 [<Fact>]
 let ``run-tests with only-failed reruns failed projects`` () =
-    withTmpDir "tp-run-failed" (fun tmpDir ->
+    withTempDir "tp-run-failed" (fun tmpDir ->
         let configs =
             [ { Project = "Passes"
                 Command = "echo"
@@ -653,7 +628,7 @@ let private emitFileAndWait
 
 [<Fact>]
 let ``FileChecked stays Running when testConfigs provided (success path)`` () =
-    withTmpDir "tp-no-complete-real" (fun tmpDir ->
+    withTempDir "tp-no-complete-real" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
         let configs =
@@ -691,7 +666,7 @@ let ``FileChecked stays Running when testConfigs provided (success path)`` () =
 
 [<Fact>]
 let ``FileChecked reports Completed when no testConfigs (success path)`` () =
-    withTmpDir "tp-complete-real" (fun tmpDir ->
+    withTempDir "tp-complete-real" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
         let checker = FSharpChecker.Create(keepAssemblyContents = true)
@@ -721,7 +696,7 @@ let ``FileChecked reports Completed when no testConfigs (success path)`` () =
 
 [<Fact>]
 let ``after scan and build, test methods are in the sqlite database`` () =
-    withTmpDir "tp-db-scan" (fun tmpDir ->
+    withTempDir "tp-db-scan" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let testFile = Path.Combine(tmpDir, "MyTests.fsx")
 
@@ -775,7 +750,7 @@ let ``after a symbol change, affected-tests identifies the dependent test`` () =
     // Single-file: prod function + test function in the same .fsx.
     // First scan populates DB. Second scan changes compute -> detectChanges finds it
     // changed -> QueryAffectedTests returns computeTest.
-    withTmpDir "tp-minimal" (fun tmpDir ->
+    withTempDir "tp-minimal" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let srcFile = Path.Combine(tmpDir, "All.fsx")
 
@@ -837,7 +812,7 @@ let computeTest () =
 [<Fact(Skip = "Timing-sensitive with async framework dispatch — needs investigation")>]
 let ``cross-file type change only runs affected test classes`` () =
     // End-to-end test: change Lib.fsx type -> affected-tests identifies dependent tests -> only those classes run
-    withTmpDir "tp-e2e" (fun tmpDir ->
+    withTempDir "tp-e2e" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let libFile = Path.Combine(tmpDir, "Lib.fsx")
         let testsFile = Path.Combine(tmpDir, "Tests.fsx")

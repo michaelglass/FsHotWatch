@@ -106,9 +106,10 @@ module FileWatcher =
                 let onCoalesced (dirPath: string) =
                     try
                         if Directory.Exists(dirPath) then
-                            for file in Directory.EnumerateFiles(dirPath, "*", SearchOption.AllDirectories) do
-                                if isRelevantFile file then
-                                    onChange (classifyChange file)
+                            for pattern in [| "*.fs"; "*.fsx"; "*.fsproj"; "*.props" |] do
+                                for file in Directory.EnumerateFiles(dirPath, pattern, SearchOption.AllDirectories) do
+                                    if isRelevantFile file then
+                                        onChange (classifyChange file)
                     with
                     | :? DirectoryNotFoundException -> ()
                     | :? UnauthorizedAccessException -> ()
