@@ -269,7 +269,8 @@ let private allTerminal (statuses: Map<string, PluginStatus>) =
     not statuses.IsEmpty && statuses |> Map.forall (fun _ s -> isTerminal s)
 
 /// Wait for all plugins to reach a terminal state with 1-second stability confirmation.
-let private waitForAllTerminal (host: PluginHost) () : Task<unit> =
+/// Times out with TimeoutException after the specified timeout.
+let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) () : Task<unit> =
     let tcs =
         TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
@@ -277,6 +278,17 @@ let private waitForAllTerminal (host: PluginHost) () : Task<unit> =
     let mutable subscription: System.IDisposable option = None
     let mutable resolved = false
     let lockObj = obj ()
+
+    let cleanup () =
+        timerCts
+        |> Option.iter (fun c ->
+            c.Cancel()
+            c.Dispose())
+
+        timerCts <- None
+
+        subscription |> Option.iter (fun s -> s.Dispose())
+        subscription <- None
 
     let checkAndSchedule () =
         lock lockObj (fun () ->
@@ -307,19 +319,27 @@ let private waitForAllTerminal (host: PluginHost) () : Task<unit> =
 
                                         if allTerminal final then
                                             resolved <- true
-
-                                            timerCts |> Option.iter (fun c -> c.Dispose())
-                                            timerCts <- None
-
-                                            subscription |> Option.iter (fun s -> s.Dispose())
-                                            subscription <- None
-
+                                            cleanup ()
                                             tcs.TrySetResult(()) |> ignore))
                     |> ignore)
 
     // Subscribe before initial check to avoid TOCTOU gap
     subscription <- Some(host.OnStatusChanged.Subscribe(fun _ -> checkAndSchedule ()))
     checkAndSchedule ()
+
+    // Set up timeout
+    if timeout <> System.TimeSpan.MaxValue then
+        Task
+            .Delay(timeout)
+            .ContinueWith(fun (_: Task) ->
+                lock lockObj (fun () ->
+                    if not resolved then
+                        resolved <- true
+                        cleanup ()
+
+                        tcs.TrySetException(System.TimeoutException($"WaitForComplete timed out after %O{timeout}"))
+                        |> ignore))
+        |> ignore
 
     tcs.Task
 
@@ -476,7 +496,7 @@ type Daemon =
                       FormatAll = formatAll
                       WaitForScanGeneration =
                         fun afterGen -> this.ScanSignal.WaitForGeneration(afterGen, this.GetScanGeneration())
-                      WaitForAllTerminal = waitForAllTerminal this.Host
+                      WaitForAllTerminal = waitForAllTerminal this.Host (System.TimeSpan.FromMinutes(30.0))
                       InvalidateAndRecheck = fun filePath -> this.InvalidateAndRecheck(filePath) }
 
                 let ipcTask = Async.StartAsTask(IpcServer.start pipeName rpcConfig cts)
