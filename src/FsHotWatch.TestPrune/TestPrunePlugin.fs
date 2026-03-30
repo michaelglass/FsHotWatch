@@ -528,7 +528,14 @@ let create
                                     AnalysisRan = true }
 
                             if isIdle then
-                                ctx.ReportStatus(Completed(DateTime.UtcNow))
+                                match testConfigs with
+                                | Some configs when not configs.IsEmpty ->
+                                    // Don't report Completed — tests haven't run yet.
+                                    // Stay Running until BuildCompleted triggers test execution.
+                                    ()
+                                | _ ->
+                                    // No test configs — analysis-only mode, can report Completed
+                                    ctx.ReportStatus(Completed(DateTime.UtcNow))
 
                             return newState
                         | Error msg ->

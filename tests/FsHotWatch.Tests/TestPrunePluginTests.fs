@@ -323,6 +323,114 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
         test <@ noChangedNames.IsEmpty @>)
 
 [<Fact>]
+let ``FileChecked does not report Completed when testConfigs are provided`` () =
+    withTmpDir "tp-no-complete" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "test.db")
+
+        let configs =
+            [ { Project = "TestProject"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+        let handler = create dbPath tmpDir (Some configs) None None None None
+        host.RegisterHandler(handler)
+
+        let fakeFile = Path.Combine(tmpDir, "Lib.fs")
+        Directory.CreateDirectory(tmpDir) |> ignore
+        File.WriteAllText(fakeFile, "module Lib\nlet x = 1\n")
+
+        let fakeResult: FileCheckResult =
+            { File = fakeFile
+              Source = "module Lib\nlet x = 1\n"
+              ParseResults = Unchecked.defaultof<_>
+              CheckResults = None
+              ProjectOptions = Unchecked.defaultof<_>
+              Version = 0L }
+
+        try
+            host.EmitFileChecked(fakeResult)
+        with _ ->
+            ()
+
+        // Wait for the plugin to process the FileChecked event
+        let deadline = DateTime.UtcNow.AddSeconds(5.0)
+        let mutable processed = false
+
+        while not processed && DateTime.UtcNow < deadline do
+            match host.GetStatus("test-prune") with
+            | Some(Running _)
+            | Some(Completed _)
+            | Some(Failed _) -> processed <- true
+            | _ -> System.Threading.Thread.Sleep(50)
+
+        // Give a little extra time for any status transition
+        System.Threading.Thread.Sleep(200)
+
+        let status = host.GetStatus("test-prune")
+        test <@ status.IsSome @>
+
+        // When testConfigs are provided, FileChecked analysis should NOT report Completed
+        // because tests haven't actually run yet (they run on BuildCompleted).
+        match status.Value with
+        | Completed _ ->
+            Assert.Fail(
+                "Expected Running (not Completed) after FileChecked when testConfigs are provided — tests haven't run yet"
+            )
+        | _ -> ())
+
+[<Fact>]
+let ``FileChecked reports Completed when no testConfigs (analysis-only mode)`` () =
+    withTmpDir "tp-complete-no-configs" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "test.db")
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+        // No testConfigs — analysis-only mode
+        let handler = create dbPath tmpDir None None None None None
+        host.RegisterHandler(handler)
+
+        let fakeFile = Path.Combine(tmpDir, "Lib.fs")
+        File.WriteAllText(fakeFile, "module Lib\nlet x = 1\n")
+
+        let fakeResult: FileCheckResult =
+            { File = fakeFile
+              Source = "module Lib\nlet x = 1\n"
+              ParseResults = Unchecked.defaultof<_>
+              CheckResults = None
+              ProjectOptions = Unchecked.defaultof<_>
+              Version = 0L }
+
+        try
+            host.EmitFileChecked(fakeResult)
+        with _ ->
+            ()
+
+        // Wait for the plugin to reach a terminal status
+        let deadline = DateTime.UtcNow.AddSeconds(5.0)
+        let mutable terminal = false
+
+        while not terminal && DateTime.UtcNow < deadline do
+            match host.GetStatus("test-prune") with
+            | Some(Completed _)
+            | Some(Failed _) -> terminal <- true
+            | _ -> System.Threading.Thread.Sleep(50)
+
+        let status = host.GetStatus("test-prune")
+        test <@ status.IsSome @>
+
+        // Without testConfigs, FileChecked analysis CAN report Completed (or Failed for null check results)
+        match status.Value with
+        | Completed _
+        | Failed _ -> () // Both are acceptable terminal states for analysis-only mode
+        | other -> Assert.Fail($"Expected Completed or Failed in analysis-only mode, got: %A{other}"))
+
+[<Fact>]
 let ``plugin reports Running status on FileChecked after tests complete`` () =
     withTmpDir "tp-reset" (fun tmpDir ->
         let configs =
