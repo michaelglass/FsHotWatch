@@ -14,12 +14,11 @@ open FsHotWatch.Tests.TestHelpers
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
 
-/// Write a sentinel file and wait for the daemon to process it (proves watcher is live).
-/// Then wait for events to stabilize before returning.
+/// Probe the watched directory until the daemon processes an event (proves watcher is live).
+/// Uses repeated file writes so FSEvents cold-start latency (4-20s) doesn't cause timeouts.
+/// Then waits for events to stabilize before returning.
 let private waitForDaemonReady (srcDir: string) (changeCount: unit -> int) =
-    let sentinel = Path.Combine(srcDir, "_sentinel.fs")
-    File.WriteAllText(sentinel, "module Sentinel")
-    waitUntil (fun () -> changeCount () > 0) 30000
+    probeUntilEvent srcDir (fun () -> changeCount () > 0) 60000
 
     // Wait for event storm to settle (create + potential debounce events)
     let mutable lastCount = changeCount ()
@@ -35,10 +34,6 @@ let private waitForDaemonReady (srcDir: string) (changeCount: unit -> int) =
             lastCount <- c
             stable <- 0
 
-    try
-        File.Delete(sentinel)
-    with _ ->
-        ()
 
 [<Fact>]
 let ``daemon starts and stops without error`` () =
@@ -138,9 +133,13 @@ let ``daemon dispatches file change events to plugins`` () =
         receivedChanges <- []
 
         let newFile = Path.Combine(tmpDir, "src", "New.fs")
-        File.WriteAllText(newFile, "module New")
-        File.SetLastWriteTimeUtc(newFile, DateTime.UtcNow.AddSeconds(1.0))
-        waitUntil (fun () -> receivedChanges.Length >= 1) 30000
+        // Probe-loop: keep writing New.fs until a FileChanged event fires.
+        // After a large probe batch in waitForDaemonReady, fseventsd may batch
+        // subsequent events for 15-30s; repeated writes handle that delay.
+        probeLoop
+            (fun n -> File.WriteAllText(newFile, $"module New // v{n}"))
+            (fun () -> receivedChanges.Length >= 1)
+            60000
 
         cts.Cancel()
 
@@ -185,15 +184,13 @@ let ``daemon debounces rapid file changes into one batch`` () =
         let fileA = Path.Combine(tmpDir, "src", "A.fs")
         let fileB = Path.Combine(tmpDir, "src", "B.fs")
         let fileC = Path.Combine(tmpDir, "src", "C.fs")
-        File.WriteAllText(fileA, "module A")
-        File.WriteAllText(fileB, "module B")
-        File.WriteAllText(fileC, "module C")
-        let touchTime = DateTime.UtcNow.AddSeconds(1.0)
-        File.SetLastWriteTimeUtc(fileA, touchTime)
-        File.SetLastWriteTimeUtc(fileB, touchTime)
-        File.SetLastWriteTimeUtc(fileC, touchTime)
-
-        waitUntil
+        // Probe-loop: write all 3 files together each iteration so they're still
+        // rapid-fire for debounce purposes, but we retry if fseventsd batches them.
+        probeLoop
+            (fun n ->
+                File.WriteAllText(fileA, $"module A // v{n}")
+                File.WriteAllText(fileB, $"module B // v{n}")
+                File.WriteAllText(fileC, $"module C // v{n}"))
             (fun () ->
                 let allFiles =
                     receivedChanges
@@ -203,7 +200,7 @@ let ``daemon debounces rapid file changes into one batch`` () =
                         | _ -> [])
 
                 allFiles.Length >= 3)
-            30000
+            60000
 
         cts.Cancel()
 
@@ -256,17 +253,16 @@ let ``daemon handles ProjectChanged events`` () =
         receivedChanges <- []
 
         let projFile = Path.Combine(tmpDir, "src", "Test.fsproj")
-        File.WriteAllText(projFile, "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>")
-        File.SetLastWriteTimeUtc(projFile, DateTime.UtcNow.AddSeconds(1.0))
-
-        waitUntil
+        // Probe-loop: keep writing Test.fsproj until a ProjectChanged event fires.
+        probeLoop
+            (fun n -> File.WriteAllText(projFile, $"<Project Sdk=\"Microsoft.NET.Sdk\"><!-- v{n} --></Project>"))
             (fun () ->
                 receivedChanges
                 |> List.exists (fun c ->
                     match c with
                     | ProjectChanged _ -> true
                     | _ -> false))
-            30000
+            60000
 
         cts.Cancel()
 
@@ -316,17 +312,16 @@ let ``daemon handles SolutionChanged events`` () =
         receivedChanges <- []
 
         let slnFile = Path.Combine(tmpDir, "Test.sln")
-        File.WriteAllText(slnFile, "Microsoft Visual Studio Solution File")
-        File.SetLastWriteTimeUtc(slnFile, DateTime.UtcNow.AddSeconds(1.0))
-
-        waitUntil
+        // Probe-loop: keep writing Test.sln until a SolutionChanged event fires.
+        probeLoop
+            (fun n -> File.WriteAllText(slnFile, $"Microsoft Visual Studio Solution File <!-- v{n} -->"))
             (fun () ->
                 receivedChanges
                 |> List.exists (fun c ->
                     match c with
                     | SolutionChanged _ -> true
                     | _ -> false))
-            30000
+            60000
 
         cts.Cancel()
 
