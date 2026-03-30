@@ -275,6 +275,7 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
         TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
 
     let mutable timerCts: CancellationTokenSource option = None
+    let mutable timeoutCts: CancellationTokenSource option = None
     let mutable subscription: System.IDisposable option = None
     let mutable resolved = false
     let lockObj = obj ()
@@ -286,6 +287,13 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
             c.Dispose())
 
         timerCts <- None
+
+        timeoutCts
+        |> Option.iter (fun c ->
+            c.Cancel()
+            c.Dispose())
+
+        timeoutCts <- None
 
         subscription |> Option.iter (fun s -> s.Dispose())
         subscription <- None
@@ -327,18 +335,24 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
     subscription <- Some(host.OnStatusChanged.Subscribe(fun _ -> checkAndSchedule ()))
     checkAndSchedule ()
 
-    // Set up timeout
+    // Set up timeout — cancellable so the delay task doesn't hold closure refs for the full 30 min on normal completion
     if timeout <> System.TimeSpan.MaxValue then
-        Task
-            .Delay(timeout)
-            .ContinueWith(fun (_: Task) ->
-                lock lockObj (fun () ->
-                    if not resolved then
-                        resolved <- true
-                        cleanup ()
+        let cts = new CancellationTokenSource()
+        timeoutCts <- Some cts
 
-                        tcs.TrySetException(System.TimeoutException($"WaitForComplete timed out after %O{timeout}"))
-                        |> ignore))
+        Task
+            .Delay(timeout, cts.Token)
+            .ContinueWith(fun (t: Task) ->
+                if not t.IsCanceled then
+                    lock lockObj (fun () ->
+                        if not resolved then
+                            resolved <- true
+                            cleanup ()
+
+                            tcs.TrySetException(
+                                System.TimeoutException($"WaitForComplete timed out after %O{timeout}")
+                            )
+                            |> ignore))
         |> ignore
 
     tcs.Task
