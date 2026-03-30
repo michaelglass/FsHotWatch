@@ -323,7 +323,7 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
         test <@ noChangedNames.IsEmpty @>)
 
 [<Fact>]
-let ``FileChecked does not report Completed when testConfigs are provided`` () =
+let ``FileChecked does not report Completed when testConfigs are provided (error path)`` () =
     withTmpDir "tp-no-complete" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
@@ -385,7 +385,7 @@ let ``FileChecked does not report Completed when testConfigs are provided`` () =
         | _ -> ())
 
 [<Fact>]
-let ``FileChecked reports Completed when no testConfigs (analysis-only mode)`` () =
+let ``FileChecked reports terminal status when no testConfigs (analysis-only mode, error path)`` () =
     withTmpDir "tp-complete-no-configs" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
@@ -650,6 +650,74 @@ let private emitFileAndWait
                 | None -> false)
             10000
     }
+
+[<Fact>]
+let ``FileChecked stays Running when testConfigs provided (success path)`` () =
+    withTmpDir "tp-no-complete-real" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "test.db")
+
+        let configs =
+            [ { Project = "TestProject"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
+
+        let checker = FSharpChecker.Create(keepAssemblyContents = true)
+        let pipeline = CheckPipeline(checker)
+        let host = PluginHost.create checker tmpDir
+
+        let handler = create dbPath tmpDir (Some configs) None None None None
+        host.RegisterHandler(handler)
+
+        let testFile = Path.Combine(tmpDir, "MyTests.fsx")
+
+        // Use real FCS analysis to exercise the Ok analysisResult path
+        emitFileAndWait checker pipeline host testFile (testSource "MyTests")
+        |> Async.RunSynchronously
+
+        // emitFileAndWait waits until changed-files includes the file, proving
+        // the FileChecked was fully processed through the success path.
+        let status = host.GetStatus("test-prune")
+        test <@ status.IsSome @>
+
+        // With testConfigs, plugin should stay Running (not Completed) — tests haven't run yet.
+        match status.Value with
+        | Running _ -> ()
+        | Completed _ -> Assert.Fail("Expected Running after FileChecked with testConfigs — tests haven't run yet")
+        | other -> Assert.Fail($"Expected Running after FileChecked with testConfigs, got: %A{other}"))
+
+[<Fact>]
+let ``FileChecked reports Completed when no testConfigs (success path)`` () =
+    withTmpDir "tp-complete-real" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "test.db")
+
+        let checker = FSharpChecker.Create(keepAssemblyContents = true)
+        let pipeline = CheckPipeline(checker)
+        let host = PluginHost.create checker tmpDir
+
+        // No testConfigs — analysis-only mode
+        let handler = create dbPath tmpDir None None None None None
+        host.RegisterHandler(handler)
+
+        let testFile = Path.Combine(tmpDir, "MyLib.fsx")
+
+        // Use real FCS analysis to exercise the Ok analysisResult path
+        emitFileAndWait checker pipeline host testFile (testSource "MyLib")
+        |> Async.RunSynchronously
+
+        // Wait for terminal status
+        waitForPluginTerminal host "test-prune" 5.0
+
+        let status = host.GetStatus("test-prune")
+        test <@ status.IsSome @>
+
+        // Without testConfigs, analysis-only mode should report Completed
+        match status.Value with
+        | Completed _ -> ()
+        | other -> Assert.Fail($"Expected Completed in analysis-only mode, got: %A{other}"))
 
 [<Fact>]
 let ``after scan and build, test methods are in the sqlite database`` () =
