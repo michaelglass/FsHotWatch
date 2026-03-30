@@ -530,7 +530,6 @@ let create
                             if isIdle then
                                 match testConfigs with
                                 | Some configs when not configs.IsEmpty ->
-                                    // Don't report Completed — tests haven't run yet.
                                     // Stay Running until BuildCompleted triggers test execution.
                                     ()
                                 | _ ->
@@ -548,12 +547,6 @@ let create
                                 { state with
                                     ChangedFiles = newChangedFiles }
                     with ex ->
-                        let isIdle =
-                            match state.TestPhase with
-                            | TestsIdle _ -> true
-                            | TestsRunning _
-                            | TestsRunningRerunQueued _ -> false
-
                         if isIdle then
                             ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
 

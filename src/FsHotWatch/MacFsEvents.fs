@@ -189,9 +189,7 @@ type FsEventStream
                                 debug "fsevents" $"coalesced event handler exception: %s{ex.Message}"
                         | None -> ()
                     else
-                        let pathPtr = Marshal.ReadIntPtr(eventPaths, i * IntPtr.Size)
-                        let path = Marshal.PtrToStringUTF8(pathPtr)
-                        debug "fsevents" $"filtered event: flags=0x%08X{flags} path=%s{path}")
+                        debug "fsevents" $"filtered event: flags=0x%08X{flags}")
 
     let cleanup () =
         if streamRef <> nativeint 0 then
