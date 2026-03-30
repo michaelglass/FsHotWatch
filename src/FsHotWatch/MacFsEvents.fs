@@ -48,6 +48,9 @@ let private ItemModified = 0x00001000u
 [<Literal>]
 let private ItemIsFile = 0x00010000u
 
+[<Literal>]
+let private MustScanSubDirs = 0x00000001u
+
 // ─── Callback delegate ──────────────────────────────────────────────
 [<UnmanagedFunctionPointer(CallingConvention.Cdecl)>]
 type private FSEventStreamCallback =
@@ -141,7 +144,13 @@ let private isFileChangeEvent (flags: uint32) =
 /// Managed wrapper around a native FSEventStream.
 /// Watches the given directories for file-level events and invokes the callback
 /// with each changed file path. Uses a GCD dispatch queue for event delivery.
-type FsEventStream(directories: string list, onFileEvent: string -> unit, latencySeconds: float) =
+type FsEventStream
+    (
+        directories: string list,
+        onFileEvent: string -> unit,
+        onCoalescedEvent: (string -> unit) option,
+        latencySeconds: float
+    ) =
     let mutable disposed = false
     let mutable streamRef = nativeint 0
     let mutable queueRef = nativeint 0
@@ -167,6 +176,18 @@ type FsEventStream(directories: string list, onFileEvent: string -> unit, latenc
                                 onFileEvent path
                             with ex ->
                                 debug "fsevents" $"callback exception: %s{ex.Message}"
+                    elif flags &&& MustScanSubDirs <> 0u then
+                        let pathPtr = Marshal.ReadIntPtr(eventPaths, i * IntPtr.Size)
+                        let path = Marshal.PtrToStringUTF8(pathPtr)
+                        debug "fsevents" $"MustScanSubDirs event for: %s{path}"
+
+                        match onCoalescedEvent with
+                        | Some handler ->
+                            try
+                                handler path
+                            with ex ->
+                                debug "fsevents" $"coalesced event handler exception: %s{ex.Message}"
+                        | None -> ()
                     else
                         let pathPtr = Marshal.ReadIntPtr(eventPaths, i * IntPtr.Size)
                         let path = Marshal.PtrToStringUTF8(pathPtr)
@@ -257,4 +278,7 @@ type FsEventStream(directories: string list, onFileEvent: string -> unit, latenc
 /// Create an FsEventStream watching the given directories.
 /// The callback is invoked on a GCD background thread with each changed file path.
 let create (directories: string list) (onFileEvent: string -> unit) =
-    new FsEventStream(directories, onFileEvent, 0.05)
+    new FsEventStream(directories, onFileEvent, None, 0.05)
+
+let createWithCoalesced (directories: string list) (onFileEvent: string -> unit) (onCoalescedEvent: string -> unit) =
+    new FsEventStream(directories, onFileEvent, Some onCoalescedEvent, 0.05)

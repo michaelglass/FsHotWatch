@@ -103,7 +103,17 @@ module FileWatcher =
             if dirs.IsEmpty then
                 { Disposables = [ slnWatcher ] }
             else
-                let stream = MacFsEvents.create dirs handle
+                let onCoalesced (dirPath: string) =
+                    try
+                        if Directory.Exists(dirPath) then
+                            for file in Directory.EnumerateFiles(dirPath, "*", SearchOption.AllDirectories) do
+                                if isRelevantFile file then
+                                    onChange (classifyChange file)
+                    with
+                    | :? DirectoryNotFoundException -> ()
+                    | :? UnauthorizedAccessException -> ()
+
+                let stream = MacFsEvents.createWithCoalesced dirs handle onCoalesced
                 { Disposables = [ stream :> IDisposable; slnWatcher ] }
         else
             let createFsw (dir: string) =
