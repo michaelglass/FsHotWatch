@@ -66,7 +66,10 @@ let private formatTestResultsJson (results: TestResults) =
     $"{{\"elapsed\": \"%.1f{results.Elapsed.TotalSeconds}s\", \"projects\": [%s{projects}]}}"
 
 /// Build the filter arg string for a config given affected classes.
-let private buildFilterArgs (config: TestConfig) (classes: string list) : string option =
+let private buildFilterArgs (config: TestConfig) (classesByProject: Map<string, string list>) : string option =
+    let classes =
+        classesByProject |> Map.tryFind config.Project |> Option.defaultValue []
+
     match classes, config.FilterTemplate with
     | [], _ -> None
     | _, None ->
@@ -87,7 +90,7 @@ let private executeTests
     (coverageArgs: (string -> string) option)
     (afterRun: (TestResults -> unit) option)
     (configs: TestConfig list)
-    (affectedClasses: string list)
+    (affectedClassesByProject: Map<string, string list>)
     (rawFilter: string option)
     =
     async {
@@ -113,61 +116,75 @@ let private executeTests
                         // Collect extra args (filter + coverage) to append
                         let extraArgs = ResizeArray<string>()
 
-                        // Template-based class filter (from impact analysis)
-                        match buildFilterArgs config affectedClasses with
-                        | Some f -> extraArgs.Add(f)
-                        | None -> ()
+                        // Template-based class filter (from impact analysis).
+                        // When the map is non-empty but has no classes for this project,
+                        // skip the project entirely (impact analysis found no relevant tests).
+                        let skipProject =
+                            not affectedClassesByProject.IsEmpty
+                            && not (affectedClassesByProject |> Map.containsKey config.Project)
 
-                        // Raw passthrough filter (from run-tests command)
-                        match rawFilter with
-                        | Some f -> extraArgs.Add(f)
-                        | None -> ()
+                        if skipProject then
+                            Logging.info "test-prune" $"Skipping %s{config.Project} — no affected classes"
 
-                        match coverageArgs with
-                        | Some covFn -> extraArgs.Add(covFn config.Project)
-                        | None -> ()
-
-                        let finalArgs =
-                            if extraArgs.Count > 0 then
-                                let extra = String.concat " " extraArgs
-                                $"%s{config.Args} %s{extra}"
-                            else
-                                config.Args
-
-                        Logging.info "test-prune" $"Running: %s{config.Command} %s{finalArgs}"
-
-                        let (success, output) =
-                            runProcess config.Command finalArgs repoRoot config.Environment
-
-                        if success then
-                            Logging.info "test-prune" $"%s{config.Project}: PASSED"
+                            results <- (config.Project, TestsPassed "") :: results
                         else
-                            Logging.error "test-prune" $"%s{config.Project}: FAILED"
 
-                        if not success then
-                            let lines = output.Split('\n')
+                            match buildFilterArgs config affectedClassesByProject with
+                            | Some f -> extraArgs.Add(f)
+                            | None -> ()
 
-                            let failedTests = lines |> Array.filter (fun l -> l.StartsWith("failed "))
+                            // Raw passthrough filter (from run-tests command)
+                            match rawFilter with
+                            | Some f -> extraArgs.Add(f)
+                            | None -> ()
 
-                            let summaryLines =
-                                lines
-                                |> Array.filter (fun l ->
-                                    l.StartsWith("failed ")
-                                    || l.StartsWith("Test run summary:")
-                                    || l.Contains("total:")
-                                    || l.Contains("failed:")
-                                    || l.Contains("succeeded:"))
+                            match coverageArgs with
+                            | Some covFn -> extraArgs.Add(covFn config.Project)
+                            | None -> ()
 
-                            Logging.error "test-prune" $"%s{config.Project}: %d{failedTests.Length} test(s) failed:"
+                            let finalArgs =
+                                if extraArgs.Count > 0 then
+                                    let extra = String.concat " " extraArgs
+                                    $"%s{config.Args} %s{extra}"
+                                else
+                                    config.Args
 
-                            for line in failedTests do
-                                Logging.error "test-prune" $"  %s{line}"
+                            Logging.info "test-prune" $"Running: %s{config.Command} %s{finalArgs}"
 
-                            for line in summaryLines |> Array.filter (fun l -> not (l.StartsWith("failed "))) do
-                                Logging.error "test-prune" $"  %s{line}"
+                            let (success, output) =
+                                runProcess config.Command finalArgs repoRoot config.Environment
 
-                        let result = if success then TestsPassed output else TestsFailed output
-                        results <- (config.Project, result) :: results
+                            if success then
+                                Logging.info "test-prune" $"%s{config.Project}: PASSED"
+                            else
+                                Logging.error "test-prune" $"%s{config.Project}: FAILED"
+
+                            if not success then
+                                let lines = output.Split('\n')
+
+                                let failedTests = lines |> Array.filter (fun l -> l.StartsWith("failed "))
+
+                                let summaryLines =
+                                    lines
+                                    |> Array.filter (fun l ->
+                                        l.StartsWith("failed ")
+                                        || l.StartsWith("Test run summary:")
+                                        || l.Contains("total:")
+                                        || l.Contains("failed:")
+                                        || l.Contains("succeeded:"))
+
+                                Logging.error
+                                    "test-prune"
+                                    $"%s{config.Project}: %d{failedTests.Length} test(s) failed:"
+
+                                for line in failedTests do
+                                    Logging.error "test-prune" $"  %s{line}"
+
+                                for line in summaryLines |> Array.filter (fun l -> not (l.StartsWith("failed "))) do
+                                    Logging.error "test-prune" $"  %s{line}"
+
+                            let result = if success then TestsPassed output else TestsFailed output
+                            results <- (config.Project, result) :: results
 
                     return results
                 })
@@ -255,29 +272,44 @@ let create
         async {
             try
                 // Combine AST-based affected tests with extension results
-                let extensionClasses =
+                let extensionTests =
                     match extensions with
                     | Some exts ->
                         exts
                         |> List.collect (fun ext ->
                             try
-                                ext.FindAffectedTests db state.ChangedFiles repoRoot
-                                |> List.map (fun t -> t.TestClass)
+                                ext.FindAffectedTests (TestPrune.Ports.toRouteStore db) state.ChangedFiles repoRoot
                             with ex ->
                                 Logging.error "test-prune" $"Extension '%s{ext.Name}' failed: %s{ex.Message}"
                                 [])
                     | None -> []
 
-                let affectedClasses =
-                    let astClasses = state.AffectedTests |> List.map (fun t -> t.TestClass)
-                    (astClasses @ extensionClasses) |> List.distinct
+                // Group affected classes by test project so each project only gets its own classes
+                let astByProject =
+                    state.AffectedTests
+                    |> List.groupBy (fun t -> t.TestProject)
+                    |> List.map (fun (proj, tests) -> proj, tests |> List.map (fun t -> t.TestClass) |> List.distinct)
 
-                if affectedClasses.IsEmpty then
+                let extByProject =
+                    extensionTests
+                    |> List.groupBy (fun t -> t.TestProject)
+                    |> List.map (fun (proj, tests) -> proj, tests |> List.map (fun t -> t.TestClass) |> List.distinct)
+
+                let affectedByProject =
+                    (astByProject @ extByProject)
+                    |> List.groupBy fst
+                    |> List.map (fun (proj, groups) -> proj, groups |> List.collect snd |> List.distinct)
+                    |> Map.ofList
+
+                let totalClasses = affectedByProject |> Map.values |> Seq.sumBy List.length
+
+                if totalClasses = 0 then
                     Logging.info "test-prune" "No affected classes found — running all tests"
                 else
-                    Logging.info "test-prune" $"Affected classes: %A{affectedClasses}"
+                    for (proj, classes) in affectedByProject |> Map.toList do
+                        Logging.info "test-prune" $"Affected classes for %s{proj}: %A{classes}"
 
-                let! results = executeTests repoRoot beforeRun coverageArgs afterRun configs affectedClasses None
+                let! results = executeTests repoRoot beforeRun coverageArgs afterRun configs affectedByProject None
 
                 ctx.EmitTestCompleted(results)
 
@@ -434,7 +466,14 @@ let create
                                         return "{\"error\": \"no matching test projects\"}"
                                     | Ok configs ->
                                         let! results =
-                                            executeTests repoRoot beforeRun coverageArgs afterRun configs [] filter
+                                            executeTests
+                                                repoRoot
+                                                beforeRun
+                                                coverageArgs
+                                                afterRun
+                                                configs
+                                                Map.empty
+                                                filter
 
                                         return formatTestResultsJson results
                             with ex ->
@@ -494,14 +533,22 @@ let create
                                 | None -> db.GetSymbolsInFile(relPath)
 
                             // Accumulate per-project; flush on BuildCompleted.
+                            // Replace any prior analysis for this file to avoid double-counting
+                            // when a file is checked more than once before the flush (e.g. initial
+                            // scan followed by a file-change recheck).
                             let existingForProject =
                                 state.PendingAnalysis |> Map.tryFind projectName |> Option.defaultValue []
 
+                            let filteredExisting =
+                                existingForProject
+                                |> List.filter (fun a ->
+                                    not (a.Symbols |> List.exists (fun s -> s.SourceFile = relPath)))
+
                             let newPending =
                                 state.PendingAnalysis
-                                |> Map.add projectName (existingForProject @ [ fileAnalysis ])
+                                |> Map.add projectName (filteredExisting @ [ fileAnalysis ])
 
-                            let changes = detectChanges normalizedSymbols storedSymbols
+                            let (changes, _events) = detectChanges normalizedSymbols storedSymbols
                             let changedNames = changedSymbolNames changes
 
                             Logging.info
@@ -528,13 +575,12 @@ let create
                                     AnalysisRan = true }
 
                             if isIdle then
-                                match testConfigs with
-                                | Some configs when not configs.IsEmpty ->
-                                    // Stay Running until BuildCompleted triggers test execution.
-                                    ()
-                                | _ ->
-                                    // No test configs — analysis-only mode, can report Completed
-                                    ctx.ReportStatus(Completed(DateTime.UtcNow))
+                                // Analysis done — report Completed. If a BuildCompleted arrives
+                                // later it will re-trigger test execution and set Running again.
+                                // Previously we stayed Running here when testConfigs existed,
+                                // which caused WaitForComplete to hang when FileChecked events
+                                // arrived after the build had already completed.
+                                ctx.ReportStatus(Completed(DateTime.UtcNow))
 
                             return newState
                         | Error msg ->
