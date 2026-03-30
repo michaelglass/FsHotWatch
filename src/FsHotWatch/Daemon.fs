@@ -335,6 +335,47 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
     subscription <- Some(host.OnStatusChanged.Subscribe(fun _ -> checkAndSchedule ()))
     checkAndSchedule ()
 
+    // Periodic status logging so operators can see what's blocking completion
+    let logCts = new CancellationTokenSource()
+
+    let rec logLoop () =
+        Task
+            .Delay(10_000, logCts.Token)
+            .ContinueWith(fun (t: Task) ->
+                if not t.IsCanceled then
+                    lock lockObj (fun () ->
+                        if not resolved then
+                            let statuses = host.GetAllStatuses()
+
+                            let running =
+                                statuses
+                                |> Map.toList
+                                |> List.choose (fun (name, s) ->
+                                    match s with
+                                    | Running since -> Some $"%s{name} (since %O{since})"
+                                    | _ -> None)
+
+                            match running with
+                            | [] ->
+                                Logging.info "wait" "All plugins terminal, waiting for stability confirmation..."
+                            | plugins ->
+                                let joined = plugins |> String.concat ", "
+
+                                Logging.info
+                                    "wait"
+                                    $"Waiting for plugins: %s{joined}")
+
+                    logLoop ())
+        |> ignore
+
+    logLoop ()
+
+    // Clean up log timer when resolved
+    tcs.Task.ContinueWith(fun (_: Task<unit>) ->
+        logCts.Cancel()
+        logCts.Dispose())
+    |> ignore
+
     // Set up timeout — cancellable so the delay task doesn't hold closure refs for the full 30 min on normal completion
     if timeout <> System.TimeSpan.MaxValue then
         let cts = new CancellationTokenSource()
@@ -349,8 +390,27 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
                             resolved <- true
                             cleanup ()
 
+                            let statuses = host.GetAllStatuses()
+
+                            let running =
+                                statuses
+                                |> Map.toList
+                                |> List.choose (fun (name, s) ->
+                                    match s with
+                                    | Running since -> Some $"%s{name} (since %O{since})"
+                                    | _ -> None)
+
+                            let detail =
+                                if running.IsEmpty then
+                                    "all terminal but stability check failed"
+                                else
+                                    let joined = running |> String.concat ", "
+                                    $"still running: %s{joined}"
+
                             tcs.TrySetException(
-                                System.TimeoutException($"WaitForComplete timed out after %O{timeout}")
+                                System.TimeoutException(
+                                    $"WaitForComplete timed out after %O{timeout} — %s{detail}"
+                                )
                             )
                             |> ignore))
         |> ignore

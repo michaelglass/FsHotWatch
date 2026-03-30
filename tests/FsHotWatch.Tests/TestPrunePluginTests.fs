@@ -14,6 +14,7 @@ open TestPrune.AstAnalyzer
 open TestPrune.Database
 open TestPrune.Extensions
 open TestPrune.SymbolDiff
+open FsHotWatch.Daemon
 open FsHotWatch.Tests.TestHelpers
 
 let private waitForPluginIdle (host: PluginHost) (pluginName: string) (timeoutSecs: float) =
@@ -264,7 +265,8 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
               SourceFile = "src/Lib.fs"
               LineStart = 1
               LineEnd = 1
-              ContentHash = "abc123" }
+              ContentHash = "abc123"
+              IsExtern = false }
 
         let testMethod1: TestMethodInfo =
             { SymbolFullName = "Tests.myTest"
@@ -301,12 +303,12 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
         test <@ storedAfter.[0].LineEnd = 5 @>
 
         // Diffing against pre-write data detects the change
-        let changes = detectChanges [ symbol2 ] storedBefore
+        let (changes, _) = detectChanges [ symbol2 ] storedBefore
         let changedNames = changedSymbolNames changes
         test <@ not changedNames.IsEmpty @>
 
         // Diffing against post-write data finds no changes (the bug this test guards against)
-        let noChanges = detectChanges [ symbol2 ] storedAfter
+        let (noChanges, _) = detectChanges [ symbol2 ] storedAfter
         let noChangedNames = changedSymbolNames noChanges
         test <@ noChangedNames.IsEmpty @>)
 
@@ -627,7 +629,7 @@ let private emitFileAndWait
     }
 
 [<Fact>]
-let ``FileChecked stays Running when testConfigs provided (success path)`` () =
+let ``FileChecked reports Completed when testConfigs provided (analysis done, awaiting build)`` () =
     withTempDir "tp-no-complete-real" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
@@ -653,16 +655,17 @@ let ``FileChecked stays Running when testConfigs provided (success path)`` () =
         emitFileAndWait checker pipeline host testFile (testSource "MyTests")
         |> Async.RunSynchronously
 
-        // emitFileAndWait waits until changed-files includes the file, proving
-        // the FileChecked was fully processed through the success path.
+        // Wait for terminal status — plugin reports Completed after analysis
+        // even with testConfigs, so WaitForComplete doesn't hang waiting for
+        // a BuildCompleted that may never come.
+        waitForPluginTerminal host "test-prune" 5.0
+
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
 
-        // With testConfigs, plugin should stay Running (not Completed) — tests haven't run yet.
         match status.Value with
-        | Running _ -> ()
-        | Completed _ -> Assert.Fail("Expected Running after FileChecked with testConfigs — tests haven't run yet")
-        | other -> Assert.Fail($"Expected Running after FileChecked with testConfigs, got: %A{other}"))
+        | Completed _ -> ()
+        | other -> Assert.Fail($"Expected Completed after FileChecked analysis, got: %A{other}"))
 
 [<Fact>]
 let ``FileChecked reports Completed when no testConfigs (success path)`` () =
@@ -979,3 +982,61 @@ let validate (cfg: Config) = cfg.Value.Length > 0
 
         test <@ capturedArgs.Contains("--filter-class") @>
         test <@ capturedArgs.Contains("Tests") @>)
+
+[<Fact>]
+let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and tests finish`` () =
+    withTempDir "tp-hang" (fun tmpDir ->
+        let configs =
+            [ { Project = "TestProject"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        host.RegisterHandler(handler)
+
+        // 1. Build completes → tests run and finish
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForPluginTerminal host "test-prune" 5.0
+
+        // Confirm we reached terminal state
+        let statusAfterTests = host.GetStatus("test-prune")
+        test <@ statusAfterTests.IsSome @>
+
+        match statusAfterTests.Value with
+        | Completed _ | Failed _ -> ()
+        | other -> Assert.Fail($"Expected terminal after tests, got: %A{other}")
+
+        // 2. Late FileChecked arrives (simulating FCS check completing after build)
+        let fakeFile = Path.Combine(tmpDir, "Late.fs")
+        File.WriteAllText(fakeFile, "module Late\nlet x = 1\n")
+
+        let fakeResult: FileCheckResult =
+            { File = fakeFile
+              Source = "module Late\nlet x = 1\n"
+              ParseResults = Unchecked.defaultof<_>
+              CheckResults = None
+              ProjectOptions = Unchecked.defaultof<_>
+              Version = 0L }
+
+        try
+            host.EmitFileChecked(fakeResult)
+        with _ ->
+            ()
+
+        // Wait for the plugin to process the FileChecked event and settle.
+        // With the fix, plugin goes Running → Completed. Without the fix, it stays Running.
+        System.Threading.Thread.Sleep(500)
+
+        // 3. WaitForComplete should resolve within a few seconds (1s stability + margin).
+        //    Before the fix, the plugin stayed Running indefinitely after this FileChecked.
+        let waitTask =
+            waitForAllTerminal host (System.TimeSpan.FromSeconds(5.0)) ()
+
+        let completed = waitTask.Wait(System.TimeSpan.FromSeconds(8.0))
+
+        test <@ completed @>)
