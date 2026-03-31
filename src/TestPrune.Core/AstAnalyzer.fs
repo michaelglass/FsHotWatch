@@ -736,7 +736,8 @@ let getScriptOptions (checker: FSharpChecker) (sourceFileName: string) (source: 
     async {
         let sourceText = SourceText.ofString source
 
-        do! scriptSemaphore.WaitAsync() |> Async.AwaitTask
+        let! ct = Async.CancellationToken
+        do! scriptSemaphore.WaitAsync(ct) |> Async.AwaitTask
 
         let! projOptions, _diagnostics =
             try
