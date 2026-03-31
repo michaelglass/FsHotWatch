@@ -89,7 +89,10 @@ let showHelp () =
     printfn "  --include-tests     Include symbols from test files in dead code report"
     printfn "  --verbose           Show why each symbol is unreachable"
 
-/// Default build runner: runs `dotnet build` on the solution.
+let private buildTimeoutMs = 600_000 // 10 minutes
+
+/// Default build runner: runs `dotnet build` on the solution with a 10-minute timeout.
+/// Reads stdout and stderr asynchronously to avoid deadlock when buffers fill.
 let dotnetBuildRunner: BuildRunner =
     fun (repoRoot: string) ->
         let slnFiles =
@@ -102,11 +105,26 @@ let dotnetBuildRunner: BuildRunner =
         buildPsi.UseShellExecute <- false
         buildPsi.RedirectStandardOutput <- true
         buildPsi.RedirectStandardError <- true
+
         use buildProc = Process.Start(buildPsi)
-        buildProc.StandardOutput.ReadToEnd() |> ignore
-        buildProc.StandardError.ReadToEnd() |> ignore
-        buildProc.WaitForExit()
-        buildProc.ExitCode
+        let sw = Diagnostics.Stopwatch.StartNew()
+
+        // Read async to avoid deadlock if a buffer fills while waiting for the other.
+        let stdoutTask = buildProc.StandardOutput.ReadToEndAsync()
+        let stderrTask = buildProc.StandardError.ReadToEndAsync()
+
+        let completed = buildProc.WaitForExit(buildTimeoutMs)
+
+        if not completed then
+            buildProc.Kill(entireProcessTree = true)
+            eprintfn $"Build timed out after {buildTimeoutMs / 60_000} minutes — aborting index"
+            1
+        else
+            stdoutTask.Wait()
+            stderrTask.Wait()
+            sw.Stop()
+            eprintfn $"[dotnet build] \u2192 exit %d{buildProc.ExitCode} in %.1f{sw.Elapsed.TotalSeconds}s"
+            buildProc.ExitCode
 
 let private createAuditSinkForRepo (repoRoot: string) =
     let dbPath = Path.Combine(repoRoot, ".test-prune.db")
