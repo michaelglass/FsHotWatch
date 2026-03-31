@@ -89,7 +89,7 @@ let showHelp () =
     printfn "  --include-tests     Include symbols from test files in dead code report"
     printfn "  --verbose           Show why each symbol is unreachable"
 
-let private buildTimeoutMs = 600_000 // 10 minutes
+let private buildTimeoutMs = 600_000
 
 /// Default build runner: runs `dotnet build` on the solution with a 10-minute timeout.
 /// Reads stdout and stderr asynchronously to avoid deadlock when buffers fill.
@@ -107,7 +107,7 @@ let dotnetBuildRunner: BuildRunner =
         buildPsi.RedirectStandardError <- true
 
         use buildProc = Process.Start(buildPsi)
-        let sw = Diagnostics.Stopwatch.StartNew()
+        let sw = Stopwatch.StartNew()
 
         // Read async to avoid deadlock if a buffer fills while waiting for the other.
         let stdoutTask = buildProc.StandardOutput.ReadToEndAsync()

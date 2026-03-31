@@ -15,7 +15,7 @@ open System.Threading
 
 /// Serializes concurrent GetProjectOptionsFromScript calls.
 /// FCS has internal state corruption when script options are loaded concurrently.
-let private scriptSemaphore = new SemaphoreSlim(1, 1)
+let private scriptSemaphore = SemaphoreSlim(1, 1)
 
 /// Discriminated union for kinds of F# symbols (function, type, DU case, etc.).
 type SymbolKind =
@@ -730,19 +730,23 @@ let private findRelatedScriptFiles (currentFile: string) (openedModules: string 
             eprintfn $"  Warning: findRelatedScriptFiles failed: %s{ex.Message}"
             []
 
-/// Resolve a path to absolute using basePath as the base directory.
+/// FCS GetProjectOptionsFromScript can return paths relative to the script location
+/// rather than the process cwd. Normalise them so FCS can load assemblies regardless
+/// of where the CLI was invoked.
 let internal resolveToAbsolute (basePath: string) (path: string) =
     if String.IsNullOrEmpty(path) || Path.IsPathRooted(path) then path
     else Path.GetFullPath(Path.Combine(basePath, path))
 
-/// Resolve relative -r: reference paths in FCS OtherOptions to absolute paths.
-/// Only resolves -r: prefixed entries; other options like --noframework are not paths.
+/// -r: entries in OtherOptions are DLL reference paths that may be relative.
+/// Other entries (e.g. --noframework) are compiler flags, not paths — leave them untouched.
 let private resolveReferenceOptions (baseDir: string) (opts: string array) =
     opts
     |> Array.map (fun opt ->
         if opt.StartsWith("-r:", StringComparison.Ordinal) then
             let path = opt[3..]
-            "-r:" + resolveToAbsolute baseDir path
+            let resolved = resolveToAbsolute baseDir path
+            if Object.ReferenceEquals(resolved, path) then opt
+            else "-r:" + resolved
         else
             opt)
 
