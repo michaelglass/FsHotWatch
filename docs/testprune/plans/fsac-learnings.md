@@ -11,14 +11,14 @@ Scores: **S** Simpler · **M** Maintainable · **R** Result quality (`★★★/
 
 ## Tier 1 — Quick wins
 
-- [ ] **Script checking semaphore** · Add `SemaphoreSlim(1,1)` to serialize
+- [x] **Script checking semaphore** · Add `SemaphoreSlim(1,1)` to serialize
       concurrent `.fsx` checks. FSAC discovered FCS has internal state corruption
       under concurrent script processing. TestPrune already calls
       `GetProjectOptionsFromScript` for scripts — worth protecting.
       (`AstAnalyzer.fs:734`, FSAC `CompilerServiceInterface.fs:113-115`)
       **S** `+`  **M** `+`  **R** `★★★`
 
-- [ ] **Process timeout on the pre-index build step** · The build that runs before
+- [x] **Process timeout on the pre-index build step** · The build that runs before
       indexing (`dotnet build`) has no timeout. A hung build blocks the CLI
       indefinitely. (`Orchestration.fs`, build invocation)
       **S** `0`  **M** `+`  **R** `★★★`
@@ -34,12 +34,12 @@ Scores: **S** Simpler · **M** Maintainable · **R** Result quality (`★★★/
       (FSAC `AdaptiveExtensions.fs:19-32`)
       **S** `+`  **M** `++`  **R** `★☆☆`
 
-- [ ] **Process execution logging** · Log command, args, working directory, and
+- [x] **Process execution logging** · Log command, args, working directory, and
       duration for build/test invocations. Build failures are opaque to diagnose
       in the current output.
       **S** `0`  **M** `++`  **R** `★★☆`
 
-- [ ] **Resolve relative paths to absolute before FCS** · FSAC does this
+- [x] **Resolve relative paths to absolute before FCS** · FSAC does this
       defensively because script compilation fails with relative paths. Apply the
       same pass over `SourceFiles` and `OtherOptions` before passing to
       `ParseAndCheckFileInProject`. (FSAC `CompilerServiceInterface.fs:207-215`)
