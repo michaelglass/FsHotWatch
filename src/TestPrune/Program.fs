@@ -121,8 +121,12 @@ let dotnetBuildRunner: BuildRunner =
             1
         else
             stdoutTask.Wait()
-            stderrTask.Wait()
+            let stderrOutput = stderrTask.Result
             sw.Stop()
+
+            if buildProc.ExitCode <> 0 && not (String.IsNullOrWhiteSpace(stderrOutput)) then
+                eprintfn "%s" stderrOutput
+
             eprintfn $"[dotnet build] \u2192 exit %d{buildProc.ExitCode} in %.1f{sw.Elapsed.TotalSeconds}s"
             buildProc.ExitCode
 
