@@ -7,12 +7,6 @@ open FsHotWatch.Events
 open FsHotWatch.Logging
 open FsHotWatch.Plugin
 
-[<NoComparison; NoEquality>]
-type private StatusMsg =
-    | SetStatus of name: string * PluginStatus
-    | GetStatus of name: string * AsyncReplyChannel<PluginStatus option>
-    | GetAll of AsyncReplyChannel<Map<string, PluginStatus>>
-
 /// Manages plugin lifecycle, event dispatch, command registration, and status tracking.
 type PluginHost(checker: FSharpChecker, repoRoot: string) =
     let statusChanged = Event<string * PluginStatus>()
@@ -21,25 +15,16 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
     let commands = ConcurrentDictionary<string, CommandHandler>()
     let preprocessors = ConcurrentBag<IFsHotWatchPreprocessor>()
 
-    let statusAgent =
-        MailboxProcessor.Start(fun inbox ->
-            let rec loop (statuses: Map<string, PluginStatus>) =
-                async {
-                    let! msg = inbox.Receive()
+    // Status tracking uses a lock + mutable map instead of a MailboxProcessor.
+    // The event fires OUTSIDE the lock so subscribers can safely call GetAllStatuses
+    // without deadlocking (a MailboxProcessor fires events inside its loop,
+    // causing re-entrant PostAndReply deadlocks).
+    let mutable statuses: Map<string, PluginStatus> = Map.empty
+    let statusLock = obj ()
 
-                    match msg with
-                    | SetStatus(name, status) ->
-                        statusChanged.Trigger(name, status)
-                        return! loop (Map.add name status statuses)
-                    | GetStatus(name, ch) ->
-                        ch.Reply(Map.tryFind name statuses)
-                        return! loop statuses
-                    | GetAll ch ->
-                        ch.Reply(statuses)
-                        return! loop statuses
-                }
-
-            loop Map.empty)
+    let setStatus name status =
+        lock statusLock (fun () -> statuses <- Map.add name status statuses)
+        statusChanged.Trigger(name, status)
 
     let registeredPlugins = ResizeArray<PluginFramework.RegisteredPlugin>()
 
@@ -57,7 +42,7 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
                 checker
                 repoRoot
                 (fun name status ->
-                    statusAgent.Post(SetStatus(name, status))
+                    setStatus name status
 
                     Logging.debug
                         name
@@ -73,12 +58,12 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
                 (fun cmd -> commands[fst cmd] <- snd cmd)
                 handler
 
-        statusAgent.Post(SetStatus(plugin.Name, Idle))
+        setStatus plugin.Name Idle
         registeredPlugins.Add(plugin)
 
     /// Register a preprocessor (runs before events are dispatched).
     member _.RegisterPreprocessor(preprocessor: IFsHotWatchPreprocessor) =
-        statusAgent.Post(SetStatus(preprocessor.Name, Idle))
+        setStatus preprocessor.Name Idle
         preprocessors.Add(preprocessor)
 
     /// Run all preprocessors on the given files. Returns files that were modified.
@@ -86,14 +71,14 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
         let mutable modifiedFiles = []
 
         for preprocessor in preprocessors do
-            statusAgent.Post(SetStatus(preprocessor.Name, Running(since = System.DateTime.UtcNow)))
+            setStatus preprocessor.Name (Running(since = System.DateTime.UtcNow))
 
             try
                 let modified = preprocessor.Process files repoRoot
                 modifiedFiles <- modified @ modifiedFiles
-                statusAgent.Post(SetStatus(preprocessor.Name, Completed(System.DateTime.UtcNow)))
+                setStatus preprocessor.Name (Completed(System.DateTime.UtcNow))
             with ex ->
-                statusAgent.Post(SetStatus(preprocessor.Name, Failed(ex.Message, System.DateTime.UtcNow)))
+                setStatus preprocessor.Name (Failed(ex.Message, System.DateTime.UtcNow))
 
         modifiedFiles |> List.distinct
 
@@ -133,11 +118,10 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
 
     /// Get the status of a specific plugin by name.
     member _.GetStatus(pluginName: string) : PluginStatus option =
-        statusAgent.PostAndReply(fun ch -> GetStatus(pluginName, ch))
+        lock statusLock (fun () -> Map.tryFind pluginName statuses)
 
     /// Get all plugin statuses as an immutable map.
-    member _.GetAllStatuses() : Map<string, PluginStatus> =
-        statusAgent.PostAndReply(fun ch -> GetAll ch)
+    member _.GetAllStatuses() : Map<string, PluginStatus> = lock statusLock (fun () -> statuses)
 
     /// Get all errors grouped by file path.
     member _.GetErrors() = ledger.GetAll()

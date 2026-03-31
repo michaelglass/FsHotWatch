@@ -9,6 +9,7 @@ open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
+open FsHotWatch.Daemon
 open FsHotWatch.Tests.TestHelpers
 
 /// A null checker is fine for tests that don't perform actual compilation.
@@ -551,3 +552,42 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
                    | Completed _ -> true
                    | _ -> false)
         @>
+
+[<Fact>]
+let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls GetAllStatuses`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let handler =
+        { Name = "deadlock-test"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                        Thread.Sleep(50)
+                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChanged = true } }
+
+    host.RegisterHandler(handler)
+
+    // Start waitForAllTerminal — this subscribes to OnStatusChanged and calls
+    // GetAllStatuses() inside the handler. If OnStatusChanged fires synchronously
+    // inside a MailboxProcessor, GetAllStatuses (which would do PostAndReply to
+    // the same agent) will deadlock.
+    let waitTask = waitForAllTerminal host (TimeSpan.FromSeconds(5.0)) ()
+
+    // Trigger a status change
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    // If deadlocked, this will time out
+    let completed = waitTask.Wait(TimeSpan.FromSeconds(8.0))
+    test <@ completed @>
