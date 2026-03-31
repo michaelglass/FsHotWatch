@@ -435,7 +435,12 @@ let private extractResults
             // Extract the last dot-delimited component of a fully-qualified name.
             let inline shortName (n: string) =
                 let i = n.LastIndexOf('.')
-                if i >= 0 then n.[i + 1 ..] else n
+                let s = if i >= 0 then n.[i + 1 ..] else n
+
+                if s.Length > 4 && s.StartsWith("``") && s.EndsWith("``") then
+                    s.[2 .. s.Length - 3]
+                else
+                    s
 
             let definitions =
                 allUses
