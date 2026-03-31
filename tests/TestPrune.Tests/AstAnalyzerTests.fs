@@ -1,6 +1,7 @@
 module TestPrune.Tests.AstAnalyzerTests
 
 open System
+open System.IO
 open Xunit
 open Swensen.Unquote
 open FSharp.Compiler.CodeAnalysis
@@ -1399,3 +1400,15 @@ module ``getScriptOptions concurrency`` =
         let results = tasks |> Async.Parallel |> Async.RunSynchronously
         for i in 0..9 do
             test <@ results[i].SourceFiles |> Array.exists (fun f -> f.Contains($"concurrent_{i + 1}.fsx")) @>
+
+module ``resolveToAbsolute`` =
+
+    [<Fact>]
+    let ``leaves absolute path unchanged`` () =
+        let result = resolveToAbsolute "/base/dir" "/abs/path.dll"
+        test <@ result = "/abs/path.dll" @>
+
+    [<Fact>]
+    let ``resolves relative path against base`` () =
+        let result = resolveToAbsolute "/base/dir" "relative/file.dll"
+        test <@ result = Path.GetFullPath(Path.Combine("/base/dir", "relative/file.dll")) @>

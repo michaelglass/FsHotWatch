@@ -730,6 +730,22 @@ let private findRelatedScriptFiles (currentFile: string) (openedModules: string 
             eprintfn $"  Warning: findRelatedScriptFiles failed: %s{ex.Message}"
             []
 
+/// Resolve a path to absolute using basePath as the base directory.
+let internal resolveToAbsolute (basePath: string) (path: string) =
+    if Path.IsPathRooted(path) then path
+    else Path.GetFullPath(Path.Combine(basePath, path))
+
+/// Resolve relative -r: reference paths in FCS OtherOptions to absolute paths.
+/// Only resolves -r: prefixed entries; other options like --noframework are not paths.
+let private resolveReferenceOptions (baseDir: string) (opts: string array) =
+    opts
+    |> Array.map (fun opt ->
+        if opt.StartsWith("-r:", StringComparison.Ordinal) then
+            let path = opt[3..]
+            "-r:" + resolveToAbsolute baseDir path
+        else
+            opt)
+
 /// Convenience: create project options from a script source string.
 /// Detects 'open' statements and includes related script files in the SourceFiles array.
 let getScriptOptions (checker: FSharpChecker) (sourceFileName: string) (source: string) =
@@ -758,9 +774,12 @@ let getScriptOptions (checker: FSharpChecker) (sourceFileName: string) (source: 
                 |> Array.append projOptions.SourceFiles
                 |> Array.distinct
 
+        let baseDir = Path.GetDirectoryName(sourceFileName)
+
         let enhancedOptions =
             { projOptions with
-                SourceFiles = enhancedSourceFiles }
+                SourceFiles = enhancedSourceFiles |> Array.map (resolveToAbsolute baseDir)
+                OtherOptions = projOptions.OtherOptions |> resolveReferenceOptions baseDir }
 
         return enhancedOptions
     }
