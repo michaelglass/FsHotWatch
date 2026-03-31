@@ -1008,7 +1008,8 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
         test <@ statusAfterTests.IsSome @>
 
         match statusAfterTests.Value with
-        | Completed _ | Failed _ -> ()
+        | Completed _
+        | Failed _ -> ()
         | other -> Assert.Fail($"Expected terminal after tests, got: %A{other}")
 
         // 2. Late FileChecked arrives (simulating FCS check completing after build)
@@ -1034,8 +1035,7 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
 
         // 3. WaitForComplete should resolve within a few seconds (1s stability + margin).
         //    Before the fix, the plugin stayed Running indefinitely after this FileChecked.
-        let waitTask =
-            waitForAllTerminal host (System.TimeSpan.FromSeconds(5.0)) ()
+        let waitTask = waitForAllTerminal host (System.TimeSpan.FromSeconds(5.0)) ()
 
         let completed = waitTask.Wait(System.TimeSpan.FromSeconds(8.0))
 
