@@ -8,6 +8,10 @@
     <Authors>Michael Glass</Authors>
     <Description>FsHotWatch plugin that runs commands when specific files change</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/michaelglass/FsHotWatch</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>
+    <PackageTags>fsharp;file-command;file-watcher;automation;plugin</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
