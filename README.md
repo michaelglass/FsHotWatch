@@ -57,6 +57,9 @@ FsHotWatch is split into small packages so you only install what you need:
 | [`FsHotWatch.Analyzers`](src/FsHotWatch.Analyzers/) | Plugin: runs F# analyzers (like [G-Research](https://github.com/G-Research/fsharp-analyzers) or your own) |
 | [`FsHotWatch.Lint`](src/FsHotWatch.Lint/) | Plugin: runs FSharpLint using the warm compiler's results |
 | [`FsHotWatch.Fantomas`](src/FsHotWatch.Fantomas/) | Plugin: checks if your files are formatted with Fantomas |
+| [`FsHotWatch.Build`](src/FsHotWatch.Build/) | Plugin: runs `dotnet build` and emits BuildCompleted events |
+| [`FsHotWatch.Coverage`](src/FsHotWatch.Coverage/) | Plugin: checks coverage thresholds after tests complete |
+| [`FsHotWatch.FileCommand`](src/FsHotWatch.FileCommand/) | Plugin: runs custom commands when specific files change |
 
 ## Writing your own plugin
 
@@ -110,6 +113,74 @@ FsHotWatch stores check result caches and the TestPrune database in `.fshw/` at 
 The cache directory contains:
 - `cache/` — Cached FCS check results for faster cold starts
 - `test-impact.db` — TestPrune dependency analysis database
+
+## Configuration
+
+Create `.fs-hot-watch.json` in your repo root. All fields are optional — sensible defaults are used when omitted.
+
+```json
+{
+  "build": {
+    "command": "dotnet",
+    "args": "build"
+  },
+  "format": true,
+  "lint": true,
+  "cache": "jj",
+  "tests": {
+    "beforeRun": "dotnet build",
+    "projects": [
+      {
+        "project": "MyProject.Tests",
+        "command": "dotnet",
+        "args": "run --project tests/MyProject.Tests --no-build --",
+        "filterTemplate": "--filter-class {classes}",
+        "classJoin": " ",
+        "group": "unit"
+      }
+    ]
+  },
+  "coverage": {
+    "directory": "./coverage",
+    "thresholdsFile": "coverage-thresholds.json"
+  },
+  "analyzers": {
+    "paths": ["analyzers/"]
+  },
+  "fileCommands": [
+    {
+      "pattern": "*.fsx",
+      "command": "dotnet",
+      "args": "fsi --typecheck-only"
+    }
+  ]
+}
+```
+
+### Configuration reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `build` | `object \| bool` | `{"command": "dotnet", "args": "build"}` | Build command. `false` disables. |
+| `format` | `bool` | `true` | Enable Fantomas format-on-save preprocessor. |
+| `lint` | `bool` | `true` | Enable FSharpLint plugin. Uses `fsharplint.json` if found. |
+| `cache` | `string \| bool` | auto (`"jj"` if `.jj/` exists, else `"file"`) | Cache strategy: `"none"`, `"memory"`, `"file"`, or `"jj"`. |
+| `tests` | `object` | — | Test runner config. See below. |
+| `coverage` | `object` | — | Coverage threshold checking. |
+| `analyzers` | `object` | — | F# Analyzers SDK integration. |
+| `fileCommands` | `array` | `[]` | Custom commands triggered by file patterns. |
+
+**`tests.projects[]` fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `project` | `string` | `"unknown"` | Project name (used for filtering and display). |
+| `command` | `string` | `"dotnet"` | Test runner command. |
+| `args` | `string` | `"test"` | Arguments to the test runner. |
+| `group` | `string` | `"default"` | Group name (for running subsets). |
+| `environment` | `object` | `{}` | Extra environment variables. |
+| `filterTemplate` | `string` | — | Template for class-based filtering. `{classes}` is replaced. |
+| `classJoin` | `string` | `" "` | Separator for joining class names in the filter. |
 
 ## Architecture
 
