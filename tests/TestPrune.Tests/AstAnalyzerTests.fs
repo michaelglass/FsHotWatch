@@ -1384,3 +1384,16 @@ let getHost (c: Config) = c.Host
                 && d.ToSymbol.EndsWith("Config", StringComparison.Ordinal))
 
         test <@ configEdges.Length >= 1 @>
+
+module ``getScriptOptions concurrency`` =
+
+    [<Fact>]
+    let ``concurrent calls do not corrupt each other`` () =
+        let checker = FSharpChecker.Create()
+        let source1 = "module A\nlet x = 1"
+        let source2 = "module B\nlet y = 2"
+        let f1 = async { return! getScriptOptions checker "/tmp/a.fsx" source1 }
+        let f2 = async { return! getScriptOptions checker "/tmp/b.fsx" source2 }
+        let results = [ f1; f2 ] |> Async.Parallel |> Async.RunSynchronously
+        test <@ results[0].SourceFiles |> Array.exists (fun f -> f.EndsWith("a.fsx")) @>
+        test <@ results[1].SourceFiles |> Array.exists (fun f -> f.EndsWith("b.fsx")) @>

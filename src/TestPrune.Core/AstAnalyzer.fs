@@ -11,6 +11,12 @@ open FSharp.Compiler.Text
 
 #nowarn "57" // Experimental snapshot API
 
+open System.Threading
+
+/// Serializes concurrent GetProjectOptionsFromScript calls.
+/// FCS has internal state corruption when script options are loaded concurrently.
+let private scriptSemaphore = new SemaphoreSlim(1, 1)
+
 /// Discriminated union for kinds of F# symbols (function, type, DU case, etc.).
 type SymbolKind =
     | Function
@@ -730,8 +736,13 @@ let getScriptOptions (checker: FSharpChecker) (sourceFileName: string) (source: 
     async {
         let sourceText = SourceText.ofString source
 
+        do! scriptSemaphore.WaitAsync() |> Async.AwaitTask
+
         let! projOptions, _diagnostics =
-            checker.GetProjectOptionsFromScript(sourceFileName, sourceText, assumeDotNetFramework = false)
+            try
+                checker.GetProjectOptionsFromScript(sourceFileName, sourceText, assumeDotNetFramework = false)
+            finally
+                scriptSemaphore.Release() |> ignore
 
         // Detect opened modules and find related script files
         let openedModules = detectOpenedModules source
