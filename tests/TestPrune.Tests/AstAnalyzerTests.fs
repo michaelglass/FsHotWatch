@@ -1411,4 +1411,14 @@ module ``resolveToAbsolute`` =
     [<Fact>]
     let ``resolves relative path against base`` () =
         let result = resolveToAbsolute "/base/dir" "relative/file.dll"
-        test <@ result = Path.GetFullPath(Path.Combine("/base/dir", "relative/file.dll")) @>
+        test <@ result = "/base/dir/relative/file.dll" @>
+
+    [<Fact>]
+    let ``resolves dotdot traversal`` () =
+        let result = resolveToAbsolute "/base/dir" "../sibling/lib.dll"
+        test <@ result = "/base/sibling/lib.dll" @>
+
+    [<Fact>]
+    let ``returns empty string unchanged`` () =
+        let result = resolveToAbsolute "/base/dir" ""
+        test <@ result = "" @>

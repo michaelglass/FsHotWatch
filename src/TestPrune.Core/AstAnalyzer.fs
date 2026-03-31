@@ -732,7 +732,7 @@ let private findRelatedScriptFiles (currentFile: string) (openedModules: string 
 
 /// Resolve a path to absolute using basePath as the base directory.
 let internal resolveToAbsolute (basePath: string) (path: string) =
-    if Path.IsPathRooted(path) then path
+    if String.IsNullOrEmpty(path) || Path.IsPathRooted(path) then path
     else Path.GetFullPath(Path.Combine(basePath, path))
 
 /// Resolve relative -r: reference paths in FCS OtherOptions to absolute paths.
@@ -774,7 +774,10 @@ let getScriptOptions (checker: FSharpChecker) (sourceFileName: string) (source: 
                 |> Array.append projOptions.SourceFiles
                 |> Array.distinct
 
-        let baseDir = Path.GetDirectoryName(sourceFileName)
+        let baseDir =
+            match Path.GetDirectoryName(sourceFileName) with
+            | null -> Directory.GetCurrentDirectory()
+            | dir -> dir
 
         let enhancedOptions =
             { projOptions with
