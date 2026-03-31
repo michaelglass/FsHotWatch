@@ -11,6 +11,10 @@
     <Authors>Michael Glass</Authors>
     <Description>FsHotWatch plugin for FSharpLint integration</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/michaelglass/FsHotWatch</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>
+    <PackageTags>fsharp;lint;fsharplint;code-quality;plugin</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
