@@ -1,6 +1,7 @@
 module TestPrune.Tests.AstAnalyzerTests
 
 open System
+open System.IO
 open Xunit
 open Swensen.Unquote
 open FSharp.Compiler.CodeAnalysis
@@ -1384,3 +1385,44 @@ let getHost (c: Config) = c.Host
                 && d.ToSymbol.EndsWith("Config", StringComparison.Ordinal))
 
         test <@ configEdges.Length >= 1 @>
+
+module ``getScriptOptions concurrency`` =
+
+    [<Fact>]
+    let ``concurrent calls do not corrupt each other`` () =
+        let checker = FSharpChecker.Create()
+
+        let tasks =
+            [| for i in 1..10 ->
+                   async { return! getScriptOptions checker $"/tmp/concurrent_{i}.fsx" $"module M{i}\nlet x{i} = {i}" } |]
+
+        let results = tasks |> Async.Parallel |> Async.RunSynchronously
+
+        for i in 0..9 do
+            test
+                <@
+                    results[i].SourceFiles
+                    |> Array.exists (fun f -> f.Contains($"concurrent_{i + 1}.fsx"))
+                @>
+
+module ``resolveToAbsolute`` =
+
+    [<Fact>]
+    let ``leaves absolute path unchanged`` () =
+        let result = resolveToAbsolute "/base/dir" "/abs/path.dll"
+        test <@ result = "/abs/path.dll" @>
+
+    [<Fact>]
+    let ``resolves relative path against base`` () =
+        let result = resolveToAbsolute "/base/dir" "relative/file.dll"
+        test <@ result = "/base/dir/relative/file.dll" @>
+
+    [<Fact>]
+    let ``resolves dotdot traversal`` () =
+        let result = resolveToAbsolute "/base/dir" "../sibling/lib.dll"
+        test <@ result = "/base/sibling/lib.dll" @>
+
+    [<Fact>]
+    let ``returns empty string unchanged`` () =
+        let result = resolveToAbsolute "/base/dir" ""
+        test <@ result = "" @>

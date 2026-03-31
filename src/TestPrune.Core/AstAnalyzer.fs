@@ -11,6 +11,12 @@ open FSharp.Compiler.Text
 
 #nowarn "57" // Experimental snapshot API
 
+open System.Threading
+
+/// Serializes concurrent GetProjectOptionsFromScript calls.
+/// FCS has internal state corruption when script options are loaded concurrently.
+let private scriptSemaphore = new SemaphoreSlim(1, 1)
+
 /// Discriminated union for kinds of F# symbols (function, type, DU case, etc.).
 type SymbolKind =
     | Function
@@ -724,14 +730,45 @@ let private findRelatedScriptFiles (currentFile: string) (openedModules: string 
             eprintfn $"  Warning: findRelatedScriptFiles failed: %s{ex.Message}"
             []
 
+/// FCS GetProjectOptionsFromScript can return paths relative to the script location
+/// rather than the process cwd. Normalise them so FCS can load assemblies regardless
+/// of where the CLI was invoked.
+let internal resolveToAbsolute (basePath: string) (path: string) =
+    if String.IsNullOrEmpty(path) || Path.IsPathRooted(path) then
+        path
+    else
+        Path.GetFullPath(Path.Combine(basePath, path))
+
+/// -r: entries in OtherOptions are DLL reference paths that may be relative.
+/// Other entries (e.g. --noframework) are compiler flags, not paths — leave them untouched.
+let private resolveReferenceOptions (baseDir: string) (opts: string array) =
+    opts
+    |> Array.map (fun opt ->
+        if opt.StartsWith("-r:", StringComparison.Ordinal) then
+            let path = opt[3..]
+            let resolved = resolveToAbsolute baseDir path
+
+            if Object.ReferenceEquals(resolved, path) then
+                opt
+            else
+                "-r:" + resolved
+        else
+            opt)
+
 /// Convenience: create project options from a script source string.
 /// Detects 'open' statements and includes related script files in the SourceFiles array.
 let getScriptOptions (checker: FSharpChecker) (sourceFileName: string) (source: string) =
     async {
         let sourceText = SourceText.ofString source
 
+        let! ct = Async.CancellationToken
+        do! scriptSemaphore.WaitAsync(ct) |> Async.AwaitTask
+
         let! projOptions, _diagnostics =
-            checker.GetProjectOptionsFromScript(sourceFileName, sourceText, assumeDotNetFramework = false)
+            try
+                checker.GetProjectOptionsFromScript(sourceFileName, sourceText, assumeDotNetFramework = false)
+            finally
+                scriptSemaphore.Release() |> ignore
 
         // Detect opened modules and find related script files
         let openedModules = detectOpenedModules source
@@ -746,9 +783,15 @@ let getScriptOptions (checker: FSharpChecker) (sourceFileName: string) (source: 
                 |> Array.append projOptions.SourceFiles
                 |> Array.distinct
 
+        let baseDir =
+            match Path.GetDirectoryName(sourceFileName) with
+            | null -> Directory.GetCurrentDirectory()
+            | dir -> dir
+
         let enhancedOptions =
             { projOptions with
-                SourceFiles = enhancedSourceFiles }
+                SourceFiles = enhancedSourceFiles |> Array.map (resolveToAbsolute baseDir)
+                OtherOptions = projOptions.OtherOptions |> resolveReferenceOptions baseDir }
 
         return enhancedOptions
     }
