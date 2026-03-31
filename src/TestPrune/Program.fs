@@ -120,12 +120,16 @@ let dotnetBuildRunner: BuildRunner =
             eprintfn $"Build timed out after {buildTimeoutMs / 60_000} minutes — aborting index"
             1
         else
-            stdoutTask.Wait()
+            let stdoutOutput = stdoutTask.Result
             let stderrOutput = stderrTask.Result
             sw.Stop()
 
-            if buildProc.ExitCode <> 0 && not (String.IsNullOrWhiteSpace(stderrOutput)) then
-                eprintfn "%s" stderrOutput
+            if buildProc.ExitCode <> 0 then
+                if not (String.IsNullOrWhiteSpace(stdoutOutput)) then
+                    eprintfn "%s" stdoutOutput
+
+                if not (String.IsNullOrWhiteSpace(stderrOutput)) then
+                    eprintfn "%s" stderrOutput
 
             eprintfn $"[dotnet build] \u2192 exit %d{buildProc.ExitCode} in %.1f{sw.Elapsed.TotalSeconds}s"
             buildProc.ExitCode
