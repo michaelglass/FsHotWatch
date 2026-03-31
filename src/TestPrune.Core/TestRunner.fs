@@ -27,9 +27,17 @@ let private runProcess (fileName: string) (arguments: string) : TestResult =
     psi.CreateNoWindow <- true
 
     use proc = Process.Start(psi)
-    let stdout = proc.StandardOutput.ReadToEnd()
-    let stderr = proc.StandardError.ReadToEnd()
+    let sw = Stopwatch.StartNew()
+
+    let stdoutTask = proc.StandardOutput.ReadToEndAsync()
+    let stderrTask = proc.StandardError.ReadToEndAsync()
     proc.WaitForExit()
+
+    let stdout = stdoutTask.Result
+    let stderr = stderrTask.Result
+    sw.Stop()
+
+    eprintfn $"[%s{fileName} %s{arguments}] \u2192 exit %d{proc.ExitCode} in %.1f{sw.Elapsed.TotalSeconds}s"
 
     { ExitCode = proc.ExitCode
       Output = stdout + stderr }
