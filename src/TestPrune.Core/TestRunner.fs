@@ -32,10 +32,10 @@ let private runProcess (fileName: string) (arguments: string) : TestResult =
     let stdoutTask = proc.StandardOutput.ReadToEndAsync()
     let stderrTask = proc.StandardError.ReadToEndAsync()
     proc.WaitForExit()
+    sw.Stop()
 
     let stdout = stdoutTask.Result
     let stderr = stderrTask.Result
-    sw.Stop()
 
     eprintfn $"[%s{fileName} %s{arguments}] \u2192 exit %d{proc.ExitCode} in %.1f{sw.Elapsed.TotalSeconds}s"
 
