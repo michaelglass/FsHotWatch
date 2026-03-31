@@ -59,7 +59,7 @@ let overrides =
           "ProjectLoader.fs", (55.0, 0.0)
           // TestRunner.fs: Pure functions (buildFilterArgs, normalizeExitCode, findTestDll),
           // DI variants (runAllTestsWith, runFilteredTestsWith), and discoverTestProjects
-          // (including exception handler) all tested. Remaining: runProcess (actual process exec)
+          // (including exception handler) all tested. Remaining: runProcess (actual process exec),
           // which gained async reads and Stopwatch logging — not unit-testable without real processes.
           "TestRunner.fs", (56.0, 50.0)
           // Orchestration.fs: Extracted from Program.fs. Contains tested orchestration logic
