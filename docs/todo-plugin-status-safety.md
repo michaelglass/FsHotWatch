@@ -65,6 +65,33 @@ This catches bugs regardless of whether `KeepRunning` is used correctly.
 - Add `RunningTimeout` with a default so existing plugins get protection automatically
 - Update tests
 
+### 4. Progress bar with per-plugin status in CLI
+
+The `check` command currently prints static messages ("Waiting for all plugins to complete...")
+with no visibility into what's happening. Add a live progress display showing each plugin's
+current status, updated as `OnStatusChanged` events arrive.
+
+```
+  build         ✓ completed (2.1s)
+  test-prune    ⟳ running (since 14:32:01) — executing tests
+  coverage      · idle
+  lint          ✓ completed (0.8s)
+  format-check  ✓ completed (0.3s)
+```
+
+**Implementation:**
+- `Ipc.fs` / `IpcClient`: Add a streaming RPC or polling endpoint that returns all plugin statuses
+- `Program.fs` (check command): Poll statuses on a short interval (500ms) and render a table
+  to stderr, overwriting previous lines with ANSI escape codes
+- Fall back to simple line-per-change output when not a TTY (CI, piped output)
+- Show elapsed time for Running plugins, total time for Completed/Failed
+- On completion, print final summary table (no ANSI rewriting needed)
+
+**Considerations:**
+- StreamJsonRpc supports notifications — could push status changes instead of polling
+- Keep it simple: polling `GetStatus` is already implemented and avoids new RPC surface
+- ANSI progress only when `stderr.IsTerminal` (or check `TERM` env var)
+
 ### Affected plugins
 
 | Plugin | Async work after Update? | Needs `KeepRunning`? |

@@ -356,14 +356,11 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
                                     | _ -> None)
 
                             match running with
-                            | [] ->
-                                Logging.info "wait" "All plugins terminal, waiting for stability confirmation..."
+                            | [] -> Logging.info "wait" "All plugins terminal, waiting for stability confirmation..."
                             | plugins ->
                                 let joined = plugins |> String.concat ", "
 
-                                Logging.info
-                                    "wait"
-                                    $"Waiting for plugins: %s{joined}")
+                                Logging.info "wait" $"Waiting for plugins: %s{joined}")
 
                     logLoop ())
         |> ignore
@@ -408,9 +405,7 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
                                     $"still running: %s{joined}"
 
                             tcs.TrySetException(
-                                System.TimeoutException(
-                                    $"WaitForComplete timed out after %O{timeout} — %s{detail}"
-                                )
+                                System.TimeoutException($"WaitForComplete timed out after %O{timeout} — %s{detail}")
                             )
                             |> ignore))
         |> ignore
