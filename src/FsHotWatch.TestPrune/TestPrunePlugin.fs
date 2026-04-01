@@ -335,7 +335,12 @@ let create
           AnalysisRan = false
           TestClassFiles = Map.empty }
 
-    let runTestsWithImpact (ctx: PluginCtx<TestPruneMsg>) (configs: TestConfig list) (state: TestPruneState) =
+    let runTestsWithImpact
+        (ctx: PluginCtx<TestPruneMsg>)
+        (configs: TestConfig list)
+        (state: TestPruneState)
+        (hasCachedResults: bool)
+        =
         async {
             try
                 // Combine AST-based affected tests with extension results
@@ -370,44 +375,56 @@ let create
 
                 let totalClasses = affectedByProject |> Map.values |> Seq.sumBy List.length
 
-                if totalClasses = 0 then
-                    Logging.info "test-prune" "No affected classes found — running all tests"
-                else
-                    for (proj, classes) in affectedByProject |> Map.toList do
-                        Logging.info "test-prune" $"Affected classes for %s{proj}: %A{classes}"
+                if totalClasses = 0 && hasCachedResults then
+                    Logging.info "test-prune" "No affected classes — skipping tests (not cold start)"
 
-                let! results = executeTests repoRoot beforeRun coverageArgs afterRun configs affectedByProject None
+                    let skipResults =
+                        { Results = Map.empty
+                          Elapsed = TimeSpan.Zero }
 
-                ctx.EmitTestCompleted(results)
-
-                let allPassed =
-                    results.Results
-                    |> Map.forall (fun _ r ->
-                        match r with
-                        | TestsPassed _ -> true
-                        | _ -> false)
-
-                if allPassed then
+                    ctx.EmitTestCompleted(skipResults)
                     ctx.ClearAllErrors()
                     ctx.ReportStatus(Completed(DateTime.UtcNow))
+                    ctx.Post(TestsFinished skipResults)
                 else
-                    reportTestErrors ctx state.TestClassFiles results
+                    if totalClasses = 0 then
+                        Logging.info "test-prune" "No affected classes (cold start) — running all tests"
+                    else
+                        for (proj, classes) in affectedByProject |> Map.toList do
+                            Logging.info "test-prune" $"Affected classes for %s{proj}: %A{classes}"
 
-                    let failedProjects =
+                    let! results = executeTests repoRoot beforeRun coverageArgs afterRun configs affectedByProject None
+
+                    ctx.EmitTestCompleted(results)
+
+                    let allPassed =
                         results.Results
-                        |> Map.toList
-                        |> List.choose (fun (name, r) ->
+                        |> Map.forall (fun _ r ->
                             match r with
-                            | TestsFailed _ -> Some name
-                            | _ -> None)
+                            | TestsPassed _ -> true
+                            | _ -> false)
 
-                    let names = failedProjects |> String.concat ", "
+                    if allPassed then
+                        ctx.ClearAllErrors()
+                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                    else
+                        reportTestErrors ctx state.TestClassFiles results
 
-                    ctx.ReportStatus(
-                        PluginStatus.Failed($"%d{failedProjects.Length} failed: %s{names}", DateTime.UtcNow)
-                    )
+                        let failedProjects =
+                            results.Results
+                            |> Map.toList
+                            |> List.choose (fun (name, r) ->
+                                match r with
+                                | TestsFailed _ -> Some name
+                                | _ -> None)
 
-                ctx.Post(TestsFinished results)
+                        let names = failedProjects |> String.concat ", "
+
+                        ctx.ReportStatus(
+                            PluginStatus.Failed($"%d{failedProjects.Length} failed: %s{names}", DateTime.UtcNow)
+                        )
+
+                    ctx.Post(TestsFinished results)
             with ex ->
                 Logging.error "test-prune" $"runTests failed: %s{ex.Message}"
                 ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
@@ -716,9 +733,12 @@ let create
                                     TestPhase = TestsRunning running }
 
                             // Dispatch tests to thread pool
+                            let hasCachedResults = (Lifecycle.value idle).IsSome
+
                             match testConfigs with
                             | Some configs when not configs.IsEmpty ->
-                                async { do! runTestsWithImpact ctx configs newState } |> Async.Start
+                                async { do! runTestsWithImpact ctx configs newState hasCachedResults }
+                                |> Async.Start
 
                                 return newState
                             | _ ->
@@ -763,7 +783,7 @@ let create
 
                         match testConfigs with
                         | Some configs when not configs.IsEmpty ->
-                            async { do! runTestsWithImpact ctx configs rerunState } |> Async.Start
+                            async { do! runTestsWithImpact ctx configs rerunState true } |> Async.Start
                         | _ -> ()
 
                         return rerunState
