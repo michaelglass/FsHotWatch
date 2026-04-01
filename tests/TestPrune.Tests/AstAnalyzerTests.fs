@@ -1481,3 +1481,178 @@ module ``resolveToAbsolute`` =
     let ``returns empty string unchanged`` () =
         let result = resolveToAbsolute "/base/dir" ""
         test <@ result = "" @>
+
+module ``Closure and nested function edge attribution`` =
+
+    [<Fact>]
+    let ``nested helper call inside module binding is attributed to enclosing function`` () =
+        let result =
+            analyze
+                """
+module M
+
+let helper x = x + 1
+
+let outerFunc () =
+    let innerHelper y = helper y
+    innerHelper 42
+"""
+
+        let outerCallsHelper =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("outerFunc", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("helper", StringComparison.Ordinal))
+
+        test <@ outerCallsHelper.IsSome @>
+
+    [<Fact>]
+    let ``multi-level nested closures attribute edges to outermost binding`` () =
+        let result =
+            analyze
+                """
+module M
+
+let utility x = x * 2
+
+let topLevel () =
+    let mid () =
+        let inner () = utility 5
+        inner ()
+    mid ()
+"""
+
+        let topLevelCallsUtility =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("topLevel", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("utility", StringComparison.Ordinal))
+
+        test <@ topLevelCallsUtility.IsSome @>
+
+module ``Interface implementation edge extraction`` =
+
+    [<Fact>]
+    let ``implementing interface creates edge from implementor to interface type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type IProcessor =
+    abstract member Process: string -> string
+
+type UpperProcessor() =
+    interface IProcessor with
+        member _.Process s = s.ToUpper()
+"""
+
+        let implementsInterface =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("UpperProcessor", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("IProcessor", StringComparison.Ordinal))
+
+        test <@ implementsInterface.IsSome @>
+
+    [<Fact>]
+    let ``calling interface method creates edge to interface not implementor`` () =
+        let result =
+            analyze
+                """
+module M
+
+type IProcessor =
+    abstract member Process: string -> string
+
+type UpperProcessor() =
+    interface IProcessor with
+        member _.Process s = s.ToUpper()
+
+let run (p: IProcessor) =
+    p.Process "hello"
+"""
+
+        let runToInterface =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("run", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("IProcessor", StringComparison.Ordinal))
+
+        test <@ runToInterface.IsSome @>
+
+        // FCS resolves the call to the interface type, not the implementor.
+        // This documents the known limitation.
+        let runToImplementor =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("run", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("UpperProcessor", StringComparison.Ordinal))
+
+        test <@ runToImplementor.IsNone @>
+
+module ``Dead code false positive regression — edge extraction`` =
+
+    [<Fact>]
+    let ``type only used as generic argument has edge from usage site`` () =
+        let result =
+            analyze
+                """
+module M
+
+type State = { Count: int }
+
+let agent : MailboxProcessor<State> = MailboxProcessor.Start(fun _ -> async { return () })
+"""
+
+        let agentToState =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("agent", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("State", StringComparison.Ordinal))
+
+        test <@ agentToState.IsSome @>
+
+    [<Fact>]
+    let ``record type only used via field construction has edge`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Config = { Host: string; Port: int }
+
+let defaultConfig () = { Host = "localhost"; Port = 8080 }
+"""
+
+        let defaultConfigToConfig =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("defaultConfig", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Config", StringComparison.Ordinal)
+                && d.Kind = UsesType)
+
+        test <@ defaultConfigToConfig.IsSome @>
+
+    [<Fact>]
+    let ``DU type only referenced via case construction has parent edge`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Msg =
+    | Start
+    | Stop
+
+let initial () = Start
+"""
+
+        let initialToMsg =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("initial", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Msg", StringComparison.Ordinal)
+                && d.Kind = UsesType)
+
+        test <@ initialToMsg.IsSome @>

@@ -1090,10 +1090,10 @@ module ``Verbose diagnostics`` =
                     | _ -> false
                 @>)
 
-module ``DU type reachable via case usage`` =
+module ``Generic type parameter reachability`` =
 
     [<Fact>]
-    let ``DU type is reachable when its cases are pattern matched`` () =
+    let ``type used as generic parameter is reachable when generic usage is reachable`` () =
         withDb (fun db ->
             let graph =
                 { Symbols =
@@ -1102,6 +1102,111 @@ module ``DU type reachable via case usage`` =
                         SourceFile = "src/App/Program.fs"
                         LineStart = 1
                         LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Agent.create"
+                        Kind = Function
+                        SourceFile = "src/App/Agent.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Domain.BuildState"
+                        Kind = Type
+                        SourceFile = "src/App/Domain.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Domain.BuildMsg"
+                        Kind = Type
+                        SourceFile = "src/App/Domain.fs"
+                        LineStart = 7
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "App.Program.main"
+                        ToSymbol = "App.Agent.create"
+                        Kind = Calls }
+                      { FromSymbol = "App.Agent.create"
+                        ToSymbol = "App.Domain.BuildState"
+                        Kind = UsesType }
+                      { FromSymbol = "App.Agent.create"
+                        ToSymbol = "App.Domain.BuildMsg"
+                        Kind = UsesType } ]
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ graph ])
+
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
+
+            test <@ result.UnreachableSymbols |> List.isEmpty @>)
+
+module ``Record type reachable via field construction`` =
+
+    [<Fact>]
+    let ``record type reached through field usage edge is not dead`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Program.main"
+                        Kind = Function
+                        SourceFile = "src/App/Program.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Lib.createPerson"
+                        Kind = Function
+                        SourceFile = "src/App/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Domain.Person"
+                        Kind = Type
+                        SourceFile = "src/App/Domain.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "App.Program.main"
+                        ToSymbol = "App.Lib.createPerson"
+                        Kind = Calls }
+                      { FromSymbol = "App.Lib.createPerson"
+                        ToSymbol = "App.Domain.Person"
+                        Kind = UsesType } ]
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ graph ])
+
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
+
+            test <@ result.UnreachableSymbols |> List.isEmpty @>)
+
+module ``DU type reachable via case usage`` =
+
+    [<Fact>]
+    let ``DU type reached through case usage edge is not dead`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Program.main"
+                        Kind = Function
+                        SourceFile = "src/App/Program.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Lib.process"
+                        Kind = Function
+                        SourceFile = "src/App/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 10
                         ContentHash = ""
                         IsExtern = false }
                       { FullName = "App.Domain.Shape"
@@ -1118,11 +1223,11 @@ module ``DU type reachable via case usage`` =
                         LineEnd = 2
                         ContentHash = ""
                         IsExtern = false }
-                      { FullName = "App.Lib.process"
-                        Kind = Function
-                        SourceFile = "src/App/Lib.fs"
-                        LineStart = 1
-                        LineEnd = 5
+                      { FullName = "App.Domain.Shape.Square"
+                        Kind = DuCase
+                        SourceFile = "src/App/Domain.fs"
+                        LineStart = 3
+                        LineEnd = 3
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies =
@@ -1144,10 +1249,8 @@ module ``DU type reachable via case usage`` =
 
             test <@ result.UnreachableSymbols |> List.isEmpty @>)
 
-module ``Generic type arg reachable`` =
-
     [<Fact>]
-    let ``type used as generic parameter is reachable`` () =
+    let ``DU type without direct edge but only case edges is still unreachable at graph level`` () =
         withDb (fun db ->
             let graph =
                 { Symbols =
@@ -1158,27 +1261,41 @@ module ``Generic type arg reachable`` =
                         LineEnd = 5
                         ContentHash = ""
                         IsExtern = false }
-                      { FullName = "App.Domain.Config"
-                        Kind = Type
-                        SourceFile = "src/App/Domain.fs"
-                        LineStart = 1
-                        LineEnd = 3
-                        ContentHash = ""
-                        IsExtern = false }
-                      { FullName = "App.Lib.loadAll"
+                      { FullName = "App.Lib.process"
                         Kind = Function
                         SourceFile = "src/App/Lib.fs"
                         LineStart = 1
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Domain.Shape"
+                        Kind = Type
+                        SourceFile = "src/App/Domain.fs"
+                        LineStart = 1
                         LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Domain.Shape.Circle"
+                        Kind = DuCase
+                        SourceFile = "src/App/Domain.fs"
+                        LineStart = 2
+                        LineEnd = 2
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Domain.Shape.Square"
+                        Kind = DuCase
+                        SourceFile = "src/App/Domain.fs"
+                        LineStart = 3
+                        LineEnd = 3
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
-                        ToSymbol = "App.Lib.loadAll"
+                        ToSymbol = "App.Lib.process"
                         Kind = Calls }
-                      { FromSymbol = "App.Lib.loadAll"
-                        ToSymbol = "App.Domain.Config"
-                        Kind = UsesType } ]
+                      { FromSymbol = "App.Lib.process"
+                        ToSymbol = "App.Domain.Shape.Circle"
+                        Kind = PatternMatches } ]
                   TestMethods = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
@@ -1186,51 +1303,10 @@ module ``Generic type arg reachable`` =
 
             let result, _events = runDeadCode db [ "*.Program.main" ] false
 
-            test <@ result.UnreachableSymbols |> List.isEmpty @>)
+            let unreachableNames =
+                result.UnreachableSymbols |> List.map (fun s -> s.FullName)
 
-module ``Record type reachable via field usage`` =
-
-    [<Fact>]
-    let ``record type is reachable when its fields are used`` () =
-        withDb (fun db ->
-            let graph =
-                { Symbols =
-                    [ { FullName = "App.Program.main"
-                        Kind = Function
-                        SourceFile = "src/App/Program.fs"
-                        LineStart = 1
-                        LineEnd = 5
-                        ContentHash = ""
-                        IsExtern = false }
-                      { FullName = "App.Domain.Person"
-                        Kind = Type
-                        SourceFile = "src/App/Domain.fs"
-                        LineStart = 1
-                        LineEnd = 3
-                        ContentHash = ""
-                        IsExtern = false }
-                      { FullName = "App.Lib.greet"
-                        Kind = Function
-                        SourceFile = "src/App/Lib.fs"
-                        LineStart = 1
-                        LineEnd = 5
-                        ContentHash = ""
-                        IsExtern = false } ]
-                  Dependencies =
-                    [ { FromSymbol = "App.Program.main"
-                        ToSymbol = "App.Lib.greet"
-                        Kind = Calls }
-                      { FromSymbol = "App.Lib.greet"
-                        ToSymbol = "App.Domain.Person"
-                        Kind = UsesType } ]
-                  TestMethods = []
-                  Diagnostics = AnalysisDiagnostics.Zero }
-
-            db.RebuildProjects([ graph ])
-
-            let result, _events = runDeadCode db [ "*.Program.main" ] false
-
-            test <@ result.UnreachableSymbols |> List.isEmpty @>)
+            test <@ unreachableNames |> List.contains "App.Domain.Shape" @>)
 
 module ``Edge coverage for test impact`` =
 
@@ -1431,3 +1507,146 @@ module ``Edge coverage for test impact`` =
             let affected = db.QueryAffectedTests([ "App.Domain.Person" ])
             test <@ affected.Length = 1 @>
             test <@ affected[0].TestMethod = "test_greet" @>)
+
+module ``Module function reachable when called from another module function`` =
+
+    [<Fact>]
+    let ``private module function called from entry point is reachable`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Program.main"
+                        Kind = Function
+                        SourceFile = "src/App/Program.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Daemon.createWith"
+                        Kind = Function
+                        SourceFile = "src/App/Daemon.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Daemon.processChanges"
+                        Kind = Function
+                        SourceFile = "src/App/Daemon.fs"
+                        LineStart = 12
+                        LineEnd = 20
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "App.Program.main"
+                        ToSymbol = "App.Daemon.createWith"
+                        Kind = Calls }
+                      { FromSymbol = "App.Daemon.createWith"
+                        ToSymbol = "App.Daemon.processChanges"
+                        Kind = Calls } ]
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ graph ])
+
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
+
+            test <@ result.UnreachableSymbols |> List.isEmpty @>)
+
+module ``Interface implementation reachability`` =
+
+    [<Fact>]
+    let ``implementor reachable when interface method edge exists to implementor`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Program.main"
+                        Kind = Function
+                        SourceFile = "src/App/Program.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Handlers.IHandler"
+                        Kind = Type
+                        SourceFile = "src/App/Handlers.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Handlers.ConcreteHandler"
+                        Kind = Type
+                        SourceFile = "src/App/Handlers.fs"
+                        LineStart = 5
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Handlers.ConcreteHandler.Handle"
+                        Kind = Function
+                        SourceFile = "src/App/Handlers.fs"
+                        LineStart = 6
+                        LineEnd = 9
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "App.Program.main"
+                        ToSymbol = "App.Handlers.IHandler"
+                        Kind = UsesType }
+                      { FromSymbol = "App.Handlers.ConcreteHandler"
+                        ToSymbol = "App.Handlers.IHandler"
+                        Kind = UsesType }
+                      { FromSymbol = "App.Program.main"
+                        ToSymbol = "App.Handlers.ConcreteHandler"
+                        Kind = UsesType } ]
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ graph ])
+
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
+
+            // Handle is contained within ConcreteHandler (lines 6-9 inside 5-10), filtered by isContainedByAnother
+            test <@ result.UnreachableSymbols |> List.isEmpty @>)
+
+    [<Fact>]
+    let ``implementor unreachable when only interface is referenced`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Program.main"
+                        Kind = Function
+                        SourceFile = "src/App/Program.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Handlers.IHandler"
+                        Kind = Type
+                        SourceFile = "src/App/Handlers.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Handlers.ConcreteHandler"
+                        Kind = Type
+                        SourceFile = "src/App/Handlers.fs"
+                        LineStart = 5
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "App.Program.main"
+                        ToSymbol = "App.Handlers.IHandler"
+                        Kind = UsesType }
+                      { FromSymbol = "App.Handlers.ConcreteHandler"
+                        ToSymbol = "App.Handlers.IHandler"
+                        Kind = UsesType } ]
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ graph ])
+
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
+
+            // Known limitation: ConcreteHandler is unreachable because there's no direct edge from main
+            let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
+            test <@ names = [ "App.Handlers.ConcreteHandler" ] @>)
