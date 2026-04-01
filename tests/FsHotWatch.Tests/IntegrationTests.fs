@@ -1458,20 +1458,18 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
 
         host.EmitBuildCompleted(BuildSucceeded)
 
-        // Wait for async test execution to complete (sleep 1 + potential re-run)
-        // Poll test-results directly since status may briefly flip between runs
-        let deadline = DateTime.UtcNow.AddSeconds(15.0)
-        let mutable resultReady = false
-
-        while not resultReady && DateTime.UtcNow < deadline do
-            match host.RunCommand("test-results", [||]) |> Async.RunSynchronously with
-            | Some v when v.Contains("\"status\": \"passed\"") -> resultReady <- true
-            | _ -> Threading.Thread.Sleep(200)
+        // Wait for async test execution to complete (sleep 1 + potential re-run/skip)
+        waitForTerminalStatus host "test-prune" 15000
 
         let cmdResult = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ cmdResult.IsSome @>
-        // sleep exits 0, so it counts as passed
-        test <@ cmdResult.Value.Contains("\"status\": \"passed\"") @>
+        // The rerun with 0 affected classes is now correctly skipped (empty results),
+        // or the first cold-start run produces passed results — either is acceptable.
+        test
+            <@
+                cmdResult.Value.Contains("\"status\": \"passed\"")
+                || cmdResult.Value.Contains("\"projects\": []")
+            @>
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
