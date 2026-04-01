@@ -136,7 +136,8 @@ module ``Multiple changed symbols`` =
                   { SymbolFullName = "Tests.test2"
                     TestProject = "MyTests"
                     TestClass = "Tests"
-                    TestMethod = "test2" } ] }
+                    TestMethod = "test2" } ]
+              Diagnostics = AnalysisDiagnostics.Zero }
 
         let store = fromAnalysisResults [ graph ]
 

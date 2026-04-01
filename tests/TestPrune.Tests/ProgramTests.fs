@@ -337,7 +337,8 @@ module ``runDeadCode`` =
         let result: AnalysisResult =
             { Symbols = symbols
               Dependencies = deps
-              TestMethods = [] }
+              TestMethods = []
+              Diagnostics = AnalysisDiagnostics.Zero }
 
         db.RebuildProjects([ result ])
         db

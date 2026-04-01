@@ -33,7 +33,8 @@ module ``All symbols reachable`` =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.helper"
                         Kind = Calls } ]
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -75,7 +76,8 @@ module ``Unreachable function detected`` =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.usedHelper"
                         Kind = Calls } ]
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -129,7 +131,8 @@ module ``Transitive reachability`` =
                       { FromSymbol = "App.Lib.funcB"
                         ToSymbol = "App.Domain.TypeC"
                         Kind = UsesType } ]
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -164,7 +167,8 @@ module ``Test methods excluded`` =
                     [ { SymbolFullName = "Tests.MyTests.testSomething"
                         TestProject = "Tests"
                         TestClass = "MyTests"
-                        TestMethod = "testSomething" } ] }
+                        TestMethod = "testSomething" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -202,7 +206,8 @@ module ``Module symbols excluded`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -248,7 +253,8 @@ module ``Only shallowest unreachable reported`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -284,7 +290,8 @@ module ``Only shallowest unreachable reported`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -321,7 +328,8 @@ module ``Only shallowest unreachable reported`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -358,7 +366,8 @@ module ``Only shallowest unreachable reported`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -394,7 +403,8 @@ module ``Only shallowest unreachable reported`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -425,7 +435,8 @@ module ``Test file symbols excluded`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -454,7 +465,8 @@ module ``Test file symbols excluded`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -497,7 +509,8 @@ module ``Test file symbols excluded`` =
                     [ { SymbolFullName = "Tests.MyTest.testSomething"
                         TestProject = "Tests"
                         TestClass = "MyTest"
-                        TestMethod = "testSomething" } ] }
+                        TestMethod = "testSomething" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -530,7 +543,8 @@ module ``matchesPattern — both wildcards (true, true)`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -560,7 +574,8 @@ module ``matchesPattern — both wildcards (true, true)`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -592,7 +607,8 @@ module ``matchesPattern — start wildcard only (true, false)`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -622,7 +638,8 @@ module ``matchesPattern — start wildcard only (true, false)`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -654,7 +671,8 @@ module ``matchesPattern — end wildcard only (false, true)`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -686,7 +704,8 @@ module ``matchesPattern — exact match (false, false)`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -719,7 +738,8 @@ module ``matchesPattern — exact match (false, false)`` =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.helper"
                         Kind = Calls } ]
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -763,7 +783,8 @@ module ``DU case symbols excluded`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -798,7 +819,8 @@ module ``No matching entry points`` =
                     [ { FromSymbol = "App.Lib.funcA"
                         ToSymbol = "App.Lib.funcB"
                         Kind = Calls } ]
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -849,7 +871,8 @@ module ``Multiple entry point patterns`` =
                       { FromSymbol = "App.Worker.run"
                         ToSymbol = "App.Shared.helper"
                         Kind = Calls } ]
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -884,7 +907,8 @@ module ``matchesPattern — prefix positive`` =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.helper"
                         Kind = Calls } ]
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -925,7 +949,8 @@ module ``Event emission`` =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.usedHelper"
                         Kind = Calls } ]
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -963,7 +988,8 @@ module ``DllImport symbols excluded`` =
                         ContentHash = ""
                         IsExtern = true } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -993,7 +1019,8 @@ module ``Verbose diagnostics`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -1034,7 +1061,8 @@ module ``Verbose diagnostics`` =
                     [ { FromSymbol = "App.Island.root"
                         ToSymbol = "App.Island.helper"
                         Kind = Calls } ]
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -1107,7 +1135,8 @@ module ``DU type reachable via case usage`` =
                       { FromSymbol = "App.Lib.process"
                         ToSymbol = "App.Domain.Shape"
                         Kind = UsesType } ]
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -1150,7 +1179,8 @@ module ``Generic type arg reachable`` =
                       { FromSymbol = "App.Lib.loadAll"
                         ToSymbol = "App.Domain.Config"
                         Kind = UsesType } ]
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -1193,7 +1223,8 @@ module ``Record type reachable via field usage`` =
                       { FromSymbol = "App.Lib.greet"
                         ToSymbol = "App.Domain.Person"
                         Kind = UsesType } ]
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -1250,7 +1281,8 @@ module ``Edge coverage for test impact`` =
                     [ { SymbolFullName = "Tests.ShapeTests.test_process"
                         TestProject = "Tests"
                         TestClass = "ShapeTests"
-                        TestMethod = "test_process" } ] }
+                        TestMethod = "test_process" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -1295,7 +1327,8 @@ module ``Edge coverage for test impact`` =
                     [ { SymbolFullName = "Tests.ConfigTests.test_load"
                         TestProject = "Tests"
                         TestClass = "ConfigTests"
-                        TestMethod = "test_load" } ] }
+                        TestMethod = "test_load" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -1344,7 +1377,8 @@ module ``Edge coverage for test impact`` =
                       { SymbolFullName = "Tests.BetaTests.test_beta"
                         TestProject = "Tests"
                         TestClass = "BetaTests"
-                        TestMethod = "test_beta" } ] }
+                        TestMethod = "test_beta" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 
@@ -1389,7 +1423,8 @@ module ``Edge coverage for test impact`` =
                     [ { SymbolFullName = "Tests.GreetTests.test_greet"
                         TestProject = "Tests"
                         TestClass = "GreetTests"
-                        TestMethod = "test_greet" } ] }
+                        TestMethod = "test_greet" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
 

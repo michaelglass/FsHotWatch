@@ -70,10 +70,37 @@ let normalizeSymbolPaths (repoRoot: string) (symbols: SymbolInfo list) =
             SourceFile = System.IO.Path.GetRelativePath(repoRoot, s.SourceFile) })
 
 /// The combined output of analyzing a source file: symbols, dependencies, and test methods.
+/// Diagnostic counters for observability into the analysis pipeline.
+/// These track how many symbols/edges were dropped during analysis
+/// to help diagnose missing dependency edges.
+type AnalysisDiagnostics =
+    {
+        /// Symbol uses where findEnclosing returned None (edge dropped)
+        DroppedEdges: int
+        /// Definitions that were classified but filtered out by isTrackedSymbol
+        FilteredSymbols: int
+        /// Total definitions before filtering
+        TotalDefinitions: int
+    }
+
+    static member Zero =
+        { DroppedEdges = 0
+          FilteredSymbols = 0
+          TotalDefinitions = 0 }
+
 type AnalysisResult =
     { Symbols: SymbolInfo list
       Dependencies: Dependency list
-      TestMethods: TestMethodInfo list }
+      TestMethods: TestMethodInfo list
+      Diagnostics: AnalysisDiagnostics }
+
+    /// Create an AnalysisResult with default (zero) diagnostics.
+    /// Useful for tests and manual construction where diagnostics aren't relevant.
+    static member Create(symbols, dependencies, testMethods) =
+        { Symbols = symbols
+          Dependencies = dependencies
+          TestMethods = testMethods
+          Diagnostics = AnalysisDiagnostics.Zero }
 
 /// Internal classification logic that can be tested with injected symbolClassifier.
 /// This separation allows test code to provide mock symbols that throw exceptions.
@@ -261,36 +288,77 @@ let private walkImplDecls (tree: ParsedInput) (visitDecl: SynModuleDecl -> unit)
                 walk d
     | ParsedInput.SigFile _ -> ()
 
+/// Extract a binding's name and compute its full range (from attributes through body end).
+/// Shared by module-level and type member range collection.
+let private addBindingRange
+    (extractName: SynPat -> string option)
+    (results: ResizeArray<string * range>)
+    (binding: SynBinding)
+    =
+    match binding with
+    | SynBinding(attributes = attributes; headPat = headPat; expr = bodyExpr; range = bindingRange) ->
+        match extractName headPat with
+        | Some n ->
+            // The binding's `range` only covers the pattern (e.g. `let main args =`).
+            // We need a range that spans from the binding start to the end of the body
+            // so that nested local `let` bindings are contained within their parent.
+            // Also include preceding attributes so that attribute changes affect the hash.
+            let rangeStart =
+                match attributes with
+                | first :: _ -> first.Range.Start
+                | [] -> bindingRange.Start
+
+            let fullRange = Range.mkRange bindingRange.FileName rangeStart bodyExpr.Range.End
+            results.Add(n, fullRange)
+        | None -> ()
+
+/// Extract the member method name from a SynPat head pattern.
+/// Member patterns include the self identifier (e.g. `_.methodName` or `this.methodName`),
+/// so we take only the last identifier component.
+let private extractMemberName (pat: SynPat) : string option =
+    extractBindingName pat
+    |> Option.map (fun n ->
+        let i = n.LastIndexOf('.')
+        if i >= 0 then n.[i + 1 ..] else n)
+
 /// Walk the parsed AST to collect module-level binding names and their full ranges.
 /// Each binding's range covers from the `let` keyword to the end of its body,
 /// which correctly encompasses nested local bindings.
 let collectModuleBindingRanges (tree: ParsedInput) : (string * range) list =
     let results = ResizeArray()
 
-    let walkBinding (binding: SynBinding) =
-        match binding with
-        | SynBinding(attributes = attributes; headPat = headPat; expr = bodyExpr; range = bindingRange) ->
-            match extractBindingName headPat with
-            | Some n ->
-                // The binding's `range` only covers the pattern (e.g. `let main args =`).
-                // We need a range that spans from the binding start to the end of the body
-                // so that nested local `let` bindings are contained within their parent.
-                // Also include preceding attributes so that attribute changes affect the hash.
-                let rangeStart =
-                    match attributes with
-                    | first :: _ -> first.Range.Start
-                    | [] -> bindingRange.Start
-
-                let fullRange = Range.mkRange bindingRange.FileName rangeStart bodyExpr.Range.End
-
-                results.Add(n, fullRange)
-            | None -> ()
-
     walkImplDecls tree (fun decl ->
         match decl with
         | SynModuleDecl.Let(bindings = bindings) ->
             for binding in bindings do
-                walkBinding binding
+                addBindingRange extractBindingName results binding
+        | _ -> ())
+
+    results |> Seq.toList
+
+/// Walk the parsed AST to collect type member binding names and their full ranges.
+/// This enables `findEnclosing` to attribute symbol uses inside type members
+/// (e.g. class-based xUnit test methods) to the correct enclosing member.
+let collectTypeMemberRanges (tree: ParsedInput) : (string * range) list =
+    let results = ResizeArray()
+
+    walkImplDecls tree (fun decl ->
+        match decl with
+        | SynModuleDecl.Types(typeDefns = typeDefns) ->
+            for SynTypeDefn(typeRepr = typeRepr; members = extraMembers) in typeDefns do
+                let walkMember (memberDefn: SynMemberDefn) =
+                    match memberDefn with
+                    | SynMemberDefn.Member(memberDefn = binding) -> addBindingRange extractMemberName results binding
+                    | _ -> ()
+
+                for m in extraMembers do
+                    walkMember m
+
+                match typeRepr with
+                | SynTypeDefnRepr.ObjectModel(members = members) ->
+                    for m in members do
+                        walkMember m
+                | _ -> ()
         | _ -> ())
 
     results |> Seq.toList
@@ -431,17 +499,30 @@ let private extractResults
             let sourceLines = source.Split('\n')
 
             let moduleBindingRanges = collectModuleBindingRanges parseResults.ParseTree
+            let typeMemberRanges = collectTypeMemberRanges parseResults.ParseTree
             let typeDefnRanges = collectTypeDefnRanges parseResults.ParseTree
+
+            // Combine module-level and type member binding ranges for findEnclosing.
+            // Type member ranges enable edge attribution for class-based test methods
+            // and any other code defined inside type members.
+            let allBindingRanges = moduleBindingRanges @ typeMemberRanges
 
             // Pre-build Maps keyed by simple (unqualified) name for O(log M) range lookup
             // rather than O(M) List.tryFind scans per symbol.
-            let moduleBindingRangeMap = moduleBindingRanges |> Map.ofList
+            let allBindingRangeMap = allBindingRanges |> Map.ofList
             let typeDefnRangeMap = typeDefnRanges |> Map.ofList
 
-            // Extract the last dot-delimited component of a fully-qualified name.
+            // Extract the last dot-delimited component of a fully-qualified name,
+            // stripping surrounding backticks so it matches AST-derived identifiers
+            // (idText never includes backticks).
             let inline shortName (n: string) =
                 let i = n.LastIndexOf('.')
-                if i >= 0 then n.[i + 1 ..] else n
+                let s = if i >= 0 then n.[i + 1 ..] else n
+
+                if s.Length > 4 && s.StartsWith("``") && s.EndsWith("``") then
+                    s.[2 .. s.Length - 3]
+                else
+                    s
 
             let definitions =
                 allUses
@@ -469,7 +550,7 @@ let private extractResults
                                     |> Option.defaultValue (u.Range.StartLine, u.Range.EndLine)
                                 | Function
                                 | Value ->
-                                    moduleBindingRangeMap
+                                    allBindingRangeMap
                                     |> Map.tryFind sn
                                     |> Option.map (fun r -> r.StartLine, r.EndLine)
                                     |> Option.defaultValue (u.Range.StartLine, u.Range.EndLine)
@@ -486,25 +567,27 @@ let private extractResults
                     else
                         None)
 
-            let isModuleLevel (symbolInfo: SymbolInfo) =
-                // A symbol is module-level if:
+            let isTrackedSymbol (symbolInfo: SymbolInfo) =
+                // A symbol is tracked if:
                 // 1. It's a Type, Module, DuCase, or Property (these are always queryable), OR
-                // 2. It's a Value/Function that's a module-level binding (by name).
+                // 2. It's a Value/Function that's a module-level binding or type member (by name).
                 match symbolInfo.Kind with
                 | Type
                 | Module
                 | DuCase
                 | Property -> true
                 | Function
-                | Value -> moduleBindingRangeMap |> Map.containsKey (shortName symbolInfo.FullName)
+                | Value -> allBindingRangeMap |> Map.containsKey (shortName symbolInfo.FullName)
 
             let symbols =
                 definitions
-                |> List.choose (fun (symbolInfo, _) -> if isModuleLevel symbolInfo then Some symbolInfo else None)
+                |> List.choose (fun (symbolInfo, _) -> if isTrackedSymbol symbolInfo then Some symbolInfo else None)
 
-            // Pre-sort binding ranges by start line descending for efficient lookup
+            // Pre-sort binding ranges by start line descending for efficient lookup.
+            // Includes both module-level and type member ranges so findEnclosing
+            // can attribute symbol uses inside type members.
             let sortedBindingRanges =
-                moduleBindingRanges
+                allBindingRanges
                 |> List.sortByDescending (fun (_, r) -> r.StartLine)
                 |> Array.ofList
 
@@ -514,7 +597,7 @@ let private extractResults
                 |> List.choose (fun (si, _) ->
                     let sn = shortName si.FullName
 
-                    if moduleBindingRangeMap |> Map.containsKey sn then
+                    if allBindingRangeMap |> Map.containsKey sn then
                         Some(sn, si)
                     else
                         None)
@@ -526,6 +609,8 @@ let private extractResults
                     useRange.StartLine >= bindingRange.StartLine
                     && useRange.EndLine <= bindingRange.EndLine)
                 |> Option.bind (fun (name, _) -> definitionsByName |> Map.tryFind name)
+
+            let mutable droppedEdgeCount = 0
 
             let dependencies =
                 allUses
@@ -553,7 +638,9 @@ let private extractResults
                         | None -> fieldRecordEdge
                         | Some(_, usedFullName) ->
                             match findEnclosing u.Range with
-                            | None -> fieldRecordEdge
+                            | None ->
+                                droppedEdgeCount <- droppedEdgeCount + 1
+                                fieldRecordEdge
                             | Some enclosingSi ->
                                 if enclosingSi.FullName = usedFullName then
                                     fieldRecordEdge
@@ -619,10 +706,16 @@ let private extractResults
                     else
                         None)
 
+            let filteredSymbolCount = definitions.Length - symbols.Length
+
             Ok
                 { Symbols = symbols
                   Dependencies = dependencies
-                  TestMethods = testMethods }
+                  TestMethods = testMethods
+                  Diagnostics =
+                    { DroppedEdges = droppedEdgeCount
+                      FilteredSymbols = filteredSymbolCount
+                      TotalDefinitions = definitions.Length } }
 
 /// Parse and analyze a single F# source string using project options.
 let analyzeSource

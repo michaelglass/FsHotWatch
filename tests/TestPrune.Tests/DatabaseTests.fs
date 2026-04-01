@@ -48,7 +48,8 @@ module ``Store and retrieve symbols`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 
@@ -99,7 +100,8 @@ module ``Transitive dependency query`` =
                     [ { SymbolFullName = "Tests.testA"
                         TestProject = "MyTests"
                         TestClass = "Tests"
-                        TestMethod = "testA" } ] }
+                        TestMethod = "testA" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 
@@ -138,7 +140,8 @@ module ``Direct dependency`` =
                     [ { SymbolFullName = "Tests.testA"
                         TestProject = "MyTests"
                         TestClass = "Tests"
-                        TestMethod = "testA" } ] }
+                        TestMethod = "testA" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 
@@ -182,7 +185,8 @@ module ``No dependency`` =
                     [ { SymbolFullName = "Tests.testA"
                         TestProject = "MyTests"
                         TestClass = "Tests"
-                        TestMethod = "testA" } ] }
+                        TestMethod = "testA" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 
@@ -204,7 +208,8 @@ module ``RebuildProjects replaces old data`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result1 ])
 
@@ -218,7 +223,8 @@ module ``RebuildProjects replaces old data`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result2 ])
 
@@ -246,7 +252,8 @@ module ``Cross-project dependencies`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             // Project B has a test that depends on A's symbol
             let projectB =
@@ -266,7 +273,8 @@ module ``Cross-project dependencies`` =
                     [ { SymbolFullName = "Tests.MyTests.test1"
                         TestProject = "ProjectB"
                         TestClass = "Tests.MyTests"
-                        TestMethod = "test1" } ] }
+                        TestMethod = "test1" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             // Pass B before A — the old API would silently drop the edge
             db.RebuildProjects([ projectB; projectA ])
@@ -274,6 +282,137 @@ module ``Cross-project dependencies`` =
             let affected = db.QueryAffectedTests [ "LibModule.helper" ]
             test <@ affected.Length = 1 @>
             test <@ affected[0].TestMethod = "test1" @>)
+
+module ``Cross-project transitive chain`` =
+
+    [<Fact>]
+    let ``change in project A reaches test in project C through handler in project B`` () =
+        withDb (fun db ->
+            let projectA =
+                AnalysisResult.Create(
+                    [ { FullName = "Database.UserQueries.getUserById"
+                        Kind = Function
+                        SourceFile = "src/Database/UserQueries.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ],
+                    [],
+                    []
+                )
+
+            let projectB =
+                AnalysisResult.Create(
+                    [ { FullName = "Web.Handlers.User.dashboard"
+                        Kind = Function
+                        SourceFile = "src/Web/Handlers/User.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false } ],
+                    [ { FromSymbol = "Web.Handlers.User.dashboard"
+                        ToSymbol = "Database.UserQueries.getUserById"
+                        Kind = Calls } ],
+                    []
+                )
+
+            let projectC =
+                AnalysisResult.Create(
+                    [ { FullName = "Tests.UserTests.test dashboard"
+                        Kind = Function
+                        SourceFile = "tests/UserTests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ],
+                    [ { FromSymbol = "Tests.UserTests.test dashboard"
+                        ToSymbol = "Web.Handlers.User.dashboard"
+                        Kind = Calls } ],
+                    [ { SymbolFullName = "Tests.UserTests.test dashboard"
+                        TestProject = "Tests"
+                        TestClass = "Tests.UserTests"
+                        TestMethod = "test dashboard" } ]
+                )
+
+            db.RebuildProjects([ projectA; projectB; projectC ])
+
+            let affected = db.QueryAffectedTests [ "Database.UserQueries.getUserById" ]
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "test dashboard" @>)
+
+    [<Fact>]
+    let ``change in project A reaches tests in both direct and transitive projects`` () =
+        withDb (fun db ->
+            let projectA =
+                AnalysisResult.Create(
+                    [ { FullName = "Lib.helper"
+                        Kind = Function
+                        SourceFile = "src/Lib/Helper.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ],
+                    [],
+                    []
+                )
+
+            let projectB =
+                AnalysisResult.Create(
+                    [ { FullName = "Web.Middleware.auth"
+                        Kind = Function
+                        SourceFile = "src/Web/Middleware.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false } ],
+                    [ { FromSymbol = "Web.Middleware.auth"
+                        ToSymbol = "Lib.helper"
+                        Kind = Calls } ],
+                    []
+                )
+
+            let unitTests =
+                AnalysisResult.Create(
+                    [ { FullName = "UnitTests.test helper"
+                        Kind = Function
+                        SourceFile = "tests/UnitTests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ],
+                    [ { FromSymbol = "UnitTests.test helper"
+                        ToSymbol = "Lib.helper"
+                        Kind = Calls } ],
+                    [ { SymbolFullName = "UnitTests.test helper"
+                        TestProject = "UnitTests"
+                        TestClass = "UnitTests"
+                        TestMethod = "test helper" } ]
+                )
+
+            let integrationTests =
+                AnalysisResult.Create(
+                    [ { FullName = "IntegTests.test auth flow"
+                        Kind = Function
+                        SourceFile = "tests/IntegTests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ],
+                    [ { FromSymbol = "IntegTests.test auth flow"
+                        ToSymbol = "Web.Middleware.auth"
+                        Kind = Calls } ],
+                    [ { SymbolFullName = "IntegTests.test auth flow"
+                        TestProject = "IntegTests"
+                        TestClass = "IntegTests"
+                        TestMethod = "test auth flow" } ]
+                )
+
+            db.RebuildProjects([ projectA; projectB; unitTests; integrationTests ])
+
+            let affected = db.QueryAffectedTests [ "Lib.helper" ]
+            let methods = affected |> List.map (fun t -> t.TestMethod) |> Set.ofList
+            test <@ affected.Length = 2 @>
+            test <@ methods = set [ "test helper"; "test auth flow" ] @>)
 
 module ``Multiple tests depending on same symbol`` =
 
@@ -318,7 +457,8 @@ module ``Multiple tests depending on same symbol`` =
                       { SymbolFullName = "Tests.test2"
                         TestProject = "MyTests"
                         TestClass = "Tests"
-                        TestMethod = "test2" } ] }
+                        TestMethod = "test2" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 
@@ -357,7 +497,8 @@ module ``GetAllSymbolNames`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 
@@ -494,7 +635,8 @@ module ``RebuildProjects with cache keys`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects(
                 [ result ],
@@ -519,7 +661,8 @@ module ``RebuildProjects with cache keys`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects(
                 [ seedResult ],
@@ -538,7 +681,8 @@ module ``RebuildProjects with cache keys`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 
@@ -627,7 +771,8 @@ module ``stringToDepKind fallback`` =
                     [ { SymbolFullName = "Tests.testA"
                         TestProject = "MyTests"
                         TestClass = "Tests"
-                        TestMethod = "testA" } ] }
+                        TestMethod = "testA" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 
@@ -675,7 +820,8 @@ module ``symbolKindToString and round-trip`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 
@@ -697,7 +843,8 @@ module ``symbolKindToString and round-trip`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 
@@ -718,7 +865,8 @@ module ``symbolKindToString and round-trip`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 
@@ -751,7 +899,8 @@ module ``depKindToString and round-trip`` =
                     [ { FromSymbol = "Tests.testA"
                         ToSymbol = "Lib.MyType"
                         Kind = UsesType } ]
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 
@@ -782,7 +931,8 @@ module ``depKindToString and round-trip`` =
                     [ { FromSymbol = "Tests.testA"
                         ToSymbol = "Lib.Case1"
                         Kind = PatternMatches } ]
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 
@@ -813,7 +963,8 @@ module ``depKindToString and round-trip`` =
                     [ { FromSymbol = "Tests.testA"
                         ToSymbol = "Lib.someVal"
                         Kind = References } ]
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 
@@ -846,7 +997,8 @@ module ``GetDependenciesFromFile`` =
                     [ { FromSymbol = "Tests.testA"
                         ToSymbol = "Lib.funcB"
                         Kind = Calls } ]
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 
@@ -869,7 +1021,8 @@ module ``GetDependenciesFromFile`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 
@@ -902,7 +1055,8 @@ module ``GetTestMethodsInFile`` =
                     [ { SymbolFullName = "Tests.testA"
                         TestProject = "MyTests"
                         TestClass = "Tests"
-                        TestMethod = "testA" } ] }
+                        TestMethod = "testA" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 
@@ -925,7 +1079,8 @@ module ``GetTestMethodsInFile`` =
                         ContentHash = ""
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
 

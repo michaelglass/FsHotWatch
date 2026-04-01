@@ -84,7 +84,8 @@ let standardGraph =
         [ { SymbolFullName = "Tests.testA"
             TestProject = "MyTests"
             TestClass = "Tests"
-            TestMethod = "testA" } ] }
+            TestMethod = "testA" } ]
+      Diagnostics = AnalysisDiagnostics.Zero }
 
 let withDbPath (f: string -> Database -> unit) =
     let path = tempDbPath ()

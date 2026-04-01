@@ -22,7 +22,8 @@ module ``SymbolStore from Database`` =
                         ContentHash = "abc"
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
             let store = toSymbolStore db
@@ -55,7 +56,8 @@ module ``SymbolSink from Database`` =
                         ContentHash = "abc"
                         IsExtern = false } ]
                   Dependencies = []
-                  TestMethods = [] }
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             sink.RebuildProjects [ graph ] [] []
             let symbols = store.GetSymbolsInFile "src/Lib.fs"

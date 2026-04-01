@@ -160,7 +160,8 @@ module ``InMemoryStore basics`` =
                   { FromSymbol = "Mod.C"
                     ToSymbol = "Mod.A"
                     Kind = Calls } ]
-              TestMethods = [] }
+              TestMethods = []
+              Diagnostics = AnalysisDiagnostics.Zero }
 
         let store = fromAnalysisResults [ cycleGraph ]
         // Forward reachability from A should reach all three
@@ -186,7 +187,8 @@ module ``InMemoryStore basics`` =
                 [ { FromSymbol = "Unknown.Source"
                     ToSymbol = "Mod.Target"
                     Kind = Calls } ]
-              TestMethods = [] }
+              TestMethods = []
+              Diagnostics = AnalysisDiagnostics.Zero }
 
         let store = fromAnalysisResults [ graph ]
         // The dep from Unknown.Source gets grouped under "" file key
@@ -203,7 +205,8 @@ module ``InMemoryStore basics`` =
                 [ { SymbolFullName = "Unknown.test1"
                     TestProject = "Proj"
                     TestClass = "Tests"
-                    TestMethod = "test1" } ] }
+                    TestMethod = "test1" } ]
+              Diagnostics = AnalysisDiagnostics.Zero }
 
         let store = fromAnalysisResults [ graph ]
         let testsFromEmpty = store.GetTestMethodsInFile ""

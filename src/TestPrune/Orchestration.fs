@@ -208,7 +208,8 @@ let indexProject
                                 let r =
                                     {| Symbols = store.GetSymbolsInFile(relPath)
                                        Dependencies = store.GetDependenciesFromFile(relPath)
-                                       TestMethods = store.GetTestMethodsInFile(relPath) |}
+                                       TestMethods = store.GetTestMethodsInFile(relPath)
+                                       Diagnostics = AnalysisDiagnostics.Zero |}
 
                                 (idx + 1,
                                  analyzedFiles,
@@ -237,10 +238,15 @@ let indexProject
                                     let testMethods =
                                         result.TestMethods |> List.map (fun t -> { t with TestProject = projName })
 
+                                    if result.Diagnostics.DroppedEdges > 0 then
+                                        eprintfn
+                                            $"    %s{relPath}: %d{result.Diagnostics.DroppedEdges} dropped edges (findEnclosing returned None)"
+
                                     let r =
                                         {| Symbols = symbols
                                            Dependencies = deps
-                                           TestMethods = testMethods |}
+                                           TestMethods = testMethods
+                                           Diagnostics = result.Diagnostics |}
 
                                     (idx + 1,
                                      analyzedFiles + 1,
@@ -264,7 +270,11 @@ let indexProject
             let combined =
                 { Symbols = results |> List.collect (fun r -> r.Symbols)
                   Dependencies = results |> List.collect (fun r -> r.Dependencies)
-                  TestMethods = results |> List.collect (fun r -> r.TestMethods) }
+                  TestMethods = results |> List.collect (fun r -> r.TestMethods)
+                  Diagnostics =
+                    { DroppedEdges = results |> List.sumBy (fun r -> r.Diagnostics.DroppedEdges)
+                      FilteredSymbols = results |> List.sumBy (fun r -> r.Diagnostics.FilteredSymbols)
+                      TotalDefinitions = results |> List.sumBy (fun r -> r.Diagnostics.TotalDefinitions) } }
 
             let fileCount = compileFiles.Length
 
@@ -391,6 +401,21 @@ let runIndexWith
             sink.RebuildProjects allResults allFileKeys allProjectKeys
 
         eprintfn $"Indexed %d{totalSymbols} symbols, %d{totalDeps} dependencies, %d{totalTests} test methods"
+
+        let totalDroppedEdges =
+            allResults |> List.sumBy (fun r -> r.Diagnostics.DroppedEdges)
+
+        let totalFilteredSymbols =
+            allResults |> List.sumBy (fun r -> r.Diagnostics.FilteredSymbols)
+
+        if totalDroppedEdges > 0 then
+            eprintfn $"Warning: %d{totalDroppedEdges} dependency edge(s) dropped (no enclosing binding found)"
+
+        if totalFilteredSymbols > 0 then
+            let totalDefs = allResults |> List.sumBy (fun r -> r.Diagnostics.TotalDefinitions)
+
+            eprintfn
+                $"Filtered %d{totalFilteredSymbols}/%d{totalDefs} local symbol(s) (not module-level or type member)"
 
         if skippedProjects > 0 then
             eprintfn $"Skipped %d{skippedProjects} unchanged project(s)"

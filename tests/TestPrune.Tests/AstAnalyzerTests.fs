@@ -732,6 +732,61 @@ let c = 3
             test <@ analysis.Symbols.Length >= 3 @>
         | Error e -> failwith $"analysis failed: {e}"
 
+module ``Coverage for collectTypeMemberRanges`` =
+
+    [<Fact>]
+    let ``extracts member ranges from class types`` () =
+        let source =
+            """module M
+
+type MyClass() =
+    member _.doWork x = x + 1
+    member this.``complex name`` () = 42
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            // The type members should be tracked as symbols
+            let doWork =
+                analysis.Symbols |> List.tryFind (fun s -> s.FullName.Contains("doWork"))
+
+            let complexName =
+                analysis.Symbols |> List.tryFind (fun s -> s.FullName.Contains("complex name"))
+
+            test <@ doWork.IsSome @>
+            test <@ complexName.IsSome @>
+        | Error e -> failwith $"analysis failed: {e}"
+
+    [<Fact>]
+    let ``type members produce dependency edges`` () =
+        let source =
+            """module M
+
+let helper x = x + 1
+
+type Worker() =
+    member _.run () = helper 5
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            let runCallsHelper =
+                analysis.Dependencies
+                |> List.exists (fun d -> d.FromSymbol.Contains("run") && d.ToSymbol.Contains("helper"))
+
+            test <@ runCallsHelper @>
+        | Error e -> failwith $"analysis failed: {e}"
+
 module ``Coverage for collectModuleBindingRanges`` =
 
     [<Fact>]
