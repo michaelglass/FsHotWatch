@@ -43,6 +43,7 @@ type TestPruneState =
         PendingAnalysis: Map<string, AnalysisResult list>
         SymbolSnapshot: Map<string, SymbolInfo list>
         AffectedTests: TestMethodInfo list
+        ChangedSymbols: string list
         ChangedFiles: string list
         TestPhase: TestRunPhase
         AnalysisRan: bool
@@ -328,6 +329,7 @@ let create
         { PendingAnalysis = Map.empty
           SymbolSnapshot = Map.empty
           AffectedTests = []
+          ChangedSymbols = []
           ChangedFiles = []
           TestPhase = TestsIdle(Lifecycle.create None)
           AnalysisRan = false
@@ -623,17 +625,12 @@ let create
                                 "test-prune"
                                 $"detectChanges for %s{relPath}: %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{normalizedSymbols.Length} current"
 
-                            let newAffected =
+                            let newChangedSymbols =
                                 if not changedNames.IsEmpty then
-                                    let affected = db.QueryAffectedTests(changedNames)
-
-                                    Logging.info
-                                        "test-prune"
-                                        $"QueryAffectedTests(%A{changedNames}): %d{affected.Length} affected tests"
-
-                                    affected
+                                    Logging.info "test-prune" $"Changed symbols: %A{changedNames}"
+                                    (state.ChangedSymbols @ changedNames) |> List.distinct
                                 else
-                                    state.AffectedTests
+                                    state.ChangedSymbols
 
                             // Update class→file mapping for test methods found in this file
                             let newClassFiles =
@@ -644,7 +641,7 @@ let create
                                 { state with
                                     ChangedFiles = newChangedFiles
                                     PendingAnalysis = newPending
-                                    AffectedTests = newAffected
+                                    ChangedSymbols = newChangedSymbols
                                     TestClassFiles = newClassFiles
                                     AnalysisRan = true }
 
