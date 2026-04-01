@@ -60,7 +60,10 @@ type TestProjectConfig =
 
 /// Parsed daemon configuration from .fs-hot-watch.json.
 type DaemonConfiguration =
-    { Build: {| Command: string; Args: string |} option
+    { Build:
+        {| Command: string
+           Args: string
+           BuildTemplate: string option |} option
       Format: bool
       Lint: bool
       Cache: CacheBackendConfig
@@ -77,7 +80,11 @@ type DaemonConfiguration =
              Args: string |} list }
 
 let private defaultConfigFor (repoRoot: string) =
-    { Build = Some {| Command = "dotnet"; Args = "build" |}
+    { Build =
+        Some
+            {| Command = "dotnet"
+               Args = "build"
+               BuildTemplate = None |}
       Format = true
       Lint = true
       Cache = detectDefaultCacheBackend repoRoot
@@ -105,8 +112,20 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 | true, a -> a.GetString()
                 | _ -> "build"
 
-            Some {| Command = cmd; Args = args |}
-        | _ -> Some {| Command = "dotnet"; Args = "build" |}
+            let buildTemplate =
+                match v.TryGetProperty("buildTemplate") with
+                | true, t -> Some(t.GetString())
+                | _ -> None
+
+            Some
+                {| Command = cmd
+                   Args = args
+                   BuildTemplate = buildTemplate |}
+        | _ ->
+            Some
+                {| Command = "dotnet"
+                   Args = "build"
+                   BuildTemplate = None |}
 
     let format =
         match root.TryGetProperty("format") with
@@ -327,8 +346,16 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
     // Build plugin
     match config.Build with
     | Some b ->
+        let testProjectNames =
+            match config.Tests with
+            | Some t -> t.Projects |> List.map (fun p -> p.Project)
+            | None -> []
+
         Logging.info "config" $"Registering BuildPlugin: %s{b.Command} %s{b.Args}"
-        daemon.RegisterHandler(FsHotWatch.Build.BuildPlugin.create b.Command b.Args [] daemon.Graph [] None)
+
+        daemon.RegisterHandler(
+            FsHotWatch.Build.BuildPlugin.create b.Command b.Args [] daemon.Graph testProjectNames b.BuildTemplate
+        )
     | None -> ()
 
     // TestPrune plugin
