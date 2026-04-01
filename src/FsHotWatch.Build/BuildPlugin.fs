@@ -32,10 +32,50 @@ let create
     (testProjectNames: string list)
     (buildTemplate: string option)
     =
-    ignore (graph, testProjectNames, buildTemplate)
+    ignore buildTemplate
     let buildCommand = command
     let buildArgs = args
     let env = environment
+    let testProjectNameSet = testProjectNames |> Set.ofList
+
+    let isTestFile (file: string) =
+        match graph.GetProjectForFile(file) with
+        | Some proj -> testProjectNameSet.Contains(Path.GetFileNameWithoutExtension(proj))
+        | None -> false
+
+    let startBuild (ctx: PluginCtx<BuildMsg>) (idle: Lifecycle<Idle, BuildOutcome>) =
+        ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
+        let running = Lifecycle.start idle
+        info "build" $"Running: %s{buildCommand} %s{buildArgs}"
+
+        async {
+            try
+                try
+                    let (success, output) = runProcess buildCommand buildArgs ctx.RepoRoot env
+
+                    if success then
+                        info "build" "Build succeeded"
+                        ctx.ClearErrors "<build>"
+                        ctx.EmitBuildCompleted(BuildSucceeded)
+                        ctx.Post(BuildDone(BuildPassed output))
+                    else
+                        error "build" "Build FAILED"
+
+                        ctx.ReportErrors "<build>" [ ErrorEntry.error output ]
+                        ctx.EmitBuildCompleted(BuildFailed [ output ])
+                        ctx.Post(BuildDone(BuildOutputFailed output))
+                with ex ->
+                    ctx.ReportErrors "<build>" [ ErrorEntry.error ex.Message ]
+
+                    ctx.EmitBuildCompleted(BuildFailed [ ex.Message ])
+                    ctx.Post(BuildDone(BuildOutputFailed ex.Message))
+            with ex ->
+                error "build" $"Unexpected error: %s{ex.Message}"
+                ctx.Post(BuildDone(BuildOutputFailed ex.Message))
+        }
+        |> Async.Start
+
+        { Phase = RunningPhase running }
 
     { Name = "build"
       Init = { Phase = IdlePhase(Lifecycle.create NotBuilt) }
@@ -43,39 +83,17 @@ let create
         fun ctx state event ->
             async {
                 match event, state.Phase with
-                | FileChanged(SourceChanged _ | ProjectChanged _), IdlePhase idle ->
-                    ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
-                    let running = Lifecycle.start idle
-                    info "build" $"Running: %s{buildCommand} %s{buildArgs}"
+                | FileChanged(SourceChanged files), IdlePhase idle ->
+                    let allTestFiles = not files.IsEmpty && files |> List.forall isTestFile
 
-                    async {
-                        try
-                            try
-                                let (success, output) = runProcess buildCommand buildArgs ctx.RepoRoot env
-
-                                if success then
-                                    info "build" "Build succeeded"
-                                    ctx.ClearErrors "<build>"
-                                    ctx.EmitBuildCompleted(BuildSucceeded)
-                                    ctx.Post(BuildDone(BuildPassed output))
-                                else
-                                    error "build" "Build FAILED"
-
-                                    ctx.ReportErrors "<build>" [ ErrorEntry.error output ]
-                                    ctx.EmitBuildCompleted(BuildFailed [ output ])
-                                    ctx.Post(BuildDone(BuildOutputFailed output))
-                            with ex ->
-                                ctx.ReportErrors "<build>" [ ErrorEntry.error ex.Message ]
-
-                                ctx.EmitBuildCompleted(BuildFailed [ ex.Message ])
-                                ctx.Post(BuildDone(BuildOutputFailed ex.Message))
-                        with ex ->
-                            error "build" $"Unexpected error: %s{ex.Message}"
-                            ctx.Post(BuildDone(BuildOutputFailed ex.Message))
-                    }
-                    |> Async.Start
-
-                    return { Phase = RunningPhase running }
+                    if allTestFiles then
+                        info "build" "Skipping build — only test files changed"
+                        ctx.EmitBuildCompleted(BuildSucceeded)
+                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                        return { Phase = IdlePhase idle }
+                    else
+                        return startBuild ctx idle
+                | FileChanged(ProjectChanged _), IdlePhase idle -> return startBuild ctx idle
                 | Custom(BuildDone outcome), RunningPhase running ->
                     let idle = Lifecycle.complete outcome running
 
