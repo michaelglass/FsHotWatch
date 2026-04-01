@@ -1224,3 +1224,35 @@ let ``BuildCompleted queries affected tests after flush`` () =
 
         let result = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
         test <@ result.IsSome @>)
+
+[<Fact>]
+let ``skip tests when 0 affected classes and not cold start`` () =
+    // Bug 1: After first run, 0 affected classes should skip (not run all).
+    withTempDir "tp-skip" (fun tmpDir ->
+        let mutable runCount = 0
+
+        let configs =
+            [ { Project = "TestProj"
+                Command = "echo"
+                Args = "ran"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+        let handler =
+            create ":memory:" tmpDir (Some configs) None None (Some(fun _ -> runCount <- runCount + 1)) None
+
+        host.RegisterHandler(handler)
+
+        // First BuildCompleted = cold start, should run all
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForPluginTerminal host "test-prune" 5.0
+        test <@ runCount = 1 @>
+
+        // Second BuildCompleted with no changed symbols — should SKIP
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForPluginTerminal host "test-prune" 5.0
+        test <@ runCount = 1 @>) // still 1, not 2
