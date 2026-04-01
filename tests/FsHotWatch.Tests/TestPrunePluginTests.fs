@@ -274,13 +274,14 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
               TestClass = "Tests"
               TestMethod = "myTest" }
 
-        let result1: AnalysisResult =
-            { Symbols = [ symbol1 ]
-              Dependencies =
+        let result1 =
+            AnalysisResult.Create(
+                [ symbol1 ],
                 [ { FromSymbol = "Tests.myTest"
                     ToSymbol = "MyModule.foo"
-                    Kind = DependencyKind.Calls } ]
-              TestMethods = [ testMethod1 ] }
+                    Kind = DependencyKind.Calls } ],
+                [ testMethod1 ]
+            )
 
         db.RebuildProjects([ result1 ])
 
@@ -1156,13 +1157,14 @@ let ``FileChecked does not query DB for affected tests`` () =
               TestClass = "Tests"
               TestMethod = "myTest" }
 
-        let analysis: AnalysisResult =
-            { Symbols = [ symbol ]
-              Dependencies =
+        let analysis =
+            AnalysisResult.Create(
+                [ symbol ],
                 [ { FromSymbol = "Tests.myTest"
                     ToSymbol = "Lib.foo"
-                    Kind = DependencyKind.Calls } ]
-              TestMethods = [ testMethod ] }
+                    Kind = DependencyKind.Calls } ],
+                [ testMethod ]
+            )
 
         db.RebuildProjects([ analysis ])
 
