@@ -10,7 +10,11 @@ open FsHotWatch.Tests.TestHelpers
 // --- Helper: defaults with known cache backend ---
 
 let private defaults: DaemonConfiguration =
-    { Build = Some {| Command = "dotnet"; Args = "build" |}
+    { Build =
+        Some
+            {| Command = "dotnet"
+               Args = "build"
+               BuildTemplate = None |}
       Format = true
       Lint = true
       Cache = FileBackend
@@ -24,7 +28,15 @@ let private defaults: DaemonConfiguration =
 [<Fact>]
 let ``parseConfig with empty JSON returns defaults`` () =
     let config = parseConfig "{}" defaults
-    test <@ config.Build = Some {| Command = "dotnet"; Args = "build" |} @>
+
+    test
+        <@
+            config.Build = Some
+                {| Command = "dotnet"
+                   Args = "build"
+                   BuildTemplate = None |}
+        @>
+
     test <@ config.Format = true @>
     test <@ config.Lint = true @>
     test <@ config.Cache = FileBackend @>
@@ -43,20 +55,39 @@ let ``parseConfig build false disables build`` () =
 [<Fact>]
 let ``parseConfig build true uses default build`` () =
     let config = parseConfig """{"build": true}""" defaults
-    test <@ config.Build = Some {| Command = "dotnet"; Args = "build" |} @>
+
+    test
+        <@
+            config.Build = Some
+                {| Command = "dotnet"
+                   Args = "build"
+                   BuildTemplate = None |}
+        @>
 
 [<Fact>]
 let ``parseConfig build object with custom command and args`` () =
     let config =
         parseConfig """{"build": {"command": "make", "args": "all"}}""" defaults
 
-    test <@ config.Build = Some {| Command = "make"; Args = "all" |} @>
+    test
+        <@
+            config.Build = Some
+                {| Command = "make"
+                   Args = "all"
+                   BuildTemplate = None |}
+        @>
 
 [<Fact>]
 let ``parseConfig build object with only command uses default args`` () =
     let config = parseConfig """{"build": {"command": "make"}}""" defaults
 
-    test <@ config.Build = Some {| Command = "make"; Args = "build" |} @>
+    test
+        <@
+            config.Build = Some
+                {| Command = "make"
+                   Args = "build"
+                   BuildTemplate = None |}
+        @>
 
 [<Fact>]
 let ``parseConfig build object with only args uses default command`` () =
@@ -66,13 +97,21 @@ let ``parseConfig build object with only args uses default command`` () =
         <@
             config.Build = Some
                 {| Command = "dotnet"
-                   Args = "release" |}
+                   Args = "release"
+                   BuildTemplate = None |}
         @>
 
 [<Fact>]
 let ``parseConfig build empty object uses defaults`` () =
     let config = parseConfig """{"build": {}}""" defaults
-    test <@ config.Build = Some {| Command = "dotnet"; Args = "build" |} @>
+
+    test
+        <@
+            config.Build = Some
+                {| Command = "dotnet"
+                   Args = "build"
+                   BuildTemplate = None |}
+        @>
 
 // --- parseConfig: format ---
 
@@ -381,7 +420,15 @@ let ``parseConfig with full configuration`` () =
     }"""
 
     let config = parseConfig json defaults
-    test <@ config.Build = Some {| Command = "make"; Args = "all" |} @>
+
+    test
+        <@
+            config.Build = Some
+                {| Command = "make"
+                   Args = "all"
+                   BuildTemplate = None |}
+        @>
+
     test <@ config.Format = false @>
     test <@ config.Lint = false @>
     test <@ config.Cache = JjFileBackend @>
@@ -441,7 +488,15 @@ let ``createCacheComponents JjFileBackend returns Some backend and Some keyProvi
 let ``loadConfig with no config file returns expected defaults`` () =
     withTempDir "cfg-def" (fun tmpDir ->
         let config = loadConfig tmpDir
-        test <@ config.Build = Some {| Command = "dotnet"; Args = "build" |} @>
+
+        test
+            <@
+                config.Build = Some
+                    {| Command = "dotnet"
+                       Args = "build"
+                       BuildTemplate = None |}
+            @>
+
         test <@ config.Format = true @>
         test <@ config.Lint = true @>
         test <@ config.Cache = FileBackend @>
