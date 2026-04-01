@@ -179,6 +179,8 @@ let ``command reports Failed status on command failure`` () =
             | _ -> false
         @>
 
+    test <@ host.HasErrors() @>
+
 [<Fact>]
 let ``command reports Failed status on exception`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -205,6 +207,8 @@ let ``command reports Failed status on exception`` () =
             | Failed _ -> true
             | _ -> false
         @>
+
+    test <@ host.HasErrors() @>
 
 [<Fact>]
 let ``status command returns not run when no files matched`` () =

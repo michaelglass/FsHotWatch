@@ -116,6 +116,8 @@ let ``coverage plugin fails when below threshold`` () =
                 | Failed _ -> true
                 | _ -> false
             @>
+
+        test <@ host.HasErrors() @>
     finally
         try
             Directory.Delete(tmpDir, true)

@@ -25,6 +25,7 @@ let private registerWith
         (fun _ _ -> ())
         (fun _ -> ())
         (fun _ -> ())
+        (fun _ -> ())
         registerCommand
         handler
 
