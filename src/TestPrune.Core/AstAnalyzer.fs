@@ -502,14 +502,17 @@ let private extractResults
             let typeMemberRanges = collectTypeMemberRanges parseResults.ParseTree
             let typeDefnRanges = collectTypeDefnRanges parseResults.ParseTree
 
-            // Combine module-level and type member binding ranges for findEnclosing.
-            // Type member ranges enable edge attribution for class-based test methods
-            // and any other code defined inside type members.
-            let allBindingRanges = moduleBindingRanges @ typeMemberRanges
+            // Module-level and type member binding ranges are used for:
+            // - isTrackedSymbol: deciding which Function/Value symbols are queryable
+            // - definitionsByName: mapping short names to SymbolInfo for findEnclosing
+            // - Hash range selection for Function/Value content hashing
+            // Type definition ranges are NOT included here to avoid shadowing
+            // binding names (e.g. type Config vs let config) in the map.
+            let memberBindingRanges = moduleBindingRanges @ typeMemberRanges
 
             // Pre-build Maps keyed by simple (unqualified) name for O(log M) range lookup
             // rather than O(M) List.tryFind scans per symbol.
-            let allBindingRangeMap = allBindingRanges |> Map.ofList
+            let allBindingRangeMap = memberBindingRanges |> Map.ofList
             let typeDefnRangeMap = typeDefnRanges |> Map.ofList
 
             // Extract the last dot-delimited component of a fully-qualified name,
@@ -583,32 +586,54 @@ let private extractResults
                 definitions
                 |> List.choose (fun (symbolInfo, _) -> if isTrackedSymbol symbolInfo then Some symbolInfo else None)
 
-            // Pre-sort binding ranges by start line descending for efficient lookup.
-            // Includes both module-level and type member ranges so findEnclosing
-            // can attribute symbol uses inside type members.
-            let sortedBindingRanges =
-                allBindingRanges
-                |> List.sortByDescending (fun (_, r) -> r.StartLine)
+            // All ranges for findEnclosing: member bindings + type definitions.
+            // Type definition ranges enable edge attribution for interface implementation
+            // references (e.g. `interface IFoo with`) which sit at the type level,
+            // outside any member body.
+            let allEnclosingRanges =
+                (memberBindingRanges @ typeDefnRanges)
                 |> Array.ofList
 
-            // Pre-build a map from binding short name to SymbolInfo for O(log N) lookup
+            // Pre-build a map from binding short name to SymbolInfo for O(log N) lookup.
+            // Includes symbols from both binding ranges and type definition ranges
+            // so findEnclosing can resolve both member-level and type-level enclosures.
             let definitionsByName =
                 definitions
                 |> List.choose (fun (si, _) ->
                     let sn = shortName si.FullName
 
-                    if allBindingRangeMap |> Map.containsKey sn then
+                    if
+                        allBindingRangeMap |> Map.containsKey sn
+                        || typeDefnRangeMap |> Map.containsKey sn
+                    then
                         Some(sn, si)
                     else
                         None)
                 |> Map.ofList
 
             let findEnclosing (useRange: range) =
-                sortedBindingRanges
-                |> Array.tryFind (fun (_, bindingRange) ->
-                    useRange.StartLine >= bindingRange.StartLine
-                    && useRange.EndLine <= bindingRange.EndLine)
-                |> Option.bind (fun (name, _) -> definitionsByName |> Map.tryFind name)
+                let mutable best: (string * range) voption = ValueNone
+
+                for i in 0 .. allEnclosingRanges.Length - 1 do
+                    let name, bindingRange = allEnclosingRanges[i]
+
+                    if
+                        useRange.StartLine >= bindingRange.StartLine
+                        && useRange.EndLine <= bindingRange.EndLine
+                    then
+                        match best with
+                        | ValueNone -> best <- ValueSome(name, bindingRange)
+                        | ValueSome(_, bestRange) ->
+                            let span = bindingRange.EndLine - bindingRange.StartLine
+                            let bestSpan = bestRange.EndLine - bestRange.StartLine
+
+                            if span < bestSpan then
+                                best <- ValueSome(name, bindingRange)
+
+                best
+                |> function
+                    | ValueSome(name, _) -> definitionsByName |> Map.tryFind name
+                    | ValueNone -> None
 
             let mutable droppedEdgeCount = 0
 
