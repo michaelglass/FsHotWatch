@@ -1,6 +1,7 @@
 module FsHotWatch.Build.BuildPlugin
 
 open System
+open System.IO
 open System.Text.Json
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
@@ -23,7 +24,15 @@ type BuildState = { Phase: BuildPhase }
 
 type BuildMsg = BuildDone of BuildOutcome
 
-let create (command: string) (args: string) (environment: (string * string) list) =
+let create
+    (command: string)
+    (args: string)
+    (environment: (string * string) list)
+    (graph: FsHotWatch.ProjectGraph.ProjectGraph)
+    (testProjectNames: string list)
+    (buildTemplate: string option)
+    =
+    ignore (graph, testProjectNames, buildTemplate)
     let buildCommand = command
     let buildArgs = args
     let env = environment
