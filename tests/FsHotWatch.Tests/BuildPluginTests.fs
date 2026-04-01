@@ -285,3 +285,42 @@ let ``build plugin triggers on ProjectChanged`` () =
 
     waitUntil (fun () -> receivedBuild.IsSome) 5000
     test <@ receivedBuild = Some BuildSucceeded @>
+
+[<Fact>]
+let ``build is skipped when only test files change`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let mutable receivedBuild: BuildResult option = None
+
+    let recorder =
+        { Name = "build-recorder"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted result -> receivedBuild <- Some result
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                BuildCompleted = true } }
+
+    let graph = ProjectGraph()
+
+    graph.RegisterProject("/tmp/tests/MyTests/MyTests.fsproj", [ "/tmp/tests/MyTests/Tests.fs" ], [])
+
+    let handler = BuildPlugin.create "false" "" [] graph [ "MyTests" ] None
+
+    host.RegisterHandler(recorder)
+    host.RegisterHandler(handler)
+
+    host.EmitFileChanged(SourceChanged [ "/tmp/tests/MyTests/Tests.fs" ])
+
+    waitForTerminalStatus host "build" 5000
+
+    waitUntil (fun () -> receivedBuild.IsSome) 5000
+    test <@ receivedBuild = Some BuildSucceeded @>
