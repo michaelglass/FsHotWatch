@@ -71,7 +71,8 @@ let create (lintConfigPath: string option) : PluginHandler<LintState, unit> =
                                         { Message = w.Details.Message
                                           Severity = DiagnosticSeverity.Warning
                                           Line = w.Details.Range.StartLine
-                                          Column = w.Details.Range.StartColumn })
+                                          Column = w.Details.Range.StartColumn
+                                          Detail = None })
 
                                 ctx.ReportErrors result.File entries
 
@@ -81,12 +82,7 @@ let create (lintConfigPath: string option) : PluginHandler<LintState, unit> =
                         | Lint.LintResult.Failure failure ->
                             let msg = $"Lint failed for %s{result.File}: %A{failure}"
 
-                            ctx.ReportErrors
-                                result.File
-                                [ { Message = msg
-                                    Severity = DiagnosticSeverity.Error
-                                    Line = 0
-                                    Column = 0 } ]
+                            ctx.ReportErrors result.File [ ErrorEntry.error msg ]
 
                             ctx.ReportStatus(PluginStatus.Failed(msg, DateTime.UtcNow))
                             return state

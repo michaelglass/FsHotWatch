@@ -49,23 +49,12 @@ let create
                                 ctx.ClearErrors $"<%s{name}>"
                                 ctx.ReportStatus(Completed(DateTime.UtcNow))
                             else
-                                ctx.ReportErrors
-                                    $"<%s{name}>"
-                                    [ { Message = output
-                                        Severity = DiagnosticSeverity.Error
-                                        Line = 0
-                                        Column = 0 } ]
-
+                                ctx.ReportErrors $"<%s{name}>" [ ErrorEntry.error output ]
                                 ctx.ReportStatus(PluginStatus.Failed($"%s{name} failed", DateTime.UtcNow))
 
                             return { LastResult = result }
                         with ex ->
-                            ctx.ReportErrors
-                                $"<%s{name}>"
-                                [ { Message = ex.Message
-                                    Severity = DiagnosticSeverity.Error
-                                    Line = 0
-                                    Column = 0 } ]
+                            ctx.ReportErrors $"<%s{name}>" [ ErrorEntry.error ex.Message ]
 
                             ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                             return { LastResult = CommandFailed ex.Message }

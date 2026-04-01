@@ -42,7 +42,8 @@ let private reportFcsDiagnostics (host: PluginHost) (checkResult: Events.FileChe
                             { Message = d.Message
                               Severity = DiagnosticSeverity.Error
                               Line = d.StartLine
-                              Column = d.StartColumn }
+                              Column = d.StartColumn
+                              Detail = None }
                     | _ -> None)
             |> Array.toList
 

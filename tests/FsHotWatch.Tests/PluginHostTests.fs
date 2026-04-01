@@ -295,7 +295,8 @@ let ``plugin can report and query errors via host`` () =
                             [ { Message = "bad"
                                 Severity = DiagnosticSeverity.Warning
                                 Line = 1
-                                Column = 0 } ]
+                                Column = 0
+                                Detail = None } ]
                     | _ -> ()
 
                     return state
@@ -330,7 +331,8 @@ let ``plugin ClearErrors removes errors from ledger`` () =
                             [ { Message = "oops"
                                 Severity = DiagnosticSeverity.Error
                                 Line = 5
-                                Column = 0 } ]
+                                Column = 0
+                                Detail = None } ]
 
                         return true
                     | FileChanged _ when state ->
@@ -362,7 +364,8 @@ let ``GetErrorsByPlugin returns only that plugin's errors`` () =
         [ { Message = "from A"
             Severity = DiagnosticSeverity.Error
             Line = 1
-            Column = 0 } ]
+            Column = 0
+            Detail = None } ]
     )
 
     host.ReportErrors(
@@ -371,7 +374,8 @@ let ``GetErrorsByPlugin returns only that plugin's errors`` () =
         [ { Message = "from B"
             Severity = DiagnosticSeverity.Error
             Line = 1
-            Column = 0 } ]
+            Column = 0
+            Detail = None } ]
     )
 
     test <@ host.ErrorCount() = 2 @>
@@ -458,7 +462,8 @@ let ``ReportErrors with version passes through to ledger`` () =
         [ { Message = "v2 error"
             Severity = DiagnosticSeverity.Error
             Line = 1
-            Column = 0 } ],
+            Column = 0
+            Detail = None } ],
         version = 2L
     )
 
@@ -469,7 +474,8 @@ let ``ReportErrors with version passes through to ledger`` () =
         [ { Message = "v1 stale"
             Severity = DiagnosticSeverity.Error
             Line = 1
-            Column = 0 } ],
+            Column = 0
+            Detail = None } ],
         version = 1L
     )
 
@@ -488,7 +494,8 @@ let ``ClearErrors with version passes through to ledger`` () =
         [ { Message = "error"
             Severity = DiagnosticSeverity.Error
             Line = 1
-            Column = 0 } ],
+            Column = 0
+            Detail = None } ],
         version = 2L
     )
 

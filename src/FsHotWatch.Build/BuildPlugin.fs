@@ -52,22 +52,11 @@ let create (command: string) (args: string) (environment: (string * string) list
                                 else
                                     error "build" "Build FAILED"
 
-                                    ctx.ReportErrors
-                                        "<build>"
-                                        [ { Message = output
-                                            Severity = DiagnosticSeverity.Error
-                                            Line = 0
-                                            Column = 0 } ]
-
+                                    ctx.ReportErrors "<build>" [ ErrorEntry.error output ]
                                     ctx.EmitBuildCompleted(BuildFailed [ output ])
                                     ctx.Post(BuildDone(BuildOutputFailed output))
                             with ex ->
-                                ctx.ReportErrors
-                                    "<build>"
-                                    [ { Message = ex.Message
-                                        Severity = DiagnosticSeverity.Error
-                                        Line = 0
-                                        Column = 0 } ]
+                                ctx.ReportErrors "<build>" [ ErrorEntry.error ex.Message ]
 
                                 ctx.EmitBuildCompleted(BuildFailed [ ex.Message ])
                                 ctx.Post(BuildDone(BuildOutputFailed ex.Message))

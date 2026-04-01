@@ -8,7 +8,8 @@ let private entry msg sev line =
     { Message = msg
       Severity = sev
       Line = line
-      Column = 0 }
+      Column = 0
+      Detail = None }
 
 [<Fact>]
 let ``Report adds errors and GetAll returns them grouped by file`` () =
@@ -84,13 +85,15 @@ let ``Report ignores stale version`` () =
         { Message = "new"
           Severity = DiagnosticSeverity.Error
           Line = 1
-          Column = 0 }
+          Column = 0
+          Detail = None }
 
     let staleEntry =
         { Message = "stale"
           Severity = DiagnosticSeverity.Error
           Line = 2
-          Column = 0 }
+          Column = 0
+          Detail = None }
 
     ledger.Report("fcs", "/tmp/Lib.fs", [ newEntry ], version = 2L)
     ledger.Report("fcs", "/tmp/Lib.fs", [ staleEntry ], version = 1L)
@@ -108,7 +111,8 @@ let ``Clear ignores stale version`` () =
         { Message = "error"
           Severity = DiagnosticSeverity.Error
           Line = 1
-          Column = 0 }
+          Column = 0
+          Detail = None }
 
     ledger.Report("fcs", "/tmp/Lib.fs", [ e ], version = 2L)
     ledger.Clear("fcs", "/tmp/Lib.fs", version = 1L)
@@ -123,13 +127,15 @@ let ``Report without version always updates`` () =
         { Message = "first"
           Severity = DiagnosticSeverity.Error
           Line = 1
-          Column = 0 }
+          Column = 0
+          Detail = None }
 
     let entry2 =
         { Message = "second"
           Severity = DiagnosticSeverity.Error
           Line = 2
-          Column = 0 }
+          Column = 0
+          Detail = None }
 
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry1 ], version = 5L)
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry2 ])
@@ -146,13 +152,15 @@ let ``Report accepts newer version after initial versioned report`` () =
         { Message = "first"
           Severity = DiagnosticSeverity.Error
           Line = 1
-          Column = 0 }
+          Column = 0
+          Detail = None }
 
     let entry2 =
         { Message = "updated"
           Severity = DiagnosticSeverity.Error
           Line = 2
-          Column = 0 }
+          Column = 0
+          Detail = None }
 
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry1 ], version = 1L)
     // This hits the update factory branch where v >= last (2 >= 1)
@@ -171,13 +179,15 @@ let ``Report accepts equal version as update`` () =
         { Message = "first"
           Severity = DiagnosticSeverity.Error
           Line = 1
-          Column = 0 }
+          Column = 0
+          Detail = None }
 
     let entry2 =
         { Message = "same-version-update"
           Severity = DiagnosticSeverity.Error
           Line = 2
-          Column = 0 }
+          Column = 0
+          Detail = None }
 
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry1 ], version = 3L)
     // Same version should still be accepted (v >= last, 3 >= 3)
@@ -196,7 +206,8 @@ let ``Clear accepts newer version after initial versioned report`` () =
         { Message = "error"
           Severity = DiagnosticSeverity.Error
           Line = 1
-          Column = 0 }
+          Column = 0
+          Detail = None }
 
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry1 ], version = 1L)
     // Clear with higher version should succeed (hits update branch where v >= last)

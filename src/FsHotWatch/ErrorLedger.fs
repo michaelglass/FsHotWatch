@@ -9,10 +9,31 @@ type DiagnosticSeverity =
 
 /// A single diagnostic entry from a plugin.
 type ErrorEntry =
-    { Message: string
-      Severity: DiagnosticSeverity
-      Line: int
-      Column: int }
+    {
+        Message: string
+        Severity: DiagnosticSeverity
+        Line: int
+        Column: int
+        /// Optional full output (e.g. complete test stdout for println debugging).
+        Detail: string option
+    }
+
+module ErrorEntry =
+    /// Create an Error-severity entry with no source location.
+    let error (message: string) : ErrorEntry =
+        { Message = message
+          Severity = Error
+          Line = 0
+          Column = 0
+          Detail = None }
+
+    /// Create an Error-severity entry with detail (e.g. full test output).
+    let errorWithDetail (message: string) (detail: string) : ErrorEntry =
+        { Message = message
+          Severity = Error
+          Line = 0
+          Column = 0
+          Detail = Some detail }
 
 type private LedgerState =
     { Errors: Map<struct (string * string), ErrorEntry list>
@@ -86,7 +107,11 @@ type ErrorLedger() =
                             | ClearPlugin plugin ->
                                 let newErrors = state.Errors |> Map.filter (fun (struct (p, _)) _ -> p <> plugin)
 
-                                { state with Errors = newErrors }
+                                let newVersions =
+                                    state.Versions |> Map.filter (fun (struct (p, _)) _ -> p <> plugin)
+
+                                { Errors = newErrors
+                                  Versions = newVersions }
 
                             | GetAll rc ->
                                 let result =
