@@ -621,6 +621,39 @@ let ``DaemonRpcTarget.GetErrors returns zero count when no errors`` () =
     test <@ json.Contains("\"count\":0") @>
 
 [<Fact>]
+let ``DaemonRpcTarget.GetErrors includes detail field`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    host.ReportErrors(
+        "test-prune",
+        "/tmp/Tests.fs",
+        [ ErrorEntry.errorWithDetail
+              "failed MyTests.test1 (5ms)"
+              "full stdout\nprintln debug: x = 42\nfailed MyTests.test1 (5ms)" ]
+    )
+
+    let target = DaemonRpcTarget(defaultRpcConfig host)
+    let json = target.GetErrors("")
+    // Verify the detail field is present with the full output, not just the message
+    test <@ json.Contains("\"detail\"") @>
+    test <@ json.Contains("println debug: x = 42") @>
+
+[<Fact>]
+let ``DaemonRpcTarget.GetErrors includes detail when filtered by plugin`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    host.ReportErrors(
+        "test-prune",
+        "/tmp/Tests.fs",
+        [ ErrorEntry.errorWithDetail "failed MyTests.test1 (5ms)" "full output with debug info" ]
+    )
+
+    let target = DaemonRpcTarget(defaultRpcConfig host)
+    let json = target.GetErrors("test-prune")
+    test <@ json.Contains("\"detail\"") @>
+    test <@ json.Contains("full output with debug info") @>
+
+[<Fact>]
 let ``DaemonRpcTarget.TriggerBuild calls config and returns status`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable buildCalled = false

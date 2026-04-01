@@ -97,7 +97,8 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
                            message = e.Message
                            severity = severityToString e.Severity
                            line = e.Line
-                           column = e.Column |}))
+                           column = e.Column
+                           detail = e.Detail |}))
             else
                 config.Host.GetErrorsByPlugin(pluginFilter)
                 |> Map.map (fun _file entries ->
@@ -107,7 +108,8 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
                            message = e.Message
                            severity = severityToString e.Severity
                            line = e.Line
-                           column = e.Column |}))
+                           column = e.Column
+                           detail = e.Detail |}))
 
         let count = allErrors |> Map.fold (fun acc _ entries -> acc + entries.Length) 0
 
