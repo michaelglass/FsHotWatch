@@ -569,7 +569,8 @@ let ``DaemonRpcTarget.GetErrors returns all errors when filter is empty`` () =
         [ { Message = "bad code"
             Severity = DiagnosticSeverity.Error
             Line = 10
-            Column = 5 } ]
+            Column = 5
+            Detail = None } ]
     )
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
@@ -588,7 +589,8 @@ let ``DaemonRpcTarget.GetErrors filters by plugin name`` () =
         [ { Message = "lint issue"
             Severity = DiagnosticSeverity.Warning
             Line = 1
-            Column = 0 } ]
+            Column = 0
+            Detail = None } ]
     )
 
     host.ReportErrors(
@@ -597,7 +599,8 @@ let ``DaemonRpcTarget.GetErrors filters by plugin name`` () =
         [ { Message = "analyzer issue"
             Severity = DiagnosticSeverity.Info
             Line = 2
-            Column = 0 } ]
+            Column = 0
+            Detail = None } ]
     )
 
     let target = DaemonRpcTarget(defaultRpcConfig host)

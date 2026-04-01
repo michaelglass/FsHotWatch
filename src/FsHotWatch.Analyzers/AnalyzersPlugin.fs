@@ -176,7 +176,8 @@ let create (analyzerPaths: string list) : PluginHandler<AnalyzersState, Analyzer
                                                         | Severity.Info -> DiagnosticSeverity.Info
                                                         | Severity.Hint -> DiagnosticSeverity.Hint
                                                       Line = m.Range.StartLine
-                                                      Column = m.Range.StartColumn })
+                                                      Column = m.Range.StartColumn
+                                                      Detail = None })
                                             | Result.Error _ -> [])
 
                                     debug
@@ -205,12 +206,7 @@ let create (analyzerPaths: string list) : PluginHandler<AnalyzersState, Analyzer
                         { state with
                             DiagnosticsByFile = state.DiagnosticsByFile |> Map.add file entries }
                 | Custom(AnalysisFailed(file, error)) ->
-                    ctx.ReportErrors
-                        file
-                        [ { Message = $"Analyzer crashed: %s{error}"
-                            Severity = DiagnosticSeverity.Error
-                            Line = 0
-                            Column = 0 } ]
+                    ctx.ReportErrors file [ ErrorEntry.error $"Analyzer crashed: %s{error}" ]
 
                     ctx.ReportStatus(Completed(DateTime.UtcNow))
                     return state

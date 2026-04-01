@@ -147,19 +147,12 @@ let create
                                     let entries =
                                         failedResults
                                         |> List.map (fun r ->
-                                            { Message =
-                                                $"%s{r.Project}: line=%.1f{r.LineRate}%% branch=%.1f{r.BranchRate}%%"
-                                              Severity = DiagnosticSeverity.Error
-                                              Line = 0
-                                              Column = 0 })
+                                            ErrorEntry.error
+                                                $"%s{r.Project}: line=%.1f{r.LineRate}%% branch=%.1f{r.BranchRate}%%")
 
                                     ctx.ReportErrors "<coverage>" entries
 
-                                    let failures =
-                                        failedResults
-                                        |> List.map (fun r ->
-                                            $"%s{r.Project}: line=%.1f{r.LineRate}%% branch=%.1f{r.BranchRate}%%")
-                                        |> String.concat "; "
+                                    let failures = entries |> List.map (fun e -> e.Message) |> String.concat "; "
 
                                     ctx.ReportStatus(
                                         PluginStatus.Failed($"Coverage below threshold: %s{failures}", DateTime.UtcNow)

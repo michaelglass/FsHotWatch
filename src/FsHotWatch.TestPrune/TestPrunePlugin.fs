@@ -127,14 +127,8 @@ let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<str
                 let parsed = parseFailedTests output
 
                 if parsed.IsEmpty then
-                    // No individual failures parsed — report the whole project failure
-                    let entry: ErrorLedger.ErrorEntry =
-                        { Message = $"Tests failed in %s{project}"
-                          Severity = ErrorLedger.DiagnosticSeverity.Error
-                          Line = 0
-                          Column = 0 }
-
-                    [ $"<tests/%s{project}>", entry ]
+                    [ $"<tests/%s{project}>",
+                      ErrorLedger.ErrorEntry.errorWithDetail $"Tests failed in %s{project}" output ]
                 else
                     parsed
                     |> List.map (fun (className, _methodName, line) ->
@@ -143,13 +137,7 @@ let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<str
                             |> Map.tryFind className
                             |> Option.defaultValue $"<tests/%s{project}>"
 
-                        let entry: ErrorLedger.ErrorEntry =
-                            { Message = line
-                              Severity = ErrorLedger.DiagnosticSeverity.Error
-                              Line = 0
-                              Column = 0 }
-
-                        file, entry)
+                        file, ErrorLedger.ErrorEntry.errorWithDetail line output)
             | TestsPassed _ -> [])
         |> List.groupBy fst
         |> List.map (fun (file, entries) -> file, entries |> List.map snd)
