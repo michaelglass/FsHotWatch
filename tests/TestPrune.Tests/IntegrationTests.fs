@@ -1401,17 +1401,20 @@ type ComputeTests() =
 
             let testAnalysis =
                 { Symbols =
-                    testResult.Symbols |> List.map (fun s -> { s with SourceFile = "tests/LibTests.fs" })
+                    testResult.Symbols
+                    |> List.map (fun s ->
+                        { s with
+                            SourceFile = "tests/LibTests.fs" })
                   Dependencies = testResult.Dependencies
                   TestMethods =
-                    testResult.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                    testResult.TestMethods
+                    |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Diagnostics = testResult.Diagnostics }
 
             db.RebuildProjects([ libAnalysis; testAnalysis ])
 
             // Verify the type member test was stored
-            let testMethods =
-                db.QueryAffectedTests [ "LibTests.compute" ]
+            let testMethods = db.QueryAffectedTests [ "LibTests.compute" ]
 
             // The class-based test should be found when its dependency changes
             test <@ testMethods |> List.exists (fun t -> t.TestMethod.Contains("compute")) @>)
