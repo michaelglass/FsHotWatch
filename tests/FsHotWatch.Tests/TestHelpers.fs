@@ -52,6 +52,30 @@ let waitForSettled (host: FsHotWatch.PluginHost.PluginHost) (pluginName: string)
             | _ -> true)
         timeoutMs
 
+/// Create a plugin that records BuildCompleted events.
+/// Returns (getBuildResult, handler) where getBuildResult() returns the captured result.
+let buildRecorder () =
+    let mutable receivedBuild: FsHotWatch.Events.BuildResult option = None
+
+    let handler: FsHotWatch.PluginFramework.PluginHandler<unit, obj> =
+        { Name = "build-recorder"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | FsHotWatch.PluginFramework.BuildCompleted result -> receivedBuild <- Some result
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { FsHotWatch.PluginFramework.PluginSubscriptions.none with
+                BuildCompleted = true } }
+
+    ((fun () -> receivedBuild), handler)
+
 /// Create a temp directory with the given prefix, run the body, then clean up.
 /// Returns the result of the body function.
 let withTempDir (prefix: string) (body: string -> 'a) =

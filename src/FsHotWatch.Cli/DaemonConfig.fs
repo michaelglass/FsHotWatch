@@ -380,9 +380,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             | Some cmd ->
                 Some(fun () ->
                     Logging.info "test-prune" $"Running beforeRun: %s{cmd}"
-                    let parts = cmd.Split(' ', 2)
-                    let command = parts.[0]
-                    let args = if parts.Length > 1 then parts.[1] else ""
+                    let (command, args) = FsHotWatch.StringHelpers.splitCommand cmd
                     let (success, output) = runProcess command args repoRoot []
 
                     if not success then
