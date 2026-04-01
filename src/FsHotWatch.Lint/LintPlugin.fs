@@ -80,6 +80,14 @@ let create (lintConfigPath: string option) : PluginHandler<LintState, unit> =
                             return newState
                         | Lint.LintResult.Failure failure ->
                             let msg = $"Lint failed for %s{result.File}: %A{failure}"
+
+                            ctx.ReportErrors
+                                result.File
+                                [ { Message = msg
+                                    Severity = DiagnosticSeverity.Error
+                                    Line = 0
+                                    Column = 0 } ]
+
                             ctx.ReportStatus(PluginStatus.Failed(msg, DateTime.UtcNow))
                             return state
                 | _ -> return state

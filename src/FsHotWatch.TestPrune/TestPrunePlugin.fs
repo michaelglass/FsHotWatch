@@ -39,12 +39,16 @@ type TestRunPhase =
     | TestsRunningRerunQueued of Lifecycle<Running, TestResults option>
 
 type TestPruneState =
-    { PendingAnalysis: Map<string, AnalysisResult list>
-      SymbolSnapshot: Map<string, SymbolInfo list>
-      AffectedTests: TestMethodInfo list
-      ChangedFiles: string list
-      TestPhase: TestRunPhase
-      AnalysisRan: bool }
+    {
+        PendingAnalysis: Map<string, AnalysisResult list>
+        SymbolSnapshot: Map<string, SymbolInfo list>
+        AffectedTests: TestMethodInfo list
+        ChangedFiles: string list
+        TestPhase: TestRunPhase
+        AnalysisRan: bool
+        /// Maps test class name → absolute source file path (built during FileChecked analysis).
+        TestClassFiles: Map<string, string>
+    }
 
 type TestPruneMsg = TestsFinished of TestResults
 
@@ -80,6 +84,78 @@ let private buildFilterArgs (config: TestConfig) (classesByProject: Map<string, 
         let result = template.Replace("{classes}", joined)
         Logging.info "test-prune" $"Filter: %s{result}"
         Some result
+
+/// Parse "failed Namespace.Class.Method (Xms)" lines from test output.
+/// Returns (className, methodName, fullLine) tuples.
+let parseFailedTests (output: string) : (string * string * string) list =
+    output.Split('\n')
+    |> Array.choose (fun line ->
+        let trimmed = line.Trim()
+
+        if trimmed.StartsWith("failed ") then
+            // Strip "failed " prefix and optional trailing timing "(Xms)"
+            let rest = trimmed.Substring(7).Trim()
+
+            let name =
+                match rest.LastIndexOf(" (") with
+                | -1 -> rest
+                | i -> rest.Substring(0, i)
+
+            // Split qualified name: last segment is method, second-to-last is class
+            let parts = name.Split('.')
+
+            if parts.Length >= 2 then
+                let methodName = parts.[parts.Length - 1]
+                let className = parts.[parts.Length - 2]
+                Some(className, methodName, trimmed)
+            else
+                Some(name, name, trimmed)
+        else
+            None)
+    |> Array.toList
+
+/// Report test failures to the error ledger grouped by source file.
+/// Falls back to a synthetic "<tests>" path for tests without a known source file.
+let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<string, string>) (results: TestResults) =
+    // Collect all failure entries grouped by file
+    let entriesByFile =
+        results.Results
+        |> Map.toList
+        |> List.collect (fun (project, result) ->
+            match result with
+            | TestsFailed output ->
+                let parsed = parseFailedTests output
+
+                if parsed.IsEmpty then
+                    // No individual failures parsed — report the whole project failure
+                    let entry: ErrorLedger.ErrorEntry =
+                        { Message = $"Tests failed in %s{project}"
+                          Severity = ErrorLedger.DiagnosticSeverity.Error
+                          Line = 0
+                          Column = 0 }
+
+                    [ $"<tests/%s{project}>", entry ]
+                else
+                    parsed
+                    |> List.map (fun (className, _methodName, line) ->
+                        let file =
+                            classFiles
+                            |> Map.tryFind className
+                            |> Option.defaultValue $"<tests/%s{project}>"
+
+                        let entry: ErrorLedger.ErrorEntry =
+                            { Message = line
+                              Severity = ErrorLedger.DiagnosticSeverity.Error
+                              Line = 0
+                              Column = 0 }
+
+                        file, entry)
+            | TestsPassed _ -> [])
+        |> List.groupBy fst
+        |> List.map (fun (file, entries) -> file, entries |> List.map snd)
+
+    for (file, entries) in entriesByFile do
+        ctx.ReportErrors file entries
 
 /// Execute test configs with optional affected classes for filtering.
 /// Handles beforeRun, coverageArgs, process execution, result storage.
@@ -266,7 +342,8 @@ let create
           AffectedTests = []
           ChangedFiles = []
           TestPhase = TestsIdle(Lifecycle.create None)
-          AnalysisRan = false }
+          AnalysisRan = false
+          TestClassFiles = Map.empty }
 
     let runTestsWithImpact (ctx: PluginCtx<TestPruneMsg>) (configs: TestConfig list) (state: TestPruneState) =
         async {
@@ -321,8 +398,11 @@ let create
                         | _ -> false)
 
                 if allPassed then
+                    ctx.ClearAllErrors()
                     ctx.ReportStatus(Completed(DateTime.UtcNow))
                 else
+                    reportTestErrors ctx state.TestClassFiles results
+
                     let failedProjects =
                         results.Results
                         |> Map.toList
@@ -567,11 +647,17 @@ let create
                                 else
                                     state.AffectedTests
 
+                            // Update class→file mapping for test methods found in this file
+                            let newClassFiles =
+                                fileAnalysis.TestMethods
+                                |> List.fold (fun acc t -> Map.add t.TestClass result.File acc) state.TestClassFiles
+
                             let newState =
                                 { state with
                                     ChangedFiles = newChangedFiles
                                     PendingAnalysis = newPending
                                     AffectedTests = newAffected
+                                    TestClassFiles = newClassFiles
                                     AnalysisRan = true }
 
                             if isIdle then

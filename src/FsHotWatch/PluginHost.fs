@@ -53,6 +53,7 @@ type PluginHost(checker: FSharpChecker, repoRoot: string) =
                          | Failed(e, _) -> $"Failed: %s{e.Substring(0, min 80 e.Length)}"))
                 (fun name file entries -> ledger.Report(name, file, entries))
                 (fun name file -> ledger.Clear(name, file))
+                (fun name -> ledger.ClearPlugin(name))
                 (fun result -> dispatchToRegistered (fun p -> p.OnBuildCompleted) result)
                 (fun results -> dispatchToRegistered (fun p -> p.OnTestCompleted) results)
                 (fun cmd -> commands[fst cmd] <- snd cmd)

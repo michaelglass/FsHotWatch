@@ -26,6 +26,8 @@ type PluginCtx<'Msg> =
         ReportErrors: string -> ErrorEntry list -> unit
         /// Clear this plugin's errors for a file.
         ClearErrors: string -> unit
+        /// Clear all of this plugin's errors across all files.
+        ClearAllErrors: unit -> unit
         /// Emit a build completed event to other plugins.
         EmitBuildCompleted: BuildResult -> unit
         /// Emit a test completed event to other plugins.
@@ -100,6 +102,7 @@ let registerHandler
     (reportStatus: string -> PluginStatus -> unit)
     (reportErrors: string -> string -> ErrorEntry list -> unit)
     (clearErrors: string -> string -> unit)
+    (clearPlugin: string -> unit)
     (emitBuildCompleted: BuildResult -> unit)
     (emitTestCompleted: TestResults -> unit)
     (registerCommand: string * CommandHandler -> unit)
@@ -112,6 +115,7 @@ let registerHandler
                 { ReportStatus = fun s -> reportStatus handler.Name s
                   ReportErrors = fun file entries -> reportErrors handler.Name file entries
                   ClearErrors = fun file -> clearErrors handler.Name file
+                  ClearAllErrors = fun () -> clearPlugin handler.Name
                   EmitBuildCompleted = emitBuildCompleted
                   EmitTestCompleted = emitTestCompleted
                   Checker = checker
