@@ -18,3 +18,13 @@ let ``wordCount counts words`` () =
 
 [<Fact>]
 let ``wordCount returns 0 for empty string`` () = Assert.Equal(0, wordCount "")
+
+/// Class-based tests (type members) — exercises the type member tracking path
+/// in TestPrune's impact analysis. Changes to `reverse` or `isPalindrome`
+/// should select these tests via the transitive dependency graph.
+type PalindromeTests() =
+    [<Fact>]
+    member _.``reverse of single char is itself``() = Assert.Equal("a", reverse "a")
+
+    [<Fact>]
+    member _.``isPalindrome handles single char``() = Assert.True(isPalindrome "a")
