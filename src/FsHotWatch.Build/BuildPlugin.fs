@@ -32,7 +32,6 @@ let create
     (testProjectNames: string list)
     (buildTemplate: string option)
     =
-    ignore buildTemplate
     let buildCommand = command
     let buildArgs = args
     let env = environment
@@ -42,6 +41,9 @@ let create
         match graph.GetProjectForFile(file) with
         | Some proj -> testProjectNameSet.Contains(Path.GetFileNameWithoutExtension(proj))
         | None -> false
+
+    let isTestProject (proj: string) =
+        testProjectNameSet.Contains(Path.GetFileNameWithoutExtension(proj))
 
     let startBuild (ctx: PluginCtx<BuildMsg>) (idle: Lifecycle<Idle, BuildOutcome>) =
         ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
@@ -77,6 +79,71 @@ let create
 
         { Phase = RunningPhase running }
 
+    let startTemplateBuild
+        (ctx: PluginCtx<BuildMsg>)
+        (idle: Lifecycle<Idle, BuildOutcome>)
+        (template: string)
+        (files: string list)
+        =
+        let nonTestFiles = files |> List.filter (fun f -> not (isTestFile f))
+        let affected = graph.GetAffectedProjects(nonTestFiles)
+        let buildable = affected |> List.filter (fun p -> not (isTestProject p))
+
+        if buildable.IsEmpty then
+            startBuild ctx idle
+        else
+            let buildableSet = buildable |> Set.ofList
+
+            let roots =
+                buildable
+                |> List.filter (fun proj ->
+                    let dependents = graph.GetDependents(proj)
+                    dependents |> List.exists (fun d -> buildableSet.Contains(d)) |> not)
+
+            ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
+            let running = Lifecycle.start idle
+
+            async {
+                try
+                    let mutable failures = []
+                    let mutable allOutput = ""
+
+                    for root in roots do
+                        let rendered = template.Replace("{project}", root)
+                        let parts = rendered.Split(' ', 2)
+                        let cmd = parts.[0]
+                        let cmdArgs = if parts.Length > 1 then parts.[1] else ""
+                        info "build" $"Running template: %s{cmd} %s{cmdArgs}"
+
+                        try
+                            let (success, output) = runProcess cmd cmdArgs ctx.RepoRoot env
+                            allOutput <- allOutput + output
+
+                            if not success then
+                                error "build" $"Template build FAILED for %s{root}"
+                                failures <- output :: failures
+                        with ex ->
+                            error "build" $"Template build exception for %s{root}: %s{ex.Message}"
+                            failures <- ex.Message :: failures
+
+                    if failures.IsEmpty then
+                        info "build" "All template builds succeeded"
+                        ctx.ClearErrors "<build>"
+                        ctx.EmitBuildCompleted(BuildSucceeded)
+                        ctx.Post(BuildDone(BuildPassed allOutput))
+                    else
+                        let errors = failures |> List.rev
+                        ctx.ReportErrors "<build>" (errors |> List.map ErrorEntry.error)
+                        ctx.EmitBuildCompleted(BuildFailed errors)
+                        ctx.Post(BuildDone(BuildOutputFailed(errors |> String.concat "\n")))
+                with ex ->
+                    error "build" $"Unexpected error: %s{ex.Message}"
+                    ctx.Post(BuildDone(BuildOutputFailed ex.Message))
+            }
+            |> Async.Start
+
+            { Phase = RunningPhase running }
+
     { Name = "build"
       Init = { Phase = IdlePhase(Lifecycle.create NotBuilt) }
       Update =
@@ -92,7 +159,9 @@ let create
                         ctx.ReportStatus(Completed(DateTime.UtcNow))
                         return { Phase = IdlePhase idle }
                     else
-                        return startBuild ctx idle
+                        match buildTemplate with
+                        | Some template -> return startTemplateBuild ctx idle template files
+                        | None -> return startBuild ctx idle
                 | FileChanged(ProjectChanged _), IdlePhase idle -> return startBuild ctx idle
                 | Custom(BuildDone outcome), RunningPhase running ->
                     let idle = Lifecycle.complete outcome running
