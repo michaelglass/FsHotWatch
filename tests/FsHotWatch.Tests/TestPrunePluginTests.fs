@@ -566,6 +566,91 @@ let ``dispose is callable`` () =
     let _handler = create ":memory:" "/tmp" None None None None None
     ()
 
+[<Fact>]
+let ``parseFailedTests extracts class and method from xUnit MTP output`` () =
+    let output =
+        "failed FsHotWatch.Tests.PluginHostTests.plugin receives file change events (1ms)\nfailed FsHotWatch.Tests.BuildPluginTests.build fires on source change (0ms)\nTest run summary: Failed!\n  total: 10\n  failed: 2"
+
+    let parsed = parseFailedTests output
+
+    test <@ parsed.Length = 2 @>
+
+    test
+        <@
+            parsed
+            |> List.exists (fun (cls, meth, _) ->
+                cls = "PluginHostTests" && meth = "plugin receives file change events")
+        @>
+
+    test
+        <@
+            parsed
+            |> List.exists (fun (cls, meth, _) -> cls = "BuildPluginTests" && meth = "build fires on source change")
+        @>
+
+[<Fact>]
+let ``parseFailedTests handles output with no failures`` () =
+    let parsed: (string * string * string) list =
+        parseFailedTests "Test run summary: Passed!\n  total: 10\n  succeeded: 10"
+
+    test <@ parsed.Length = 0 @>
+
+[<Fact>]
+let ``test failures are reported to error ledger`` () =
+    withTempDir "tp-ledger" (fun tmpDir ->
+        // Use "false" command which always fails, producing test failure output
+        let configs =
+            [ { Project = "TestProject"
+                Command = "false"
+                Args = ""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        host.RegisterHandler(handler)
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForPluginTerminal host "test-prune" 5.0
+
+        test <@ host.HasErrors() @>)
+
+[<Fact>]
+let ``test errors are cleared when all tests pass`` () =
+    withTempDir "tp-ledger-clear" (fun tmpDir ->
+        // First run fails, second run passes
+        let mutable shouldFail = true
+
+        let configs =
+            [ { Project = "TestProject"
+                Command = "sh"
+                Args = "-c \"if [ -f fail_flag ]; then exit 1; else exit 0; fi\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        host.RegisterHandler(handler)
+
+        // Create fail flag so first run fails
+        File.WriteAllText(Path.Combine(tmpDir, "fail_flag"), "")
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForPluginTerminal host "test-prune" 5.0
+        test <@ host.HasErrors() @>
+
+        // Remove fail flag so second run passes
+        File.Delete(Path.Combine(tmpDir, "fail_flag"))
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForPluginTerminal host "test-prune" 5.0
+        // Small delay to let the ledger's ClearPlugin message process
+        // (status and ledger are separate async systems)
+        Threading.Thread.Sleep(100)
+        test <@ not (host.HasErrors()) @>)
+
 // Inline FactAttribute so test detection works without xUnit assemblies in script options.
 // Uses module-level [<Fact>] functions — the pattern that analyzeSource reliably detects
 // via FCS symbol uses without needing resolved assembly references.

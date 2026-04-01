@@ -204,7 +204,14 @@ let create (analyzerPaths: string list) : PluginHandler<AnalyzersState, Analyzer
                     return
                         { state with
                             DiagnosticsByFile = state.DiagnosticsByFile |> Map.add file entries }
-                | Custom(AnalysisFailed(_file, _error)) ->
+                | Custom(AnalysisFailed(file, error)) ->
+                    ctx.ReportErrors
+                        file
+                        [ { Message = $"Analyzer crashed: %s{error}"
+                            Severity = DiagnosticSeverity.Error
+                            Line = 0
+                            Column = 0 } ]
+
                     ctx.ReportStatus(Completed(DateTime.UtcNow))
                     return state
                 | _ -> return state

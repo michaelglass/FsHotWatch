@@ -6,6 +6,7 @@ open System.Text.Json
 open System.Xml.Linq
 open FsHotWatch.Events
 open FsHotWatch
+open FsHotWatch.ErrorLedger
 open FsHotWatch.Logging
 open FsHotWatch.PluginFramework
 
@@ -138,11 +139,24 @@ let create
                                 | None -> ()
 
                                 if allPass then
+                                    ctx.ClearErrors "<coverage>"
                                     ctx.ReportStatus(Completed(DateTime.UtcNow))
                                 else
+                                    let failedResults = results |> List.filter (fun r -> not r.MeetsThreshold)
+
+                                    let entries =
+                                        failedResults
+                                        |> List.map (fun r ->
+                                            { Message =
+                                                $"%s{r.Project}: line=%.1f{r.LineRate}%% branch=%.1f{r.BranchRate}%%"
+                                              Severity = DiagnosticSeverity.Error
+                                              Line = 0
+                                              Column = 0 })
+
+                                    ctx.ReportErrors "<coverage>" entries
+
                                     let failures =
-                                        results
-                                        |> List.filter (fun r -> not r.MeetsThreshold)
+                                        failedResults
                                         |> List.map (fun r ->
                                             $"%s{r.Project}: line=%.1f{r.LineRate}%% branch=%.1f{r.BranchRate}%%")
                                         |> String.concat "; "
