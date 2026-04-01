@@ -1331,3 +1331,87 @@ type MyTests() =
             let affected = db.QueryAffectedTests changedNames
             test <@ affected.Length >= 1 @>
             test <@ affected |> List.exists (fun t -> t.TestMethod.Contains("helper")) @>)
+
+    [<Fact>]
+    let ``this self-identifier produces same edges as underscore`` () =
+        let source =
+            """
+module M
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+let helper x = x + 1
+
+type MyTests() =
+    [<Fact>]
+    member this.``helper via this`` () =
+        let result = helper 5
+        ()
+"""
+
+        let result = analyze source
+
+        test <@ result.TestMethods.Length >= 1 @>
+
+        let testToHelper =
+            result.Dependencies
+            |> List.exists (fun d ->
+                d.FromSymbol.Contains("helper via this")
+                && d.ToSymbol.EndsWith("helper", StringComparison.Ordinal))
+
+        test <@ testToHelper @>
+
+    [<Fact>]
+    let ``cross-project type member test selects via transitive chain`` () =
+        withDb (fun db ->
+            // Project A: library function
+            let libSource =
+                """
+module Lib
+
+let compute x = x * 2
+"""
+
+            // Project B: class-based test calling the library function
+            let testSource =
+                """
+module LibTests
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+let compute x = x * 2
+
+type ComputeTests() =
+    [<Fact>]
+    member _.``compute doubles value`` () =
+        let result = compute 5
+        ()
+"""
+
+            let libResult = analyze libSource
+            let testResult = analyze testSource
+
+            let libAnalysis =
+                { Symbols = libResult.Symbols |> List.map (fun s -> { s with SourceFile = "src/Lib.fs" })
+                  Dependencies = libResult.Dependencies
+                  TestMethods = []
+                  Diagnostics = libResult.Diagnostics }
+
+            let testAnalysis =
+                { Symbols =
+                    testResult.Symbols |> List.map (fun s -> { s with SourceFile = "tests/LibTests.fs" })
+                  Dependencies = testResult.Dependencies
+                  TestMethods =
+                    testResult.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Diagnostics = testResult.Diagnostics }
+
+            db.RebuildProjects([ libAnalysis; testAnalysis ])
+
+            // Verify the type member test was stored
+            let testMethods =
+                db.QueryAffectedTests [ "LibTests.compute" ]
+
+            // The class-based test should be found when its dependency changes
+            test <@ testMethods |> List.exists (fun t -> t.TestMethod.Contains("compute")) @>)
