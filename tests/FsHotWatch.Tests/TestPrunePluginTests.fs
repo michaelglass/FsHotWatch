@@ -833,11 +833,11 @@ let ``after scan and build, test methods are in the sqlite database`` () =
                 |> List.exists (fun t -> t.TestClass.EndsWith("MyTests", StringComparison.Ordinal))
             @>)
 
-[<Fact(Skip = "Bug 2 Task 2: affected-tests now populated in BuildCompleted, not FileChecked")>]
+[<Fact>]
 let ``after a symbol change, affected-tests identifies the dependent test`` () =
     // Single-file: prod function + test function in the same .fsx.
     // First scan populates DB. Second scan changes compute -> detectChanges finds it
-    // changed -> QueryAffectedTests returns computeTest.
+    // changed -> QueryAffectedTests returns computeTest (queried after BuildCompleted flush).
     withTempDir "tp-minimal" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let srcFile = Path.Combine(tmpDir, "All.fsx")
@@ -889,8 +889,12 @@ let computeTest () =
         emitFileAndWait checker pipeline host srcFile changedSrc
         |> Async.RunSynchronously
 
-        // After the second FileChecked, affected-tests should contain computeTest
-        // (compute changed -> QueryAffectedTests finds computeTest via the dependency edge)
+        // Emit BuildCompleted to trigger flush + QueryAffectedTests
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForPluginTerminal host "test-prune" 15.0
+
+        // After BuildCompleted, affected-tests should contain computeTest
+        // (compute changed -> flush -> QueryAffectedTests finds computeTest via the dependency edge)
         let affectedResult =
             host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
 
@@ -1193,3 +1197,30 @@ let ``FileChecked does not query DB for affected tests`` () =
         let result = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
         test <@ result.IsSome @>
         test <@ not (result.Value.Contains("myTest")) @>)
+
+[<Fact>]
+let ``BuildCompleted queries affected tests after flush`` () =
+    // Bug 2: After flush, QueryAffectedTests should run against fresh DB data.
+    withTempDir "tp-query-after-flush" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "test.db")
+
+        let configs =
+            [ { Project = "TestProj"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = Some "-- --filter-class {classes}"
+                ClassJoin = " " } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create dbPath tmpDir (Some configs) None None None None
+        host.RegisterHandler(handler)
+
+        // After BuildCompleted with no prior FileChecked, should still work
+        // (AnalysisRan will be false, affected-tests returns "not analyzed")
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForPluginTerminal host "test-prune" 5.0
+
+        let result = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
+        test <@ result.IsSome @>)

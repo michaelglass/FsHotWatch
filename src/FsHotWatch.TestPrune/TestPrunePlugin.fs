@@ -690,10 +690,29 @@ let create
                             // Flush pending analysis to DB
                             let flushedState = flushPendingAnalysis db state
 
+                            // Query affected tests AFTER flush (Bug 2 fix)
+                            let affectedTests =
+                                let symbols = flushedState.ChangedSymbols |> List.distinct
+
+                                if symbols.IsEmpty then
+                                    []
+                                else
+                                    let affected = db.QueryAffectedTests(symbols)
+
+                                    Logging.info
+                                        "test-prune"
+                                        $"QueryAffectedTests(%A{symbols}): %d{affected.Length} affected tests"
+
+                                    affected
+
+                            let stateWithAffected =
+                                { flushedState with
+                                    AffectedTests = affectedTests }
+
                             let running = Lifecycle.start idle
 
                             let newState =
-                                { flushedState with
+                                { stateWithAffected with
                                     TestPhase = TestsRunning running }
 
                             // Dispatch tests to thread pool
@@ -723,19 +742,40 @@ let create
                                 { state with
                                     TestPhase = TestsRunning running }
 
+                        // Query affected tests after flush
+                        let affectedTests =
+                            let symbols = flushedState.ChangedSymbols |> List.distinct
+
+                            if symbols.IsEmpty then
+                                []
+                            else
+                                let affected = db.QueryAffectedTests(symbols)
+
+                                Logging.info
+                                    "test-prune"
+                                    $"QueryAffectedTests(%A{symbols}): %d{affected.Length} affected tests"
+
+                                affected
+
+                        let rerunState =
+                            { flushedState with
+                                AffectedTests = affectedTests }
+
                         match testConfigs with
                         | Some configs when not configs.IsEmpty ->
-                            async { do! runTestsWithImpact ctx configs flushedState } |> Async.Start
+                            async { do! runTestsWithImpact ctx configs rerunState } |> Async.Start
                         | _ -> ()
 
-                        return flushedState
+                        return rerunState
                     | TestsRunning running ->
                         let completed = Lifecycle.complete (Some testResults) running
 
                         return
                             { state with
                                 TestPhase = TestsIdle completed
-                                ChangedFiles = [] }
+                                ChangedFiles = []
+                                ChangedSymbols = []
+                                AffectedTests = [] }
                     | TestsIdle _ ->
                         // Unexpected but handle gracefully
                         return state
