@@ -324,3 +324,120 @@ let ``build is skipped when only test files change`` () =
 
     waitUntil (fun () -> receivedBuild.IsSome) 5000
     test <@ receivedBuild = Some BuildSucceeded @>
+
+[<Fact>]
+let ``build uses template for affected project`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let mutable receivedBuild: BuildResult option = None
+
+    let recorder =
+        { Name = "build-recorder"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted result -> receivedBuild <- Some result
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                BuildCompleted = true } }
+
+    let graph = ProjectGraph()
+
+    graph.RegisterProject("/tmp/src/MyLib/MyLib.fsproj", [ "/tmp/src/MyLib/Lib.fs" ], [])
+
+    let handler =
+        BuildPlugin.create "false" "should-not-run" [] graph [] (Some "echo {project}")
+
+    host.RegisterHandler(recorder)
+    host.RegisterHandler(handler)
+
+    host.EmitFileChanged(SourceChanged [ "/tmp/src/MyLib/Lib.fs" ])
+
+    waitForTerminalStatus host "build" 5000
+
+    waitUntil (fun () -> receivedBuild.IsSome) 5000
+    test <@ receivedBuild = Some BuildSucceeded @>
+
+[<Fact>]
+let ``build falls back to original command when no template`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let mutable receivedBuild: BuildResult option = None
+
+    let recorder =
+        { Name = "build-recorder"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted result -> receivedBuild <- Some result
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                BuildCompleted = true } }
+
+    let graph = ProjectGraph()
+
+    graph.RegisterProject("/tmp/src/MyLib/MyLib.fsproj", [ "/tmp/src/MyLib/Lib.fs" ], [])
+
+    let handler = BuildPlugin.create "echo" "fallback-build" [] graph [] None
+
+    host.RegisterHandler(recorder)
+    host.RegisterHandler(handler)
+
+    host.EmitFileChanged(SourceChanged [ "/tmp/src/MyLib/Lib.fs" ])
+
+    waitForTerminalStatus host "build" 5000
+
+    waitUntil (fun () -> receivedBuild.IsSome) 5000
+    test <@ receivedBuild = Some BuildSucceeded @>
+
+[<Fact>]
+let ``build falls back when file not in graph`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let mutable receivedBuild: BuildResult option = None
+
+    let recorder =
+        { Name = "build-recorder"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted result -> receivedBuild <- Some result
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                BuildCompleted = true } }
+
+    let graph = ProjectGraph()
+
+    let handler =
+        BuildPlugin.create "echo" "fallback-for-unknown" [] graph [] (Some "false {project}")
+
+    host.RegisterHandler(recorder)
+    host.RegisterHandler(handler)
+
+    host.EmitFileChanged(SourceChanged [ "/tmp/src/Unknown/File.fs" ])
+
+    waitForTerminalStatus host "build" 5000
+
+    waitUntil (fun () -> receivedBuild.IsSome) 5000
+    test <@ receivedBuild = Some BuildSucceeded @>
