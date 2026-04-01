@@ -106,18 +106,16 @@ let create
             async {
                 try
                     let mutable failures = []
-                    let mutable allOutput = ""
+                    let mutable outputs = []
 
                     for root in roots do
                         let rendered = template.Replace("{project}", root)
-                        let parts = rendered.Split(' ', 2)
-                        let cmd = parts.[0]
-                        let cmdArgs = if parts.Length > 1 then parts.[1] else ""
+                        let (cmd, cmdArgs) = splitCommand rendered
                         info "build" $"Running template: %s{cmd} %s{cmdArgs}"
 
                         try
                             let (success, output) = runProcess cmd cmdArgs ctx.RepoRoot env
-                            allOutput <- allOutput + output
+                            outputs <- output :: outputs
 
                             if not success then
                                 error "build" $"Template build FAILED for %s{root}"
@@ -126,11 +124,13 @@ let create
                             error "build" $"Template build exception for %s{root}: %s{ex.Message}"
                             failures <- ex.Message :: failures
 
+                    let combinedOutput = outputs |> List.rev |> String.concat "\n"
+
                     if failures.IsEmpty then
                         info "build" "All template builds succeeded"
                         ctx.ClearErrors "<build>"
                         ctx.EmitBuildCompleted(BuildSucceeded)
-                        ctx.Post(BuildDone(BuildPassed allOutput))
+                        ctx.Post(BuildDone(BuildPassed combinedOutput))
                     else
                         let errors = failures |> List.rev
                         ctx.ReportErrors "<build>" (errors |> List.map ErrorEntry.error)
