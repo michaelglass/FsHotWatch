@@ -287,9 +287,11 @@ let private flushPendingAnalysis (db: Database) (state: TestPruneState) =
             newPending <- Map.remove projectName newPending
 
             let combined =
-                { Symbols = items |> List.collect (fun r -> r.Symbols)
-                  Dependencies = items |> List.collect (fun r -> r.Dependencies)
-                  TestMethods = items |> List.collect (fun r -> r.TestMethods) }
+                AnalysisResult.Create(
+                    items |> List.collect (fun r -> r.Symbols),
+                    items |> List.collect (fun r -> r.Dependencies),
+                    items |> List.collect (fun r -> r.TestMethods)
+                )
 
             Logging.info "test-prune" $"Flushing %d{items.Length} files for %s{projectName} to DB"
             allResults.Add(combined)
@@ -628,7 +630,8 @@ let create
                                   Dependencies = analysisResult.Dependencies
                                   TestMethods =
                                     analysisResult.TestMethods
-                                    |> List.map (fun t -> { t with TestProject = projectName }) }
+                                    |> List.map (fun t -> { t with TestProject = projectName })
+                                  Diagnostics = analysisResult.Diagnostics }
 
                             // Read stored symbols from the in-memory snapshot (populated after
                             // each flush). Falls back to DB for warm starts where the snapshot
