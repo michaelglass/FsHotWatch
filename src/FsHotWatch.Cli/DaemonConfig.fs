@@ -328,7 +328,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
     match config.Build with
     | Some b ->
         Logging.info "config" $"Registering BuildPlugin: %s{b.Command} %s{b.Args}"
-        daemon.RegisterHandler(FsHotWatch.Build.BuildPlugin.create b.Command b.Args [])
+        daemon.RegisterHandler(FsHotWatch.Build.BuildPlugin.create b.Command b.Args [] daemon.Graph [] None)
     | None -> ()
 
     // TestPrune plugin

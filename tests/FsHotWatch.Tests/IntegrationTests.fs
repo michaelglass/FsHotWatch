@@ -14,6 +14,7 @@ open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
+open FsHotWatch.ProjectGraph
 
 module LintPlugin = FsHotWatch.Lint.LintPlugin
 
@@ -862,7 +863,7 @@ let ``BuildPlugin succeeds with echo command`` () =
             { PluginSubscriptions.none with
                 BuildCompleted = true } }
 
-    let handler = BuildPlugin.create "echo" "build ok" []
+    let handler = BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
@@ -905,7 +906,7 @@ let ``BuildPlugin fails with false command`` () =
             { PluginSubscriptions.none with
                 BuildCompleted = true } }
 
-    let handler = BuildPlugin.create "false" "" []
+    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
@@ -1276,7 +1277,7 @@ let ``Full pipeline: format → build → test → coverage`` () =
         host.RegisterPreprocessor(preprocessor)
 
         // Register BuildPlugin (echo for success)
-        let buildHandler = BuildPlugin.create "echo" "build ok" []
+        let buildHandler = BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None
         host.RegisterHandler(buildHandler)
 
         // Register TestPrunePlugin with echo test command
@@ -1391,7 +1392,7 @@ let ``BuildPlugin does not run concurrent builds`` () =
                 BuildCompleted = true } }
 
     // Use /bin/sleep 1 as a slow build command so the second emit arrives while the first is running
-    let handler = BuildPlugin.create "/bin/sleep" "1" []
+    let handler = BuildPlugin.create "/bin/sleep" "1" [] (ProjectGraph()) [] None
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 

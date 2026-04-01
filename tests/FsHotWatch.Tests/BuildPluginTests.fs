@@ -7,18 +7,29 @@ open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 open FsHotWatch.Build
+open FsHotWatch.ProjectGraph
 open FsHotWatch.Tests.TestHelpers
 
 [<Fact>]
+let ``create accepts graph and test project names`` () =
+    let graph = FsHotWatch.ProjectGraph.ProjectGraph()
+    let handler = BuildPlugin.create "echo" "build" [] graph [] None
+    test <@ handler.Name = "build" @>
+
+[<Fact>]
 let ``plugin has correct name`` () =
-    let handler = BuildPlugin.create "echo" "build succeeded" []
+    let handler =
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None
+
     test <@ handler.Name = "build" @>
 
 [<Fact>]
 let ``build-status command returns not run initially`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = BuildPlugin.create "echo" "build succeeded" []
+    let handler =
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None
+
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
@@ -48,7 +59,9 @@ let ``build plugin emits BuildCompleted on successful build`` () =
             { PluginSubscriptions.none with
                 BuildCompleted = true } }
 
-    let handler = BuildPlugin.create "echo" "build succeeded" []
+    let handler =
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None
+
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
@@ -73,7 +86,9 @@ let ``build plugin emits BuildCompleted on successful build`` () =
 let ``build-status command returns passed true after successful build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = BuildPlugin.create "echo" "build succeeded" []
+    let handler =
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None
+
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -88,7 +103,7 @@ let ``build-status command returns passed true after successful build`` () =
 let ``build-status command returns failed after failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = BuildPlugin.create "false" "" []
+    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -103,7 +118,7 @@ let ``build-status command returns failed after failed build`` () =
 let ``build plugin reports Failed status on failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = BuildPlugin.create "false" "" []
+    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -143,7 +158,7 @@ let ``build plugin emits BuildFailed on failed build`` () =
             { PluginSubscriptions.none with
                 BuildCompleted = true } }
 
-    let handler = BuildPlugin.create "false" "" []
+    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
@@ -164,7 +179,7 @@ let ``build plugin emits BuildFailed on failed build`` () =
 let ``build plugin reports errors on failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = BuildPlugin.create "false" "" []
+    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -178,7 +193,8 @@ let ``build plugin handles exception from runProcess`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     // Use a command that doesn't exist to trigger an exception
-    let handler = BuildPlugin.create "this-command-does-not-exist-xyz" "" []
+    let handler =
+        BuildPlugin.create "this-command-does-not-exist-xyz" "" [] (ProjectGraph()) [] None
 
     host.RegisterHandler(handler)
 
@@ -221,7 +237,9 @@ let ``build plugin ignores SolutionChanged events`` () =
             { PluginSubscriptions.none with
                 BuildCompleted = true } }
 
-    let handler = BuildPlugin.create "echo" "build succeeded" []
+    let handler =
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None
+
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
@@ -255,7 +273,9 @@ let ``build plugin triggers on ProjectChanged`` () =
             { PluginSubscriptions.none with
                 BuildCompleted = true } }
 
-    let handler = BuildPlugin.create "echo" "build succeeded" []
+    let handler =
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None
+
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
