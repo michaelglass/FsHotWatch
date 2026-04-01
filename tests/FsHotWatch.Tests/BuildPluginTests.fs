@@ -441,3 +441,42 @@ let ``build falls back when file not in graph`` () =
 
     waitUntil (fun () -> receivedBuild.IsSome) 5000
     test <@ receivedBuild = Some BuildSucceeded @>
+
+[<Fact>]
+let ``ProjectChanged always uses fallback command`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let mutable receivedBuild: BuildResult option = None
+
+    let recorder =
+        { Name = "build-recorder"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted result -> receivedBuild <- Some result
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                BuildCompleted = true } }
+
+    let graph = ProjectGraph()
+
+    // Use "false" as template — if ProjectChanged used the template, it would fail
+    let handler =
+        BuildPlugin.create "echo" "fallback ok" [] graph [] (Some "false {project}")
+
+    host.RegisterHandler(recorder)
+    host.RegisterHandler(handler)
+
+    host.EmitFileChanged(ProjectChanged [ "src/Lib.fsproj" ])
+
+    waitForTerminalStatus host "build" 5000
+
+    waitUntil (fun () -> receivedBuild.IsSome) 5000
+    test <@ receivedBuild = Some BuildSucceeded @>
