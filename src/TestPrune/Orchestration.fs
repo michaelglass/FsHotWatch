@@ -535,6 +535,15 @@ let runStatusWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSi
             printfn $"Would run ALL tests (reason: %s{SelectionReason.describe reason})"
             0)
 
+let private printTestResult (result: TestRunner.TestResult) (exitCode: byref<int>) =
+    printfn "%s" result.Stdout
+
+    if not (String.IsNullOrWhiteSpace(result.Stderr)) then
+        eprintfn "%s" result.Stderr
+
+    if result.ExitCode <> 0 then
+        exitCode <- result.ExitCode
+
 /// Run the run command with an injectable diff provider.
 let runRunWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink) : int =
     withAnalysis getDiff repoRoot auditSink (fun (selection, _changedFiles) ->
@@ -551,10 +560,7 @@ let runRunWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink)
                 let dll = findTestDll projPath
                 eprintfn $"Running: %s{Path.GetFileName(projPath)}"
                 let result = runAllTests dll
-                printfn "%s" result.Output
-
-                if result.ExitCode <> 0 then
-                    exitCode <- result.ExitCode
+                printTestResult result &exitCode
 
             exitCode
         | RunSubset tests ->
@@ -573,10 +579,7 @@ let runRunWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink)
                     let dll = findTestDll projPath
                     eprintfn $"Running %d{classes.Length} class(es) in %s{projName}"
                     let result = runFilteredTests dll classes
-                    printfn "%s" result.Output
-
-                    if result.ExitCode <> 0 then
-                        exitCode <- result.ExitCode
+                    printTestResult result &exitCode
                 | None -> eprintfn $"WARNING: project %s{projName} not found"
 
             exitCode)
