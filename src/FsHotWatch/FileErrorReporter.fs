@@ -4,19 +4,14 @@ open System.IO
 open System.Text.Json
 open FsHotWatch.ErrorLedger
 
-let private sanitizeFileName (s: string) =
-    s.Replace('/', '-').Replace('\\', '-').Replace('<', '_').Replace('>', '_')
+let private sanitizeFileName = FsHotWatch.StringHelpers.sanitizeFileName
 
 let private errorFileName (plugin: string) (file: string) =
     $"%s{plugin}--%s{sanitizeFileName file}.json"
 
 let private jsonOptions = JsonSerializerOptions(WriteIndented = true)
 
-let private tryDelete path =
-    try
-        File.Delete(path)
-    with :? FileNotFoundException ->
-        ()
+let private tryDelete path = File.Delete(path)
 
 /// Writes per-plugin per-file JSON error files to a directory.
 type FileErrorReporter(errorDir: string) =
