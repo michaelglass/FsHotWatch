@@ -172,6 +172,20 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
             return result
         }
 
+    /// Clear task cache entries. Optionally filter by plugin and/or file.
+    [<JsonRpcMethod("cache-clear")>]
+    member _.CacheClear(plugin: string, file: string) : string =
+        let pluginOpt = if plugin = null then None else Some plugin
+        let fileOpt = if file = null then None else Some file
+
+        match pluginOpt, fileOpt with
+        | Some p, Some f -> config.Host.ClearTaskCachePluginFile(p, f)
+        | Some p, None -> config.Host.ClearTaskCachePlugin(p)
+        | None, Some f -> config.Host.ClearTaskCacheFile(f)
+        | None, None -> config.Host.ClearTaskCache()
+
+        "ok"
+
     /// Run all preprocessors on all registered files and return a summary.
     member _.FormatAll() : Task<string> =
         task {
@@ -299,6 +313,10 @@ module IpcClient =
 
     /// Run all preprocessors on all registered files.
     let formatAll (pipeName: string) : Async<string> = invoke pipeName "FormatAll" [||]
+
+    /// Clear task cache entries. Pass null for plugin/file to omit that filter.
+    let cacheClear (pipeName: string) (plugin: string) (file: string) : Async<string> =
+        invoke pipeName "cache-clear" [| plugin; file |]
 
     /// Invalidate cache for a file and re-check it.
     let invalidateCache (pipeName: string) (filePath: string) : Async<string> =
