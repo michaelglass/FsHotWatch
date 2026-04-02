@@ -13,7 +13,10 @@ type LintState =
 
 /// Creates a framework plugin handler that lints files using pre-parsed AST
 /// and check results from the daemon's warm FSharpChecker.
-let create (lintConfigPath: string option) : PluginHandler<LintState, unit> =
+let create
+    (lintConfigPath: string option)
+    (getCommitId: (unit -> string option) option)
+    : PluginHandler<LintState, unit> =
     let lintParams =
         try
             match lintConfigPath with
@@ -99,4 +102,7 @@ let create (lintConfigPath: string option) : PluginHandler<LintState, unit> =
       Subscriptions =
         { PluginSubscriptions.none with
             FileChecked = true }
-      CacheKey = None }
+      CacheKey =
+        match getCommitId with
+        | Some fn -> Some(FsHotWatch.TaskCache.defaultCacheKey fn)
+        | None -> None }

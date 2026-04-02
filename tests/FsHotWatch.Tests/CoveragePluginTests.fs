@@ -14,7 +14,7 @@ open FsHotWatch.Tests.TestHelpers
 let ``coverage command returns empty initially`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create "/tmp/nonexistent" None None
+    let handler = create "/tmp/nonexistent" None None None
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("coverage", [||]) |> Async.RunSynchronously
@@ -36,7 +36,7 @@ let ``coverage plugin reads Cobertura XML`` () =
 
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let handler = create tmpDir None (Some(fun () -> checkDone <- true))
+        let handler = create tmpDir None (Some(fun () -> checkDone <- true)) None
         host.RegisterHandler(handler)
 
         let testResults =
@@ -91,7 +91,7 @@ let ``coverage plugin fails when below threshold`` () =
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let handler = create tmpDir (Some thresholdsPath) None
+        let handler = create tmpDir (Some thresholdsPath) None None
         host.RegisterHandler(handler)
 
         let testResults =
@@ -128,7 +128,7 @@ let ``coverage plugin fails when below threshold`` () =
 let ``coverage plugin skips check when no test results`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create "/tmp/nonexistent" None None
+    let handler = create "/tmp/nonexistent" None None None
     host.RegisterHandler(handler)
 
     let testResults =
@@ -155,7 +155,7 @@ let ``coverage plugin skips check when no test results`` () =
 let ``coverage plugin reports Failed when coverage dir does not exist`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create "/tmp/nonexistent-cov-dir-xyz" None None
+    let handler = create "/tmp/nonexistent-cov-dir-xyz" None None None
     host.RegisterHandler(handler)
 
     let testResults =
@@ -198,7 +198,7 @@ let ``coverage plugin handles threshold file with missing branch property`` () =
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let handler = create tmpDir (Some thresholdsPath) None
+        let handler = create tmpDir (Some thresholdsPath) None None
         host.RegisterHandler(handler)
 
         let testResults =
@@ -246,7 +246,7 @@ let ``coverage plugin handles threshold file with missing line property`` () =
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let handler = create tmpDir (Some thresholdsPath) None
+        let handler = create tmpDir (Some thresholdsPath) None None
         host.RegisterHandler(handler)
 
         let testResults =
@@ -293,7 +293,7 @@ let ``coverage plugin handles invalid thresholds JSON`` () =
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let handler = create tmpDir (Some thresholdsPath) None
+        let handler = create tmpDir (Some thresholdsPath) None None
         host.RegisterHandler(handler)
 
         let testResults =
@@ -338,7 +338,7 @@ let ``coverage plugin handles non-existent thresholds file`` () =
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let handler = create tmpDir (Some "/tmp/nonexistent-thresholds-xyz.json") None
+        let handler = create tmpDir (Some "/tmp/nonexistent-thresholds-xyz.json") None None
 
         host.RegisterHandler(handler)
 
@@ -383,7 +383,7 @@ let ``coverage plugin handles XML with missing attributes`` () =
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let handler = create tmpDir None None
+        let handler = create tmpDir None None None
         host.RegisterHandler(handler)
 
         let testResults =
@@ -430,7 +430,7 @@ let ``coverage plugin handles invalid XML file`` () =
     try
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let handler = create tmpDir None None
+        let handler = create tmpDir None None None
         host.RegisterHandler(handler)
 
         let testResults =

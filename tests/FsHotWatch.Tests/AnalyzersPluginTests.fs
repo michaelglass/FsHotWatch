@@ -9,14 +9,14 @@ open FsHotWatch.Analyzers.AnalyzersPlugin
 
 [<Fact>]
 let ``plugin has correct name`` () =
-    let handler = create []
+    let handler = create [] None
     test <@ handler.Name = "analyzers" @>
 
 [<Fact>]
 let ``diagnostics command returns zeroes when no files checked`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create []
+    let handler = create [] None
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
@@ -29,7 +29,7 @@ let ``diagnostics command returns zeroes when no files checked`` () =
 let ``analyzer error path does not crash`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create []
+    let handler = create [] None
     host.RegisterHandler(handler)
 
     let fakeResult: FileCheckResult =
@@ -61,7 +61,7 @@ let ``analyzer with non-existent path skips loading`` () =
     // Exercise the Directory.Exists false branch
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create [ "/tmp/no-such-analyzer-dir-12345" ]
+    let handler = create [ "/tmp/no-such-analyzer-dir-12345" ] None
     host.RegisterHandler(handler)
 
     // No analyzers should be loaded — diagnostics command shows 0 analyzers
@@ -84,6 +84,7 @@ let ``analyzer with mix of valid and invalid paths`` () =
             create
                 [ emptyDir // exists but no analyzer DLLs
                   "/tmp/nonexistent-path-xyz-99999" ] // does not exist
+                None
 
         host.RegisterHandler(handler)
 
@@ -98,5 +99,5 @@ let ``analyzer with mix of valid and invalid paths`` () =
 
 [<Fact>]
 let ``concurrent analyzer runs are bounded`` () =
-    let handler = create []
+    let handler = create [] None
     test <@ handler.Name = "analyzers" @>
