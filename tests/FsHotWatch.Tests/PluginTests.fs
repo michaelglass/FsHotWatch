@@ -11,6 +11,7 @@ let ``plugin has a name`` () =
           Init = ()
           Update = fun _ctx state _event -> async { return state }
           Commands = []
-          Subscriptions = PluginSubscriptions.none }
+          Subscriptions = PluginSubscriptions.none
+          CacheKey = None }
 
     Assert.Equal("fake", handler.Name)

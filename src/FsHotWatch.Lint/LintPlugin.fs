@@ -98,4 +98,5 @@ let create (lintConfigPath: string option) : PluginHandler<LintState, unit> =
               } ]
       Subscriptions =
         { PluginSubscriptions.none with
-            FileChecked = true } }
+            FileChecked = true }
+      CacheKey = None }

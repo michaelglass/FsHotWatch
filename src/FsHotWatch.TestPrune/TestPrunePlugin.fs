@@ -789,4 +789,5 @@ let create
       Subscriptions =
         { PluginSubscriptions.none with
             FileChecked = true
-            BuildCompleted = hasTestConfigs } }
+            BuildCompleted = hasTestConfigs }
+      CacheKey = None }

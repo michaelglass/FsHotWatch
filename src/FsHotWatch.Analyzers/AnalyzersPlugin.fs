@@ -230,4 +230,5 @@ let create (analyzerPaths: string list) : PluginHandler<AnalyzersState, Analyzer
               } ]
       Subscriptions =
         { PluginSubscriptions.none with
-            FileChecked = true } }
+            FileChecked = true }
+      CacheKey = None }
