@@ -8,7 +8,8 @@ open FsHotWatch.Logging
 open FsHotWatch.Plugin
 
 /// Manages plugin lifecycle, event dispatch, command registration, and status tracking.
-type PluginHost(checker: FSharpChecker, repoRoot: string, ?reporters: IErrorReporter list) =
+type PluginHost
+    (checker: FSharpChecker, repoRoot: string, ?reporters: IErrorReporter list, ?taskCache: TaskCache.ITaskCache) =
     let statusChanged = Event<string * PluginStatus>()
 
     let ledger = ErrorLedger(?reporters = reporters)
@@ -57,6 +58,7 @@ type PluginHost(checker: FSharpChecker, repoRoot: string, ?reporters: IErrorRepo
                 (fun result -> dispatchToRegistered (fun p -> p.OnBuildCompleted) result)
                 (fun results -> dispatchToRegistered (fun p -> p.OnTestCompleted) results)
                 (fun cmd -> commands[fst cmd] <- snd cmd)
+                taskCache
                 handler
 
         setStatus plugin.Name Idle
