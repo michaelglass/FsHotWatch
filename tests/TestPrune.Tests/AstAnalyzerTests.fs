@@ -237,6 +237,54 @@ let myTest () = ()
         test <@ testMethod.IsSome @>
         test <@ testMethod.Value.TestClass.EndsWith("M", StringComparison.Ordinal) @>
 
+    [<Fact>]
+    let ``test class inside module uses + separator for CLR nested type`` () =
+        let result =
+            analyze
+                """
+module OuterModule
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+type MyTests() =
+    [<Fact>]
+    member _.myTest() = ()
+"""
+
+        let testMethod =
+            result.TestMethods |> List.tryFind (fun t -> t.TestMethod = "myTest")
+
+        test <@ testMethod.IsSome @>
+        // F# compiles types inside modules as CLR nested types (Module+Type)
+        // xUnit v3 --filter-class requires the + separator
+        let tc = testMethod.Value.TestClass
+        test <@ tc.Contains("+") @>
+        test <@ tc.EndsWith("OuterModule+MyTests", StringComparison.Ordinal) @>
+
+    [<Fact>]
+    let ``top-level module let binding does not use + separator`` () =
+        let result =
+            analyze
+                """
+module TopModule
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+[<Fact>]
+let myTest () = ()
+"""
+
+        let testMethod =
+            result.TestMethods |> List.tryFind (fun t -> t.TestMethod = "myTest")
+
+        test <@ testMethod.IsSome @>
+        let tc = testMethod.Value.TestClass
+        // Top-level let bindings in a module are not nested types — no + separator
+        test <@ not (tc.Contains("+")) @>
+        test <@ tc.EndsWith("TopModule", StringComparison.Ordinal) @>
+
 module ``Symbol source locations`` =
 
     [<Fact>]

@@ -261,6 +261,20 @@ let private extractTestClass (fullName: string) : string * string =
     | -1 -> ("", fullName)
     | idx -> (fullName.Substring(0, idx), fullName.Substring(idx + 1))
 
+/// Build the CLR-style class name from an entity chain.
+/// F# compiles types inside modules as CLR nested types (Module+Type).
+/// FCS FullName uses '.' throughout, but xUnit v3 --filter-class needs '+'.
+let private buildClrClassName (entity: FSharpEntity) : string =
+    let rec collect (e: FSharpEntity) acc =
+        try
+            match e.DeclaringEntity with
+            | Some parent when parent.IsFSharpModule -> collect parent (e.CompiledName :: acc)
+            | _ -> (e.FullName :: acc) |> String.concat "+"
+        with :? System.InvalidOperationException ->
+            (e.FullName :: acc) |> String.concat "+"
+
+    collect entity []
+
 /// Extract the binding name from a SynPat head pattern.
 let private extractBindingName (pat: SynPat) : string option =
     match pat with
@@ -590,9 +604,7 @@ let private extractResults
             // Type definition ranges enable edge attribution for interface implementation
             // references (e.g. `interface IFoo with`) which sit at the type level,
             // outside any member body.
-            let allEnclosingRanges =
-                (memberBindingRanges @ typeDefnRanges)
-                |> Array.ofList
+            let allEnclosingRanges = (memberBindingRanges @ typeDefnRanges) |> Array.ofList
 
             // Pre-build a map from binding short name to SymbolInfo for O(log N) lookup.
             // Includes symbols from both binding ranges and type definition ranges
@@ -720,7 +732,15 @@ let private extractResults
                     if u.IsFromDefinition then
                         match u.Symbol with
                         | :? FSharpMemberOrFunctionOrValue as mfv when isTestAttribute mfv ->
-                            let testClass, testMethod = extractTestClass mfv.FullName
+                            let fallbackClass, testMethod = extractTestClass mfv.FullName
+
+                            let testClass =
+                                try
+                                    match mfv.DeclaringEntity with
+                                    | Some entity -> buildClrClassName entity
+                                    | None -> fallbackClass
+                                with :? System.InvalidOperationException ->
+                                    fallbackClass
 
                             Some
                                 { SymbolFullName = mfv.FullName
