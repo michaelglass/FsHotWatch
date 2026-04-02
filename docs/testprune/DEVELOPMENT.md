@@ -28,6 +28,8 @@ mise run docs           # Generate API documentation
 mise run coverage-check # Check per-file coverage thresholds
 mise run dead-code      # Find unreachable production code
 mise run dead-code-tests # Find unreachable test code
+mise run bench          # Run benchmarks with dotnet-trace profiling
+mise run bench-raw      # Run benchmarks without profiling (JSON metrics)
 ```
 
 ## Project Structure
