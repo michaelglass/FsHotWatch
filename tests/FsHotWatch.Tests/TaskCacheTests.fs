@@ -1,10 +1,15 @@
 module FsHotWatch.Tests.TaskCacheTests
 
 open System
+open System.Threading
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
+open FsHotWatch.ErrorLedger
+open FsHotWatch.PluginFramework
+open FsHotWatch.PluginHost
 open FsHotWatch.TaskCache
+open FsHotWatch.Tests.TestHelpers
 
 let private fixedTime = DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc)
 
@@ -118,3 +123,144 @@ let ``defaultCacheKey returns None for Custom events`` () =
     let event: PluginEvent<string> = Custom "hello"
     let result = defaultCacheKey getCommitId event
     test <@ result = None @>
+
+// --- Integration tests: cache intercept in registerHandler ---
+
+/// A null checker is fine for tests that don't perform actual compilation.
+let private nullChecker =
+    Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
+
+let private dummyFileCheckResult file : FileCheckResult =
+    { File = file
+      Source = ""
+      ParseResults = Unchecked.defaultof<_>
+      CheckResults = None
+      ProjectOptions = Unchecked.defaultof<_>
+      Version = 0L }
+
+[<Fact>]
+let ``plugin skips Update on cache hit and replays errors`` () =
+    let cache = InMemoryTaskCache()
+
+    // Pre-populate cache with a result
+    let cachedErrors =
+        [ ("/src/A.fs",
+           [ { Message = "cached warning"
+               Severity = DiagnosticSeverity.Warning
+               Line = 1
+               Column = 0
+               Detail = None } ]) ]
+
+    let cachedResult: TaskCacheResult =
+        { CacheKey = "commit-abc"
+          Errors = cachedErrors
+          Status = Completed(at = fixedTime)
+          EmittedEvents = [] }
+
+    cache.Set("test-plugin--/src/A.fs", "commit-abc", cachedResult)
+
+    let mutable updateCallCount = 0
+
+    let host = PluginHost(nullChecker, "/tmp/test", taskCache = (cache :> ITaskCache))
+
+    let handler: PluginHandler<unit, obj> =
+        { Name = "test-plugin"
+          Init = ()
+          Update =
+            fun ctx state _event ->
+                async {
+                    updateCallCount <- updateCallCount + 1
+                    ctx.ReportStatus(Completed(at = DateTime.UtcNow))
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChecked = true }
+          CacheKey = Some(fun _ -> Some "commit-abc") }
+
+    host.RegisterHandler(handler)
+    host.EmitFileChecked(dummyFileCheckResult "/src/A.fs")
+
+    // Wait for the agent to process the event
+    waitUntil (fun () -> host.GetStatus("test-plugin") <> Some Idle) 5000
+
+    // Update should NOT have been called — cache hit
+    test <@ updateCallCount = 0 @>
+
+    // Errors should be replayed into the ledger
+    test <@ host.HasErrors() @>
+    test <@ host.ErrorCount() = 1 @>
+
+[<Fact>]
+let ``plugin stores result on cache miss then hits on second event`` () =
+    let cache = InMemoryTaskCache()
+    let mutable updateCallCount = 0
+
+    let host = PluginHost(nullChecker, "/tmp/test", taskCache = (cache :> ITaskCache))
+
+    let handler: PluginHandler<unit, obj> =
+        { Name = "counter-plugin"
+          Init = ()
+          Update =
+            fun ctx state _event ->
+                async {
+                    updateCallCount <- updateCallCount + 1
+                    ctx.ReportStatus(Completed(at = DateTime.UtcNow))
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChecked = true }
+          CacheKey = Some(fun _ -> Some "commit-xyz") }
+
+    host.RegisterHandler(handler)
+
+    // First event: cache miss, runs Update
+    host.EmitFileChecked(dummyFileCheckResult "/src/B.fs")
+    waitForTerminalStatus host "counter-plugin" 5000
+    test <@ updateCallCount = 1 @>
+
+    // Second event with same cache key: cache hit, skips Update
+    host.EmitFileChecked(dummyFileCheckResult "/src/B.fs")
+    // Wait for the agent to process — status will be set by replay
+    Thread.Sleep(200)
+    test <@ updateCallCount = 1 @>
+
+[<Fact>]
+let ``plugin runs Update when cache key changes`` () =
+    let cache = InMemoryTaskCache()
+    let mutable updateCallCount = 0
+    let mutable currentCommit = "commit-1"
+
+    let host = PluginHost(nullChecker, "/tmp/test", taskCache = (cache :> ITaskCache))
+
+    let handler: PluginHandler<unit, obj> =
+        { Name = "key-change-plugin"
+          Init = ()
+          Update =
+            fun ctx state _event ->
+                async {
+                    updateCallCount <- updateCallCount + 1
+                    ctx.ReportStatus(Completed(at = DateTime.UtcNow))
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { PluginSubscriptions.none with
+                FileChecked = true }
+          CacheKey = Some(fun _ -> Some currentCommit) }
+
+    host.RegisterHandler(handler)
+
+    // First event: cache miss
+    host.EmitFileChecked(dummyFileCheckResult "/src/C.fs")
+    waitForTerminalStatus host "key-change-plugin" 5000
+    test <@ updateCallCount = 1 @>
+
+    // Change the commit — second event should miss cache
+    currentCommit <- "commit-2"
+    host.EmitFileChecked(dummyFileCheckResult "/src/C.fs")
+    waitUntil (fun () -> updateCallCount = 2) 5000
+    test <@ updateCallCount = 2 @>

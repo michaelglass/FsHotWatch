@@ -100,6 +100,7 @@ let registerHandler
     (emitBuildCompleted: BuildResult -> unit)
     (emitTestCompleted: TestResults -> unit)
     (registerCommand: string * CommandHandler -> unit)
+    (taskCache: TaskCache.ITaskCache option)
     (handler: PluginHandler<'State, 'Msg>)
     : RegisteredPlugin =
 
@@ -116,6 +117,116 @@ let registerHandler
                   RepoRoot = repoRoot
                   Post = fun msg -> inbox.Post(Choice1Of2(Custom msg)) }
 
+            /// Compute the composite key for a given event.
+            let compositeKey (event: PluginEvent<'Msg>) =
+                match event with
+                | FileChecked r -> $"%s{handler.Name}--%s{r.File}"
+                | FileChanged _ -> handler.Name
+                | BuildCompleted _ -> handler.Name
+                | TestCompleted _ -> handler.Name
+                | Custom _ -> handler.Name
+
+            /// Try to replay a cached result. Returns true if cache hit.
+            let tryReplayCache (event: PluginEvent<'Msg>) =
+                match taskCache, handler.CacheKey with
+                | Some cache, Some cacheKeyFn ->
+                    match cacheKeyFn event with
+                    | Some cacheKey ->
+                        let compKey = compositeKey event
+
+                        match cache.TryGet compKey cacheKey with
+                        | Some result ->
+                            // Replay errors
+                            for (file, entries) in result.Errors do
+                                reportErrors handler.Name file entries
+
+                            // Replay status
+                            reportStatus handler.Name result.Status
+
+                            // Replay emitted events
+                            for emitted in result.EmittedEvents do
+                                match emitted with
+                                | TaskCache.CachedBuildCompleted r -> emitBuildCompleted r
+                                | TaskCache.CachedTestCompleted r -> emitTestCompleted r
+
+                            true
+                        | None -> false
+                    | None -> false
+                | _ -> false
+
+            /// Run Update with a capturing context that records side effects, then store in cache if terminal.
+            let runAndCache (event: PluginEvent<'Msg>) (state: 'State) =
+                async {
+                    match taskCache, handler.CacheKey with
+                    | Some cache, Some cacheKeyFn ->
+                        match cacheKeyFn event with
+                        | Some cacheKey ->
+                            let capturedErrors = ResizeArray<string * ErrorEntry list>()
+                            let capturedEvents = ResizeArray<TaskCache.CachedEvent>()
+                            let mutable capturedStatus: PluginStatus option = None
+
+                            let capturingCtx =
+                                { ReportStatus =
+                                    fun s ->
+                                        capturedStatus <- Some s
+                                        reportStatus handler.Name s
+                                  ReportErrors =
+                                    fun file entries ->
+                                        capturedErrors.Add(file, entries)
+                                        reportErrors handler.Name file entries
+                                  ClearErrors = fun file -> clearErrors handler.Name file
+                                  ClearAllErrors = fun () -> clearPlugin handler.Name
+                                  EmitBuildCompleted =
+                                    fun r ->
+                                        capturedEvents.Add(TaskCache.CachedBuildCompleted r)
+                                        emitBuildCompleted r
+                                  EmitTestCompleted =
+                                    fun r ->
+                                        capturedEvents.Add(TaskCache.CachedTestCompleted r)
+                                        emitTestCompleted r
+                                  Checker = checker
+                                  RepoRoot = repoRoot
+                                  Post = fun msg -> inbox.Post(Choice1Of2(Custom msg)) }
+
+                            let! nextState =
+                                async {
+                                    try
+                                        return! handler.Update capturingCtx state event
+                                    with ex ->
+                                        error handler.Name $"Plugin handler failed: %s{ex.ToString()}"
+                                        return state
+                                }
+
+                            // Only cache when status reached a terminal state
+                            match capturedStatus with
+                            | Some(Completed _ as s)
+                            | Some(Failed _ as s) ->
+                                let compKey = compositeKey event
+
+                                let result: TaskCache.TaskCacheResult =
+                                    { CacheKey = cacheKey
+                                      Errors = capturedErrors |> Seq.toList
+                                      Status = s
+                                      EmittedEvents = capturedEvents |> Seq.toList }
+
+                                cache.Set compKey cacheKey result
+                            | _ -> ()
+
+                            return nextState
+                        | None ->
+                            try
+                                return! handler.Update ctx state event
+                            with ex ->
+                                error handler.Name $"Plugin handler failed: %s{ex.ToString()}"
+                                return state
+                    | _ ->
+                        try
+                            return! handler.Update ctx state event
+                        with ex ->
+                            error handler.Name $"Plugin handler failed: %s{ex.ToString()}"
+                            return state
+                }
+
             let rec loop state =
                 async {
                     let! msg = inbox.Receive()
@@ -125,16 +236,11 @@ let registerHandler
                         ch.Reply(state)
                         return! loop state
                     | Choice1Of2 event ->
-                        let! nextState =
-                            async {
-                                try
-                                    return! handler.Update ctx state event
-                                with ex ->
-                                    error handler.Name $"Plugin handler failed: %s{ex.ToString()}"
-                                    return state
-                            }
-
-                        return! loop nextState
+                        if tryReplayCache event then
+                            return! loop state
+                        else
+                            let! nextState = runAndCache event state
+                            return! loop nextState
                 }
 
             loop handler.Init)
