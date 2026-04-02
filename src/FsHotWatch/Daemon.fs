@@ -735,7 +735,12 @@ module Daemon =
         (cacheBackend: ICheckCacheBackend option)
         (cacheKeyProvider: ICacheKeyProvider option)
         =
-        let host = PluginHost.create checker repoRoot
+        let errorDir = Path.Combine(repoRoot, ".fshw", "errors")
+        let fileReporter = FsHotWatch.FileErrorReporter.FileErrorReporter(errorDir)
+        (fileReporter :> FsHotWatch.ErrorLedger.IErrorReporter).ClearAll()
+
+        let host =
+            PluginHost(checker, repoRoot, reporters = [ fileReporter :> FsHotWatch.ErrorLedger.IErrorReporter ])
 
         let pipeline =
             match cacheBackend, cacheKeyProvider with
