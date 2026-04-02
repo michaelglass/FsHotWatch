@@ -5,6 +5,10 @@ addressed in `TODO.md` (projectCacheSize, snapshot API, topo sort, caching,
 etc.) and items explicitly ruled out (`enablePartialTypeChecking`,
 parse-only, intra-project parallelism) are not repeated here.
 
+Primary use case: TestPrune.Core as a library consumed by a long-running
+daemon holding a hot FCS instance. Priorities reflect daemon resilience,
+cancellation safety, and incremental re-analysis over CLI ergonomics.
+
 Scores: **S** Simpler · **M** Maintainable · **R** Result quality (`★★★/★★☆/★☆☆`)
 
 ---
@@ -23,17 +27,6 @@ Scores: **S** Simpler · **M** Maintainable · **R** Result quality (`★★★/
       indefinitely. (`Orchestration.fs`, build invocation)
       **S** `0`  **M** `+`  **R** `★★★`
 
-- [ ] **MSBuild lock: bounded retry, not infinite** · `ProjectLoader.fs` retries
-      MSBuild acquisition in an infinite `while true` loop with 50ms sleeps. Should
-      have a timeout/retry limit and return an error. (`ProjectLoader.fs:17,55`)
-      **S** `0`  **M** `++`  **R** `★★☆`
-
-- [ ] **`CancellationTokenSource.TryCancel()` / `TryDispose()`** · Adopt FSAC's
-      extension methods that swallow `ObjectDisposedException` and
-      `NullReferenceException` on cancellation. Defensive against races.
-      (FSAC `AdaptiveExtensions.fs:19-32`)
-      **S** `+`  **M** `++`  **R** `★☆☆`
-
 - [x] **Process execution logging** · Log command, args, working directory, and
       duration for build/test invocations. Build failures are opaque to diagnose
       in the current output.
@@ -45,62 +38,58 @@ Scores: **S** Simpler · **M** Maintainable · **R** Result quality (`★★★/
       `ParseAndCheckFileInProject`. (FSAC `CompilerServiceInterface.fs:207-215`)
       **S** `0`  **M** `+`  **R** `★★☆`
 
+- [x] ~~**`CancellationTokenSource.TryCancel()` / `TryDispose()`**~~ · Skipped —
+      FsHotWatch (primary consumer) already has a local `cancelAndDispose` helper
+      in CheckPipeline.fs. No value duplicating it in Core when the consumer owns
+      CTS lifecycle.
+
+- [x] ~~**MSBuild lock: bounded retry, not infinite**~~ · Dropped — the infinite
+      retry is inside Ionide.ProjInfo's `WorkspaceLoader`, not our code. Our
+      `ProjectLoader.fs` uses a simple `lock msbuildLock` monitor. Can't fix
+      upstream behavior from here.
+
 ---
 
 ## Tier 2 — Focused sessions
 
-- [ ] **`Async.parallel75` for project tiers** · The topo-sort produces dependency
-      tiers. Projects at the same tier are currently processed sequentially.
-      `Async.Parallel` with a `ProcessorCount * 0.75` cap would parallelize
-      FCS analysis across independent projects. SQLite writes would still serialize
-      (WAL allows one writer), but FCS work would overlap.
-      Note from TODO.md: `getProjectOptions` serializes via MSBuild lock, but FCS
-      analysis after options load can overlap.
-      (FSAC `Utils.fs:243-247`)
-      **S** `0`  **M** `+`  **R** `★★★`
+- [x] **`Async.parallel75` for project tiers** · Already implemented.
+      `Orchestration.fs:369` uses `Async.Parallel(tasks, maxDegreeOfParallelism = parallelism)`
+      with a `--parallelism` CLI flag (default: `ProcessorCount`).
 
-- [ ] **Track `packages.lock.json` and `obj/*.props` for project invalidation** ·
-      The project-key hash currently covers source file paths/sizes/mtimes.
-      NuGet restore changes and SDK props changes (which alter `OtherOptions`) are
-      not detected, causing stale project options until the next full reindex.
-      (FSAC `AdaptiveServerState.fs:1063-1086`)
-      **S** `-`  **M** `0`  **R** `★★☆`
+- [x] ~~**Track `packages.lock.json` and `obj/*.props` for project invalidation**~~ ·
+      Dropped — file-change invalidation belongs in the daemon (FsHotWatch), not
+      in Core. Tracking `obj/` causes infinite loops (build writes trigger
+      reindexing). `.fsproj` changes are already detected by existing invalidation.
 
-- [ ] **Separate stdout and stderr from build/test processes** · Currently merged.
-      Separating them lets the caller distinguish structured output (test results,
-      error codes) from log noise.
+- [x] **Separate stdout and stderr from build/test processes** · `TestResult`
+      now has `Stdout` and `Stderr` fields. Callers print stdout to stdout and
+      stderr to stderr. Build runner already handled them separately.
       **S** `0`  **M** `+`  **R** `★★☆`
-
-- [ ] **FSharp.Core / FSI path fixup in project options** · FSAC explicitly
-      replaces `FSharp.Core.dll` and `FSharp.Compiler.Interactive.Settings.dll`
-      paths in project options with SDK-discovered paths. Avoids version mismatches
-      on non-standard SDK configurations.
-      (FSAC `CompilerServiceInterface.fs:143-182`)
-      **S** `0`  **M** `0`  **R** `★★☆`
 
 ---
 
 ## Tier 3 — Experiments
 
-- [ ] **(experiment)** **`WorkspaceLoaderViaProjectGraph`** · Uses MSBuild's static
-      graph evaluation. Faster for multi-project solutions because it avoids
-      sequential design-time builds. TestPrune's sequential MSBuild lock is a
-      known bottleneck for large solutions — worth measuring.
-      (FSAC `Parser.fs:126`)
-      **S** `0`  **M** `0`  **R** `★★☆` *(if experiment succeeds)*
+- [ ] **Indexing benchmarks** · Add a benchmark measuring cold and warm index time,
+      symbol count, and cache hit rate on a representative multi-project solution.
+      Required before the TransparentCompiler and WorkspaceLoaderViaProjectGraph
+      experiments produce meaningful numbers. **Do this first.**
+      **S** `0`  **M** `++`  **R** `★★☆`
 
 - [ ] **(experiment)** **`useTransparentCompiler = true`** · FCS's newer incremental
       compiler; FSAC tests both modes in CI. Requires `FSharpProjectSnapshot` API
       (TestPrune already has `createProjectSnapshot` in AstAnalyzer.fs, so the
-      infrastructure is partially there). Measure indexing time vs BackgroundCompiler.
+      infrastructure is partially there). Designed for exactly the hot-FCS daemon
+      use case — incremental recompilation with a warm compiler. Measure indexing
+      time vs BackgroundCompiler.
       (`AstAnalyzer.fs`, FSAC `CompilerServiceInterface.fs:91-109`)
       **S** `-`  **M** `0`  **R** `★★★` *(if experiment succeeds)*
 
 - [ ] **(experiment)** **`keepAllBackgroundSymbolUses = true`** · FSAC enables this
       for find-all-references. TestPrune uses `GetAllUsesOfAllSymbolsInFile` which
-      operates on per-file check results, so this may not affect correctness. Worth
-      enabling and checking whether symbol resolution completeness improves (more
-      complete call graph = fewer false negatives in test selection).
+      operates on per-file check results, so this may not affect correctness. With
+      a hot FCS, background symbol uses accumulate across checks — enabling this
+      could improve graph completeness for incremental re-analysis.
       (`Orchestration.fs:98-104`)
       **S** `0`  **M** `0`  **R** `★★☆` *(if experiment shows improvement)*
 
@@ -116,23 +105,29 @@ Scores: **S** Simpler · **M** Maintainable · **R** Result quality (`★★★/
       upgrades before users hit them.
       **S** `0`  **M** `++`  **R** `★☆☆`
 
-- [ ] **Indexing benchmarks** · Add a benchmark measuring cold and warm index time,
-      symbol count, and cache hit rate on a representative multi-project solution.
-      Required before the TransparentCompiler and WorkspaceLoaderViaProjectGraph
-      experiments produce meaningful numbers.
-      **S** `0`  **M** `++`  **R** `★☆☆`
-
 ---
 
-## Notes on items from FsHotWatch's list that do NOT apply here
+## Deprioritized / Not applicable
+
+- **FSharp.Core / FSI path fixup in project options** — FSAC explicitly replaces
+  `FSharp.Core.dll` and `FSharp.Compiler.Interactive.Settings.dll` paths in project
+  options with SDK-discovered paths. Edge case for non-standard SDK configurations.
+  Low priority; revisit if users report issues.
+  (FSAC `CompilerServiceInterface.fs:143-182`)
+
+- **`WorkspaceLoaderViaProjectGraph`** — Uses MSBuild's static graph evaluation.
+  Faster for multi-project solutions. However, the bottleneck in TestPrune's MSBuild
+  path is inside Ionide.ProjInfo, not in our code. Revisit if Ionide adds support
+  or if we replace the project loader.
+  (FSAC `Parser.fs:126`)
 
 - **`keepAssemblyContents` conditional on hasAnalyzers** — TestPrune always needs
   assembly contents for `GetAllUsesOfAllSymbolsInFile`. Cannot be made conditional.
-- **`enablePartialTypeChecking`** — explicitly ruled out in TODO.md (mutually
-  exclusive with `keepAssemblyContents`).
+- **`enablePartialTypeChecking`** — explicitly ruled out (mutually exclusive with
+  `keepAssemblyContents`).
 - **File-level dependency tracking** — TestPrune already implements this via
   `firstChangedIndex` in Orchestration.fs.
 - **Script project options via `GetProjectOptionsFromScript`** — already done.
-- **Sliding cache expiration / WeakReference in cache** — TestPrune is a CLI tool,
-  not a long-running daemon. Memory pressure between runs is not a concern.
+- **Sliding cache expiration / WeakReference in cache** — memory pressure is managed
+  by the daemon process, not TestPrune.Core. Not our concern.
 - **`suggestNamesForErrors`** — TestPrune doesn't surface FCS diagnostics to users.
