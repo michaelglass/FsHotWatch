@@ -340,8 +340,14 @@ let create
     (beforeRun: (unit -> unit) option)
     (afterRun: (TestResults -> unit) option)
     (coverageArgs: (string -> string) option)
+    (getCommitId: (unit -> string option) option)
     =
     let db = Database.create dbPath
+
+    // Mutable snapshot of ChangedSymbols for the cache key function.
+    // Updated from the Update handler so the cache intercept (which runs
+    // before Update) sees the symbols accumulated from prior FileChecked events.
+    let mutable changedSymbolsRef: string list = []
 
     let hasTestConfigs =
         testConfigs |> Option.map (List.isEmpty >> not) |> Option.defaultValue false
@@ -684,6 +690,9 @@ let create
                                     TestClassFiles = newClassFiles
                                     AnalysisRan = true }
 
+                            // Keep the mutable snapshot in sync for the cache key function
+                            changedSymbolsRef <- newState.ChangedSymbols
+
                             if isIdle then
                                 // Analysis done — report Completed. If a BuildCompleted arrives
                                 // later it will re-trigger test execution and set Running again.
@@ -772,6 +781,7 @@ let create
                         return rerunState
                     | TestsRunning running ->
                         let completed = Lifecycle.complete (Some testResults) running
+                        changedSymbolsRef <- []
 
                         return
                             { state with
@@ -790,4 +800,24 @@ let create
         { PluginSubscriptions.none with
             FileChecked = true
             BuildCompleted = hasTestConfigs }
-      CacheKey = None }
+      CacheKey =
+        match getCommitId with
+        | Some fn ->
+            Some(fun event ->
+                match fn () with
+                | None -> None
+                | Some commitId ->
+                    match event with
+                    | Custom _ -> None
+                    | FileChecked _ -> Some commitId
+                    | BuildCompleted _ ->
+                        let symbolsHash =
+                            changedSymbolsRef
+                            |> List.distinct
+                            |> List.sort
+                            |> String.concat "|"
+                            |> FsHotWatch.CheckCache.sha256Hex
+
+                        Some $"{commitId}:{symbolsHash}"
+                    | _ -> Some commitId)
+        | None -> None }
