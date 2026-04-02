@@ -161,6 +161,15 @@ let registerHandler
                     | None -> false
                 | _ -> false
 
+            let safeUpdate pluginCtx state event =
+                async {
+                    try
+                        return! handler.Update pluginCtx state event
+                    with ex ->
+                        error handler.Name $"Plugin handler failed: %s{ex.ToString()}"
+                        return state
+                }
+
             /// Run Update with a capturing context that records side effects, then store in cache if terminal.
             let runAndCache (event: PluginEvent<'Msg>) (state: 'State) =
                 async {
@@ -201,14 +210,7 @@ let registerHandler
                                   RepoRoot = repoRoot
                                   Post = fun msg -> inbox.Post(Choice1Of2(Custom msg)) }
 
-                            let! nextState =
-                                async {
-                                    try
-                                        return! handler.Update capturingCtx state event
-                                    with ex ->
-                                        error handler.Name $"Plugin handler failed: %s{ex.ToString()}"
-                                        return state
-                                }
+                            let! nextState = safeUpdate capturingCtx state event
 
                             // Only cache when status reached a terminal state
                             match capturedStatus with
@@ -226,18 +228,8 @@ let registerHandler
                             | _ -> ()
 
                             return nextState
-                        | None ->
-                            try
-                                return! handler.Update ctx state event
-                            with ex ->
-                                error handler.Name $"Plugin handler failed: %s{ex.ToString()}"
-                                return state
-                    | _ ->
-                        try
-                            return! handler.Update ctx state event
-                        with ex ->
-                            error handler.Name $"Plugin handler failed: %s{ex.ToString()}"
-                            return state
+                        | None -> return! safeUpdate ctx state event
+                    | _ -> return! safeUpdate ctx state event
                 }
 
             let rec loop state =

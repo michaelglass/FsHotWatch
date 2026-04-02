@@ -73,7 +73,4 @@ let create
       Subscriptions =
         { PluginSubscriptions.none with
             FileChanged = true }
-      CacheKey =
-        match getCommitId with
-        | Some fn -> Some(FsHotWatch.TaskCache.defaultCacheKey fn)
-        | None -> None }
+      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId }

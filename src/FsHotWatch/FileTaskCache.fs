@@ -8,9 +8,7 @@ open FsHotWatch.TaskCache
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 
-/// Sanitize a composite key for use as a filename.
-let private sanitizeKey (s: string) =
-    s.Replace('/', '-').Replace('\\', '-').Replace('<', '_').Replace('>', '_')
+let private sanitizeKey = FsHotWatch.StringHelpers.sanitizeFileName
 
 let private severityToString (sev: DiagnosticSeverity) =
     match sev with
@@ -209,11 +207,7 @@ let private deserializeResult (json: string) : TaskCacheResult =
       Status = deserializeStatus (root["status"].AsObject())
       EmittedEvents = emittedEvents }
 
-let private tryDelete path =
-    try
-        File.Delete(path)
-    with :? FileNotFoundException ->
-        ()
+let private tryDelete path = File.Delete(path)
 
 /// On-disk task cache. Each entry is a JSON file in the cache directory.
 type FileTaskCache(cacheDir: string) =
@@ -236,11 +230,12 @@ type FileTaskCache(cacheDir: string) =
         else
             None
 
+    let jsonWriteOptions = System.Text.Json.JsonSerializerOptions(WriteIndented = true)
+
     let set (compositeKey: string) (_cacheKey: string) (result: TaskCacheResult) =
         let path = filePath compositeKey
         let json = serializeResult result
-        let opts = System.Text.Json.JsonSerializerOptions(WriteIndented = true)
-        File.WriteAllText(path, json.ToJsonString(opts))
+        File.WriteAllText(path, json.ToJsonString(jsonWriteOptions))
 
     let clear () =
         for f in Directory.EnumerateFiles(cacheDir, "*.json") do
