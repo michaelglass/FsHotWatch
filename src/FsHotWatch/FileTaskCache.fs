@@ -208,14 +208,7 @@ let private deserializeResult (json: string) : TaskCacheResult =
       EmittedEvents = emittedEvents }
 
 let private hashCacheKey (cacheKey: string) =
-    use sha = System.Security.Cryptography.SHA256.Create()
-    let bytes = System.Text.Encoding.UTF8.GetBytes(cacheKey)
-    let hash = sha.ComputeHash(bytes)
-
-    hash
-    |> Array.map (fun b -> b.ToString("x2"))
-    |> String.concat ""
-    |> fun s -> s.Substring(0, 12)
+    (FsHotWatch.CheckCache.sha256Hex cacheKey).Substring(0, 12)
 
 /// On-disk task cache. Each entry is a JSON file in the cache directory.
 /// Files are named `{compositeKey}@{cacheKeyHash}.json` so multiple versions coexist.
@@ -232,12 +225,10 @@ type FileTaskCache(cacheDir: string) =
         let path = filePath compositeKey cacheKey
 
         try
-            if File.Exists(path) then
-                let json = File.ReadAllText(path)
-                let result = deserializeResult json
-                Some result
-            else
-                None
+            let json = File.ReadAllText(path)
+            let result = deserializeResult json
+
+            if result.CacheKey = cacheKey then Some result else None
         with _ ->
             None
 
@@ -261,12 +252,13 @@ type FileTaskCache(cacheDir: string) =
                 File.Delete(f)
 
     let clearFile (file: string) =
-        let suffix = sanitizeKey ("--" + file) + "@"
+        let suffix = sanitizeKey ("--" + file)
 
         for f in Directory.EnumerateFiles(cacheDir, "*.json") do
             let name = Path.GetFileName(f)
+            let atIdx = name.IndexOf('@')
 
-            if name.Contains(suffix) then
+            if atIdx > 0 && name.Substring(0, atIdx).EndsWith(suffix) then
                 File.Delete(f)
 
     let clearPluginFile (plugin: string) (file: string) =
