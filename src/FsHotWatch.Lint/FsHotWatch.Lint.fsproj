@@ -34,6 +34,6 @@
 
   <ItemGroup>
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
-    <PackageReference Include="FSharpLint.Core" Version="0.26.11--date20260212-1023.git-8e20e0b" />
+    <PackageReference Include="FSharpLint.Core" Version="0.27.0-perf-two-phase.1" />
   </ItemGroup>
 </Project>

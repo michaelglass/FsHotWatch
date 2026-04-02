@@ -450,7 +450,7 @@ let ``preprocessor exception sets Failed status`` () =
     let modified = host.RunPreprocessors([ "src/Lib.fs" ])
 
     // No modified files returned from a failing preprocessor
-    test <@ modified = [] @>
+    test <@ modified |> List.isEmpty @>
 
     let status = host.GetStatus("boom-pp")
     test <@ status.IsSome @>
