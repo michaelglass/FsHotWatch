@@ -18,6 +18,13 @@ type ErrorEntry =
         Detail: string option
     }
 
+/// Interface for receiving error ledger mutation notifications.
+type IErrorReporter =
+    abstract Report: plugin: string -> file: string -> entries: ErrorEntry list -> unit
+    abstract Clear: plugin: string -> file: string -> unit
+    abstract ClearPlugin: plugin: string -> unit
+    abstract ClearAll: unit -> unit
+
 module ErrorEntry =
     /// Create an Error-severity entry with no source location.
     let error (message: string) : ErrorEntry =
@@ -62,7 +69,16 @@ let private tryAcceptVersion key (v: int64) (state: LedgerState) =
 /// is re-checked and passes. Thread-safe via MailboxProcessor agent.
 /// Supports optional version-guarded updates: when a version is provided,
 /// stale updates (version < last accepted) are silently ignored.
-type ErrorLedger() =
+type ErrorLedger(?reporters: IErrorReporter list) =
+    let reporters = defaultArg reporters []
+
+    let notifyReporters action =
+        for r in reporters do
+            try
+                action r
+            with ex ->
+                Logging.error "error-ledger" $"Reporter failed: %s{ex.Message}"
+
     let agent =
         MailboxProcessor.Start(fun inbox ->
             let rec loop (state: LedgerState) =
@@ -82,9 +98,13 @@ type ErrorLedger() =
 
                                 if accepted then
                                     if entries.IsEmpty then
+                                        notifyReporters (fun r -> r.Clear plugin file)
+
                                         { state' with
                                             Errors = Map.remove key state'.Errors }
                                     else
+                                        notifyReporters (fun r -> r.Report plugin file entries)
+
                                         { state' with
                                             Errors = Map.add key entries state'.Errors }
                                 else
@@ -99,6 +119,8 @@ type ErrorLedger() =
                                     | None -> true, state
 
                                 if accepted then
+                                    notifyReporters (fun r -> r.Clear plugin file)
+
                                     { state' with
                                         Errors = Map.remove key state'.Errors }
                                 else
@@ -109,6 +131,8 @@ type ErrorLedger() =
 
                                 let newVersions =
                                     state.Versions |> Map.filter (fun (struct (p, _)) _ -> p <> plugin)
+
+                                notifyReporters (fun r -> r.ClearPlugin plugin)
 
                                 { Errors = newErrors
                                   Versions = newVersions }
