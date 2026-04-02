@@ -19,6 +19,7 @@ let create
     (fileFilter: string -> bool)
     (command: string)
     (args: string)
+    (getCommitId: (unit -> string option) option)
     : PluginHandler<FileCommandState, unit> =
     { Name = name
       Init = { LastResult = NotRun }
@@ -72,4 +73,7 @@ let create
       Subscriptions =
         { PluginSubscriptions.none with
             FileChanged = true }
-      CacheKey = None }
+      CacheKey =
+        match getCommitId with
+        | Some fn -> Some(FsHotWatch.TaskCache.defaultCacheKey fn)
+        | None -> None }

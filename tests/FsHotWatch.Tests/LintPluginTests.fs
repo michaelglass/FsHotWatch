@@ -10,14 +10,14 @@ open FsHotWatch.Tests.TestHelpers
 
 [<Fact>]
 let ``plugin has correct name`` () =
-    let handler = create None
+    let handler = create None None
     test <@ handler.Name = "lint" @>
 
 [<Fact>]
 let ``warnings command returns zeroes when no files checked`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create None
+    let handler = create None None
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
@@ -27,14 +27,14 @@ let ``warnings command returns zeroes when no files checked`` () =
 
 [<Fact>]
 let ``LintPlugin with configPath sets up lint params`` () =
-    let handler = create (Some "/tmp/nonexistent-config.json")
+    let handler = create (Some "/tmp/nonexistent-config.json") None
     test <@ handler.Name = "lint" @>
 
 [<Fact>]
 let ``lint error path sets Failed status on null check results`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create None
+    let handler = create None None
     host.RegisterHandler(handler)
 
     let fakeResult: FileCheckResult =
@@ -70,7 +70,7 @@ let ``lint error path sets Failed status on null check results`` () =
 let ``warnings command with args passes through`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create None
+    let handler = create None None
     host.RegisterHandler(handler)
 
     // The warnings command ignores args, but verify it handles non-empty args
@@ -84,7 +84,7 @@ let ``warnings command with args passes through`` () =
 let ``lint skips file with null ParseResults without crashing`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create None
+    let handler = create None None
     host.RegisterHandler(handler)
 
     // Null ParseResults — lint should skip, not crash

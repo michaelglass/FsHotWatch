@@ -31,6 +31,7 @@ let create
     (graph: FsHotWatch.ProjectGraph.ProjectGraph)
     (testProjectNames: string list)
     (buildTemplate: string option)
+    (getCommitId: (unit -> string option) option)
     =
     let buildCommand = command
     let buildArgs = args
@@ -200,4 +201,7 @@ let create
       Subscriptions =
         { PluginSubscriptions.none with
             FileChanged = true }
-      CacheKey = None }
+      CacheKey =
+        match getCommitId with
+        | Some fn -> Some(FsHotWatch.TaskCache.defaultCacheKey fn)
+        | None -> None }

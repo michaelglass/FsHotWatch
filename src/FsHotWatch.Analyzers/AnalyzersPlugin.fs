@@ -23,7 +23,10 @@ type AnalyzersState =
 /// using the warm checker's results.
 /// Uses reflection to construct CliContext, bypassing the FCS 43.10 vs 43.12
 /// type mismatch at compile time (the types are structurally identical).
-let create (analyzerPaths: string list) : PluginHandler<AnalyzersState, AnalyzersMsg> =
+let create
+    (analyzerPaths: string list)
+    (getCommitId: (unit -> string option) option)
+    : PluginHandler<AnalyzersState, AnalyzersMsg> =
     let client = Client<CliAnalyzerAttribute, CliContext>()
     let concurrencyLimit = 4
     let semaphore = new SemaphoreSlim(concurrencyLimit, concurrencyLimit)
@@ -231,4 +234,7 @@ let create (analyzerPaths: string list) : PluginHandler<AnalyzersState, Analyzer
       Subscriptions =
         { PluginSubscriptions.none with
             FileChecked = true }
-      CacheKey = None }
+      CacheKey =
+        match getCommitId with
+        | Some fn -> Some(FsHotWatch.TaskCache.defaultCacheKey fn)
+        | None -> None }
