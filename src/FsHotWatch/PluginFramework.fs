@@ -136,9 +136,17 @@ let registerHandler
 
                         match cache.TryGet compKey cacheKey with
                         | Some result ->
+                            // Clear stale errors before replay
+                            match event with
+                            | FileChecked r -> clearErrors handler.Name r.File
+                            | _ -> clearPlugin handler.Name
+
                             // Replay errors
                             for (file, entries) in result.Errors do
-                                reportErrors handler.Name file entries
+                                if entries.IsEmpty then
+                                    clearErrors handler.Name file
+                                else
+                                    reportErrors handler.Name file entries
 
                             // Replay status
                             reportStatus handler.Name result.Status
@@ -174,8 +182,14 @@ let registerHandler
                                     fun file entries ->
                                         capturedErrors.Add(file, entries)
                                         reportErrors handler.Name file entries
-                                  ClearErrors = fun file -> clearErrors handler.Name file
-                                  ClearAllErrors = fun () -> clearPlugin handler.Name
+                                  ClearErrors =
+                                    fun file ->
+                                        capturedErrors.Add(file, [])
+                                        clearErrors handler.Name file
+                                  ClearAllErrors =
+                                    fun () ->
+                                        capturedErrors.Add("*", [])
+                                        clearPlugin handler.Name
                                   EmitBuildCompleted =
                                     fun r ->
                                         capturedEvents.Add(TaskCache.CachedBuildCompleted r)
