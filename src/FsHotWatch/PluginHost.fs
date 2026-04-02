@@ -141,5 +141,29 @@ type PluginHost
     /// Event fired when any plugin's status changes.
     member _.OnStatusChanged = statusChanged.Publish
 
+    /// Clear all task cache entries.
+    member _.ClearTaskCache() =
+        match taskCache with
+        | Some c -> c.Clear()
+        | None -> ()
+
+    /// Clear task cache entries for a specific plugin.
+    member _.ClearTaskCachePlugin(plugin: string) =
+        match taskCache with
+        | Some c -> c.ClearPlugin(plugin)
+        | None -> ()
+
+    /// Clear task cache entries for a specific file.
+    member _.ClearTaskCacheFile(file: string) =
+        match taskCache with
+        | Some c -> c.ClearFile(file)
+        | None -> ()
+
+    /// Clear a specific plugin+file task cache entry.
+    member _.ClearTaskCachePluginFile(plugin: string, file: string) =
+        match taskCache with
+        | Some c -> c.ClearPluginFile plugin file
+        | None -> ()
+
     /// Create a new PluginHost.
     static member create (checker: FSharpChecker) (repoRoot: string) = PluginHost(checker, repoRoot)
