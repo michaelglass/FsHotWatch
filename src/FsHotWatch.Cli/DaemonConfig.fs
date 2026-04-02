@@ -309,6 +309,9 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
 
 /// Register plugins on the daemon based on the loaded configuration.
 let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
+    let getCommitId =
+        Some(fun () -> FsHotWatch.JjHelper.getWorkingCopyCommitId repoRoot)
+
     // Format preprocessor (runs before other plugins see the file)
     if config.Format then
         Logging.info "config" "Registering FormatPreprocessor"
@@ -324,7 +327,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         | Some path -> Logging.info "config" $"Registering LintPlugin with config: %s{path}"
         | None -> Logging.info "config" "Registering LintPlugin (no fsharplint.json found)"
 
-        daemon.RegisterHandler(FsHotWatch.Lint.LintPlugin.create lintConfigPath)
+        daemon.RegisterHandler(FsHotWatch.Lint.LintPlugin.create lintConfigPath getCommitId)
 
     // Analyzers plugin
     match config.Analyzers with
@@ -340,7 +343,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
 
         if not resolvedPaths.IsEmpty then
             Logging.info "config" $"Registering AnalyzersPlugin with %d{resolvedPaths.Length} paths"
-            daemon.RegisterHandler(FsHotWatch.Analyzers.AnalyzersPlugin.create resolvedPaths)
+            daemon.RegisterHandler(FsHotWatch.Analyzers.AnalyzersPlugin.create resolvedPaths getCommitId)
     | None -> ()
 
     // Build plugin
@@ -354,7 +357,14 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         Logging.info "config" $"Registering BuildPlugin: %s{b.Command} %s{b.Args}"
 
         daemon.RegisterHandler(
-            FsHotWatch.Build.BuildPlugin.create b.Command b.Args [] daemon.Graph testProjectNames b.BuildTemplate
+            FsHotWatch.Build.BuildPlugin.create
+                b.Command
+                b.Args
+                []
+                daemon.Graph
+                testProjectNames
+                b.BuildTemplate
+                getCommitId
         )
     | None -> ()
 
@@ -413,7 +423,9 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
     | Some cov ->
         Logging.info "config" $"Registering CoveragePlugin: %s{cov.Directory}"
 
-        daemon.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create cov.Directory cov.ThresholdsFile None)
+        daemon.RegisterHandler(
+            FsHotWatch.Coverage.CoveragePlugin.create cov.Directory cov.ThresholdsFile None getCommitId
+        )
     | None -> ()
 
     // File commands
@@ -425,5 +437,10 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             path.EndsWith(pattern.TrimStart('*'), StringComparison.OrdinalIgnoreCase)
 
         daemon.RegisterHandler(
-            FsHotWatch.FileCommand.FileCommandPlugin.create $"file-cmd-%s{fc.Pattern}" fileFilter fc.Command fc.Args
+            FsHotWatch.FileCommand.FileCommandPlugin.create
+                $"file-cmd-%s{fc.Pattern}"
+                fileFilter
+                fc.Command
+                fc.Args
+                getCommitId
         )

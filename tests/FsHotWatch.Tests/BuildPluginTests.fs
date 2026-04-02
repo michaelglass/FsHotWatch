@@ -13,13 +13,13 @@ open FsHotWatch.Tests.TestHelpers
 [<Fact>]
 let ``create accepts graph and test project names`` () =
     let graph = FsHotWatch.ProjectGraph.ProjectGraph()
-    let handler = BuildPlugin.create "echo" "build" [] graph [] None
+    let handler = BuildPlugin.create "echo" "build" [] graph [] None None
     test <@ handler.Name = "build" @>
 
 [<Fact>]
 let ``plugin has correct name`` () =
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None None
 
     test <@ handler.Name = "build" @>
 
@@ -28,7 +28,7 @@ let ``build-status command returns not run initially`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None None
 
     host.RegisterHandler(handler)
 
@@ -42,7 +42,7 @@ let ``build plugin emits BuildCompleted on successful build`` () =
     let (getBuild, recorder) = buildRecorder ()
 
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -69,7 +69,7 @@ let ``build-status command returns passed true after successful build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None None
 
     host.RegisterHandler(handler)
 
@@ -85,7 +85,7 @@ let ``build-status command returns passed true after successful build`` () =
 let ``build-status command returns failed after failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None
+    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None None
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -100,7 +100,7 @@ let ``build-status command returns failed after failed build`` () =
 let ``build plugin reports Failed status on failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None
+    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None None
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -122,7 +122,7 @@ let ``build plugin emits BuildFailed on failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
 
-    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None
+    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None None
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
@@ -143,7 +143,7 @@ let ``build plugin emits BuildFailed on failed build`` () =
 let ``build plugin reports errors on failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None
+    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None None
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -157,7 +157,7 @@ let ``build plugin handles exception from runProcess`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        BuildPlugin.create "this-command-does-not-exist-xyz" "" [] (ProjectGraph()) [] None
+        BuildPlugin.create "this-command-does-not-exist-xyz" "" [] (ProjectGraph()) [] None None
 
     host.RegisterHandler(handler)
 
@@ -183,7 +183,7 @@ let ``build plugin ignores SolutionChanged events`` () =
     let (getBuild, recorder) = buildRecorder ()
 
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -201,7 +201,7 @@ let ``build plugin triggers on ProjectChanged`` () =
     let (getBuild, recorder) = buildRecorder ()
 
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -222,7 +222,7 @@ let ``build is skipped when only test files change`` () =
 
     graph.RegisterProject("/tmp/tests/MyTests/MyTests.fsproj", [ "/tmp/tests/MyTests/Tests.fs" ], [])
 
-    let handler = BuildPlugin.create "false" "" [] graph [ "MyTests" ] None
+    let handler = BuildPlugin.create "false" "" [] graph [ "MyTests" ] None None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -244,7 +244,7 @@ let ``build uses template for affected project`` () =
     graph.RegisterProject("/tmp/src/MyLib/MyLib.fsproj", [ "/tmp/src/MyLib/Lib.fs" ], [])
 
     let handler =
-        BuildPlugin.create "false" "should-not-run" [] graph [] (Some "echo {project}")
+        BuildPlugin.create "false" "should-not-run" [] graph [] (Some "echo {project}") None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -265,7 +265,7 @@ let ``build falls back to original command when no template`` () =
 
     graph.RegisterProject("/tmp/src/MyLib/MyLib.fsproj", [ "/tmp/src/MyLib/Lib.fs" ], [])
 
-    let handler = BuildPlugin.create "echo" "fallback-build" [] graph [] None
+    let handler = BuildPlugin.create "echo" "fallback-build" [] graph [] None None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -285,7 +285,7 @@ let ``build falls back when file not in graph`` () =
     let graph = ProjectGraph()
 
     let handler =
-        BuildPlugin.create "echo" "fallback-for-unknown" [] graph [] (Some "false {project}")
+        BuildPlugin.create "echo" "fallback-for-unknown" [] graph [] (Some "false {project}") None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -305,7 +305,7 @@ let ``ProjectChanged always uses fallback command`` () =
     let graph = ProjectGraph()
 
     let handler =
-        BuildPlugin.create "echo" "fallback ok" [] graph [] (Some "false {project}")
+        BuildPlugin.create "echo" "fallback ok" [] graph [] (Some "false {project}") None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)

@@ -741,7 +741,10 @@ module Daemon =
             FsHotWatch.FileErrorReporter.FileErrorReporter(errorDir)
 
         fileReporter.ClearAll()
-        let host = PluginHost(checker, repoRoot, reporters = [ fileReporter ])
+        let taskCache = FsHotWatch.TaskCache.InMemoryTaskCache()
+
+        let host =
+            PluginHost(checker, repoRoot, reporters = [ fileReporter ], taskCache = taskCache)
 
         let pipeline =
             match cacheBackend, cacheKeyProvider with

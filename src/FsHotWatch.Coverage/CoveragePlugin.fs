@@ -79,6 +79,7 @@ let create
     (coverageDir: string)
     (thresholdsFile: string option)
     (afterCheck: (unit -> unit) option)
+    (getCommitId: (unit -> string option) option)
     : PluginHandler<CoverageState, unit> =
     { Name = "coverage"
       Init = { Results = [] }
@@ -179,4 +180,7 @@ let create
       Subscriptions =
         { PluginSubscriptions.none with
             TestCompleted = true }
-      CacheKey = None }
+      CacheKey =
+        match getCommitId with
+        | Some fn -> Some(FsHotWatch.TaskCache.defaultCacheKey fn)
+        | None -> None }

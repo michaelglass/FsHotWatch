@@ -12,14 +12,14 @@ open FsHotWatch.Tests.TestHelpers
 
 [<Fact>]
 let ``plugin has correct name`` () =
-    let handler = createFormatCheck ()
+    let handler = createFormatCheck None
     test <@ handler.Name = "format-check" @>
 
 [<Fact>]
 let ``unformatted command returns zero count when no files processed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = createFormatCheck ()
+    let handler = createFormatCheck None
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
@@ -30,7 +30,7 @@ let ``unformatted command returns zero count when no files processed`` () =
 let ``format check handles non-source change events without crashing`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = createFormatCheck ()
+    let handler = createFormatCheck None
     host.RegisterHandler(handler)
 
     // ProjectChanged and SolutionChanged should not crash the plugin
@@ -56,7 +56,7 @@ let ``format check handles non-source change events without crashing`` () =
 let ``format check handles non-existent source file gracefully`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = createFormatCheck ()
+    let handler = createFormatCheck None
     host.RegisterHandler(handler)
 
     // Emit a SourceChanged with a file that doesn't exist — File.Exists check
@@ -172,7 +172,7 @@ let ``format check handles exception gracefully`` () =
 
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let handler = createFormatCheck ()
+        let handler = createFormatCheck None
         host.RegisterHandler(handler)
 
         // This should not crash the plugin - errors are caught
