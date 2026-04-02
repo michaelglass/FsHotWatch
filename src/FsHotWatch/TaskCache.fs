@@ -104,3 +104,8 @@ let defaultCacheKey (getCommitId: unit -> string option) (event: PluginEvent<'Ms
     match event with
     | Custom _ -> None
     | _ -> getCommitId ()
+
+/// Build an optional CacheKey from an optional getCommitId function.
+/// Convenience for plugins that use the default cache key.
+let optionalCacheKey (getCommitId: (unit -> string option) option) =
+    getCommitId |> Option.map defaultCacheKey
