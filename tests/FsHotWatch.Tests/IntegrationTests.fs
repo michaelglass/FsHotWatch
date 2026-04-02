@@ -101,7 +101,7 @@ let ``all plugins receive events when checking a file`` () =
     // Register all four plugins
     let dbPath = Path.Combine(Path.GetTempPath(), $"fshw-inttest-{Guid.NewGuid():N}.db")
 
-    let testPrune = TestPrunePlugin.create dbPath repoRoot None None None None None
+    let testPrune = TestPrunePlugin.create dbPath repoRoot None None None None None None
     let lint = LintPlugin.create None None
     let fantomas = createFormatCheck None
     let analyzers = AnalyzersPlugin.create [] None
@@ -957,7 +957,7 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
                 ClassJoin = " " } ]
 
         let handler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None
 
         host.RegisterHandler(handler)
 
@@ -1010,7 +1010,7 @@ let ``TestPrunePlugin with failing test reports failure`` () =
                 ClassJoin = " " } ]
 
         let handler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None
 
         host.RegisterHandler(handler)
 
@@ -1295,7 +1295,7 @@ let ``Full pipeline: format → build → test → coverage`` () =
                 ClassJoin = " " } ]
 
         let testPruneHandler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None
 
         host.RegisterHandler(testPruneHandler)
 
@@ -1447,7 +1447,7 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
                 ClassJoin = " " } ]
 
         let handler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None
 
         host.RegisterHandler(handler)
 
