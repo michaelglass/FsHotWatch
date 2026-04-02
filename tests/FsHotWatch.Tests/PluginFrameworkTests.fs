@@ -27,6 +27,7 @@ let private registerWith
         (fun _ -> ())
         (fun _ -> ())
         registerCommand
+        None
         handler
 
 /// Register with all defaults.
