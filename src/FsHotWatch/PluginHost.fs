@@ -8,10 +8,10 @@ open FsHotWatch.Logging
 open FsHotWatch.Plugin
 
 /// Manages plugin lifecycle, event dispatch, command registration, and status tracking.
-type PluginHost(checker: FSharpChecker, repoRoot: string) =
+type PluginHost(checker: FSharpChecker, repoRoot: string, ?reporters: IErrorReporter list) =
     let statusChanged = Event<string * PluginStatus>()
 
-    let ledger = ErrorLedger()
+    let ledger = ErrorLedger(?reporters = reporters)
     let commands = ConcurrentDictionary<string, CommandHandler>()
     let preprocessors = ConcurrentBag<IFsHotWatchPreprocessor>()
 
