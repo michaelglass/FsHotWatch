@@ -232,13 +232,13 @@ let ``RegisterFromFsproj ignores ProjectReference elements without Include attri
 [<Fact>]
 let ``GetSourceFiles returns empty for unregistered project`` () =
     let graph = ProjectGraph()
-    test <@ graph.GetSourceFiles("/proj/NoSuch.fsproj") = [] @>
+    test <@ graph.GetSourceFiles("/proj/NoSuch.fsproj") |> List.isEmpty @>
 
 // Line 94: GetReferences for unregistered project returns empty list
 [<Fact>]
 let ``GetReferences returns empty for unregistered project`` () =
     let graph = ProjectGraph()
-    test <@ graph.GetReferences("/proj/NoSuch.fsproj") = [] @>
+    test <@ graph.GetReferences("/proj/NoSuch.fsproj") |> List.isEmpty @>
 
 // Line 165: GetParallelTiers with circular dependency (blocked projects forced into final tier)
 [<Fact>]
@@ -256,13 +256,13 @@ let ``GetParallelTiers puts circular dependencies in final tier`` () =
 [<Fact>]
 let ``GetParallelTiers returns empty for empty graph`` () =
     let graph = ProjectGraph()
-    test <@ graph.GetParallelTiers() = [] @>
+    test <@ graph.GetParallelTiers() |> List.isEmpty @>
 
 // GetTopologicalOrder returns empty for empty graph
 [<Fact>]
 let ``GetTopologicalOrder returns empty for empty graph`` () =
     let graph = ProjectGraph()
-    test <@ graph.GetTopologicalOrder() = [] @>
+    test <@ graph.GetTopologicalOrder() |> List.isEmpty @>
 
 [<Fact>]
 let ``GetAllFiles returns all registered file paths`` () =

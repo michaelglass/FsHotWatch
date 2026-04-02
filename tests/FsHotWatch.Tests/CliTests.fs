@@ -676,15 +676,15 @@ let ``executeCommand Format calls formatAll`` () =
     test <@ called @>
 
 [<Fact>]
-let ``executeCommand Lint calls runCommand with lint`` () =
-    let mutable cmdName = ""
+let ``executeCommand Lint scans waits and gets lint errors`` () =
+    let mutable errorFilter = ""
 
     let ipc =
         { fakeIpc () with
-            RunCommand =
-                fun _ cmd _ ->
+            GetErrors =
+                fun _ filter ->
                     async {
-                        cmdName <- cmd
+                        errorFilter <- filter
                         return """{"count": 0}"""
                     } }
 
@@ -692,7 +692,7 @@ let ``executeCommand Lint calls runCommand with lint`` () =
         executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Lint "" fakeConfig
 
     test <@ result = 0 @>
-    test <@ cmdName = "lint" @>
+    test <@ errorFilter = "lint" @>
 
 [<Fact>]
 let ``executeCommand Errors calls getErrors`` () =

@@ -43,7 +43,7 @@ let ``parseConfig with empty JSON returns defaults`` () =
     test <@ config.Analyzers = None @>
     test <@ config.Tests = None @>
     test <@ config.Coverage = None @>
-    test <@ config.FileCommands = [] @>
+    test <@ config.FileCommands |> List.isEmpty @>
 
 // --- parseConfig: build ---
 
@@ -263,7 +263,7 @@ let ``parseConfig tests with minimal project uses defaults`` () =
     test <@ p.Command = "dotnet" @>
     test <@ p.Args = "test --project Tests.fsproj" @>
     test <@ p.Group = "default" @>
-    test <@ p.Environment = [] @>
+    test <@ p.Environment |> List.isEmpty @>
     test <@ p.FilterTemplate = None @>
     test <@ p.ClassJoin = " " @>
 
@@ -381,12 +381,12 @@ let ``parseConfig fileCommands with empty entry uses defaults`` () =
 [<Fact>]
 let ``parseConfig fileCommands empty array`` () =
     let config = parseConfig """{"fileCommands": []}""" defaults
-    test <@ config.FileCommands = [] @>
+    test <@ config.FileCommands |> List.isEmpty @>
 
 [<Fact>]
 let ``parseConfig no fileCommands returns empty list`` () =
     let config = parseConfig """{}""" defaults
-    test <@ config.FileCommands = [] @>
+    test <@ config.FileCommands |> List.isEmpty @>
 
 // --- parseConfig: invalid JSON ---
 
@@ -503,7 +503,7 @@ let ``loadConfig with no config file returns expected defaults`` () =
         test <@ config.Analyzers = None @>
         test <@ config.Tests = None @>
         test <@ config.Coverage = None @>
-        test <@ config.FileCommands = [] @>)
+        test <@ config.FileCommands |> List.isEmpty @>)
 
 [<Fact>]
 let ``loadConfig with jj repo defaults to JjFileBackend`` () =
