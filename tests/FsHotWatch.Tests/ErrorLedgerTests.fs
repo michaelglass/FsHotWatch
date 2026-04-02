@@ -213,3 +213,76 @@ let ``Clear accepts newer version after initial versioned report`` () =
     // Clear with higher version should succeed (hits update branch where v >= last)
     ledger.Clear("fcs", "/tmp/Lib.fs", version = 2L)
     test <@ not (ledger.HasErrors()) @>
+
+[<Fact>]
+let ``ErrorLedger notifies reporters on Report`` () =
+    let mutable reported: (string * string * ErrorEntry list) list = []
+
+    let reporter =
+        { new IErrorReporter with
+            member _.Report plugin file entries =
+                reported <- (plugin, file, entries) :: reported
+
+            member _.Clear _ _ = ()
+            member _.ClearPlugin _ = ()
+            member _.ClearAll() = () }
+
+    let ledger = ErrorLedger([ reporter ])
+    ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
+    System.Threading.Thread.Sleep(100)
+    test <@ reported.Length = 1 @>
+    test <@ let (p, f, _) = reported.[0] in p = "lint" && f = "/src/A.fs" @>
+
+[<Fact>]
+let ``ErrorLedger notifies reporters on Clear`` () =
+    let mutable cleared: (string * string) list = []
+
+    let reporter =
+        { new IErrorReporter with
+            member _.Report _ _ _ = ()
+            member _.Clear plugin file = cleared <- (plugin, file) :: cleared
+            member _.ClearPlugin _ = ()
+            member _.ClearAll() = () }
+
+    let ledger = ErrorLedger([ reporter ])
+    ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
+    ledger.Clear("lint", "/src/A.fs")
+    System.Threading.Thread.Sleep(100)
+    test <@ cleared.Length = 1 @>
+
+[<Fact>]
+let ``ErrorLedger notifies reporters on ClearPlugin`` () =
+    let mutable clearedPlugins: string list = []
+
+    let reporter =
+        { new IErrorReporter with
+            member _.Report _ _ _ = ()
+            member _.Clear _ _ = ()
+
+            member _.ClearPlugin plugin =
+                clearedPlugins <- plugin :: clearedPlugins
+
+            member _.ClearAll() = () }
+
+    let ledger = ErrorLedger([ reporter ])
+    ledger.Report("lint", "/src/A.fs", [ entry "a" DiagnosticSeverity.Warning 1 ])
+    ledger.ClearPlugin("lint")
+    System.Threading.Thread.Sleep(100)
+    test <@ clearedPlugins = [ "lint" ] @>
+
+[<Fact>]
+let ``ErrorLedger does not notify reporters on stale version`` () =
+    let mutable reportCount = 0
+
+    let reporter =
+        { new IErrorReporter with
+            member _.Report _ _ _ = reportCount <- reportCount + 1
+            member _.Clear _ _ = ()
+            member _.ClearPlugin _ = ()
+            member _.ClearAll() = () }
+
+    let ledger = ErrorLedger([ reporter ])
+    ledger.Report("fcs", "/tmp/Lib.fs", [ entry "new" DiagnosticSeverity.Error 1 ], version = 2L)
+    ledger.Report("fcs", "/tmp/Lib.fs", [ entry "stale" DiagnosticSeverity.Error 1 ], version = 1L)
+    System.Threading.Thread.Sleep(100)
+    test <@ reportCount = 1 @>
