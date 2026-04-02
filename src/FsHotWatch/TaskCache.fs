@@ -42,35 +42,46 @@ type ITaskCache =
     abstract ClearPluginFile: plugin: string -> file: string -> unit
 
 /// In-memory implementation using ConcurrentDictionary.
+/// Keyed by (compositeKey, cacheKey) so multiple versions coexist.
 type InMemoryTaskCache() =
-    let cache = ConcurrentDictionary<string, TaskCacheResult>()
+    let cache = ConcurrentDictionary<struct (string * string), TaskCacheResult>()
 
     let tryGet (compositeKey: string) (cacheKey: string) =
-        match cache.TryGetValue(compositeKey) with
-        | true, result when result.CacheKey = cacheKey -> Some result
+        match cache.TryGetValue(struct (compositeKey, cacheKey)) with
+        | true, result -> Some result
         | _ -> None
 
-    let set (compositeKey: string) (_cacheKey: string) (result: TaskCacheResult) = cache.[compositeKey] <- result
+    let set (compositeKey: string) (cacheKey: string) (result: TaskCacheResult) =
+        cache.[struct (compositeKey, cacheKey)] <- result
 
     let clear () = cache.Clear()
 
     let clearPlugin (plugin: string) =
         let prefix = plugin + "--"
 
-        for key in cache.Keys do
-            if key.StartsWith(prefix) || key = plugin then
+        for key in cache.Keys |> Seq.toArray do
+            let struct (compKey, _) = key
+
+            if compKey.StartsWith(prefix) || compKey = plugin then
                 cache.TryRemove(key) |> ignore
 
     let clearFile (file: string) =
         let suffix = "--" + file
 
-        for key in cache.Keys do
-            if key.EndsWith(suffix) then
+        for key in cache.Keys |> Seq.toArray do
+            let struct (compKey, _) = key
+
+            if compKey.EndsWith(suffix) then
                 cache.TryRemove(key) |> ignore
 
     let clearPluginFile (plugin: string) (file: string) =
-        let key = plugin + "--" + file
-        cache.TryRemove(key) |> ignore
+        let target = plugin + "--" + file
+
+        for key in cache.Keys |> Seq.toArray do
+            let struct (compKey, _) = key
+
+            if compKey = target then
+                cache.TryRemove(key) |> ignore
 
     /// Try to retrieve a cached result. Returns Some only when the compositeKey
     /// matches AND the stored result's CacheKey matches the provided cacheKey.

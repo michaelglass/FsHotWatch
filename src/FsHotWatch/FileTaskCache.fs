@@ -207,33 +207,42 @@ let private deserializeResult (json: string) : TaskCacheResult =
       Status = deserializeStatus (root["status"].AsObject())
       EmittedEvents = emittedEvents }
 
-let private tryDelete path = File.Delete(path)
+let private hashCacheKey (cacheKey: string) =
+    use sha = System.Security.Cryptography.SHA256.Create()
+    let bytes = System.Text.Encoding.UTF8.GetBytes(cacheKey)
+    let hash = sha.ComputeHash(bytes)
+
+    hash
+    |> Array.map (fun b -> b.ToString("x2"))
+    |> String.concat ""
+    |> fun s -> s.Substring(0, 12)
 
 /// On-disk task cache. Each entry is a JSON file in the cache directory.
+/// Files are named `{compositeKey}@{cacheKeyHash}.json` so multiple versions coexist.
 type FileTaskCache(cacheDir: string) =
     do Directory.CreateDirectory(cacheDir) |> ignore
 
-    let filePath compositeKey =
-        Path.Combine(cacheDir, $"%s{sanitizeKey compositeKey}.json")
-
-    let tryGet (compositeKey: string) (cacheKey: string) =
-        let path = filePath compositeKey
-
-        if File.Exists(path) then
-            try
-                let json = File.ReadAllText(path)
-                let result = deserializeResult json
-
-                if result.CacheKey = cacheKey then Some result else None
-            with _ ->
-                None
-        else
-            None
+    let filePath compositeKey cacheKey =
+        let keyHash = hashCacheKey cacheKey
+        Path.Combine(cacheDir, $"%s{sanitizeKey compositeKey}@%s{keyHash}.json")
 
     let jsonWriteOptions = System.Text.Json.JsonSerializerOptions(WriteIndented = true)
 
-    let set (compositeKey: string) (_cacheKey: string) (result: TaskCacheResult) =
-        let path = filePath compositeKey
+    let tryGet (compositeKey: string) (cacheKey: string) =
+        let path = filePath compositeKey cacheKey
+
+        try
+            if File.Exists(path) then
+                let json = File.ReadAllText(path)
+                let result = deserializeResult json
+                Some result
+            else
+                None
+        with _ ->
+            None
+
+    let set (compositeKey: string) (cacheKey: string) (result: TaskCacheResult) =
+        let path = filePath compositeKey cacheKey
         let json = serializeResult result
         File.WriteAllText(path, json.ToJsonString(jsonWriteOptions))
 
@@ -243,25 +252,31 @@ type FileTaskCache(cacheDir: string) =
 
     let clearPlugin (plugin: string) =
         let prefix = sanitizeKey (plugin + "--")
+        let exact = sanitizeKey plugin + "@"
 
         for f in Directory.EnumerateFiles(cacheDir, "*.json") do
             let name = Path.GetFileName(f)
 
-            if name.StartsWith(prefix) || name = $"%s{sanitizeKey plugin}.json" then
+            if name.StartsWith(prefix) || name.StartsWith(exact) then
                 File.Delete(f)
 
     let clearFile (file: string) =
-        let suffix = sanitizeKey ("--" + file)
+        let suffix = sanitizeKey ("--" + file) + "@"
 
         for f in Directory.EnumerateFiles(cacheDir, "*.json") do
-            let name = Path.GetFileNameWithoutExtension(f)
+            let name = Path.GetFileName(f)
 
-            if name.EndsWith(suffix) then
+            if name.Contains(suffix) then
                 File.Delete(f)
 
     let clearPluginFile (plugin: string) (file: string) =
-        let key = plugin + "--" + file
-        tryDelete (filePath key)
+        let prefix = sanitizeKey (plugin + "--" + file) + "@"
+
+        for f in Directory.EnumerateFiles(cacheDir, "*.json") do
+            let name = Path.GetFileName(f)
+
+            if name.StartsWith(prefix) then
+                File.Delete(f)
 
     /// Try to retrieve a cached result. Returns Some only when the compositeKey
     /// matches AND the stored result's CacheKey matches the provided cacheKey.
