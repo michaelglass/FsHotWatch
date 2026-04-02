@@ -111,3 +111,22 @@ dotnet pack src/TestPrune.Falco/TestPrune.Falco.fsproj -c Release -o artifacts
 dotnet pack src/TestPrune/TestPrune.fsproj -c Release -o artifacts
 """
 depends = ["build"]
+
+[tasks.bench]
+description = "Run benchmarks with dotnet-trace profiling (produces speedscope flame graph)"
+run = """
+mkdir -p benchmarks/results
+dotnet-trace collect \
+  --output benchmarks/results/trace \
+  -- dotnet run --project benchmarks/TestPrune.Benchmarks -c Release \
+  || true
+dotnet-trace convert benchmarks/results/trace \
+  --format speedscope \
+  --output benchmarks/results/trace
+"""
+depends = ["build"]
+
+[tasks.bench-raw]
+description = "Run benchmarks without profiling (JSON metrics only)"
+run = "dotnet run --project benchmarks/TestPrune.Benchmarks -c Release"
+depends = ["build"]

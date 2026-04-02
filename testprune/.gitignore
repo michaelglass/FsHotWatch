@@ -62,3 +62,6 @@ tmp/
 TODO.md
 .ionide/
 .fake
+
+# Benchmark results
+benchmarks/results/

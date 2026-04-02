@@ -7,4 +7,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/TestPrune.Tests/TestPrune.Tests.fsproj" />
   </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/TestPrune.Benchmarks/TestPrune.Benchmarks.fsproj" />
+  </Folder>
 </Solution>
