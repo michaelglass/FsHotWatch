@@ -1,9 +1,9 @@
 # FSAC / Compiler Learnings for TestPrune
 
 Cross-reference with FsHotWatch's `docs/fsac-learnings.md`. Items already
-addressed in `TODO.md` (projectCacheSize, snapshot API, topo sort, caching,
-etc.) and items explicitly ruled out (`enablePartialTypeChecking`,
-parse-only, intra-project parallelism) are not repeated here.
+shipped (projectCacheSize, snapshot API, topo sort, caching, etc.) and
+items explicitly ruled out (`enablePartialTypeChecking`, parse-only,
+intra-project parallelism) are not repeated here.
 
 Primary use case: TestPrune.Core as a library consumed by a long-running
 daemon holding a hot FCS instance. Priorities reflect daemon resilience,
