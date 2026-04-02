@@ -3,13 +3,9 @@ module FsHotWatch.Tests.ErrorLedgerTests
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.ErrorLedger
+open FsHotWatch.Tests.TestHelpers
 
-let private entry msg sev line =
-    { Message = msg
-      Severity = sev
-      Line = line
-      Column = 0
-      Detail = None }
+let private entry msg sev line = { errorEntry msg sev with Line = line }
 
 [<Fact>]
 let ``Report adds errors and GetAll returns them grouped by file`` () =
