@@ -147,14 +147,17 @@ module ``runAllTestsWith`` =
         let fakeRunner (fileName: string) (args: string) : TestResult =
             capturedFileName <- fileName
             capturedArgs <- args
-            { ExitCode = 0; Output = "ok" }
+
+            { ExitCode = 0
+              Stdout = "ok"
+              Stderr = "" }
 
         let result = runAllTestsWith fakeRunner "/path/to/Tests.dll"
 
         test <@ capturedFileName = "dotnet" @>
         test <@ capturedArgs = "exec \"/path/to/Tests.dll\"" @>
         test <@ result.ExitCode = 0 @>
-        test <@ result.Output = "ok" @>
+        test <@ result.Stdout = "ok" @>
 
 module ``runFilteredTestsWith`` =
 
@@ -162,14 +165,18 @@ module ``runFilteredTestsWith`` =
     let ``normalizes exit code 8 to 0`` () =
         let fakeRunner (_: string) (_: string) : TestResult =
             { ExitCode = 8
-              Output = "no tests matched" }
+              Stdout = "no tests matched"
+              Stderr = "" }
 
         let result = runFilteredTestsWith fakeRunner "/path/to/Tests.dll" [ "Ns.MyClass" ]
         test <@ result.ExitCode = 0 @>
 
     [<Fact>]
     let ``preserves non-8 exit codes`` () =
-        let fakeRunner (_: string) (_: string) : TestResult = { ExitCode = 1; Output = "failure" }
+        let fakeRunner (_: string) (_: string) : TestResult =
+            { ExitCode = 1
+              Stdout = "failure"
+              Stderr = "" }
 
         let result = runFilteredTestsWith fakeRunner "/path/to/Tests.dll" [ "Ns.MyClass" ]
         test <@ result.ExitCode = 1 @>
@@ -180,7 +187,10 @@ module ``runFilteredTestsWith`` =
 
         let fakeRunner (_: string) (args: string) : TestResult =
             capturedArgs <- args
-            { ExitCode = 0; Output = "" }
+
+            { ExitCode = 0
+              Stdout = ""
+              Stderr = "" }
 
         runFilteredTestsWith fakeRunner "/path/to/Tests.dll" [ "Ns.A"; "Ns.B" ]
         |> ignore

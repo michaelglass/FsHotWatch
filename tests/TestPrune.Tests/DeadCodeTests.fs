@@ -1303,8 +1303,7 @@ module ``DU type reachable via case usage`` =
 
             let result, _events = runDeadCode db [ "*.Program.main" ] false
 
-            let unreachableNames =
-                result.UnreachableSymbols |> List.map (fun s -> s.FullName)
+            let unreachableNames = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
 
             test <@ unreachableNames |> List.contains "App.Domain.Shape" @>)
 

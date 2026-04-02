@@ -4,8 +4,11 @@ open System
 open System.Diagnostics
 open System.IO
 
-/// Result of running a test process, containing exit code and combined stdout/stderr output.
-type TestResult = { ExitCode: int; Output: string }
+/// Result of running a test process, with stdout and stderr kept separate.
+type TestResult =
+    { ExitCode: int
+      Stdout: string
+      Stderr: string }
 
 /// Type alias for process runner functions.
 type ProcessRunner = string -> string -> TestResult
@@ -40,7 +43,8 @@ let private runProcess (fileName: string) (arguments: string) : TestResult =
     eprintfn $"[%s{fileName} %s{arguments}] \u2192 exit %d{proc.ExitCode} in %.1f{sw.Elapsed.TotalSeconds}s"
 
     { ExitCode = proc.ExitCode
-      Output = stdout + stderr }
+      Stdout = stdout
+      Stderr = stderr }
 
 /// Build the filter arguments string from a list of test class names.
 let buildFilterArgs (testClasses: string list) : string =
