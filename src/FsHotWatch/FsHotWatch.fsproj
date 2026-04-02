@@ -73,7 +73,7 @@
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
     <PackageReference Include="FSharp.Data.Adaptive" Version="1.2.16" />
     <PackageReference Include="StreamJsonRpc" Version="2.24.84" />
-    <PackageReference Include="TestPrune.Core" Version="0.1.0-alpha.8" />
+    <PackageReference Include="TestPrune.Core" Version="0.1.0-alpha.9" />
     <PackageReference Include="FSharp.Compiler.Service" Version="43.12.201" />
     <PackageReference Include="Ionide.ProjInfo" Version="0.68.0" />
     <PackageReference Include="Ionide.ProjInfo.FCS" Version="0.68.0" />
