@@ -7,7 +7,7 @@
         <PackAsTool>true</PackAsTool>
         <ToolCommandName>test-prune</ToolCommandName>
         <PackageId>TestPrune</PackageId>
-        <Version>0.1.0-alpha.8</Version>
+        <Version>0.1.0-alpha.9</Version>
         <Authors>Michael Glass</Authors>
         <Description>CLI for TestPrune — only run the tests affected by your change</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
