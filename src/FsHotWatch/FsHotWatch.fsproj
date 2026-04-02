@@ -56,6 +56,7 @@
     <Compile Include="InMemoryCheckCache.fs" />
     <Compile Include="FileCheckCache.fs" />
     <Compile Include="ErrorLedger.fs" />
+    <Compile Include="FileErrorReporter.fs" />
     <Compile Include="StringHelpers.fs" />
     <Compile Include="Plugin.fs" />
     <Compile Include="PluginFramework.fs" />
