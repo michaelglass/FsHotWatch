@@ -169,7 +169,8 @@ let ``CLI status query works against running daemon`` () =
           Init = ()
           Update = fun _ctx state _event -> async { return state }
           Commands = []
-          Subscriptions = PluginSubscriptions.none }
+          Subscriptions = PluginSubscriptions.none
+          CacheKey = None }
 
     daemon.RegisterHandler(handler)
     let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
@@ -214,7 +215,8 @@ let ``CLI plugin status query works against running daemon`` () =
           Commands = []
           Subscriptions =
             { PluginSubscriptions.none with
-                FileChanged = true } }
+                FileChanged = true }
+          CacheKey = None }
 
     daemon.RegisterHandler(handler)
     // Trigger a FileChanged so the plugin reports Running status
@@ -263,7 +265,8 @@ let ``CLI command proxying works against running daemon`` () =
                       let name = if args.Length > 0 then args.[0] else "world"
                       return $"hello {name}"
                   } ]
-          Subscriptions = PluginSubscriptions.none }
+          Subscriptions = PluginSubscriptions.none
+          CacheKey = None }
 
     daemon.RegisterHandler(handler)
     let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))

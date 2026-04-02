@@ -64,7 +64,7 @@ let buildRecorder () =
             fun _ctx state event ->
                 async {
                     match event with
-                    | FsHotWatch.PluginFramework.BuildCompleted result -> receivedBuild <- Some result
+                    | FsHotWatch.Events.BuildCompleted result -> receivedBuild <- Some result
                     | _ -> ()
 
                     return state
@@ -72,7 +72,8 @@ let buildRecorder () =
           Commands = []
           Subscriptions =
             { FsHotWatch.PluginFramework.PluginSubscriptions.none with
-                BuildCompleted = true } }
+                BuildCompleted = true }
+          CacheKey = None }
 
     ((fun () -> receivedBuild), handler)
 

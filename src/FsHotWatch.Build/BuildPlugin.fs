@@ -199,4 +199,5 @@ let create
               } ]
       Subscriptions =
         { PluginSubscriptions.none with
-            FileChanged = true } }
+            FileChanged = true }
+      CacheKey = None }

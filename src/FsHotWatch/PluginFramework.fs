@@ -7,15 +7,6 @@ open FsHotWatch.ErrorLedger
 open FsHotWatch.Logging
 open FsHotWatch.Plugin
 
-/// Events routed to plugins by the framework.
-[<NoComparison; NoEquality>]
-type PluginEvent<'Msg> =
-    | FileChanged of FileChangeKind
-    | FileChecked of FileCheckResult
-    | BuildCompleted of BuildResult
-    | TestCompleted of TestResults
-    | Custom of 'Msg
-
 /// Side-effect context provided to plugin handlers.
 [<NoComparison; NoEquality>]
 type PluginCtx<'Msg> =
@@ -76,6 +67,9 @@ type PluginHandler<'State, 'Msg> =
         Commands: (string * ('State -> string array -> Async<string>)) list
         /// Which events the plugin subscribes to.
         Subscriptions: PluginSubscriptions
+        /// Optional cache key function. When provided, the framework checks the task cache
+        /// before calling Update. Returns Some(key) for cacheable events, None to skip cache.
+        CacheKey: (PluginEvent<'Msg> -> string option) option
     }
 
 /// Type-erased plugin registration stored by PluginHost.

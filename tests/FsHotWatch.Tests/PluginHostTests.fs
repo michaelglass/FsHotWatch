@@ -36,7 +36,8 @@ let ``plugin receives file change events`` () =
           Commands = []
           Subscriptions =
             { PluginSubscriptions.none with
-                FileChanged = true } }
+                FileChanged = true }
+          CacheKey = None }
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -52,7 +53,8 @@ let ``plugin registers command`` () =
           Init = ()
           Update = fun _ctx state _event -> async { return state }
           Commands = [ "greet", fun _state _args -> async { return "hello" } ]
-          Subscriptions = PluginSubscriptions.none }
+          Subscriptions = PluginSubscriptions.none
+          CacheKey = None }
 
     host.RegisterHandler(handler)
     let result = host.RunCommand("greet", [||]) |> Async.RunSynchronously
@@ -83,7 +85,8 @@ let ``plugin reports status`` () =
           Commands = []
           Subscriptions =
             { PluginSubscriptions.none with
-                FileChanged = true } }
+                FileChanged = true }
+          CacheKey = None }
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -108,7 +111,8 @@ let ``GetAllStatuses returns all plugin statuses`` () =
           Init = ()
           Update = fun _ctx state _event -> async { return state }
           Commands = []
-          Subscriptions = PluginSubscriptions.none }
+          Subscriptions = PluginSubscriptions.none
+          CacheKey = None }
 
     host.RegisterHandler(makeHandler "a")
     host.RegisterHandler(makeHandler "b")
@@ -137,7 +141,8 @@ let ``EmitBuildCompleted reaches plugins`` () =
           Commands = []
           Subscriptions =
             { PluginSubscriptions.none with
-                BuildCompleted = true } }
+                BuildCompleted = true }
+          CacheKey = None }
 
     host.RegisterHandler(handler)
     host.EmitBuildCompleted(BuildSucceeded)
@@ -164,7 +169,8 @@ let ``EmitBuildCompleted with failure reaches plugins`` () =
           Commands = []
           Subscriptions =
             { PluginSubscriptions.none with
-                BuildCompleted = true } }
+                BuildCompleted = true }
+          CacheKey = None }
 
     host.RegisterHandler(handler)
     let errors = [ "error CS0001: Something broke" ]
@@ -265,7 +271,8 @@ let ``multiple plugins receive the same event`` () =
           Commands = []
           Subscriptions =
             { PluginSubscriptions.none with
-                FileChanged = true } }
+                FileChanged = true }
+          CacheKey = None }
 
     host.RegisterHandler(makeHandler "p1" (fun () -> received1 <- true))
     host.RegisterHandler(makeHandler "p2" (fun () -> received2 <- true))
@@ -304,7 +311,8 @@ let ``plugin can report and query errors via host`` () =
           Commands = []
           Subscriptions =
             { PluginSubscriptions.none with
-                FileChanged = true } }
+                FileChanged = true }
+          CacheKey = None }
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -343,7 +351,8 @@ let ``plugin ClearErrors removes errors from ledger`` () =
           Commands = []
           Subscriptions =
             { PluginSubscriptions.none with
-                FileChanged = true } }
+                FileChanged = true }
+          CacheKey = None }
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -405,7 +414,8 @@ let ``EmitFileChecked dispatches to framework plugin handlers`` () =
           Commands = []
           Subscriptions =
             { PluginSubscriptions.none with
-                FileChecked = true } }
+                FileChecked = true }
+          CacheKey = None }
 
     host.RegisterHandler(makeHandler "p1" ref1)
     host.RegisterHandler(makeHandler "p2" ref2)
@@ -530,7 +540,8 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
           Commands = []
           Subscriptions =
             { PluginSubscriptions.none with
-                FileChanged = true } }
+                FileChanged = true }
+          CacheKey = None }
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -582,7 +593,8 @@ let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls
           Commands = []
           Subscriptions =
             { PluginSubscriptions.none with
-                FileChanged = true } }
+                FileChanged = true }
+          CacheKey = None }
 
     host.RegisterHandler(handler)
 
