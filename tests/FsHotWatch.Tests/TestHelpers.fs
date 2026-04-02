@@ -76,6 +76,14 @@ let buildRecorder () =
 
     ((fun () -> receivedBuild), handler)
 
+/// Create an ErrorEntry for tests.
+let errorEntry msg (sev: FsHotWatch.ErrorLedger.DiagnosticSeverity) : FsHotWatch.ErrorLedger.ErrorEntry =
+    { Message = msg
+      Severity = sev
+      Line = 0
+      Column = 0
+      Detail = None }
+
 /// Create a temp directory with the given prefix, run the body, then clean up.
 /// Returns the result of the body function.
 let withTempDir (prefix: string) (body: string -> 'a) =

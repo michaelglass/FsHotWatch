@@ -10,13 +10,19 @@ let private sanitizeFileName (s: string) =
 let private errorFileName (plugin: string) (file: string) =
     $"%s{plugin}--%s{sanitizeFileName file}.json"
 
+let private jsonOptions = JsonSerializerOptions(WriteIndented = true)
+
+let private tryDelete path =
+    try
+        File.Delete(path)
+    with :? FileNotFoundException ->
+        ()
+
 /// Writes per-plugin per-file JSON error files to a directory.
 type FileErrorReporter(errorDir: string) =
     do Directory.CreateDirectory(errorDir) |> ignore
 
     let serializeEntries (entries: ErrorEntry list) =
-        let options = JsonSerializerOptions(WriteIndented = true)
-
         let records =
             entries
             |> List.map (fun e ->
@@ -31,7 +37,7 @@ type FileErrorReporter(errorDir: string) =
                    column = e.Column
                    detail = e.Detail |})
 
-        JsonSerializer.Serialize(records, options)
+        JsonSerializer.Serialize(records, jsonOptions)
 
     let writePath plugin file =
         Path.Combine(errorDir, errorFileName plugin file)
@@ -41,24 +47,19 @@ type FileErrorReporter(errorDir: string) =
             let path = writePath plugin file
 
             if entries.IsEmpty then
-                if File.Exists(path) then
-                    File.Delete(path)
+                tryDelete path
             else
                 File.WriteAllText(path, serializeEntries entries)
 
-        member _.Clear plugin file =
-            let path = writePath plugin file
-
-            if File.Exists(path) then
-                File.Delete(path)
+        member _.Clear plugin file = tryDelete (writePath plugin file)
 
         member _.ClearPlugin plugin =
             let prefix = $"%s{plugin}--"
 
-            for f in Directory.GetFiles(errorDir, "*.json") do
+            for f in Directory.EnumerateFiles(errorDir, "*.json") do
                 if Path.GetFileName(f).StartsWith(prefix) then
                     File.Delete(f)
 
         member _.ClearAll() =
-            for f in Directory.GetFiles(errorDir, "*.json") do
+            for f in Directory.EnumerateFiles(errorDir, "*.json") do
                 File.Delete(f)
