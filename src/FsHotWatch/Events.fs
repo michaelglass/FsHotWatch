@@ -89,3 +89,12 @@ type ScanState =
     | Scanning of total: int * completed: int * startedAt: System.DateTime
     /// Scan completed.
     | ScanComplete of total: int * elapsed: System.TimeSpan
+
+/// Events routed to plugins by the framework.
+[<NoComparison; NoEquality>]
+type PluginEvent<'Msg> =
+    | FileChanged of FileChangeKind
+    | FileChecked of FileCheckResult
+    | BuildCompleted of BuildResult
+    | TestCompleted of TestResults
+    | Custom of 'Msg

@@ -95,4 +95,5 @@ let createFormatCheck () : PluginHandler<FormatCheckState, unit> =
               } ]
       Subscriptions =
         { PluginSubscriptions.none with
-            FileChanged = true } }
+            FileChanged = true }
+      CacheKey = None }

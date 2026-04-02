@@ -87,7 +87,8 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
               Commands = []
               Subscriptions =
                 { PluginSubscriptions.none with
-                    FileChanged = true } }
+                    FileChanged = true }
+              CacheKey = None }
 
         daemon.RegisterHandler(handler)
 
@@ -124,7 +125,8 @@ let ``daemon dispatches file change events to plugins`` () =
               Commands = []
               Subscriptions =
                 { PluginSubscriptions.none with
-                    FileChanged = true } }
+                    FileChanged = true }
+              CacheKey = None }
 
         daemon.RegisterHandler(handler)
 
@@ -173,7 +175,8 @@ let ``daemon debounces rapid file changes into one batch`` () =
               Commands = []
               Subscriptions =
                 { PluginSubscriptions.none with
-                    FileChanged = true } }
+                    FileChanged = true }
+              CacheKey = None }
 
         daemon.RegisterHandler(handler)
 
@@ -244,7 +247,8 @@ let ``daemon handles ProjectChanged events`` () =
               Commands = []
               Subscriptions =
                 { PluginSubscriptions.none with
-                    FileChanged = true } }
+                    FileChanged = true }
+              CacheKey = None }
 
         daemon.RegisterHandler(handler)
 
@@ -303,7 +307,8 @@ let ``daemon handles SolutionChanged events`` () =
               Commands = []
               Subscriptions =
                 { PluginSubscriptions.none with
-                    FileChanged = true } }
+                    FileChanged = true }
+              CacheKey = None }
 
         daemon.RegisterHandler(handler)
 
@@ -404,7 +409,8 @@ let ``daemon RunWithIpc responds to IPC queries`` () =
               Init = ()
               Update = fun _ctx state _event -> async { return state }
               Commands = []
-              Subscriptions = PluginSubscriptions.none }
+              Subscriptions = PluginSubscriptions.none
+              CacheKey = None }
 
         daemon.RegisterHandler(handler)
 

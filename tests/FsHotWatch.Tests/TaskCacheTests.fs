@@ -83,3 +83,38 @@ let ``ClearPluginFile removes specific entry`` () =
     test <@ cache.TryGet("build--Foo.fs", "h1") = None @>
     test <@ cache.TryGet("build--Bar.fs", "h2") = Some barResult @>
     test <@ cache.TryGet("lint--Foo.fs", "h3") = Some lintResult @>
+
+[<Fact>]
+let ``defaultCacheKey returns commit_id for FileChecked`` () =
+    let getCommitId () = Some "abc123"
+    let event: PluginEvent<unit> = FileChecked(Unchecked.defaultof<FileCheckResult>)
+    let result = defaultCacheKey getCommitId event
+    test <@ result = Some "abc123" @>
+
+[<Fact>]
+let ``defaultCacheKey returns commit_id for FileChanged`` () =
+    let getCommitId () = Some "abc123"
+    let event: PluginEvent<unit> = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
+    let result = defaultCacheKey getCommitId event
+    test <@ result = Some "abc123" @>
+
+[<Fact>]
+let ``defaultCacheKey returns commit_id for BuildCompleted`` () =
+    let getCommitId () = Some "abc123"
+    let event: PluginEvent<unit> = BuildCompleted BuildSucceeded
+    let result = defaultCacheKey getCommitId event
+    test <@ result = Some "abc123" @>
+
+[<Fact>]
+let ``defaultCacheKey returns None when jj unavailable`` () =
+    let getCommitId () = None
+    let event: PluginEvent<unit> = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
+    let result = defaultCacheKey getCommitId event
+    test <@ result = None @>
+
+[<Fact>]
+let ``defaultCacheKey returns None for Custom events`` () =
+    let getCommitId () = Some "abc123"
+    let event: PluginEvent<string> = Custom "hello"
+    let result = defaultCacheKey getCommitId event
+    test <@ result = None @>

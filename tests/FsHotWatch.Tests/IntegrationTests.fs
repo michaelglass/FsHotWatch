@@ -861,7 +861,8 @@ let ``BuildPlugin succeeds with echo command`` () =
           Commands = []
           Subscriptions =
             { PluginSubscriptions.none with
-                BuildCompleted = true } }
+                BuildCompleted = true }
+          CacheKey = None }
 
     let handler = BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None
     host.RegisterHandler(recorder)
@@ -904,7 +905,8 @@ let ``BuildPlugin fails with false command`` () =
           Commands = []
           Subscriptions =
             { PluginSubscriptions.none with
-                BuildCompleted = true } }
+                BuildCompleted = true }
+          CacheKey = None }
 
     let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None
     host.RegisterHandler(recorder)
@@ -1389,7 +1391,8 @@ let ``BuildPlugin does not run concurrent builds`` () =
           Commands = []
           Subscriptions =
             { PluginSubscriptions.none with
-                BuildCompleted = true } }
+                BuildCompleted = true }
+          CacheKey = None }
 
     // Use /bin/sleep 1 as a slow build command so the second emit arrives while the first is running
     let handler = BuildPlugin.create "/bin/sleep" "1" [] (ProjectGraph()) [] None

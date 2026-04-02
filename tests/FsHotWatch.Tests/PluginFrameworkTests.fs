@@ -49,7 +49,8 @@ let ``registered plugin dispatches FileChanged`` () =
           Commands = [ "was-called", fun state _args -> async { return $"%b{state}" } ]
           Subscriptions =
             { PluginSubscriptions.none with
-                FileChanged = true } }
+                FileChanged = true }
+          CacheKey = None }
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
 
@@ -72,7 +73,8 @@ let ``registered plugin skips unsubscribed events`` () =
             { FileChanged = true
               FileChecked = false
               BuildCompleted = false
-              TestCompleted = true } }
+              TestCompleted = true }
+          CacheKey = None }
 
     let reg = registerDefault handler
 
@@ -99,7 +101,8 @@ let ``commands query agent state`` () =
               Commands = [ "get-count", fun state _args -> async { return $"%d{state}" } ]
               Subscriptions =
                 { PluginSubscriptions.none with
-                    FileChanged = true } }
+                    FileChanged = true }
+              CacheKey = None }
 
         let _reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
 
@@ -138,7 +141,8 @@ let ``Custom messages work for self-posting`` () =
               Commands = [ "got-custom", fun state _args -> async { return $"%b{state}" } ]
               Subscriptions =
                 { PluginSubscriptions.none with
-                    FileChanged = true } }
+                    FileChanged = true }
+              CacheKey = None }
 
         let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
 
@@ -179,7 +183,8 @@ let ``handler errors are recovered`` () =
               Commands = [ "get-state", fun state _args -> async { return $"%d{state}" } ]
               Subscriptions =
                 { PluginSubscriptions.none with
-                    FileChanged = true } }
+                    FileChanged = true }
+              CacheKey = None }
 
         let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
 

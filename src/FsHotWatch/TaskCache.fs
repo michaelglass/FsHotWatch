@@ -2,6 +2,7 @@
 module FsHotWatch.TaskCache
 
 open System.Collections.Concurrent
+open FsHotWatch.Events
 
 /// A captured side effect emitted by a plugin during execution.
 type CachedEvent =
@@ -97,3 +98,9 @@ type InMemoryTaskCache() =
         member _.ClearPlugin plugin = clearPlugin plugin
         member _.ClearFile file = clearFile file
         member _.ClearPluginFile plugin file = clearPluginFile plugin file
+
+/// Default cache key: jj commit_id for framework events, None for Custom events (uncacheable).
+let defaultCacheKey (getCommitId: unit -> string option) (event: PluginEvent<'Msg>) : string option =
+    match event with
+    | Custom _ -> None
+    | _ -> getCommitId ()
