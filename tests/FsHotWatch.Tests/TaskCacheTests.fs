@@ -10,6 +10,7 @@ open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 open FsHotWatch.TaskCache
 open FsHotWatch.Tests.TestHelpers
+open FsHotWatch.FileTaskCache
 
 let private fixedTime = DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc)
 
@@ -264,3 +265,160 @@ let ``plugin runs Update when cache key changes`` () =
     host.EmitFileChecked(dummyFileCheckResult "/src/C.fs")
     waitUntil (fun () -> updateCallCount = 2) 5000
     test <@ updateCallCount = 2 @>
+
+// --- FileTaskCache tests ---
+
+[<Fact>]
+let ``FileTaskCache persists and retrieves across instances`` () =
+    withTempDir "ftc-persist" (fun tmpDir ->
+        let cache1 = FileTaskCache(tmpDir)
+
+        let result =
+            { CacheKey = "abc"
+              Errors = [ "/src/A.fs", [ errorEntry "warn" DiagnosticSeverity.Warning ] ]
+              Status = Completed(at = fixedTime)
+              EmittedEvents = [] }
+
+        (cache1 :> ITaskCache).Set "lint--/src/A.fs" "abc" result
+
+        // New instance, same directory
+        let cache2 = FileTaskCache(tmpDir)
+        let retrieved = (cache2 :> ITaskCache).TryGet "lint--/src/A.fs" "abc"
+        test <@ retrieved.IsSome @>
+        test <@ retrieved.Value.Errors.Length = 1 @>)
+
+[<Fact>]
+let ``FileTaskCache clear removes all files`` () =
+    withTempDir "ftc-clear" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+
+        let result =
+            { CacheKey = "abc"
+              Errors = []
+              Status = Completed(at = fixedTime)
+              EmittedEvents = [] }
+
+        (cache :> ITaskCache).Set "build" "abc" result
+        (cache :> ITaskCache).Clear()
+        test <@ (cache :> ITaskCache).TryGet "build" "abc" |> Option.isNone @>)
+
+[<Fact>]
+let ``FileTaskCache roundtrips all PluginStatus variants`` () =
+    withTempDir "ftc-status" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+
+        let statuses =
+            [ Idle
+              Running(since = fixedTime)
+              Completed(at = fixedTime)
+              Failed("boom", at = fixedTime) ]
+
+        for i, status in statuses |> List.indexed do
+            let key = $"plugin--%d{i}"
+
+            let result =
+                { CacheKey = "k"
+                  Errors = []
+                  Status = status
+                  EmittedEvents = [] }
+
+            c.Set key "k" result
+
+        // Read back from a new instance
+        let cache2 = FileTaskCache(tmpDir)
+        let c2 = cache2 :> ITaskCache
+        test <@ (c2.TryGet "plugin--0" "k").Value.Status = Idle @>
+        test <@ (c2.TryGet "plugin--1" "k").Value.Status = Running(since = fixedTime) @>
+        test <@ (c2.TryGet "plugin--2" "k").Value.Status = Completed(at = fixedTime) @>
+        test <@ (c2.TryGet "plugin--3" "k").Value.Status = Failed("boom", at = fixedTime) @>)
+
+[<Fact>]
+let ``FileTaskCache roundtrips cached events`` () =
+    withTempDir "ftc-events" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+
+        let result =
+            { CacheKey = "k"
+              Errors = []
+              Status = Completed(at = fixedTime)
+              EmittedEvents =
+                [ CachedBuildCompleted BuildSucceeded
+                  CachedBuildCompleted(BuildFailed [ "err1"; "err2" ])
+                  CachedTestCompleted
+                      { Results = Map.ofList [ "proj1", TestsPassed "ok"; "proj2", TestsFailed "fail" ]
+                        Elapsed = System.TimeSpan.FromSeconds(3.5) } ] }
+
+        c.Set "build--X.fs" "k" result
+
+        let cache2 = FileTaskCache(tmpDir)
+        let r = (cache2 :> ITaskCache).TryGet "build--X.fs" "k"
+        test <@ r.IsSome @>
+        test <@ r.Value.EmittedEvents.Length = 3 @>)
+
+[<Fact>]
+let ``FileTaskCache roundtrips error entries with detail`` () =
+    withTempDir "ftc-detail" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+
+        let entry: ErrorEntry =
+            { Message = "test msg"
+              Severity = DiagnosticSeverity.Error
+              Line = 42
+              Column = 7
+              Detail = Some "full detail" }
+
+        let result =
+            { CacheKey = "k"
+              Errors = [ "/src/X.fs", [ entry ] ]
+              Status = Completed(at = fixedTime)
+              EmittedEvents = [] }
+
+        c.Set "lint--/src/X.fs" "k" result
+
+        let cache2 = FileTaskCache(tmpDir)
+        let r = (cache2 :> ITaskCache).TryGet "lint--/src/X.fs" "k"
+        test <@ r.IsSome @>
+        let e = r.Value.Errors.[0] |> snd |> List.head
+        test <@ e.Message = "test msg" @>
+        test <@ e.Severity = DiagnosticSeverity.Error @>
+        test <@ e.Line = 42 @>
+        test <@ e.Column = 7 @>
+        test <@ e.Detail = Some "full detail" @>)
+
+[<Fact>]
+let ``FileTaskCache ClearPlugin removes only matching files`` () =
+    withTempDir "ftc-clearplugin" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+        c.Set "build--Foo.fs" "h1" (makeResult "h1")
+        c.Set "lint--Foo.fs" "h2" (makeResult "h2")
+        c.ClearPlugin "build"
+        test <@ c.TryGet "build--Foo.fs" "h1" |> Option.isNone @>
+        test <@ c.TryGet "lint--Foo.fs" "h2" |> Option.isSome @>)
+
+[<Fact>]
+let ``FileTaskCache ClearFile removes entries matching the file`` () =
+    withTempDir "ftc-clearfile" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+        c.Set "build--Foo.fs" "h1" (makeResult "h1")
+        c.Set "lint--Foo.fs" "h2" (makeResult "h2")
+        c.Set "build--Bar.fs" "h3" (makeResult "h3")
+        c.ClearFile "Foo.fs"
+        test <@ c.TryGet "build--Foo.fs" "h1" |> Option.isNone @>
+        test <@ c.TryGet "lint--Foo.fs" "h2" |> Option.isNone @>
+        test <@ c.TryGet "build--Bar.fs" "h3" |> Option.isSome @>)
+
+[<Fact>]
+let ``FileTaskCache ClearPluginFile removes specific entry`` () =
+    withTempDir "ftc-clearpf" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+        c.Set "build--Foo.fs" "h1" (makeResult "h1")
+        c.Set "build--Bar.fs" "h2" (makeResult "h2")
+        c.ClearPluginFile "build" "Foo.fs"
+        test <@ c.TryGet "build--Foo.fs" "h1" |> Option.isNone @>
+        test <@ c.TryGet "build--Bar.fs" "h2" |> Option.isSome @>)

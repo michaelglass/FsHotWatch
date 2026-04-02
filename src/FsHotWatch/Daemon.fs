@@ -741,7 +741,8 @@ module Daemon =
             FsHotWatch.FileErrorReporter.FileErrorReporter(errorDir)
 
         fileReporter.ClearAll()
-        let taskCache = FsHotWatch.TaskCache.InMemoryTaskCache()
+        let taskCacheDir = Path.Combine(repoRoot, ".fshw", "cache", "tasks")
+        let taskCache = FsHotWatch.FileTaskCache.FileTaskCache(taskCacheDir)
 
         let host =
             PluginHost(checker, repoRoot, reporters = [ fileReporter ], taskCache = taskCache)
