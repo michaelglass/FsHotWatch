@@ -143,10 +143,9 @@ let registerHandler
 
                             // Replay errors
                             for (file, entries) in result.Errors do
-                                if entries.IsEmpty then
-                                    clearErrors handler.Name file
-                                else
-                                    reportErrors handler.Name file entries
+                                if file = "*" then clearPlugin handler.Name
+                                elif entries.IsEmpty then clearErrors handler.Name file
+                                else reportErrors handler.Name file entries
 
                             // Replay status
                             reportStatus handler.Name result.Status
