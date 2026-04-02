@@ -12,7 +12,7 @@
     <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
     <PackageTags>fsharp;testing;falco;routing;test-impact-analysis</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <Version>0.1.0-alpha.8</Version>
+    <Version>0.1.0-alpha.9</Version>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
