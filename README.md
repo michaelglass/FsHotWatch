@@ -63,44 +63,57 @@ FsHotWatch is split into small packages so you only install what you need:
 
 ## Writing your own plugin
 
-A plugin is an F# class that subscribes to events from the daemon.
-Here's the simplest possible plugin:
+Plugins use a declarative framework: you define an update function that
+receives events and returns new state. The framework manages the agent,
+status tracking, and IPC command registration.
 
 ```fsharp
 open FsHotWatch.Events
-open FsHotWatch.Plugin
+open FsHotWatch.PluginFramework
 
-type MyPlugin() =
-    interface IFsHotWatchPlugin with
-        member _.Name = "my-plugin"
+type MyState = { FilesChecked: int }
 
-        member _.Initialize(ctx) =
-            // Called once when the daemon starts.
-            // Subscribe to events you care about:
-            ctx.OnFileChecked.Add(fun result ->
-                // 'result' has .ParseResults and .CheckResults from the warm compiler.
-                // Do your analysis here (lint, analyze, check tests, etc.)
-                printfn "Checked: %s" result.File
-                ctx.ReportStatus(Completed(box "done", System.DateTime.UtcNow)))
+let myPlugin: PluginHandler<MyState, unit> =
+    { Name = "my-plugin"
+      Init = { FilesChecked = 0 }
+      Update =
+        fun ctx state event ->
+            async {
+                match event with
+                | FileChecked result ->
+                    // result.ParseResults and result.CheckResults come from
+                    // the warm FSharpChecker — no re-parsing needed.
+                    printfn "Checked: %s" result.File
+                    ctx.ReportStatus(Completed(System.DateTime.UtcNow))
+                    return { FilesChecked = state.FilesChecked + 1 }
+                | _ -> return state
+            }
+      Commands =
+        [ "my-status",
+          fun state _args ->
+              async { return $"checked %d{state.FilesChecked} files" } ]
+      Subscriptions =
+        { PluginSubscriptions.none with
+            FileChecked = true }
+      CacheKey = None }
 
-            // Register a command that users can query via CLI:
-            ctx.RegisterCommand("my-status", fun _args ->
-                async { return "everything is fine" })
-
-        member _.Dispose() = ()
+// Register with the daemon:
+daemon.RegisterHandler(myPlugin)
 ```
 
-**Available events:**
-- `ctx.OnFileChanged` — a source file was saved (you get the file path)
-- `ctx.OnBuildCompleted` — `dotnet build` finished (success or failure)
-- `ctx.OnFileChecked` — a file was type-checked (you get parse + check results)
-- `ctx.OnProjectChecked` — all files in a project were checked
+**Available events (subscribe via `Subscriptions`):**
+- `FileChanged` — a source file was saved (you get the file paths)
+- `BuildCompleted` — `dotnet build` finished (success or failure)
+- `FileChecked` — a file was type-checked (you get parse + check results)
+- `TestCompleted` — tests finished running (you get per-project results)
 
-**What you can do in Initialize:**
+**What you can do in Update via `ctx`:**
 - `ctx.Checker` — the warm FSharpChecker (reuse it for your own analysis)
 - `ctx.RepoRoot` — path to the repository root
 - `ctx.ReportStatus(status)` — tell the daemon your current status
-- `ctx.RegisterCommand(name, handler)` — add a CLI command
+- `ctx.ReportErrors(file, entries)` — report diagnostics to the error ledger
+- `ctx.EmitBuildCompleted(result)` — emit events to other plugins
+- `ctx.Post(msg)` — send a custom message back to your own agent
 
 ## Cache Directory
 
@@ -170,17 +183,53 @@ Create `.fs-hot-watch.json` in your repo root. All fields are optional — sensi
 | `analyzers` | `object` | — | F# Analyzers SDK integration. |
 | `fileCommands` | `array` | `[]` | Custom commands triggered by file patterns. |
 
+**`build` fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `command` | `string` | `"dotnet"` | Build command. |
+| `args` | `string` | `"build"` | Arguments to the build command. |
+| `buildTemplate` | `string` | — | Template for incremental builds. `{projects}` is replaced with changed project paths. |
+
+**`tests` fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `beforeRun` | `string` | — | Command to run before each test run (e.g. `"dotnet build"`). |
+| `projects` | `array` | `[]` | List of test project configurations. |
+
 **`tests.projects[]` fields:**
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `project` | `string` | `"unknown"` | Project name (used for filtering and display). |
 | `command` | `string` | `"dotnet"` | Test runner command. |
-| `args` | `string` | `"test"` | Arguments to the test runner. |
+| `args` | `string` | `"test --project <project>"` | Arguments to the test runner. |
 | `group` | `string` | `"default"` | Group name (for running subsets). |
-| `environment` | `object` | `{}` | Extra environment variables. |
-| `filterTemplate` | `string` | — | Template for class-based filtering. `{classes}` is replaced. |
+| `environment` | `object` | `{}` | Extra environment variables as `"KEY": "VALUE"` pairs. |
+| `filterTemplate` | `string` | — | Template for class-based filtering. `{classes}` is replaced with affected test class names. |
 | `classJoin` | `string` | `" "` | Separator for joining class names in the filter. |
+
+**`coverage` fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `directory` | `string` | `"./coverage"` | Directory containing Cobertura XML coverage reports. |
+| `thresholdsFile` | `string` | — | Path to JSON file with per-project coverage thresholds. |
+
+**`analyzers` fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `paths` | `string[]` | — | Directories containing analyzer DLLs. Relative paths resolved from repo root. |
+
+**`fileCommands[]` fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `pattern` | `string` | `"*.fsx"` | File extension pattern to match (e.g. `"*.fsx"`, `"*.sql"`). |
+| `command` | `string` | `"echo"` | Command to run when a matching file changes. |
+| `args` | `string` | `""` | Arguments to the command. |
 
 ## Architecture
 

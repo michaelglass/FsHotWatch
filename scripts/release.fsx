@@ -130,8 +130,11 @@ module Shell =
         psi.RedirectStandardError <- true
         psi.UseShellExecute <- false
         use p = Process.Start(psi)
+        // Read stdout and stderr concurrently to avoid deadlock when
+        // either stream's buffer fills while we block reading the other.
+        let errorTask = p.StandardError.ReadToEndAsync()
         let output = p.StandardOutput.ReadToEnd()
-        let error = p.StandardError.ReadToEnd()
+        let error = errorTask.Result
         p.WaitForExit()
 
         if p.ExitCode = 0 then
@@ -263,7 +266,7 @@ module Api =
             []
 
     let extractCurrent (pkg: PackageConfig) : ApiSignature list =
-        Shell.runOrFail "dotnet" "build -c Release --verbosity quiet" |> ignore
+        // Caller (release) already runs `dotnet build -c Release` before invoking this.
         extractFromDll (Path.GetFullPath pkg.DllPath)
 
     let extractFromTag (pkg: PackageConfig) (tag: string) : ApiSignature list =
@@ -543,11 +546,14 @@ module UI =
         printfn ""
         printfn "Automatically detects which packages have API changes and releases them."
         printfn "Each package gets its own version and tag:"
-        printfn "  core-v1.0.0      FsHotWatch + FsHotWatch.Cli (same version)"
-        printfn "  testprune-v1.0.0 FsHotWatch.TestPrune"
-        printfn "  analyzers-v1.0.0 FsHotWatch.Analyzers"
-        printfn "  lint-v1.0.0      FsHotWatch.Lint"
-        printfn "  fantomas-v1.0.0  FsHotWatch.Fantomas"
+        printfn "  core-v1.0.0        FsHotWatch + FsHotWatch.Cli (same version)"
+        printfn "  testprune-v1.0.0   FsHotWatch.TestPrune"
+        printfn "  analyzers-v1.0.0   FsHotWatch.Analyzers"
+        printfn "  lint-v1.0.0        FsHotWatch.Lint"
+        printfn "  fantomas-v1.0.0    FsHotWatch.Fantomas"
+        printfn "  build-v1.0.0       FsHotWatch.Build"
+        printfn "  coverage-v1.0.0    FsHotWatch.Coverage"
+        printfn "  filecommand-v1.0.0 FsHotWatch.FileCommand"
         printfn ""
         printfn "Commands:"
         printfn "  (none)  - auto-detect changes, bump based on API diff"
@@ -671,8 +677,15 @@ let release (cmd: ReleaseCommand) (mode: PublishMode) : int =
             printfn "\nPackages to release:"
 
             for (pkg, bump) in bumps do
+                let state = VCS.getReleaseState pkg
+
+                let currentStr =
+                    match state with
+                    | FirstRelease -> "(new)"
+                    | HasPreviousRelease(_, v) -> Version.format v
+
                 let tag = Version.toTag pkg bump.NewVersion
-                printfn "  %s: %s -> %s (%s)" pkg.Name (tag) (Version.format bump.NewVersion) bump.Reason
+                printfn "  %s: %s -> %s [%s] (%s)" pkg.Name currentStr (Version.format bump.NewVersion) tag bump.Reason
 
             match mode with
             | LocalPublish -> printfn "\nMode: local publish to NuGet"

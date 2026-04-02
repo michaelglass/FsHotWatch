@@ -410,7 +410,12 @@ let executeCommand
             eprintfn "Failed to start daemon"
             1
         else
-            runIpcWithExitCode (ipc.RunCommand pipeName "lint" "")
+            eprintfn "  Waiting for scan to complete..."
+            let scanResult = ipc.WaitForScan pipeName -1L |> Async.RunSynchronously
+            eprintfn "  Scan: %s" scanResult
+            eprintfn "  Waiting for lint to complete..."
+            ipc.WaitForComplete pipeName |> Async.RunSynchronously |> ignore
+            runIpcWithExitCode (ipc.GetErrors pipeName "lint")
     | Errors ->
         if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
             eprintfn "Failed to start daemon"
