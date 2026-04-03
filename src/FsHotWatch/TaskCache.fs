@@ -10,6 +10,8 @@ type CachedEvent =
     | CachedBuildCompleted of FsHotWatch.Events.BuildResult
     /// A test completed event captured for replay.
     | CachedTestCompleted of FsHotWatch.Events.TestResults
+    /// A command completed event captured for replay.
+    | CachedCommandCompleted of FsHotWatch.Events.CommandCompletedResult
 
 /// The full result of a plugin processing an event, captured for replay.
 [<NoComparison>]

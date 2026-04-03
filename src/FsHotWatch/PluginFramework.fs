@@ -23,6 +23,8 @@ type PluginCtx<'Msg> =
         EmitBuildCompleted: BuildResult -> unit
         /// Emit a test completed event to other plugins.
         EmitTestCompleted: TestResults -> unit
+        /// Emit a command completed event to other plugins.
+        EmitCommandCompleted: CommandCompletedResult -> unit
         /// The warm FSharpChecker instance shared across all plugins.
         Checker: FSharp.Compiler.CodeAnalysis.FSharpChecker
         /// The repository root directory.
@@ -42,6 +44,8 @@ type PluginSubscriptions =
         BuildCompleted: bool
         /// Subscribe to test completed events.
         TestCompleted: bool
+        /// Subscribe to command completed events.
+        CommandCompleted: bool
     }
 
 /// Helper functions for PluginSubscriptions.
@@ -51,7 +55,8 @@ module PluginSubscriptions =
         { FileChanged = false
           FileChecked = false
           BuildCompleted = false
-          TestCompleted = false }
+          TestCompleted = false
+          CommandCompleted = false }
 
 /// Declarative plugin definition.
 [<NoComparison; NoEquality>]
@@ -86,6 +91,8 @@ type RegisteredPlugin =
         OnBuildCompleted: (BuildResult -> unit) option
         /// Handler for test completed events, if subscribed.
         OnTestCompleted: (TestResults -> unit) option
+        /// Handler for command completed events, if subscribed.
+        OnCommandCompleted: (CommandCompletedResult -> unit) option
     }
 
 /// Register a declarative plugin handler, returning a type-erased RegisteredPlugin.
@@ -99,6 +106,7 @@ let registerHandler
     (clearPlugin: string -> unit)
     (emitBuildCompleted: BuildResult -> unit)
     (emitTestCompleted: TestResults -> unit)
+    (emitCommandCompleted: CommandCompletedResult -> unit)
     (registerCommand: string * CommandHandler -> unit)
     (taskCache: TaskCache.ITaskCache option)
     (handler: PluginHandler<'State, 'Msg>)
@@ -113,6 +121,7 @@ let registerHandler
                   ClearAllErrors = fun () -> clearPlugin handler.Name
                   EmitBuildCompleted = emitBuildCompleted
                   EmitTestCompleted = emitTestCompleted
+                  EmitCommandCompleted = emitCommandCompleted
                   Checker = checker
                   RepoRoot = repoRoot
                   Post = fun msg -> inbox.Post(Choice1Of2(Custom msg)) }
@@ -124,6 +133,7 @@ let registerHandler
                 | FileChanged _ -> handler.Name
                 | BuildCompleted _ -> handler.Name
                 | TestCompleted _ -> handler.Name
+                | CommandCompleted _ -> handler.Name
                 | Custom _ -> handler.Name
 
             /// Try to replay a cached result. Returns true if cache hit.
@@ -155,6 +165,7 @@ let registerHandler
                                 match emitted with
                                 | TaskCache.CachedBuildCompleted r -> emitBuildCompleted r
                                 | TaskCache.CachedTestCompleted r -> emitTestCompleted r
+                                | TaskCache.CachedCommandCompleted r -> emitCommandCompleted r
 
                             true
                         | None -> false
@@ -206,6 +217,10 @@ let registerHandler
                                     fun r ->
                                         capturedEvents.Add(TaskCache.CachedTestCompleted r)
                                         emitTestCompleted r
+                                  EmitCommandCompleted =
+                                    fun r ->
+                                        capturedEvents.Add(TaskCache.CachedCommandCompleted r)
+                                        emitCommandCompleted r
                                   Checker = checker
                                   RepoRoot = repoRoot
                                   Post = fun msg -> inbox.Post(Choice1Of2(Custom msg)) }
@@ -283,5 +298,10 @@ let registerHandler
       OnTestCompleted =
         if handler.Subscriptions.TestCompleted then
             Some(fun r -> post (TestCompleted r))
+        else
+            None
+      OnCommandCompleted =
+        if handler.Subscriptions.CommandCompleted then
+            Some(fun r -> post (CommandCompleted r))
         else
             None }

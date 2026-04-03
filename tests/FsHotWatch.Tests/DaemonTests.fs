@@ -483,3 +483,22 @@ let ``FormatScanStatus returns complete for ScanComplete`` () =
         let status = daemon.FormatScanStatus()
         test <@ status.Contains("70 files") @>
         test <@ status.Contains("15.5s") @>)
+
+[<Fact>]
+let ``RunOnce completes and returns plugin statuses`` () =
+    withTempDir "daemon" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let daemon = Daemon.createWith nullChecker tmpDir None None
+
+        let handler =
+            { Name = "runonce-test"
+              Init = ()
+              Update = fun _ctx state _event -> async { return state }
+              Commands = []
+              Subscriptions = PluginSubscriptions.none
+              CacheKey = None }
+
+        daemon.RegisterHandler(handler)
+
+        let statuses = Async.RunSynchronously(daemon.RunOnce(), timeout = 30000)
+        test <@ statuses.ContainsKey("runonce-test") @>)

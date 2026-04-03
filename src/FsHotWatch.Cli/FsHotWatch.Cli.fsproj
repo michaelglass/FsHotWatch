@@ -25,6 +25,8 @@
 
     <ItemGroup>
         <Compile Include="DaemonConfig.fs" />
+        <Compile Include="InitConfig.fs" />
+        <Compile Include="RunOnceOutput.fs" />
         <Compile Include="Program.fs" />
     </ItemGroup>
 
@@ -40,6 +42,7 @@
     </ItemGroup>
 
     <ItemGroup>
+        <PackageReference Include="TestPrune.Falco" Version="0.1.0-beta.1" />
         <PackageReference Update="FSharp.Core" Version="10.1.*" />
     </ItemGroup>
 </Project>

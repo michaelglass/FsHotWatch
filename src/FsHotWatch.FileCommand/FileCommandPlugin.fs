@@ -11,7 +11,9 @@ type CommandResult =
     | Succeeded of output: string
     | CommandFailed of output: string
 
-type FileCommandState = { LastResult: CommandResult }
+type FileCommandState =
+    { LastResult: CommandResult
+      HasRunOnce: bool }
 
 /// Creates a framework plugin handler that runs a command when files matching a filter change.
 let create
@@ -19,10 +21,13 @@ let create
     (fileFilter: string -> bool)
     (command: string)
     (args: string)
+    (runOnStart: bool)
     (getCommitId: (unit -> string option) option)
     : PluginHandler<FileCommandState, unit> =
     { Name = name
-      Init = { LastResult = NotRun }
+      Init =
+        { LastResult = NotRun
+          HasRunOnce = false }
       Update =
         fun ctx state event ->
             async {
@@ -36,7 +41,13 @@ let create
 
                     let matching = files |> List.filter fileFilter
 
-                    if matching.IsEmpty then
+                    let shouldRun =
+                        if runOnStart && not state.HasRunOnce then
+                            true
+                        else
+                            matching |> (not << List.isEmpty)
+
+                    if not shouldRun then
                         return state
                     else
                         ctx.ReportStatus(Running(since = DateTime.UtcNow))
@@ -53,12 +64,29 @@ let create
                                 ctx.ReportErrors $"<%s{name}>" [ ErrorEntry.error output ]
                                 ctx.ReportStatus(PluginStatus.Failed($"%s{name} failed", DateTime.UtcNow))
 
-                            return { LastResult = result }
+                            ctx.EmitCommandCompleted(
+                                { Name = name
+                                  Succeeded = success
+                                  Output = output }
+                            )
+
+                            return
+                                { LastResult = result
+                                  HasRunOnce = true }
                         with ex ->
                             ctx.ReportErrors $"<%s{name}>" [ ErrorEntry.error ex.Message ]
 
                             ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
-                            return { LastResult = CommandFailed ex.Message }
+
+                            ctx.EmitCommandCompleted(
+                                { Name = name
+                                  Succeeded = false
+                                  Output = ex.Message }
+                            )
+
+                            return
+                                { LastResult = CommandFailed ex.Message
+                                  HasRunOnce = true }
                 | _ -> return state
             }
       Commands =
