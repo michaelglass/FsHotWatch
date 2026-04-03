@@ -25,44 +25,81 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      skipped: ${{ steps.check-existing.outputs.skip }}
+      prior-run-id: ${{ steps.check-existing.outputs.prior-run-id }}
 
     steps:
+      - name: Check for existing successful build on this commit
+        id: check-existing
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'ci.yml',
+              head_sha: context.sha,
+              status: 'completed',
+              per_page: 10,
+            });
+            const priorRun = runs.data.workflow_runs.find(run =>
+              run.conclusion === 'success' && run.id !== context.runId
+            );
+            const skip = !!priorRun;
+            core.setOutput('skip', skip.toString());
+            if (priorRun) {
+              core.setOutput('prior-run-id', priorRun.id.toString());
+              core.info(`Skipping build — run ${priorRun.id} already succeeded for ${context.sha}`);
+            }
+
       - uses: actions/checkout@v4
+        if: steps.check-existing.outputs.skip != 'true'
 
       - name: Setup .NET
+        if: steps.check-existing.outputs.skip != 'true'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
 
       - name: Restore dependencies
+        if: steps.check-existing.outputs.skip != 'true'
         run: dotnet restore
 
       - name: Restore tools
+        if: steps.check-existing.outputs.skip != 'true'
         run: dotnet tool restore
 
       - name: Check formatting
+        if: steps.check-existing.outputs.skip != 'true'
         run: dotnet fantomas src/ tests/ --check
 
       - name: Check docs sync
+        if: steps.check-existing.outputs.skip != 'true'
         run: dotnet fsi scripts/sync-docs.fsx --check
 
       - name: Build
+        if: steps.check-existing.outputs.skip != 'true'
         run: dotnet build --no-restore
 
       - name: Lint
+        if: steps.check-existing.outputs.skip != 'true'
         run: dotnet fsharplint lint FsHotWatch.slnx
 
       - name: Generate docs
+        if: steps.check-existing.outputs.skip != 'true'
         run: dotnet fsdocs build --output output/docs --clean --parameters root /FsHotWatch/
 
       - name: Upload docs artifact
-        if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/core-v') || startsWith(github.ref, 'refs/tags/testprune-v') || startsWith(github.ref, 'refs/tags/analyzers-v') || startsWith(github.ref, 'refs/tags/lint-v') || startsWith(github.ref, 'refs/tags/fantomas-v') || startsWith(github.ref, 'refs/tags/build-v') || startsWith(github.ref, 'refs/tags/coverage-v') || startsWith(github.ref, 'refs/tags/filecommand-v'))
+        if: steps.check-existing.outputs.skip != 'true' && github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/core-v') || startsWith(github.ref, 'refs/tags/testprune-v') || startsWith(github.ref, 'refs/tags/analyzers-v') || startsWith(github.ref, 'refs/tags/lint-v') || startsWith(github.ref, 'refs/tags/fantomas-v') || startsWith(github.ref, 'refs/tags/build-v') || startsWith(github.ref, 'refs/tags/coverage-v') || startsWith(github.ref, 'refs/tags/filecommand-v'))
         uses: actions/upload-artifact@v4
         with:
           name: docs
           path: output/docs
 
       - name: Test with coverage
+        if: steps.check-existing.outputs.skip != 'true'
         run: |
           dotnet test --no-build --verbosity normal \
             --coverage \
@@ -70,6 +107,7 @@ jobs:
             --coverage-output "$PWD/coverage/coverage.cobertura.xml"
 
       - name: Generate coverage report
+        if: steps.check-existing.outputs.skip != 'true'
         uses: danielpalme/ReportGenerator-GitHub-Action@5
         with:
           reports: ./coverage/coverage.cobertura.xml
@@ -77,6 +115,7 @@ jobs:
           reporttypes: Cobertura;MarkdownSummaryGithub;Html
 
       - name: Check coverage threshold
+        if: steps.check-existing.outputs.skip != 'true'
         uses: irongut/CodeCoverageSummary@v1.3.0
         with:
           filename: ./coverage/report/Cobertura.xml
@@ -91,14 +130,14 @@ jobs:
 
       - name: Add coverage PR comment
         uses: marocchino/sticky-pull-request-comment@v2
-        if: github.event_name == 'pull_request'
+        if: steps.check-existing.outputs.skip != 'true' && github.event_name == 'pull_request'
         with:
           recreate: true
           path: code-coverage-results.md
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
-        if: always()
+        if: steps.check-existing.outputs.skip != 'true' && always()
         with:
           name: coverage-report
           path: ./coverage/report
@@ -141,11 +180,20 @@ jobs:
           fi
 
       - name: Download docs artifact
-        if: steps.check.outputs.is_prerelease == 'false' || steps.check.outputs.has_stable == 'false'
+        if: (steps.check.outputs.is_prerelease == 'false' || steps.check.outputs.has_stable == 'false') && needs.build.outputs.skipped != 'true'
         uses: actions/download-artifact@v4
         with:
           name: docs
           path: /tmp/docs-output
+
+      - name: Download docs artifact from prior run
+        if: (steps.check.outputs.is_prerelease == 'false' || steps.check.outputs.has_stable == 'false') && needs.build.outputs.skipped == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: docs
+          path: /tmp/docs-output
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ needs.build.outputs.prior-run-id }}
 
       - name: Deploy to gh-pages branch
         if: steps.check.outputs.is_prerelease == 'false' || steps.check.outputs.has_stable == 'false'
