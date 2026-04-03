@@ -35,6 +35,8 @@
     <Compile Include="ProjectGraphTests.fs" />
     <Compile Include="CheckPipelineTests.fs" />
     <Compile Include="DaemonConfigTests.fs" />
+    <Compile Include="InitConfigTests.fs" />
+    <Compile Include="RunOnceOutputTests.fs" />
     <Compile Include="CliTests.fs" />
     <Compile Include="BuildPluginTests.fs" />
     <Compile Include="CoveragePluginTests.fs" />

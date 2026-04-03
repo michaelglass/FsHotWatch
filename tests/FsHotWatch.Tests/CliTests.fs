@@ -42,8 +42,12 @@ let ``parseCommand --help returns Help`` () =
 let ``parseCommand -h returns Help`` () = test <@ parseCommand [ "-h" ] = Help @>
 
 [<Fact>]
-let ``parseCommand start returns Start`` () =
-    test <@ parseCommand [ "start" ] = Start @>
+let ``parseCommand start returns Start false`` () =
+    test <@ parseCommand [ "start" ] = Start false @>
+
+[<Fact>]
+let ``parseCommand start --run-once returns Start true`` () =
+    test <@ parseCommand [ "start"; "--run-once" ] = Start true @>
 
 [<Fact>]
 let ``parseCommand stop returns Stop`` () =
@@ -76,6 +80,48 @@ let ``parseCommand unknown command returns PluginCommand`` () =
 [<Fact>]
 let ``parseCommand command with args joins them`` () =
     test <@ parseCommand [ "run"; "--verbose"; "foo" ] = PluginCommand("run", "--verbose foo") @>
+
+[<Fact>]
+let ``parseCommand analyze returns AnalyzeCheck`` () =
+    test <@ parseCommand [ "analyze" ] = AnalyzeCheck false @>
+
+[<Fact>]
+let ``parseCommand format --check returns FormatCheck`` () =
+    test <@ parseCommand [ "format"; "--check" ] = FormatCheck false @>
+
+[<Fact>]
+let ``parseCommand lint --run-once`` () =
+    test <@ parseCommand [ "lint"; "--run-once" ] = Lint true @>
+
+[<Fact>]
+let ``parseCommand build --run-once`` () =
+    test <@ parseCommand [ "build"; "--run-once" ] = Build true @>
+
+[<Fact>]
+let ``parseCommand analyze --run-once`` () =
+    test <@ parseCommand [ "analyze"; "--run-once" ] = AnalyzeCheck true @>
+
+[<Fact>]
+let ``parseCommand format --run-once`` () =
+    test <@ parseCommand [ "format"; "--run-once" ] = Format true @>
+
+[<Fact>]
+let ``parseCommand format --check --run-once`` () =
+    test <@ parseCommand [ "format"; "--check"; "--run-once" ] = FormatCheck true @>
+
+[<Fact>]
+let ``parseCommand test --run-once`` () =
+    test <@ parseCommand [ "test"; "--run-once" ] = Test("{}", true) @>
+
+[<Fact>]
+let ``parseCommand test with flags and --run-once`` () =
+    let result = parseCommand [ "test"; "-p"; "MyProj"; "--run-once" ]
+
+    match result with
+    | Test(json, runOnce) ->
+        test <@ json.Contains("\"projects\": [\"MyProj\"]") @>
+        test <@ runOnce = true @>
+    | _ -> failwith "Expected Test command"
 
 // --- findRepoRoot tests ---
 
@@ -292,7 +338,7 @@ let ``CLI command proxying works against running daemon`` () =
 
 let private fakeConfig: DaemonConfiguration =
     { Build = None
-      Format = false
+      Format = Off
       Lint = false
       Cache = NoCache
       Analyzers = None
@@ -437,7 +483,7 @@ let ``executeCommand Start with fake daemon throws on null daemon`` () =
 
     let threw =
         try
-            executeCommand createDaemon (fakeIpc ()) "/tmp" "pipe" Start "" fakeConfig
+            executeCommand createDaemon (fakeIpc ()) "/tmp" "pipe" (Start false) "" fakeConfig
             |> ignore
 
             false
@@ -484,14 +530,14 @@ let ``decideDaemonAction starts fresh when not running even with matching hash``
 
 [<Fact>]
 let ``parseCommand test with no flags returns empty JSON`` () =
-    test <@ parseCommand [ "test" ] = Test "{}" @>
+    test <@ parseCommand [ "test" ] = Test("{}", false) @>
 
 [<Fact>]
 let ``parseCommand test with --project returns projects JSON`` () =
     let result = parseCommand [ "test"; "--project"; "MyProj" ]
 
     match result with
-    | Test json -> test <@ json.Contains("\"projects\": [\"MyProj\"]") @>
+    | Test(json, _) -> test <@ json.Contains("\"projects\": [\"MyProj\"]") @>
     | _ -> failwith "Expected Test command"
 
 [<Fact>]
@@ -499,7 +545,7 @@ let ``parseCommand test with -p short flag returns projects JSON`` () =
     let result = parseCommand [ "test"; "-p"; "MyProj" ]
 
     match result with
-    | Test json -> test <@ json.Contains("\"projects\": [\"MyProj\"]") @>
+    | Test(json, _) -> test <@ json.Contains("\"projects\": [\"MyProj\"]") @>
     | _ -> failwith "Expected Test command"
 
 [<Fact>]
@@ -507,7 +553,7 @@ let ``parseCommand test with --filter returns filter JSON`` () =
     let result = parseCommand [ "test"; "--filter"; "MyClass" ]
 
     match result with
-    | Test json -> test <@ json.Contains("\"filter\": \"MyClass\"") @>
+    | Test(json, _) -> test <@ json.Contains("\"filter\": \"MyClass\"") @>
     | _ -> failwith "Expected Test command"
 
 [<Fact>]
@@ -515,7 +561,7 @@ let ``parseCommand test with -f short flag returns filter JSON`` () =
     let result = parseCommand [ "test"; "-f"; "MyClass" ]
 
     match result with
-    | Test json -> test <@ json.Contains("\"filter\": \"MyClass\"") @>
+    | Test(json, _) -> test <@ json.Contains("\"filter\": \"MyClass\"") @>
     | _ -> failwith "Expected Test command"
 
 [<Fact>]
@@ -523,7 +569,7 @@ let ``parseCommand test with --only-failed returns only-failed JSON`` () =
     let result = parseCommand [ "test"; "--only-failed" ]
 
     match result with
-    | Test json -> test <@ json.Contains("\"only-failed\": true") @>
+    | Test(json, _) -> test <@ json.Contains("\"only-failed\": true") @>
     | _ -> failwith "Expected Test command"
 
 [<Fact>]
@@ -531,7 +577,7 @@ let ``parseCommand test with all flags combined`` () =
     let result = parseCommand [ "test"; "-p"; "A"; "-f"; "B"; "--only-failed" ]
 
     match result with
-    | Test json ->
+    | Test(json, _) ->
         test <@ json.Contains("\"only-failed\": true") @>
         test <@ json.Contains("\"projects\": [\"A\"]") @>
         test <@ json.Contains("\"filter\": \"B\"") @>
@@ -542,7 +588,7 @@ let ``parseCommand test with unknown flags ignores them`` () =
     let result = parseCommand [ "test"; "--unknown-flag" ]
 
     match result with
-    | Test json -> test <@ json = "{}" @>
+    | Test(json, _) -> test <@ json = "{}" @>
     | _ -> failwith "Expected Test command"
 
 // --- runIpcWithExitCode exit code paths via executeCommand ---
@@ -587,7 +633,7 @@ let ``executeCommand Build with status passed returns exit code 0`` () =
             TriggerBuild = fun _ -> async { return """{"status": "passed"}""" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Build "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build false) "" fakeConfig
 
     test <@ result = 0 @>
 
@@ -598,7 +644,7 @@ let ``executeCommand Build with status failed returns exit code 1`` () =
             TriggerBuild = fun _ -> async { return """{"status": "failed"}""" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Build "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build false) "" fakeConfig
 
     test <@ result = 1 @>
 
@@ -609,7 +655,7 @@ let ``executeCommand Build with plain text returns exit code 0`` () =
             TriggerBuild = fun _ -> async { return "build completed successfully" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Build "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build false) "" fakeConfig
 
     test <@ result = 0 @>
 
@@ -629,7 +675,7 @@ let ``executeCommand Build calls triggerBuild`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Build "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build false) "" fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>
@@ -650,7 +696,14 @@ let ``executeCommand Test calls runCommand with run-tests`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Test """{"filter": "Foo"}""") "" fakeConfig
+        executeCommand
+            (fun _ -> Unchecked.defaultof<_>)
+            ipc
+            "/tmp"
+            "pipe"
+            (Test("""{"filter": "Foo"}""", false))
+            ""
+            fakeConfig
 
     test <@ result = 0 @>
     test <@ cmdName = "run-tests" @>
@@ -670,7 +723,7 @@ let ``executeCommand Format calls formatAll`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Format "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Format false) "" fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>
@@ -689,7 +742,7 @@ let ``executeCommand Lint scans waits and gets lint errors`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Lint "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Lint false) "" fakeConfig
 
     test <@ result = 0 @>
     test <@ errorFilter = "lint" @>

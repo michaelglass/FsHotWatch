@@ -10,13 +10,18 @@ open FsHotWatch.Tests.TestHelpers
 
 [<Fact>]
 let ``plugin has correct name`` () =
-    let handler = create "run-scripts" (fun f -> f.EndsWith(".fsx")) "echo" "hello" None
+    let handler =
+        create "run-scripts" (fun f -> f.EndsWith(".fsx")) "echo" "hello" false None
+
     test <@ handler.Name = "run-scripts" @>
 
 [<Fact>]
 let ``command runs when matching files change`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create "run-scripts" (fun f -> f.EndsWith(".fsx")) "echo" "hello" None
+
+    let handler =
+        create "run-scripts" (fun f -> f.EndsWith(".fsx")) "echo" "hello" false None
+
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "scripts/build.fsx" ])
@@ -41,7 +46,10 @@ let ``command runs when matching files change`` () =
 [<Fact>]
 let ``command does not run for non-matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create "run-scripts" (fun f -> f.EndsWith(".fsx")) "echo" "hello" None
+
+    let handler =
+        create "run-scripts" (fun f -> f.EndsWith(".fsx")) "echo" "hello" false None
+
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -63,7 +71,7 @@ let ``command does not run for non-matching files`` () =
 [<Fact>]
 let ``command captures stdout output`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create "echo-test" (fun _ -> true) "echo" "captured-output" None
+    let handler = create "echo-test" (fun _ -> true) "echo" "captured-output" false None
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "anything.txt" ])
@@ -83,7 +91,7 @@ let ``command captures stdout output`` () =
 [<Fact>]
 let ``command with environment variables`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create "env-test" (fun _ -> true) "echo" "env-test-output" None
+    let handler = create "env-test" (fun _ -> true) "echo" "env-test-output" false None
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "file.txt" ])
@@ -110,7 +118,7 @@ let ``command runs on ProjectChanged with matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create "proj-watcher" (fun f -> f.EndsWith(".fsproj")) "echo" "project changed" None
+        create "proj-watcher" (fun f -> f.EndsWith(".fsproj")) "echo" "project changed" false None
 
     host.RegisterHandler(handler)
 
@@ -136,7 +144,7 @@ let ``command runs on ProjectChanged with matching files`` () =
 [<Fact>]
 let ``command ignores SolutionChanged`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create "sln-watcher" (fun _ -> true) "echo" "hello" None
+    let handler = create "sln-watcher" (fun _ -> true) "echo" "hello" false None
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SolutionChanged "test.sln")
@@ -157,7 +165,7 @@ let ``command ignores SolutionChanged`` () =
 [<Fact>]
 let ``command reports Failed status on command failure`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create "fail-cmd" (fun _ -> true) "false" "" None
+    let handler = create "fail-cmd" (fun _ -> true) "false" "" false None
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "file.txt" ])
@@ -186,7 +194,7 @@ let ``command reports Failed status on exception`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create "bad-cmd" (fun _ -> true) "this-command-does-not-exist-xyz" "" None
+        create "bad-cmd" (fun _ -> true) "this-command-does-not-exist-xyz" "" false None
 
     host.RegisterHandler(handler)
 
@@ -214,7 +222,7 @@ let ``command reports Failed status on exception`` () =
 [<Fact>]
 let ``status command returns not run when no files matched`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create "no-match" (fun _ -> false) "echo" "hello" None
+    let handler = create "no-match" (fun _ -> false) "echo" "hello" false None
     host.RegisterHandler(handler)
 
     // No files match, so command never runs
@@ -236,7 +244,7 @@ let ``status command returns not run when no files matched`` () =
 [<Fact>]
 let ``status command returns false when command failed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create "fail-status" (fun _ -> true) "false" "" None
+    let handler = create "fail-status" (fun _ -> true) "false" "" false None
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "file.txt" ])
@@ -251,3 +259,114 @@ let ``status command returns false when command failed`` () =
     let result = host.RunCommand("fail-status-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
     test <@ result.Value.Contains("false") @>
+
+[<Fact>]
+let ``emits CommandCompleted on success`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let (getCommand, recorder) = commandRecorder ()
+    host.RegisterHandler(recorder)
+    let handler = create "echo-cmd" (fun _ -> true) "echo" "hello" false None
+    host.RegisterHandler(handler)
+
+    host.EmitFileChanged(SourceChanged [ "file.txt" ])
+
+    waitUntil
+        (fun () ->
+            match getCommand () with
+            | Some _ -> true
+            | None -> false)
+        5000
+
+    let cmd = getCommand ()
+    test <@ cmd.IsSome @>
+    test <@ cmd.Value.Name = "echo-cmd" @>
+    test <@ cmd.Value.Succeeded = true @>
+    test <@ cmd.Value.Output.Contains("hello") @>
+
+[<Fact>]
+let ``emits CommandCompleted on failure`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let (getCommand, recorder) = commandRecorder ()
+    host.RegisterHandler(recorder)
+    let handler = create "fail-cmd-emit" (fun _ -> true) "false" "" false None
+    host.RegisterHandler(handler)
+
+    host.EmitFileChanged(SourceChanged [ "file.txt" ])
+
+    waitUntil
+        (fun () ->
+            match getCommand () with
+            | Some _ -> true
+            | None -> false)
+        5000
+
+    let cmd = getCommand ()
+    test <@ cmd.IsSome @>
+    test <@ cmd.Value.Name = "fail-cmd-emit" @>
+    test <@ cmd.Value.Succeeded = false @>
+
+[<Fact>]
+let ``runOnStart runs command on first FileChanged even without matching files`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let handler = create "setup-cmd" (fun _ -> false) "echo" "setup" true None
+    host.RegisterHandler(handler)
+
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("setup-cmd") with
+            | Some(Completed _) -> true
+            | _ -> false)
+        5000
+
+    let status = host.GetStatus("setup-cmd")
+    test <@ status.IsSome @>
+
+    test
+        <@
+            match status.Value with
+            | Completed _ -> true
+            | _ -> false
+        @>
+
+[<Fact>]
+let ``runOnStart only triggers once`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let handler = create "setup-once" (fun _ -> false) "echo" "setup" true None
+    host.RegisterHandler(handler)
+
+    // First event — runs despite no matching files
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("setup-once") with
+            | Some(Completed _) -> true
+            | _ -> false)
+        5000
+
+    let result1 = host.RunCommand("setup-once-status", [||]) |> Async.RunSynchronously
+
+    test <@ result1.IsSome @>
+    test <@ result1.Value.Contains("true") @>
+
+    // Second event — no matching files and already ran once, should not re-run
+    // Reset status observation by sending another event
+    host.EmitFileChanged(SourceChanged [ "src/Other.fs" ])
+
+    // Wait briefly — command should NOT run again
+    waitUntil
+        (fun () ->
+            match host.GetStatus("setup-once") with
+            | Some(Completed _)
+            | Some(Failed _) -> true
+            | _ -> false)
+        1000
+    |> ignore
+
+    // Status should still show the original successful run
+    let result2 = host.RunCommand("setup-once-status", [||]) |> Async.RunSynchronously
+
+    test <@ result2.IsSome @>
+    test <@ result2.Value.Contains("true") @>

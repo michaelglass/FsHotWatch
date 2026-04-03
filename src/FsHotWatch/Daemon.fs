@@ -500,6 +500,19 @@ type Daemon =
             do! requestScan this.ScanAgent force ct
         }
 
+    /// Run a single full scan in-process without watcher or IPC.
+    /// Discovers projects, scans all files, waits for plugins to complete, returns statuses.
+    member this.RunOnce() =
+        async {
+            do! this.ScanAll(force = true)
+
+            do!
+                waitForAllTerminal this.Host (System.TimeSpan.FromMinutes(30.0)) ()
+                |> Async.AwaitTask
+
+            return this.Host.GetAllStatuses()
+        }
+
     /// Run the daemon until cancellation is requested.
     member this.Run(cancellationToken: CancellationToken) =
         async {

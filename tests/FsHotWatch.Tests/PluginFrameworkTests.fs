@@ -26,6 +26,7 @@ let private registerWith
         (fun _ -> ())
         (fun _ -> ())
         (fun _ -> ())
+        (fun _ -> ())
         registerCommand
         None
         handler
@@ -74,7 +75,8 @@ let ``registered plugin skips unsubscribed events`` () =
             { FileChanged = true
               FileChecked = false
               BuildCompleted = false
-              TestCompleted = true }
+              TestCompleted = true
+              CommandCompleted = false }
           CacheKey = None }
 
     let reg = registerDefault handler
@@ -83,6 +85,7 @@ let ``registered plugin skips unsubscribed events`` () =
     test <@ reg.OnFileChecked.IsNone @>
     test <@ reg.OnBuildCompleted.IsNone @>
     test <@ reg.OnTestCompleted.IsSome @>
+    test <@ reg.OnCommandCompleted.IsNone @>
 
 [<Fact>]
 let ``commands query agent state`` () =
@@ -205,3 +208,38 @@ let ``handler errors are recovered`` () =
         test <@ callCount = 2 @>
     }
     |> Async.RunSynchronously
+
+[<Fact>]
+let ``plugin subscribing to CommandCompleted receives event`` () =
+    let mutable registeredCmd: (string * CommandHandler) option = None
+
+    let handler =
+        { Name = "test-cc"
+          Init = false
+          Update =
+            fun _ctx _state event ->
+                async {
+                    match event with
+                    | CommandCompleted _ -> return true
+                    | _ -> return _state
+                }
+          Commands = [ "was-called", fun state _args -> async { return $"%b{state}" } ]
+          Subscriptions =
+            { PluginSubscriptions.none with
+                CommandCompleted = true }
+          CacheKey = None }
+
+    let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
+
+    test <@ reg.OnCommandCompleted.IsSome @>
+
+    reg.OnCommandCompleted.Value(
+        { Name = "my-cmd"
+          Succeeded = true
+          Output = "done" }
+    )
+
+    // Poll the command deterministically — it queues behind the CommandCompleted message
+    let (_, cmdHandler) = registeredCmd.Value
+    let result = cmdHandler [||] |> Async.RunSynchronously
+    test <@ result = "true" @>

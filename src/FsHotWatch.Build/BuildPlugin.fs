@@ -20,7 +20,10 @@ type BuildPhase =
     | IdlePhase of Lifecycle<Idle, BuildOutcome>
     | RunningPhase of Lifecycle<Running, BuildOutcome>
 
-type BuildState = { Phase: BuildPhase }
+type BuildState =
+    { Phase: BuildPhase
+      SatisfiedDeps: Set<string>
+      PendingFiles: FileChangeKind option }
 
 type BuildMsg = BuildDone of BuildOutcome
 
@@ -31,6 +34,7 @@ let create
     (graph: FsHotWatch.ProjectGraph.ProjectGraph)
     (testProjectNames: string list)
     (buildTemplate: string option)
+    (dependsOn: string list)
     (getCommitId: (unit -> string option) option)
     =
     let buildCommand = command
@@ -45,6 +49,9 @@ let create
 
     let isTestProject (proj: string) =
         testProjectNameSet.Contains(Path.GetFileNameWithoutExtension(proj))
+
+    let depNames = dependsOn |> Set.ofList
+    let allDepsSatisfied deps = Set.isSubset depNames deps
 
     let startBuild (ctx: PluginCtx<BuildMsg>) (idle: Lifecycle<Idle, BuildOutcome>) =
         ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
@@ -78,7 +85,9 @@ let create
         }
         |> Async.Start
 
-        { Phase = RunningPhase running }
+        { Phase = RunningPhase running
+          SatisfiedDeps = Set.empty
+          PendingFiles = None }
 
     let startTemplateBuild
         (ctx: PluginCtx<BuildMsg>)
@@ -143,27 +152,87 @@ let create
             }
             |> Async.Start
 
-            { Phase = RunningPhase running }
+            { Phase = RunningPhase running
+              SatisfiedDeps = Set.empty
+              PendingFiles = None }
+
+    let handleSourceChanged
+        (ctx: PluginCtx<BuildMsg>)
+        (state: BuildState)
+        (idle: Lifecycle<Idle, BuildOutcome>)
+        (files: string list)
+        =
+        let allTestFiles = not files.IsEmpty && files |> List.forall isTestFile
+
+        if allTestFiles then
+            info "build" "Skipping build — only test files changed"
+            ctx.EmitBuildCompleted(BuildSucceeded)
+            ctx.ReportStatus(Completed(DateTime.UtcNow))
+            { state with Phase = IdlePhase idle }
+        else
+            match buildTemplate with
+            | Some template ->
+                { (startTemplateBuild ctx idle template files) with
+                    SatisfiedDeps = state.SatisfiedDeps
+                    PendingFiles = None }
+            | None ->
+                { (startBuild ctx idle) with
+                    SatisfiedDeps = state.SatisfiedDeps
+                    PendingFiles = None }
+
+    let handleProjectChanged (ctx: PluginCtx<BuildMsg>) (state: BuildState) (idle: Lifecycle<Idle, BuildOutcome>) =
+        { (startBuild ctx idle) with
+            SatisfiedDeps = state.SatisfiedDeps
+            PendingFiles = None }
 
     { Name = "build"
-      Init = { Phase = IdlePhase(Lifecycle.create NotBuilt) }
+      Init =
+        { Phase = IdlePhase(Lifecycle.create NotBuilt)
+          SatisfiedDeps = Set.empty
+          PendingFiles = None }
       Update =
         fun ctx state event ->
             async {
                 match event, state.Phase with
-                | FileChanged(SourceChanged files), IdlePhase idle ->
-                    let allTestFiles = not files.IsEmpty && files |> List.forall isTestFile
-
-                    if allTestFiles then
-                        info "build" "Skipping build — only test files changed"
-                        ctx.EmitBuildCompleted(BuildSucceeded)
-                        ctx.ReportStatus(Completed(DateTime.UtcNow))
-                        return { Phase = IdlePhase idle }
+                // --- CommandCompleted: track dependency satisfaction ---
+                | CommandCompleted result, _ when depNames.Contains(result.Name) ->
+                    if not result.Succeeded then
+                        ctx.ReportStatus(PluginStatus.Failed($"dependency failed: %s{result.Name}", DateTime.UtcNow))
+                        return state
                     else
-                        match buildTemplate with
-                        | Some template -> return startTemplateBuild ctx idle template files
-                        | None -> return startBuild ctx idle
-                | FileChanged(ProjectChanged _), IdlePhase idle -> return startBuild ctx idle
+                        let newDeps = Set.add result.Name state.SatisfiedDeps
+
+                        if allDepsSatisfied newDeps then
+                            match state.PendingFiles, state.Phase with
+                            | Some(SourceChanged files), IdlePhase idle ->
+                                return handleSourceChanged ctx { state with SatisfiedDeps = newDeps } idle files
+                            | Some(ProjectChanged _), IdlePhase idle ->
+                                return handleProjectChanged ctx { state with SatisfiedDeps = newDeps } idle
+                            | _ -> return { state with SatisfiedDeps = newDeps }
+                        else
+                            return { state with SatisfiedDeps = newDeps }
+
+                // --- FileChanged: buffer if deps not yet satisfied ---
+                | FileChanged change, IdlePhase _ when
+                    not depNames.IsEmpty && not (allDepsSatisfied state.SatisfiedDeps)
+                    ->
+                    info "build" "Buffering file change — waiting for dependencies"
+
+                    let merged =
+                        match state.PendingFiles, change with
+                        | Some(SourceChanged existing), SourceChanged incoming ->
+                            SourceChanged(existing @ incoming |> List.distinct)
+                        | Some(ProjectChanged existing), ProjectChanged incoming ->
+                            ProjectChanged(existing @ incoming |> List.distinct)
+                        | _ -> change
+
+                    return
+                        { state with
+                            PendingFiles = Some merged }
+
+                // --- FileChanged: normal handling (no deps or all satisfied) ---
+                | FileChanged(SourceChanged files), IdlePhase idle -> return handleSourceChanged ctx state idle files
+                | FileChanged(ProjectChanged _), IdlePhase idle -> return handleProjectChanged ctx state idle
                 | Custom(BuildDone outcome), RunningPhase running ->
                     let idle = Lifecycle.complete outcome running
 
@@ -174,7 +243,11 @@ let create
                         ctx.ReportStatus(PluginStatus.Failed($"Build failed: %s{summary}", DateTime.UtcNow))
                     | NotBuilt -> ()
 
-                    return { Phase = IdlePhase idle }
+                    return
+                        { state with
+                            Phase = IdlePhase idle
+                            SatisfiedDeps = Set.empty
+                            PendingFiles = None }
                 | FileChanged _, RunningPhase _ ->
                     info "build" "Skipping: build already in progress"
                     return state
@@ -200,5 +273,6 @@ let create
               } ]
       Subscriptions =
         { PluginSubscriptions.none with
-            FileChanged = true }
+            FileChanged = true
+            CommandCompleted = not dependsOn.IsEmpty }
       CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId }
