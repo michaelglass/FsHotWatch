@@ -411,7 +411,6 @@ let create
 
                     ctx.EmitTestCompleted(skipResults)
                     ctx.ClearAllErrors()
-                    ctx.ReportStatus(Completed(DateTime.UtcNow))
                     ctx.Post(TestsFinished skipResults)
                 else
                     if totalClasses = 0 then
@@ -433,28 +432,12 @@ let create
 
                     if allPassed then
                         ctx.ClearAllErrors()
-                        ctx.ReportStatus(Completed(DateTime.UtcNow))
                     else
                         reportTestErrors ctx state.TestClassFiles results
-
-                        let failedProjects =
-                            results.Results
-                            |> Map.toList
-                            |> List.choose (fun (name, r) ->
-                                match r with
-                                | TestsFailed _ -> Some name
-                                | _ -> None)
-
-                        let names = failedProjects |> String.concat ", "
-
-                        ctx.ReportStatus(
-                            PluginStatus.Failed($"%d{failedProjects.Length} failed: %s{names}", DateTime.UtcNow)
-                        )
 
                     ctx.Post(TestsFinished results)
             with ex ->
                 Logging.error "test-prune" $"runTests failed: %s{ex.Message}"
-                ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
 
                 // Post a dummy failed result so we transition back to idle
                 let failResult =
@@ -782,6 +765,30 @@ let create
                     | TestsRunning running ->
                         let completed = Lifecycle.complete (Some testResults) running
                         changedSymbolsRef <- []
+
+                        let allPassed =
+                            testResults.Results
+                            |> Map.forall (fun _ r ->
+                                match r with
+                                | TestsPassed _ -> true
+                                | _ -> false)
+
+                        if allPassed || testResults.Results.IsEmpty then
+                            ctx.ReportStatus(Completed(DateTime.UtcNow))
+                        else
+                            let failedProjects =
+                                testResults.Results
+                                |> Map.toList
+                                |> List.choose (fun (name, r) ->
+                                    match r with
+                                    | TestsFailed _ -> Some name
+                                    | _ -> None)
+
+                            let names = failedProjects |> String.concat ", "
+
+                            ctx.ReportStatus(
+                                PluginStatus.Failed($"%d{failedProjects.Length} failed: %s{names}", DateTime.UtcNow)
+                            )
 
                         return
                             { state with
