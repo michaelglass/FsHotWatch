@@ -115,18 +115,6 @@ daemon.RegisterHandler(myPlugin)
 - `ctx.EmitBuildCompleted(result)` — emit events to other plugins
 - `ctx.Post(msg)` — send a custom message back to your own agent
 
-## Cache Directory
-
-FsHotWatch stores check result caches and the TestPrune database in `.fshw/` at the repository root. Add this to your `.gitignore`:
-
-```
-.fshw/
-```
-
-The cache directory contains:
-- `cache/` — Cached FCS check results for faster cold starts
-- `test-impact.db` — TestPrune dependency analysis database
-
 ## Configuration
 
 Create `.fs-hot-watch.json` in your repo root. All fields are optional — sensible defaults are used when omitted.
@@ -231,7 +219,14 @@ Create `.fs-hot-watch.json` in your repo root. All fields are optional — sensi
 | `command` | `string` | `"echo"` | Command to run when a matching file changes. |
 | `args` | `string` | `""` | Arguments to the command. |
 
-## Architecture
+### Cache directory
 
-See the [architecture design doc](docs/plans/2026-03-24-architecture-design.md)
-for the full technical design.
+FsHotWatch stores check result caches and the TestPrune database in `.fshw/` at the repository root. Add this to your `.gitignore`:
+
+```
+.fshw/
+```
+
+The cache directory contains:
+- `cache/` — Cached FCS check results for faster cold starts
+- `test-impact.db` — TestPrune dependency analysis database
