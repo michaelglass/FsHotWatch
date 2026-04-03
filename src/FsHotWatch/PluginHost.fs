@@ -57,6 +57,7 @@ type PluginHost
                 (fun name -> ledger.ClearPlugin(name))
                 (fun result -> dispatchToRegistered (fun p -> p.OnBuildCompleted) result)
                 (fun results -> dispatchToRegistered (fun p -> p.OnTestCompleted) results)
+                (fun result -> dispatchToRegistered (fun p -> p.OnCommandCompleted) result)
                 (fun cmd -> commands[fst cmd] <- snd cmd)
                 taskCache
                 handler
@@ -108,6 +109,10 @@ type PluginHost
     /// Emit a test completed event to all registered plugins.
     member _.EmitTestCompleted(results: TestResults) =
         dispatchToRegistered (fun p -> p.OnTestCompleted) results
+
+    /// Emit a command completed event to all registered plugins.
+    member _.EmitCommandCompleted(result: CommandCompletedResult) =
+        dispatchToRegistered (fun p -> p.OnCommandCompleted) result
 
     /// Run a registered command by name. Returns None if the command is unknown.
     member _.RunCommand(name: string, args: string array) : Async<string option> =

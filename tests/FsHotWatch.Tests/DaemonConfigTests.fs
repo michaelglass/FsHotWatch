@@ -12,10 +12,11 @@ open FsHotWatch.Tests.TestHelpers
 let private defaults: DaemonConfiguration =
     { Build =
         Some
-            {| Command = "dotnet"
-               Args = "build"
-               BuildTemplate = None |}
-      Format = true
+            [ {| Command = "dotnet"
+                 Args = "build"
+                 BuildTemplate = None
+                 DependsOn = [] |} ]
+      Format = Auto
       Lint = true
       Cache = FileBackend
       Analyzers = None
@@ -32,12 +33,13 @@ let ``parseConfig with empty JSON returns defaults`` () =
     test
         <@
             config.Build = Some
-                {| Command = "dotnet"
-                   Args = "build"
-                   BuildTemplate = None |}
+                [ {| Command = "dotnet"
+                     Args = "build"
+                     BuildTemplate = None
+                     DependsOn = [] |} ]
         @>
 
-    test <@ config.Format = true @>
+    test <@ config.Format = Auto @>
     test <@ config.Lint = true @>
     test <@ config.Cache = FileBackend @>
     test <@ config.Analyzers = None @>
@@ -50,7 +52,7 @@ let ``parseConfig with empty JSON returns defaults`` () =
 [<Fact>]
 let ``parseConfig build false disables build`` () =
     let config = parseConfig """{"build": false}""" defaults
-    test <@ config.Build = None @>
+    test <@ config.Build = Some [] @>
 
 [<Fact>]
 let ``parseConfig build true uses default build`` () =
@@ -59,9 +61,10 @@ let ``parseConfig build true uses default build`` () =
     test
         <@
             config.Build = Some
-                {| Command = "dotnet"
-                   Args = "build"
-                   BuildTemplate = None |}
+                [ {| Command = "dotnet"
+                     Args = "build"
+                     BuildTemplate = None
+                     DependsOn = [] |} ]
         @>
 
 [<Fact>]
@@ -72,9 +75,10 @@ let ``parseConfig build object with custom command and args`` () =
     test
         <@
             config.Build = Some
-                {| Command = "make"
-                   Args = "all"
-                   BuildTemplate = None |}
+                [ {| Command = "make"
+                     Args = "all"
+                     BuildTemplate = None
+                     DependsOn = [] |} ]
         @>
 
 [<Fact>]
@@ -84,9 +88,10 @@ let ``parseConfig build object with only command uses default args`` () =
     test
         <@
             config.Build = Some
-                {| Command = "make"
-                   Args = "build"
-                   BuildTemplate = None |}
+                [ {| Command = "make"
+                     Args = "build"
+                     BuildTemplate = None
+                     DependsOn = [] |} ]
         @>
 
 [<Fact>]
@@ -96,9 +101,10 @@ let ``parseConfig build object with only args uses default command`` () =
     test
         <@
             config.Build = Some
-                {| Command = "dotnet"
-                   Args = "release"
-                   BuildTemplate = None |}
+                [ {| Command = "dotnet"
+                     Args = "release"
+                     BuildTemplate = None
+                     DependsOn = [] |} ]
         @>
 
 [<Fact>]
@@ -108,22 +114,28 @@ let ``parseConfig build empty object uses defaults`` () =
     test
         <@
             config.Build = Some
-                {| Command = "dotnet"
-                   Args = "build"
-                   BuildTemplate = None |}
+                [ {| Command = "dotnet"
+                     Args = "build"
+                     BuildTemplate = None
+                     DependsOn = [] |} ]
         @>
 
 // --- parseConfig: format ---
 
 [<Fact>]
-let ``parseConfig format true enables format`` () =
+let ``parseConfig format true returns Auto`` () =
     let config = parseConfig """{"format": true}""" defaults
-    test <@ config.Format = true @>
+    test <@ config.Format = Auto @>
 
 [<Fact>]
-let ``parseConfig format false disables format`` () =
+let ``parseConfig format false returns Off`` () =
     let config = parseConfig """{"format": false}""" defaults
-    test <@ config.Format = false @>
+    test <@ config.Format = Off @>
+
+[<Fact>]
+let ``parseConfig format check string returns Check`` () =
+    let config = parseConfig """{"format": "check"}""" defaults
+    test <@ config.Format = Check @>
 
 // --- parseConfig: lint ---
 
@@ -314,7 +326,8 @@ let ``parseConfig coverage with directory`` () =
     test
         <@
             config.Coverage = Some
-                {| Directory = "./cov"
+                {| AfterCheck = None
+                   Directory = "./cov"
                    ThresholdsFile = None |}
         @>
 
@@ -328,7 +341,8 @@ let ``parseConfig coverage with directory and thresholdsFile`` () =
     test
         <@
             config.Coverage = Some
-                {| Directory = "./cov"
+                {| AfterCheck = None
+                   Directory = "./cov"
                    ThresholdsFile = Some "thresholds.json" |}
         @>
 
@@ -339,7 +353,8 @@ let ``parseConfig coverage with empty object uses default directory`` () =
     test
         <@
             config.Coverage = Some
-                {| Directory = "./coverage"
+                {| AfterCheck = None
+                   Directory = "./coverage"
                    ThresholdsFile = None |}
         @>
 
@@ -424,12 +439,13 @@ let ``parseConfig with full configuration`` () =
     test
         <@
             config.Build = Some
-                {| Command = "make"
-                   Args = "all"
-                   BuildTemplate = None |}
+                [ {| Command = "make"
+                     Args = "all"
+                     BuildTemplate = None
+                     DependsOn = [] |} ]
         @>
 
-    test <@ config.Format = false @>
+    test <@ config.Format = Off @>
     test <@ config.Lint = false @>
     test <@ config.Cache = JjFileBackend @>
     test <@ config.Analyzers = Some {| Paths = [ "/analyzers" ] |} @>
@@ -492,12 +508,13 @@ let ``loadConfig with no config file returns expected defaults`` () =
         test
             <@
                 config.Build = Some
-                    {| Command = "dotnet"
-                       Args = "build"
-                       BuildTemplate = None |}
+                    [ {| Command = "dotnet"
+                         Args = "build"
+                         BuildTemplate = None
+                         DependsOn = [] |} ]
             @>
 
-        test <@ config.Format = true @>
+        test <@ config.Format = Auto @>
         test <@ config.Lint = true @>
         test <@ config.Cache = FileBackend @>
         test <@ config.Analyzers = None @>
@@ -505,9 +522,193 @@ let ``loadConfig with no config file returns expected defaults`` () =
         test <@ config.Coverage = None @>
         test <@ config.FileCommands |> List.isEmpty @>)
 
+// --- parseConfig: coverage afterCheck ---
+
+[<Fact>]
+let ``parseConfig coverage with afterCheck`` () =
+    let json =
+        """{"coverage": {"directory": "./cov", "afterCheck": "dotnet run -- ratchet"}}"""
+
+    let config = parseConfig json defaults
+
+    test
+        <@
+            config.Coverage = Some
+                {| AfterCheck = Some "dotnet run -- ratchet"
+                   Directory = "./cov"
+                   ThresholdsFile = None |}
+        @>
+
+[<Fact>]
+let ``parseConfig coverage without afterCheck defaults to None`` () =
+    let config = parseConfig """{"coverage": {"directory": "./cov"}}""" defaults
+
+    test
+        <@
+            config.Coverage = Some
+                {| AfterCheck = None
+                   Directory = "./cov"
+                   ThresholdsFile = None |}
+        @>
+
+// --- parseConfig: per-project coverage exclusion ---
+
+[<Fact>]
+let ``parseConfig test project with coverage false`` () =
+    let json =
+        """{
+        "tests": {
+            "projects": [{
+                "project": "IntTests",
+                "coverage": false
+            }]
+        }
+    }"""
+
+    let config = parseConfig json defaults
+    let p = config.Tests.Value.Projects.[0]
+    test <@ p.Coverage = false @>
+
+[<Fact>]
+let ``parseConfig test project without coverage defaults to true`` () =
+    let json =
+        """{
+        "tests": {
+            "projects": [{
+                "project": "UnitTests"
+            }]
+        }
+    }"""
+
+    let config = parseConfig json defaults
+    let p = config.Tests.Value.Projects.[0]
+    test <@ p.Coverage = true @>
+
+// --- parseConfig: build as array ---
+
+[<Fact>]
+let ``parseConfig build array of commands`` () =
+    let json =
+        """{
+        "build": [
+            {"command": "dotnet", "args": "build src/App"},
+            {"command": "dotnet", "args": "build src/Analyzers -c Release"}
+        ]
+    }"""
+
+    let config = parseConfig json defaults
+
+    test <@ config.Build.IsSome @>
+    let builds = config.Build.Value
+    test <@ builds.Length = 2 @>
+    test <@ builds.[0].Command = "dotnet" @>
+    test <@ builds.[0].Args = "build src/App" @>
+    test <@ builds.[1].Command = "dotnet" @>
+    test <@ builds.[1].Args = "build src/Analyzers -c Release" @>
+
+[<Fact>]
+let ``parseConfig build single object still works`` () =
+    let json = """{"build": {"command": "make", "args": "all"}}"""
+    let config = parseConfig json defaults
+
+    test <@ config.Build.IsSome @>
+    let builds = config.Build.Value
+    test <@ builds.Length = 1 @>
+    test <@ builds.[0].Command = "make" @>
+    test <@ builds.[0].Args = "all" @>
+
+[<Fact>]
+let ``parseConfig build false disables build as empty list`` () =
+    let config = parseConfig """{"build": false}""" defaults
+    test <@ config.Build.IsSome @>
+    test <@ config.Build.Value |> List.isEmpty @>
+
+// --- parseConfig: test extensions ---
+
+[<Fact>]
+let ``parseConfig tests with extensions`` () =
+    let json =
+        """{
+        "tests": {
+            "extensions": [
+                {"type": "falco", "project": "IntTests", "testDir": "tests/IntTests"}
+            ],
+            "projects": [{"project": "IntTests"}]
+        }
+    }"""
+
+    let config = parseConfig json defaults
+    test <@ config.Tests.IsSome @>
+    let tests = config.Tests.Value
+    test <@ tests.Extensions.Length = 1 @>
+    test <@ tests.Extensions.[0].Type = "falco" @>
+    test <@ tests.Extensions.[0].Project = "IntTests" @>
+    test <@ tests.Extensions.[0].TestDir = "tests/IntTests" @>
+
+[<Fact>]
+let ``parseConfig tests without extensions defaults to empty`` () =
+    let json =
+        """{
+        "tests": {
+            "projects": [{"project": "Tests"}]
+        }
+    }"""
+
+    let config = parseConfig json defaults
+    test <@ config.Tests.Value.Extensions |> List.isEmpty @>
+
+// --- parseConfig: fileCommands runOnStart ---
+
+[<Fact>]
+let ``parseConfig fileCommands with runOnStart true`` () =
+    let json =
+        """{"fileCommands": [{"pattern": "*.lock", "command": "npm", "args": "install", "runOnStart": true}]}"""
+
+    let config = parseConfig json defaults
+    test <@ config.FileCommands.Length = 1 @>
+    test <@ config.FileCommands.[0].RunOnStart = true @>
+
+[<Fact>]
+let ``parseConfig fileCommands without runOnStart defaults to false`` () =
+    let json =
+        """{"fileCommands": [{"pattern": "*.fsx", "command": "dotnet", "args": "fsi"}]}"""
+
+    let config = parseConfig json defaults
+    test <@ config.FileCommands.Length = 1 @>
+    test <@ config.FileCommands.[0].RunOnStart = false @>
+
 [<Fact>]
 let ``loadConfig with jj repo defaults to JjFileBackend`` () =
     withTempDir "cfg-def-jj" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
         let config = loadConfig tmpDir
         test <@ config.Cache = JjFileBackend @>)
+
+// --- parseConfig: build dependsOn ---
+
+[<Fact>]
+let ``parseConfig build with dependsOn`` () =
+    let json =
+        """{"build": {"command": "dotnet", "args": "build", "dependsOn": ["npm-deps"]}}"""
+
+    let config = parseConfig json defaults
+
+    test <@ config.Build.IsSome @>
+    let builds = config.Build.Value
+    test <@ builds.Length = 1 @>
+    test <@ builds.[0].DependsOn = [ "npm-deps" ] @>
+
+[<Fact>]
+let ``parseConfig build without dependsOn defaults to empty`` () =
+    let json = """{"build": {"command": "dotnet", "args": "build"}}"""
+    let config = parseConfig json defaults
+    let builds = config.Build.Value
+    test <@ builds.[0].DependsOn = [] @>
+
+[<Fact>]
+let ``parseConfig build with multiple dependsOn`` () =
+    let json = """{"build": {"dependsOn": ["setup", "codegen"]}}"""
+
+    let config = parseConfig json defaults
+    let builds = config.Build.Value
+    test <@ builds.[0].DependsOn = [ "setup"; "codegen" ] @>

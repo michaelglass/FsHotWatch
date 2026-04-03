@@ -56,36 +56,57 @@ type TestProjectConfig =
       Group: string
       Environment: (string * string) list
       FilterTemplate: string option
-      ClassJoin: string }
+      ClassJoin: string
+      Coverage: bool }
+
+/// Configuration for a test extension (e.g. Falco route mapping).
+type TestExtensionConfig =
+    { Type: string
+      Project: string
+      TestDir: string }
+
+/// Format mode configuration.
+type FormatMode =
+    /// No format plugin
+    | Off
+    /// Register FormatPreprocessor (auto-format on save)
+    | Auto
+    /// Register read-only format check (reports errors without modifying)
+    | Check
 
 /// Parsed daemon configuration from .fs-hot-watch.json.
 type DaemonConfiguration =
     { Build:
         {| Command: string
            Args: string
-           BuildTemplate: string option |} option
-      Format: bool
+           BuildTemplate: string option
+           DependsOn: string list |} list option
+      Format: FormatMode
       Lint: bool
       Cache: CacheBackendConfig
       Analyzers: {| Paths: string list |} option
       Tests:
           {| BeforeRun: string option
+             Extensions: TestExtensionConfig list
              Projects: TestProjectConfig list |} option
       Coverage:
-          {| Directory: string
+          {| AfterCheck: string option
+             Directory: string
              ThresholdsFile: string option |} option
       FileCommands:
           {| Pattern: string
              Command: string
-             Args: string |} list }
+             Args: string
+             RunOnStart: bool |} list }
 
 let private defaultConfigFor (repoRoot: string) =
     { Build =
         Some
-            {| Command = "dotnet"
-               Args = "build"
-               BuildTemplate = None |}
-      Format = true
+            [ {| Command = "dotnet"
+                 Args = "build"
+                 BuildTemplate = None
+                 DependsOn = [] |} ]
+      Format = Auto
       Lint = true
       Cache = detectDefaultCacheBackend repoRoot
       Analyzers = None
@@ -98,39 +119,54 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
     use doc = JsonDocument.Parse(json)
     let root = doc.RootElement
 
+    let parseBuildEntry (v: JsonElement) =
+        let cmd =
+            match v.TryGetProperty("command") with
+            | true, c -> c.GetString()
+            | _ -> "dotnet"
+
+        let args =
+            match v.TryGetProperty("args") with
+            | true, a -> a.GetString()
+            | _ -> "build"
+
+        let buildTemplate =
+            match v.TryGetProperty("buildTemplate") with
+            | true, t -> Some(t.GetString())
+            | _ -> None
+
+        let dependsOn =
+            match v.TryGetProperty("dependsOn") with
+            | true, arr -> arr.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList
+            | _ -> []
+
+        {| Command = cmd
+           Args = args
+           BuildTemplate = buildTemplate
+           DependsOn = dependsOn |}
+
     let build =
         match root.TryGetProperty("build") with
-        | true, v when v.ValueKind = JsonValueKind.False -> None
-        | true, v when v.ValueKind = JsonValueKind.Object ->
-            let cmd =
-                match v.TryGetProperty("command") with
-                | true, c -> c.GetString()
-                | _ -> "dotnet"
-
-            let args =
-                match v.TryGetProperty("args") with
-                | true, a -> a.GetString()
-                | _ -> "build"
-
-            let buildTemplate =
-                match v.TryGetProperty("buildTemplate") with
-                | true, t -> Some(t.GetString())
-                | _ -> None
-
-            Some
-                {| Command = cmd
-                   Args = args
-                   BuildTemplate = buildTemplate |}
-        | _ ->
-            Some
-                {| Command = "dotnet"
-                   Args = "build"
-                   BuildTemplate = None |}
+        | true, v when v.ValueKind = JsonValueKind.False -> Some []
+        | true, v when v.ValueKind = JsonValueKind.Object -> Some [ parseBuildEntry v ]
+        | true, v when v.ValueKind = JsonValueKind.Array ->
+            Some(v.EnumerateArray() |> Seq.map parseBuildEntry |> Seq.toList)
+        | _ -> defaults.Build
 
     let format =
         match root.TryGetProperty("format") with
-        | true, v -> v.GetBoolean()
-        | _ -> true
+        | true, v when v.ValueKind = JsonValueKind.String ->
+            match v.GetString().ToLowerInvariant() with
+            | "check" -> Check
+            | "auto" -> Auto
+            | "off"
+            | "false" -> Off
+            | other ->
+                Logging.warn "config" $"Unknown format value '%s{other}', using Auto"
+                Auto
+        | true, v when v.ValueKind = JsonValueKind.True -> Auto
+        | true, v when v.ValueKind = JsonValueKind.False -> Off
+        | _ -> Auto
 
     let lint =
         match root.TryGetProperty("lint") with
@@ -171,6 +207,32 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 match v.TryGetProperty("beforeRun") with
                 | true, br -> Some(br.GetString())
                 | _ -> None
+
+            let extensions =
+                match v.TryGetProperty("extensions") with
+                | true, arr ->
+                    arr.EnumerateArray()
+                    |> Seq.map (fun e ->
+                        let typ =
+                            match e.TryGetProperty("type") with
+                            | true, v -> v.GetString()
+                            | _ -> "unknown"
+
+                        let project =
+                            match e.TryGetProperty("project") with
+                            | true, v -> v.GetString()
+                            | _ -> "unknown"
+
+                        let testDir =
+                            match e.TryGetProperty("testDir") with
+                            | true, v -> v.GetString()
+                            | _ -> ""
+
+                        { Type = typ
+                          Project = project
+                          TestDir = testDir })
+                    |> Seq.toList
+                | _ -> []
 
             let projects =
                 match v.TryGetProperty("projects") with
@@ -215,13 +277,19 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                             | true, v -> v.GetString()
                             | _ -> " "
 
+                        let coverage =
+                            match p.TryGetProperty("coverage") with
+                            | true, v when v.ValueKind = JsonValueKind.False -> false
+                            | _ -> true
+
                         { Project = project
                           Command = command
                           Args = args
                           Group = group
                           Environment = env
                           FilterTemplate = filterTemplate
-                          ClassJoin = classJoin })
+                          ClassJoin = classJoin
+                          Coverage = coverage })
                     |> Seq.toList
                 | _ -> []
 
@@ -230,6 +298,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             else
                 Some
                     {| BeforeRun = beforeRun
+                       Extensions = extensions
                        Projects = projects |}
         | _ -> None
 
@@ -246,8 +315,14 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 | true, t -> Some(t.GetString())
                 | _ -> None
 
+            let afterCheck =
+                match v.TryGetProperty("afterCheck") with
+                | true, a -> Some(a.GetString())
+                | _ -> None
+
             Some
-                {| Directory = dir
+                {| AfterCheck = afterCheck
+                   Directory = dir
                    ThresholdsFile = thresholds |}
         | _ -> None
 
@@ -271,9 +346,15 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     | true, v -> v.GetString()
                     | _ -> ""
 
+                let runOnStart =
+                    match fc.TryGetProperty("runOnStart") with
+                    | true, v when v.ValueKind = JsonValueKind.True -> true
+                    | _ -> false
+
                 {| Pattern = pattern
                    Command = command
-                   Args = args |})
+                   Args = args
+                   RunOnStart = runOnStart |})
             |> Seq.toList
         | _ -> []
 
@@ -285,6 +366,17 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       Tests = tests
       Coverage = coverage
       FileCommands = fileCommands }
+
+/// Strip a config down to a minimal base for run-once subcommands.
+/// Disables all plugins except format preprocessor. Caller overrides specific fields.
+let stripConfig (config: DaemonConfiguration) : DaemonConfiguration =
+    { config with
+        Build = Some []
+        Lint = false
+        Analyzers = None
+        Tests = None
+        Coverage = None
+        FileCommands = [] }
 
 /// Load config from .fs-hot-watch.json in repoRoot. Returns defaults if no file exists.
 let loadConfig (repoRoot: string) : DaemonConfiguration =
@@ -307,15 +399,34 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
             Logging.info "config" "Using defaults"
             defaults
 
+/// Wrap a shell command string into a callback that runs via splitCommand + runProcess.
+/// If failOnError is true, raises on failure; otherwise only logs.
+let private makeShellHook (label: string) (failOnError: bool) (repoRoot: string) (cmd: string) : unit -> unit =
+    fun () ->
+        Logging.info label $"Running %s{label}: %s{cmd}"
+        let (command, args) = FsHotWatch.StringHelpers.splitCommand cmd
+        let (success, output) = runProcess command args repoRoot []
+
+        if not success then
+            Logging.error label $"%s{label} failed:\n%s{output}"
+
+            if failOnError then
+                failwith $"%s{label} failed: %s{cmd}"
+
 /// Register plugins on the daemon based on the loaded configuration.
 let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
     let getCommitId =
         Some(fun () -> FsHotWatch.JjHelper.getWorkingCopyCommitId repoRoot)
 
-    // Format preprocessor (runs before other plugins see the file)
-    if config.Format then
+    // Format plugin
+    match config.Format with
+    | Auto ->
         Logging.info "config" "Registering FormatPreprocessor"
         daemon.RegisterPreprocessor(FsHotWatch.Fantomas.FormatCheckPlugin.FormatPreprocessor())
+    | Check ->
+        Logging.info "config" "Registering FormatCheckPlugin (read-only)"
+        daemon.RegisterHandler(FsHotWatch.Fantomas.FormatCheckPlugin.createFormatCheck getCommitId)
+    | Off -> ()
 
     // Lint plugin
     if config.Lint then
@@ -346,27 +457,29 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             daemon.RegisterHandler(FsHotWatch.Analyzers.AnalyzersPlugin.create resolvedPaths getCommitId)
     | None -> ()
 
-    // Build plugin
+    // Build plugin(s)
     match config.Build with
-    | Some b ->
+    | Some builds when not builds.IsEmpty ->
         let testProjectNames =
             match config.Tests with
             | Some t -> t.Projects |> List.map (fun p -> p.Project)
             | None -> []
 
-        Logging.info "config" $"Registering BuildPlugin: %s{b.Command} %s{b.Args}"
+        for b in builds do
+            Logging.info "config" $"Registering BuildPlugin: %s{b.Command} %s{b.Args}"
 
-        daemon.RegisterHandler(
-            FsHotWatch.Build.BuildPlugin.create
-                b.Command
-                b.Args
-                []
-                daemon.Graph
-                testProjectNames
-                b.BuildTemplate
-                getCommitId
-        )
-    | None -> ()
+            daemon.RegisterHandler(
+                FsHotWatch.Build.BuildPlugin.create
+                    b.Command
+                    b.Args
+                    []
+                    daemon.Graph
+                    testProjectNames
+                    b.BuildTemplate
+                    b.DependsOn
+                    getCommitId
+            )
+    | _ -> ()
 
     // TestPrune plugin
     match config.Tests with
@@ -385,35 +498,52 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                   FilterTemplate = p.FilterTemplate
                   ClassJoin = p.ClassJoin })
 
-        let beforeRun =
-            match t.BeforeRun with
-            | Some cmd ->
-                Some(fun () ->
-                    Logging.info "test-prune" $"Running beforeRun: %s{cmd}"
-                    let (command, args) = FsHotWatch.StringHelpers.splitCommand cmd
-                    let (success, output) = runProcess command args repoRoot []
+        let beforeRun = t.BeforeRun |> Option.map (makeShellHook "beforeRun" true repoRoot)
 
-                    if not success then
-                        Logging.error "test-prune" $"beforeRun failed:\n%s{output}"
-                        failwith $"beforeRun failed: %s{cmd}")
-            | None -> None
+        // Coverage args — generate Cobertura XML per test project (respecting per-project opt-out)
+        let coverageExcludedProjects =
+            t.Projects
+            |> List.filter (fun p -> not p.Coverage)
+            |> List.map (fun p -> p.Project)
+            |> Set.ofList
 
-        // Coverage args — generate Cobertura XML per test project
         let coverageArgs =
             match config.Coverage with
             | Some cov ->
                 Some(fun (project: string) ->
-                    let outputDir = Path.Combine(cov.Directory, project)
-                    Directory.CreateDirectory(outputDir) |> ignore
-                    let outputPath = Path.GetFullPath(Path.Combine(outputDir, "coverage.cobertura.xml"))
+                    if coverageExcludedProjects.Contains(project) then
+                        ""
+                    else
+                        let outputDir = Path.Combine(cov.Directory, project)
+                        Directory.CreateDirectory(outputDir) |> ignore
+                        let outputPath = Path.GetFullPath(Path.Combine(outputDir, "coverage.cobertura.xml"))
 
-                    $"--coverage --coverage-output-format cobertura --coverage-output \"%s{outputPath}\"")
+                        $"--coverage --coverage-output-format cobertura --coverage-output \"%s{outputPath}\"")
             | None -> None
+
+        // Extensions (e.g. Falco route mapping)
+        let extensions =
+            t.Extensions
+            |> List.choose (fun ext ->
+                match ext.Type.ToLowerInvariant() with
+                | "falco" ->
+                    Logging.info "config" $"Creating FalcoRouteExtension for %s{ext.Project} (%s{ext.TestDir})"
+
+                    Some(
+                        TestPrune.Falco.FalcoRouteExtension(ext.Project, ext.TestDir)
+                        :> TestPrune.Extensions.ITestPruneExtension
+                    )
+                | other ->
+                    Logging.warn "config" $"Unknown test extension type: %s{other}"
+                    None)
+            |> function
+                | [] -> None
+                | xs -> Some xs
 
         Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"
 
         let handler =
-            create dbPath repoRoot (Some testConfigs) None beforeRun None coverageArgs getCommitId
+            create dbPath repoRoot (Some testConfigs) extensions beforeRun None coverageArgs getCommitId
 
         daemon.RegisterHandler(handler)
     | None -> ()
@@ -423,18 +553,21 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
     | Some cov ->
         Logging.info "config" $"Registering CoveragePlugin: %s{cov.Directory}"
 
+        let afterCheck =
+            cov.AfterCheck |> Option.map (makeShellHook "afterCheck" false repoRoot)
+
         daemon.RegisterHandler(
-            FsHotWatch.Coverage.CoveragePlugin.create cov.Directory cov.ThresholdsFile None getCommitId
+            FsHotWatch.Coverage.CoveragePlugin.create cov.Directory cov.ThresholdsFile afterCheck getCommitId
         )
     | None -> ()
 
     // File commands
     for fc in config.FileCommands do
         Logging.info "config" $"Registering FileCommandPlugin: %s{fc.Pattern} → %s{fc.Command} %s{fc.Args}"
-        let pattern = fc.Pattern
+        let suffix = fc.Pattern.TrimStart('*')
 
         let fileFilter (path: string) =
-            path.EndsWith(pattern.TrimStart('*'), StringComparison.OrdinalIgnoreCase)
+            path.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
 
         daemon.RegisterHandler(
             FsHotWatch.FileCommand.FileCommandPlugin.create
@@ -442,5 +575,6 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                 fileFilter
                 fc.Command
                 fc.Args
+                fc.RunOnStart
                 getCommitId
         )

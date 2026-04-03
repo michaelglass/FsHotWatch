@@ -128,6 +128,11 @@ let private serializeCachedEvent (evt: CachedEvent) =
 
         obj["results"] <- resultsArr
         obj["elapsedMs"] <- results.Elapsed.TotalMilliseconds
+    | CachedCommandCompleted result ->
+        obj["type"] <- "command"
+        obj["name"] <- result.Name
+        obj["succeeded"] <- result.Succeeded
+        obj["output"] <- result.Output
 
     obj
 
@@ -150,6 +155,11 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
 
         let elapsed = TimeSpan.FromMilliseconds(obj["elapsedMs"].GetValue<float>())
         CachedTestCompleted { Results = results; Elapsed = elapsed }
+    | "command" ->
+        CachedCommandCompleted
+            { Name = obj["name"].GetValue<string>()
+              Succeeded = obj["succeeded"].GetValue<bool>()
+              Output = obj["output"].GetValue<string>() }
     | t -> failwith $"Unknown cached event type: %s{t}"
 
 let private serializeResult (result: TaskCacheResult) =

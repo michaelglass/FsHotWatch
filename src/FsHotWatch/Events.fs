@@ -90,6 +90,12 @@ type ScanState =
     /// Scan completed.
     | ScanComplete of total: int * elapsed: System.TimeSpan
 
+/// Result of a command execution (e.g., file command plugin completing a shell command).
+type CommandCompletedResult =
+    { Name: string
+      Succeeded: bool
+      Output: string }
+
 /// Events routed to plugins by the framework.
 [<NoComparison; NoEquality>]
 type PluginEvent<'Msg> =
@@ -97,4 +103,5 @@ type PluginEvent<'Msg> =
     | FileChecked of FileCheckResult
     | BuildCompleted of BuildResult
     | TestCompleted of TestResults
+    | CommandCompleted of CommandCompletedResult
     | Custom of 'Msg

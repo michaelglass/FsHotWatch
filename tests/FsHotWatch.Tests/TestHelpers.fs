@@ -77,6 +77,31 @@ let buildRecorder () =
 
     ((fun () -> receivedBuild), handler)
 
+/// Create a plugin that records CommandCompleted events.
+/// Returns (getCommandResult, handler) where getCommandResult() returns the captured result.
+let commandRecorder () =
+    let mutable receivedCommand: FsHotWatch.Events.CommandCompletedResult option = None
+
+    let handler: FsHotWatch.PluginFramework.PluginHandler<unit, obj> =
+        { Name = "command-recorder"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | FsHotWatch.Events.CommandCompleted result -> receivedCommand <- Some result
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions =
+            { FsHotWatch.PluginFramework.PluginSubscriptions.none with
+                CommandCompleted = true }
+          CacheKey = None }
+
+    ((fun () -> receivedCommand), handler)
+
 /// Create an ErrorEntry for tests.
 let errorEntry msg (sev: FsHotWatch.ErrorLedger.DiagnosticSeverity) : FsHotWatch.ErrorLedger.ErrorEntry =
     { Message = msg
