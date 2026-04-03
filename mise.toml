@@ -84,11 +84,11 @@ run = "dotnet fsi scripts/check-api.fsx"
 depends = ["restore"]
 
 [tasks.sync-docs]
-description = "Sync README.md content to docs/index.md"
+description = "Sync README content to docs/"
 run = "dotnet fsi scripts/sync-docs.fsx"
 
 [tasks.sync-docs-check]
-description = "Check if docs/index.md is in sync with README.md"
+description = "Check if docs/ is in sync with READMEs"
 run = "dotnet fsi scripts/sync-docs.fsx --check"
 
 [tasks.ci]
@@ -117,7 +117,7 @@ depends = ["restore"]
 
 [tasks.docs]
 description = "Generate API documentation"
-run = "dotnet fsdocs build --output output/docs --clean"
+run = "dotnet fsdocs build --output output/docs --clean --parameters root /FsHotWatch/"
 depends = ["restore", "tool-restore"]
 
 [tasks.docs-watch]
