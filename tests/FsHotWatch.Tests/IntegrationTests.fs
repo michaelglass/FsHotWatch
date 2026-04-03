@@ -1416,6 +1416,9 @@ let ``BuildPlugin does not run concurrent builds`` () =
 
     waitForTerminalStatus host "build" 5000
 
+    // Wait for build-counter to process the BuildCompleted event
+    waitUntil (fun () -> buildCount >= 1) 2000
+
     // Only one build should have completed — the guard skipped the second
     test <@ buildCount = 1 @>
 
