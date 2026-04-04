@@ -23,7 +23,7 @@ type BuildPhase =
 type BuildState =
     { Phase: BuildPhase
       SatisfiedDeps: Set<string>
-      PendingFiles: FileChangeKind option }
+      PendingFiles: FileChangeKind list }
 
 type BuildMsg = BuildDone of BuildOutcome
 
@@ -87,7 +87,7 @@ let create
 
         { Phase = RunningPhase running
           SatisfiedDeps = Set.empty
-          PendingFiles = None }
+          PendingFiles = [] }
 
     let startTemplateBuild
         (ctx: PluginCtx<BuildMsg>)
@@ -154,7 +154,7 @@ let create
 
             { Phase = RunningPhase running
               SatisfiedDeps = Set.empty
-              PendingFiles = None }
+              PendingFiles = [] }
 
     let handleSourceChanged
         (ctx: PluginCtx<BuildMsg>)
@@ -174,22 +174,22 @@ let create
             | Some template ->
                 { (startTemplateBuild ctx idle template files) with
                     SatisfiedDeps = state.SatisfiedDeps
-                    PendingFiles = None }
+                    PendingFiles = [] }
             | None ->
                 { (startBuild ctx idle) with
                     SatisfiedDeps = state.SatisfiedDeps
-                    PendingFiles = None }
+                    PendingFiles = [] }
 
     let handleProjectChanged (ctx: PluginCtx<BuildMsg>) (state: BuildState) (idle: Lifecycle<Idle, BuildOutcome>) =
         { (startBuild ctx idle) with
             SatisfiedDeps = state.SatisfiedDeps
-            PendingFiles = None }
+            PendingFiles = [] }
 
     { Name = "build"
       Init =
         { Phase = IdlePhase(Lifecycle.create NotBuilt)
           SatisfiedDeps = Set.empty
-          PendingFiles = None }
+          PendingFiles = [] }
       Update =
         fun ctx state event ->
             async {
@@ -203,12 +203,25 @@ let create
                         let newDeps = Set.add result.Name state.SatisfiedDeps
 
                         if allDepsSatisfied newDeps then
-                            match state.PendingFiles, state.Phase with
-                            | Some(SourceChanged files), IdlePhase idle ->
-                                return handleSourceChanged ctx { state with SatisfiedDeps = newDeps } idle files
-                            | Some(ProjectChanged _), IdlePhase idle ->
-                                return handleProjectChanged ctx { state with SatisfiedDeps = newDeps } idle
-                            | _ -> return { state with SatisfiedDeps = newDeps }
+                            let updatedState = { state with SatisfiedDeps = newDeps }
+
+                            let hasProjectChange =
+                                updatedState.PendingFiles
+                                |> List.exists (function
+                                    | ProjectChanged _ -> true
+                                    | _ -> false)
+
+                            let sourceFiles =
+                                updatedState.PendingFiles
+                                |> List.collect (function
+                                    | SourceChanged files -> files
+                                    | _ -> [])
+                                |> List.distinct
+
+                            match hasProjectChange, sourceFiles, updatedState.Phase with
+                            | true, _, IdlePhase idle -> return handleProjectChanged ctx updatedState idle
+                            | _, _ :: _, IdlePhase idle -> return handleSourceChanged ctx updatedState idle sourceFiles
+                            | _ -> return updatedState
                         else
                             return { state with SatisfiedDeps = newDeps }
 
@@ -218,17 +231,9 @@ let create
                     ->
                     info "build" "Buffering file change — waiting for dependencies"
 
-                    let merged =
-                        match state.PendingFiles, change with
-                        | Some(SourceChanged existing), SourceChanged incoming ->
-                            SourceChanged(existing @ incoming |> List.distinct)
-                        | Some(ProjectChanged existing), ProjectChanged incoming ->
-                            ProjectChanged(existing @ incoming |> List.distinct)
-                        | _ -> change
-
                     return
                         { state with
-                            PendingFiles = Some merged }
+                            PendingFiles = state.PendingFiles @ [ change ] }
 
                 // --- FileChanged: normal handling (no deps or all satisfied) ---
                 | FileChanged(SourceChanged files), IdlePhase idle -> return handleSourceChanged ctx state idle files
@@ -247,7 +252,7 @@ let create
                         { state with
                             Phase = IdlePhase idle
                             SatisfiedDeps = Set.empty
-                            PendingFiles = None }
+                            PendingFiles = [] }
                 | FileChanged _, RunningPhase _ ->
                     info "build" "Skipping: build already in progress"
                     return state

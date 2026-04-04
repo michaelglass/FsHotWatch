@@ -236,6 +236,25 @@ let private runIpcWithExitCode (action: Async<string>) : int =
         eprintfn "Could not connect to daemon: %s" ex.Message
         1
 
+/// Ensure daemon, wait for scan + plugin completion, query errors for a plugin.
+let private ensureAndQueryErrors
+    (ensureDaemon: unit -> bool)
+    (ipc: IpcOps)
+    (pipeName: string)
+    (pluginLabel: string)
+    (pluginFilter: string)
+    : int =
+    if not (ensureDaemon ()) then
+        eprintfn "Failed to start daemon"
+        1
+    else
+        eprintfn "  Waiting for scan to complete..."
+        let scanResult = ipc.WaitForScan pipeName -1L |> Async.RunSynchronously
+        eprintfn "  Scan: %s" scanResult
+        eprintfn "  Waiting for %s to complete..." pluginLabel
+        ipc.WaitForComplete pipeName |> Async.RunSynchronously |> ignore
+        runIpcWithExitCode (ipc.GetErrors pipeName pluginFilter)
+
 /// Compute a hash of the config file + CLI binary for staleness detection.
 let private computeConfigHash (repoRoot: string) =
     let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
@@ -304,11 +323,9 @@ let private startFreshDaemon
     let logFile = Path.Combine(logDir, "daemon.log")
     eprintfn "Starting daemon... (log: %s)" logFile
     let exe = Environment.ProcessPath
-    // Launch via shell with nohup to fully detach from parent process group.
-    // Without this, mise (and similar task runners) wait for all child processes
-    // to exit, causing them to hang even after the CLI client completes.
-    // Launch with nohup so mise/task-runners don't wait for us.
-    // The daemon writes its own PID to daemon.pid on startup (not echo $! which gives the nohup wrapper PID).
+    // Launch via nohup to fully detach from parent process group so
+    // mise/task-runners don't hang waiting for the daemon subprocess.
+    // The daemon writes its own PID to daemon.pid (not echo $! which gives the nohup wrapper PID).
     let psi =
         System.Diagnostics.ProcessStartInfo(
             "/bin/sh",
@@ -367,6 +384,12 @@ let executeCommand
     (daemonExtraArgs: string)
     (config: DaemonConfiguration)
     : int =
+    let ensureDaemonFn () =
+        ensureDaemon ipc repoRoot pipeName daemonExtraArgs
+
+    let queryPlugin label filter =
+        ensureAndQueryErrors ensureDaemonFn ipc pipeName label filter
+
     match command with
     | Help ->
         showHelp ()
@@ -444,51 +467,21 @@ let executeCommand
     | Lint true ->
         let lintConfig = { stripConfig config with Lint = true }
         RunOnceOutput.runOnceAndReport createDaemon repoRoot lintConfig (Some "lint")
-    | Lint false ->
-        if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
-            eprintfn "Failed to start daemon"
-            1
-        else
-            eprintfn "  Waiting for scan to complete..."
-            let scanResult = ipc.WaitForScan pipeName -1L |> Async.RunSynchronously
-            eprintfn "  Scan: %s" scanResult
-            eprintfn "  Waiting for lint to complete..."
-            ipc.WaitForComplete pipeName |> Async.RunSynchronously |> ignore
-            runIpcWithExitCode (ipc.GetErrors pipeName "lint")
+    | Lint false -> queryPlugin "lint" "lint"
     | AnalyzeCheck true ->
         let analyzeConfig =
             { stripConfig config with
                 Analyzers = config.Analyzers }
 
         RunOnceOutput.runOnceAndReport createDaemon repoRoot analyzeConfig (Some "analyzers")
-    | AnalyzeCheck false ->
-        if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
-            eprintfn "Failed to start daemon"
-            1
-        else
-            eprintfn "  Waiting for scan to complete..."
-            let scanResult = ipc.WaitForScan pipeName -1L |> Async.RunSynchronously
-            eprintfn "  Scan: %s" scanResult
-            eprintfn "  Waiting for analyzers to complete..."
-            ipc.WaitForComplete pipeName |> Async.RunSynchronously |> ignore
-            runIpcWithExitCode (ipc.GetErrors pipeName "analyzers")
+    | AnalyzeCheck false -> queryPlugin "analyzers" "analyzers"
     | FormatCheck true ->
         let formatCheckConfig =
             { stripConfig config with
                 Format = FormatMode.Check }
 
         RunOnceOutput.runOnceAndReport createDaemon repoRoot formatCheckConfig (Some "format")
-    | FormatCheck false ->
-        if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
-            eprintfn "Failed to start daemon"
-            1
-        else
-            eprintfn "  Waiting for scan to complete..."
-            let scanResult = ipc.WaitForScan pipeName -1L |> Async.RunSynchronously
-            eprintfn "  Scan: %s" scanResult
-            eprintfn "  Waiting for format check to complete..."
-            ipc.WaitForComplete pipeName |> Async.RunSynchronously |> ignore
-            runIpcWithExitCode (ipc.GetErrors pipeName "format")
+    | FormatCheck false -> queryPlugin "format check" "format"
     | Errors ->
         if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
             eprintfn "Failed to start daemon"
