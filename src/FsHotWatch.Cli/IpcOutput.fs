@@ -3,6 +3,7 @@ module FsHotWatch.Cli.IpcOutput
 open System
 open System.Globalization
 open System.Text.Json
+open System.Threading
 open CommandTree
 
 /// Parsed status for display purposes (no dependency on FsHotWatch.Events).
@@ -131,6 +132,13 @@ let formatStatusLine (name: string) (status: DisplayStatus) : string =
         $"  %s{Color.yellow}\u2026%s{Color.reset} %s{paddedName} %s{timingStr}"
     | DisplayIdle -> $"  %s{Color.dim}\u2014 %s{paddedName}%s{Color.reset}"
 
+/// Render all plugin statuses as a multi-line progress display.
+let renderProgress (statuses: Map<string, DisplayStatus>) : string =
+    statuses
+    |> Map.toList
+    |> List.map (fun (name, status) -> formatStatusLine name status)
+    |> String.concat "\n"
+
 /// Format the full errors response with colored status lines and error details.
 let formatErrorsResponse (resp: ErrorsResponse) : string =
     let sb = System.Text.StringBuilder()
@@ -172,3 +180,62 @@ let formatErrorsResponse (resp: ErrorsResponse) : string =
 
 /// Determine exit code from an ErrorsResponse.
 let exitCodeFromResponse (resp: ErrorsResponse) : int = if resp.Count > 0 then 1 else 0
+
+/// Poll daemon status, render live progress, then format final errors.
+/// Returns exit code (0 = no errors, 1 = errors).
+let pollAndRender (waitForScan: unit -> string) (getStatus: unit -> string) (getErrors: unit -> string) : int =
+    // Phase 1: Wait for scan
+    if UI.isInteractive then
+        UI.withSpinnerQuiet "Scanning" (fun () -> waitForScan () |> ignore)
+    else
+        eprintfn "  Scanning..."
+        waitForScan () |> ignore
+
+    // Phase 2: Poll status until all terminal
+    let mutable lastStatuses = Map.empty
+    let mutable prevLineCount = 0
+    let mutable allDone = false
+
+    while not allDone do
+        let statusJson = getStatus ()
+
+        let statusMap =
+            try
+                use doc = JsonDocument.Parse(statusJson)
+
+                [ for prop in doc.RootElement.EnumerateObject() do
+                      prop.Name, prop.Value.GetString() ]
+                |> Map.ofList
+            with _ ->
+                Map.empty
+
+        let parsed = parseStatusMap statusMap
+        lastStatuses <- parsed
+
+        if UI.isInteractive then
+            // Move cursor up to overwrite previous lines
+            if prevLineCount > 0 then
+                for _ in 1..prevLineCount do
+                    Console.Error.Write("\x1b[A\x1b[2K")
+
+            // Render current state
+            let progress = renderProgress parsed
+            eprintfn "%s" progress
+            prevLineCount <- parsed.Count
+
+        allDone <- isAllTerminal parsed
+
+        if not allDone then
+            Thread.Sleep(200)
+
+    // Phase 3: Clear interactive progress
+    if UI.isInteractive && prevLineCount > 0 then
+        for _ in 1..prevLineCount do
+            Console.Error.Write("\x1b[A\x1b[2K")
+
+    // Phase 4: Get errors and render final output
+    let errorsJson = getErrors ()
+    let resp = parseErrorsResponse errorsJson
+    let output = formatErrorsResponse resp
+    eprintfn "%s" output
+    exitCodeFromResponse resp
