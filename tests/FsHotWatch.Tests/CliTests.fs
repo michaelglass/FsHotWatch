@@ -97,8 +97,12 @@ let ``parse status with plugin returns Status Some`` () =
     test <@ CommandTree.parse tree [| "status"; "lint" |] = Ok(Status(Some "lint")) @>
 
 [<Fact>]
-let ``parse scan returns Scan None`` () =
-    test <@ CommandTree.parse tree [| "scan" |] = Ok(Scan None) @>
+let ``parse scan returns Scan`` () =
+    test <@ CommandTree.parse tree [| "scan" |] = Ok(Scan { Force = false }) @>
+
+[<Fact>]
+let ``parse scan --force returns Scan with Force`` () =
+    test <@ CommandTree.parse tree [| "scan"; "--force" |] = Ok(Scan { Force = true }) @>
 
 [<Fact>]
 let ``parse errors returns Errors`` () =
@@ -414,7 +418,7 @@ let ``executeCommand Scan calls scan IPC`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Scan None) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Scan { Force = false }) "" fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>

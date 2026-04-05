@@ -42,7 +42,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="CommandTree" Version="0.1.*" />
+        <PackageReference Include="CommandTree" Version="0.3.*" />
         <PackageReference Include="TestPrune.Falco" Version="0.1.0-beta.1" />
         <PackageReference Update="FSharp.Core" Version="10.1.*" />
     </ItemGroup>
