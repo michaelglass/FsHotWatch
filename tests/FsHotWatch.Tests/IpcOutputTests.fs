@@ -169,3 +169,38 @@ let ``renderProgress shows all plugins`` () =
     test <@ output.Contains("lint") @>
     test <@ output.Contains("\u2713") @>
     test <@ output.Contains("\u2026") @>
+
+// --- renderIpcResult tests ---
+
+[<Fact>]
+let ``renderIpcResult with GetErrors format count 0 returns 0`` () =
+    let result = renderIpcResult """{"count":0,"files":{},"statuses":{}}"""
+    test <@ result = 0 @>
+
+[<Fact>]
+let ``renderIpcResult with GetErrors format count > 0 returns 1`` () =
+    let result =
+        renderIpcResult
+            """{"count":1,"files":{"src/Foo.fs":[{"plugin":"lint","message":"bad","severity":"warning","line":1,"column":0,"detail":null}]},"statuses":{}}"""
+
+    test <@ result = 1 @>
+
+[<Fact>]
+let ``renderIpcResult with status passed returns 0`` () =
+    let result = renderIpcResult """{"status":"passed"}"""
+    test <@ result = 0 @>
+
+[<Fact>]
+let ``renderIpcResult with status failed returns 1`` () =
+    let result = renderIpcResult """{"status":"failed"}"""
+    test <@ result = 1 @>
+
+[<Fact>]
+let ``renderIpcResult with error field returns 1`` () =
+    let result = renderIpcResult """{"error":"something went wrong"}"""
+    test <@ result = 1 @>
+
+[<Fact>]
+let ``renderIpcResult with plain text returns 0`` () =
+    let result = renderIpcResult "build completed successfully"
+    test <@ result = 0 @>
