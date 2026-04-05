@@ -181,6 +181,17 @@ let formatErrorsResponse (resp: ErrorsResponse) : string =
 /// Determine exit code from an ErrorsResponse.
 let exitCodeFromResponse (resp: ErrorsResponse) : int = if resp.Count > 0 then 1 else 0
 
+/// Parse a JSON object into a string-to-string map (for status responses).
+let parseStatusJson (json: string) : Map<string, string> =
+    try
+        use doc = JsonDocument.Parse(json)
+
+        [ for prop in doc.RootElement.EnumerateObject() do
+              prop.Name, prop.Value.GetString() ]
+        |> Map.ofList
+    with _ ->
+        Map.empty
+
 /// Render a generic IPC result (status JSON or plain text).
 /// Dispatches on JSON shape: GetErrors format (has "count"), error/status fields, status map, or plain text.
 let renderIpcResult (result: string) : int =
@@ -206,38 +217,38 @@ let renderIpcResult (result: string) : int =
             exitCodeFromResponse resp
         | false, _ ->
 
-            match root.TryGetProperty("error") with
-            | true, e ->
-                UI.fail (e.GetString())
-                1
-            | false, _ ->
+        match root.TryGetProperty("error") with
+        | true, e ->
+            UI.fail (e.GetString())
+            1
+        | false, _ ->
 
-                match root.TryGetProperty("status") with
-                | true, v when v.GetString() = "failed" ->
-                    UI.fail "Failed"
-                    1
-                | true, v when v.GetString() = "passed" ->
-                    UI.success "Passed"
-                    0
-                | _ ->
+        match root.TryGetProperty("status") with
+        | true, v when v.GetString() = "failed" ->
+            UI.fail "Failed"
+            1
+        | true, v when v.GetString() = "passed" ->
+            UI.success "Passed"
+            0
+        | _ ->
 
-                    let statusMap =
-                        [ for prop in root.EnumerateObject() do
-                              prop.Name, prop.Value.GetString() ]
-                        |> Map.ofList
+        let statusMap =
+            [ for prop in root.EnumerateObject() do
+                  prop.Name, prop.Value.GetString() ]
+            |> Map.ofList
 
-                    let parsed = parseStatusMap statusMap
-                    let output = renderProgress parsed
-                    eprintfn "%s" output
+        let parsed = parseStatusMap statusMap
+        let output = renderProgress parsed
+        eprintfn "%s" output
 
-                    let hasFailed =
-                        parsed
-                        |> Map.exists (fun _ s ->
-                            match s with
-                            | DisplayFailed _ -> true
-                            | _ -> false)
+        let hasFailed =
+            parsed
+            |> Map.exists (fun _ s ->
+                match s with
+                | DisplayFailed _ -> true
+                | _ -> false)
 
-                    if hasFailed then 1 else 0
+        if hasFailed then 1 else 0
 
 /// Poll daemon status, render live progress, then format final errors.
 /// Returns exit code (0 = no errors, 1 = errors).
@@ -250,25 +261,12 @@ let pollAndRender (waitForScan: unit -> string) (getStatus: unit -> string) (get
         waitForScan () |> ignore
 
     // Phase 2: Poll status until all terminal
-    let mutable lastStatuses = Map.empty
     let mutable prevLineCount = 0
     let mutable allDone = false
 
     while not allDone do
         let statusJson = getStatus ()
-
-        let statusMap =
-            try
-                use doc = JsonDocument.Parse(statusJson)
-
-                [ for prop in doc.RootElement.EnumerateObject() do
-                      prop.Name, prop.Value.GetString() ]
-                |> Map.ofList
-            with _ ->
-                Map.empty
-
-        let parsed = parseStatusMap statusMap
-        lastStatuses <- parsed
+        let parsed = parseStatusMap (parseStatusJson statusJson)
 
         if UI.isInteractive then
             // Move cursor up to overwrite previous lines
