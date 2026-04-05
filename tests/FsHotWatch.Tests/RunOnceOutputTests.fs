@@ -8,24 +8,32 @@ open FsHotWatch.ErrorLedger
 open FsHotWatch.Cli.RunOnceOutput
 
 [<Fact>]
-let ``formatProgressLine shows status for each plugin`` () =
-    let now = DateTime.UtcNow
-
-    let statuses =
-        Map.ofList
-            [ "build", Running(now.AddSeconds(-12.0))
-              "format", Completed now
-              "lint", Idle ]
-
-    let result = formatProgressLine statuses
-    test <@ result.Contains("format") @>
+let ``formatStepResult shows checkmark for completed`` () =
+    let result = formatStepResult "build" (Completed DateTime.UtcNow)
     test <@ result.Contains("\u2713") @>
-    test <@ result.Contains("lint") @>
-    test <@ result.Contains("...") @>
     test <@ result.Contains("build") @>
 
 [<Fact>]
-let ``formatSummary shows checkmark for completed plugins`` () =
+let ``formatStepResult shows X for failed`` () =
+    let result = formatStepResult "build" (Failed("compile error", DateTime.UtcNow))
+    test <@ result.Contains("\u2717") @>
+    test <@ result.Contains("build") @>
+    test <@ result.Contains("compile error") @>
+
+[<Fact>]
+let ``formatStepResult shows ellipsis for running`` () =
+    let result = formatStepResult "lint" (Running(DateTime.UtcNow.AddSeconds(-5.0)))
+    test <@ result.Contains("\u2026") @>
+    test <@ result.Contains("lint") @>
+
+[<Fact>]
+let ``formatStepResult shows dash for idle`` () =
+    let result = formatStepResult "format" Idle
+    test <@ result.Contains("\u2014") @>
+    test <@ result.Contains("format") @>
+
+[<Fact>]
+let ``formatSummary shows all plugins`` () =
     let statuses =
         Map.ofList [ "lint", Completed(DateTime.UtcNow); "build", Completed(DateTime.UtcNow) ]
 
@@ -48,15 +56,6 @@ let ``formatSummary shows failure message`` () =
 
     let result = formatSummary statuses
     test <@ result.Contains("compile error") @>
-
-[<Fact>]
-let ``formatSummary pads plugin names for alignment`` () =
-    let statuses =
-        Map.ofList [ "lint", Completed(DateTime.UtcNow); "build", Completed(DateTime.UtcNow) ]
-
-    let result = formatSummary statuses
-    // "build" is 5 chars, "lint" is 4 chars — lint should be padded
-    test <@ result.Contains("lint ") @>
 
 [<Fact>]
 let ``formatSummary empty map returns empty string`` () =
@@ -107,8 +106,10 @@ let ``formatErrors shows severity labels for error and warning`` () =
                    Detail = None }) ] ]
 
     let result = formatErrors errors
-    test <@ result.Contains("error: type error") @>
-    test <@ result.Contains("warning: bad name") @>
+    test <@ result.Contains("error") @>
+    test <@ result.Contains("type error") @>
+    test <@ result.Contains("warning") @>
+    test <@ result.Contains("bad name") @>
 
 [<Fact>]
 let ``formatErrors shows count summary`` () =

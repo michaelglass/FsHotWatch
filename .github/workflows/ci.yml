@@ -71,21 +71,21 @@ jobs:
         if: steps.check-existing.outputs.skip != 'true'
         run: dotnet tool restore
 
-      - name: Check formatting
-        if: steps.check-existing.outputs.skip != 'true'
-        run: dotnet fantomas src/ tests/ --check
-
-      - name: Check docs sync
-        if: steps.check-existing.outputs.skip != 'true'
-        run: dotnet fsi scripts/sync-docs.fsx --check
-
       - name: Build
         if: steps.check-existing.outputs.skip != 'true'
         run: dotnet build --no-restore
 
+      - name: Check formatting
+        if: steps.check-existing.outputs.skip != 'true'
+        run: dotnet run --project src/FsHotWatch.Cli --no-build -- format-check run-once
+
       - name: Lint
         if: steps.check-existing.outputs.skip != 'true'
         run: dotnet fsharplint lint FsHotWatch.slnx
+
+      - name: Check docs sync
+        if: steps.check-existing.outputs.skip != 'true'
+        run: dotnet fsi scripts/sync-docs.fsx --check
 
       - name: Generate docs
         if: steps.check-existing.outputs.skip != 'true'

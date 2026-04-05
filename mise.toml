@@ -41,7 +41,7 @@ depends = ["build"]
 
 [tasks.check]
 description = "Run all checks via daemon (auto-starts daemon if needed)"
-run = "dotnet run --project src/FsHotWatch.Cli --no-build -- --verbose check"
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- check"
 depends = ["build"]
 # Note: depends on build to ensure CLI binary is compiled.
 # The daemon handles its own build/test/lint cycle internally.
@@ -64,14 +64,14 @@ dotnet test \
 depends = ["restore"]
 
 [tasks.format-check]
-description = "Check formatting without making changes"
-run = "dotnet fantomas src/ tests/ --check"
-depends = ["tool-restore"]
+description = "Check formatting (single pass)"
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- format-check run-once"
+depends = ["build"]
 
 [tasks.lint-direct]
-description = "Run FSharpLint directly (for CI)"
-run = "dotnet fsharplint lint FsHotWatch.slnx"
-depends = ["restore", "tool-restore"]
+description = "Run linter (single pass)"
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- lint run-once"
+depends = ["build"]
 
 [tasks.coverage-check]
 description = "Check per-file coverage meets minimum threshold"
@@ -92,8 +92,9 @@ description = "Check if docs/ is in sync with READMEs"
 run = "dotnet fsi scripts/sync-docs.fsx --check"
 
 [tasks.ci]
-description = "Run all CI checks (no daemon, no auto-fix)"
-depends = ["format-check", "lint-direct", "coverage-check", "sync-docs-check", "docs"]
+description = "Run all CI checks (single pass, no daemon)"
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- check run-once"
+depends = ["build"]
 
 [tasks.run]
 description = "Run the CLI"
