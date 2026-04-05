@@ -27,6 +27,7 @@
         <Compile Include="DaemonConfig.fs" />
         <Compile Include="InitConfig.fs" />
         <Compile Include="RunOnceOutput.fs" />
+        <Compile Include="IpcOutput.fs" />
         <Compile Include="Program.fs" />
     </ItemGroup>
 
