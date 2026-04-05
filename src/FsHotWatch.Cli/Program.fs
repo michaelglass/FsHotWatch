@@ -90,66 +90,22 @@ let defaultIpcOps: IpcOps =
       InvalidateCache = IpcClient.invalidateCache
       IsRunning = IpcClient.isRunning }
 
-let private runIpc (action: Async<string>) : int =
-    try
-        let result = action |> Async.RunSynchronously
-        printfn "%s" result
-        0
-    with ex ->
-        eprintfn $"Could not connect to daemon: %s{ex.Message}"
-        1
-
-let private runIpcWithExitCode (action: Async<string>) : int =
-    try
-        let result = action |> Async.RunSynchronously
-        printfn "%s" result
-
-        // Determine exit code from JSON result
-        try
-            use doc = System.Text.Json.JsonDocument.Parse(result)
-            let root = doc.RootElement
-
-            // {"count": 0} → success
-            match root.TryGetProperty("count") with
-            | true, v when v.GetInt32() = 0 -> 0
-            | true, _ -> 1
-            | false, _ ->
-
-                // {"error": "..."} → failure
-                match root.TryGetProperty("error") with
-                | true, _ -> 1
-                | false, _ ->
-
-                    // {"status": "passed"} → success, {"status": "failed"} → failure
-                    match root.TryGetProperty("status") with
-                    | true, v when v.GetString() = "passed" -> 0
-                    | true, v when v.GetString() = "failed" -> 1
-                    | _ -> 0
-        with _ ->
-            // Non-JSON response (e.g., plain status string) — success
-            0
-    with ex ->
-        eprintfn "Could not connect to daemon: %s" ex.Message
-        1
-
 /// Ensure daemon, wait for scan + plugin completion, query errors for a plugin.
 let private ensureAndQueryErrors
     (ensureDaemon: unit -> bool)
     (ipc: IpcOps)
     (pipeName: string)
-    (pluginLabel: string)
+    (_pluginLabel: string)
     (pluginFilter: string)
     : int =
     if not (ensureDaemon ()) then
         eprintfn "Failed to start daemon"
         1
     else
-        eprintfn "  Waiting for scan to complete..."
-        let scanResult = ipc.WaitForScan pipeName -1L |> Async.RunSynchronously
-        eprintfn "  Scan: %s" scanResult
-        eprintfn "  Waiting for %s to complete..." pluginLabel
-        ipc.WaitForComplete pipeName |> Async.RunSynchronously |> ignore
-        runIpcWithExitCode (ipc.GetErrors pipeName pluginFilter)
+        IpcOutput.pollAndRender
+            (fun () -> ipc.WaitForScan pipeName -1L |> Async.RunSynchronously)
+            (fun () -> ipc.GetStatus pipeName |> Async.RunSynchronously)
+            (fun () -> ipc.GetErrors pipeName pluginFilter |> Async.RunSynchronously)
 
 /// Compute a hash of the config file + CLI binary for staleness detection.
 let private computeConfigHash (repoRoot: string) =
@@ -315,20 +271,69 @@ let executeCommand
 
         eprintfn "Daemon stopped."
         0
-    | Stop -> runIpc (ipc.Shutdown pipeName)
-    | Scan { Force = force } -> runIpc (ipc.Scan pipeName force)
-    | Status None -> runIpc (ipc.GetStatus pipeName)
-    | Status(Some pluginName) -> runIpc (ipc.GetPluginStatus pipeName pluginName)
+    | Stop ->
+        try
+            ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
+            UI.success "Daemon stopped"
+            0
+        with ex ->
+            eprintfn "Could not connect to daemon: %s" ex.Message
+            1
+    | Scan { Force = force } ->
+        try
+            let result = ipc.Scan pipeName force |> Async.RunSynchronously
+            UI.success $"Scan: %s{result}"
+            0
+        with ex ->
+            eprintfn "Could not connect to daemon: %s" ex.Message
+            1
+    | Status None ->
+        try
+            let json = ipc.GetStatus pipeName |> Async.RunSynchronously
+
+            let statusMap =
+                try
+                    use doc = System.Text.Json.JsonDocument.Parse(json)
+
+                    [ for prop in doc.RootElement.EnumerateObject() do
+                          prop.Name, prop.Value.GetString() ]
+                    |> Map.ofList
+                with _ ->
+                    Map.empty
+
+            let parsed = IpcOutput.parseStatusMap statusMap
+            let output = IpcOutput.renderProgress parsed
+            eprintfn "%s" output
+            0
+        with ex ->
+            eprintfn "Could not connect to daemon: %s" ex.Message
+            1
+    | Status(Some pluginName) ->
+        try
+            let result = ipc.GetPluginStatus pipeName pluginName |> Async.RunSynchronously
+            let parsed = IpcOutput.parseStatusMap (Map.ofList [ pluginName, result ])
+            let output = IpcOutput.renderProgress parsed
+            eprintfn "%s" output
+            0
+        with ex ->
+            eprintfn "Could not connect to daemon: %s" ex.Message
+            1
     | Build RunOnce ->
         let buildConfig = stripConfig config
         RunOnceOutput.runOnceAndReport createDaemon repoRoot buildConfig (Some "build")
     | Build Daemon ->
-        if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
+        if not (ensureDaemonFn ()) then
             eprintfn "Failed to start daemon"
             1
         else
-            eprintfn "  Triggering build..."
-            runIpcWithExitCode (ipc.TriggerBuild pipeName)
+            let result =
+                if UI.isInteractive then
+                    UI.withSpinner "Building" (fun () -> ipc.TriggerBuild pipeName |> Async.RunSynchronously)
+                else
+                    eprintfn "  Building..."
+                    ipc.TriggerBuild pipeName |> Async.RunSynchronously
+
+            IpcOutput.renderIpcResult result
     | Test RunOnce ->
         let testConfig =
             { stripConfig config with
@@ -337,11 +342,19 @@ let executeCommand
 
         RunOnceOutput.runOnceAndReport createDaemon repoRoot testConfig (Some "test-prune")
     | Test Daemon ->
-        if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
+        if not (ensureDaemonFn ()) then
             eprintfn "Failed to start daemon"
             1
         else
-            runIpcWithExitCode (ipc.RunCommand pipeName "run-tests" "{}")
+            let result =
+                if UI.isInteractive then
+                    UI.withSpinner "Running tests" (fun () ->
+                        ipc.RunCommand pipeName "run-tests" "{}" |> Async.RunSynchronously)
+                else
+                    eprintfn "  Running tests..."
+                    ipc.RunCommand pipeName "run-tests" "{}" |> Async.RunSynchronously
+
+            IpcOutput.renderIpcResult result
     | Format RunOnce ->
         let formatConfig =
             { stripConfig config with
@@ -349,11 +362,19 @@ let executeCommand
 
         RunOnceOutput.runOnceAndReport createDaemon repoRoot formatConfig (Some "format")
     | Format Daemon ->
-        if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
+        if not (ensureDaemonFn ()) then
             eprintfn "Failed to start daemon"
             1
         else
-            runIpc (ipc.FormatAll pipeName)
+            let result =
+                if UI.isInteractive then
+                    UI.withSpinner "Formatting" (fun () -> ipc.FormatAll pipeName |> Async.RunSynchronously)
+                else
+                    eprintfn "  Formatting..."
+                    ipc.FormatAll pipeName |> Async.RunSynchronously
+
+            UI.success $"Format: %s{result}"
+            0
     | Lint RunOnce ->
         let lintConfig = { stripConfig config with Lint = true }
         RunOnceOutput.runOnceAndReport createDaemon repoRoot lintConfig (Some "lint")
@@ -373,17 +394,30 @@ let executeCommand
         RunOnceOutput.runOnceAndReport createDaemon repoRoot formatCheckConfig (Some "format")
     | FormatCheck Daemon -> queryPlugin "format check" "format"
     | Errors ->
-        if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
+        if not (ensureDaemonFn ()) then
             eprintfn "Failed to start daemon"
             1
         else
-            runIpcWithExitCode (ipc.GetErrors pipeName "")
+            try
+                let errorsJson = ipc.GetErrors pipeName "" |> Async.RunSynchronously
+                let resp = IpcOutput.parseErrorsResponse errorsJson
+                let output = IpcOutput.formatErrorsResponse resp
+                eprintfn "%s" output
+                IpcOutput.exitCodeFromResponse resp
+            with ex ->
+                eprintfn "Could not connect to daemon: %s" ex.Message
+                1
     | InvalidateCache filePath ->
-        if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
+        if not (ensureDaemonFn ()) then
             eprintfn "Failed to start daemon"
             1
         else
-            runIpcWithExitCode (ipc.InvalidateCache pipeName filePath)
+            try
+                let result = ipc.InvalidateCache pipeName filePath |> Async.RunSynchronously
+                IpcOutput.renderIpcResult result
+            with ex ->
+                eprintfn "Could not connect to daemon: %s" ex.Message
+                1
     | Init ->
         let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
         let projects = InitConfig.discoverProjects repoRoot
@@ -411,7 +445,12 @@ let executeCommand
 
 /// Execute an unknown command as a plugin command via IPC.
 let executePluginCommand (ipc: IpcOps) (pipeName: string) (cmd: string) (argsStr: string) : int =
-    runIpc (ipc.RunCommand pipeName cmd argsStr)
+    try
+        let result = ipc.RunCommand pipeName cmd argsStr |> Async.RunSynchronously
+        IpcOutput.renderIpcResult result
+    with ex ->
+        eprintfn "Could not connect to daemon: %s" ex.Message
+        1
 
 [<EntryPoint>]
 let main args =
