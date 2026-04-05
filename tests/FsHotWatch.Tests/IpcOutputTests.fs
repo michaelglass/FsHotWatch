@@ -156,3 +156,16 @@ let ``exitCodeFromResponse returns 1 for count > 0`` () =
           Statuses = Map.empty }
 
     test <@ exitCodeFromResponse resp = 1 @>
+
+[<Fact>]
+let ``renderProgress shows all plugins`` () =
+    let statuses =
+        Map.ofList
+            [ "build", DisplayCompleted System.DateTime.UtcNow
+              "lint", DisplayRunning(System.DateTime.UtcNow.AddSeconds(-3.0)) ]
+
+    let output = renderProgress statuses
+    test <@ output.Contains("build") @>
+    test <@ output.Contains("lint") @>
+    test <@ output.Contains("\u2713") @>
+    test <@ output.Contains("\u2026") @>
