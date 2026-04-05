@@ -349,7 +349,7 @@ let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
       Scan = fun _ _ -> async { return "scan started" }
       ScanStatus = fun _ -> async { return "idle" }
-      GetStatus = fun _ -> async { return "{}" }
+      GetStatus = fun _ -> async { return """{"plugin": "Completed at 2026-01-01T00:00:00Z"}""" }
       GetPluginStatus = fun _ _ -> async { return "not found" }
       RunCommand = fun _ _ _ -> async { return "unknown command" }
       GetErrors = fun _ _ -> async { return """{"count": 0, "files": {}}""" }
@@ -498,7 +498,7 @@ let ``decideDaemonAction starts fresh when not running even with matching hash``
     let action = decideDaemonAction false "abc123" "abc123"
     test <@ action = StartFresh @>
 
-// --- runIpcWithExitCode exit code paths via executeCommand ---
+// --- exit code paths via executeCommand ---
 
 [<Fact>]
 let ``executeCommand Errors with count 0 returns exit code 0`` () =
@@ -515,7 +515,12 @@ let ``executeCommand Errors with count 0 returns exit code 0`` () =
 let ``executeCommand Errors with count 5 returns exit code 1`` () =
     let ipc =
         { fakeIpc () with
-            GetErrors = fun _ _ -> async { return """{"count": 5}""" } }
+            GetErrors =
+                fun _ _ ->
+                    async {
+                        return
+                            """{"count": 5, "files": {"src/Foo.fs": [{"plugin":"check","message":"err","severity":"error","line":1,"column":1}]}, "statuses": {}}"""
+                    } }
 
     let result =
         executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" fakeConfig
@@ -523,10 +528,10 @@ let ``executeCommand Errors with count 5 returns exit code 1`` () =
     test <@ result = 1 @>
 
 [<Fact>]
-let ``executeCommand Errors with error field returns exit code 1`` () =
+let ``executeCommand Errors with IPC failure returns exit code 1`` () =
     let ipc =
         { fakeIpc () with
-            GetErrors = fun _ _ -> async { return """{"error": "something went wrong"}""" } }
+            GetErrors = fun _ _ -> async { return failwith "connection refused" } }
 
     let result =
         executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" fakeConfig
@@ -666,7 +671,7 @@ let ``executeCommand Errors calls getErrors`` () =
 [<Fact>]
 let ``executeCommand Check waits for scan and returns errors`` () =
     let mutable waitForScanCalled = false
-    let mutable waitForCompleteCalled = false
+    let mutable getStatusCalled = false
     let mutable getErrorsCalled = false
 
     let ipc =
@@ -677,11 +682,11 @@ let ``executeCommand Check waits for scan and returns errors`` () =
                         waitForScanCalled <- true
                         return "idle"
                     }
-            WaitForComplete =
+            GetStatus =
                 fun _ ->
                     async {
-                        waitForCompleteCalled <- true
-                        return "{}"
+                        getStatusCalled <- true
+                        return """{"check": "Completed at 2026-01-01T00:00:00Z"}"""
                     }
             GetErrors =
                 fun _ _ ->
@@ -695,7 +700,7 @@ let ``executeCommand Check waits for scan and returns errors`` () =
 
     test <@ result = 0 @>
     test <@ waitForScanCalled @>
-    test <@ waitForCompleteCalled @>
+    test <@ getStatusCalled @>
     test <@ getErrorsCalled @>
 
 // --- executeCommand for InvalidateCache ---
