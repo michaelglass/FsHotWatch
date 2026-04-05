@@ -118,6 +118,10 @@ let ``formatStatusLine shows X for failed`` () =
     test <@ line.Contains("compile error") @>
 
 [<Fact>]
+let ``isAllTerminal returns false for empty map`` () =
+    test <@ not (isAllTerminal Map.empty) @>
+
+[<Fact>]
 let ``isAllTerminal returns true when all completed or failed`` () =
     let statuses =
         Map.ofList

@@ -1,6 +1,7 @@
 module FsHotWatch.Cli.IpcOutput
 
 open System
+open System.Globalization
 open System.Text.Json
 open CommandTree
 
@@ -70,14 +71,17 @@ let parseErrorsResponse (json: string) : ErrorsResponse =
 
 /// Parse a status string from IPC into DisplayStatus.
 let private parseStatus (s: string) : DisplayStatus =
+    let tryParseUtc (s: string) =
+        DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal)
+
     if s = "Idle" then
         DisplayIdle
     elif s.StartsWith("Running since ") then
-        match DateTime.TryParse(s.Substring("Running since ".Length)) with
+        match tryParseUtc (s.Substring("Running since ".Length)) with
         | true, dt -> DisplayRunning dt
         | false, _ -> DisplayIdle
     elif s.StartsWith("Completed at ") then
-        match DateTime.TryParse(s.Substring("Completed at ".Length)) with
+        match tryParseUtc (s.Substring("Completed at ".Length)) with
         | true, dt -> DisplayCompleted dt
         | false, _ -> DisplayCompleted DateTime.UtcNow
     elif s.StartsWith("Failed at ") then
@@ -85,14 +89,14 @@ let private parseStatus (s: string) : DisplayStatus =
 
         match rest.IndexOf(": ") with
         | -1 ->
-            match DateTime.TryParse(rest) with
+            match tryParseUtc rest with
             | true, dt -> DisplayFailed("", dt)
             | false, _ -> DisplayFailed(rest, DateTime.UtcNow)
         | idx ->
             let dtStr = rest.Substring(0, idx)
             let msg = rest.Substring(idx + 2)
 
-            match DateTime.TryParse(dtStr) with
+            match tryParseUtc dtStr with
             | true, dt -> DisplayFailed(msg, dt)
             | false, _ -> DisplayFailed(msg, DateTime.UtcNow)
     else
@@ -103,20 +107,22 @@ let parseStatusMap (statuses: Map<string, string>) : Map<string, DisplayStatus> 
     statuses |> Map.map (fun _ s -> parseStatus s)
 
 /// Check if all statuses are terminal (Completed or Failed).
+/// Returns false for empty maps (no plugins registered yet).
 let isAllTerminal (statuses: Map<string, DisplayStatus>) : bool =
-    statuses
-    |> Map.forall (fun _ s ->
-        match s with
-        | DisplayCompleted _
-        | DisplayFailed _ -> true
-        | _ -> false)
+    not statuses.IsEmpty
+    && statuses
+       |> Map.forall (fun _ s ->
+           match s with
+           | DisplayCompleted _
+           | DisplayFailed _ -> true
+           | _ -> false)
 
 /// Format a single status line with icon, name, and timing.
 let formatStatusLine (name: string) (status: DisplayStatus) : string =
     let paddedName = name.PadRight(24)
 
     match status with
-    | DisplayCompleted at -> $"  %s{Color.green}\u2713%s{Color.reset} %s{paddedName}"
+    | DisplayCompleted _ -> $"  %s{Color.green}\u2713%s{Color.reset} %s{paddedName}"
     | DisplayFailed(error, _) ->
         $"  %s{Color.red}\u2717%s{Color.reset} %s{paddedName} %s{Color.dim}\u2014 %s{error}%s{Color.reset}"
     | DisplayRunning since ->
