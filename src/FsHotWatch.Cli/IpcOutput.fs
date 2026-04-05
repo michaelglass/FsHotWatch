@@ -182,28 +182,36 @@ let formatErrorsResponse (resp: ErrorsResponse) : string =
 let exitCodeFromResponse (resp: ErrorsResponse) : int = if resp.Count > 0 then 1 else 0
 
 /// Render a generic IPC result (status JSON or plain text).
-/// Tries to parse as GetErrors format first, falls back to status display.
+/// Dispatches on JSON shape: GetErrors format (has "count"), error/status fields, status map, or plain text.
 let renderIpcResult (result: string) : int =
-    try
-        use probe = JsonDocument.Parse(result)
+    let doc =
+        try
+            Some(JsonDocument.Parse(result))
+        with _ ->
+            None
 
-        match probe.RootElement.TryGetProperty("count") with
+    match doc with
+    | None ->
+        eprintfn "%s" result
+        0
+    | Some doc ->
+        use doc = doc
+        let root = doc.RootElement
+
+        match root.TryGetProperty("count") with
         | true, _ ->
             let resp = parseErrorsResponse result
             let output = formatErrorsResponse resp
             eprintfn "%s" output
             exitCodeFromResponse resp
-        | false, _ -> failwith "not a GetErrors response"
-    with _ ->
-        try
-            use doc = JsonDocument.Parse(result)
-            let root = doc.RootElement
+        | false, _ ->
 
             match root.TryGetProperty("error") with
             | true, e ->
                 UI.fail (e.GetString())
                 1
             | false, _ ->
+
                 match root.TryGetProperty("status") with
                 | true, v when v.GetString() = "failed" ->
                     UI.fail "Failed"
@@ -212,6 +220,7 @@ let renderIpcResult (result: string) : int =
                     UI.success "Passed"
                     0
                 | _ ->
+
                     let statusMap =
                         [ for prop in root.EnumerateObject() do
                               prop.Name, prop.Value.GetString() ]
@@ -229,9 +238,6 @@ let renderIpcResult (result: string) : int =
                             | _ -> false)
 
                     if hasFailed then 1 else 0
-        with _ ->
-            eprintfn "%s" result
-            0
 
 /// Poll daemon status, render live progress, then format final errors.
 /// Returns exit code (0 = no errors, 1 = errors).
