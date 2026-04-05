@@ -11,6 +11,11 @@ open FSharpLint.Application
 type LintState =
     { WarningsByFile: Map<string, string list> }
 
+// TODO: lintParsedSource misses hint-based rules (e.g. FL0065 "x = [] ===> List.isEmpty x")
+// that the solution-level linter (dotnet fsharplint lint) catches. Investigate using
+// Lint.lintProject with a warm FSharpChecker instead of per-file lintParsedSource.
+// See ../FsharpLint for the FSharpLint.Core source.
+
 /// Creates a framework plugin handler that lints files using pre-parsed AST
 /// and check results from the daemon's warm FSharpChecker.
 let create

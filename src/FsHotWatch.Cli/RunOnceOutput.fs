@@ -2,50 +2,43 @@ module FsHotWatch.Cli.RunOnceOutput
 
 open System
 open System.Text
+open CommandTree
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 
-/// Format a single-line progress status for all plugins.
-let formatProgressLine (statuses: Map<string, PluginStatus>) : string =
-    statuses
-    |> Map.toList
-    |> List.map (fun (name, status) ->
-        match status with
-        | Completed _ -> $"%s{name} \u2713"
-        | Failed _ -> $"%s{name} \u2717"
-        | Running since ->
-            let elapsed = DateTime.UtcNow - since
-            $"%s{name} %d{int elapsed.TotalSeconds}s"
-        | Idle -> $"%s{name} ...")
-    |> String.concat "  "
+/// Format a single plugin result line with ANSI colors and timing.
+/// Example: "  ✓ Build                        3.2s"
+/// Example: "  ✗ Lint                         6.4s"
+let formatStepResult (name: string) (status: PluginStatus) : string =
+    let paddedName = name.PadRight(24)
 
-/// Format the plugin summary section.
-/// Takes a map of plugin name -> status, returns lines for stderr.
+    match status with
+    | Completed _ -> $"  %s{Color.green}\u2713%s{Color.reset} %s{paddedName}"
+    | Failed(error, _) ->
+        $"  %s{Color.red}\u2717%s{Color.reset} %s{paddedName} %s{Color.dim}\u2014 %s{error}%s{Color.reset}"
+    | Running since ->
+        let elapsed = DateTime.UtcNow - since
+        let timingStr = UI.timing elapsed
+        $"  %s{Color.yellow}\u2026%s{Color.reset} %s{paddedName} %s{timingStr}"
+    | Idle -> $"  %s{Color.dim}\u2014 %s{paddedName}%s{Color.reset}"
+
+/// Format the plugin summary section with colored status and timing.
 let formatSummary (statuses: Map<string, PluginStatus>) : string =
     if statuses.IsEmpty then
         ""
     else
-        let maxNameLen =
-            statuses |> Map.toSeq |> Seq.map (fun (name, _) -> name.Length) |> Seq.max
-
         let sb = StringBuilder()
 
         for KeyValue(name, status) in statuses do
-            let paddedName = name.PadRight(maxNameLen)
-
-            match status with
-            | Completed _ -> sb.AppendLine($"  \u2713 %s{paddedName}") |> ignore
-            | Failed(error, _) -> sb.AppendLine($"  \u2717 %s{paddedName} \u2014 %s{error}") |> ignore
-            | Running _ -> sb.AppendLine($"  \u2026 %s{paddedName}") |> ignore
-            | Idle -> sb.AppendLine($"  \u2014 %s{paddedName}") |> ignore
+            sb.AppendLine(formatStepResult name status) |> ignore
 
         sb.ToString().TrimEnd('\n', '\r')
 
-/// Format the errors section.
-/// Takes errors grouped by file (from GetErrors), returns lines for stderr.
+/// Format the errors section with colored severity labels.
+/// Groups errors by file with colored severity.
 let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
     if errors.IsEmpty then
-        "No errors"
+        $"%s{Color.green}No errors%s{Color.reset}"
     else
         let sb = StringBuilder()
         let mutable totalCount = 0
@@ -53,56 +46,34 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
 
         for KeyValue(file, entries) in errors do
             sb.AppendLine() |> ignore
-            sb.AppendLine(file) |> ignore
+            sb.AppendLine($"%s{Color.bold}%s{file}%s{Color.reset}") |> ignore
             totalCount <- totalCount + entries.Length
 
             for (pluginName, entry) in entries do
                 let severityLabel =
                     match entry.Severity with
-                    | Error -> "error: "
-                    | Warning -> "warning: "
+                    | Error -> $"%s{Color.red}error%s{Color.reset}: "
+                    | Warning -> $"%s{Color.yellow}warning%s{Color.reset}: "
                     | Info -> ""
                     | Hint -> ""
 
-                sb.AppendLine($"  [%s{pluginName}] L%d{entry.Line}: %s{severityLabel}%s{entry.Message}")
+                sb.AppendLine(
+                    $"  %s{Color.dim}[%s{pluginName}]%s{Color.reset} L%d{entry.Line}: %s{severityLabel}%s{entry.Message}"
+                )
                 |> ignore
 
         sb.AppendLine() |> ignore
         sb.Append($"%d{totalCount} error(s) in %d{fileCount} file(s)") |> ignore
         sb.ToString().TrimEnd('\n', '\r')
 
-/// Format the complete run-once output for stderr.
-let formatRunOnceOutput
-    (statuses: Map<string, PluginStatus>)
-    (errors: Map<string, (string * ErrorEntry) list>)
-    : string =
-    let summary = formatSummary statuses
-    let errorsOutput = formatErrors errors
-
-    if summary = "" then
-        errorsOutput
-    else
-        summary + "\n" + errorsOutput
-
 /// Run a daemon's RunOnce with live progress display to stderr.
+/// Uses spinners when interactive, plain output otherwise.
 /// Returns the final statuses.
 let runOnceWithProgress (daemon: FsHotWatch.Daemon.Daemon) : Map<string, PluginStatus> =
-    let mutable currentStatuses = daemon.Host.GetAllStatuses()
-    let progressLock = obj ()
-
-    let sub =
-        daemon.Host.OnStatusChanged.Subscribe(fun (name, status) ->
-            lock progressLock (fun () ->
-                currentStatuses <- Map.add name status currentStatuses
-                let line = formatProgressLine currentStatuses
-                eprintf "\r\033[2K%s" line))
-
-    let statuses = daemon.RunOnce() |> Async.RunSynchronously
-    sub.Dispose()
-
-    // Clear the progress line and move to next line
-    eprintf "\r\033[2K"
-    statuses
+    if UI.isInteractive then
+        UI.withSpinnerQuiet "Running checks" (fun () -> daemon.RunOnce() |> Async.RunSynchronously)
+    else
+        daemon.RunOnce() |> Async.RunSynchronously
 
 /// Run a daemon in run-once mode and report results.
 /// pluginName = None queries all errors; Some name queries one plugin.
@@ -127,13 +98,10 @@ let runOnceAndReport
     let errorCount =
         allErrors |> Map.toList |> List.sumBy (fun (_, entries) -> entries.Length)
 
-    eprintfn "%s" (formatRunOnceOutput statuses allErrors)
+    let summary = formatSummary statuses
 
-    let json =
-        System.Text.Json.JsonSerializer.Serialize(
-            {| count = errorCount
-               statuses = statuses |> Map.map (fun _ s -> sprintf "%A" s) |}
-        )
+    if summary <> "" then
+        eprintfn "%s" summary
 
-    printfn "%s" json
+    eprintfn "%s" (formatErrors allErrors)
     if errorCount > 0 then 1 else 0
