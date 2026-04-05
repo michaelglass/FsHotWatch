@@ -90,12 +90,19 @@ let defaultIpcOps: IpcOps =
       InvalidateCache = IpcClient.invalidateCache
       IsRunning = IpcClient.isRunning }
 
-/// Ensure daemon, wait for scan + plugin completion, query errors for a plugin.
+/// Wrap an IPC call with connection error handling.
+let private withIpc (action: unit -> int) : int =
+    try
+        action ()
+    with ex ->
+        eprintfn "Could not connect to daemon: %s" ex.Message
+        1
+
+/// Ensure daemon, poll for progress, render colored output.
 let private ensureAndQueryErrors
     (ensureDaemon: unit -> bool)
     (ipc: IpcOps)
     (pipeName: string)
-    (_pluginLabel: string)
     (pluginFilter: string)
     : int =
     if not (ensureDaemon ()) then
@@ -239,8 +246,8 @@ let executeCommand
     let ensureDaemonFn () =
         ensureDaemon ipc repoRoot pipeName daemonExtraArgs
 
-    let queryPlugin label filter =
-        ensureAndQueryErrors ensureDaemonFn ipc pipeName label filter
+    let queryPlugin filter =
+        ensureAndQueryErrors ensureDaemonFn ipc pipeName filter
 
     match command with
     | Start ->
@@ -272,52 +279,27 @@ let executeCommand
         eprintfn "Daemon stopped."
         0
     | Stop ->
-        try
+        withIpc (fun () ->
             ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
             UI.success "Daemon stopped"
-            0
-        with ex ->
-            eprintfn "Could not connect to daemon: %s" ex.Message
-            1
+            0)
     | Scan { Force = force } ->
-        try
+        withIpc (fun () ->
             let result = ipc.Scan pipeName force |> Async.RunSynchronously
             UI.success $"Scan: %s{result}"
-            0
-        with ex ->
-            eprintfn "Could not connect to daemon: %s" ex.Message
-            1
+            0)
     | Status None ->
-        try
+        withIpc (fun () ->
             let json = ipc.GetStatus pipeName |> Async.RunSynchronously
-
-            let statusMap =
-                try
-                    use doc = System.Text.Json.JsonDocument.Parse(json)
-
-                    [ for prop in doc.RootElement.EnumerateObject() do
-                          prop.Name, prop.Value.GetString() ]
-                    |> Map.ofList
-                with _ ->
-                    Map.empty
-
-            let parsed = IpcOutput.parseStatusMap statusMap
-            let output = IpcOutput.renderProgress parsed
-            eprintfn "%s" output
-            0
-        with ex ->
-            eprintfn "Could not connect to daemon: %s" ex.Message
-            1
+            let parsed = IpcOutput.parseStatusMap (IpcOutput.parseStatusJson json)
+            eprintfn "%s" (IpcOutput.renderProgress parsed)
+            0)
     | Status(Some pluginName) ->
-        try
+        withIpc (fun () ->
             let result = ipc.GetPluginStatus pipeName pluginName |> Async.RunSynchronously
             let parsed = IpcOutput.parseStatusMap (Map.ofList [ pluginName, result ])
-            let output = IpcOutput.renderProgress parsed
-            eprintfn "%s" output
-            0
-        with ex ->
-            eprintfn "Could not connect to daemon: %s" ex.Message
-            1
+            eprintfn "%s" (IpcOutput.renderProgress parsed)
+            0)
     | Build RunOnce ->
         let buildConfig = stripConfig config
         RunOnceOutput.runOnceAndReport createDaemon repoRoot buildConfig (Some "build")
@@ -378,46 +360,39 @@ let executeCommand
     | Lint RunOnce ->
         let lintConfig = { stripConfig config with Lint = true }
         RunOnceOutput.runOnceAndReport createDaemon repoRoot lintConfig (Some "lint")
-    | Lint Daemon -> queryPlugin "lint" "lint"
+    | Lint Daemon -> queryPlugin "lint"
     | Analyze RunOnce ->
         let analyzeConfig =
             { stripConfig config with
                 Analyzers = config.Analyzers }
 
         RunOnceOutput.runOnceAndReport createDaemon repoRoot analyzeConfig (Some "analyzers")
-    | Analyze Daemon -> queryPlugin "analyzers" "analyzers"
+    | Analyze Daemon -> queryPlugin "analyzers"
     | FormatCheck RunOnce ->
         let formatCheckConfig =
             { stripConfig config with
                 Format = FormatMode.Check }
 
         RunOnceOutput.runOnceAndReport createDaemon repoRoot formatCheckConfig (Some "format")
-    | FormatCheck Daemon -> queryPlugin "format check" "format"
+    | FormatCheck Daemon -> queryPlugin "format"
     | Errors ->
         if not (ensureDaemonFn ()) then
             eprintfn "Failed to start daemon"
             1
         else
-            try
+            withIpc (fun () ->
                 let errorsJson = ipc.GetErrors pipeName "" |> Async.RunSynchronously
                 let resp = IpcOutput.parseErrorsResponse errorsJson
-                let output = IpcOutput.formatErrorsResponse resp
-                eprintfn "%s" output
-                IpcOutput.exitCodeFromResponse resp
-            with ex ->
-                eprintfn "Could not connect to daemon: %s" ex.Message
-                1
+                eprintfn "%s" (IpcOutput.formatErrorsResponse resp)
+                IpcOutput.exitCodeFromResponse resp)
     | InvalidateCache filePath ->
         if not (ensureDaemonFn ()) then
             eprintfn "Failed to start daemon"
             1
         else
-            try
+            withIpc (fun () ->
                 let result = ipc.InvalidateCache pipeName filePath |> Async.RunSynchronously
-                IpcOutput.renderIpcResult result
-            with ex ->
-                eprintfn "Could not connect to daemon: %s" ex.Message
-                1
+                IpcOutput.renderIpcResult result)
     | Init ->
         let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
         let projects = InitConfig.discoverProjects repoRoot
@@ -436,7 +411,7 @@ let executeCommand
             eprintfn "%s already exists" configPath
             1
     | Check RunOnce -> RunOnceOutput.runOnceAndReport createDaemon repoRoot config None
-    | Check Daemon -> queryPlugin "all checks" ""
+    | Check Daemon -> queryPlugin ""
     | Completions ->
         FishCompletions.writeToFile commandTree cliName
         eprintfn "%s" $"%s{Color.green}✓%s{Color.reset} Fish completions installed"
@@ -445,12 +420,9 @@ let executeCommand
 
 /// Execute an unknown command as a plugin command via IPC.
 let executePluginCommand (ipc: IpcOps) (pipeName: string) (cmd: string) (argsStr: string) : int =
-    try
+    withIpc (fun () ->
         let result = ipc.RunCommand pipeName cmd argsStr |> Async.RunSynchronously
-        IpcOutput.renderIpcResult result
-    with ex ->
-        eprintfn "Could not connect to daemon: %s" ex.Message
-        1
+        IpcOutput.renderIpcResult result)
 
 [<EntryPoint>]
 let main args =
