@@ -6,6 +6,7 @@ open System.Threading
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Cli.DaemonConfig
+open CommandTree
 open FsHotWatch.Cli.Program
 open FsHotWatch.Daemon
 open FsHotWatch.Ipc
@@ -25,103 +26,97 @@ let private waitForIpcServer (pipeName: string) =
                 false)
         5000
 
-// --- parseCommand tests ---
+// --- CommandTree.parse tests ---
+
+let tree = FsHotWatch.Cli.Program.commandTree
 
 [<Fact>]
-let ``parseCommand empty args returns Help`` () = test <@ parseCommand [] = Help @>
+let ``parse empty args returns HelpRequested`` () =
+    match CommandTree.parse tree [||] with
+    | Error(HelpRequested _) -> ()
+    | other -> failwith $"Expected HelpRequested, got %A{other}"
 
 [<Fact>]
-let ``parseCommand help returns Help`` () =
-    test <@ parseCommand [ "help" ] = Help @>
+let ``parse start returns Start`` () =
+    test <@ CommandTree.parse tree [| "start" |] = Ok Start @>
 
 [<Fact>]
-let ``parseCommand --help returns Help`` () =
-    test <@ parseCommand [ "--help" ] = Help @>
+let ``parse stop returns Stop`` () =
+    test <@ CommandTree.parse tree [| "stop" |] = Ok Stop @>
 
 [<Fact>]
-let ``parseCommand -h returns Help`` () = test <@ parseCommand [ "-h" ] = Help @>
+let ``parse check returns Check Daemon`` () =
+    test <@ CommandTree.parse tree [| "check" |] = Ok(Check Daemon) @>
 
 [<Fact>]
-let ``parseCommand start returns Start false`` () =
-    test <@ parseCommand [ "start" ] = Start false @>
+let ``parse check run-once returns Check RunOnce`` () =
+    test <@ CommandTree.parse tree [| "check"; "run-once" |] = Ok(Check RunOnce) @>
 
 [<Fact>]
-let ``parseCommand start --run-once returns Start true`` () =
-    test <@ parseCommand [ "start"; "--run-once" ] = Start true @>
+let ``parse build returns Build Daemon`` () =
+    test <@ CommandTree.parse tree [| "build" |] = Ok(Build Daemon) @>
 
 [<Fact>]
-let ``parseCommand stop returns Stop`` () =
-    test <@ parseCommand [ "stop" ] = Stop @>
+let ``parse build run-once returns Build RunOnce`` () =
+    test <@ CommandTree.parse tree [| "build"; "run-once" |] = Ok(Build RunOnce) @>
 
 [<Fact>]
-let ``parseCommand status returns Status None`` () =
-    test <@ parseCommand [ "status" ] = Status None @>
+let ``parse test returns Test Daemon`` () =
+    test <@ CommandTree.parse tree [| "test" |] = Ok(Test Daemon) @>
 
 [<Fact>]
-let ``parseCommand status with plugin returns Status Some`` () =
-    test <@ parseCommand [ "status"; "lint" ] = Status(Some "lint") @>
+let ``parse test run-once returns Test RunOnce`` () =
+    test <@ CommandTree.parse tree [| "test"; "run-once" |] = Ok(Test RunOnce) @>
 
 [<Fact>]
-let ``parseCommand scan returns Scan false`` () =
-    test <@ parseCommand [ "scan" ] = Scan false @>
+let ``parse format returns Format Daemon`` () =
+    test <@ CommandTree.parse tree [| "format" |] = Ok(Format Daemon) @>
 
 [<Fact>]
-let ``parseCommand scan --force returns Scan true`` () =
-    test <@ parseCommand [ "scan"; "--force" ] = Scan true @>
+let ``parse lint returns Lint Daemon`` () =
+    test <@ CommandTree.parse tree [| "lint" |] = Ok(Lint Daemon) @>
 
 [<Fact>]
-let ``parseCommand scan-status returns ScanStatus`` () =
-    test <@ parseCommand [ "scan-status" ] = ScanStatus @>
+let ``parse lint run-once returns Lint RunOnce`` () =
+    test <@ CommandTree.parse tree [| "lint"; "run-once" |] = Ok(Lint RunOnce) @>
 
 [<Fact>]
-let ``parseCommand unknown command returns PluginCommand`` () =
-    test <@ parseCommand [ "warnings" ] = PluginCommand("warnings", "") @>
+let ``parse format-check returns FormatCheck Daemon`` () =
+    test <@ CommandTree.parse tree [| "format-check" |] = Ok(FormatCheck Daemon) @>
 
 [<Fact>]
-let ``parseCommand command with args joins them`` () =
-    test <@ parseCommand [ "run"; "--verbose"; "foo" ] = PluginCommand("run", "--verbose foo") @>
+let ``parse analyze returns Analyze Daemon`` () =
+    test <@ CommandTree.parse tree [| "analyze" |] = Ok(Analyze Daemon) @>
 
 [<Fact>]
-let ``parseCommand analyze returns AnalyzeCheck`` () =
-    test <@ parseCommand [ "analyze" ] = AnalyzeCheck false @>
+let ``parse status returns Status None`` () =
+    test <@ CommandTree.parse tree [| "status" |] = Ok(Status None) @>
 
 [<Fact>]
-let ``parseCommand format --check returns FormatCheck`` () =
-    test <@ parseCommand [ "format"; "--check" ] = FormatCheck false @>
+let ``parse status with plugin returns Status Some`` () =
+    test <@ CommandTree.parse tree [| "status"; "lint" |] = Ok(Status(Some "lint")) @>
 
 [<Fact>]
-let ``parseCommand lint --run-once`` () =
-    test <@ parseCommand [ "lint"; "--run-once" ] = Lint true @>
+let ``parse scan returns Scan None`` () =
+    test <@ CommandTree.parse tree [| "scan" |] = Ok(Scan None) @>
 
 [<Fact>]
-let ``parseCommand build --run-once`` () =
-    test <@ parseCommand [ "build"; "--run-once" ] = Build true @>
+let ``parse errors returns Errors`` () =
+    test <@ CommandTree.parse tree [| "errors" |] = Ok Errors @>
 
 [<Fact>]
-let ``parseCommand analyze --run-once`` () =
-    test <@ parseCommand [ "analyze"; "--run-once" ] = AnalyzeCheck true @>
+let ``parse invalidate-cache returns InvalidateCache`` () =
+    test <@ CommandTree.parse tree [| "invalidate-cache"; "some/file.fs" |] = Ok(InvalidateCache "some/file.fs") @>
 
 [<Fact>]
-let ``parseCommand format --run-once`` () =
-    test <@ parseCommand [ "format"; "--run-once" ] = Format true @>
+let ``parse init returns Init`` () =
+    test <@ CommandTree.parse tree [| "init" |] = Ok Init @>
 
 [<Fact>]
-let ``parseCommand format --check --run-once`` () =
-    test <@ parseCommand [ "format"; "--check"; "--run-once" ] = FormatCheck true @>
-
-[<Fact>]
-let ``parseCommand test --run-once`` () =
-    test <@ parseCommand [ "test"; "--run-once" ] = Test("{}", true) @>
-
-[<Fact>]
-let ``parseCommand test with flags and --run-once`` () =
-    let result = parseCommand [ "test"; "-p"; "MyProj"; "--run-once" ]
-
-    match result with
-    | Test(json, runOnce) ->
-        test <@ json.Contains("\"projects\": [\"MyProj\"]") @>
-        test <@ runOnce = true @>
-    | _ -> failwith "Expected Test command"
+let ``parse unknown command returns UnknownCommand`` () =
+    match CommandTree.parse tree [| "warnings" |] with
+    | Error(UnknownCommand("warnings", _)) -> ()
+    | other -> failwith $"Expected UnknownCommand, got %A{other}"
 
 // --- findRepoRoot tests ---
 
@@ -362,13 +357,6 @@ let private fakeIpc () : IpcOps =
       IsRunning = fun _ -> true }
 
 [<Fact>]
-let ``executeCommand Help returns 0`` () =
-    let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" Help "" fakeConfig
-
-    test <@ result = 0 @>
-
-[<Fact>]
 let ``executeCommand Stop calls shutdown`` () =
     let mutable called = false
 
@@ -395,7 +383,7 @@ let ``executeCommand Status returns 0`` () =
     test <@ result = 0 @>
 
 [<Fact>]
-let ``executeCommand PluginCommand proxies to IPC`` () =
+let ``executePluginCommand proxies to IPC`` () =
     let mutable cmdName = ""
 
     let ipc =
@@ -407,8 +395,7 @@ let ``executeCommand PluginCommand proxies to IPC`` () =
                         return "result"
                     } }
 
-    let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (PluginCommand("warnings", "")) "" fakeConfig
+    let result = executePluginCommand ipc "pipe" "warnings" ""
 
     test <@ result = 0 @>
     test <@ cmdName = "warnings" @>
@@ -427,26 +414,7 @@ let ``executeCommand Scan calls scan IPC`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Scan false) "" fakeConfig
-
-    test <@ result = 0 @>
-    test <@ called @>
-
-[<Fact>]
-let ``executeCommand ScanStatus calls scanStatus IPC`` () =
-    let mutable called = false
-
-    let ipc =
-        { fakeIpc () with
-            ScanStatus =
-                fun _ ->
-                    async {
-                        called <- true
-                        return "idle"
-                    } }
-
-    let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" ScanStatus "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Scan None) "" fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>
@@ -483,7 +451,7 @@ let ``executeCommand Start with fake daemon throws on null daemon`` () =
 
     let threw =
         try
-            executeCommand createDaemon (fakeIpc ()) "/tmp" "pipe" (Start false) "" fakeConfig
+            executeCommand createDaemon (fakeIpc ()) "/tmp" "pipe" Start "" fakeConfig
             |> ignore
 
             false
@@ -525,71 +493,6 @@ let ``decideDaemonAction starts fresh when daemon not running`` () =
 let ``decideDaemonAction starts fresh when not running even with matching hash`` () =
     let action = decideDaemonAction false "abc123" "abc123"
     test <@ action = StartFresh @>
-
-// --- parseCommand "test" variations ---
-
-[<Fact>]
-let ``parseCommand test with no flags returns empty JSON`` () =
-    test <@ parseCommand [ "test" ] = Test("{}", false) @>
-
-[<Fact>]
-let ``parseCommand test with --project returns projects JSON`` () =
-    let result = parseCommand [ "test"; "--project"; "MyProj" ]
-
-    match result with
-    | Test(json, _) -> test <@ json.Contains("\"projects\": [\"MyProj\"]") @>
-    | _ -> failwith "Expected Test command"
-
-[<Fact>]
-let ``parseCommand test with -p short flag returns projects JSON`` () =
-    let result = parseCommand [ "test"; "-p"; "MyProj" ]
-
-    match result with
-    | Test(json, _) -> test <@ json.Contains("\"projects\": [\"MyProj\"]") @>
-    | _ -> failwith "Expected Test command"
-
-[<Fact>]
-let ``parseCommand test with --filter returns filter JSON`` () =
-    let result = parseCommand [ "test"; "--filter"; "MyClass" ]
-
-    match result with
-    | Test(json, _) -> test <@ json.Contains("\"filter\": \"MyClass\"") @>
-    | _ -> failwith "Expected Test command"
-
-[<Fact>]
-let ``parseCommand test with -f short flag returns filter JSON`` () =
-    let result = parseCommand [ "test"; "-f"; "MyClass" ]
-
-    match result with
-    | Test(json, _) -> test <@ json.Contains("\"filter\": \"MyClass\"") @>
-    | _ -> failwith "Expected Test command"
-
-[<Fact>]
-let ``parseCommand test with --only-failed returns only-failed JSON`` () =
-    let result = parseCommand [ "test"; "--only-failed" ]
-
-    match result with
-    | Test(json, _) -> test <@ json.Contains("\"only-failed\": true") @>
-    | _ -> failwith "Expected Test command"
-
-[<Fact>]
-let ``parseCommand test with all flags combined`` () =
-    let result = parseCommand [ "test"; "-p"; "A"; "-f"; "B"; "--only-failed" ]
-
-    match result with
-    | Test(json, _) ->
-        test <@ json.Contains("\"only-failed\": true") @>
-        test <@ json.Contains("\"projects\": [\"A\"]") @>
-        test <@ json.Contains("\"filter\": \"B\"") @>
-    | _ -> failwith "Expected Test command"
-
-[<Fact>]
-let ``parseCommand test with unknown flags ignores them`` () =
-    let result = parseCommand [ "test"; "--unknown-flag" ]
-
-    match result with
-    | Test(json, _) -> test <@ json = "{}" @>
-    | _ -> failwith "Expected Test command"
 
 // --- runIpcWithExitCode exit code paths via executeCommand ---
 
@@ -633,7 +536,7 @@ let ``executeCommand Build with status passed returns exit code 0`` () =
             TriggerBuild = fun _ -> async { return """{"status": "passed"}""" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build false) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build Daemon) "" fakeConfig
 
     test <@ result = 0 @>
 
@@ -644,7 +547,7 @@ let ``executeCommand Build with status failed returns exit code 1`` () =
             TriggerBuild = fun _ -> async { return """{"status": "failed"}""" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build false) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build Daemon) "" fakeConfig
 
     test <@ result = 1 @>
 
@@ -655,7 +558,7 @@ let ``executeCommand Build with plain text returns exit code 0`` () =
             TriggerBuild = fun _ -> async { return "build completed successfully" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build false) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build Daemon) "" fakeConfig
 
     test <@ result = 0 @>
 
@@ -675,7 +578,7 @@ let ``executeCommand Build calls triggerBuild`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build false) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build Daemon) "" fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>
@@ -683,31 +586,21 @@ let ``executeCommand Build calls triggerBuild`` () =
 [<Fact>]
 let ``executeCommand Test calls runCommand with run-tests`` () =
     let mutable cmdName = ""
-    let mutable cmdArgs = ""
 
     let ipc =
         { fakeIpc () with
             RunCommand =
-                fun _ cmd args ->
+                fun _ cmd _ ->
                     async {
                         cmdName <- cmd
-                        cmdArgs <- args
                         return """{"status": "passed"}"""
                     } }
 
     let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Test("""{"filter": "Foo"}""", false))
-            ""
-            fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Test Daemon) "" fakeConfig
 
     test <@ result = 0 @>
     test <@ cmdName = "run-tests" @>
-    test <@ cmdArgs = """{"filter": "Foo"}""" @>
 
 [<Fact>]
 let ``executeCommand Format calls formatAll`` () =
@@ -723,7 +616,7 @@ let ``executeCommand Format calls formatAll`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Format false) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Format Daemon) "" fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>
@@ -742,7 +635,7 @@ let ``executeCommand Lint scans waits and gets lint errors`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Lint false) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Lint Daemon) "" fakeConfig
 
     test <@ result = 0 @>
     test <@ errorFilter = "lint" @>
@@ -794,7 +687,7 @@ let ``executeCommand Check waits for scan and returns errors`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Check "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Check Daemon) "" fakeConfig
 
     test <@ result = 0 @>
     test <@ waitForScanCalled @>

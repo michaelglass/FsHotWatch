@@ -5,29 +5,36 @@ open System.IO
 open System.Security.Cryptography
 open System.Text
 open System.Threading
+open CommandTree
 open FsHotWatch.Cli.DaemonConfig
 open FsHotWatch.Daemon
 open FsHotWatch.Ipc
 
-/// CLI command types.
+type RunMode =
+    | [<Cmd("Run once and exit")>] RunOnce
+    | [<Cmd("Use running daemon"); CmdDefault>] Daemon
+
 type Command =
-    | Start of runOnce: bool
-    | Stop
-    | Scan of force: bool
-    | ScanStatus
-    | Status of pluginName: string option
-    | PluginCommand of name: string * args: string
-    | Build of runOnce: bool
-    | Test of args: string * runOnce: bool
-    | Format of runOnce: bool
-    | Lint of runOnce: bool
-    | Errors
-    | Check
-    | AnalyzeCheck of runOnce: bool
-    | FormatCheck of runOnce: bool
-    | InvalidateCache of filePath: string
-    | Init
-    | Help
+    | [<Cmd("Start the daemon")>] Start
+    | [<Cmd("Stop the daemon")>] Stop
+    | [<Cmd("Run all checks")>] Check of RunMode
+    | [<Cmd("Build the project")>] Build of RunMode
+    | [<Cmd("Run tests")>] Test of RunMode
+    | [<Cmd("Format code")>] Format of RunMode
+    | [<Cmd("Lint code")>] Lint of RunMode
+    | [<Cmd("Check formatting", Name = "format-check")>] FormatCheck of RunMode
+    | [<Cmd("Run analyzers")>] Analyze of RunMode
+    | [<Cmd("Show current status")>] Status of plugin: string option
+    | [<Cmd("Show accumulated errors")>] Errors
+    | [<Cmd("Scan for file changes")>] Scan of force: bool option
+    | [<Cmd("Invalidate cache for a file"); CmdFileCompletion>] InvalidateCache of filePath: string
+    | [<Cmd("Generate initial config")>] Init
+    | [<Cmd("Install fish completions")>] Completions
+
+let commandTree =
+    CommandReflection.fromUnion<Command> "FsHotWatch — F# file watcher daemon"
+
+let cliName = "fs-hot-watch"
 
 /// Walk up from startDir looking for .jj or .git directory.
 let findRepoRoot (startDir: string) =
@@ -48,91 +55,6 @@ let computePipeName (repoRoot: string) =
     let hash = SHA256.HashData(Encoding.UTF8.GetBytes(repoRoot))
     let short = Convert.ToHexStringLower(hash).Substring(0, 12)
     $"fs-hot-watch-{short}"
-
-/// Parse CLI arguments into a Command.
-let parseCommand (args: string list) : Command =
-    match args with
-    | []
-    | [ "help" ]
-    | [ "--help" ]
-    | [ "-h" ] -> Help
-    | [ "start" ] -> Start false
-    | [ "start"; "--run-once" ] -> Start true
-    | [ "stop" ] -> Stop
-    | [ "scan" ] -> Scan false
-    | [ "scan"; "--force" ] -> Scan true
-    | [ "scan-status" ] -> ScanStatus
-    | [ "status" ] -> Status None
-    | [ "status"; pluginName ] -> Status(Some pluginName)
-    | [ "build" ] -> Build false
-    | [ "build"; "--run-once" ] -> Build true
-    | [ "test" ] -> Test("{}", false)
-    | "test" :: rest ->
-        // Convert CLI flags to JSON for run-tests command
-        let mutable projects = []
-        let mutable filter = None
-        let mutable onlyFailed = false
-        let mutable runOnce = false
-        let mutable i = 0
-        let args = rest |> Array.ofList
-
-        while i < args.Length do
-            match args.[i] with
-            | "--project"
-            | "-p" when i + 1 < args.Length ->
-                projects <- args.[i + 1] :: projects
-                i <- i + 2
-            | "--filter"
-            | "-f" when i + 1 < args.Length ->
-                filter <- Some args.[i + 1]
-                i <- i + 2
-            | "--only-failed" ->
-                onlyFailed <- true
-                i <- i + 1
-            | "--run-once" ->
-                runOnce <- true
-                i <- i + 1
-            | _ -> i <- i + 1
-
-        let json = System.Text.StringBuilder("{")
-
-        if onlyFailed then
-            json.Append("\"only-failed\": true") |> ignore
-
-        if not projects.IsEmpty then
-            let ps =
-                projects |> List.rev |> List.map (fun p -> $"\"%s{p}\"") |> String.concat ", "
-
-            if json.Length > 1 then
-                json.Append(", ") |> ignore
-
-            json.Append($"\"projects\": [%s{ps}]") |> ignore
-
-        match filter with
-        | Some f ->
-            if json.Length > 1 then
-                json.Append(", ") |> ignore
-
-            json.Append($"\"filter\": \"%s{f}\"") |> ignore
-        | None -> ()
-
-        json.Append("}") |> ignore
-        Test(json.ToString(), runOnce)
-    | [ "analyze" ] -> AnalyzeCheck false
-    | [ "analyze"; "--run-once" ] -> AnalyzeCheck true
-    | [ "format"; "--check" ] -> FormatCheck false
-    | [ "format"; "--check"; "--run-once" ] -> FormatCheck true
-    | [ "format" ] -> Format false
-    | [ "format"; "--run-once" ] -> Format true
-    | [ "lint" ] -> Lint false
-    | [ "lint"; "--run-once" ] -> Lint true
-    | [ "errors" ] -> Errors
-    | [ "check" ] -> Check
-    | [ "invalidate-cache"; path ] -> InvalidateCache path
-    | [ "init" ] -> Init
-    | cmd :: rest ->
-        let argsStr = if rest.IsEmpty then "" else String.concat " " rest
-        PluginCommand(cmd, argsStr)
 
 /// Injectable IPC operations for testability.
 type IpcOps =
@@ -165,34 +87,6 @@ let defaultIpcOps: IpcOps =
       FormatAll = IpcClient.formatAll
       InvalidateCache = IpcClient.invalidateCache
       IsRunning = IpcClient.isRunning }
-
-let private showHelp () =
-    printfn "FsHotWatch — F# file watcher daemon"
-    printfn ""
-    printfn "Usage: fs-hot-watch <command>"
-    printfn ""
-    printfn "Commands:"
-    printfn "  start [--run-once]  Start daemon (--run-once: single pass, exit)"
-    printfn "  stop               Stop running daemon"
-    printfn "  scan [--force]      Re-scan all files (--force bypasses jj guard)"
-    printfn "  scan-status        Check scan progress without blocking"
-    printfn "  status [plugin]    Show plugin statuses"
-    printfn "  build [--run-once]  Trigger a build and wait for completion"
-    printfn "  test [opts]        Run tests (-p project, -f filter, --only-failed, --run-once)"
-    printfn "  format [--run-once]  Run formatter on all files"
-    printfn "  lint [--run-once]  Run linter on all files"
-    printfn "  analyze [--run-once] Run analyzers and report errors"
-    printfn "  format --check [--run-once] Check formatting without modifying files"
-    printfn "  errors             Show current errors from all plugins"
-    printfn "  check              Full check: scan, build, lint, then report errors"
-    printfn "  invalidate-cache <file>    Invalidate cache for a file and re-check it"
-    printfn "  init               Generate .fs-hot-watch.json from discovered projects"
-    printfn "  <command> [args]   Run a plugin-registered command"
-    printfn ""
-    printfn "Options:"
-    printfn "  -v, --verbose              Show per-file status transitions (same as --log-level=debug)"
-    printfn "  --log-level=<level>        Set log level: error, warning, info, debug (default: info)"
-    printfn "  --no-cache                 Disable check result cache"
 
 let private runIpc (action: Async<string>) : int =
     try
@@ -391,11 +285,7 @@ let executeCommand
         ensureAndQueryErrors ensureDaemonFn ipc pipeName label filter
 
     match command with
-    | Help ->
-        showHelp ()
-        0
-    | Start true -> RunOnceOutput.runOnceAndReport createDaemon repoRoot config None
-    | Start false ->
+    | Start ->
         eprintfn $"Starting FsHotWatch daemon for %s{repoRoot}"
         eprintfn $"Pipe: %s{pipeName}"
         // Write our own PID so killStaleDaemon can find the actual daemon process,
@@ -424,64 +314,62 @@ let executeCommand
         eprintfn "Daemon stopped."
         0
     | Stop -> runIpc (ipc.Shutdown pipeName)
-    | Scan force -> runIpc (ipc.Scan pipeName force)
-    | ScanStatus -> runIpc (ipc.ScanStatus pipeName)
+    | Scan force -> runIpc (ipc.Scan pipeName (force = Some true))
     | Status None -> runIpc (ipc.GetStatus pipeName)
     | Status(Some pluginName) -> runIpc (ipc.GetPluginStatus pipeName pluginName)
-    | PluginCommand(cmd, argsJson) -> runIpc (ipc.RunCommand pipeName cmd argsJson)
-    | Build true ->
+    | Build RunOnce ->
         let buildConfig = stripConfig config
         RunOnceOutput.runOnceAndReport createDaemon repoRoot buildConfig (Some "build")
-    | Build false ->
+    | Build Daemon ->
         if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
             eprintfn "Failed to start daemon"
             1
         else
             eprintfn "  Triggering build..."
             runIpcWithExitCode (ipc.TriggerBuild pipeName)
-    | Test(_, true) ->
+    | Test RunOnce ->
         let testConfig =
             { stripConfig config with
                 Build = config.Build
                 Tests = config.Tests }
 
         RunOnceOutput.runOnceAndReport createDaemon repoRoot testConfig (Some "test-prune")
-    | Test(argsJson, false) ->
+    | Test Daemon ->
         if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
             eprintfn "Failed to start daemon"
             1
         else
-            runIpcWithExitCode (ipc.RunCommand pipeName "run-tests" argsJson)
-    | Format true ->
+            runIpcWithExitCode (ipc.RunCommand pipeName "run-tests" "{}")
+    | Format RunOnce ->
         let formatConfig =
             { stripConfig config with
                 Format = FormatMode.Auto }
 
         RunOnceOutput.runOnceAndReport createDaemon repoRoot formatConfig (Some "format")
-    | Format false ->
+    | Format Daemon ->
         if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
             eprintfn "Failed to start daemon"
             1
         else
             runIpc (ipc.FormatAll pipeName)
-    | Lint true ->
+    | Lint RunOnce ->
         let lintConfig = { stripConfig config with Lint = true }
         RunOnceOutput.runOnceAndReport createDaemon repoRoot lintConfig (Some "lint")
-    | Lint false -> queryPlugin "lint" "lint"
-    | AnalyzeCheck true ->
+    | Lint Daemon -> queryPlugin "lint" "lint"
+    | Analyze RunOnce ->
         let analyzeConfig =
             { stripConfig config with
                 Analyzers = config.Analyzers }
 
         RunOnceOutput.runOnceAndReport createDaemon repoRoot analyzeConfig (Some "analyzers")
-    | AnalyzeCheck false -> queryPlugin "analyzers" "analyzers"
-    | FormatCheck true ->
+    | Analyze Daemon -> queryPlugin "analyzers" "analyzers"
+    | FormatCheck RunOnce ->
         let formatCheckConfig =
             { stripConfig config with
                 Format = FormatMode.Check }
 
         RunOnceOutput.runOnceAndReport createDaemon repoRoot formatCheckConfig (Some "format")
-    | FormatCheck false -> queryPlugin "format check" "format"
+    | FormatCheck Daemon -> queryPlugin "format check" "format"
     | Errors ->
         if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
             eprintfn "Failed to start daemon"
@@ -511,19 +399,17 @@ let executeCommand
         with :? IOException ->
             eprintfn "%s already exists" configPath
             1
-    | Check ->
-        if not (ensureDaemon ipc repoRoot pipeName daemonExtraArgs) then
-            eprintfn "Failed to start daemon"
-            1
-        else
-            // Wait for the daemon's initial scan (triggered by RunWithIpc on startup)
-            eprintfn "  Waiting for scan to complete..."
-            let scanResult = ipc.WaitForScan pipeName -1L |> Async.RunSynchronously
-            eprintfn "  Scan: %s" scanResult
-            eprintfn "  Waiting for all plugins to complete..."
-            ipc.WaitForComplete pipeName |> Async.RunSynchronously |> ignore
-            eprintfn "  Collecting errors..."
-            runIpcWithExitCode (ipc.GetErrors pipeName "")
+    | Check RunOnce -> RunOnceOutput.runOnceAndReport createDaemon repoRoot config None
+    | Check Daemon -> queryPlugin "all checks" ""
+    | Completions ->
+        FishCompletions.writeToFile commandTree cliName
+        eprintfn "%s" $"%s{Color.green}✓%s{Color.reset} Fish completions installed"
+        eprintfn "  Wrote ~/.config/fish/completions/%s.fish" cliName
+        0
+
+/// Execute an unknown command as a plugin command via IPC.
+let executePluginCommand (ipc: IpcOps) (pipeName: string) (cmd: string) (argsStr: string) : int =
+    runIpc (ipc.RunCommand pipeName cmd argsStr)
 
 [<EntryPoint>]
 let main args =
@@ -591,5 +477,26 @@ let main args =
 
     let createDaemon (root: string) = Daemon.create root backend keyProvider
 
-    let command = parseCommand filteredArgs
-    executeCommand createDaemon defaultIpcOps repoRoot pipeName command daemonExtraArgs config
+    let filteredArgArray = filteredArgs |> Array.ofList
+
+    // Handle --help/-h explicitly (CommandTree doesn't support flag syntax)
+    if filteredArgs |> List.exists (fun a -> a = "--help" || a = "-h" || a = "help") then
+        printfn "%s" (CommandTree.helpFull commandTree cliName)
+        0
+    else
+
+        match CommandTree.parse commandTree filteredArgArray with
+        | Ok command -> executeCommand createDaemon defaultIpcOps repoRoot pipeName command daemonExtraArgs config
+        | Error(HelpRequested path) ->
+            printfn "%s" (CommandTree.helpForPath commandTree path cliName)
+            0
+        | Error(UnknownCommand(input, _path)) ->
+            let argsStr = filteredArgs |> List.skip 1 |> String.concat " "
+
+            executePluginCommand defaultIpcOps pipeName input argsStr
+        | Error(InvalidArguments(cmd, msg)) ->
+            eprintfn "Invalid arguments for '%s': %s" cmd msg
+            1
+        | Error(AmbiguousArgument(input, candidates)) ->
+            eprintfn "Ambiguous command '%s'. Did you mean: %s" input (String.concat ", " candidates)
+            1
