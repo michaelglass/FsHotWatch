@@ -14,6 +14,8 @@ type RunMode =
     | [<Cmd("Run once and exit")>] RunOnce
     | [<Cmd("Use running daemon"); CmdDefault>] Daemon
 
+type ScanOptions = { Force: bool }
+
 type Command =
     | [<Cmd("Start the daemon")>] Start
     | [<Cmd("Stop the daemon")>] Stop
@@ -26,7 +28,7 @@ type Command =
     | [<Cmd("Run analyzers")>] Analyze of RunMode
     | [<Cmd("Show current status")>] Status of plugin: string option
     | [<Cmd("Show accumulated errors")>] Errors
-    | [<Cmd("Scan for file changes")>] Scan of force: bool option
+    | [<Cmd("Scan for file changes")>] Scan of ScanOptions
     | [<Cmd("Invalidate cache for a file"); CmdFileCompletion>] InvalidateCache of filePath: string
     | [<Cmd("Generate initial config")>] Init
     | [<Cmd("Install fish completions")>] Completions
@@ -314,7 +316,7 @@ let executeCommand
         eprintfn "Daemon stopped."
         0
     | Stop -> runIpc (ipc.Shutdown pipeName)
-    | Scan force -> runIpc (ipc.Scan pipeName (force = Some true))
+    | Scan { Force = force } -> runIpc (ipc.Scan pipeName force)
     | Status None -> runIpc (ipc.GetStatus pipeName)
     | Status(Some pluginName) -> runIpc (ipc.GetPluginStatus pipeName pluginName)
     | Build RunOnce ->
@@ -479,7 +481,7 @@ let main args =
 
     let filteredArgArray = filteredArgs |> Array.ofList
 
-    // Handle --help/-h explicitly (CommandTree doesn't support flag syntax)
+    // Handle --help/-h as global flags (CommandTree flags are per-command only)
     if filteredArgs |> List.exists (fun a -> a = "--help" || a = "-h" || a = "help") then
         printfn "%s" (CommandTree.helpFull commandTree cliName)
         0
@@ -499,4 +501,10 @@ let main args =
             1
         | Error(AmbiguousArgument(input, candidates)) ->
             eprintfn "Ambiguous command '%s'. Did you mean: %s" input (String.concat ", " candidates)
+            1
+        | Error(UnknownFlag(flag, cmd, validFlags)) ->
+            eprintfn "Unknown flag '%s' for '%s'. Valid flags: %s" flag cmd (String.concat ", " validFlags)
+            1
+        | Error(DuplicateFlag(flag, cmd)) ->
+            eprintfn "Flag '%s' provided more than once for '%s'" flag cmd
             1
