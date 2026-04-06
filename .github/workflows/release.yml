@@ -1,0 +1,247 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'core-v*'
+      - 'testprune-v*'
+      - 'analyzers-v*'
+      - 'lint-v*'
+      - 'fantomas-v*'
+      - 'build-v*'
+      - 'coverage-v*'
+      - 'filecommand-v*'
+
+# --- core (FsHotWatch + FsHotWatch.Cli) ---
+
+jobs:
+  release-core:
+    if: startsWith(github.ref, 'refs/tags/core-v')
+    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-release.yml@main
+    with:
+      package-name: FsHotWatch
+      tag-prefix: core-v
+      fsproj-path: src/FsHotWatch/FsHotWatch.fsproj
+      extra-fsproj-paths: src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj
+    permissions:
+      contents: write
+
+  publish-core:
+    if: startsWith(github.ref, 'refs/tags/core-v')
+    needs: release-core
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nuget-packages
+          path: ./artifacts
+      - uses: nuget/login@v1
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  # --- testprune ---
+
+  release-testprune:
+    if: startsWith(github.ref, 'refs/tags/testprune-v')
+    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-release.yml@main
+    with:
+      package-name: FsHotWatch.TestPrune
+      tag-prefix: testprune-v
+      fsproj-path: src/FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj
+    permissions:
+      contents: write
+
+  publish-testprune:
+    if: startsWith(github.ref, 'refs/tags/testprune-v')
+    needs: release-testprune
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nuget-packages
+          path: ./artifacts
+      - uses: nuget/login@v1
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  # --- analyzers ---
+
+  release-analyzers:
+    if: startsWith(github.ref, 'refs/tags/analyzers-v')
+    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-release.yml@main
+    with:
+      package-name: FsHotWatch.Analyzers
+      tag-prefix: analyzers-v
+      fsproj-path: src/FsHotWatch.Analyzers/FsHotWatch.Analyzers.fsproj
+    permissions:
+      contents: write
+
+  publish-analyzers:
+    if: startsWith(github.ref, 'refs/tags/analyzers-v')
+    needs: release-analyzers
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nuget-packages
+          path: ./artifacts
+      - uses: nuget/login@v1
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  # --- lint ---
+
+  release-lint:
+    if: startsWith(github.ref, 'refs/tags/lint-v')
+    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-release.yml@main
+    with:
+      package-name: FsHotWatch.Lint
+      tag-prefix: lint-v
+      fsproj-path: src/FsHotWatch.Lint/FsHotWatch.Lint.fsproj
+    permissions:
+      contents: write
+
+  publish-lint:
+    if: startsWith(github.ref, 'refs/tags/lint-v')
+    needs: release-lint
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nuget-packages
+          path: ./artifacts
+      - uses: nuget/login@v1
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  # --- fantomas ---
+
+  release-fantomas:
+    if: startsWith(github.ref, 'refs/tags/fantomas-v')
+    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-release.yml@main
+    with:
+      package-name: FsHotWatch.Fantomas
+      tag-prefix: fantomas-v
+      fsproj-path: src/FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj
+    permissions:
+      contents: write
+
+  publish-fantomas:
+    if: startsWith(github.ref, 'refs/tags/fantomas-v')
+    needs: release-fantomas
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nuget-packages
+          path: ./artifacts
+      - uses: nuget/login@v1
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  # --- build ---
+
+  release-build:
+    if: startsWith(github.ref, 'refs/tags/build-v')
+    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-release.yml@main
+    with:
+      package-name: FsHotWatch.Build
+      tag-prefix: build-v
+      fsproj-path: src/FsHotWatch.Build/FsHotWatch.Build.fsproj
+    permissions:
+      contents: write
+
+  publish-build:
+    if: startsWith(github.ref, 'refs/tags/build-v')
+    needs: release-build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nuget-packages
+          path: ./artifacts
+      - uses: nuget/login@v1
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  # --- coverage ---
+
+  release-coverage:
+    if: startsWith(github.ref, 'refs/tags/coverage-v')
+    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-release.yml@main
+    with:
+      package-name: FsHotWatch.Coverage
+      tag-prefix: coverage-v
+      fsproj-path: src/FsHotWatch.Coverage/FsHotWatch.Coverage.fsproj
+    permissions:
+      contents: write
+
+  publish-coverage:
+    if: startsWith(github.ref, 'refs/tags/coverage-v')
+    needs: release-coverage
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nuget-packages
+          path: ./artifacts
+      - uses: nuget/login@v1
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  # --- filecommand ---
+
+  release-filecommand:
+    if: startsWith(github.ref, 'refs/tags/filecommand-v')
+    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-release.yml@main
+    with:
+      package-name: FsHotWatch.FileCommand
+      tag-prefix: filecommand-v
+      fsproj-path: src/FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj
+    permissions:
+      contents: write
+
+  publish-filecommand:
+    if: startsWith(github.ref, 'refs/tags/filecommand-v')
+    needs: release-filecommand
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nuget-packages
+          path: ./artifacts
+      - uses: nuget/login@v1
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate

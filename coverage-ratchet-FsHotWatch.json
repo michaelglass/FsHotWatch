@@ -1,0 +1,20 @@
+{
+  "defaultMinLine": 100.0,
+  "defaultMinBranch": 100.0,
+  "overrides": {
+    "Daemon.fs": { "minLine": 75.0, "minBranch": 65.0 },
+    "Ipc.fs": { "minLine": 85.0, "minBranch": 55.0 },
+    "Program.fs": { "minLine": 70.0, "minBranch": 65.0 },
+    "BuildPlugin.fs": { "minLine": 85.0, "minBranch": 70.0 },
+    "CoveragePlugin.fs": { "minLine": 85.0, "minBranch": 80.0 },
+    "FormatCheckPlugin.fs": { "minLine": 85.0, "minBranch": 85.0 },
+    "FileCommandPlugin.fs": { "minLine": 80.0, "minBranch": 55.0 },
+    "LintPlugin.fs": { "minLine": 85.0, "minBranch": 80.0 },
+    "AnalyzersPlugin.fs": { "minLine": 75.0, "minBranch": 45.0 },
+    "CheckPipeline.fs": { "minLine": 80.0, "minBranch": 70.0 },
+    "PluginHost.fs": { "minLine": 90.0, "minBranch": 80.0 },
+    "Watcher.fs": { "minLine": 95.0, "minBranch": 80.0 },
+    "ProcessHelper.fs": { "minLine": 90.0, "minBranch": 45.0 },
+    "ProjectGraph.fs": { "minLine": 90.0, "minBranch": 90.0 }
+  }
+}
