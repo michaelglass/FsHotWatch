@@ -1,0 +1,23 @@
+name: Deploy Docs
+
+on:
+  push:
+    tags:
+      - 'core-v*'
+      - 'testprune-v*'
+      - 'analyzers-v*'
+      - 'lint-v*'
+      - 'fantomas-v*'
+      - 'build-v*'
+      - 'coverage-v*'
+      - 'filecommand-v*'
+
+jobs:
+  docs:
+    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-docs.yml@main
+    with:
+      fsdocs-parameters: '--parameters root /FsHotWatch/'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write

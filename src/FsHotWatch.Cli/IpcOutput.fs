@@ -217,38 +217,38 @@ let renderIpcResult (result: string) : int =
             exitCodeFromResponse resp
         | false, _ ->
 
-        match root.TryGetProperty("error") with
-        | true, e ->
-            UI.fail (e.GetString())
-            1
-        | false, _ ->
+            match root.TryGetProperty("error") with
+            | true, e ->
+                UI.fail (e.GetString())
+                1
+            | false, _ ->
 
-        match root.TryGetProperty("status") with
-        | true, v when v.GetString() = "failed" ->
-            UI.fail "Failed"
-            1
-        | true, v when v.GetString() = "passed" ->
-            UI.success "Passed"
-            0
-        | _ ->
+                match root.TryGetProperty("status") with
+                | true, v when v.GetString() = "failed" ->
+                    UI.fail "Failed"
+                    1
+                | true, v when v.GetString() = "passed" ->
+                    UI.success "Passed"
+                    0
+                | _ ->
 
-        let statusMap =
-            [ for prop in root.EnumerateObject() do
-                  prop.Name, prop.Value.GetString() ]
-            |> Map.ofList
+                    let statusMap =
+                        [ for prop in root.EnumerateObject() do
+                              prop.Name, prop.Value.GetString() ]
+                        |> Map.ofList
 
-        let parsed = parseStatusMap statusMap
-        let output = renderProgress parsed
-        eprintfn "%s" output
+                    let parsed = parseStatusMap statusMap
+                    let output = renderProgress parsed
+                    eprintfn "%s" output
 
-        let hasFailed =
-            parsed
-            |> Map.exists (fun _ s ->
-                match s with
-                | DisplayFailed _ -> true
-                | _ -> false)
+                    let hasFailed =
+                        parsed
+                        |> Map.exists (fun _ s ->
+                            match s with
+                            | DisplayFailed _ -> true
+                            | _ -> false)
 
-        if hasFailed then 1 else 0
+                    if hasFailed then 1 else 0
 
 /// Poll daemon status, render live progress, then format final errors.
 /// Returns exit code (0 = no errors, 1 = errors).
