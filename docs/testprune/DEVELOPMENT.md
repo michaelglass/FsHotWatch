@@ -25,11 +25,16 @@ mise run lint           # Run FSharpLint
 mise run example        # Run test-prune against example solution
 mise run example-build  # Build the example solution
 mise run docs           # Generate API documentation
-mise run coverage-check # Check per-file coverage thresholds
+mise run coverage-check   # Check per-file coverage thresholds
+mise run coverage-ratchet # Tighten coverage thresholds to current values
+mise run sync-docs        # Sync README.md to docs/index.md
+mise run sync-docs-check  # Check docs sync
 mise run dead-code      # Find unreachable production code
 mise run dead-code-tests # Find unreachable test code
 mise run bench          # Run benchmarks with dotnet-trace profiling
 mise run bench-raw      # Run benchmarks without profiling (JSON metrics)
+mise run release        # Tag a release based on API changes
+mise run release-alpha  # Tag an alpha pre-release
 ```
 
 ## Project Structure
@@ -39,7 +44,6 @@ mise run bench-raw      # Run benchmarks without profiling (JSON metrics)
 - `src/TestPrune.Falco/` — Falco route-based integration test filtering extension
 - `tests/TestPrune.Tests/` — All tests (xUnit v3 + MTP v2)
 - `examples/SampleSolution/` — Example F# solution for smoke testing
-- `scripts/` — Release, coverage, API check scripts
 
 ## Conventions
 
@@ -50,10 +54,17 @@ mise run bench-raw      # Run benchmarks without profiling (JSON metrics)
 - FSharp.Core 10.1.x pinned explicitly (FCS 43.12.201 dependency)
 - NU1605 suppressed across projects (FSharp.Core version mismatch with SDK)
 
+## Shared Tooling
+
+Uses NuGet tools from michaelglass/MichaelsWackyFsPackageTools:
+- `coverageratchet` — per-file coverage enforcement with automatic threshold ratcheting
+- `syncdocs` — README-to-docs section syncing
+- `fssemantictagger` — semantic versioning with API change detection
+
+CI uses reusable GitHub workflows from the same repo.
+
 ## Package Publishing
 
-TestPrune.Core and TestPrune.Falco are NuGet packages. Release via:
-```bash
-dotnet fsi scripts/release.fsx        # auto-bump based on API changes
-dotnet fsi scripts/release.fsx alpha  # first release
-```
+TestPrune.Core and TestPrune.Falco are NuGet packages with separate release tags:
+- `core-v*` — TestPrune.Core + CLI
+- `falco-v*` — TestPrune.Falco

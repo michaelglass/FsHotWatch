@@ -1,0 +1,49 @@
+{
+  "overrides": {
+    "AstAnalyzer.fs": {
+      "line": 90.36363636363637,
+      "branch": 65.4320987654321,
+      "reason": "loosened automatically"
+    },
+    "Database.fs": {
+      "line": 84.08071748878923,
+      "branch": 69.31818181818183,
+      "reason": "loosened automatically"
+    },
+    "DeadCode.fs": {
+      "line": 100,
+      "branch": 91.66666666666666,
+      "reason": "loosened automatically"
+    },
+    "FalcoRouteAnalysis.fs": {
+      "line": 98.11320754716981,
+      "branch": 100,
+      "reason": "loosened automatically"
+    },
+    "ImpactAnalysis.fs": {
+      "line": 100,
+      "branch": 66.66666666666666,
+      "reason": "loosened automatically"
+    },
+    "InMemoryStore.fs": {
+      "line": 98.21428571428571,
+      "branch": 100,
+      "reason": "loosened automatically"
+    },
+    "Orchestration.fs": {
+      "line": 84.02777777777779,
+      "branch": 80,
+      "reason": "loosened automatically"
+    },
+    "Program.fs": {
+      "line": 39.2,
+      "branch": 15.384615384615385,
+      "reason": "loosened automatically"
+    },
+    "ProjectLoader.fs": {
+      "line": 55.26315789473685,
+      "branch": 0,
+      "reason": "loosened automatically"
+    }
+  }
+}
