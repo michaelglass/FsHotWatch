@@ -14,7 +14,7 @@ type RunMode =
     | [<Cmd("Run once and exit")>] RunOnce
     | [<Cmd("Use running daemon"); CmdDefault>] Daemon
 
-type ScanOptions = { Force: bool }
+type ScanFlag = | [<Cmd("Force rescan even if no changes detected")>] Force
 
 type Command =
     | [<Cmd("Start the daemon")>] Start
@@ -28,13 +28,22 @@ type Command =
     | [<Cmd("Run analyzers")>] Analyze of RunMode
     | [<Cmd("Show current status")>] Status of plugin: string option
     | [<Cmd("Show accumulated errors")>] Errors
-    | [<Cmd("Scan for file changes")>] Scan of ScanOptions
+    | [<Cmd("Scan for file changes")>] Scan of ScanFlag list
     | [<Cmd("Invalidate cache for a file"); CmdFileCompletion>] InvalidateCache of filePath: string
     | [<Cmd("Generate initial config")>] Init
     | [<Cmd("Install fish completions")>] Completions
 
-let commandTree =
-    CommandReflection.fromUnion<Command> "FsHotWatch — F# file watcher daemon"
+type GlobalFlag =
+    | [<CmdFlag(Short = "v")>] Verbose
+    | [<CmdFlag(Name = "log-level")>] LogLevel of string
+    | [<CmdFlag(Name = "no-cache")>] NoCache
+
+let globalSpec =
+    CommandReflection.fromUnionWithGlobalsAndEnv<Command, GlobalFlag>
+        "FsHotWatch — F# file watcher daemon"
+        "FS_HOT_WATCH"
+
+let commandTree = globalSpec.Tree
 
 let cliName = "fs-hot-watch"
 
@@ -283,7 +292,9 @@ let executeCommand
             ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
             UI.success "Daemon stopped"
             0)
-    | Scan { Force = force } ->
+    | Scan flags ->
+        let force = flags |> List.contains Force
+
         withIpc (fun () ->
             let result = ipc.Scan pipeName force |> Async.RunSynchronously
             UI.success $"Scan: %s{result}"
@@ -424,88 +435,85 @@ let executePluginCommand (ipc: IpcOps) (pipeName: string) (cmd: string) (argsStr
         let result = ipc.RunCommand pipeName cmd argsStr |> Async.RunSynchronously
         IpcOutput.renderIpcResult result)
 
-[<EntryPoint>]
-let main args =
-    let argList = args |> Array.toList
+/// Apply parsed global flags: configure logging and return (noCache, daemonExtraArgs).
+let applyGlobalFlags (globals: GlobalFlag list) : bool * string =
+    let mutable noCache = false
+    let parts = System.Collections.Generic.List<string>()
 
-    let logLevelArg =
-        argList
-        |> List.tryFind (fun a -> a.StartsWith("--log-level="))
-        |> Option.map (fun a -> a.Substring("--log-level=".Length))
+    for flag in globals do
+        match flag with
+        | Verbose ->
+            FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
+            parts.Add("--verbose")
+        | LogLevel level ->
+            match level with
+            | "error" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
+            | "warning" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Warning
+            | "info" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Info
+            | "debug" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
+            | other -> eprintfn "Unknown log level: %s (using info)" other
 
-    if argList |> List.exists (fun a -> a = "--verbose" || a = "-v") then
-        FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
+            parts.Add($"--log-level %s{level}")
+        | NoCache ->
+            noCache <- true
+            parts.Add("--no-cache")
 
-    match logLevelArg with
-    | Some "error" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
-    | Some "warning" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Warning
-    | Some "info" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Info
-    | Some "debug" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
-    | Some other -> eprintfn "Unknown log level: %s (using info)" other
-    | None -> ()
-
-    let noCache = argList |> List.exists (fun a -> a = "--no-cache")
-
-    let filteredArgs =
-        argList
-        |> List.filter (fun a ->
-            a <> "--verbose"
-            && a <> "-v"
-            && a <> "--no-cache"
-            && not (a.StartsWith("--log-level=")))
-
-    // Build extra args string to forward logging flags to daemon subprocess
-    let daemonExtraArgs =
-        let parts =
-            [ match logLevelArg with
-              | Some("error" | "warning" | "info" | "debug" as level) -> $"--log-level=%s{level}"
-              | Some _ -> () // invalid level already warned; don't forward
-              | None ->
-                  if argList |> List.exists (fun a -> a = "--verbose" || a = "-v") then
-                      "--verbose"
-              if noCache then
-                  "--no-cache" ]
-
-        if parts.IsEmpty then
+    let extraArgs =
+        if parts.Count = 0 then
             ""
         else
             (String.concat " " parts) + " "
 
-    let repoRoot =
-        match findRepoRoot (Directory.GetCurrentDirectory()) with
-        | Some root -> root
-        | None ->
-            eprintfn "Error: not in a jj or git repository"
-            exit 1
-            ""
+    (noCache, extraArgs)
 
-    let pipeName = computePipeName repoRoot
+[<EntryPoint>]
+let main args =
+    let argList = args |> Array.toList
 
-    // Load config to determine cache backend, then create daemon factory with cache wired in
-    let config = loadConfig repoRoot
-
-    let cacheConfig = if noCache then DaemonConfig.NoCache else config.Cache
-
-    let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
-
-    let createDaemon (root: string) = Daemon.create root backend keyProvider
-
-    let filteredArgArray = filteredArgs |> Array.ofList
-
-    // Handle --help/-h as global flags (CommandTree flags are per-command only)
-    if filteredArgs |> List.exists (fun a -> a = "--help" || a = "-h" || a = "help") then
-        printfn "%s" (CommandTree.helpFull commandTree cliName)
+    // Handle --help/-h as global flags (CommandTree handles subcommand help via HelpRequested)
+    if argList |> List.exists (fun a -> a = "--help" || a = "-h" || a = "help") then
+        printfn "%s" (CommandTree.helpWithGlobals globalSpec.GlobalFlags commandTree cliName)
         0
     else
 
-        match CommandTree.parse commandTree filteredArgArray with
-        | Ok command -> executeCommand createDaemon defaultIpcOps repoRoot pipeName command daemonExtraArgs config
+        match globalSpec.Parse args with
+        | Ok(globals, command) ->
+            let (noCache, daemonExtraArgs) = applyGlobalFlags globals
+
+            let repoRoot =
+                match findRepoRoot (Directory.GetCurrentDirectory()) with
+                | Some root -> root
+                | None ->
+                    eprintfn "Error: not in a jj or git repository"
+                    exit 1
+                    ""
+
+            let pipeName = computePipeName repoRoot
+            let config = loadConfig repoRoot
+            let cacheConfig = if noCache then DaemonConfig.NoCache else config.Cache
+            let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
+            let createDaemon (root: string) = Daemon.create root backend keyProvider
+
+            executeCommand createDaemon defaultIpcOps repoRoot pipeName command daemonExtraArgs config
         | Error(HelpRequested path) ->
             printfn "%s" (CommandTree.helpForPath commandTree path cliName)
             0
         | Error(UnknownCommand(input, _path)) ->
-            let argsStr = filteredArgs |> List.skip 1 |> String.concat " "
+            let argsStr =
+                argList
+                |> List.skipWhile (fun a -> a <> input)
+                |> List.skip 1
+                |> String.concat " "
 
+            let repoRoot =
+                match findRepoRoot (Directory.GetCurrentDirectory()) with
+                | Some root -> root
+                | None ->
+                    eprintfn "Error: not in a jj or git repository"
+                    exit 1
+                    ""
+
+            let pipeName = computePipeName repoRoot
             executePluginCommand defaultIpcOps pipeName input argsStr
         | Error(InvalidArguments(cmd, msg)) ->
             eprintfn "Invalid arguments for '%s': %s" cmd msg
