@@ -29,6 +29,7 @@ let private waitForIpcServer (pipeName: string) =
 // --- CommandTree.parse tests ---
 
 let tree = FsHotWatch.Cli.Program.commandTree
+let spec = FsHotWatch.Cli.Program.globalSpec
 
 [<Fact>]
 let ``parse empty args returns HelpRequested`` () =
@@ -98,11 +99,15 @@ let ``parse status with plugin returns Status Some`` () =
 
 [<Fact>]
 let ``parse scan returns Scan`` () =
-    test <@ CommandTree.parse tree [| "scan" |] = Ok(Scan { Force = false }) @>
+    match CommandTree.parse tree [| "scan" |] with
+    | Ok(Scan flags) -> test <@ flags = [] @>
+    | other -> failwith $"Expected Ok(Scan []), got %A{other}"
 
 [<Fact>]
 let ``parse scan --force returns Scan with Force`` () =
-    test <@ CommandTree.parse tree [| "scan"; "--force" |] = Ok(Scan { Force = true }) @>
+    match CommandTree.parse tree [| "scan"; "--force" |] with
+    | Ok(Scan flags) -> test <@ flags = [ Force ] @>
+    | other -> failwith $"Expected Ok(Scan [Force]), got %A{other}"
 
 [<Fact>]
 let ``parse errors returns Errors`` () =
@@ -121,6 +126,75 @@ let ``parse unknown command returns UnknownCommand`` () =
     match CommandTree.parse tree [| "warnings" |] with
     | Error(UnknownCommand("warnings", _)) -> ()
     | other -> failwith $"Expected UnknownCommand, got %A{other}"
+
+// --- GlobalSpec.Parse tests ---
+
+[<Fact>]
+let ``globalSpec parse with --verbose returns Verbose flag`` () =
+    match spec.Parse [| "--verbose"; "start" |] with
+    | Ok(globals, Start) -> test <@ globals = [ Verbose ] @>
+    | other -> failwith $"Expected Ok(Verbose, Start), got %A{other}"
+
+[<Fact>]
+let ``globalSpec parse with -v returns Verbose flag`` () =
+    match spec.Parse [| "-v"; "stop" |] with
+    | Ok(globals, Stop) -> test <@ globals = [ Verbose ] @>
+    | other -> failwith $"Expected Ok(Verbose, Stop), got %A{other}"
+
+[<Fact>]
+let ``globalSpec parse with --log-level returns LogLevel flag`` () =
+    match spec.Parse [| "--log-level"; "debug"; "start" |] with
+    | Ok(globals, Start) -> test <@ globals = [ LogLevel "debug" ] @>
+    | other -> failwith $"Expected Ok(LogLevel debug, Start), got %A{other}"
+
+[<Fact>]
+let ``globalSpec parse with --no-cache returns NoCache flag`` () =
+    match spec.Parse [| "--no-cache"; "build" |] with
+    | Ok(globals, Build Daemon) -> test <@ globals = [ NoCache ] @>
+    | other -> failwith $"Expected Ok(NoCache, Build Daemon), got %A{other}"
+
+[<Fact>]
+let ``globalSpec parse with multiple global flags`` () =
+    match spec.Parse [| "--verbose"; "--no-cache"; "check" |] with
+    | Ok(globals, Check Daemon) -> test <@ globals = [ Verbose; NoCache ] @>
+    | other -> failwith $"Expected Ok([Verbose; NoCache], Check Daemon), got %A{other}"
+
+[<Fact>]
+let ``globalSpec parse with no global flags passes through`` () =
+    match spec.Parse [| "scan"; "--force" |] with
+    | Ok(globals, Scan flags) ->
+        test <@ globals = [] @>
+        test <@ flags = [ Force ] @>
+    | other -> failwith $"Expected Ok([], Scan [Force]), got %A{other}"
+
+[<Fact>]
+let ``globalSpec parse with global flags after command`` () =
+    match spec.Parse [| "start"; "--verbose" |] with
+    | Ok(globals, Start) -> test <@ globals = [ Verbose ] @>
+    | other -> failwith $"Expected Ok([Verbose], Start), got %A{other}"
+
+// --- applyGlobalFlags tests ---
+
+[<Fact>]
+let ``applyGlobalFlags with NoCache returns noCache true`` () =
+    let (noCache, _) = applyGlobalFlags [ NoCache ]
+    test <@ noCache @>
+
+[<Fact>]
+let ``applyGlobalFlags with empty list returns noCache false`` () =
+    let (noCache, extraArgs) = applyGlobalFlags []
+    test <@ not noCache @>
+    test <@ extraArgs = "" @>
+
+[<Fact>]
+let ``applyGlobalFlags builds daemon extra args`` () =
+    let (_, extraArgs) = applyGlobalFlags [ Verbose; NoCache ]
+    test <@ extraArgs = "--verbose --no-cache " @>
+
+[<Fact>]
+let ``applyGlobalFlags with LogLevel builds extra args`` () =
+    let (_, extraArgs) = applyGlobalFlags [ LogLevel "debug" ]
+    test <@ extraArgs = "--log-level debug " @>
 
 // --- findRepoRoot tests ---
 
@@ -339,7 +413,7 @@ let private fakeConfig: DaemonConfiguration =
     { Build = None
       Format = Off
       Lint = false
-      Cache = NoCache
+      Cache = FsHotWatch.Cli.DaemonConfig.NoCache
       Analyzers = None
       Tests = None
       Coverage = None
@@ -418,7 +492,7 @@ let ``executeCommand Scan calls scan IPC`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Scan { Force = false }) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Scan []) "" fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>
