@@ -41,20 +41,25 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
         $"%s{Color.green}No errors%s{Color.reset}"
     else
         let sb = StringBuilder()
-        let mutable totalCount = 0
+        let mutable errorCount = 0
+        let mutable warnCount = 0
         let fileCount = errors.Count
 
         for KeyValue(file, entries) in errors do
             sb.AppendLine() |> ignore
             sb.AppendLine($"%s{Color.bold}%s{file}%s{Color.reset}") |> ignore
-            totalCount <- totalCount + entries.Length
 
             for (pluginName, entry) in entries do
+                match entry.Severity with
+                | Error -> errorCount <- errorCount + 1
+                | Warning -> warnCount <- warnCount + 1
+                | _ -> ()
+
                 let severityLabel =
                     match entry.Severity with
                     | Error -> $"%s{Color.red}error%s{Color.reset}: "
                     | Warning -> $"%s{Color.yellow}warning%s{Color.reset}: "
-                    | Info -> ""
+                    | Info
                     | Hint -> ""
 
                 sb.AppendLine(
@@ -63,7 +68,15 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
                 |> ignore
 
         sb.AppendLine() |> ignore
-        sb.Append($"%d{totalCount} error(s) in %d{fileCount} file(s)") |> ignore
+
+        let summary =
+            match errorCount, warnCount with
+            | 0, 0 -> "No errors"
+            | e, 0 -> $"%d{e} error(s)"
+            | 0, w -> $"%d{w} warning(s)"
+            | e, w -> $"%d{e} error(s), %d{w} warning(s)"
+
+        sb.Append($"%s{summary} in %d{fileCount} file(s)") |> ignore
         sb.ToString().TrimEnd('\n', '\r')
 
 /// Run a daemon's RunOnce with live progress display to stderr.
@@ -79,6 +92,7 @@ let runOnceWithProgress (daemon: FsHotWatch.Daemon.Daemon) : Map<string, PluginS
 /// pluginName = None queries all errors; Some name queries one plugin.
 /// Returns exit code (0 = clean, 1 = errors).
 let runOnceAndReport
+    (noWarnFail: bool)
     (createDaemon: string -> FsHotWatch.Daemon.Daemon)
     (repoRoot: string)
     (config: DaemonConfig.DaemonConfiguration)
@@ -95,8 +109,12 @@ let runOnceAndReport
             |> Map.map (fun _ entries -> entries |> List.map (fun e -> name, e))
         | None -> daemon.Host.GetErrors()
 
-    let errorCount =
-        allErrors |> Map.toList |> List.sumBy (fun (_, entries) -> entries.Length)
+    let failCount =
+        allErrors
+        |> Map.toList
+        |> List.collect snd
+        |> List.filter (fun (_, e) -> ErrorEntry.isFailing (not noWarnFail) e)
+        |> List.length
 
     let summary = formatSummary statuses
 
@@ -104,4 +122,4 @@ let runOnceAndReport
         eprintfn "%s" summary
 
     eprintfn "%s" (formatErrors allErrors)
-    if errorCount > 0 then 1 else 0
+    if failCount > 0 then 1 else 0

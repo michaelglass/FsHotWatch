@@ -62,16 +62,28 @@ let create
             try
                 try
                     let (success, output) = runProcess buildCommand buildArgs ctx.RepoRoot env
+                    let parsed = BuildDiagnostics.parseMSBuildDiagnostics output
 
                     if success then
                         info "build" "Build succeeded"
-                        ctx.ClearErrors "<build>"
+
+                        if parsed.IsEmpty then
+                            ctx.ClearErrors "<build>"
+                        else
+                            ctx.ReportErrors "<build>" parsed
+
                         ctx.EmitBuildCompleted(BuildSucceeded)
                         ctx.Post(BuildDone(BuildPassed output))
                     else
                         error "build" "Build FAILED"
 
-                        ctx.ReportErrors "<build>" [ ErrorEntry.error output ]
+                        let entries =
+                            if parsed.IsEmpty then
+                                [ ErrorEntry.error output ]
+                            else
+                                parsed
+
+                        ctx.ReportErrors "<build>" entries
                         ctx.EmitBuildCompleted(BuildFailed [ output ])
                         ctx.Post(BuildDone(BuildOutputFailed output))
                 with ex ->
@@ -138,12 +150,27 @@ let create
 
                     if failures.IsEmpty then
                         info "build" "All template builds succeeded"
-                        ctx.ClearErrors "<build>"
+                        let parsed = BuildDiagnostics.parseMSBuildDiagnostics combinedOutput
+
+                        if parsed.IsEmpty then
+                            ctx.ClearErrors "<build>"
+                        else
+                            ctx.ReportErrors "<build>" parsed
+
                         ctx.EmitBuildCompleted(BuildSucceeded)
                         ctx.Post(BuildDone(BuildPassed combinedOutput))
                     else
                         let errors = failures |> List.rev
-                        ctx.ReportErrors "<build>" (errors |> List.map ErrorEntry.error)
+
+                        let parsed = BuildDiagnostics.parseMSBuildDiagnostics (errors |> String.concat "\n")
+
+                        let entries =
+                            if parsed.IsEmpty then
+                                errors |> List.map ErrorEntry.error
+                            else
+                                parsed
+
+                        ctx.ReportErrors "<build>" entries
                         ctx.EmitBuildCompleted(BuildFailed errors)
                         ctx.Post(BuildDone(BuildOutputFailed(errors |> String.concat "\n")))
                 with ex ->

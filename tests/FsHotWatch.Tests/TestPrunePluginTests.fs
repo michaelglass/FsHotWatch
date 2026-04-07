@@ -616,7 +616,7 @@ let ``test failures are reported to error ledger`` () =
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 5.0
 
-        test <@ host.HasErrors() @>)
+        test <@ host.HasFailingReasons(warningsAreFailures = true) @>)
 
 [<Fact>]
 let ``test errors are cleared when all tests pass`` () =
@@ -641,7 +641,7 @@ let ``test errors are cleared when all tests pass`` () =
         File.WriteAllText(Path.Combine(tmpDir, "fail_flag"), "")
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 5.0
-        test <@ host.HasErrors() @>
+        test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
         // Remove fail flag so second run passes
         File.Delete(Path.Combine(tmpDir, "fail_flag"))
@@ -650,7 +650,7 @@ let ``test errors are cleared when all tests pass`` () =
         // Small delay to let the ledger's ClearPlugin message process
         // (status and ledger are separate async systems)
         Threading.Thread.Sleep(100)
-        test <@ not (host.HasErrors()) @>)
+        test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>)
 
 // Inline FactAttribute so test detection works without xUnit assemblies in script options.
 // Uses module-level [<Fact>] functions — the pattern that analyzeSource reliably detects
