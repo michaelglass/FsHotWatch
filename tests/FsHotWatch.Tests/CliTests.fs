@@ -431,7 +431,7 @@ let private fakeIpc () : IpcOps =
       GetStatus = fun _ -> async { return """{"plugin": "Completed at 2026-01-01T00:00:00Z"}""" }
       GetPluginStatus = fun _ _ -> async { return "not found" }
       RunCommand = fun _ _ _ -> async { return "unknown command" }
-      GetErrors = fun _ _ -> async { return """{"count": 0, "files": {}}""" }
+      GetDiagnostics = fun _ _ -> async { return """{"count": 0, "files": {}}""" }
       WaitForScan = fun _ _ -> async { return "idle" }
       WaitForComplete = fun _ -> async { return "{}" }
       TriggerBuild = fun _ -> async { return "{}" }
@@ -583,7 +583,7 @@ let ``decideDaemonAction starts fresh when not running even with matching hash``
 let ``executeCommand Errors with count 0 returns exit code 0`` () =
     let ipc =
         { fakeIpc () with
-            GetErrors = fun _ _ -> async { return """{"count": 0}""" } }
+            GetDiagnostics = fun _ _ -> async { return """{"count": 0}""" } }
 
     let result =
         executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" fakeConfig
@@ -594,7 +594,7 @@ let ``executeCommand Errors with count 0 returns exit code 0`` () =
 let ``executeCommand Errors with count 5 returns exit code 1`` () =
     let ipc =
         { fakeIpc () with
-            GetErrors =
+            GetDiagnostics =
                 fun _ _ ->
                     async {
                         return
@@ -610,7 +610,7 @@ let ``executeCommand Errors with count 5 returns exit code 1`` () =
 let ``executeCommand Errors with IPC failure returns exit code 1`` () =
     let ipc =
         { fakeIpc () with
-            GetErrors = fun _ _ -> async { return failwith "connection refused" } }
+            GetDiagnostics = fun _ _ -> async { return failwith "connection refused" } }
 
     let result =
         executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" fakeConfig
@@ -715,7 +715,7 @@ let ``executeCommand Lint scans waits and gets lint errors`` () =
 
     let ipc =
         { fakeIpc () with
-            GetErrors =
+            GetDiagnostics =
                 fun _ filter ->
                     async {
                         errorFilter <- filter
@@ -734,7 +734,7 @@ let ``executeCommand Errors calls getErrors`` () =
 
     let ipc =
         { fakeIpc () with
-            GetErrors =
+            GetDiagnostics =
                 fun _ _ ->
                     async {
                         called <- true
@@ -767,7 +767,7 @@ let ``executeCommand Check waits for scan and returns errors`` () =
                         getStatusCalled <- true
                         return """{"check": "Completed at 2026-01-01T00:00:00Z"}"""
                     }
-            GetErrors =
+            GetDiagnostics =
                 fun _ _ ->
                     async {
                         getErrorsCalled <- true
