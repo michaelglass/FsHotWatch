@@ -5,17 +5,17 @@ open Swensen.Unquote
 open FsHotWatch.Cli.IpcOutput
 
 [<Fact>]
-let ``parseErrorsResponse extracts count`` () =
+let ``parseDiagnosticsResponse extracts count`` () =
     let json = """{"count":2,"files":{},"statuses":{}}"""
-    let result = parseErrorsResponse json
+    let result = parseDiagnosticsResponse json
     test <@ result.Count = 2 @>
 
 [<Fact>]
-let ``parseErrorsResponse extracts files with entries`` () =
+let ``parseDiagnosticsResponse extracts files with entries`` () =
     let json =
         """{"count":1,"files":{"src/Foo.fs":[{"plugin":"lint","message":"bad name","severity":"warning","line":17,"column":0,"detail":null}]},"statuses":{}}"""
 
-    let result = parseErrorsResponse json
+    let result = parseDiagnosticsResponse json
     test <@ result.Files.ContainsKey("src/Foo.fs") @>
     let entries = result.Files["src/Foo.fs"]
     test <@ entries.Length = 1 @>
@@ -25,11 +25,11 @@ let ``parseErrorsResponse extracts files with entries`` () =
     test <@ entries[0].Line = 17 @>
 
 [<Fact>]
-let ``parseErrorsResponse extracts statuses`` () =
+let ``parseDiagnosticsResponse extracts statuses`` () =
     let json =
         """{"count":0,"files":{},"statuses":{"build":"Completed at 2026-04-05T12:00:00.0000000Z","lint":"Idle"}}"""
 
-    let result = parseErrorsResponse json
+    let result = parseDiagnosticsResponse json
     test <@ result.Statuses.ContainsKey("build") @>
     test <@ result.Statuses["build"].Contains("Completed") @>
 
@@ -74,33 +74,33 @@ let ``parseStatusMap parses idle status`` () =
     | other -> failwith $"Expected DisplayIdle, got %A{other}"
 
 [<Fact>]
-let ``formatErrorsResponse with no errors shows clean message`` () =
+let ``formatDiagnosticsResponse with no errors shows clean message`` () =
     let json =
         """{"count":0,"files":{},"statuses":{"build":"Completed at 2026-04-05T12:00:00.0000000Z"}}"""
 
-    let result = parseErrorsResponse json
-    let output = formatErrorsResponse result
+    let result = parseDiagnosticsResponse json
+    let output = formatDiagnosticsResponse result
     test <@ output.Contains("No errors") @>
 
 [<Fact>]
-let ``formatErrorsResponse with errors shows file and message`` () =
+let ``formatDiagnosticsResponse with errors shows file and message`` () =
     let json =
         """{"count":1,"files":{"src/Foo.fs":[{"plugin":"lint","message":"bad name","severity":"warning","line":17,"column":0,"detail":null}]},"statuses":{"lint":"Completed at 2026-04-05T12:00:00.0000000Z"}}"""
 
-    let result = parseErrorsResponse json
-    let output = formatErrorsResponse result
+    let result = parseDiagnosticsResponse json
+    let output = formatDiagnosticsResponse result
     test <@ output.Contains("src/Foo.fs") @>
     test <@ output.Contains("[lint]") @>
     test <@ output.Contains("L17") @>
     test <@ output.Contains("bad name") @>
 
 [<Fact>]
-let ``formatErrorsResponse with errors shows count summary`` () =
+let ``formatDiagnosticsResponse with errors shows count summary`` () =
     let json =
         """{"count":2,"files":{"src/A.fs":[{"plugin":"lint","message":"x","severity":"warning","line":1,"column":0,"detail":null}],"src/B.fs":[{"plugin":"build","message":"y","severity":"error","line":2,"column":0,"detail":null}]},"statuses":{}}"""
 
-    let result = parseErrorsResponse json
-    let output = formatErrorsResponse result
+    let result = parseDiagnosticsResponse json
+    let output = formatDiagnosticsResponse result
     test <@ output.Contains("2 error(s) in 2 file(s)") @>
 
 [<Fact>]
@@ -173,12 +173,12 @@ let ``renderProgress shows all plugins`` () =
 // --- renderIpcResult tests ---
 
 [<Fact>]
-let ``renderIpcResult with GetErrors format count 0 returns 0`` () =
+let ``renderIpcResult with GetDiagnostics format count 0 returns 0`` () =
     let result = renderIpcResult """{"count":0,"files":{},"statuses":{}}"""
     test <@ result = 0 @>
 
 [<Fact>]
-let ``renderIpcResult with GetErrors format count > 0 returns 1`` () =
+let ``renderIpcResult with GetDiagnostics format count > 0 returns 1`` () =
     let result =
         renderIpcResult
             """{"count":1,"files":{"src/Foo.fs":[{"plugin":"lint","message":"bad","severity":"warning","line":1,"column":0,"detail":null}]},"statuses":{}}"""

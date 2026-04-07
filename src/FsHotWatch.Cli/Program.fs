@@ -75,7 +75,7 @@ type IpcOps =
       GetStatus: string -> Async<string>
       GetPluginStatus: string -> string -> Async<string>
       RunCommand: string -> string -> string -> Async<string>
-      GetErrors: string -> string -> Async<string>
+      GetDiagnostics: string -> string -> Async<string>
       WaitForScan: string -> int64 -> Async<string>
       WaitForComplete: string -> Async<string>
       TriggerBuild: string -> Async<string>
@@ -91,7 +91,7 @@ let defaultIpcOps: IpcOps =
       GetStatus = IpcClient.getStatus
       GetPluginStatus = IpcClient.getPluginStatus
       RunCommand = IpcClient.runCommand
-      GetErrors = IpcClient.getErrors
+      GetDiagnostics = IpcClient.getDiagnostics
       WaitForScan = IpcClient.waitForScan
       WaitForComplete = IpcClient.waitForComplete
       TriggerBuild = IpcClient.triggerBuild
@@ -121,7 +121,7 @@ let private ensureAndQueryErrors
         IpcOutput.pollAndRender
             (fun () -> ipc.WaitForScan pipeName -1L |> Async.RunSynchronously)
             (fun () -> ipc.GetStatus pipeName |> Async.RunSynchronously)
-            (fun () -> ipc.GetErrors pipeName pluginFilter |> Async.RunSynchronously)
+            (fun () -> ipc.GetDiagnostics pipeName pluginFilter |> Async.RunSynchronously)
 
 /// Compute a hash of the config file + CLI binary for staleness detection.
 let private computeConfigHash (repoRoot: string) =
@@ -392,9 +392,9 @@ let executeCommand
             1
         else
             withIpc (fun () ->
-                let errorsJson = ipc.GetErrors pipeName "" |> Async.RunSynchronously
-                let resp = IpcOutput.parseErrorsResponse errorsJson
-                eprintfn "%s" (IpcOutput.formatErrorsResponse resp)
+                let errorsJson = ipc.GetDiagnostics pipeName "" |> Async.RunSynchronously
+                let resp = IpcOutput.parseDiagnosticsResponse errorsJson
+                eprintfn "%s" (IpcOutput.formatDiagnosticsResponse resp)
                 IpcOutput.exitCodeFromResponse resp)
     | InvalidateCache filePath ->
         if not (ensureDaemonFn ()) then
