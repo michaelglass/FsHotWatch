@@ -316,9 +316,16 @@ let ``plugin can report and query errors via host`` () =
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    waitUntil (fun () -> host.HasErrors()) 5000
-    test <@ host.HasErrors() @>
-    test <@ host.ErrorCount() = 1 @>
+    waitUntil (fun () -> host.HasFailingReasons(warningsAreFailures = true)) 5000
+    test <@ host.HasFailingReasons(warningsAreFailures = true) @>
+
+    test
+        <@
+            host.GetErrors()
+            |> Map.toList
+            |> List.sumBy (fun (_, entries) -> entries.Length) = 1
+        @>
+
     let errors = host.GetErrors()
     test <@ errors.ContainsKey "/src/A.fs" @>
 
@@ -356,11 +363,11 @@ let ``plugin ClearErrors removes errors from ledger`` () =
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    waitUntil (fun () -> host.HasErrors()) 5000
-    test <@ host.HasErrors() @>
+    waitUntil (fun () -> host.HasFailingReasons(warningsAreFailures = true)) 5000
+    test <@ host.HasFailingReasons(warningsAreFailures = true) @>
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    waitUntil (fun () -> not (host.HasErrors())) 5000
-    test <@ not (host.HasErrors()) @>
+    waitUntil (fun () -> not (host.HasFailingReasons(warningsAreFailures = true))) 5000
+    test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
 
 [<Fact>]
 let ``GetErrorsByPlugin returns only that plugin's errors`` () =
@@ -387,7 +394,13 @@ let ``GetErrorsByPlugin returns only that plugin's errors`` () =
             Detail = None } ]
     )
 
-    test <@ host.ErrorCount() = 2 @>
+    test
+        <@
+            host.GetErrors()
+            |> Map.toList
+            |> List.sumBy (fun (_, entries) -> entries.Length) = 2
+        @>
+
     let aErrors = host.GetErrorsByPlugin("pluginA")
     test <@ aErrors.Count = 1 @>
     test <@ aErrors.ContainsKey "/src/A.fs" @>
@@ -489,7 +502,13 @@ let ``ReportErrors with version passes through to ledger`` () =
         version = 1L
     )
 
-    test <@ host.ErrorCount() = 1 @>
+    test
+        <@
+            host.GetErrors()
+            |> Map.toList
+            |> List.sumBy (fun (_, entries) -> entries.Length) = 1
+        @>
+
     let errors = host.GetErrors()
     let fileErrors = errors.["/src/A.fs"]
     test <@ (snd fileErrors.[0]).Message = "v2 error" @>
@@ -511,11 +530,11 @@ let ``ClearErrors with version passes through to ledger`` () =
 
     // Stale clear should be ignored
     host.ClearErrors("fcs", "/src/A.fs", version = 1L)
-    test <@ host.HasErrors() @>
+    test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
     // Current version clear should work
     host.ClearErrors("fcs", "/src/A.fs", version = 3L)
-    test <@ not (host.HasErrors()) @>
+    test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
 
 [<Fact>]
 let ``OnStatusChanged event fires when plugin reports status`` () =
@@ -610,3 +629,56 @@ let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls
     // If deadlocked, this will time out
     let completed = waitTask.Wait(TimeSpan.FromSeconds(8.0))
     test <@ completed @>
+
+[<Fact>]
+let ``HasFailingReasons distinguishes warnings from errors`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    // Report only warnings
+    host.ReportErrors(
+        "linter",
+        "/src/A.fs",
+        [ { Message = "style warning"
+            Severity = DiagnosticSeverity.Warning
+            Line = 1
+            Column = 0
+            Detail = None } ]
+    )
+
+    // With warningsAreFailures=true, warnings count as failures
+    test <@ host.HasFailingReasons(warningsAreFailures = true) @>
+
+    // With warningsAreFailures=false, only errors count as failures
+    test <@ not (host.HasFailingReasons(warningsAreFailures = false)) @>
+
+    // FailingReasons with warningsAreFailures=true includes the warning
+    let withWarnings = host.FailingReasons(warningsAreFailures = true)
+    test <@ withWarnings.Count = 1 @>
+
+    // FailingReasons with warningsAreFailures=false excludes the warning
+    let withoutWarnings = host.FailingReasons(warningsAreFailures = false)
+    test <@ withoutWarnings.Count = 0 @>
+
+    // Now add an actual error
+    host.ReportErrors(
+        "fcs",
+        "/src/B.fs",
+        [ { Message = "real error"
+            Severity = DiagnosticSeverity.Error
+            Line = 5
+            Column = 0
+            Detail = None } ]
+    )
+
+    // Both modes should now report failures
+    test <@ host.HasFailingReasons(warningsAreFailures = true) @>
+    test <@ host.HasFailingReasons(warningsAreFailures = false) @>
+
+    // warningsAreFailures=true: 2 files (warning + error)
+    let allFailing = host.FailingReasons(warningsAreFailures = true)
+    test <@ allFailing.Count = 2 @>
+
+    // warningsAreFailures=false: 1 file (only error)
+    let errorsOnly = host.FailingReasons(warningsAreFailures = false)
+    test <@ errorsOnly.Count = 1 @>
+    test <@ errorsOnly.ContainsKey "/src/B.fs" @>
