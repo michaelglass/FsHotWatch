@@ -100,7 +100,7 @@ let ``parse status with plugin returns Status Some`` () =
 [<Fact>]
 let ``parse scan returns Scan`` () =
     match CommandTree.parse tree [| "scan" |] with
-    | Ok(Scan flags) -> test <@ flags = [] @>
+    | Ok(Scan flags) -> test <@ flags |> List.isEmpty @>
     | other -> failwith $"Expected Ok(Scan []), got %A{other}"
 
 [<Fact>]
@@ -163,7 +163,7 @@ let ``globalSpec parse with multiple global flags`` () =
 let ``globalSpec parse with no global flags passes through`` () =
     match spec.Parse [| "scan"; "--force" |] with
     | Ok(globals, Scan flags) ->
-        test <@ globals = [] @>
+        test <@ globals |> List.isEmpty @>
         test <@ flags = [ Force ] @>
     | other -> failwith $"Expected Ok([], Scan [Force]), got %A{other}"
 
