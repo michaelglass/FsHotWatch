@@ -505,6 +505,12 @@ let main args =
         | Error(HelpRequested path) ->
             printfn "%s" (CommandTree.helpForPath commandTree path cliName)
             0
+        | Error VersionRequested ->
+            let version =
+                System.Reflection.Assembly.GetExecutingAssembly().GetName().Version |> string
+
+            printfn "%s %s" cliName version
+            0
         | Error(UnknownCommand(input, _path)) ->
             let argsStr =
                 argList
