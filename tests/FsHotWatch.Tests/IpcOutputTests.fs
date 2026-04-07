@@ -101,7 +101,7 @@ let ``formatDiagnosticsResponse with errors shows count summary`` () =
 
     let result = parseDiagnosticsResponse json
     let output = formatDiagnosticsResponse result
-    test <@ output.Contains("2 error(s) in 2 file(s)") @>
+    test <@ output.Contains("1 error(s), 1 warning(s) in 2 file(s)") @>
 
 [<Fact>]
 let ``formatStatusLine shows checkmark for completed`` () =
