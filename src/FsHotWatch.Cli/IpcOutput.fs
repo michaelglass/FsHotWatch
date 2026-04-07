@@ -174,7 +174,29 @@ let formatDiagnosticsResponse (resp: DiagnosticsResponse) : string =
 
         sb.AppendLine() |> ignore
         let fileCount = resp.Files.Count
-        sb.Append($"%d{resp.Count} error(s) in %d{fileCount} file(s)") |> ignore
+
+        let errorCount =
+            resp.Files
+            |> Map.toSeq
+            |> Seq.collect snd
+            |> Seq.filter (fun e -> e.Severity = "error")
+            |> Seq.length
+
+        let warnCount =
+            resp.Files
+            |> Map.toSeq
+            |> Seq.collect snd
+            |> Seq.filter (fun e -> e.Severity = "warning")
+            |> Seq.length
+
+        let summary =
+            match errorCount, warnCount with
+            | 0, 0 -> "No errors"
+            | e, 0 -> $"%d{e} error(s)"
+            | 0, w -> $"%d{w} warning(s)"
+            | e, w -> $"%d{e} error(s), %d{w} warning(s)"
+
+        sb.Append($"%s{summary} in %d{fileCount} file(s)") |> ignore
 
     sb.ToString().TrimEnd('\n', '\r')
 

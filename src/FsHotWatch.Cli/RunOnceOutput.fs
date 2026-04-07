@@ -63,7 +63,29 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
                 |> ignore
 
         sb.AppendLine() |> ignore
-        sb.Append($"%d{totalCount} error(s) in %d{fileCount} file(s)") |> ignore
+
+        let errorCount =
+            errors
+            |> Map.toList
+            |> List.collect snd
+            |> List.filter (fun (_, e) -> e.Severity = Error)
+            |> List.length
+
+        let warnCount =
+            errors
+            |> Map.toList
+            |> List.collect snd
+            |> List.filter (fun (_, e) -> e.Severity = Warning)
+            |> List.length
+
+        let summary =
+            match errorCount, warnCount with
+            | 0, 0 -> "No errors"
+            | e, 0 -> $"%d{e} error(s)"
+            | 0, w -> $"%d{w} warning(s)"
+            | e, w -> $"%d{e} error(s), %d{w} warning(s)"
+
+        sb.Append($"%s{summary} in %d{fileCount} file(s)") |> ignore
         sb.ToString().TrimEnd('\n', '\r')
 
 /// Run a daemon's RunOnce with live progress display to stderr.
