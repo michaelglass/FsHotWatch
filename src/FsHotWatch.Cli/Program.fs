@@ -437,32 +437,32 @@ let executePluginCommand (ipc: IpcOps) (pipeName: string) (cmd: string) (argsStr
 
 /// Apply parsed global flags: configure logging and return (noCache, daemonExtraArgs).
 let applyGlobalFlags (globals: GlobalFlag list) : bool * string =
-    let mutable noCache = false
-    let parts = System.Collections.Generic.List<string>()
+    let (noCache, parts) =
+        globals
+        |> List.fold
+            (fun (nc, acc) flag ->
+                match flag with
+                | Verbose ->
+                    FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
+                    (nc, "--verbose" :: acc)
+                | LogLevel level ->
+                    match level with
+                    | "error" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
+                    | "warning" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Warning
+                    | "info" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Info
+                    | "debug" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
+                    | other ->
+                        eprintfn "Unknown log level: %s (using info)" other
+                        FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Info
 
-    for flag in globals do
-        match flag with
-        | Verbose ->
-            FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
-            parts.Add("--verbose")
-        | LogLevel level ->
-            match level with
-            | "error" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
-            | "warning" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Warning
-            | "info" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Info
-            | "debug" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
-            | other -> eprintfn "Unknown log level: %s (using info)" other
-
-            parts.Add($"--log-level %s{level}")
-        | NoCache ->
-            noCache <- true
-            parts.Add("--no-cache")
+                    (nc, $"--log-level %s{level}" :: acc)
+                | NoCache -> (true, "--no-cache" :: acc))
+            (false, [])
 
     let extraArgs =
-        if parts.Count = 0 then
-            ""
-        else
-            (String.concat " " parts) + " "
+        match parts with
+        | [] -> ""
+        | _ -> (parts |> List.rev |> String.concat " ") + " "
 
     (noCache, extraArgs)
 
@@ -476,19 +476,19 @@ let main args =
         0
     else
 
+        let repoRoot =
+            match findRepoRoot (Directory.GetCurrentDirectory()) with
+            | Some root -> root
+            | None ->
+                eprintfn "Error: not in a jj or git repository"
+                exit 1
+                ""
+
+        let pipeName = computePipeName repoRoot
+
         match globalSpec.Parse args with
         | Ok(globals, command) ->
             let (noCache, daemonExtraArgs) = applyGlobalFlags globals
-
-            let repoRoot =
-                match findRepoRoot (Directory.GetCurrentDirectory()) with
-                | Some root -> root
-                | None ->
-                    eprintfn "Error: not in a jj or git repository"
-                    exit 1
-                    ""
-
-            let pipeName = computePipeName repoRoot
             let config = loadConfig repoRoot
             let cacheConfig = if noCache then DaemonConfig.NoCache else config.Cache
             let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
@@ -505,15 +505,6 @@ let main args =
                 |> List.skip 1
                 |> String.concat " "
 
-            let repoRoot =
-                match findRepoRoot (Directory.GetCurrentDirectory()) with
-                | Some root -> root
-                | None ->
-                    eprintfn "Error: not in a jj or git repository"
-                    exit 1
-                    ""
-
-            let pipeName = computePipeName repoRoot
             executePluginCommand defaultIpcOps pipeName input argsStr
         | Error(InvalidArguments(cmd, msg)) ->
             eprintfn "Invalid arguments for '%s': %s" cmd msg
