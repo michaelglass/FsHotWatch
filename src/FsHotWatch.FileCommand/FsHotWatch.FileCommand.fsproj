@@ -4,7 +4,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);NU1605;MSB3277;NETSDK1188</NoWarn>
     <PackageId>FsHotWatch.FileCommand</PackageId>
-    <Version>0.1.0-alpha.2</Version>
+    <Version>0.1.0-alpha.3</Version>
     <Authors>Michael Glass</Authors>
     <Description>FsHotWatch plugin that runs commands when specific files change</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
