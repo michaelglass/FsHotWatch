@@ -20,14 +20,14 @@ let ``Clear removes errors for plugin and file`` () =
     let ledger = ErrorLedger()
     ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
     ledger.Clear("lint", "/src/A.fs")
-    test <@ not (ledger.HasErrors()) @>
+    test <@ not (ledger.HasFailingReasons(warningsAreFailures = true)) @>
 
 [<Fact>]
 let ``Report with empty list clears errors`` () =
     let ledger = ErrorLedger()
     ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
     ledger.Report("lint", "/src/A.fs", [])
-    test <@ not (ledger.HasErrors()) @>
+    test <@ not (ledger.HasFailingReasons(warningsAreFailures = true)) @>
 
 [<Fact>]
 let ``GetByPlugin filters to specific plugin`` () =
@@ -56,7 +56,7 @@ let ``ClearPlugin removes all errors for a plugin`` () =
     ledger.Report("lint", "/src/B.fs", [ entry "b" DiagnosticSeverity.Warning 2 ])
     ledger.Report("analyzers", "/src/A.fs", [ entry "c" DiagnosticSeverity.Error 3 ])
     ledger.ClearPlugin("lint")
-    test <@ ledger.Count() = 1 @>
+    test <@ ledger.GetAll() |> Map.values |> Seq.sumBy List.length = 1 @>
     test <@ ledger.GetByPlugin("lint").IsEmpty @>
 
 [<Fact>]
@@ -71,7 +71,7 @@ let ``Count returns total across all plugins and files`` () =
     )
 
     ledger.Report("analyzers", "/src/A.fs", [ entry "c" DiagnosticSeverity.Error 3 ])
-    test <@ ledger.Count() = 3 @>
+    test <@ ledger.GetAll() |> Map.values |> Seq.sumBy List.length = 3 @>
 
 [<Fact>]
 let ``Report ignores stale version`` () =
@@ -113,7 +113,7 @@ let ``Clear ignores stale version`` () =
     ledger.Report("fcs", "/tmp/Lib.fs", [ e ], version = 2L)
     ledger.Clear("fcs", "/tmp/Lib.fs", version = 1L)
 
-    test <@ ledger.HasErrors() @>
+    test <@ ledger.HasFailingReasons(warningsAreFailures = true) @>
 
 [<Fact>]
 let ``Report without version always updates`` () =
@@ -208,7 +208,52 @@ let ``Clear accepts newer version after initial versioned report`` () =
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry1 ], version = 1L)
     // Clear with higher version should succeed (hits update branch where v >= last)
     ledger.Clear("fcs", "/tmp/Lib.fs", version = 2L)
-    test <@ not (ledger.HasErrors()) @>
+    test <@ not (ledger.HasFailingReasons(warningsAreFailures = true)) @>
+
+[<Fact>]
+let ``FailingReasons returns only errors when warningsAreFailures is false`` () =
+    let ledger = ErrorLedger()
+    ledger.Report("lint", "/src/A.fs", [ entry "warn" DiagnosticSeverity.Warning 1 ])
+    ledger.Report("fcs", "/src/A.fs", [ entry "err" DiagnosticSeverity.Error 2 ])
+    ledger.Report("lint", "/src/B.fs", [ entry "info" DiagnosticSeverity.Info 3 ])
+    let failing = ledger.FailingReasons(warningsAreFailures = false)
+    test <@ failing.Count = 1 @>
+    test <@ failing.ContainsKey "/src/A.fs" @>
+    test <@ failing.["/src/A.fs"].Length = 1 @>
+    test <@ (snd failing.["/src/A.fs"].[0]).Message = "err" @>
+
+[<Fact>]
+let ``FailingReasons returns errors and warnings when warningsAreFailures is true`` () =
+    let ledger = ErrorLedger()
+    ledger.Report("lint", "/src/A.fs", [ entry "warn" DiagnosticSeverity.Warning 1 ])
+    ledger.Report("fcs", "/src/A.fs", [ entry "err" DiagnosticSeverity.Error 2 ])
+    ledger.Report("lint", "/src/B.fs", [ entry "info" DiagnosticSeverity.Info 3 ])
+    let failing = ledger.FailingReasons(warningsAreFailures = true)
+    test <@ failing.Count = 1 @>
+    test <@ failing.ContainsKey "/src/A.fs" @>
+    test <@ failing.["/src/A.fs"].Length = 2 @>
+
+[<Fact>]
+let ``HasFailingReasons returns false when only info and hint entries exist`` () =
+    let ledger = ErrorLedger()
+    ledger.Report("lint", "/src/A.fs", [ entry "info" DiagnosticSeverity.Info 1 ])
+    ledger.Report("fcs", "/src/B.fs", [ entry "hint" DiagnosticSeverity.Hint 2 ])
+    test <@ not (ledger.HasFailingReasons(warningsAreFailures = false)) @>
+    test <@ not (ledger.HasFailingReasons(warningsAreFailures = true)) @>
+
+[<Fact>]
+let ``HasFailingReasons with warningsAreFailures false ignores warnings`` () =
+    let ledger = ErrorLedger()
+    ledger.Report("lint", "/src/A.fs", [ entry "warn" DiagnosticSeverity.Warning 1 ])
+    test <@ not (ledger.HasFailingReasons(warningsAreFailures = false)) @>
+    test <@ ledger.HasFailingReasons(warningsAreFailures = true) @>
+
+[<Fact>]
+let ``FailingReasons returns empty map when no failing entries`` () =
+    let ledger = ErrorLedger()
+    ledger.Report("lint", "/src/A.fs", [ entry "info" DiagnosticSeverity.Info 1 ])
+    let failing = ledger.FailingReasons(warningsAreFailures = true)
+    test <@ failing.IsEmpty @>
 
 [<Fact>]
 let ``ErrorLedger notifies reporters on Report`` () =
