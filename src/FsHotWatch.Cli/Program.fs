@@ -37,6 +37,7 @@ type GlobalFlag =
     | [<CmdFlag(Short = "v")>] Verbose
     | [<CmdFlag(Name = "log-level")>] LogLevel of string
     | [<CmdFlag(Name = "no-cache")>] NoCache
+    | [<CmdFlag(Name = "no-warn-fail")>] NoWarnFail
 
 let globalSpec =
     CommandReflection.fromUnionWithGlobalsAndEnv<Command, GlobalFlag>
@@ -109,6 +110,7 @@ let private withIpc (action: unit -> int) : int =
 
 /// Ensure daemon, poll for progress, render colored output.
 let private ensureAndQueryErrors
+    (noWarnFail: bool)
     (ensureDaemon: unit -> bool)
     (ipc: IpcOps)
     (pipeName: string)
@@ -119,6 +121,7 @@ let private ensureAndQueryErrors
         1
     else
         IpcOutput.pollAndRender
+            noWarnFail
             (fun () -> ipc.WaitForScan pipeName -1L |> Async.RunSynchronously)
             (fun () -> ipc.GetStatus pipeName |> Async.RunSynchronously)
             (fun () -> ipc.GetDiagnostics pipeName pluginFilter |> Async.RunSynchronously)
@@ -250,13 +253,14 @@ let executeCommand
     (pipeName: string)
     (command: Command)
     (daemonExtraArgs: string)
+    (noWarnFail: bool)
     (config: DaemonConfiguration)
     : int =
     let ensureDaemonFn () =
         ensureDaemon ipc repoRoot pipeName daemonExtraArgs
 
     let queryPlugin filter =
-        ensureAndQueryErrors ensureDaemonFn ipc pipeName filter
+        ensureAndQueryErrors noWarnFail ensureDaemonFn ipc pipeName filter
 
     match command with
     | Start ->
@@ -313,7 +317,7 @@ let executeCommand
             0)
     | Build RunOnce ->
         let buildConfig = stripConfig config
-        RunOnceOutput.runOnceAndReport createDaemon repoRoot buildConfig (Some "build")
+        RunOnceOutput.runOnceAndReport noWarnFail createDaemon repoRoot buildConfig (Some "build")
     | Build Daemon ->
         if not (ensureDaemonFn ()) then
             eprintfn "Failed to start daemon"
@@ -326,14 +330,14 @@ let executeCommand
                     eprintfn "  Building..."
                     ipc.TriggerBuild pipeName |> Async.RunSynchronously
 
-            IpcOutput.renderIpcResult result
+            IpcOutput.renderIpcResult noWarnFail result
     | Test RunOnce ->
         let testConfig =
             { stripConfig config with
                 Build = config.Build
                 Tests = config.Tests }
 
-        RunOnceOutput.runOnceAndReport createDaemon repoRoot testConfig (Some "test-prune")
+        RunOnceOutput.runOnceAndReport noWarnFail createDaemon repoRoot testConfig (Some "test-prune")
     | Test Daemon ->
         if not (ensureDaemonFn ()) then
             eprintfn "Failed to start daemon"
@@ -347,13 +351,13 @@ let executeCommand
                     eprintfn "  Running tests..."
                     ipc.RunCommand pipeName "run-tests" "{}" |> Async.RunSynchronously
 
-            IpcOutput.renderIpcResult result
+            IpcOutput.renderIpcResult noWarnFail result
     | Format RunOnce ->
         let formatConfig =
             { stripConfig config with
                 Format = FormatMode.Auto }
 
-        RunOnceOutput.runOnceAndReport createDaemon repoRoot formatConfig (Some "format")
+        RunOnceOutput.runOnceAndReport noWarnFail createDaemon repoRoot formatConfig (Some "format")
     | Format Daemon ->
         if not (ensureDaemonFn ()) then
             eprintfn "Failed to start daemon"
@@ -370,21 +374,21 @@ let executeCommand
             0
     | Lint RunOnce ->
         let lintConfig = { stripConfig config with Lint = true }
-        RunOnceOutput.runOnceAndReport createDaemon repoRoot lintConfig (Some "lint")
+        RunOnceOutput.runOnceAndReport noWarnFail createDaemon repoRoot lintConfig (Some "lint")
     | Lint Daemon -> queryPlugin "lint"
     | Analyze RunOnce ->
         let analyzeConfig =
             { stripConfig config with
                 Analyzers = config.Analyzers }
 
-        RunOnceOutput.runOnceAndReport createDaemon repoRoot analyzeConfig (Some "analyzers")
+        RunOnceOutput.runOnceAndReport noWarnFail createDaemon repoRoot analyzeConfig (Some "analyzers")
     | Analyze Daemon -> queryPlugin "analyzers"
     | FormatCheck RunOnce ->
         let formatCheckConfig =
             { stripConfig config with
                 Format = FormatMode.Check }
 
-        RunOnceOutput.runOnceAndReport createDaemon repoRoot formatCheckConfig (Some "format")
+        RunOnceOutput.runOnceAndReport noWarnFail createDaemon repoRoot formatCheckConfig (Some "format")
     | FormatCheck Daemon -> queryPlugin "format"
     | Errors ->
         if not (ensureDaemonFn ()) then
@@ -395,7 +399,7 @@ let executeCommand
                 let errorsJson = ipc.GetDiagnostics pipeName "" |> Async.RunSynchronously
                 let resp = IpcOutput.parseDiagnosticsResponse errorsJson
                 eprintfn "%s" (IpcOutput.formatDiagnosticsResponse resp)
-                IpcOutput.exitCodeFromResponse resp)
+                IpcOutput.exitCodeFromResponse noWarnFail resp)
     | InvalidateCache filePath ->
         if not (ensureDaemonFn ()) then
             eprintfn "Failed to start daemon"
@@ -403,7 +407,7 @@ let executeCommand
         else
             withIpc (fun () ->
                 let result = ipc.InvalidateCache pipeName filePath |> Async.RunSynchronously
-                IpcOutput.renderIpcResult result)
+                IpcOutput.renderIpcResult noWarnFail result)
     | Init ->
         let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
         let projects = InitConfig.discoverProjects repoRoot
@@ -421,7 +425,7 @@ let executeCommand
         with :? IOException ->
             eprintfn "%s already exists" configPath
             1
-    | Check RunOnce -> RunOnceOutput.runOnceAndReport createDaemon repoRoot config None
+    | Check RunOnce -> RunOnceOutput.runOnceAndReport noWarnFail createDaemon repoRoot config None
     | Check Daemon -> queryPlugin ""
     | Completions ->
         FishCompletions.writeToFile commandTree cliName
@@ -433,18 +437,18 @@ let executeCommand
 let executePluginCommand (ipc: IpcOps) (pipeName: string) (cmd: string) (argsStr: string) : int =
     withIpc (fun () ->
         let result = ipc.RunCommand pipeName cmd argsStr |> Async.RunSynchronously
-        IpcOutput.renderIpcResult result)
+        IpcOutput.renderIpcResult false result)
 
-/// Apply parsed global flags: configure logging and return (noCache, daemonExtraArgs).
-let applyGlobalFlags (globals: GlobalFlag list) : bool * string =
-    let (noCache, parts) =
+/// Apply parsed global flags: configure logging and return (noCache, noWarnFail, daemonExtraArgs).
+let applyGlobalFlags (globals: GlobalFlag list) : bool * bool * string =
+    let (noCache, noWarnFail, parts) =
         globals
         |> List.fold
-            (fun (nc, acc) flag ->
+            (fun (nc, nwf, acc) flag ->
                 match flag with
                 | Verbose ->
                     FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
-                    (nc, "--verbose" :: acc)
+                    (nc, nwf, "--verbose" :: acc)
                 | LogLevel level ->
                     match level with
                     | "error" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
@@ -455,16 +459,17 @@ let applyGlobalFlags (globals: GlobalFlag list) : bool * string =
                         eprintfn "Unknown log level: %s (using info)" other
                         FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Info
 
-                    (nc, $"--log-level %s{level}" :: acc)
-                | NoCache -> (true, "--no-cache" :: acc))
-            (false, [])
+                    (nc, nwf, $"--log-level %s{level}" :: acc)
+                | NoCache -> (true, nwf, "--no-cache" :: acc)
+                | NoWarnFail -> (nc, true, acc))
+            (false, false, [])
 
     let extraArgs =
         match parts with
         | [] -> ""
         | _ -> (parts |> List.rev |> String.concat " ") + " "
 
-    (noCache, extraArgs)
+    (noCache, noWarnFail, extraArgs)
 
 [<EntryPoint>]
 let main args =
@@ -488,7 +493,7 @@ let main args =
 
         match globalSpec.Parse args with
         | Ok(globals, command) ->
-            let (noCache, daemonExtraArgs) = applyGlobalFlags globals
+            let (noCache, noWarnFail, daemonExtraArgs) = applyGlobalFlags globals
             let config = loadConfig repoRoot
             let cacheConfig = if noCache then DaemonConfig.NoCache else config.Cache
             let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
@@ -496,7 +501,7 @@ let main args =
             let createDaemon (root: string) =
                 Daemon.create root backend keyProvider None
 
-            executeCommand createDaemon defaultIpcOps repoRoot pipeName command daemonExtraArgs config
+            executeCommand createDaemon defaultIpcOps repoRoot pipeName command daemonExtraArgs noWarnFail config
         | Error(HelpRequested path) ->
             printfn "%s" (CommandTree.helpForPath commandTree path cliName)
             0

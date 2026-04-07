@@ -179,7 +179,18 @@ let formatDiagnosticsResponse (resp: DiagnosticsResponse) : string =
     sb.ToString().TrimEnd('\n', '\r')
 
 /// Determine exit code from a DiagnosticsResponse.
-let exitCodeFromResponse (resp: DiagnosticsResponse) : int = if resp.Count > 0 then 1 else 0
+/// When noWarnFail is true, only errors (not warnings) cause a non-zero exit code.
+let exitCodeFromResponse (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
+    let isFailure (e: DiagnosticEntry) =
+        match e.Severity with
+        | "error" -> true
+        | "warning" -> not noWarnFail
+        | _ -> false
+
+    let failCount =
+        resp.Files |> Map.toSeq |> Seq.collect snd |> Seq.filter isFailure |> Seq.length
+
+    if failCount > 0 then 1 else 0
 
 /// Parse a JSON object into a string-to-string map (for status responses).
 let parseStatusJson (json: string) : Map<string, string> =
@@ -194,7 +205,7 @@ let parseStatusJson (json: string) : Map<string, string> =
 
 /// Render a generic IPC result (status JSON or plain text).
 /// Dispatches on JSON shape: GetDiagnostics format (has "count"), error/status fields, status map, or plain text.
-let renderIpcResult (result: string) : int =
+let renderIpcResult (noWarnFail: bool) (result: string) : int =
     let doc =
         try
             Some(JsonDocument.Parse(result))
@@ -214,7 +225,7 @@ let renderIpcResult (result: string) : int =
             let resp = parseDiagnosticsResponse result
             let output = formatDiagnosticsResponse resp
             eprintfn "%s" output
-            exitCodeFromResponse resp
+            exitCodeFromResponse noWarnFail resp
         | false, _ ->
 
             match root.TryGetProperty("error") with
@@ -252,7 +263,12 @@ let renderIpcResult (result: string) : int =
 
 /// Poll daemon status, render live progress, then format final errors.
 /// Returns exit code (0 = no errors, 1 = errors).
-let pollAndRender (waitForScan: unit -> string) (getStatus: unit -> string) (getErrors: unit -> string) : int =
+let pollAndRender
+    (noWarnFail: bool)
+    (waitForScan: unit -> string)
+    (getStatus: unit -> string)
+    (getErrors: unit -> string)
+    : int =
     // Phase 1: Wait for scan
     if UI.isInteractive then
         UI.withSpinnerQuiet "Scanning" (fun () -> waitForScan () |> ignore)
@@ -294,4 +310,4 @@ let pollAndRender (waitForScan: unit -> string) (getStatus: unit -> string) (get
     let resp = parseDiagnosticsResponse errorsJson
     let output = formatDiagnosticsResponse resp
     eprintfn "%s" output
-    exitCodeFromResponse resp
+    exitCodeFromResponse noWarnFail resp
