@@ -131,7 +131,7 @@ let ``formatErrors shows count summary`` () =
                    Detail = None }) ] ]
 
     let result = formatErrors errors
-    test <@ result.Contains("2 error(s) in 2 file(s)") @>
+    test <@ result.Contains("1 error(s), 1 warning(s) in 2 file(s)") @>
 
 [<Fact>]
 let ``formatErrors with no errors shows clean message`` () =
