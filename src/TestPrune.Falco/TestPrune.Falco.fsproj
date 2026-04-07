@@ -2,7 +2,6 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <NoWarn>$(NoWarn);NU1605;MSB3277;NETSDK1188</NoWarn>
-    <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>TestPrune.Falco</PackageId>
     <Authors>Michael Glass</Authors>
     <Description>Falco route-based integration test filtering extension for TestPrune</Description>
@@ -12,7 +11,9 @@
     <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
     <PackageTags>fsharp;testing;falco;routing;test-impact-analysis</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <Version>0.1.0-beta.1</Version>
+    <Version>1.0.1</Version>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
@@ -27,5 +28,9 @@
 
   <ItemGroup>
     <ProjectReference Include="../TestPrune.Core/TestPrune.Core.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.102" PrivateAssets="All" />
   </ItemGroup>
 </Project>

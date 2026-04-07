@@ -21,21 +21,27 @@
       ]
     },
     "coverageratchet": {
-      "version": "0.2.0-alpha.1",
+      "version": "0.3.0-alpha.1",
       "commands": [
         "coverageratchet"
       ]
     },
     "syncdocs": {
-      "version": "0.2.0-alpha.1",
+      "version": "0.3.0-alpha.1",
       "commands": [
         "syncdocs"
       ]
     },
     "fssemantictagger": {
-      "version": "0.2.0-alpha.1",
+      "version": "0.3.0-alpha.2",
       "commands": [
         "fssemantictagger"
+      ]
+    },
+    "fsprojlint": {
+      "version": "0.1.0-alpha.1",
+      "commands": [
+        "fsprojlint"
       ]
     }
   }

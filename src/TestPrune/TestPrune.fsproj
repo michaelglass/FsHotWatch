@@ -7,7 +7,7 @@
         <PackAsTool>true</PackAsTool>
         <ToolCommandName>test-prune</ToolCommandName>
         <PackageId>TestPrune</PackageId>
-        <Version>0.1.0-beta.1</Version>
+        <Version>1.0.1</Version>
         <Authors>Michael Glass</Authors>
         <Description>CLI for TestPrune — only run the tests affected by your change</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -16,6 +16,10 @@
         <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
         <PackageTags>fsharp;testing;test-impact-analysis;cli;dotnet-tool</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     </PropertyGroup>
 
     <ItemGroup>
@@ -36,6 +40,7 @@
         <PackageReference Update="FSharp.Core" Version="10.1.*" />
         <PackageReference Include="Ionide.ProjInfo" Version="0.74.2" />
         <PackageReference Include="Ionide.ProjInfo.FCS" Version="0.74.2" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.102" PrivateAssets="All" />
     </ItemGroup>
 
 </Project>

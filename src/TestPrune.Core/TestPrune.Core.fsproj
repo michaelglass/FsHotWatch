@@ -3,7 +3,6 @@
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
         <NoWarn>$(NoWarn);NU1605;MSB3277;NETSDK1188</NoWarn>
-        <GenerateDocumentationFile>true</GenerateDocumentationFile>
         <PackageId>TestPrune.Core</PackageId>
         <Authors>Michael Glass</Authors>
         <Description>F# test impact analysis — AST-based dependency graph, symbol diffing, and test selection</Description>
@@ -13,7 +12,9 @@
         <PackageProjectUrl>https://github.com/michaelglass/TestPrune</PackageProjectUrl>
         <PackageTags>fsharp;testing;test-impact-analysis;ast;dependency-graph;symbol-diff</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
-        <Version>0.1.0-beta.1</Version>
+        <Version>1.0.1</Version>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
         <IncludeSymbols>true</IncludeSymbols>
         <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     </PropertyGroup>
@@ -47,6 +48,7 @@
         <PackageReference Update="FSharp.Core" Version="10.1.*" />
         <PackageReference Include="FSharp.Compiler.Service" Version="43.12.201" />
         <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.5" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.102" PrivateAssets="All" />
     </ItemGroup>
 
 </Project>

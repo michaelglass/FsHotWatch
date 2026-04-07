@@ -77,6 +77,11 @@ dotnet run --project src/TestPrune -- --repo examples/SampleSolution dead-code -
 """
 depends = ["build", "example-build"]
 
+[tasks.lint-project]
+description = "Lint fsproj files"
+run = "dotnet tool run fsprojlint"
+depends = ["tool-restore"]
+
 [tasks.sync-docs]
 description = "Sync README.md content to docs/index.md"
 run = "dotnet tool run syncdocs sync"
@@ -97,11 +102,11 @@ depends = ["build", "tool-restore"]
 
 [tasks.check]
 description = "Run all checks with auto-fix (format, sync-docs, then verify)"
-depends = ["format", "sync-docs", "lint", "coverage-check", "docs", "example-build"]
+depends = ["format", "sync-docs", "lint", "lint-project", "coverage-check", "docs", "example-build"]
 
 [tasks.ci]
 description = "Run all CI checks (no auto-fix)"
-depends = ["format-check", "lint", "coverage-check", "sync-docs-check", "docs", "example-build"]
+depends = ["format-check", "lint", "lint-project", "coverage-check", "sync-docs-check", "docs", "example-build"]
 
 [tasks.pack]
 description = "Create NuGet packages"
