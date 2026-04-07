@@ -138,10 +138,12 @@ type PluginHost
     member _.GetErrorsByPlugin(name) = ledger.GetByPlugin(name)
 
     /// True if any errors exist in the ledger.
-    member _.HasErrors() = ledger.HasErrors()
+    member _.HasErrors() =
+        ledger.HasFailingReasons(warningsAreFailures = true)
 
     /// Total error count across all plugins and files.
-    member _.ErrorCount() = ledger.Count()
+    member _.ErrorCount() =
+        ledger.GetAll() |> Map.values |> Seq.sumBy List.length
 
     /// Event fired when any plugin's status changes.
     member _.OnStatusChanged = statusChanged.Publish

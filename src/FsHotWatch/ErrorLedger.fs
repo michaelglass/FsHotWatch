@@ -53,8 +53,16 @@ type private LedgerMsg =
     | ClearPlugin of plugin: string
     | GetAll of AsyncReplyChannel<Map<string, (string * ErrorEntry) list>>
     | GetByPlugin of plugin: string * AsyncReplyChannel<Map<string, ErrorEntry list>>
-    | HasErrors of AsyncReplyChannel<bool>
-    | GetCount of AsyncReplyChannel<int>
+    | FailingReasons of warningsAreFailures: bool * AsyncReplyChannel<Map<string, (string * ErrorEntry) list>>
+    | HasFailingReasons of warningsAreFailures: bool * AsyncReplyChannel<bool>
+
+/// True if the entry counts as a failure given the warningsAreFailures flag.
+let private isFailing warningsAreFailures (e: ErrorEntry) =
+    match e.Severity with
+    | Error -> true
+    | Warning -> warningsAreFailures
+    | Info
+    | Hint -> false
 
 /// Check version and advance if accepted. Returns (accepted, newState).
 let private tryAcceptVersion key (v: int64) (state: LedgerState) =
@@ -161,13 +169,28 @@ type ErrorLedger(?reporters: IErrorReporter list) =
                                 rc.Reply(result)
                                 state
 
-                            | HasErrors rc ->
-                                rc.Reply(not state.Errors.IsEmpty)
+                            | FailingReasons(warningsAreFailures, rc) ->
+                                let result =
+                                    state.Errors
+                                    |> Map.toSeq
+                                    |> Seq.collect (fun (struct (plugin, file), entries) ->
+                                        entries
+                                        |> List.filter (isFailing warningsAreFailures)
+                                        |> List.map (fun e -> file, (plugin, e)))
+                                    |> Seq.groupBy fst
+                                    |> Seq.map (fun (file, entries) -> file, entries |> Seq.map snd |> Seq.toList)
+                                    |> Map.ofSeq
+
+                                rc.Reply(result)
                                 state
 
-                            | GetCount rc ->
-                                let count = state.Errors |> Map.values |> Seq.sumBy List.length
-                                rc.Reply(count)
+                            | HasFailingReasons(warningsAreFailures, rc) ->
+                                let hasAny =
+                                    state.Errors
+                                    |> Map.values
+                                    |> Seq.exists (List.exists (isFailing warningsAreFailures))
+
+                                rc.Reply(hasAny)
                                 state
                         with ex ->
                             Logging.error "error-ledger" $"Agent failed: %s{ex.ToString()}"
@@ -200,10 +223,12 @@ type ErrorLedger(?reporters: IErrorReporter list) =
     member _.GetByPlugin(pluginName: string) : Map<string, ErrorEntry list> =
         agent.PostAndReply(fun rc -> GetByPlugin(pluginName, rc))
 
-    /// True if any errors exist.
-    member _.HasErrors() =
-        agent.PostAndReply(fun rc -> HasErrors rc)
+    /// Get all failing entries grouped by file path, filtered by severity.
+    /// When warningsAreFailures is true, both Error and Warning entries are included.
+    /// When false, only Error entries are included.
+    member _.FailingReasons(warningsAreFailures: bool) : Map<string, (string * ErrorEntry) list> =
+        agent.PostAndReply(fun rc -> FailingReasons(warningsAreFailures, rc))
 
-    /// Total error count across all plugins and files.
-    member _.Count() =
-        agent.PostAndReply(fun rc -> GetCount rc)
+    /// True if any failing entries exist (Error, or Warning when warningsAreFailures=true).
+    member _.HasFailingReasons(warningsAreFailures: bool) =
+        agent.PostAndReply(fun rc -> HasFailingReasons(warningsAreFailures, rc))
