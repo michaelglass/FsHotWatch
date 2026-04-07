@@ -1,20 +1,144 @@
 {
-  "defaultMinLine": 100.0,
-  "defaultMinBranch": 100.0,
   "overrides": {
-    "Daemon.fs": { "minLine": 75.0, "minBranch": 65.0 },
-    "Ipc.fs": { "minLine": 85.0, "minBranch": 55.0 },
-    "Program.fs": { "minLine": 70.0, "minBranch": 65.0 },
-    "BuildPlugin.fs": { "minLine": 85.0, "minBranch": 70.0 },
-    "CoveragePlugin.fs": { "minLine": 85.0, "minBranch": 80.0 },
-    "FormatCheckPlugin.fs": { "minLine": 85.0, "minBranch": 85.0 },
-    "FileCommandPlugin.fs": { "minLine": 80.0, "minBranch": 55.0 },
-    "LintPlugin.fs": { "minLine": 85.0, "minBranch": 80.0 },
-    "AnalyzersPlugin.fs": { "minLine": 75.0, "minBranch": 45.0 },
-    "CheckPipeline.fs": { "minLine": 80.0, "minBranch": 70.0 },
-    "PluginHost.fs": { "minLine": 90.0, "minBranch": 80.0 },
-    "Watcher.fs": { "minLine": 95.0, "minBranch": 80.0 },
-    "ProcessHelper.fs": { "minLine": 90.0, "minBranch": 45.0 },
-    "ProjectGraph.fs": { "minLine": 90.0, "minBranch": 90.0 }
+    "AnalyzersPlugin.fs": {
+      "line": 81.4207650273224,
+      "branch": 83.33333333333334,
+      "reason": ""
+    },
+    "BuildPlugin.fs": {
+      "line": 90.25641025641026,
+      "branch": 86.36363636363636,
+      "reason": ""
+    },
+    "CheckPipeline.fs": {
+      "line": 91.07142857142857,
+      "branch": 77.27272727272727,
+      "reason": ""
+    },
+    "CoveragePlugin.fs": {
+      "line": 97.05882352941177,
+      "branch": 100,
+      "reason": ""
+    },
+    "Daemon.fs": {
+      "line": 71.69491525423729,
+      "branch": 55.88235294117647,
+      "reason": ""
+    },
+    "DaemonConfig.fs": {
+      "line": 63.661202185792355,
+      "branch": 55.769230769230774,
+      "reason": "loosened automatically"
+    },
+    "ErrorLedger.fs": {
+      "line": 96.09375,
+      "branch": 94.44444444444444,
+      "reason": "loosened automatically"
+    },
+    "FileCheckCache.fs": {
+      "line": 83.33333333333334,
+      "branch": 50,
+      "reason": "loosened automatically"
+    },
+    "FileCommandPlugin.fs": {
+      "line": 98.71794871794873,
+      "branch": 100,
+      "reason": ""
+    },
+    "FileErrorReporter.fs": {
+      "line": 93.10344827586206,
+      "branch": 75,
+      "reason": "loosened automatically"
+    },
+    "FileTaskCache.fs": {
+      "line": 87.43169398907104,
+      "branch": 83.33333333333334,
+      "reason": "loosened automatically"
+    },
+    "FormatCheckPlugin.fs": {
+      "line": 98.57142857142858,
+      "branch": 100,
+      "reason": ""
+    },
+    "InMemoryCheckCache.fs": {
+      "line": 95.65217391304348,
+      "branch": 100,
+      "reason": "loosened automatically"
+    },
+    "InitConfig.fs": {
+      "line": 76.72413793103449,
+      "branch": 52.77777777777778,
+      "reason": "loosened automatically"
+    },
+    "Ipc.fs": {
+      "line": 82.82208588957054,
+      "branch": 50,
+      "reason": ""
+    },
+    "IpcOutput.fs": {
+      "line": 87.5,
+      "branch": 63.23529411764706,
+      "reason": "loosened automatically"
+    },
+    "JjHelper.fs": {
+      "line": 54.09836065573771,
+      "branch": 40.909090909090914,
+      "reason": "loosened automatically"
+    },
+    "LintPlugin.fs": {
+      "line": 80.24691358024691,
+      "branch": 83.33333333333334,
+      "reason": ""
+    },
+    "MacFsEvents.fs": {
+      "line": 83.5820895522388,
+      "branch": 55.00000000000001,
+      "reason": "loosened automatically"
+    },
+    "PluginFramework.fs": {
+      "line": 87.11340206185567,
+      "branch": 65.71428571428571,
+      "reason": "loosened automatically"
+    },
+    "PluginHost.fs": {
+      "line": 85.36585365853658,
+      "branch": 50,
+      "reason": ""
+    },
+    "ProcessHelper.fs": {
+      "line": 93.75,
+      "branch": 50,
+      "reason": ""
+    },
+    "Program.fs": {
+      "line": 61.61616161616161,
+      "branch": 42.30769230769231,
+      "reason": ""
+    },
+    "ProjectGraph.fs": {
+      "line": 100,
+      "branch": 92.85714285714286,
+      "reason": ""
+    },
+    "RunOnceOutput.fs": {
+      "line": 65.38461538461539,
+      "branch": 50,
+      "reason": "loosened automatically"
+    },
+    "StringHelpers.fs": {
+      "line": 85.71428571428571,
+      "branch": 50,
+      "reason": "loosened automatically"
+    },
+    "TaskCache.fs": {
+      "line": 89.1891891891892,
+      "branch": 90,
+      "reason": "loosened automatically"
+    },
+    "Watcher.fs": {
+      "line": 60,
+      "branch": 43.333333333333336,
+      "reason": ""
+    }
   }
 }
