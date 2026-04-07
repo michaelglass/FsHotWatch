@@ -26,41 +26,25 @@ let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) 
     match checkResult.CheckResults with
     | None -> ()
     | Some checkResults ->
+        let mapSeverity =
+            function
+            | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error -> DiagnosticSeverity.Error
+            | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning -> DiagnosticSeverity.Warning
+            | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Info -> DiagnosticSeverity.Info
+            | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Hidden -> DiagnosticSeverity.Hint
+
         let diagnostics =
             checkResults.Diagnostics
             |> Array.choose (fun d ->
                 if suppressedCodes.Contains(d.ErrorNumber) then
                     None
                 else
-                    match d.Severity with
-                    | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error ->
-                        Some
-                            { Message = d.Message
-                              Severity = DiagnosticSeverity.Error
-                              Line = d.StartLine
-                              Column = d.StartColumn
-                              Detail = None }
-                    | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning ->
-                        Some
-                            { Message = d.Message
-                              Severity = DiagnosticSeverity.Warning
-                              Line = d.StartLine
-                              Column = d.StartColumn
-                              Detail = None }
-                    | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Info ->
-                        Some
-                            { Message = d.Message
-                              Severity = DiagnosticSeverity.Info
-                              Line = d.StartLine
-                              Column = d.StartColumn
-                              Detail = None }
-                    | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Hidden ->
-                        Some
-                            { Message = d.Message
-                              Severity = DiagnosticSeverity.Hint
-                              Line = d.StartLine
-                              Column = d.StartColumn
-                              Detail = None })
+                    Some
+                        { Message = d.Message
+                          Severity = mapSeverity d.Severity
+                          Line = d.StartLine
+                          Column = d.StartColumn
+                          Detail = None })
             |> Array.toList
 
         if diagnostics.IsEmpty then

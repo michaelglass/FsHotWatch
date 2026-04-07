@@ -26,6 +26,14 @@ type IErrorReporter =
     abstract ClearAll: unit -> unit
 
 module ErrorEntry =
+    /// True if the entry counts as a failure given the warningsAreFailures flag.
+    let isFailing (warningsAreFailures: bool) (e: ErrorEntry) : bool =
+        match e.Severity with
+        | Error -> true
+        | Warning -> warningsAreFailures
+        | Info
+        | Hint -> false
+
     /// Create an Error-severity entry with no source location.
     let error (message: string) : ErrorEntry =
         { Message = message
@@ -56,13 +64,8 @@ type private LedgerMsg =
     | FailingReasons of warningsAreFailures: bool * AsyncReplyChannel<Map<string, (string * ErrorEntry) list>>
     | HasFailingReasons of warningsAreFailures: bool * AsyncReplyChannel<bool>
 
-/// True if the entry counts as a failure given the warningsAreFailures flag.
-let private isFailing warningsAreFailures (e: ErrorEntry) =
-    match e.Severity with
-    | Error -> true
-    | Warning -> warningsAreFailures
-    | Info
-    | Hint -> false
+let private isFailing warningsAreFailures e =
+    ErrorEntry.isFailing warningsAreFailures e
 
 /// Check version and advance if accepted. Returns (accepted, newState).
 let private tryAcceptVersion key (v: int64) (state: LedgerState) =

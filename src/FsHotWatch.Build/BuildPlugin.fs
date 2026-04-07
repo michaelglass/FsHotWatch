@@ -81,7 +81,7 @@ let create
                             if parsed.IsEmpty then
                                 [ ErrorEntry.error output ]
                             else
-                                parsed @ [ ErrorEntry.error "Build failed" ]
+                                parsed
 
                         ctx.ReportErrors "<build>" entries
                         ctx.EmitBuildCompleted(BuildFailed [ output ])
@@ -168,7 +168,7 @@ let create
                             if parsed.IsEmpty then
                                 errors |> List.map ErrorEntry.error
                             else
-                                parsed @ [ ErrorEntry.error "Build failed" ]
+                                parsed
 
                         ctx.ReportErrors "<build>" entries
                         ctx.EmitBuildCompleted(BuildFailed errors)
