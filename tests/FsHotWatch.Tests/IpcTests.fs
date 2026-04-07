@@ -568,7 +568,7 @@ let ``DaemonRpcTarget.ScanStatus delegates to GetScanStatus`` () =
     test <@ target.ScanStatus() = "complete: 70 files checked in 15.5s" @>
 
 [<Fact>]
-let ``DaemonRpcTarget.GetErrors returns all errors when filter is empty`` () =
+let ``DaemonRpcTarget.GetDiagnostics returns all errors when filter is empty`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     host.ReportErrors(
@@ -582,13 +582,13 @@ let ``DaemonRpcTarget.GetErrors returns all errors when filter is empty`` () =
     )
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
-    let json = target.GetErrors("")
+    let json = target.GetDiagnostics("")
     test <@ json.Contains("\"count\":1") @>
     test <@ json.Contains("bad code") @>
     test <@ json.Contains("error-plugin") @>
 
 [<Fact>]
-let ``DaemonRpcTarget.GetErrors filters by plugin name`` () =
+let ``DaemonRpcTarget.GetDiagnostics filters by plugin name`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     host.ReportErrors(
@@ -613,23 +613,23 @@ let ``DaemonRpcTarget.GetErrors filters by plugin name`` () =
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
 
-    let lintJson = target.GetErrors("lint")
+    let lintJson = target.GetDiagnostics("lint")
     test <@ lintJson.Contains("lint issue") @>
     test <@ not (lintJson.Contains("analyzer issue")) @>
 
-    let analyzerJson = target.GetErrors("analyzers")
+    let analyzerJson = target.GetDiagnostics("analyzers")
     test <@ analyzerJson.Contains("analyzer issue") @>
     test <@ not (analyzerJson.Contains("lint issue")) @>
 
 [<Fact>]
-let ``DaemonRpcTarget.GetErrors returns zero count when no errors`` () =
+let ``DaemonRpcTarget.GetDiagnostics returns zero count when no errors`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let target = DaemonRpcTarget(defaultRpcConfig host)
-    let json = target.GetErrors("")
+    let json = target.GetDiagnostics("")
     test <@ json.Contains("\"count\":0") @>
 
 [<Fact>]
-let ``DaemonRpcTarget.GetErrors includes detail field`` () =
+let ``DaemonRpcTarget.GetDiagnostics includes detail field`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     host.ReportErrors(
@@ -641,13 +641,13 @@ let ``DaemonRpcTarget.GetErrors includes detail field`` () =
     )
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
-    let json = target.GetErrors("")
+    let json = target.GetDiagnostics("")
     // Verify the detail field is present with the full output, not just the message
     test <@ json.Contains("\"detail\"") @>
     test <@ json.Contains("println debug: x = 42") @>
 
 [<Fact>]
-let ``DaemonRpcTarget.GetErrors includes detail when filtered by plugin`` () =
+let ``DaemonRpcTarget.GetDiagnostics includes detail when filtered by plugin`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     host.ReportErrors(
@@ -657,7 +657,7 @@ let ``DaemonRpcTarget.GetErrors includes detail when filtered by plugin`` () =
     )
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
-    let json = target.GetErrors("test-prune")
+    let json = target.GetDiagnostics("test-prune")
     test <@ json.Contains("\"detail\"") @>
     test <@ json.Contains("full output with debug info") @>
 
@@ -712,7 +712,7 @@ let ``DaemonRpcTarget.InvalidateCache delegates to config`` () =
     test <@ capturedPath = "/tmp/test.fs" @>
 
 [<Fact>]
-let ``DaemonRpcTarget.GetErrors includes plugin statuses in response`` () =
+let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
@@ -745,7 +745,7 @@ let ``DaemonRpcTarget.GetErrors includes plugin statuses in response`` () =
         5000
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
-    let json = target.GetErrors("")
+    let json = target.GetDiagnostics("")
     test <@ json.Contains("\"count\":0") @>
     test <@ json.Contains("\"statuses\"") @>
     test <@ json.Contains("test-prune") @>

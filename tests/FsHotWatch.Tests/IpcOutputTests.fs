@@ -5,17 +5,17 @@ open Swensen.Unquote
 open FsHotWatch.Cli.IpcOutput
 
 [<Fact>]
-let ``parseErrorsResponse extracts count`` () =
+let ``parseDiagnosticsResponse extracts count`` () =
     let json = """{"count":2,"files":{},"statuses":{}}"""
-    let result = parseErrorsResponse json
+    let result = parseDiagnosticsResponse json
     test <@ result.Count = 2 @>
 
 [<Fact>]
-let ``parseErrorsResponse extracts files with entries`` () =
+let ``parseDiagnosticsResponse extracts files with entries`` () =
     let json =
         """{"count":1,"files":{"src/Foo.fs":[{"plugin":"lint","message":"bad name","severity":"warning","line":17,"column":0,"detail":null}]},"statuses":{}}"""
 
-    let result = parseErrorsResponse json
+    let result = parseDiagnosticsResponse json
     test <@ result.Files.ContainsKey("src/Foo.fs") @>
     let entries = result.Files["src/Foo.fs"]
     test <@ entries.Length = 1 @>
@@ -25,11 +25,11 @@ let ``parseErrorsResponse extracts files with entries`` () =
     test <@ entries[0].Line = 17 @>
 
 [<Fact>]
-let ``parseErrorsResponse extracts statuses`` () =
+let ``parseDiagnosticsResponse extracts statuses`` () =
     let json =
         """{"count":0,"files":{},"statuses":{"build":"Completed at 2026-04-05T12:00:00.0000000Z","lint":"Idle"}}"""
 
-    let result = parseErrorsResponse json
+    let result = parseDiagnosticsResponse json
     test <@ result.Statuses.ContainsKey("build") @>
     test <@ result.Statuses["build"].Contains("Completed") @>
 
@@ -74,34 +74,34 @@ let ``parseStatusMap parses idle status`` () =
     | other -> failwith $"Expected DisplayIdle, got %A{other}"
 
 [<Fact>]
-let ``formatErrorsResponse with no errors shows clean message`` () =
+let ``formatDiagnosticsResponse with no errors shows clean message`` () =
     let json =
         """{"count":0,"files":{},"statuses":{"build":"Completed at 2026-04-05T12:00:00.0000000Z"}}"""
 
-    let result = parseErrorsResponse json
-    let output = formatErrorsResponse result
+    let result = parseDiagnosticsResponse json
+    let output = formatDiagnosticsResponse result
     test <@ output.Contains("No errors") @>
 
 [<Fact>]
-let ``formatErrorsResponse with errors shows file and message`` () =
+let ``formatDiagnosticsResponse with errors shows file and message`` () =
     let json =
         """{"count":1,"files":{"src/Foo.fs":[{"plugin":"lint","message":"bad name","severity":"warning","line":17,"column":0,"detail":null}]},"statuses":{"lint":"Completed at 2026-04-05T12:00:00.0000000Z"}}"""
 
-    let result = parseErrorsResponse json
-    let output = formatErrorsResponse result
+    let result = parseDiagnosticsResponse json
+    let output = formatDiagnosticsResponse result
     test <@ output.Contains("src/Foo.fs") @>
     test <@ output.Contains("[lint]") @>
     test <@ output.Contains("L17") @>
     test <@ output.Contains("bad name") @>
 
 [<Fact>]
-let ``formatErrorsResponse with errors shows count summary`` () =
+let ``formatDiagnosticsResponse with errors shows count summary`` () =
     let json =
         """{"count":2,"files":{"src/A.fs":[{"plugin":"lint","message":"x","severity":"warning","line":1,"column":0,"detail":null}],"src/B.fs":[{"plugin":"build","message":"y","severity":"error","line":2,"column":0,"detail":null}]},"statuses":{}}"""
 
-    let result = parseErrorsResponse json
-    let output = formatErrorsResponse result
-    test <@ output.Contains("2 error(s) in 2 file(s)") @>
+    let result = parseDiagnosticsResponse json
+    let output = formatDiagnosticsResponse result
+    test <@ output.Contains("1 error(s), 1 warning(s) in 2 file(s)") @>
 
 [<Fact>]
 let ``formatStatusLine shows checkmark for completed`` () =
@@ -146,16 +146,58 @@ let ``exitCodeFromResponse returns 0 for count 0`` () =
           Files = Map.empty
           Statuses = Map.empty }
 
-    test <@ exitCodeFromResponse resp = 0 @>
+    test <@ exitCodeFromResponse false resp = 0 @>
 
 [<Fact>]
-let ``exitCodeFromResponse returns 1 for count > 0`` () =
+let ``exitCodeFromResponse returns 1 for errors`` () =
     let resp =
-        { Count = 3
-          Files = Map.empty
+        { Count = 1
+          Files =
+            Map.ofList
+                [ "src/Foo.fs",
+                  [ { Plugin = "fcs"
+                      Message = "bad"
+                      Severity = "error"
+                      Line = 1
+                      Column = 0
+                      Detail = None } ] ]
           Statuses = Map.empty }
 
-    test <@ exitCodeFromResponse resp = 1 @>
+    test <@ exitCodeFromResponse false resp = 1 @>
+
+[<Fact>]
+let ``exitCodeFromResponse with noWarnFail ignores warnings`` () =
+    let resp =
+        { Count = 1
+          Files =
+            Map.ofList
+                [ "src/Foo.fs",
+                  [ { Plugin = "lint"
+                      Message = "bad"
+                      Severity = "warning"
+                      Line = 1
+                      Column = 0
+                      Detail = None } ] ]
+          Statuses = Map.empty }
+
+    test <@ exitCodeFromResponse true resp = 0 @>
+
+[<Fact>]
+let ``exitCodeFromResponse without noWarnFail fails on warnings`` () =
+    let resp =
+        { Count = 1
+          Files =
+            Map.ofList
+                [ "src/Foo.fs",
+                  [ { Plugin = "lint"
+                      Message = "bad"
+                      Severity = "warning"
+                      Line = 1
+                      Column = 0
+                      Detail = None } ] ]
+          Statuses = Map.empty }
+
+    test <@ exitCodeFromResponse false resp = 1 @>
 
 [<Fact>]
 let ``renderProgress shows all plugins`` () =
@@ -173,34 +215,35 @@ let ``renderProgress shows all plugins`` () =
 // --- renderIpcResult tests ---
 
 [<Fact>]
-let ``renderIpcResult with GetErrors format count 0 returns 0`` () =
-    let result = renderIpcResult """{"count":0,"files":{},"statuses":{}}"""
+let ``renderIpcResult with GetDiagnostics format count 0 returns 0`` () =
+    let result = renderIpcResult false """{"count":0,"files":{},"statuses":{}}"""
     test <@ result = 0 @>
 
 [<Fact>]
-let ``renderIpcResult with GetErrors format count > 0 returns 1`` () =
+let ``renderIpcResult with GetDiagnostics format count > 0 returns 1`` () =
     let result =
         renderIpcResult
+            false
             """{"count":1,"files":{"src/Foo.fs":[{"plugin":"lint","message":"bad","severity":"warning","line":1,"column":0,"detail":null}]},"statuses":{}}"""
 
     test <@ result = 1 @>
 
 [<Fact>]
 let ``renderIpcResult with status passed returns 0`` () =
-    let result = renderIpcResult """{"status":"passed"}"""
+    let result = renderIpcResult false """{"status":"passed"}"""
     test <@ result = 0 @>
 
 [<Fact>]
 let ``renderIpcResult with status failed returns 1`` () =
-    let result = renderIpcResult """{"status":"failed"}"""
+    let result = renderIpcResult false """{"status":"failed"}"""
     test <@ result = 1 @>
 
 [<Fact>]
 let ``renderIpcResult with error field returns 1`` () =
-    let result = renderIpcResult """{"error":"something went wrong"}"""
+    let result = renderIpcResult false """{"error":"something went wrong"}"""
     test <@ result = 1 @>
 
 [<Fact>]
 let ``renderIpcResult with plain text returns 0`` () =
-    let result = renderIpcResult "build completed successfully"
+    let result = renderIpcResult false "build completed successfully"
     test <@ result = 0 @>

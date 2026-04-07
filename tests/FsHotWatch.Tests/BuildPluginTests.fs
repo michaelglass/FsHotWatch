@@ -150,7 +150,7 @@ let ``build plugin reports errors on failed build`` () =
 
     waitForTerminalStatus host "build" 5000
 
-    test <@ host.HasErrors() @>
+    test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
 [<Fact>]
 let ``build plugin handles exception from runProcess`` () =
@@ -175,7 +175,7 @@ let ``build plugin handles exception from runProcess`` () =
             | _ -> false
         @>
 
-    test <@ host.HasErrors() @>
+    test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
 [<Fact>]
 let ``build plugin ignores SolutionChanged events`` () =

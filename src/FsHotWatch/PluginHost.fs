@@ -137,11 +137,13 @@ type PluginHost
     /// Get errors for a specific plugin only.
     member _.GetErrorsByPlugin(name) = ledger.GetByPlugin(name)
 
-    /// True if any errors exist in the ledger.
-    member _.HasErrors() = ledger.HasErrors()
+    /// True if any failing entries exist (Error, or Warning when warningsAreFailures=true).
+    member _.HasFailingReasons(warningsAreFailures: bool) =
+        ledger.HasFailingReasons(warningsAreFailures)
 
-    /// Total error count across all plugins and files.
-    member _.ErrorCount() = ledger.Count()
+    /// Get all failing entries grouped by file path, filtered by severity.
+    member _.FailingReasons(warningsAreFailures: bool) =
+        ledger.FailingReasons(warningsAreFailures)
 
     /// Event fired when any plugin's status changes.
     member _.OnStatusChanged = statusChanged.Publish

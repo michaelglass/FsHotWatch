@@ -86,7 +86,7 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
     member _.ScanStatus() : string = config.GetScanStatus()
 
     /// Query the error ledger. If pluginFilter is empty, return all errors; otherwise filter to that plugin.
-    member _.GetErrors(pluginFilter: string) : string =
+    member _.GetDiagnostics(pluginFilter: string) : string =
         let allErrors =
             if System.String.IsNullOrEmpty(pluginFilter) then
                 config.Host.GetErrors()
@@ -297,9 +297,9 @@ module IpcClient =
     /// Get current scan progress.
     let scanStatus (pipeName: string) : Async<string> = invoke pipeName "ScanStatus" [||]
 
-    /// Get errors, optionally filtered by plugin name.
-    let getErrors (pipeName: string) (pluginFilter: string) : Async<string> =
-        invoke pipeName "GetErrors" [| pluginFilter |]
+    /// Get diagnostics, optionally filtered by plugin name.
+    let getDiagnostics (pipeName: string) (pluginFilter: string) : Async<string> =
+        invoke pipeName "GetDiagnostics" [| pluginFilter |]
 
     /// Wait for scan to complete, then return final status.
     let waitForScan (pipeName: string) (afterGeneration: int64) : Async<string> =

@@ -13,8 +13,8 @@ type DisplayStatus =
     | DisplayCompleted of at: DateTime
     | DisplayFailed of error: string * at: DateTime
 
-/// A single error entry parsed from IPC JSON.
-type ErrorEntry =
+/// A single diagnostic entry parsed from IPC JSON.
+type DiagnosticEntry =
     { Plugin: string
       Message: string
       Severity: string
@@ -22,14 +22,14 @@ type ErrorEntry =
       Column: int
       Detail: string option }
 
-/// Parsed GetErrors response.
-type ErrorsResponse =
+/// Parsed GetDiagnostics response.
+type DiagnosticsResponse =
     { Count: int
-      Files: Map<string, ErrorEntry list>
+      Files: Map<string, DiagnosticEntry list>
       Statuses: Map<string, string> }
 
-/// Parse the JSON response from GetErrors RPC.
-let parseErrorsResponse (json: string) : ErrorsResponse =
+/// Parse the JSON response from GetDiagnostics RPC.
+let parseDiagnosticsResponse (json: string) : DiagnosticsResponse =
     use doc = JsonDocument.Parse(json)
     let root = doc.RootElement
 
@@ -140,7 +140,7 @@ let renderProgress (statuses: Map<string, DisplayStatus>) : string =
     |> String.concat "\n"
 
 /// Format the full errors response with colored status lines and error details.
-let formatErrorsResponse (resp: ErrorsResponse) : string =
+let formatDiagnosticsResponse (resp: DiagnosticsResponse) : string =
     let sb = System.Text.StringBuilder()
 
     // Status summary
@@ -156,11 +156,19 @@ let formatErrorsResponse (resp: ErrorsResponse) : string =
     if resp.Count = 0 then
         sb.Append($"%s{Color.green}No errors%s{Color.reset}") |> ignore
     else
+        let mutable errorCount = 0
+        let mutable warnCount = 0
+
         for KeyValue(file, entries) in resp.Files do
             sb.AppendLine() |> ignore
             sb.AppendLine($"%s{Color.bold}%s{file}%s{Color.reset}") |> ignore
 
             for entry in entries do
+                match entry.Severity with
+                | "error" -> errorCount <- errorCount + 1
+                | "warning" -> warnCount <- warnCount + 1
+                | _ -> ()
+
                 let severityLabel =
                     match entry.Severity with
                     | "error" -> $"%s{Color.red}error%s{Color.reset}: "
@@ -174,12 +182,31 @@ let formatErrorsResponse (resp: ErrorsResponse) : string =
 
         sb.AppendLine() |> ignore
         let fileCount = resp.Files.Count
-        sb.Append($"%d{resp.Count} error(s) in %d{fileCount} file(s)") |> ignore
+
+        let summary =
+            match errorCount, warnCount with
+            | 0, 0 -> "No errors"
+            | e, 0 -> $"%d{e} error(s)"
+            | 0, w -> $"%d{w} warning(s)"
+            | e, w -> $"%d{e} error(s), %d{w} warning(s)"
+
+        sb.Append($"%s{summary} in %d{fileCount} file(s)") |> ignore
 
     sb.ToString().TrimEnd('\n', '\r')
 
-/// Determine exit code from an ErrorsResponse.
-let exitCodeFromResponse (resp: ErrorsResponse) : int = if resp.Count > 0 then 1 else 0
+/// Determine exit code from a DiagnosticsResponse.
+/// When noWarnFail is true, only errors (not warnings) cause a non-zero exit code.
+let exitCodeFromResponse (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
+    let isFailure (e: DiagnosticEntry) =
+        match e.Severity with
+        | "error" -> true
+        | "warning" -> not noWarnFail
+        | _ -> false
+
+    let failCount =
+        resp.Files |> Map.toSeq |> Seq.collect snd |> Seq.filter isFailure |> Seq.length
+
+    if failCount > 0 then 1 else 0
 
 /// Parse a JSON object into a string-to-string map (for status responses).
 let parseStatusJson (json: string) : Map<string, string> =
@@ -193,8 +220,8 @@ let parseStatusJson (json: string) : Map<string, string> =
         Map.empty
 
 /// Render a generic IPC result (status JSON or plain text).
-/// Dispatches on JSON shape: GetErrors format (has "count"), error/status fields, status map, or plain text.
-let renderIpcResult (result: string) : int =
+/// Dispatches on JSON shape: GetDiagnostics format (has "count"), error/status fields, status map, or plain text.
+let renderIpcResult (noWarnFail: bool) (result: string) : int =
     let doc =
         try
             Some(JsonDocument.Parse(result))
@@ -211,10 +238,10 @@ let renderIpcResult (result: string) : int =
 
         match root.TryGetProperty("count") with
         | true, _ ->
-            let resp = parseErrorsResponse result
-            let output = formatErrorsResponse resp
+            let resp = parseDiagnosticsResponse result
+            let output = formatDiagnosticsResponse resp
             eprintfn "%s" output
-            exitCodeFromResponse resp
+            exitCodeFromResponse noWarnFail resp
         | false, _ ->
 
             match root.TryGetProperty("error") with
@@ -252,7 +279,12 @@ let renderIpcResult (result: string) : int =
 
 /// Poll daemon status, render live progress, then format final errors.
 /// Returns exit code (0 = no errors, 1 = errors).
-let pollAndRender (waitForScan: unit -> string) (getStatus: unit -> string) (getErrors: unit -> string) : int =
+let pollAndRender
+    (noWarnFail: bool)
+    (waitForScan: unit -> string)
+    (getStatus: unit -> string)
+    (getErrors: unit -> string)
+    : int =
     // Phase 1: Wait for scan
     if UI.isInteractive then
         UI.withSpinnerQuiet "Scanning" (fun () -> waitForScan () |> ignore)
@@ -291,7 +323,7 @@ let pollAndRender (waitForScan: unit -> string) (getStatus: unit -> string) (get
 
     // Phase 4: Get errors and render final output
     let errorsJson = getErrors ()
-    let resp = parseErrorsResponse errorsJson
-    let output = formatErrorsResponse resp
+    let resp = parseDiagnosticsResponse errorsJson
+    let output = formatDiagnosticsResponse resp
     eprintfn "%s" output
-    exitCodeFromResponse resp
+    exitCodeFromResponse noWarnFail resp
