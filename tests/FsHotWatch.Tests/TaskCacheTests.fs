@@ -190,8 +190,14 @@ let ``plugin skips Update on cache hit and replays errors`` () =
     test <@ updateCallCount = 0 @>
 
     // Errors should be replayed into the ledger
-    test <@ host.HasErrors() @>
-    test <@ host.ErrorCount() = 1 @>
+    test <@ host.HasFailingReasons(warningsAreFailures = true) @>
+
+    test
+        <@
+            host.GetErrors()
+            |> Map.toList
+            |> List.sumBy (fun (_, entries) -> entries.Length) = 1
+        @>
 
 [<Fact>]
 let ``plugin stores result on cache miss then hits on second event`` () =

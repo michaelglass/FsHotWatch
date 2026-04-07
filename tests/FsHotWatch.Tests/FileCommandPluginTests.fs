@@ -187,7 +187,7 @@ let ``command reports Failed status on command failure`` () =
             | _ -> false
         @>
 
-    test <@ host.HasErrors() @>
+    test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
 [<Fact>]
 let ``command reports Failed status on exception`` () =
@@ -217,7 +217,7 @@ let ``command reports Failed status on exception`` () =
             | _ -> false
         @>
 
-    test <@ host.HasErrors() @>
+    test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
 [<Fact>]
 let ``status command returns not run when no files matched`` () =
