@@ -12,8 +12,7 @@ jobs:
     with:
       solution: FsHotWatch.slnx
       fantomas-paths: 'src/ tests/'
-      has-examples: true
-      example-path: 'examples/'
+      has-examples: false
     permissions:
       contents: read
       checks: write
