@@ -703,7 +703,7 @@ let ``parseConfig build without dependsOn defaults to empty`` () =
     let json = """{"build": {"command": "dotnet", "args": "build"}}"""
     let config = parseConfig json defaults
     let builds = config.Build.Value
-    test <@ builds.[0].DependsOn = [] @>
+    test <@ builds.[0].DependsOn |> List.isEmpty @>
 
 [<Fact>]
 let ``parseConfig build with multiple dependsOn`` () =
