@@ -24,21 +24,21 @@
       "rollForward": false
     },
     "coverageratchet": {
-      "version": "0.1.0-alpha.1",
+      "version": "0.2.0-alpha.1",
       "commands": [
         "coverageratchet"
       ],
       "rollForward": false
     },
     "syncdocs": {
-      "version": "0.1.0-alpha.1",
+      "version": "0.2.0-alpha.1",
       "commands": [
         "syncdocs"
       ],
       "rollForward": false
     },
     "fssemantictagger": {
-      "version": "0.1.0-alpha.1",
+      "version": "0.2.0-alpha.1",
       "commands": [
         "fssemantictagger"
       ],
