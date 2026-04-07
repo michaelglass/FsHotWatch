@@ -33,6 +33,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.102" PrivateAssets="All" />
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
     <PackageReference Include="Fantomas.Core" Version="7.0.5" />
   </ItemGroup>
