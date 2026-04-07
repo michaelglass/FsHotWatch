@@ -13,8 +13,8 @@ type DisplayStatus =
     | DisplayCompleted of at: DateTime
     | DisplayFailed of error: string * at: DateTime
 
-/// A single error entry parsed from IPC JSON.
-type ErrorEntry =
+/// A single diagnostic entry parsed from IPC JSON.
+type DiagnosticEntry =
     { Plugin: string
       Message: string
       Severity: string
@@ -22,14 +22,14 @@ type ErrorEntry =
       Column: int
       Detail: string option }
 
-/// Parsed GetErrors response.
-type ErrorsResponse =
+/// Parsed GetDiagnostics response.
+type DiagnosticsResponse =
     { Count: int
-      Files: Map<string, ErrorEntry list>
+      Files: Map<string, DiagnosticEntry list>
       Statuses: Map<string, string> }
 
-/// Parse the JSON response from GetErrors RPC.
-let parseErrorsResponse (json: string) : ErrorsResponse =
+/// Parse the JSON response from GetDiagnostics RPC.
+let parseDiagnosticsResponse (json: string) : DiagnosticsResponse =
     use doc = JsonDocument.Parse(json)
     let root = doc.RootElement
 
@@ -140,7 +140,7 @@ let renderProgress (statuses: Map<string, DisplayStatus>) : string =
     |> String.concat "\n"
 
 /// Format the full errors response with colored status lines and error details.
-let formatErrorsResponse (resp: ErrorsResponse) : string =
+let formatDiagnosticsResponse (resp: DiagnosticsResponse) : string =
     let sb = System.Text.StringBuilder()
 
     // Status summary
@@ -178,8 +178,8 @@ let formatErrorsResponse (resp: ErrorsResponse) : string =
 
     sb.ToString().TrimEnd('\n', '\r')
 
-/// Determine exit code from an ErrorsResponse.
-let exitCodeFromResponse (resp: ErrorsResponse) : int = if resp.Count > 0 then 1 else 0
+/// Determine exit code from a DiagnosticsResponse.
+let exitCodeFromResponse (resp: DiagnosticsResponse) : int = if resp.Count > 0 then 1 else 0
 
 /// Parse a JSON object into a string-to-string map (for status responses).
 let parseStatusJson (json: string) : Map<string, string> =
@@ -193,7 +193,7 @@ let parseStatusJson (json: string) : Map<string, string> =
         Map.empty
 
 /// Render a generic IPC result (status JSON or plain text).
-/// Dispatches on JSON shape: GetErrors format (has "count"), error/status fields, status map, or plain text.
+/// Dispatches on JSON shape: GetDiagnostics format (has "count"), error/status fields, status map, or plain text.
 let renderIpcResult (result: string) : int =
     let doc =
         try
@@ -211,8 +211,8 @@ let renderIpcResult (result: string) : int =
 
         match root.TryGetProperty("count") with
         | true, _ ->
-            let resp = parseErrorsResponse result
-            let output = formatErrorsResponse resp
+            let resp = parseDiagnosticsResponse result
+            let output = formatDiagnosticsResponse resp
             eprintfn "%s" output
             exitCodeFromResponse resp
         | false, _ ->
@@ -291,7 +291,7 @@ let pollAndRender (waitForScan: unit -> string) (getStatus: unit -> string) (get
 
     // Phase 4: Get errors and render final output
     let errorsJson = getErrors ()
-    let resp = parseErrorsResponse errorsJson
-    let output = formatErrorsResponse resp
+    let resp = parseDiagnosticsResponse errorsJson
+    let output = formatDiagnosticsResponse resp
     eprintfn "%s" output
     exitCodeFromResponse resp
