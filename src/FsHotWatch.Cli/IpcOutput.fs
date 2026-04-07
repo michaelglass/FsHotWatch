@@ -156,11 +156,19 @@ let formatDiagnosticsResponse (resp: DiagnosticsResponse) : string =
     if resp.Count = 0 then
         sb.Append($"%s{Color.green}No errors%s{Color.reset}") |> ignore
     else
+        let mutable errorCount = 0
+        let mutable warnCount = 0
+
         for KeyValue(file, entries) in resp.Files do
             sb.AppendLine() |> ignore
             sb.AppendLine($"%s{Color.bold}%s{file}%s{Color.reset}") |> ignore
 
             for entry in entries do
+                match entry.Severity with
+                | "error" -> errorCount <- errorCount + 1
+                | "warning" -> warnCount <- warnCount + 1
+                | _ -> ()
+
                 let severityLabel =
                     match entry.Severity with
                     | "error" -> $"%s{Color.red}error%s{Color.reset}: "
@@ -174,20 +182,6 @@ let formatDiagnosticsResponse (resp: DiagnosticsResponse) : string =
 
         sb.AppendLine() |> ignore
         let fileCount = resp.Files.Count
-
-        let errorCount =
-            resp.Files
-            |> Map.toSeq
-            |> Seq.collect snd
-            |> Seq.filter (fun e -> e.Severity = "error")
-            |> Seq.length
-
-        let warnCount =
-            resp.Files
-            |> Map.toSeq
-            |> Seq.collect snd
-            |> Seq.filter (fun e -> e.Severity = "warning")
-            |> Seq.length
 
         let summary =
             match errorCount, warnCount with
