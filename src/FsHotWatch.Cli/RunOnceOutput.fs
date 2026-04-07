@@ -79,6 +79,7 @@ let runOnceWithProgress (daemon: FsHotWatch.Daemon.Daemon) : Map<string, PluginS
 /// pluginName = None queries all errors; Some name queries one plugin.
 /// Returns exit code (0 = clean, 1 = errors).
 let runOnceAndReport
+    (noWarnFail: bool)
     (createDaemon: string -> FsHotWatch.Daemon.Daemon)
     (repoRoot: string)
     (config: DaemonConfig.DaemonConfiguration)
@@ -95,8 +96,18 @@ let runOnceAndReport
             |> Map.map (fun _ entries -> entries |> List.map (fun e -> name, e))
         | None -> daemon.Host.GetErrors()
 
-    let errorCount =
-        allErrors |> Map.toList |> List.sumBy (fun (_, entries) -> entries.Length)
+    let isFailure (_, (e: ErrorEntry)) =
+        match e.Severity with
+        | Error -> true
+        | Warning -> not noWarnFail
+        | _ -> false
+
+    let failCount =
+        allErrors
+        |> Map.toList
+        |> List.collect snd
+        |> List.filter isFailure
+        |> List.length
 
     let summary = formatSummary statuses
 
@@ -104,4 +115,4 @@ let runOnceAndReport
         eprintfn "%s" summary
 
     eprintfn "%s" (formatErrors allErrors)
-    if errorCount > 0 then 1 else 0
+    if failCount > 0 then 1 else 0

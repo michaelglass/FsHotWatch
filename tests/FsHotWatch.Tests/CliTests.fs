@@ -177,24 +177,35 @@ let ``globalSpec parse with global flags after command`` () =
 
 [<Fact>]
 let ``applyGlobalFlags with NoCache returns noCache true`` () =
-    let (noCache, _) = applyGlobalFlags [ NoCache ]
+    let (noCache, _, _) = applyGlobalFlags [ NoCache ]
     test <@ noCache @>
 
 [<Fact>]
 let ``applyGlobalFlags with empty list returns noCache false`` () =
-    let (noCache, extraArgs) = applyGlobalFlags []
+    let (noCache, noWarnFail, extraArgs) = applyGlobalFlags []
     test <@ not noCache @>
+    test <@ not noWarnFail @>
     test <@ extraArgs = "" @>
 
 [<Fact>]
 let ``applyGlobalFlags builds daemon extra args`` () =
-    let (_, extraArgs) = applyGlobalFlags [ Verbose; NoCache ]
+    let (_, _, extraArgs) = applyGlobalFlags [ Verbose; NoCache ]
     test <@ extraArgs = "--verbose --no-cache " @>
 
 [<Fact>]
 let ``applyGlobalFlags with LogLevel builds extra args`` () =
-    let (_, extraArgs) = applyGlobalFlags [ LogLevel "debug" ]
+    let (_, _, extraArgs) = applyGlobalFlags [ LogLevel "debug" ]
     test <@ extraArgs = "--log-level debug " @>
+
+[<Fact>]
+let ``applyGlobalFlags with NoWarnFail returns noWarnFail true`` () =
+    let (_, noWarnFail, _) = applyGlobalFlags [ NoWarnFail ]
+    test <@ noWarnFail @>
+
+[<Fact>]
+let ``applyGlobalFlags NoWarnFail does not add to daemon extra args`` () =
+    let (_, _, extraArgs) = applyGlobalFlags [ NoWarnFail ]
+    test <@ extraArgs = "" @>
 
 // --- findRepoRoot tests ---
 
@@ -453,7 +464,7 @@ let ``executeCommand Stop calls shutdown`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Stop "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Stop "" false fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>
@@ -461,7 +472,7 @@ let ``executeCommand Stop calls shutdown`` () =
 [<Fact>]
 let ``executeCommand Status returns 0`` () =
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" (Status None) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" (Status None) "" false fakeConfig
 
     test <@ result = 0 @>
 
@@ -497,7 +508,7 @@ let ``executeCommand Scan calls scan IPC`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Scan []) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Scan []) "" false fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>
@@ -516,7 +527,7 @@ let ``executeCommand Status with plugin name calls getPluginStatus`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status(Some "lint")) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status(Some "lint")) "" false fakeConfig
 
     test <@ result = 0 @>
     test <@ calledWith = "lint" @>
@@ -534,7 +545,7 @@ let ``executeCommand Start with fake daemon throws on null daemon`` () =
 
     let threw =
         try
-            executeCommand createDaemon (fakeIpc ()) "/tmp" "pipe" Start "" fakeConfig
+            executeCommand createDaemon (fakeIpc ()) "/tmp" "pipe" Start "" false fakeConfig
             |> ignore
 
             false
@@ -551,7 +562,7 @@ let ``executeCommand returns 1 when IPC fails`` () =
             GetStatus = fun _ -> async { return failwith "connection refused" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status None) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status None) "" false fakeConfig
 
     test <@ result = 1 @>
 
@@ -586,7 +597,7 @@ let ``executeCommand Errors with count 0 returns exit code 0`` () =
             GetDiagnostics = fun _ _ -> async { return """{"count": 0}""" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig
 
     test <@ result = 0 @>
 
@@ -602,7 +613,7 @@ let ``executeCommand Errors with count 5 returns exit code 1`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig
 
     test <@ result = 1 @>
 
@@ -613,7 +624,7 @@ let ``executeCommand Errors with IPC failure returns exit code 1`` () =
             GetDiagnostics = fun _ _ -> async { return failwith "connection refused" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig
 
     test <@ result = 1 @>
 
@@ -624,7 +635,7 @@ let ``executeCommand Build with status passed returns exit code 0`` () =
             TriggerBuild = fun _ -> async { return """{"status": "passed"}""" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build Daemon) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build Daemon) "" false fakeConfig
 
     test <@ result = 0 @>
 
@@ -635,7 +646,7 @@ let ``executeCommand Build with status failed returns exit code 1`` () =
             TriggerBuild = fun _ -> async { return """{"status": "failed"}""" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build Daemon) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build Daemon) "" false fakeConfig
 
     test <@ result = 1 @>
 
@@ -646,7 +657,7 @@ let ``executeCommand Build with plain text returns exit code 0`` () =
             TriggerBuild = fun _ -> async { return "build completed successfully" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build Daemon) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build Daemon) "" false fakeConfig
 
     test <@ result = 0 @>
 
@@ -666,7 +677,7 @@ let ``executeCommand Build calls triggerBuild`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build Daemon) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build Daemon) "" false fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>
@@ -685,7 +696,7 @@ let ``executeCommand Test calls runCommand with run-tests`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Test Daemon) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Test Daemon) "" false fakeConfig
 
     test <@ result = 0 @>
     test <@ cmdName = "run-tests" @>
@@ -704,7 +715,7 @@ let ``executeCommand Format calls formatAll`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Format Daemon) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Format Daemon) "" false fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>
@@ -723,7 +734,7 @@ let ``executeCommand Lint scans waits and gets lint errors`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Lint Daemon) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Lint Daemon) "" false fakeConfig
 
     test <@ result = 0 @>
     test <@ errorFilter = "lint" @>
@@ -742,7 +753,7 @@ let ``executeCommand Errors calls getErrors`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>
@@ -775,7 +786,7 @@ let ``executeCommand Check waits for scan and returns errors`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Check Daemon) "" fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Check Daemon) "" false fakeConfig
 
     test <@ result = 0 @>
     test <@ waitForScanCalled @>
@@ -805,6 +816,7 @@ let ``executeCommand InvalidateCache calls invalidateCache with file path`` () =
             "pipe"
             (InvalidateCache "some/file.fs")
             ""
+            false
             fakeConfig
 
     test <@ result = 0 @>
