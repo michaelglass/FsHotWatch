@@ -95,11 +95,19 @@
       "branch": 83.33333333333334,
       "reason": ""
     },
-    "MacFsEvents.fs": {
-      "line": 0,
-      "branch": 0,
-      "reason": "macOS-only FSEvents code, 0% coverage on Linux CI runners"
-    },
+    "MacFsEvents.fs": [
+      {
+        "line": 83,
+        "branch": 55,
+        "reason": "macOS-only FSEvents code",
+        "platform": "macos"
+      },
+      {
+        "line": 0,
+        "branch": 0,
+        "reason": "macOS-only FSEvents code, 0% coverage on Linux CI runners"
+      }
+    ],
     "PluginFramework.fs": {
       "line": 87.11340206185567,
       "branch": 65.71428571428571,
