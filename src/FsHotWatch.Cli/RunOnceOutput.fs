@@ -41,20 +41,25 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
         $"%s{Color.green}No errors%s{Color.reset}"
     else
         let sb = StringBuilder()
-        let mutable totalCount = 0
+        let mutable errorCount = 0
+        let mutable warnCount = 0
         let fileCount = errors.Count
 
         for KeyValue(file, entries) in errors do
             sb.AppendLine() |> ignore
             sb.AppendLine($"%s{Color.bold}%s{file}%s{Color.reset}") |> ignore
-            totalCount <- totalCount + entries.Length
 
             for (pluginName, entry) in entries do
+                match entry.Severity with
+                | Error -> errorCount <- errorCount + 1
+                | Warning -> warnCount <- warnCount + 1
+                | _ -> ()
+
                 let severityLabel =
                     match entry.Severity with
                     | Error -> $"%s{Color.red}error%s{Color.reset}: "
                     | Warning -> $"%s{Color.yellow}warning%s{Color.reset}: "
-                    | Info -> ""
+                    | Info
                     | Hint -> ""
 
                 sb.AppendLine(
@@ -63,20 +68,6 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
                 |> ignore
 
         sb.AppendLine() |> ignore
-
-        let errorCount =
-            errors
-            |> Map.toList
-            |> List.collect snd
-            |> List.filter (fun (_, e) -> e.Severity = Error)
-            |> List.length
-
-        let warnCount =
-            errors
-            |> Map.toList
-            |> List.collect snd
-            |> List.filter (fun (_, e) -> e.Severity = Warning)
-            |> List.length
 
         let summary =
             match errorCount, warnCount with
@@ -118,17 +109,11 @@ let runOnceAndReport
             |> Map.map (fun _ entries -> entries |> List.map (fun e -> name, e))
         | None -> daemon.Host.GetErrors()
 
-    let isFailure (_, (e: ErrorEntry)) =
-        match e.Severity with
-        | Error -> true
-        | Warning -> not noWarnFail
-        | _ -> false
-
     let failCount =
         allErrors
         |> Map.toList
         |> List.collect snd
-        |> List.filter isFailure
+        |> List.filter (fun (_, e) -> ErrorEntry.isFailing (not noWarnFail) e)
         |> List.length
 
     let summary = formatSummary statuses
