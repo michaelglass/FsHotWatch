@@ -492,7 +492,9 @@ let main args =
             let config = loadConfig repoRoot
             let cacheConfig = if noCache then DaemonConfig.NoCache else config.Cache
             let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
-            let createDaemon (root: string) = Daemon.create root backend keyProvider
+
+            let createDaemon (root: string) =
+                Daemon.create root backend keyProvider None
 
             executeCommand createDaemon defaultIpcOps repoRoot pipeName command daemonExtraArgs config
         | Error(HelpRequested path) ->

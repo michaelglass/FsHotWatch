@@ -22,6 +22,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="BuildDiagnostics.fs" />
     <Compile Include="BuildPlugin.fs" />
   </ItemGroup>
 

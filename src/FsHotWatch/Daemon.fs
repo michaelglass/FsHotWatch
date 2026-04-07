@@ -20,16 +20,12 @@ open FsHotWatch.ProjectGraph
 open FsHotWatch.Watcher
 
 /// Extract FCS diagnostics from check results and report to the error ledger.
-let private reportFcsDiagnostics (host: PluginHost) (checkResult: Events.FileCheckResult) =
+/// Reports all severity levels (Error, Warning, Info, Hidden) with configurable
+/// suppressed diagnostic codes.
+let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) (checkResult: Events.FileCheckResult) =
     match checkResult.CheckResults with
     | None -> ()
     | Some checkResults ->
-        // FCS per-file diagnostics are noisy: TreatWarningsAsErrors promotes CE-related
-        // warnings (FS1182 from SqlHydra, etc.) to errors that the real build handles
-        // via #nowarn. The build plugin provides authoritative compilation diagnostics.
-        // Only report genuine FCS errors that aren't the well-known CE false positives.
-        let suppressedCodes = set [ 1182 ] // SqlHydra CE "value unused"
-
         let diagnostics =
             checkResults.Diagnostics
             |> Array.choose (fun d ->
@@ -44,7 +40,27 @@ let private reportFcsDiagnostics (host: PluginHost) (checkResult: Events.FileChe
                               Line = d.StartLine
                               Column = d.StartColumn
                               Detail = None }
-                    | _ -> None)
+                    | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Warning ->
+                        Some
+                            { Message = d.Message
+                              Severity = DiagnosticSeverity.Warning
+                              Line = d.StartLine
+                              Column = d.StartColumn
+                              Detail = None }
+                    | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Info ->
+                        Some
+                            { Message = d.Message
+                              Severity = DiagnosticSeverity.Info
+                              Line = d.StartLine
+                              Column = d.StartColumn
+                              Detail = None }
+                    | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Hidden ->
+                        Some
+                            { Message = d.Message
+                              Severity = DiagnosticSeverity.Hint
+                              Line = d.StartLine
+                              Column = d.StartColumn
+                              Detail = None })
             |> Array.toList
 
         if diagnostics.IsEmpty then
@@ -443,6 +459,8 @@ type Daemon =
         ScanSignal: ScanSignal
         /// Optional jj scan guard for content-addressed cache optimization.
         JjGuard: JjHelper.JjScanGuard option
+        /// FCS diagnostic codes to suppress (default: [1182] SqlHydra CE "value unused").
+        FcsSuppressedCodes: Set<int>
     }
 
     /// Register a declarative framework-managed plugin handler.
@@ -475,7 +493,7 @@ type Daemon =
             match result with
             | Some checkResult ->
                 this.Host.EmitFileChecked(checkResult)
-                reportFcsDiagnostics this.Host checkResult
+                reportFcsDiagnostics this.FcsSuppressedCodes this.Host checkResult
 
                 return
                     JsonSerializer.Serialize(
@@ -615,6 +633,7 @@ let private performScan
     (loader: IWorkspaceLoader)
     (jjGuard: JjHelper.JjScanGuard option)
     (scanSignal: ScanSignal)
+    (fcsSuppressedCodes: Set<int>)
     (state: ScanAgentState)
     (force: bool)
     (ct: CancellationToken)
@@ -711,7 +730,7 @@ let private performScan
                         | Some checkResult ->
                             checkedCount <- checkedCount + 1
                             host.EmitFileChecked(checkResult)
-                            reportFcsDiagnostics host checkResult
+                            reportFcsDiagnostics fcsSuppressedCodes host checkResult
                         | None -> skippedCount <- skippedCount + 1
 
                         completed <- completed + 1
@@ -747,6 +766,7 @@ module Daemon =
         (repoRoot: string)
         (cacheBackend: ICheckCacheBackend option)
         (cacheKeyProvider: ICacheKeyProvider option)
+        (fcsSuppressedCodes: Set<int>)
         =
         let errorDir = Path.Combine(repoRoot, ".fshw", "errors")
 
@@ -889,7 +909,7 @@ module Daemon =
                         | Some checkResult ->
                             Logging.debug "daemon" $"EmitFileChecked: %s{Path.GetFileName(file)}"
                             host.EmitFileChecked(checkResult)
-                            reportFcsDiagnostics host checkResult
+                            reportFcsDiagnostics fcsSuppressedCodes host checkResult
 
                         | None -> ()
 
@@ -954,7 +974,18 @@ module Daemon =
                         | RequestScan(force, ct, reply) ->
                             try
                                 let! newState =
-                                    performScan host pipeline graph repoRoot loader jjGuard scanSignal state force ct
+                                    performScan
+                                        host
+                                        pipeline
+                                        graph
+                                        repoRoot
+                                        loader
+                                        jjGuard
+                                        scanSignal
+                                        fcsSuppressedCodes
+                                        state
+                                        force
+                                        ct
 
                                 match scanAgentRef.Value with
                                 | Some sa ->
@@ -989,7 +1020,8 @@ module Daemon =
           CancellationTokenRef = daemonCtRef
           Ready = new ManualResetEventSlim(false)
           ScanSignal = scanSignal
-          JjGuard = jjGuard }
+          JjGuard = jjGuard
+          FcsSuppressedCodes = fcsSuppressedCodes }
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     /// When cacheBackend or cacheKeyProvider are None, defaults to FileCheckCache + TimestampCacheKeyProvider.
@@ -997,7 +1029,11 @@ module Daemon =
         (repoRoot: string)
         (cacheBackend: ICheckCacheBackend option)
         (cacheKeyProvider: ICacheKeyProvider option)
+        (fcsSuppressedCodes: int list option)
         =
+        let suppressedCodes =
+            fcsSuppressedCodes |> Option.defaultValue [ 1182 ] |> Set.ofList
+
         let checker =
             FSharpChecker.Create(
                 projectCacheSize = 200,
@@ -1006,4 +1042,4 @@ module Daemon =
                 parallelReferenceResolution = true
             )
 
-        createWith checker repoRoot cacheBackend cacheKeyProvider
+        createWith checker repoRoot cacheBackend cacheKeyProvider suppressedCodes

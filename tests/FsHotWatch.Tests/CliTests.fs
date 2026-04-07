@@ -225,7 +225,9 @@ let ``shutdown via IPC stops the daemon`` () =
     let pipeName = computePipeName tmpDir
     let cts = new CancellationTokenSource()
 
-    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None
+    let daemon =
+        Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ])
+
     let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
     waitForIpcServer pipeName
 
@@ -281,7 +283,8 @@ let ``CLI status query works against running daemon`` () =
     let pipeName = computePipeName tmpDir
     let cts = new CancellationTokenSource()
 
-    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None
+    let daemon =
+        Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ])
 
     let handler =
         { Name = "test-plugin"
@@ -317,7 +320,8 @@ let ``CLI plugin status query works against running daemon`` () =
     let pipeName = computePipeName tmpDir
     let cts = new CancellationTokenSource()
 
-    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None
+    let daemon =
+        Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ])
 
     let handler =
         { Name = "my-lint"
@@ -371,7 +375,8 @@ let ``CLI command proxying works against running daemon`` () =
     let pipeName = computePipeName tmpDir
     let cts = new CancellationTokenSource()
 
-    let daemon = Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None
+    let daemon =
+        Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ])
 
     let handler =
         { Name = "greeter"
