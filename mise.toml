@@ -42,7 +42,7 @@ depends = ["build"]
 [tasks.check]
 description = "Run all checks via daemon (auto-starts daemon if needed)"
 run = "dotnet run --project src/FsHotWatch.Cli --no-build -- check"
-depends = ["build"]
+depends = ["build", "lint-project"]
 # Note: depends on build to ensure CLI binary is compiled.
 # The daemon handles its own build/test/lint cycle internally.
 
@@ -83,6 +83,11 @@ description = "Ratchet coverage thresholds to current values"
 run = "dotnet tool run coverageratchet ratchet coverage-ratchet-FsHotWatch.json"
 depends = ["test-direct"]
 
+[tasks.lint-project]
+description = "Lint fsproj files"
+run = "dotnet tool run fsprojlint"
+depends = ["tool-restore"]
+
 [tasks.check-api]
 description = "Check API changes since last release"
 run = "dotnet tool run fssemantictagger check"
@@ -109,7 +114,7 @@ depends = ["restore"]
 [tasks.ci]
 description = "Run all CI checks (single pass, no daemon)"
 run = "dotnet run --project src/FsHotWatch.Cli --no-build -- check run-once"
-depends = ["build"]
+depends = ["build", "lint-project"]
 
 [tasks.run]
 description = "Run the CLI"
