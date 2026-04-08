@@ -5,7 +5,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <NoWarn>$(NoWarn);NU1605;MSB3277;NETSDK1188</NoWarn>
     <PackageId>FsHotWatch.FileCommand</PackageId>
-    <Version>0.2.0-alpha.1</Version>
+    <Version>0.3.0-alpha.1</Version>
     <Authors>Michael Glass</Authors>
     <Description>FsHotWatch plugin that runs commands when specific files change</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
