@@ -7,7 +7,7 @@
 
     <!-- Package metadata -->
     <PackageId>FsHotWatch.Analyzers</PackageId>
-    <Version>0.1.0-alpha.2</Version>
+    <Version>0.1.0-alpha.3</Version>
     <Authors>Michael Glass</Authors>
     <Description>FsHotWatch plugin for F# Analyzers SDK integration</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -33,6 +33,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.102" PrivateAssets="All" />
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
     <PackageReference Include="FSharp.Analyzers.SDK" Version="0.36.0" />
     <PackageReference Include="FSharp.Compiler.Service" Version="43.12.201" />

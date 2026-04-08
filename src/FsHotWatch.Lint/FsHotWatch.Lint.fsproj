@@ -7,7 +7,7 @@
 
     <!-- Package metadata -->
     <PackageId>FsHotWatch.Lint</PackageId>
-    <Version>0.1.0-alpha.2</Version>
+    <Version>0.1.0-alpha.3</Version>
     <Authors>Michael Glass</Authors>
     <Description>FsHotWatch plugin for FSharpLint integration</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -33,6 +33,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.102" PrivateAssets="All" />
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
     <PackageReference Include="FSharpLint.Core" Version="0.26.11--date20260212-1023.git-8e20e0b" />
   </ItemGroup>
