@@ -4,10 +4,25 @@ Note: as of the Unreleased cycle, CLI versions and releases together with the co
 
 ## Unreleased
 
+### Bug fixes
+
+- **Breaking:** `run-once` positional subcommand replaced by `--run-once` flag (e.g. `check --run-once`, `build --run-once`) — uses CommandTree flag list support
+- Fix `build --run-once` not running the build plugin — `stripConfig` was discarding the build config; it is now restored
+- Fix `format-check` (run-once and daemon mode) always reporting "No errors" — was querying plugin errors under name `"format"` instead of `"format-check"`
+- Fix `check` (daemon mode) hanging forever when a `file-cmd-*` plugin stayed Idle — Idle is now treated as terminal in `pollAndRender`
+- Fix daemon auto-start when running as a `dotnet` local tool — `computeLaunchCommand` now detects the dotnet binary and constructs `dotnet tool run fs-hot-watch`
+
+### Improvements
+
+- Extract `isRunOnce` helper and `withDaemon` guard in `executeCommand` to remove repetition
+- Fix `format` (daemon mode) to pass result through `renderIpcResult` consistently with other commands
+- Avoid redundant `IsRunning` probe at end of `startFreshDaemon` polling loop
+
 ### Infrastructure / CI
 
 - CLI moved under core's shared tag in `semantic-tagger.json` — no longer versioned separately
 - Bump internal tooling: `coverageratchet` 0.10.0-alpha.1, `syncdocs` 0.10.0-alpha.1, `fssemantictagger` 0.10.0-alpha.1, `fsprojlint` 0.7.0-alpha.1
+- Bump `CommandTree` 0.3.3 → 0.3.5 (flag list support)
 
 ---
 
