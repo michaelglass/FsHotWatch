@@ -107,15 +107,18 @@ let private parseStatus (s: string) : DisplayStatus =
 let parseStatusMap (statuses: Map<string, string>) : Map<string, DisplayStatus> =
     statuses |> Map.map (fun _ s -> parseStatus s)
 
-/// Check if all statuses are terminal (Completed or Failed).
+/// Check if all statuses are terminal (Completed, Failed, or Idle).
 /// Returns false for empty maps (no plugins registered yet).
+/// Idle is treated as terminal because this is only called after WaitForScan returns,
+/// at which point Idle means the plugin was not triggered by this scan cycle.
 let isAllTerminal (statuses: Map<string, DisplayStatus>) : bool =
     not statuses.IsEmpty
     && statuses
        |> Map.forall (fun _ s ->
            match s with
            | DisplayCompleted _
-           | DisplayFailed _ -> true
+           | DisplayFailed _
+           | DisplayIdle -> true
            | _ -> false)
 
 /// Format a single status line with icon, name, and timing.

@@ -191,3 +191,148 @@ let ``format check handles exception gracefully`` () =
     finally
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``format check detects formatting change even with same commit ID`` () =
+    let tmpDir =
+        Path.Combine(Path.GetTempPath(), $"fshw-fmtchk-cache-{Guid.NewGuid():N}")
+
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let file = Path.Combine(tmpDir, "Test.fs")
+
+        // Create a mock commit ID provider that always returns the same ID (simulating unchanged commit)
+        let mockGetCommitId () = Some "fixed-commit-id"
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = createFormatCheck (Some mockGetCommitId)
+        host.RegisterHandler(handler)
+
+        // First: file is unformatted
+        File.WriteAllText(file, "module Test\nlet   x = 1\n")
+        host.EmitFileChanged(SourceChanged [ file ])
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("format-check") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
+
+        // Verify plugin detected unformatted file
+        let result1 = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
+        test <@ result1.IsSome @>
+        test <@ result1.Value.Contains("\"count\": 1") @>
+
+        // Second: file is now formatted, but commit ID hasn't changed
+        File.WriteAllText(file, "module Test\n\nlet x = 1\n")
+        host.EmitFileChanged(SourceChanged [ file ])
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("format-check") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
+
+        // With proper cache invalidation, plugin should detect file is now formatted
+        let result2 = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
+        test <@ result2.IsSome @>
+        test <@ result2.Value.Contains("\"count\": 0") @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``format check reports unformatted files to error ledger`` () =
+    let tmpDir =
+        Path.Combine(Path.GetTempPath(), $"fshw-fmtchk-ledger-{Guid.NewGuid():N}")
+
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let file = Path.Combine(tmpDir, "Bad.fs")
+        File.WriteAllText(file, "module Bad\nlet   x=1\nlet   y   =   2\n")
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = createFormatCheck None
+        host.RegisterHandler(handler)
+
+        host.EmitFileChanged(SourceChanged [ file ])
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("format-check") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
+
+        // The format-check plugin should report errors to the ErrorLedger
+        let errors = host.GetErrors()
+        test <@ not errors.IsEmpty @>
+
+        let fileErrors = errors |> Map.tryFind file
+        test <@ fileErrors.IsSome @>
+
+        let formatErrors =
+            fileErrors.Value |> List.filter (fun (plugin, _) -> plugin = "format-check")
+
+        test <@ not formatErrors.IsEmpty @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
+
+[<Fact>]
+let ``format check clears errors when file becomes formatted`` () =
+    let tmpDir =
+        Path.Combine(Path.GetTempPath(), $"fshw-fmtchk-clear-{Guid.NewGuid():N}")
+
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let file = Path.Combine(tmpDir, "Fix.fs")
+        File.WriteAllText(file, "module Fix\nlet   x=1\n")
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = createFormatCheck None
+        host.RegisterHandler(handler)
+
+        // First: unformatted
+        host.EmitFileChanged(SourceChanged [ file ])
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("format-check") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
+
+        let errors1 = host.GetErrors()
+        test <@ not errors1.IsEmpty @>
+
+        // Now fix the file
+        File.WriteAllText(file, "module Fix\n\nlet x = 1\n")
+        host.EmitFileChanged(SourceChanged [ file ])
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("format-check") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
+
+        // Errors should be cleared
+        let errors2 = host.GetErrors()
+        let fileErrors = errors2 |> Map.tryFind file
+
+        test
+            <@
+                fileErrors.IsNone
+                || fileErrors.Value
+                   |> List.filter (fun (p, _) -> p = "format-check")
+                   |> List.isEmpty
+            @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)

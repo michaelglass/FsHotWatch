@@ -131,6 +131,18 @@ let ``isAllTerminal returns true when all completed or failed`` () =
     test <@ isAllTerminal statuses @>
 
 [<Fact>]
+let ``isAllTerminal returns true when some plugins are idle`` () =
+    let statuses =
+        Map.ofList [ "build", DisplayCompleted System.DateTime.UtcNow; "file-cmd", DisplayIdle ]
+
+    test <@ isAllTerminal statuses @>
+
+[<Fact>]
+let ``isAllTerminal returns true when all plugins are idle`` () =
+    let statuses = Map.ofList [ "file-cmd", DisplayIdle ]
+    test <@ isAllTerminal statuses @>
+
+[<Fact>]
 let ``isAllTerminal returns false when any running`` () =
     let statuses =
         Map.ofList
