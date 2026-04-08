@@ -10,22 +10,20 @@ open FsHotWatch.Cli.DaemonConfig
 open FsHotWatch.Daemon
 open FsHotWatch.Ipc
 
-type RunMode =
-    | [<Cmd("Run once and exit")>] RunOnce
-    | [<Cmd("Use running daemon"); CmdDefault>] Daemon
+type RunFlag = | [<Cmd("Run once without daemon")>] RunOnce
 
 type ScanFlag = | [<Cmd("Force rescan even if no changes detected")>] Force
 
 type Command =
     | [<Cmd("Start the daemon")>] Start
     | [<Cmd("Stop the daemon")>] Stop
-    | [<Cmd("Run all checks")>] Check of RunMode
-    | [<Cmd("Build the project")>] Build of RunMode
-    | [<Cmd("Run tests")>] Test of RunMode
-    | [<Cmd("Format code")>] Format of RunMode
-    | [<Cmd("Lint code")>] Lint of RunMode
-    | [<Cmd("Check formatting", Name = "format-check")>] FormatCheck of RunMode
-    | [<Cmd("Run analyzers")>] Analyze of RunMode
+    | [<Cmd("Run all checks")>] Check of RunFlag list
+    | [<Cmd("Build the project")>] Build of RunFlag list
+    | [<Cmd("Run tests")>] Test of RunFlag list
+    | [<Cmd("Format code")>] Format of RunFlag list
+    | [<Cmd("Lint code")>] Lint of RunFlag list
+    | [<Cmd("Check formatting", Name = "format-check")>] FormatCheck of RunFlag list
+    | [<Cmd("Run analyzers")>] Analyze of RunFlag list
     | [<Cmd("Show current status")>] Status of plugin: string option
     | [<Cmd("Show accumulated errors")>] Errors
     | [<Cmd("Scan for file changes")>] Scan of ScanFlag list
@@ -47,6 +45,20 @@ let globalSpec =
 let commandTree = globalSpec.Tree
 
 let cliName = "fs-hot-watch"
+
+let private isRunOnce = List.contains RunOnce
+
+/// Compute the launch command for re-starting the daemon.
+/// Returns (exe, argPrefix) where argPrefix is prepended to "start" when launching.
+/// When running as a dotnet tool, Environment.ProcessPath is the dotnet binary itself,
+/// so we need to reconstruct "dotnet tool run fs-hot-watch" as the command.
+let computeLaunchCommand (processPath: string) : string * string =
+    let lowerPath = processPath.ToLowerInvariant()
+
+    if lowerPath.EndsWith("dotnet") || lowerPath.EndsWith("dotnet.exe") then
+        (processPath, $"tool run %s{cliName} ")
+    else
+        (processPath, "")
 
 /// Walk up from startDir looking for .jj or .git directory.
 let findRepoRoot (startDir: string) =
@@ -193,14 +205,12 @@ let private startFreshDaemon
     Directory.CreateDirectory(logDir) |> ignore
     let logFile = Path.Combine(logDir, "daemon.log")
     eprintfn "Starting daemon... (log: %s)" logFile
-    let exe = Environment.ProcessPath
-    // Launch via nohup to fully detach from parent process group so
-    // mise/task-runners don't hang waiting for the daemon subprocess.
-    // The daemon writes its own PID to daemon.pid (not echo $! which gives the nohup wrapper PID).
+    let (exe, toolPrefix) = computeLaunchCommand Environment.ProcessPath
+    // nohup detaches from the parent process group so mise/task-runners don't hang.
     let psi =
         System.Diagnostics.ProcessStartInfo(
             "/bin/sh",
-            $"-c \"nohup '%s{exe}' %s{extraArgs}start >> '%s{logFile}' 2>&1 &\""
+            $"-c \"nohup '%s{exe}' %s{toolPrefix}%s{extraArgs}start >> '%s{logFile}' 2>&1 &\""
         )
 
     psi.WorkingDirectory <- repoRoot
@@ -210,11 +220,13 @@ let private startFreshDaemon
     Directory.CreateDirectory(stateDir) |> ignore
     File.WriteAllText(Path.Combine(stateDir, "config.hash"), currentHash)
     let deadline = DateTime.UtcNow.AddSeconds(30.0)
+    let mutable isUp = ipc.IsRunning pipeName
 
-    while not (ipc.IsRunning pipeName) && DateTime.UtcNow < deadline do
+    while not isUp && DateTime.UtcNow < deadline do
         Thread.Sleep(100)
+        isUp <- ipc.IsRunning pipeName
 
-    ipc.IsRunning pipeName
+    isUp
 
 let private ensureDaemon (ipc: IpcOps) (repoRoot: string) (pipeName: string) (extraArgs: string) : bool =
     let stateDir = Path.Combine(repoRoot, ".fs-hot-watch")
@@ -261,6 +273,13 @@ let executeCommand
 
     let queryPlugin filter =
         ensureAndQueryErrors noWarnFail ensureDaemonFn ipc pipeName filter
+
+    let withDaemon (action: unit -> int) : int =
+        if not (ensureDaemonFn ()) then
+            eprintfn "Failed to start daemon"
+            1
+        else
+            action ()
 
     match command with
     | Start ->
@@ -315,14 +334,14 @@ let executeCommand
             let parsed = IpcOutput.parseStatusMap (Map.ofList [ pluginName, result ])
             eprintfn "%s" (IpcOutput.renderProgress parsed)
             0)
-    | Build RunOnce ->
-        let buildConfig = stripConfig config
+    | Build flags when isRunOnce flags ->
+        let buildConfig =
+            { stripConfig config with
+                Build = config.Build }
+
         RunOnceOutput.runOnceAndReport noWarnFail createDaemon repoRoot buildConfig (Some "build")
-    | Build Daemon ->
-        if not (ensureDaemonFn ()) then
-            eprintfn "Failed to start daemon"
-            1
-        else
+    | Build _ ->
+        withDaemon (fun () ->
             let result =
                 if UI.isInteractive then
                     UI.withSpinner "Building" (fun () -> ipc.TriggerBuild pipeName |> Async.RunSynchronously)
@@ -330,19 +349,16 @@ let executeCommand
                     eprintfn "  Building..."
                     ipc.TriggerBuild pipeName |> Async.RunSynchronously
 
-            IpcOutput.renderIpcResult noWarnFail result
-    | Test RunOnce ->
+            IpcOutput.renderIpcResult noWarnFail result)
+    | Test flags when isRunOnce flags ->
         let testConfig =
             { stripConfig config with
                 Build = config.Build
                 Tests = config.Tests }
 
         RunOnceOutput.runOnceAndReport noWarnFail createDaemon repoRoot testConfig (Some "test-prune")
-    | Test Daemon ->
-        if not (ensureDaemonFn ()) then
-            eprintfn "Failed to start daemon"
-            1
-        else
+    | Test _ ->
+        withDaemon (fun () ->
             let result =
                 if UI.isInteractive then
                     UI.withSpinner "Running tests" (fun () ->
@@ -351,18 +367,15 @@ let executeCommand
                     eprintfn "  Running tests..."
                     ipc.RunCommand pipeName "run-tests" "{}" |> Async.RunSynchronously
 
-            IpcOutput.renderIpcResult noWarnFail result
-    | Format RunOnce ->
+            IpcOutput.renderIpcResult noWarnFail result)
+    | Format flags when isRunOnce flags ->
         let formatConfig =
             { stripConfig config with
                 Format = FormatMode.Auto }
 
         RunOnceOutput.runOnceAndReport noWarnFail createDaemon repoRoot formatConfig (Some "format")
-    | Format Daemon ->
-        if not (ensureDaemonFn ()) then
-            eprintfn "Failed to start daemon"
-            1
-        else
+    | Format _ ->
+        withDaemon (fun () ->
             let result =
                 if UI.isInteractive then
                     UI.withSpinner "Formatting" (fun () -> ipc.FormatAll pipeName |> Async.RunSynchronously)
@@ -370,44 +383,37 @@ let executeCommand
                     eprintfn "  Formatting..."
                     ipc.FormatAll pipeName |> Async.RunSynchronously
 
-            UI.success $"Format: %s{result}"
-            0
-    | Lint RunOnce ->
+            IpcOutput.renderIpcResult noWarnFail result)
+    | Lint flags when isRunOnce flags ->
         let lintConfig = { stripConfig config with Lint = true }
         RunOnceOutput.runOnceAndReport noWarnFail createDaemon repoRoot lintConfig (Some "lint")
-    | Lint Daemon -> queryPlugin "lint"
-    | Analyze RunOnce ->
+    | Lint _ -> queryPlugin "lint"
+    | Analyze flags when isRunOnce flags ->
         let analyzeConfig =
             { stripConfig config with
                 Analyzers = config.Analyzers }
 
         RunOnceOutput.runOnceAndReport noWarnFail createDaemon repoRoot analyzeConfig (Some "analyzers")
-    | Analyze Daemon -> queryPlugin "analyzers"
-    | FormatCheck RunOnce ->
+    | Analyze _ -> queryPlugin "analyzers"
+    | FormatCheck flags when isRunOnce flags ->
         let formatCheckConfig =
             { stripConfig config with
                 Format = FormatMode.Check }
 
-        RunOnceOutput.runOnceAndReport noWarnFail createDaemon repoRoot formatCheckConfig (Some "format")
-    | FormatCheck Daemon -> queryPlugin "format"
+        RunOnceOutput.runOnceAndReport noWarnFail createDaemon repoRoot formatCheckConfig (Some "format-check")
+    | FormatCheck _ -> queryPlugin "format-check"
     | Errors ->
-        if not (ensureDaemonFn ()) then
-            eprintfn "Failed to start daemon"
-            1
-        else
+        withDaemon (fun () ->
             withIpc (fun () ->
                 let errorsJson = ipc.GetDiagnostics pipeName "" |> Async.RunSynchronously
                 let resp = IpcOutput.parseDiagnosticsResponse errorsJson
                 eprintfn "%s" (IpcOutput.formatDiagnosticsResponse resp)
-                IpcOutput.exitCodeFromResponse noWarnFail resp)
+                IpcOutput.exitCodeFromResponse noWarnFail resp))
     | InvalidateCache filePath ->
-        if not (ensureDaemonFn ()) then
-            eprintfn "Failed to start daemon"
-            1
-        else
+        withDaemon (fun () ->
             withIpc (fun () ->
                 let result = ipc.InvalidateCache pipeName filePath |> Async.RunSynchronously
-                IpcOutput.renderIpcResult noWarnFail result)
+                IpcOutput.renderIpcResult noWarnFail result))
     | Init ->
         let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
         let projects = InitConfig.discoverProjects repoRoot
@@ -425,8 +431,8 @@ let executeCommand
         with :? IOException ->
             eprintfn "%s already exists" configPath
             1
-    | Check RunOnce -> RunOnceOutput.runOnceAndReport noWarnFail createDaemon repoRoot config None
-    | Check Daemon -> queryPlugin ""
+    | Check flags when isRunOnce flags -> RunOnceOutput.runOnceAndReport noWarnFail createDaemon repoRoot config None
+    | Check _ -> queryPlugin ""
     | Completions ->
         FishCompletions.writeToFile commandTree cliName
         eprintfn "%s" $"%s{Color.green}✓%s{Color.reset} Fish completions installed"

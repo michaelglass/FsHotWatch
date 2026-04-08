@@ -46,48 +46,48 @@ let ``parse stop returns Stop`` () =
     test <@ CommandTree.parse tree [| "stop" |] = Ok Stop @>
 
 [<Fact>]
-let ``parse check returns Check Daemon`` () =
-    test <@ CommandTree.parse tree [| "check" |] = Ok(Check Daemon) @>
+let ``parse check returns Check with no flags`` () =
+    test <@ CommandTree.parse tree [| "check" |] = Ok(Check []) @>
 
 [<Fact>]
-let ``parse check run-once returns Check RunOnce`` () =
-    test <@ CommandTree.parse tree [| "check"; "run-once" |] = Ok(Check RunOnce) @>
+let ``parse check --run-once returns Check RunOnce`` () =
+    test <@ CommandTree.parse tree [| "check"; "--run-once" |] = Ok(Check [ RunOnce ]) @>
 
 [<Fact>]
-let ``parse build returns Build Daemon`` () =
-    test <@ CommandTree.parse tree [| "build" |] = Ok(Build Daemon) @>
+let ``parse build returns Build with no flags`` () =
+    test <@ CommandTree.parse tree [| "build" |] = Ok(Build []) @>
 
 [<Fact>]
-let ``parse build run-once returns Build RunOnce`` () =
-    test <@ CommandTree.parse tree [| "build"; "run-once" |] = Ok(Build RunOnce) @>
+let ``parse build --run-once returns Build RunOnce`` () =
+    test <@ CommandTree.parse tree [| "build"; "--run-once" |] = Ok(Build [ RunOnce ]) @>
 
 [<Fact>]
-let ``parse test returns Test Daemon`` () =
-    test <@ CommandTree.parse tree [| "test" |] = Ok(Test Daemon) @>
+let ``parse test returns Test with no flags`` () =
+    test <@ CommandTree.parse tree [| "test" |] = Ok(Test []) @>
 
 [<Fact>]
-let ``parse test run-once returns Test RunOnce`` () =
-    test <@ CommandTree.parse tree [| "test"; "run-once" |] = Ok(Test RunOnce) @>
+let ``parse test --run-once returns Test RunOnce`` () =
+    test <@ CommandTree.parse tree [| "test"; "--run-once" |] = Ok(Test [ RunOnce ]) @>
 
 [<Fact>]
-let ``parse format returns Format Daemon`` () =
-    test <@ CommandTree.parse tree [| "format" |] = Ok(Format Daemon) @>
+let ``parse format returns Format with no flags`` () =
+    test <@ CommandTree.parse tree [| "format" |] = Ok(Format []) @>
 
 [<Fact>]
-let ``parse lint returns Lint Daemon`` () =
-    test <@ CommandTree.parse tree [| "lint" |] = Ok(Lint Daemon) @>
+let ``parse lint returns Lint with no flags`` () =
+    test <@ CommandTree.parse tree [| "lint" |] = Ok(Lint []) @>
 
 [<Fact>]
-let ``parse lint run-once returns Lint RunOnce`` () =
-    test <@ CommandTree.parse tree [| "lint"; "run-once" |] = Ok(Lint RunOnce) @>
+let ``parse lint --run-once returns Lint RunOnce`` () =
+    test <@ CommandTree.parse tree [| "lint"; "--run-once" |] = Ok(Lint [ RunOnce ]) @>
 
 [<Fact>]
-let ``parse format-check returns FormatCheck Daemon`` () =
-    test <@ CommandTree.parse tree [| "format-check" |] = Ok(FormatCheck Daemon) @>
+let ``parse format-check returns FormatCheck with no flags`` () =
+    test <@ CommandTree.parse tree [| "format-check" |] = Ok(FormatCheck []) @>
 
 [<Fact>]
-let ``parse analyze returns Analyze Daemon`` () =
-    test <@ CommandTree.parse tree [| "analyze" |] = Ok(Analyze Daemon) @>
+let ``parse analyze returns Analyze with no flags`` () =
+    test <@ CommandTree.parse tree [| "analyze" |] = Ok(Analyze []) @>
 
 [<Fact>]
 let ``parse status returns Status None`` () =
@@ -150,14 +150,14 @@ let ``globalSpec parse with --log-level returns LogLevel flag`` () =
 [<Fact>]
 let ``globalSpec parse with --no-cache returns NoCache flag`` () =
     match spec.Parse [| "--no-cache"; "build" |] with
-    | Ok(globals, Build Daemon) -> test <@ globals = [ NoCache ] @>
-    | other -> failwith $"Expected Ok(NoCache, Build Daemon), got %A{other}"
+    | Ok(globals, Build []) -> test <@ globals = [ NoCache ] @>
+    | other -> failwith $"Expected Ok(NoCache, Build []), got %A{other}"
 
 [<Fact>]
 let ``globalSpec parse with multiple global flags`` () =
     match spec.Parse [| "--verbose"; "--no-cache"; "check" |] with
-    | Ok(globals, Check Daemon) -> test <@ globals = [ Verbose; NoCache ] @>
-    | other -> failwith $"Expected Ok([Verbose; NoCache], Check Daemon), got %A{other}"
+    | Ok(globals, Check []) -> test <@ globals = [ Verbose; NoCache ] @>
+    | other -> failwith $"Expected Ok([Verbose; NoCache], Check []), got %A{other}"
 
 [<Fact>]
 let ``globalSpec parse with no global flags passes through`` () =
@@ -635,7 +635,7 @@ let ``executeCommand Build with status passed returns exit code 0`` () =
             TriggerBuild = fun _ -> async { return """{"status": "passed"}""" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build Daemon) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build []) "" false fakeConfig
 
     test <@ result = 0 @>
 
@@ -646,7 +646,7 @@ let ``executeCommand Build with status failed returns exit code 1`` () =
             TriggerBuild = fun _ -> async { return """{"status": "failed"}""" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build Daemon) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build []) "" false fakeConfig
 
     test <@ result = 1 @>
 
@@ -657,7 +657,7 @@ let ``executeCommand Build with plain text returns exit code 0`` () =
             TriggerBuild = fun _ -> async { return "build completed successfully" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build Daemon) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build []) "" false fakeConfig
 
     test <@ result = 0 @>
 
@@ -677,7 +677,7 @@ let ``executeCommand Build calls triggerBuild`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build Daemon) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build []) "" false fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>
@@ -696,7 +696,7 @@ let ``executeCommand Test calls runCommand with run-tests`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Test Daemon) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Test []) "" false fakeConfig
 
     test <@ result = 0 @>
     test <@ cmdName = "run-tests" @>
@@ -715,10 +715,29 @@ let ``executeCommand Format calls formatAll`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Format Daemon) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Format []) "" false fakeConfig
 
     test <@ result = 0 @>
     test <@ called @>
+
+[<Fact>]
+let ``executeCommand FormatCheck uses format-check filter not format`` () =
+    let mutable errorFilter = ""
+
+    let ipc =
+        { fakeIpc () with
+            GetDiagnostics =
+                fun _ filter ->
+                    async {
+                        errorFilter <- filter
+                        return """{"count": 0}"""
+                    } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (FormatCheck []) "" false fakeConfig
+
+    test <@ result = 0 @>
+    test <@ errorFilter = "format-check" @>
 
 [<Fact>]
 let ``executeCommand Lint scans waits and gets lint errors`` () =
@@ -734,7 +753,7 @@ let ``executeCommand Lint scans waits and gets lint errors`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Lint Daemon) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Lint []) "" false fakeConfig
 
     test <@ result = 0 @>
     test <@ errorFilter = "lint" @>
@@ -786,7 +805,7 @@ let ``executeCommand Check waits for scan and returns errors`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Check Daemon) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Check []) "" false fakeConfig
 
     test <@ result = 0 @>
     test <@ waitForScanCalled @>
@@ -821,3 +840,80 @@ let ``executeCommand InvalidateCache calls invalidateCache with file path`` () =
 
     test <@ result = 0 @>
     test <@ calledWithPath = "some/file.fs" @>
+
+// --- Regression tests for bug fixes ---
+
+[<Fact>]
+let ``executeCommand Check returns 1 when daemon startup fails`` () =
+    let ipc =
+        { fakeIpc () with
+            IsRunning = fun _ -> false }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Check []) "" false fakeConfig
+
+    test <@ result = 1 @>
+
+[<Fact>]
+let ``executeCommand Build returns 1 when daemon startup fails`` () =
+    let ipc =
+        { fakeIpc () with
+            IsRunning = fun _ -> false }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build []) "" false fakeConfig
+
+    test <@ result = 1 @>
+
+[<Fact>]
+let ``executeCommand Test returns 1 when daemon startup fails`` () =
+    let ipc =
+        { fakeIpc () with
+            IsRunning = fun _ -> false }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Test []) "" false fakeConfig
+
+    test <@ result = 1 @>
+
+[<Fact>]
+let ``executeCommand Lint returns 1 when daemon startup fails`` () =
+    let ipc =
+        { fakeIpc () with
+            IsRunning = fun _ -> false }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Lint []) "" false fakeConfig
+
+    test <@ result = 1 @>
+
+[<Fact>]
+let ``executeCommand Errors returns 1 when daemon startup fails`` () =
+    let ipc =
+        { fakeIpc () with
+            IsRunning = fun _ -> false }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig
+
+    test <@ result = 1 @>
+
+// --- computeLaunchCommand tests ---
+
+[<Fact>]
+let ``computeLaunchCommand with dotnet process path returns dotnet tool run`` () =
+    let (exe, prefix) = computeLaunchCommand "/usr/local/bin/dotnet"
+    test <@ exe = "/usr/local/bin/dotnet" @>
+    test <@ prefix.Contains("fs-hot-watch") @>
+
+[<Fact>]
+let ``computeLaunchCommand with native exe returns exe directly`` () =
+    let (exe, prefix) = computeLaunchCommand "/usr/local/bin/fs-hot-watch"
+    test <@ exe = "/usr/local/bin/fs-hot-watch" @>
+    test <@ prefix = "" @>
+
+[<Fact>]
+let ``computeLaunchCommand with dotnet.exe on Windows returns dotnet tool run`` () =
+    let (exe, prefix) = computeLaunchCommand """C:\Program Files\dotnet\dotnet.exe"""
+    test <@ exe = """C:\Program Files\dotnet\dotnet.exe""" @>
+    test <@ prefix.Contains("fs-hot-watch") @>

@@ -5,6 +5,7 @@ open System.Text.Json
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Cli.DaemonConfig
+open FsHotWatch.Daemon
 open FsHotWatch.Tests.TestHelpers
 
 // --- Helper: defaults with known cache backend ---
@@ -712,3 +713,59 @@ let ``parseConfig build with multiple dependsOn`` () =
     let config = parseConfig json defaults
     let builds = config.Build.Value
     test <@ builds.[0].DependsOn = [ "setup"; "codegen" ] @>
+
+// --- stripConfig tests ---
+
+[<Fact>]
+let ``stripConfig preserves format mode`` () =
+    let config = { defaults with Format = Check }
+    let stripped = stripConfig config
+    test <@ stripped.Format = Check @>
+
+[<Fact>]
+let ``stripConfig disables lint`` () =
+    let stripped = stripConfig defaults
+    test <@ stripped.Lint = false @>
+
+[<Fact>]
+let ``stripConfig sets build to empty list`` () =
+    let stripped = stripConfig defaults
+    test <@ stripped.Build = Some [] @>
+
+[<Fact>]
+let ``stripConfig caller can restore build config`` () =
+    let stripped =
+        { stripConfig defaults with
+            Build = defaults.Build }
+
+    test <@ stripped.Build = defaults.Build @>
+    test <@ stripped.Build.Value.Length = 1 @>
+
+[<Fact>]
+let ``registerPlugins with build config registers build plugin`` () =
+    withTempDir "cfg-build-reg" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+        let daemon =
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ])
+
+        let config =
+            { stripConfig defaults with
+                Build = defaults.Build }
+
+        registerPlugins daemon tmpDir config
+        let statuses = daemon.Host.GetAllStatuses()
+        test <@ statuses.ContainsKey("build") @>)
+
+[<Fact>]
+let ``registerPlugins with stripped config does not register build plugin`` () =
+    withTempDir "cfg-build-noreg" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+        let daemon =
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ])
+
+        let config = stripConfig defaults
+        registerPlugins daemon tmpDir config
+        let statuses = daemon.Host.GetAllStatuses()
+        test <@ not (statuses.ContainsKey("build")) @>)
