@@ -5,6 +5,16 @@ All notable changes to FsHotWatch packages are documented here.
 This is a monorepo — all packages are released together from the same commit.
 Tag prefixes: `core-v`, `build-v`, `testprune-v`, `analyzers-v`, `lint-v`, `fantomas-v`, `coverage-v`, `filecommand-v`, `cli-v`.
 
+## Unreleased
+
+### Infrastructure / CI
+
+- Fix per-platform coverage threshold for `AnalyzersPlugin.fs` — macOS reports 83% branch coverage vs Linux 66% due to reflection-based `CliContext` branches
+- Move CLI under core's shared tag in `semantic-tagger.json` — CLI now versions and releases together with the core package (no separate `cli-v` tag prefix)
+- Bump internal tooling: `coverageratchet` 0.10.0-alpha.1, `syncdocs` 0.10.0-alpha.1, `fssemantictagger` 0.10.0-alpha.1, `fsprojlint` 0.7.0-alpha.1
+
+---
+
 ## 0.2.0-alpha.1 (2026-04-07)
 
 Packaging and infrastructure release. No public API changes beyond dependency bumps.
