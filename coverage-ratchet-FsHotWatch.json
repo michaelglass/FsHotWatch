@@ -1,10 +1,19 @@
 {
   "overrides": {
-    "AnalyzersPlugin.fs": {
-      "line": 81,
-      "branch": 83,
-      "reason": "loosened: reflection-based CliContext branches vary by platform"
-    },
+    "AnalyzersPlugin.fs": [
+      {
+        "line": 81,
+        "branch": 83,
+        "reason": "reflection-based CliContext branches vary by platform",
+        "platform": "macos"
+      },
+      {
+        "line": 81,
+        "branch": 66,
+        "reason": "reflection-based CliContext branches vary by platform",
+        "platform": "linux"
+      }
+    ],
     "BuildDiagnostics.fs": {
       "line": 100,
       "branch": 75,
