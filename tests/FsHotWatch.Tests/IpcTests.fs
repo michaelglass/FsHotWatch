@@ -797,3 +797,54 @@ let ``WaitForComplete times out when plugin stays Running`` () =
         |> Async.RunSynchronously
 
     test <@ ex.Message.Contains("timed out") @>
+
+[<Fact>]
+let ``repeated scan force via IPC increments generation each time`` () =
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-rescan-{Guid.NewGuid():N}")
+
+    System.IO.Directory.CreateDirectory(System.IO.Path.Combine(tmpDir, "src"))
+    |> ignore
+
+    let pipeName = FsHotWatch.Cli.Program.computePipeName tmpDir
+    let cts = new CancellationTokenSource()
+
+    let daemon =
+        Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ])
+
+    let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
+    waitForServer pipeName
+
+    // Wait for initial scan to complete (gen=1)
+    let waitResult = IpcClient.waitForScan pipeName -1L |> Async.RunSynchronously
+    let gen1 = daemon.GetScanGeneration()
+    test <@ gen1 >= 1L @>
+
+    try
+        // First force scan
+        let scanResult1 = IpcClient.scan pipeName true |> Async.RunSynchronously
+        test <@ scanResult1.Contains("scan started") @>
+
+        // Wait for this scan to complete
+        IpcClient.waitForScan pipeName gen1 |> Async.RunSynchronously |> ignore
+        let gen2 = daemon.GetScanGeneration()
+        test <@ gen2 > gen1 @>
+
+        // Second force scan — this is the one that was reported as broken
+        let scanResult2 = IpcClient.scan pipeName true |> Async.RunSynchronously
+        test <@ scanResult2.Contains("scan started") @>
+
+        // Wait for this scan to complete
+        IpcClient.waitForScan pipeName gen2 |> Async.RunSynchronously |> ignore
+        let gen3 = daemon.GetScanGeneration()
+        test <@ gen3 > gen2 @>
+    finally
+        cts.Cancel()
+
+        try
+            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+        with _ ->
+            ()
+
+        if System.IO.Directory.Exists tmpDir then
+            System.IO.Directory.Delete(tmpDir, true)
