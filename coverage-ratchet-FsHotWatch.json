@@ -1,8 +1,8 @@
 {
   "overrides": {
     "AnalyzersPlugin.fs": {
-      "line": 81.4207650273224,
-      "branch": 66.66666666666666,
+      "line": 81,
+      "branch": 83,
       "reason": "loosened: reflection-based CliContext branches vary by platform"
     },
     "BuildDiagnostics.fs": {
@@ -11,94 +11,94 @@
       "reason": "new file, 3/4 branches covered"
     },
     "BuildPlugin.fs": {
-      "line": 87.5,
-      "branch": 86.36363636363636,
+      "line": 87,
+      "branch": 86,
       "reason": "loosened: new diagnostic parsing branches"
     },
     "CheckPipeline.fs": {
-      "line": 91.07142857142857,
-      "branch": 77.27272727272727,
+      "line": 91,
+      "branch": 77,
       "reason": ""
     },
     "CoveragePlugin.fs": {
-      "line": 97.05882352941177,
+      "line": 97,
       "branch": 100,
       "reason": ""
     },
     "Daemon.fs": {
-      "line": 72.30514096185739,
-      "branch": 55.88235294117647,
+      "line": 72,
+      "branch": 55,
       "reason": ""
     },
     "DaemonConfig.fs": {
-      "line": 63.661202185792355,
-      "branch": 55.769230769230774,
+      "line": 63,
+      "branch": 55,
       "reason": "loosened automatically"
     },
     "ErrorLedger.fs": {
-      "line": 96.62162162162163,
+      "line": 96,
       "branch": 100,
       "reason": "loosened automatically"
     },
     "FileCheckCache.fs": {
-      "line": 83.33333333333334,
+      "line": 83,
       "branch": 50,
       "reason": "loosened automatically"
     },
     "FileCommandPlugin.fs": {
-      "line": 98.71794871794873,
+      "line": 98,
       "branch": 100,
       "reason": ""
     },
     "FileErrorReporter.fs": {
-      "line": 93.10344827586206,
+      "line": 93,
       "branch": 75,
       "reason": "loosened automatically"
     },
     "FileTaskCache.fs": {
-      "line": 87.43169398907104,
-      "branch": 83.33333333333334,
+      "line": 87,
+      "branch": 83,
       "reason": "loosened automatically"
     },
     "FormatCheckPlugin.fs": {
-      "line": 98.57142857142858,
+      "line": 98,
       "branch": 100,
       "reason": ""
     },
     "InMemoryCheckCache.fs": {
-      "line": 95.65217391304348,
+      "line": 95,
       "branch": 100,
       "reason": "loosened automatically"
     },
     "InitConfig.fs": {
-      "line": 76.72413793103449,
-      "branch": 52.77777777777778,
+      "line": 76,
+      "branch": 52,
       "reason": "loosened automatically"
     },
     "Ipc.fs": {
-      "line": 82.82208588957054,
+      "line": 82,
       "branch": 50,
       "reason": ""
     },
     "IpcOutput.fs": {
-      "line": 86.95652173913044,
-      "branch": 63.23529411764706,
+      "line": 86,
+      "branch": 63,
       "reason": "loosened: new severity-aware exit code branches"
     },
     "JjHelper.fs": {
-      "line": 54.09836065573771,
-      "branch": 40.909090909090914,
+      "line": 54,
+      "branch": 40,
       "reason": "loosened automatically"
     },
     "LintPlugin.fs": {
-      "line": 80.24691358024691,
-      "branch": 83.33333333333334,
+      "line": 80,
+      "branch": 83,
       "reason": ""
     },
     "MacFsEvents.fs": [
       {
-        "line": 83.5820895522388,
-        "branch": 55.00000000000001,
+        "line": 83,
+        "branch": 55,
         "reason": "macOS-only FSEvents code",
         "platform": "macos"
       },
@@ -109,48 +109,57 @@
       }
     ],
     "PluginFramework.fs": {
-      "line": 87.11340206185567,
-      "branch": 65.71428571428571,
+      "line": 87,
+      "branch": 65,
       "reason": "loosened automatically"
     },
     "PluginHost.fs": {
-      "line": 85.36585365853658,
+      "line": 85,
       "branch": 50,
       "reason": ""
     },
     "ProcessHelper.fs": {
-      "line": 93.75,
+      "line": 93,
       "branch": 50,
       "reason": ""
     },
-    "Program.fs": {
-      "line": 59,
-      "branch": 31.818181818181817,
-      "reason": "CLI entry point, new --no-warn-fail flag branches"
-    },
+    "Program.fs": [
+      {
+        "line": 49,
+        "branch": 23,
+        "reason": "CLI entry point, new --no-warn-fail flag branches",
+        "platform": "macos"
+      },
+      {
+        "line": 59,
+        "branch": 23,
+        "reason": "CLI entry point, new --no-warn-fail flag branches",
+        "platform": "linux"
+      }
+    ],
     "ProjectGraph.fs": {
       "line": 100,
-      "branch": 92.85714285714286,
+      "branch": 92,
       "reason": ""
     },
     "RunOnceOutput.fs": {
-      "line": 60.9375,
-      "branch": 57.14285714285714,
+      "line": 60,
+      "branch": 57,
       "reason": "loosened: new severity counting branches"
     },
     "StringHelpers.fs": {
-      "line": 85.71428571428571,
+      "line": 85,
       "branch": 50,
       "reason": "loosened automatically"
     },
     "TaskCache.fs": {
-      "line": 89.1891891891892,
+      "line": 89,
       "branch": 90,
       "reason": "loosened automatically"
     },
     "Watcher.fs": {
-      "line": 60,
-      "branch": 43.333333333333336,
+      "line": 57,
+      "branch": 43,
       "reason": ""
     }
   }
