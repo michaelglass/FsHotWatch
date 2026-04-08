@@ -1,0 +1,15 @@
+{
+  "packages": [
+    {
+      "name": "TestPrune.Core",
+      "fsproj": "src/TestPrune.Core/TestPrune.Core.fsproj",
+      "tagPrefix": "core-v",
+      "fsProjsSharingSameTag": ["src/TestPrune/TestPrune.fsproj"]
+    },
+    {
+      "name": "TestPrune.Falco",
+      "fsproj": "src/TestPrune.Falco/TestPrune.Falco.fsproj",
+      "tagPrefix": "falco-v"
+    }
+  ]
+}
