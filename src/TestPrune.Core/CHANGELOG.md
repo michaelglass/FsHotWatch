@@ -1,4 +1,4 @@
-# Changelog
+# Changelog — TestPrune.Core
 
 ## Unreleased
 - fix: add semantic-tagger.json with CLI under core's shared tag
