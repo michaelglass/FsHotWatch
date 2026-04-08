@@ -12,6 +12,10 @@ on:
       - 'coverage-v*'
       - 'filecommand-v*'
 
+permissions:
+  contents: write
+  id-token: write
+
 # --- core (FsHotWatch + FsHotWatch.Cli) ---
 
 jobs:
