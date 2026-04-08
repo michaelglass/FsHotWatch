@@ -7,7 +7,7 @@
 
     <!-- Package metadata -->
     <PackageId>FsHotWatch.TestPrune</PackageId>
-    <Version>0.1.0-alpha.2</Version>
+    <Version>0.1.0-alpha.3</Version>
     <Authors>Michael Glass</Authors>
     <Description>FsHotWatch plugin for TestPrune test impact analysis</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -33,6 +33,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.102" PrivateAssets="All" />
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
     <PackageReference Include="TestPrune.Core" Version="0.1.0-beta.1" />
   </ItemGroup>
