@@ -12,12 +12,18 @@ on:
       - 'coverage-v*'
       - 'filecommand-v*'
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
 jobs:
   docs:
+    if: "!contains(github.ref, '-alpha') && !contains(github.ref, '-beta') && !contains(github.ref, '-rc')"
     uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-docs.yml@main
     with:
       fsdocs-parameters: '--parameters root /FsHotWatch/'
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
