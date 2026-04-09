@@ -379,7 +379,7 @@ let create
                             try
                                 ext.FindAffectedTests (TestPrune.Ports.toRouteStore db) state.ChangedFiles repoRoot
                             with ex ->
-                                Logging.error "test-prune" $"Extension '%s{ext.Name}' failed: %s{ex.Message}"
+                                Logging.error "test-prune" $"Extension '{ext.Name}' failed: {ex.Message}"
                                 [])
                     | None -> []
 
@@ -599,12 +599,6 @@ let create
                     try
                         let relPath = Path.GetRelativePath(repoRoot, result.File).Replace('\\', '/')
 
-                        let newChangedFiles =
-                            if not (state.ChangedFiles |> List.contains relPath) then
-                                relPath :: state.ChangedFiles
-                            else
-                                state.ChangedFiles
-
                         let! analysisResult = analyzeSource ctx.Checker result.File result.Source result.ProjectOptions
 
                         match analysisResult with
@@ -660,6 +654,15 @@ let create
                                 else
                                     state.ChangedSymbols
 
+                            // Only track file as changed if its AST actually changed.
+                            // Comment-only changes produce the same symbol hashes, so they
+                            // should not trigger extension-based tests (e.g. Falco routes).
+                            let newChangedFiles =
+                                if not changedNames.IsEmpty && not (state.ChangedFiles |> List.contains relPath) then
+                                    relPath :: state.ChangedFiles
+                                else
+                                    state.ChangedFiles
+
                             // Update class→file mapping for test methods found in this file
                             let newClassFiles =
                                 fileAnalysis.TestMethods
@@ -691,9 +694,7 @@ let create
                             if isIdle then
                                 ctx.ReportStatus(PluginStatus.Failed($"Analysis failed: %s{msg}", DateTime.UtcNow))
 
-                            return
-                                { state with
-                                    ChangedFiles = newChangedFiles }
+                            return state
                     with ex ->
                         if isIdle then
                             ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
