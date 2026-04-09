@@ -5,6 +5,7 @@ open System.IO
 open Xunit
 open Swensen.Unquote
 open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Text
 open FsHotWatch.CheckPipeline
 open FsHotWatch.Events
 open FsHotWatch.Plugin
@@ -1258,3 +1259,90 @@ let ``skip tests when 0 affected classes and not cold start`` () =
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 5.0
         test <@ runCount = 1 @>) // still 1, not 2
+
+[<Fact>]
+let ``comment-only change does not add file to ChangedFiles but AST change does`` () =
+    // Regression test: before the fix, newChangedFiles was computed unconditionally
+    // before changedNames, so any file emit (even comment-only) would add the file
+    // to ChangedFiles and trigger extension-based tests (e.g. Falco routes).
+    //
+    // After the fix, newChangedFiles is only updated when changedNames is non-empty,
+    // i.e. only when the AST actually changed.
+    withTempDir "tp-comment-regression" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "test.db")
+        let filePath = Path.Combine(tmpDir, "Lib.fs")
+        let relPath = "Lib.fs"
+
+        let initialSource = "module Lib\nlet x = 1\n"
+        let commentOnlySource = "module Lib\n// a comment added\nlet x = 1\n"
+        let astChangedSource = "module Lib\nlet x = 1\nlet y = 2\n"
+
+        // Create a single checker and project options shared by both DB setup and the plugin.
+        // Using the same checker ensures analyzeSource (inside the plugin) can reuse FCS results.
+        let checker =
+            FSharpChecker.Create(
+                projectCacheSize = 200,
+                keepAssemblyContents = true,
+                keepAllBackgroundResolutions = true
+            )
+
+        File.WriteAllText(filePath, initialSource)
+        let initialSourceText = SourceText.ofString initialSource
+
+        let projOptions =
+            checker.GetProjectOptionsFromScript(filePath, initialSourceText, assumeDotNetFramework = false)
+            |> Async.RunSynchronously
+            |> fst
+
+        // --- Seed DB directly with initial source symbols ---
+        // The plugin's BuildCompleted flush only runs when testConfigs is provided,
+        // so we populate the baseline here via analyzeSource + RebuildProjects.
+        let seedResult =
+            analyzeSource checker filePath initialSource projOptions
+            |> Async.RunSynchronously
+
+        match seedResult with
+        | Error msg -> Assert.Fail($"Initial analysis failed: {msg}")
+        | Ok result ->
+            let normalized =
+                { result with
+                    Symbols = normalizeSymbolPaths tmpDir result.Symbols }
+
+            let db = Database.create dbPath
+            db.RebuildProjects([ normalized ])
+
+        // --- Set up pipeline (same checker) and plugin host ---
+        let pipeline = CheckPipeline(checker)
+        pipeline.RegisterProject(projOptions.ProjectFileName, projOptions)
+
+        let host = PluginHost.create checker tmpDir
+        let handler = create dbPath tmpDir None None None None None None
+        host.RegisterHandler(handler)
+
+        // --- Phase 1: comment-only change should NOT add file to ChangedFiles ---
+        File.WriteAllText(filePath, commentOnlySource)
+
+        match pipeline.CheckFile(filePath) |> Async.RunSynchronously with
+        | None -> Assert.Fail("FCS failed to check comment-only source")
+        | Some result -> host.EmitFileChecked(result)
+
+        waitForTerminalStatus host "test-prune" 30000
+
+        let changedAfterComment =
+            host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
+
+        test <@ changedAfterComment.Value = "[]" @>
+
+        // --- Phase 2: AST change should add file to ChangedFiles ---
+        File.WriteAllText(filePath, astChangedSource)
+
+        match pipeline.CheckFile(filePath) |> Async.RunSynchronously with
+        | None -> Assert.Fail("FCS failed to check AST-changed source")
+        | Some result -> host.EmitFileChecked(result)
+
+        waitForTerminalStatus host "test-prune" 30000
+
+        let changedAfterAst =
+            host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
+
+        test <@ changedAfterAst.Value.Contains(relPath) @>)
