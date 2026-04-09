@@ -54,7 +54,7 @@ type private InMemoryCache() =
             this.InvalidateCalls.Add(key)
 
         member this.Clear() =
-            incr this.ClearCalls
+            this.ClearCalls.Value <- this.ClearCalls.Value + 1
             store.Clear()
 
 [<Fact>]
