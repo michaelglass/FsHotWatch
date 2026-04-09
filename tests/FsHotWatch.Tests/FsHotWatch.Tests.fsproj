@@ -7,6 +7,9 @@
     <!-- FS0988: existing suppression; FS3511: state machine not statically compilable; NETSDK1188: harmless locale warnings from Microsoft.Testing.Platform -->
     <NoWarn>$(NoWarn);FS0988;3511;NETSDK1188;NU1605;NU1608</NoWarn>
     <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    <!-- FSharpChecker background reactor threads prevent clean process exit after tests complete.
+         Exit code 7 = "process didn't exit gracefully" — safe to ignore since all tests passed. -->
+    <TestingPlatformCommandLineArguments>--ignore-exit-code 7</TestingPlatformCommandLineArguments>
   </PropertyGroup>
 
   <ItemGroup>
