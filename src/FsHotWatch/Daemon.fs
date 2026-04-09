@@ -589,14 +589,25 @@ type Daemon =
                 this.CancellationTokenRef.Value <- cts.Token
                 this.Ready.Set()
 
+                // Register cancellation before starting the scan so that cancellation during
+                // the initial scan unblocks RunWithIpc immediately rather than waiting for the
+                // scan to complete. This prevents test-process hangs when cts is cancelled while
+                // the scan is still running (e.g. under thread-pool contention in test suites).
+                let tcs = System.Threading.Tasks.TaskCompletionSource<unit>()
+                use _reg = cts.Token.Register(fun () -> tcs.TrySetResult() |> ignore)
+
                 // Initial full scan — performScan handles discovery when LastFingerprint
                 // differs from current (always true on first run since it starts empty).
                 // force bypasses jj guard since plugins have no state from previous daemon runs.
-                do! this.ScanAll(force = true)
+                // Race against cancellation so a slow scan doesn't block shutdown.
+                let scanTask = Async.StartAsTask(this.ScanAll(force = true))
 
-                let tcs = System.Threading.Tasks.TaskCompletionSource<unit>()
-
-                use _reg = cts.Token.Register(fun () -> tcs.TrySetResult() |> ignore)
+                do!
+                    [| scanTask :> System.Threading.Tasks.Task
+                       tcs.Task :> System.Threading.Tasks.Task |]
+                    |> System.Threading.Tasks.Task.WhenAny
+                    |> Async.AwaitTask
+                    |> Async.Ignore
 
                 do! tcs.Task |> Async.AwaitTask
 
