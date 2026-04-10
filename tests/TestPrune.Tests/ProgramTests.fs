@@ -15,6 +15,11 @@ open TestPrune.Ports
 open TestPrune.ProjectLoader
 open System.Reflection
 open FSharp.Compiler.CodeAnalysis
+open TestPrune.TestRunner
+
+/// Collection definition that serializes tests mutating global Console state.
+[<CollectionDefinition("Console", DisableParallelization = true)>]
+type ConsoleCollection() = class end
 
 module ``parseArgs`` =
 
@@ -209,6 +214,7 @@ module ``findProjectFiles`` =
             if Directory.Exists(tmp) then
                 Directory.Delete(tmp, true)
 
+[<Collection("Console")>]
 module ``analyzeChanges`` =
 
     let private makeChecker () = FSharpChecker.Create()
@@ -330,6 +336,7 @@ module ``analyzeChanges`` =
             if Directory.Exists(tmp) then
                 Directory.Delete(tmp, true)
 
+[<Collection("Console")>]
 module ``showHelp`` =
     [<Fact>]
     let ``prints usage information`` () =
@@ -346,6 +353,7 @@ module ``showHelp`` =
         finally
             System.Console.SetOut(oldOut)
 
+[<Collection("Console")>]
 module ``runDeadCode`` =
     [<Fact>]
     let ``returns 1 when no index exists`` () =
@@ -587,6 +595,7 @@ module ``runDeadCode`` =
             Console.SetOut(oldOut)
             Directory.Delete(tmpDir, true)
 
+[<Collection("Console")>]
 module ``runStatusWith`` =
 
     [<Fact>]
@@ -641,6 +650,7 @@ module ``runStatusWith`` =
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)
 
+[<Collection("Console")>]
 module ``runRunWith`` =
 
     [<Fact>]
@@ -675,6 +685,612 @@ module ``runRunWith`` =
             Console.SetOut(oldOut)
             Directory.Delete(tmpDir, true)
 
+[<Collection("Console")>]
+module ``runStatusWith RunSubset`` =
+
+    let private makeDbWithTestGraph
+        (tmpDir: string)
+        (symbols: SymbolInfo list)
+        (deps: Dependency list)
+        (testMethods: TestMethodInfo list)
+        =
+        let dbPath = Path.Combine(tmpDir, ".test-prune.db")
+        let db = Database.create dbPath
+
+        let result: AnalysisResult =
+            { Symbols = symbols
+              Dependencies = deps
+              TestMethods = testMethods
+              Diagnostics = AnalysisDiagnostics.Zero }
+
+        db.RebuildProjects([ result ])
+        db
+
+    [<Fact>]
+    let ``analyzeChanges returns RunSubset with affected tests`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+
+        try
+            let libDir = Path.Combine(tmpDir, "src", "Lib")
+            Directory.CreateDirectory(libDir) |> ignore
+            File.WriteAllText(Path.Combine(libDir, "Lib.fs"), "module Lib\nlet helper x = x + 1\n")
+
+            let symbols =
+                [ { FullName = "Lib.helper"
+                    Kind = Function
+                    SourceFile = "src/Lib/Lib.fs"
+                    LineStart = 2
+                    LineEnd = 2
+                    ContentHash = "old-hash-that-will-not-match"
+                    IsExtern = false } ]
+
+            let testSymbols =
+                [ { FullName = "MyTests.Tests.testHelper"
+                    Kind = Function
+                    SourceFile = "tests/MyTests/Tests.fs"
+                    LineStart = 3
+                    LineEnd = 5
+                    ContentHash = "test-hash"
+                    IsExtern = false } ]
+
+            let deps =
+                [ { FromSymbol = "MyTests.Tests.testHelper"
+                    ToSymbol = "Lib.helper"
+                    Kind = Calls } ]
+
+            let testMethods =
+                [ { SymbolFullName = "MyTests.Tests.testHelper"
+                    TestProject = "MyTests"
+                    TestClass = "MyTests.Tests"
+                    TestMethod = "testHelper" } ]
+
+            makeDbWithTestGraph tmpDir (symbols @ testSymbols) deps testMethods |> ignore
+
+            let fsDiff =
+                "diff --git a/src/Lib/Lib.fs b/src/Lib/Lib.fs\n"
+                + "--- a/src/Lib/Lib.fs\n"
+                + "+++ b/src/Lib/Lib.fs\n"
+                + "@@ -1,2 +1,2 @@\n"
+                + " module Lib\n"
+                + "-let helper x = x\n"
+                + "+let helper x = x + 1\n"
+
+            let fakeDiff: DiffProvider = fun () -> Ok fsDiff
+            let dbPath = Path.Combine(tmpDir, ".test-prune.db")
+            let db = Database.create dbPath
+            let store = toSymbolStore db
+            let checker = FSharpChecker.Create()
+
+            let errSw = new StringWriter()
+            let oldErr = Console.Error
+            Console.SetError(errSw)
+
+            try
+                let result = analyzeChanges fakeDiff tmpDir store checker (createNoopSink ())
+
+                match result with
+                | Ok(RunSubset tests, _changedFiles) ->
+                    test <@ tests.Length = 1 @>
+                    test <@ tests.[0].TestProject = "MyTests" @>
+                    test <@ tests.[0].TestClass = "MyTests.Tests" @>
+                    test <@ tests.[0].TestMethod = "testHelper" @>
+                | other -> failwith $"expected Ok(RunSubset [...], _) but got %A{other}"
+            finally
+                Console.SetError(oldErr)
+        finally
+            if Directory.Exists(tmpDir) then
+                Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``RunSubset displays project, class, and method grouping`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+
+        try
+            let libDir = Path.Combine(tmpDir, "src", "Lib")
+            Directory.CreateDirectory(libDir) |> ignore
+            File.WriteAllText(Path.Combine(libDir, "Lib.fs"), "module Lib\nlet helper x = x + 1\n")
+
+            let symbols =
+                [ { FullName = "Lib.helper"
+                    Kind = Function
+                    SourceFile = "src/Lib/Lib.fs"
+                    LineStart = 2
+                    LineEnd = 2
+                    ContentHash = "old-hash-that-will-not-match"
+                    IsExtern = false } ]
+
+            let testSymbols =
+                [ { FullName = "MyTests.Tests.testHelper"
+                    Kind = Function
+                    SourceFile = "tests/MyTests/Tests.fs"
+                    LineStart = 3
+                    LineEnd = 5
+                    ContentHash = "test-hash"
+                    IsExtern = false } ]
+
+            let deps =
+                [ { FromSymbol = "MyTests.Tests.testHelper"
+                    ToSymbol = "Lib.helper"
+                    Kind = Calls } ]
+
+            let testMethods =
+                [ { SymbolFullName = "MyTests.Tests.testHelper"
+                    TestProject = "MyTests"
+                    TestClass = "MyTests.Tests"
+                    TestMethod = "testHelper" } ]
+
+            makeDbWithTestGraph tmpDir (symbols @ testSymbols) deps testMethods |> ignore
+
+            let fsDiff =
+                "diff --git a/src/Lib/Lib.fs b/src/Lib/Lib.fs\n"
+                + "--- a/src/Lib/Lib.fs\n"
+                + "+++ b/src/Lib/Lib.fs\n"
+                + "@@ -1,2 +1,2 @@\n"
+                + " module Lib\n"
+                + "-let helper x = x\n"
+                + "+let helper x = x + 1\n"
+
+            let fakeDiff: DiffProvider = fun () -> Ok fsDiff
+
+            let sw = new StringWriter()
+            let oldOut = Console.Out
+            Console.SetOut(sw)
+            let errSw = new StringWriter()
+            let oldErr = Console.Error
+            Console.SetError(errSw)
+
+            try
+                let exitCode = runStatusWith fakeDiff tmpDir (createNoopSink ())
+                let output = sw.ToString()
+                test <@ exitCode = 0 @>
+                test <@ output.Contains("Would run") @>
+                test <@ output.Contains("1 test(s)") @>
+                test <@ output.Contains("MyTests:") @>
+                test <@ output.Contains("MyTests.Tests") @>
+                test <@ output.Contains("testHelper") @>
+            finally
+                Console.SetOut(oldOut)
+                Console.SetError(oldErr)
+        finally
+            if Directory.Exists(tmpDir) then
+                Directory.Delete(tmpDir, true)
+
+[<Collection("Console")>]
+module ``runRunWithExecutor`` =
+
+    let private makeDbWithTestGraph
+        (tmpDir: string)
+        (symbols: SymbolInfo list)
+        (deps: Dependency list)
+        (testMethods: TestMethodInfo list)
+        =
+        let dbPath = Path.Combine(tmpDir, ".test-prune.db")
+        let db = Database.create dbPath
+
+        let result: AnalysisResult =
+            { Symbols = symbols
+              Dependencies = deps
+              TestMethods = testMethods
+              Diagnostics = AnalysisDiagnostics.Zero }
+
+        db.RebuildProjects([ result ])
+        db
+
+    [<Fact>]
+    let ``empty subset returns 0 and prints no tests affected`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+        let dbPath = Path.Combine(tmpDir, ".test-prune.db")
+        Database.create dbPath |> ignore
+        let fakeDiff: DiffProvider = fun () -> Ok ""
+
+        let fakeExecutor: TestExecutor =
+            { DiscoverTestProjects = fun _ -> []
+              FindTestDll = fun p -> p.Replace(".fsproj", ".dll")
+              RunAllTests =
+                fun _ ->
+                    { ExitCode = 0
+                      Stdout = ""
+                      Stderr = "" }
+              RunFilteredTests =
+                fun _ _ ->
+                    { ExitCode = 0
+                      Stdout = ""
+                      Stderr = "" } }
+
+        let sw = new StringWriter()
+        let oldOut = Console.Out
+        Console.SetOut(sw)
+
+        try
+            let exitCode = runRunWithExecutor fakeExecutor fakeDiff tmpDir (createNoopSink ())
+            let output = sw.ToString()
+            test <@ exitCode = 0 @>
+            test <@ output.Contains("No tests affected") @>
+        finally
+            Console.SetOut(oldOut)
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``RunAll invokes executor RunAllTests on each discovered project`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+        let dbPath = Path.Combine(tmpDir, ".test-prune.db")
+        Database.create dbPath |> ignore
+
+        let fsprojDiff =
+            "diff --git a/src/MyProj/MyProj.fsproj b/src/MyProj/MyProj.fsproj\n"
+            + "--- a/src/MyProj/MyProj.fsproj\n"
+            + "+++ b/src/MyProj/MyProj.fsproj\n"
+            + "@@ -1 +1 @@\n"
+            + "-old\n"
+            + "+new\n"
+
+        let fakeDiff: DiffProvider = fun () -> Ok fsprojDiff
+
+        let mutable calls = []
+
+        let fakeExecutor: TestExecutor =
+            { DiscoverTestProjects = fun _ -> [ "/tmp/tests/A/A.fsproj"; "/tmp/tests/B/B.fsproj" ]
+              FindTestDll = fun p -> p.Replace(".fsproj", ".dll")
+              RunAllTests =
+                fun dll ->
+                    calls <- ("all", dll) :: calls
+
+                    { ExitCode = 0
+                      Stdout = ""
+                      Stderr = "" }
+              RunFilteredTests =
+                fun _ _ ->
+                    { ExitCode = 0
+                      Stdout = ""
+                      Stderr = "" } }
+
+        let sw = new StringWriter()
+        let oldOut = Console.Out
+        Console.SetOut(sw)
+        let errSw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(errSw)
+
+        try
+            let exitCode = runRunWithExecutor fakeExecutor fakeDiff tmpDir (createNoopSink ())
+            test <@ exitCode = 0 @>
+            test <@ calls |> List.exists (fun (kind, dll) -> kind = "all" && dll.Contains("A.dll")) @>
+            test <@ calls |> List.exists (fun (kind, dll) -> kind = "all" && dll.Contains("B.dll")) @>
+        finally
+            Console.SetOut(oldOut)
+            Console.SetError(oldErr)
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``RunAll propagates worst exit code`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+        let dbPath = Path.Combine(tmpDir, ".test-prune.db")
+        Database.create dbPath |> ignore
+
+        let fsprojDiff =
+            "diff --git a/src/MyProj/MyProj.fsproj b/src/MyProj/MyProj.fsproj\n"
+            + "--- a/src/MyProj/MyProj.fsproj\n"
+            + "+++ b/src/MyProj/MyProj.fsproj\n"
+            + "@@ -1 +1 @@\n"
+            + "-old\n"
+            + "+new\n"
+
+        let fakeDiff: DiffProvider = fun () -> Ok fsprojDiff
+
+        let fakeExecutor: TestExecutor =
+            { DiscoverTestProjects = fun _ -> [ "/tmp/tests/A/A.fsproj"; "/tmp/tests/B/B.fsproj" ]
+              FindTestDll = fun p -> p.Replace(".fsproj", ".dll")
+              RunAllTests =
+                fun dll ->
+                    if dll.Contains("A") then
+                        { ExitCode = 0
+                          Stdout = ""
+                          Stderr = "" }
+                    else
+                        { ExitCode = 3
+                          Stdout = ""
+                          Stderr = "" }
+              RunFilteredTests =
+                fun _ _ ->
+                    { ExitCode = 0
+                      Stdout = ""
+                      Stderr = "" } }
+
+        let sw = new StringWriter()
+        let oldOut = Console.Out
+        Console.SetOut(sw)
+        let errSw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(errSw)
+
+        try
+            let exitCode = runRunWithExecutor fakeExecutor fakeDiff tmpDir (createNoopSink ())
+            test <@ exitCode = 3 @>
+        finally
+            Console.SetOut(oldOut)
+            Console.SetError(oldErr)
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``RunSubset invokes executor RunFilteredTests with correct classes`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+
+        try
+            let libDir = Path.Combine(tmpDir, "src", "Lib")
+            Directory.CreateDirectory(libDir) |> ignore
+            File.WriteAllText(Path.Combine(libDir, "Lib.fs"), "module Lib\nlet helper x = x + 1\n")
+
+            let symbols =
+                [ { FullName = "Lib.helper"
+                    Kind = Function
+                    SourceFile = "src/Lib/Lib.fs"
+                    LineStart = 2
+                    LineEnd = 2
+                    ContentHash = "old-hash-will-differ"
+                    IsExtern = false }
+                  { FullName = "MyTests.Tests.testHelper"
+                    Kind = Function
+                    SourceFile = "tests/MyTests/Tests.fs"
+                    LineStart = 3
+                    LineEnd = 5
+                    ContentHash = "test-hash"
+                    IsExtern = false } ]
+
+            let deps =
+                [ { FromSymbol = "MyTests.Tests.testHelper"
+                    ToSymbol = "Lib.helper"
+                    Kind = Calls } ]
+
+            let testMethods =
+                [ { SymbolFullName = "MyTests.Tests.testHelper"
+                    TestProject = "MyTests"
+                    TestClass = "MyTests.Tests"
+                    TestMethod = "testHelper" } ]
+
+            makeDbWithTestGraph tmpDir symbols deps testMethods |> ignore
+
+            let fsDiff =
+                "diff --git a/src/Lib/Lib.fs b/src/Lib/Lib.fs\n"
+                + "--- a/src/Lib/Lib.fs\n"
+                + "+++ b/src/Lib/Lib.fs\n"
+                + "@@ -1,2 +1,2 @@\n"
+                + " module Lib\n"
+                + "-let helper x = x\n"
+                + "+let helper x = x + 1\n"
+
+            let fakeDiff: DiffProvider = fun () -> Ok fsDiff
+
+            let mutable filteredCalls: (string * string list) list = []
+
+            let fakeExecutor: TestExecutor =
+                { DiscoverTestProjects = fun _ -> [ "/tmp/tests/MyTests/MyTests.fsproj" ]
+                  FindTestDll = fun p -> p.Replace(".fsproj", ".dll")
+                  RunAllTests =
+                    fun _ ->
+                        { ExitCode = 0
+                          Stdout = ""
+                          Stderr = "" }
+                  RunFilteredTests =
+                    fun dll classes ->
+                        filteredCalls <- (dll, classes) :: filteredCalls
+
+                        { ExitCode = 0
+                          Stdout = ""
+                          Stderr = "" } }
+
+            let sw = new StringWriter()
+            let oldOut = Console.Out
+            Console.SetOut(sw)
+            let errSw = new StringWriter()
+            let oldErr = Console.Error
+            Console.SetError(errSw)
+
+            try
+                let exitCode = runRunWithExecutor fakeExecutor fakeDiff tmpDir (createNoopSink ())
+                test <@ exitCode = 0 @>
+                test <@ filteredCalls.Length = 1 @>
+
+                let (dll, classes) = filteredCalls.Head
+                test <@ dll.Contains("MyTests.dll") @>
+                test <@ classes |> List.contains "MyTests.Tests" @>
+            finally
+                Console.SetOut(oldOut)
+                Console.SetError(oldErr)
+        finally
+            if Directory.Exists(tmpDir) then
+                Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``RunSubset propagates worst exit code from multiple projects`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+
+        try
+            let libDir = Path.Combine(tmpDir, "src", "Lib")
+            Directory.CreateDirectory(libDir) |> ignore
+            File.WriteAllText(Path.Combine(libDir, "Lib.fs"), "module Lib\nlet helper x = x + 1\n")
+
+            let symbols =
+                [ { FullName = "Lib.helper"
+                    Kind = Function
+                    SourceFile = "src/Lib/Lib.fs"
+                    LineStart = 2
+                    LineEnd = 2
+                    ContentHash = "old-hash-will-differ"
+                    IsExtern = false }
+                  { FullName = "ProjA.Tests.testA"
+                    Kind = Function
+                    SourceFile = "tests/ProjA/Tests.fs"
+                    LineStart = 3
+                    LineEnd = 5
+                    ContentHash = "test-hash-a"
+                    IsExtern = false }
+                  { FullName = "ProjB.Tests.testB"
+                    Kind = Function
+                    SourceFile = "tests/ProjB/Tests.fs"
+                    LineStart = 3
+                    LineEnd = 5
+                    ContentHash = "test-hash-b"
+                    IsExtern = false } ]
+
+            let deps =
+                [ { FromSymbol = "ProjA.Tests.testA"
+                    ToSymbol = "Lib.helper"
+                    Kind = Calls }
+                  { FromSymbol = "ProjB.Tests.testB"
+                    ToSymbol = "Lib.helper"
+                    Kind = Calls } ]
+
+            let testMethods =
+                [ { SymbolFullName = "ProjA.Tests.testA"
+                    TestProject = "ProjA"
+                    TestClass = "ProjA.Tests"
+                    TestMethod = "testA" }
+                  { SymbolFullName = "ProjB.Tests.testB"
+                    TestProject = "ProjB"
+                    TestClass = "ProjB.Tests"
+                    TestMethod = "testB" } ]
+
+            makeDbWithTestGraph tmpDir symbols deps testMethods |> ignore
+
+            let fsDiff =
+                "diff --git a/src/Lib/Lib.fs b/src/Lib/Lib.fs\n"
+                + "--- a/src/Lib/Lib.fs\n"
+                + "+++ b/src/Lib/Lib.fs\n"
+                + "@@ -1,2 +1,2 @@\n"
+                + " module Lib\n"
+                + "-let helper x = x\n"
+                + "+let helper x = x + 1\n"
+
+            let fakeDiff: DiffProvider = fun () -> Ok fsDiff
+
+            let fakeExecutor: TestExecutor =
+                { DiscoverTestProjects = fun _ -> [ "/tmp/tests/ProjA/ProjA.fsproj"; "/tmp/tests/ProjB/ProjB.fsproj" ]
+                  FindTestDll = fun p -> p.Replace(".fsproj", ".dll")
+                  RunAllTests =
+                    fun _ ->
+                        { ExitCode = 0
+                          Stdout = ""
+                          Stderr = "" }
+                  RunFilteredTests =
+                    fun dll _ ->
+                        if dll.Contains("ProjB") then
+                            { ExitCode = 5
+                              Stdout = ""
+                              Stderr = "" }
+                        else
+                            { ExitCode = 0
+                              Stdout = ""
+                              Stderr = "" } }
+
+            let sw = new StringWriter()
+            let oldOut = Console.Out
+            Console.SetOut(sw)
+            let errSw = new StringWriter()
+            let oldErr = Console.Error
+            Console.SetError(errSw)
+
+            try
+                let exitCode = runRunWithExecutor fakeExecutor fakeDiff tmpDir (createNoopSink ())
+                test <@ exitCode = 5 @>
+            finally
+                Console.SetOut(oldOut)
+                Console.SetError(oldErr)
+        finally
+            if Directory.Exists(tmpDir) then
+                Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``RunSubset with unknown project prints warning`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+
+        try
+            let libDir = Path.Combine(tmpDir, "src", "Lib")
+            Directory.CreateDirectory(libDir) |> ignore
+            File.WriteAllText(Path.Combine(libDir, "Lib.fs"), "module Lib\nlet helper x = x + 1\n")
+
+            let symbols =
+                [ { FullName = "Lib.helper"
+                    Kind = Function
+                    SourceFile = "src/Lib/Lib.fs"
+                    LineStart = 2
+                    LineEnd = 2
+                    ContentHash = "old-hash-will-differ"
+                    IsExtern = false }
+                  { FullName = "MissingProj.Tests.testHelper"
+                    Kind = Function
+                    SourceFile = "tests/MissingProj/Tests.fs"
+                    LineStart = 3
+                    LineEnd = 5
+                    ContentHash = "test-hash"
+                    IsExtern = false } ]
+
+            let deps =
+                [ { FromSymbol = "MissingProj.Tests.testHelper"
+                    ToSymbol = "Lib.helper"
+                    Kind = Calls } ]
+
+            let testMethods =
+                [ { SymbolFullName = "MissingProj.Tests.testHelper"
+                    TestProject = "MissingProj"
+                    TestClass = "MissingProj.Tests"
+                    TestMethod = "testHelper" } ]
+
+            makeDbWithTestGraph tmpDir symbols deps testMethods |> ignore
+
+            let fsDiff =
+                "diff --git a/src/Lib/Lib.fs b/src/Lib/Lib.fs\n"
+                + "--- a/src/Lib/Lib.fs\n"
+                + "+++ b/src/Lib/Lib.fs\n"
+                + "@@ -1,2 +1,2 @@\n"
+                + " module Lib\n"
+                + "-let helper x = x\n"
+                + "+let helper x = x + 1\n"
+
+            let fakeDiff: DiffProvider = fun () -> Ok fsDiff
+
+            let fakeExecutor: TestExecutor =
+                { DiscoverTestProjects = fun _ -> []
+                  FindTestDll = fun p -> p.Replace(".fsproj", ".dll")
+                  RunAllTests =
+                    fun _ ->
+                        { ExitCode = 0
+                          Stdout = ""
+                          Stderr = "" }
+                  RunFilteredTests =
+                    fun _ _ ->
+                        { ExitCode = 0
+                          Stdout = ""
+                          Stderr = "" } }
+
+            let sw = new StringWriter()
+            let oldOut = Console.Out
+            Console.SetOut(sw)
+            let errSw = new StringWriter()
+            let oldErr = Console.Error
+            Console.SetError(errSw)
+
+            try
+                let exitCode = runRunWithExecutor fakeExecutor fakeDiff tmpDir (createNoopSink ())
+                let errOutput = errSw.ToString()
+                test <@ exitCode = 0 @>
+                test <@ errOutput.Contains("WARNING") @>
+                test <@ errOutput.Contains("MissingProj") @>
+            finally
+                Console.SetOut(oldOut)
+                Console.SetError(oldErr)
+        finally
+            if Directory.Exists(tmpDir) then
+                Directory.Delete(tmpDir, true)
+
+[<Collection("Console")>]
 module ``runIndexWith`` =
 
     let private testChecker = createChecker ()
@@ -881,6 +1497,259 @@ module ``runIndexWith`` =
             Console.SetError(oldErr)
             Directory.Delete(tmpDir, true)
 
+    [<Fact>]
+    let ``prints warning when dropped edges occur`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let srcDir = Path.Combine(tmpDir, "src", "Lib")
+        Directory.CreateDirectory(srcDir) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(srcDir, "Lib.fsproj"),
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+</Project>"""
+        )
+
+        // Module-level "do" expression references x but isn't inside a let binding,
+        // so findEnclosing returns None and the edge is dropped.
+        File.WriteAllText(Path.Combine(srcDir, "Lib.fs"), "module Lib\nlet x = 1\ndo printfn \"%d\" x\n")
+
+        let sw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(sw)
+
+        try
+            let exitCode =
+                runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ())
+
+            test <@ exitCode = 0 @>
+            let errOutput = sw.ToString()
+            test <@ errOutput.Contains("dropped") @>
+        finally
+            Console.SetError(oldErr)
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``prints warning when filtered symbols occur`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let srcDir = Path.Combine(tmpDir, "src", "Lib")
+        Directory.CreateDirectory(srcDir) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(srcDir, "Lib.fsproj"),
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+</Project>"""
+        )
+
+        // Local let binding inside a function gets filtered (not module-level or type member).
+        File.WriteAllText(
+            Path.Combine(srcDir, "Lib.fs"),
+            "module Lib\nlet outer () =\n    let inner x = x + 1\n    inner 42\n"
+        )
+
+        let sw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(sw)
+
+        try
+            let exitCode =
+                runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ())
+
+            test <@ exitCode = 0 @>
+            let errOutput = sw.ToString()
+            test <@ errOutput.Contains("Filtered") @>
+        finally
+            Console.SetError(oldErr)
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``skips project with invalid fsproj`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let srcDir = Path.Combine(tmpDir, "src", "Bad")
+        Directory.CreateDirectory(srcDir) |> ignore
+
+        // Invalid XML in .fsproj causes parseProjectFile to throw
+        File.WriteAllText(Path.Combine(srcDir, "Bad.fsproj"), "not valid xml")
+
+        let sw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(sw)
+
+        try
+            let exitCode =
+                runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ())
+
+            test <@ exitCode = 0 @>
+            let errOutput = sw.ToString()
+            test <@ errOutput.Contains("Error parsing") @>
+        finally
+            Console.SetError(oldErr)
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``skips missing source files listed in fsproj`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        let srcDir = Path.Combine(tmpDir, "src", "Lib")
+        Directory.CreateDirectory(srcDir) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(srcDir, "Lib.fsproj"),
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <Compile Include="Exists.fs" />
+    <Compile Include="Missing.fs" />
+  </ItemGroup>
+</Project>"""
+        )
+
+        // Only create Exists.fs, not Missing.fs
+        File.WriteAllText(Path.Combine(srcDir, "Exists.fs"), "module Exists\nlet y = 42\n")
+
+        let sw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(sw)
+
+        try
+            let exitCode =
+                runIndexWith successBuild scriptOptions tmpDir testChecker 1 (createNoopSink ())
+
+            test <@ exitCode = 0 @>
+
+            // Verify the existing file was still indexed
+            let dbPath = Path.Combine(tmpDir, ".test-prune.db")
+            let db = Database.create dbPath
+            let symbols = db.GetAllSymbolNames()
+            test <@ symbols.Count > 0 @>
+        finally
+            Console.SetError(oldErr)
+            Directory.Delete(tmpDir, true)
+
+[<Collection("Console")>]
+module ``runCommand`` =
+
+    [<Fact>]
+    let ``Help command returns 0`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
+        let sw = new StringWriter()
+        let oldOut = Console.Out
+        Console.SetOut(sw)
+
+        try
+            let parsed =
+                { Command = Help
+                  RepoRoot = Some tmpDir
+                  Parallelism = 1 }
+
+            test <@ runCommand parsed = 0 @>
+            test <@ sw.ToString().Contains("TestPrune") @>
+        finally
+            Console.SetOut(oldOut)
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``Help command with explicit repo root`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
+        let sw = new StringWriter()
+        let oldOut = Console.Out
+        Console.SetOut(sw)
+
+        try
+            let parsed =
+                { Command = Help
+                  RepoRoot = Some tmpDir
+                  Parallelism = 1 }
+
+            let result = runCommand parsed
+            test <@ result = 0 @>
+        finally
+            Console.SetOut(oldOut)
+            Directory.Delete(tmpDir, true)
+
+[<Collection("Console")>]
+module ``main`` =
+
+    [<Fact>]
+    let ``help returns 0`` () =
+        let sw = new StringWriter()
+        let oldOut = Console.Out
+        Console.SetOut(sw)
+
+        try
+            test <@ main [| "help" |] = 0 @>
+        finally
+            Console.SetOut(oldOut)
+
+    [<Fact>]
+    let ``--help returns 0`` () =
+        let sw = new StringWriter()
+        let oldOut = Console.Out
+        Console.SetOut(sw)
+
+        try
+            test <@ main [| "--help" |] = 0 @>
+        finally
+            Console.SetOut(oldOut)
+
+    [<Fact>]
+    let ``-h returns 0`` () =
+        let sw = new StringWriter()
+        let oldOut = Console.Out
+        Console.SetOut(sw)
+
+        try
+            test <@ main [| "-h" |] = 0 @>
+        finally
+            Console.SetOut(oldOut)
+
+    [<Fact>]
+    let ``empty args returns 0 (shows help)`` () =
+        let sw = new StringWriter()
+        let oldOut = Console.Out
+        Console.SetOut(sw)
+
+        try
+            test <@ main [||] = 0 @>
+        finally
+            Console.SetOut(oldOut)
+
+    [<Fact>]
+    let ``unknown command returns 1`` () =
+        let sw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(sw)
+        let oldOut = Console.Out
+        Console.SetOut(new StringWriter())
+
+        try
+            test <@ main [| "unknown" |] = 1 @>
+            let errOutput = sw.ToString()
+            test <@ errOutput.Contains("Error") @>
+        finally
+            Console.SetError(oldErr)
+            Console.SetOut(oldOut)
+
+    [<Fact>]
+    let ``invalid parallelism returns 1`` () =
+        let sw = new StringWriter()
+        let oldErr = Console.Error
+        Console.SetError(sw)
+        let oldOut = Console.Out
+        Console.SetOut(new StringWriter())
+
+        try
+            test <@ main [| "--parallelism"; "abc"; "index" |] = 1 @>
+        finally
+            Console.SetError(oldErr)
+            Console.SetOut(oldOut)
+
+[<Collection("Console")>]
 module ``Example solution integration`` =
 
     let private exampleChecker = createChecker ()

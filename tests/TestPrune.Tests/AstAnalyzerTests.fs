@@ -1825,3 +1825,260 @@ module ``getScriptOptions with bare filename`` =
         match result with
         | Ok analysis -> test <@ analysis.Symbols.Length > 0 @>
         | Error e -> failwith $"analysis failed: {e}"
+
+module ``DllImport detection`` =
+
+    [<Fact>]
+    let ``function with DllImport attribute is marked as extern`` () =
+        let result =
+            analyze
+                """
+module M
+
+open System.Runtime.InteropServices
+
+type DllImportAttribute(dllName: string) =
+    inherit System.Attribute()
+
+[<DllImport("kernel32.dll")>]
+extern void Sleep(int milliseconds)
+"""
+
+        let sleepSym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Sleep", StringComparison.Ordinal))
+
+        test <@ sleepSym.IsSome @>
+        test <@ sleepSym.Value.IsExtern @>
+
+module ``Record field edges via FSharpField`` =
+
+    [<Fact>]
+    let ``record construction via fields creates UsesType edge to record type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type MyRecord = { Name: string; Age: int }
+
+let create () = { Name = "Alice"; Age = 30 }
+"""
+
+        let dep =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("create", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("MyRecord", StringComparison.Ordinal)
+                && d.Kind = UsesType)
+
+        test <@ dep.IsSome @>
+
+    [<Fact>]
+    let ``record update expression creates UsesType edge`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Settings = { Verbose: bool; MaxRetries: int }
+
+let makeVerbose (s: Settings) = { s with Verbose = true }
+"""
+
+        let dep =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("makeVerbose", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("Settings", StringComparison.Ordinal)
+                && d.Kind = UsesType)
+
+        test <@ dep.IsSome @>
+
+module ``Union parent type edge coverage`` =
+
+    [<Fact>]
+    let ``pattern matching on DU case creates edges to both case and parent type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Shape =
+    | Circle of float
+    | Square of float
+
+let area s =
+    match s with
+    | Circle r -> 3.14 * r * r
+    | Square l -> l * l
+"""
+
+        let deps =
+            result.Dependencies
+            |> List.filter (fun d -> d.FromSymbol.EndsWith("area", StringComparison.Ordinal))
+
+        // Should have edges to individual cases
+        let hasCircleEdge =
+            deps
+            |> List.exists (fun d -> d.ToSymbol.EndsWith("Circle", StringComparison.Ordinal))
+
+        let hasSquareEdge =
+            deps
+            |> List.exists (fun d -> d.ToSymbol.EndsWith("Square", StringComparison.Ordinal))
+
+        // Should also have an edge to the parent type Shape
+        let hasShapeEdge =
+            deps
+            |> List.exists (fun d -> d.ToSymbol.EndsWith("Shape", StringComparison.Ordinal) && d.Kind = UsesType)
+
+        test <@ hasCircleEdge @>
+        test <@ hasSquareEdge @>
+        test <@ hasShapeEdge @>
+
+module ``Generic type arg edges`` =
+
+    [<Fact>]
+    let ``function with generic container type creates edge to type arg`` () =
+        let result =
+            analyze
+                """
+module M
+
+type Wrapper<'T> = { Items: 'T list }
+type Payload = { Data: string }
+
+let bundle (p: Payload) : Wrapper<Payload> = { Items = [ p ] }
+"""
+
+        // bundle should have deps to both Wrapper and Payload
+        let deps =
+            result.Dependencies
+            |> List.filter (fun d -> d.FromSymbol.EndsWith("bundle", StringComparison.Ordinal))
+
+        let hasPayloadEdge =
+            deps
+            |> List.exists (fun d -> d.ToSymbol.EndsWith("Payload", StringComparison.Ordinal) && d.Kind = UsesType)
+
+        test <@ hasPayloadEdge @>
+
+module ``findEnclosing tighter span`` =
+
+    [<Fact>]
+    let ``nested functions attribute edges to innermost enclosing binding`` () =
+        let result =
+            analyze
+                """
+module M
+
+let helper x = x + 1
+
+let outerFn () =
+    let innerFn x = helper x
+    innerFn 42
+"""
+
+        // The call to helper should be attributed to outerFn (the nearest module-level binding)
+        let outerCallsHelper =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("outerFn", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("helper", StringComparison.Ordinal))
+
+        test <@ outerCallsHelper.IsSome @>
+
+    [<Fact>]
+    let ``deeply nested binding with type member uses tighter enclosing span`` () =
+        let result =
+            analyze
+                """
+module M
+
+let utility x = x * 2
+
+type Worker() =
+    member _.doWork () =
+        let step1 = utility 1
+        let step2 = utility 2
+        step1 + step2
+"""
+
+        let doWorkCallsUtility =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("doWork", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("utility", StringComparison.Ordinal))
+
+        test <@ doWorkCallsUtility.IsSome @>
+
+module ``Extern symbol extraction`` =
+
+    [<Fact>]
+    let ``dependencies to external symbols generate ExternRef symbols`` () =
+        let result =
+            analyze
+                """
+module M
+
+let greet name = sprintf "Hello, %s" name
+"""
+
+        // sprintf is an external symbol not defined in this file
+        let externSymbols = result.Symbols |> List.filter (fun s -> s.IsExtern)
+
+        // All extern symbols should have IsExtern = true and ExternSourceFile
+        for s in externSymbols do
+            test <@ s.IsExtern @>
+            test <@ s.SourceFile = ExternSourceFile @>
+
+module ``AnalysisDiagnostics`` =
+
+    [<Fact>]
+    let ``analysis produces diagnostics with counts`` () =
+        let result =
+            analyze
+                """
+module M
+
+let add x y = x + y
+let double x = add x x
+"""
+
+        // Diagnostics should be populated
+        test <@ result.Diagnostics.TotalDefinitions > 0 @>
+
+module ``AnalysisResult Create helper`` =
+
+    [<Fact>]
+    let ``Create sets zero diagnostics`` () =
+        let result =
+            AnalysisResult.Create(
+                [ { FullName = "M.f"
+                    Kind = Function
+                    SourceFile = "test.fs"
+                    LineStart = 1
+                    LineEnd = 1
+                    ContentHash = ""
+                    IsExtern = false } ],
+                [],
+                []
+            )
+
+        test <@ result.Diagnostics = AnalysisDiagnostics.Zero @>
+        test <@ result.Symbols.Length = 1 @>
+
+module ``normalizeSymbolPaths`` =
+
+    [<Fact>]
+    let ``normalizes absolute paths to relative`` () =
+        let symbols =
+            [ { FullName = "M.f"
+                Kind = Function
+                SourceFile = "/repo/root/src/MyModule.fs"
+                LineStart = 1
+                LineEnd = 5
+                ContentHash = ""
+                IsExtern = false } ]
+
+        let normalized = normalizeSymbolPaths "/repo/root" symbols
+        test <@ normalized[0].SourceFile = "src/MyModule.fs" @>

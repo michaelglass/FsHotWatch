@@ -31,13 +31,13 @@
       "reason": "loosened automatically"
     },
     "Orchestration.fs": {
-      "line": 86,
-      "branch": 79,
+      "line": 97,
+      "branch": 96,
       "reason": "loosened: ProjectOutcome DU fold refactoring added uncovered branches"
     },
     "Program.fs": {
-      "line": 39.2,
-      "branch": 15.384615384615385,
+      "line": 49,
+      "branch": 26,
       "reason": "loosened automatically"
     },
     "ProjectLoader.fs": {

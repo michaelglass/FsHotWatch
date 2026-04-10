@@ -437,6 +437,13 @@ let runIndexWith
 
 type DiffProvider = unit -> Result<string, string>
 
+/// Injectable test execution dependencies for runRunWith.
+type TestExecutor =
+    { DiscoverTestProjects: string -> string list
+      FindTestDll: string -> string
+      RunAllTests: string -> TestResult
+      RunFilteredTests: string -> string list -> TestResult }
+
 /// Determine test selection from current jj diff.
 let analyzeChanges
     (getDiff: DiffProvider)
@@ -552,8 +559,20 @@ let private runAndReport (runTests: string -> TestRunner.TestResult) (dll: strin
 
     result.ExitCode
 
-/// Run the run command with an injectable diff provider.
-let runRunWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink) : int =
+/// Default test executor using real process invocations.
+let defaultTestExecutor: TestExecutor =
+    { DiscoverTestProjects = discoverTestProjects
+      FindTestDll = findTestDll
+      RunAllTests = runAllTests
+      RunFilteredTests = runFilteredTests }
+
+/// Run the run command with injectable diff provider and test executor.
+let runRunWithExecutor
+    (executor: TestExecutor)
+    (getDiff: DiffProvider)
+    (repoRoot: string)
+    (auditSink: AuditSink)
+    : int =
     withAnalysis getDiff repoRoot auditSink (fun (selection, _changedFiles) ->
         match selection with
         | RunSubset [] ->
@@ -561,18 +580,18 @@ let runRunWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink)
             0
         | RunAll reason ->
             eprintfn $"Running ALL tests (reason: %s{SelectionReason.describe reason})"
-            let testProjects = discoverTestProjects repoRoot
+            let testProjects = executor.DiscoverTestProjects repoRoot
 
             testProjects
             |> List.fold
                 (fun worstExit projPath ->
-                    let dll = findTestDll projPath
+                    let dll = executor.FindTestDll projPath
                     eprintfn $"Running: %s{Path.GetFileName(projPath)}"
-                    max worstExit (runAndReport runAllTests dll))
+                    max worstExit (runAndReport executor.RunAllTests dll))
                 0
         | RunSubset tests ->
             let byProject = tests |> List.groupBy (fun t -> t.TestProject)
-            let projects = discoverTestProjects repoRoot
+            let projects = executor.DiscoverTestProjects repoRoot
 
             byProject
             |> List.fold
@@ -584,13 +603,17 @@ let runRunWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink)
                         |> List.tryFind (fun p -> Path.GetFileNameWithoutExtension(p) = projName)
                     with
                     | Some projPath ->
-                        let dll = findTestDll projPath
+                        let dll = executor.FindTestDll projPath
                         eprintfn $"Running %d{classes.Length} class(es) in %s{projName}"
-                        max worstExit (runAndReport (fun d -> runFilteredTests d classes) dll)
+                        max worstExit (runAndReport (fun d -> executor.RunFilteredTests d classes) dll)
                     | None ->
                         eprintfn $"WARNING: project %s{projName} not found"
                         worstExit)
                 0)
+
+/// Run the run command with an injectable diff provider.
+let runRunWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink) : int =
+    runRunWithExecutor defaultTestExecutor getDiff repoRoot auditSink
 
 /// Run the dead-code command: detect unreachable symbols from entry points.
 let runDeadCode

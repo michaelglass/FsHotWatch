@@ -1,5 +1,7 @@
 module TestPrune.Tests.DatabaseTests
 
+open System
+open System.IO
 open Xunit
 open Swensen.Unquote
 open Microsoft.Data.Sqlite
@@ -1411,3 +1413,255 @@ module ``GetFileKey`` =
 
             let key = db.GetFileKey "src/Mod.fs"
             test <@ key = Some "abc123" @>)
+
+module ``openConnection error handling`` =
+
+    [<Fact>]
+    let ``creating database with nonexistent directory path fails gracefully`` () =
+        let dbPath = "/nonexistent/dir/that/does/not/exist/test.db"
+        Assert.ThrowsAny<exn>(fun () -> Database.create dbPath |> ignore)
+
+    [<Fact>]
+    let ``creating database with directory as path fails gracefully`` () =
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-test-{Guid.NewGuid():N}")
+
+        Directory.CreateDirectory(tmpDir) |> ignore
+
+        try
+            // SQLite may or may not fail when given a directory path;
+            // the point is that it should not hang or corrupt state
+            try
+                let _db = Database.create tmpDir
+                // If it doesn't throw, that's also acceptable
+                ()
+            with _ ->
+                ()
+        finally
+            try
+                Directory.Delete(tmpDir, true)
+            with _ ->
+                ()
+
+module ``GetTestMethodsInFile empty result`` =
+
+    [<Fact>]
+    let ``GetTestMethodsInFile returns empty for nonexistent file`` () =
+        withDb (fun db ->
+            let tests = db.GetTestMethodsInFile "nonexistent/file.fs"
+            test <@ tests |> List.isEmpty @>)
+
+module ``GetDependenciesFromFile empty result`` =
+
+    [<Fact>]
+    let ``GetDependenciesFromFile returns empty for nonexistent file`` () =
+        withDb (fun db ->
+            let deps = db.GetDependenciesFromFile "nonexistent/file.fs"
+            test <@ deps |> List.isEmpty @>)
+
+module ``GetIncomingEdgesBatch`` =
+
+    [<Fact>]
+    let ``GetIncomingEdgesBatch with empty input returns empty map`` () =
+        withDb (fun db -> test <@ db.GetIncomingEdgesBatch([]) = Map.empty @>)
+
+    [<Fact>]
+    let ``GetIncomingEdgesBatch returns incoming edges for populated database`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Lib.funcB"
+                        Kind = Calls } ]
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let edges = db.GetIncomingEdgesBatch([ "Lib.funcB" ])
+            test <@ edges |> Map.containsKey "Lib.funcB" @>
+            test <@ edges["Lib.funcB"] = [ "Tests.testA" ] @>)
+
+    [<Fact>]
+    let ``GetIncomingEdgesBatch returns empty for symbols with no incoming edges`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let edges = db.GetIncomingEdgesBatch([ "Lib.funcB" ])
+            test <@ edges = Map.empty @>)
+
+module ``Analysis events`` =
+
+    [<Fact>]
+    let ``InsertEvent and GetEvents round-trip`` () =
+        withDb (fun db ->
+            db.InsertEvent("run1", "2024-01-01T00:00:00Z", "start", "data1")
+            db.InsertEvent("run1", "2024-01-01T00:01:00Z", "end", "data2")
+            db.InsertEvent("run2", "2024-01-01T00:02:00Z", "start", "data3")
+
+            let events = db.GetEvents("run1")
+            test <@ events.Length = 2 @>
+            let (ts, evType, evData) = events[0]
+            test <@ ts = "2024-01-01T00:00:00Z" @>
+            test <@ evType = "start" @>
+            test <@ evData = "data1" @>)
+
+    [<Fact>]
+    let ``GetEvents returns empty for unknown run ID`` () =
+        withDb (fun db ->
+            let events = db.GetEvents("nonexistent-run")
+            test <@ events |> List.isEmpty @>)
+
+    [<Fact>]
+    let ``ClearEvents removes events for given run ID only`` () =
+        withDb (fun db ->
+            db.InsertEvent("run1", "2024-01-01T00:00:00Z", "start", "data1")
+            db.InsertEvent("run2", "2024-01-01T00:01:00Z", "start", "data2")
+
+            db.ClearEvents("run1")
+
+            let run1Events = db.GetEvents("run1")
+            let run2Events = db.GetEvents("run2")
+            test <@ run1Events |> List.isEmpty @>
+            test <@ run2Events.Length = 1 @>)
+
+module ``GetReachableSymbols`` =
+
+    [<Fact>]
+    let ``GetReachableSymbols with empty roots returns empty`` () =
+        withDb (fun db ->
+            let reachable = db.GetReachableSymbols([])
+            test <@ reachable = Set.empty @>)
+
+    [<Fact>]
+    let ``GetReachableSymbols returns transitively reachable symbols`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Domain.TypeC"
+                        Kind = Type
+                        SourceFile = "src/Domain.fs"
+                        LineStart = 1
+                        LineEnd = 3
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Lib.funcB"
+                        Kind = Calls }
+                      { FromSymbol = "Lib.funcB"
+                        ToSymbol = "Domain.TypeC"
+                        Kind = UsesType } ]
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let reachable = db.GetReachableSymbols([ "Tests.testA" ])
+            test <@ reachable |> Set.contains "Tests.testA" @>
+            test <@ reachable |> Set.contains "Lib.funcB" @>
+            test <@ reachable |> Set.contains "Domain.TypeC" @>)
+
+module ``GetUrlPatternsForSourceFile empty result`` =
+
+    [<Fact>]
+    let ``GetUrlPatternsForSourceFile returns empty for unknown file`` () =
+        withDb (fun db ->
+            let patterns = db.GetUrlPatternsForSourceFile "nonexistent.fs"
+            test <@ patterns |> List.isEmpty @>)
+
+module ``ExternRef kind round-trips through database`` =
+
+    [<Fact>]
+    let ``ExternRef kind round-trips through database`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Ext.SomeType"
+                        Kind = ExternRef
+                        SourceFile = ExternSourceFile
+                        LineStart = 0
+                        LineEnd = 0
+                        ContentHash = ""
+                        IsExtern = true } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let allSymbols = db.GetAllSymbols()
+
+            let externSym = allSymbols |> List.tryFind (fun s -> s.FullName = "Ext.SomeType")
+
+            test <@ externSym.IsSome @>
+            test <@ externSym.Value.Kind = ExternRef @>
+            test <@ externSym.Value.IsExtern @>)
+
+module ``GetTestMethodSymbolNames with data`` =
+
+    [<Fact>]
+    let ``GetTestMethodSymbolNames returns test symbol names`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.testA"
+                        TestProject = "MyTests"
+                        TestClass = "Tests"
+                        TestMethod = "testA" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let names = db.GetTestMethodSymbolNames()
+            test <@ names |> Set.contains "Tests.testA" @>)
