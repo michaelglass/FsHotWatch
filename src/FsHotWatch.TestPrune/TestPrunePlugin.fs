@@ -33,20 +33,26 @@ type TestConfig =
         ClassJoin: string
     }
 
+type RerunIntent =
+    | NoRerun
+    | RerunQueued
+
 type TestRunPhase =
     | TestsIdle of Lifecycle<Idle, TestResults option>
-    | TestsRunning of Lifecycle<Running, TestResults option>
-    | TestsRunningRerunQueued of Lifecycle<Running, TestResults option>
+    | TestsRunning of Lifecycle<Running, TestResults option> * RerunIntent
+
+type AffectedTestsState =
+    | NotYetAnalyzed
+    | Analyzed of TestMethodInfo list
 
 type TestPruneState =
     {
         PendingAnalysis: Map<string, AnalysisResult list>
         SymbolSnapshot: Map<string, SymbolInfo list>
-        AffectedTests: TestMethodInfo list
+        AffectedTests: AffectedTestsState
         ChangedSymbols: string list
         ChangedFiles: string list
         TestPhase: TestRunPhase
-        AnalysisRan: bool
         /// Maps test class name → absolute source file path (built during FileChecked analysis).
         TestClassFiles: Map<string, string>
     }
@@ -63,12 +69,14 @@ let private formatTestResultsJson (results: TestResults) =
                 | TestsPassed o -> ("passed", o)
                 | TestsFailed o -> ("failed", o)
 
-            let escapedName = JsonSerializer.Serialize(name)
-            let escapedOutput = JsonSerializer.Serialize(truncateOutput 200 output)
-            $"{{\"project\": %s{escapedName}, \"status\": \"%s{status}\", \"output\": %s{escapedOutput}}}")
-        |> String.concat ", "
+            {| project = name
+               status = status
+               output = truncateOutput 200 output |})
 
-    $"{{\"elapsed\": \"%.1f{results.Elapsed.TotalSeconds}s\", \"projects\": [%s{projects}]}}"
+    JsonSerializer.Serialize(
+        {| elapsed = $"%.1f{results.Elapsed.TotalSeconds}s"
+           projects = projects |}
+    )
 
 /// Build the filter arg string for a config given affected classes.
 let private buildFilterArgs (config: TestConfig) (classesByProject: Map<string, string list>) : string option =
@@ -329,7 +337,7 @@ let private flushAndQueryAffected (db: Database) (state: TestPruneState) =
             affected
 
     { flushedState with
-        AffectedTests = affectedTests }
+        AffectedTests = Analyzed affectedTests }
 
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 let create
@@ -355,11 +363,10 @@ let create
     let initialState =
         { PendingAnalysis = Map.empty
           SymbolSnapshot = Map.empty
-          AffectedTests = []
+          AffectedTests = NotYetAnalyzed
           ChangedSymbols = []
           ChangedFiles = []
           TestPhase = TestsIdle(Lifecycle.create None)
-          AnalysisRan = false
           TestClassFiles = Map.empty }
 
     let runTestsWithImpact
@@ -384,8 +391,13 @@ let create
                     | None -> []
 
                 // Group affected classes by test project so each project only gets its own classes
+                let affectedTestsList =
+                    match state.AffectedTests with
+                    | Analyzed tests -> tests
+                    | NotYetAnalyzed -> []
+
                 let astByProject =
-                    state.AffectedTests
+                    affectedTestsList
                     |> List.groupBy (fun t -> t.TestProject)
                     |> List.map (fun (proj, tests) -> proj, tests |> List.map (fun t -> t.TestClass) |> List.distinct)
 
@@ -451,37 +463,32 @@ let create
         [ "affected-tests",
           fun (state: TestPruneState) (_args: string array) ->
               async {
-                  if not state.AnalysisRan then
-                      return "{\"status\": \"not analyzed\"}"
-                  else
-                      let tests =
-                          state.AffectedTests
+                  match state.AffectedTests with
+                  | NotYetAnalyzed -> return JsonSerializer.Serialize({| status = "not analyzed" |})
+                  | Analyzed tests ->
+                      let testsData =
+                          tests
                           |> List.map (fun t ->
-                              $"{{\"project\": \"%s{t.TestProject}\", \"class\": \"%s{t.TestClass}\", \"method\": \"%s{t.TestMethod}\"}}")
-                          |> String.concat ", "
+                              {| project = t.TestProject
+                                 ``class`` = t.TestClass
+                                 ``method`` = t.TestMethod |})
 
-                      return $"[%s{tests}]"
+                      return JsonSerializer.Serialize(testsData)
               }
 
           "changed-files",
           fun (state: TestPruneState) (_args: string array) ->
-              async {
-                  let files =
-                      state.ChangedFiles |> List.map (fun f -> $"\"%s{f}\"") |> String.concat ", "
-
-                  return $"[%s{files}]"
-              }
+              async { return JsonSerializer.Serialize(state.ChangedFiles) }
 
           "test-results",
           fun (state: TestPruneState) (_args: string array) ->
               async {
                   match state.TestPhase with
-                  | TestsRunning _
-                  | TestsRunningRerunQueued _ -> return "{\"status\": \"running\"}"
+                  | TestsRunning _ -> return JsonSerializer.Serialize({| status = "running" |})
                   | TestsIdle idle ->
                       match Lifecycle.value idle with
                       | Some results -> return formatTestResultsJson results
-                      | None -> return "{\"status\": \"not run\"}"
+                      | None -> return JsonSerializer.Serialize({| status = "not run" |})
               } ]
 
     // run-tests command (only if testConfigs are provided)
@@ -493,8 +500,7 @@ let create
                 fun (state: TestPruneState) (args: string array) ->
                     async {
                         match state.TestPhase with
-                        | TestsRunning _
-                        | TestsRunningRerunQueued _ -> return "{\"error\": \"tests already running\"}"
+                        | TestsRunning _ -> return JsonSerializer.Serialize({| error = "tests already running" |})
                         | TestsIdle _ ->
                             try
                                 let argStr = if args.Length > 0 then args.[0].Trim() else "{}"
@@ -506,8 +512,7 @@ let create
                                         Error ex.Message
 
                                 match parseResult with
-                                | Error msg ->
-                                    return $"{{\"error\": \"invalid JSON: %s{JsonSerializer.Serialize(msg)}\"}}"
+                                | Error msg -> return JsonSerializer.Serialize({| error = $"invalid JSON: %s{msg}" |})
                                 | Ok doc ->
 
                                     use doc = doc
@@ -533,8 +538,7 @@ let create
                                     let lastResults =
                                         match state.TestPhase with
                                         | TestsIdle idle -> Lifecycle.value idle
-                                        | TestsRunning _
-                                        | TestsRunningRerunQueued _ -> None
+                                        | TestsRunning _ -> None
 
                                     let configsResult =
                                         if onlyFailed then
@@ -558,9 +562,9 @@ let create
                                             | None -> Ok allConfigs
 
                                     match configsResult with
-                                    | Error msg -> return $"{{\"error\": %s{JsonSerializer.Serialize(msg)}}}"
+                                    | Error msg -> return JsonSerializer.Serialize({| error = msg |})
                                     | Ok configs when configs.IsEmpty ->
-                                        return "{\"error\": \"no matching test projects\"}"
+                                        return JsonSerializer.Serialize({| error = "no matching test projects" |})
                                     | Ok configs ->
                                         let! results =
                                             executeTests
@@ -575,11 +579,11 @@ let create
                                         return formatTestResultsJson results
                             with ex ->
                                 Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
-                                return $"{{\"error\": %s{JsonSerializer.Serialize(ex.Message)}}}"
+                                return JsonSerializer.Serialize({| error = ex.Message |})
                     } ]
         | _ -> commands
 
-    { Name = "test-prune"
+    { Name = PluginName.create "test-prune"
       Init = initialState
       Update =
         fun ctx state event ->
@@ -590,8 +594,7 @@ let create
                     let isIdle =
                         match state.TestPhase with
                         | TestsIdle _ -> true
-                        | TestsRunning _
-                        | TestsRunningRerunQueued _ -> false
+                        | TestsRunning _ -> false
 
                     if isIdle then
                         ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
@@ -674,7 +677,7 @@ let create
                                     PendingAnalysis = newPending
                                     ChangedSymbols = newChangedSymbols
                                     TestClassFiles = newClassFiles
-                                    AnalysisRan = true }
+                                    AffectedTests = Analyzed [] }
 
                             // Keep the mutable snapshot in sync for the cache key function
                             changedSymbolsRef <- newState.ChangedSymbols
@@ -705,15 +708,14 @@ let create
                     match buildResult with
                     | BuildSucceeded ->
                         match state.TestPhase with
-                        | TestsRunning running
-                        | TestsRunningRerunQueued running ->
+                        | TestsRunning(running, _) ->
                             Logging.info
                                 "test-prune"
                                 "BuildSucceeded received but tests already running — will re-run after"
 
                             return
                                 { state with
-                                    TestPhase = TestsRunningRerunQueued running }
+                                    TestPhase = TestsRunning(running, RerunQueued) }
                         | TestsIdle idle ->
                             Logging.info "test-prune" $"BuildSucceeded received, running tests"
 
@@ -725,7 +727,7 @@ let create
 
                             let newState =
                                 { stateWithAffected with
-                                    TestPhase = TestsRunning running }
+                                    TestPhase = TestsRunning(running, NoRerun) }
 
                             // Dispatch tests to thread pool
                             let hasCachedResults = (Lifecycle.value idle).IsSome
@@ -747,7 +749,7 @@ let create
 
                 | Custom(TestsFinished testResults) ->
                     match state.TestPhase with
-                    | TestsRunningRerunQueued running ->
+                    | TestsRunning(running, RerunQueued) ->
                         Logging.info "test-prune" "Re-running tests (queued during previous run)"
 
                         // Flush any new pending analysis
@@ -755,7 +757,7 @@ let create
                             flushAndQueryAffected
                                 db
                                 { state with
-                                    TestPhase = TestsRunning running }
+                                    TestPhase = TestsRunning(running, NoRerun) }
 
                         match testConfigs with
                         | Some configs when not configs.IsEmpty ->
@@ -763,7 +765,7 @@ let create
                         | _ -> ()
 
                         return rerunState
-                    | TestsRunning running ->
+                    | TestsRunning(running, NoRerun) ->
                         let completed = Lifecycle.complete (Some testResults) running
                         changedSymbolsRef <- []
 
@@ -796,7 +798,7 @@ let create
                                 TestPhase = TestsIdle completed
                                 ChangedFiles = []
                                 ChangedSymbols = []
-                                AffectedTests = [] }
+                                AffectedTests = Analyzed [] }
                     | TestsIdle _ ->
                         // Unexpected but handle gracefully
                         return state
@@ -805,9 +807,10 @@ let create
             }
       Commands = allCommands
       Subscriptions =
-        { PluginSubscriptions.none with
-            FileChecked = true
-            BuildCompleted = hasTestConfigs }
+        Set.ofList (
+            [ SubscribeFileChecked ]
+            @ (if hasTestConfigs then [ SubscribeBuildCompleted ] else [])
+        )
       CacheKey =
         match getCommitId with
         | Some fn ->
@@ -828,4 +831,5 @@ let create
 
                         Some $"{commitId}:{symbolsHash}"
                     | _ -> Some commitId)
-        | None -> None }
+        | None -> None
+      Teardown = None }

@@ -298,12 +298,13 @@ let ``CLI status query works against running daemon`` () =
         Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ])
 
     let handler =
-        { Name = "test-plugin"
+        { Name = PluginName.create "test-plugin"
           Init = ()
           Update = fun _ctx state _event -> async { return state }
           Commands = []
           Subscriptions = PluginSubscriptions.none
-          CacheKey = None }
+          CacheKey = None
+          Teardown = None }
 
     daemon.RegisterHandler(handler)
     let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
@@ -335,7 +336,7 @@ let ``CLI plugin status query works against running daemon`` () =
         Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ])
 
     let handler =
-        { Name = "my-lint"
+        { Name = PluginName.create "my-lint"
           Init = ()
           Update =
             fun ctx state event ->
@@ -347,10 +348,9 @@ let ``CLI plugin status query works against running daemon`` () =
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                FileChanged = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
 
     daemon.RegisterHandler(handler)
     // Trigger a FileChanged so the plugin reports Running status
@@ -390,7 +390,7 @@ let ``CLI command proxying works against running daemon`` () =
         Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ])
 
     let handler =
-        { Name = "greeter"
+        { Name = PluginName.create "greeter"
           Init = ()
           Update = fun _ctx state _event -> async { return state }
           Commands =
@@ -401,7 +401,8 @@ let ``CLI command proxying works against running daemon`` () =
                       return $"hello {name}"
                   } ]
           Subscriptions = PluginSubscriptions.none
-          CacheKey = None }
+          CacheKey = None
+          Teardown = None }
 
     daemon.RegisterHandler(handler)
     let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))

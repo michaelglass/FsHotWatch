@@ -59,9 +59,14 @@ type TestProjectConfig =
       ClassJoin: string
       Coverage: bool }
 
+/// The kind of test extension.
+type TestExtensionKind =
+    | Falco
+    | Unknown of string
+
 /// Configuration for a test extension (e.g. Falco route mapping).
 type TestExtensionConfig =
-    { Type: string
+    { Kind: TestExtensionKind
       Project: string
       TestDir: string }
 
@@ -213,10 +218,13 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 | true, arr ->
                     arr.EnumerateArray()
                     |> Seq.map (fun e ->
-                        let typ =
+                        let kind =
                             match e.TryGetProperty("type") with
-                            | true, v -> v.GetString()
-                            | _ -> "unknown"
+                            | true, v ->
+                                match v.GetString().ToLowerInvariant() with
+                                | "falco" -> Falco
+                                | other -> Unknown other
+                            | _ -> Unknown "unknown"
 
                         let project =
                             match e.TryGetProperty("project") with
@@ -228,7 +236,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                             | true, v -> v.GetString()
                             | _ -> ""
 
-                        { Type = typ
+                        { Kind = kind
                           Project = project
                           TestDir = testDir })
                     |> Seq.toList
@@ -525,15 +533,15 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         let extensions =
             t.Extensions
             |> List.choose (fun ext ->
-                match ext.Type.ToLowerInvariant() with
-                | "falco" ->
+                match ext.Kind with
+                | Falco ->
                     Logging.info "config" $"Creating FalcoRouteExtension for %s{ext.Project} (%s{ext.TestDir})"
 
                     Some(
                         TestPrune.Falco.FalcoRouteExtension(ext.Project, ext.TestDir)
                         :> TestPrune.Extensions.ITestPruneExtension
                     )
-                | other ->
+                | Unknown other ->
                     Logging.warn "config" $"Unknown test extension type: %s{other}"
                     None)
             |> function
@@ -571,7 +579,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
 
         daemon.RegisterHandler(
             FsHotWatch.FileCommand.FileCommandPlugin.create
-                $"file-cmd-%s{fc.Pattern}"
+                (FsHotWatch.PluginFramework.PluginName.create $"file-cmd-%s{fc.Pattern}")
                 fileFilter
                 fc.Command
                 fc.Args

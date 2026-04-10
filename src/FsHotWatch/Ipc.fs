@@ -8,15 +8,18 @@ open System.Threading.Tasks
 open StreamJsonRpc
 open FsHotWatch.Logging
 open FsHotWatch.PluginHost
+
+/// Filter for cache clear operations.
+type CacheClearFilter =
+    | ClearAll
+    | ClearPlugin of plugin: string
+    | ClearFile of file: string
+    | ClearPluginFile of plugin: string * file: string
+
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 
-let private severityToString (severity: DiagnosticSeverity) =
-    match severity with
-    | DiagnosticSeverity.Error -> "error"
-    | DiagnosticSeverity.Warning -> "warning"
-    | DiagnosticSeverity.Info -> "info"
-    | DiagnosticSeverity.Hint -> "hint"
+let private severityToString = DiagnosticSeverity.toString
 
 let private formatStatus (status: PluginStatus) =
     match status with
@@ -314,8 +317,15 @@ module IpcClient =
     /// Run all preprocessors on all registered files.
     let formatAll (pipeName: string) : Async<string> = invoke pipeName "FormatAll" [||]
 
-    /// Clear task cache entries. Pass null for plugin/file to omit that filter.
-    let cacheClear (pipeName: string) (plugin: string) (file: string) : Async<string> =
+    /// Clear task cache entries with a typed filter.
+    let cacheClear (pipeName: string) (filter: CacheClearFilter) : Async<string> =
+        let (plugin, file) =
+            match filter with
+            | ClearAll -> (null, null)
+            | ClearPlugin p -> (p, null)
+            | ClearFile f -> (null, f)
+            | ClearPluginFile(p, f) -> (p, f)
+
         invoke pipeName "cache-clear" [| plugin; file |]
 
     /// Invalidate cache for a file and re-check it.

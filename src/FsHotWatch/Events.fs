@@ -1,15 +1,40 @@
 /// Core event and status types for the FsHotWatch daemon.
 module FsHotWatch.Events
 
+open System.IO
 open FSharp.Compiler.CodeAnalysis
+
+/// Absolute file path — normalized at construction time via Path.GetFullPath.
+[<Struct>]
+type AbsFilePath = private AbsFilePath of string
+
+module AbsFilePath =
+    let create (path: string) = AbsFilePath(Path.GetFullPath(path))
+    let value (AbsFilePath p) = p
+
+/// Absolute project path (.fsproj) — normalized at construction time via Path.GetFullPath.
+[<Struct>]
+type AbsProjectPath = private AbsProjectPath of string
+
+module AbsProjectPath =
+    let create (path: string) = AbsProjectPath(Path.GetFullPath(path))
+    let value (AbsProjectPath p) = p
+
+/// Opaque content hash — wraps raw hash strings to prevent mixing with other strings.
+[<Struct>]
+type ContentHash = private ContentHash of string
+
+module ContentHash =
+    let create (hash: string) = ContentHash hash
+    let value (ContentHash h) = h
 
 /// Identifies a check result in the cache
 type CacheKey =
     {
         /// Content hash of the file being checked (from jj or file metadata)
-        FileHash: string
+        FileHash: ContentHash
         /// Hash of project options (dependencies, compiler flags)
-        ProjectOptionsHash: string
+        ProjectOptionsHash: ContentHash
     }
 
 /// Describes what kind of file change was detected by the watcher.
@@ -26,6 +51,12 @@ type BuildResult =
     | BuildSucceeded
     | BuildFailed of errors: string list
 
+/// Whether a file was fully type-checked or only parsed (check aborted).
+[<NoComparison>]
+type FileCheckState =
+    | FullCheck of FSharpCheckFileResults
+    | ParseOnly
+
 /// Result of type-checking a single file with the warm FSharpChecker.
 [<NoComparison>]
 type FileCheckResult =
@@ -36,8 +67,8 @@ type FileCheckResult =
         Source: string
         /// FCS parse results (AST).
         ParseResults: FSharpParseFileResults
-        /// FCS type-check results (symbols, diagnostics). None if check was aborted.
-        CheckResults: FSharpCheckFileResults option
+        /// FCS type-check results. ParseOnly if check was aborted.
+        CheckResults: FileCheckState
         /// FSharpProjectOptions used when checking this file.
         ProjectOptions: FSharpProjectOptions
         /// Monotonic version counter — higher means newer.
@@ -90,11 +121,15 @@ type ScanState =
     /// Scan completed.
     | ScanComplete of total: int * elapsed: System.TimeSpan
 
+/// Outcome of a command execution.
+type CommandOutcome =
+    | CommandSucceeded of output: string
+    | CommandFailed of output: string
+
 /// Result of a command execution (e.g., file command plugin completing a shell command).
 type CommandCompletedResult =
     { Name: string
-      Succeeded: bool
-      Output: string }
+      Outcome: CommandOutcome }
 
 /// Events routed to plugins by the framework.
 [<NoComparison; NoEquality>]

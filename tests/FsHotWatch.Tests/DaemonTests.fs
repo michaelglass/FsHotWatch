@@ -73,7 +73,7 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
         let mutable sourceChangedEvents: string list list = []
 
         let handler =
-            { Name = "suppression-recorder"
+            { Name = PluginName.create "suppression-recorder"
               Init = ()
               Update =
                 fun _ctx state event ->
@@ -85,10 +85,9 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
                         return state
                     }
               Commands = []
-              Subscriptions =
-                { PluginSubscriptions.none with
-                    FileChanged = true }
-              CacheKey = None }
+              Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              CacheKey = None
+              Teardown = None }
 
         daemon.RegisterHandler(handler)
 
@@ -111,7 +110,7 @@ let ``daemon dispatches file change events to plugins`` () =
         let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ])
 
         let handler =
-            { Name = "test-recorder"
+            { Name = PluginName.create "test-recorder"
               Init = ()
               Update =
                 fun _ctx state event ->
@@ -123,10 +122,9 @@ let ``daemon dispatches file change events to plugins`` () =
                         return state
                     }
               Commands = []
-              Subscriptions =
-                { PluginSubscriptions.none with
-                    FileChanged = true }
-              CacheKey = None }
+              Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              CacheKey = None
+              Teardown = None }
 
         daemon.RegisterHandler(handler)
 
@@ -161,7 +159,7 @@ let ``daemon debounces rapid file changes into one batch`` () =
         let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ])
 
         let handler =
-            { Name = "debounce-recorder"
+            { Name = PluginName.create "debounce-recorder"
               Init = ()
               Update =
                 fun _ctx state event ->
@@ -173,10 +171,9 @@ let ``daemon debounces rapid file changes into one batch`` () =
                         return state
                     }
               Commands = []
-              Subscriptions =
-                { PluginSubscriptions.none with
-                    FileChanged = true }
-              CacheKey = None }
+              Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              CacheKey = None
+              Teardown = None }
 
         daemon.RegisterHandler(handler)
 
@@ -233,7 +230,7 @@ let ``daemon handles ProjectChanged events`` () =
         let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ])
 
         let handler =
-            { Name = "project-recorder"
+            { Name = PluginName.create "project-recorder"
               Init = ()
               Update =
                 fun _ctx state event ->
@@ -245,10 +242,9 @@ let ``daemon handles ProjectChanged events`` () =
                         return state
                     }
               Commands = []
-              Subscriptions =
-                { PluginSubscriptions.none with
-                    FileChanged = true }
-              CacheKey = None }
+              Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              CacheKey = None
+              Teardown = None }
 
         daemon.RegisterHandler(handler)
 
@@ -293,7 +289,7 @@ let ``daemon handles SolutionChanged events`` () =
         let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ])
 
         let handler =
-            { Name = "solution-recorder"
+            { Name = PluginName.create "solution-recorder"
               Init = ()
               Update =
                 fun _ctx state event ->
@@ -305,10 +301,9 @@ let ``daemon handles SolutionChanged events`` () =
                         return state
                     }
               Commands = []
-              Subscriptions =
-                { PluginSubscriptions.none with
-                    FileChanged = true }
-              CacheKey = None }
+              Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              CacheKey = None
+              Teardown = None }
 
         daemon.RegisterHandler(handler)
 
@@ -405,12 +400,13 @@ let ``daemon RunWithIpc responds to IPC queries`` () =
         let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ])
 
         let handler =
-            { Name = "ipc-test"
+            { Name = PluginName.create "ipc-test"
               Init = ()
               Update = fun _ctx state _event -> async { return state }
               Commands = []
               Subscriptions = PluginSubscriptions.none
-              CacheKey = None }
+              CacheKey = None
+              Teardown = None }
 
         daemon.RegisterHandler(handler)
 
@@ -491,12 +487,13 @@ let ``RunOnce completes and returns plugin statuses`` () =
         let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ])
 
         let handler =
-            { Name = "runonce-test"
+            { Name = PluginName.create "runonce-test"
               Init = ()
               Update = fun _ctx state _event -> async { return state }
               Commands = []
               Subscriptions = PluginSubscriptions.none
-              CacheKey = None }
+              CacheKey = None
+              Teardown = None }
 
         daemon.RegisterHandler(handler)
 
