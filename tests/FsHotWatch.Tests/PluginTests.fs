@@ -7,11 +7,12 @@ open FsHotWatch.PluginFramework
 [<Fact>]
 let ``plugin has a name`` () =
     let handler =
-        { Name = "fake"
+        { Name = PluginName.create "fake"
           Init = ()
           Update = fun _ctx state _event -> async { return state }
           Commands = []
           Subscriptions = PluginSubscriptions.none
-          CacheKey = None }
+          CacheKey = None
+          Teardown = None }
 
-    Assert.Equal("fake", handler.Name)
+    Assert.Equal(PluginName.create "fake", handler.Name)

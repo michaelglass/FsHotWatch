@@ -38,7 +38,7 @@ type FileCheckCache(cacheDir: string) =
                     { File = entry.File
                       Source = ""
                       ParseResults = Unchecked.defaultof<_>
-                      CheckResults = None
+                      CheckResults = ParseOnly
                       ProjectOptions = Unchecked.defaultof<_>
                       Version = entry.Version }
             with ex ->

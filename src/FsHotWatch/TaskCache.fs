@@ -4,6 +4,10 @@ module FsHotWatch.TaskCache
 open System.Collections.Concurrent
 open FsHotWatch.Events
 
+/// Structured key for task cache entries, replacing ambiguous "plugin--file" strings.
+[<Struct>]
+type CompositeKey = { Plugin: string; File: string option }
+
 /// A captured side effect emitted by a plugin during execution.
 type CachedEvent =
     /// A build completed event captured for replay.
@@ -31,66 +35,60 @@ type TaskCacheResult =
 type ITaskCache =
     /// Try to retrieve a cached result. Returns Some only when the compositeKey
     /// matches AND the stored result's CacheKey matches the provided cacheKey.
-    abstract TryGet: compositeKey: string -> cacheKey: string -> TaskCacheResult option
+    abstract TryGet: compositeKey: CompositeKey -> cacheKey: string -> TaskCacheResult option
     /// Store a result under the given compositeKey.
-    abstract Set: compositeKey: string -> cacheKey: string -> result: TaskCacheResult -> unit
+    abstract Set: compositeKey: CompositeKey -> cacheKey: string -> result: TaskCacheResult -> unit
     /// Remove all cached entries.
     abstract Clear: unit -> unit
-    /// Remove entries for a specific plugin (keys starting with "{plugin}--" or equal to "{plugin}").
+    /// Remove entries for a specific plugin.
     abstract ClearPlugin: plugin: string -> unit
-    /// Remove entries for a specific file (keys ending with "--{file}").
+    /// Remove entries for a specific file.
     abstract ClearFile: file: string -> unit
-    /// Remove the specific "{plugin}--{file}" entry.
+    /// Remove the specific plugin+file entry.
     abstract ClearPluginFile: plugin: string -> file: string -> unit
 
 /// In-memory implementation using ConcurrentDictionary.
 /// Keyed by (compositeKey, cacheKey) so multiple versions coexist.
 type InMemoryTaskCache() =
-    let cache = ConcurrentDictionary<struct (string * string), TaskCacheResult>()
+    let cache = ConcurrentDictionary<struct (CompositeKey * string), TaskCacheResult>()
 
-    let tryGet (compositeKey: string) (cacheKey: string) =
+    let tryGet (compositeKey: CompositeKey) (cacheKey: string) =
         match cache.TryGetValue(struct (compositeKey, cacheKey)) with
         | true, result -> Some result
         | _ -> None
 
-    let set (compositeKey: string) (cacheKey: string) (result: TaskCacheResult) =
+    let set (compositeKey: CompositeKey) (cacheKey: string) (result: TaskCacheResult) =
         cache.[struct (compositeKey, cacheKey)] <- result
 
     let clear () = cache.Clear()
 
     let clearPlugin (plugin: string) =
-        let prefix = plugin + "--"
-
         for key in cache.Keys |> Seq.toArray do
             let struct (compKey, _) = key
 
-            if compKey.StartsWith(prefix) || compKey = plugin then
+            if compKey.Plugin = plugin then
                 cache.TryRemove(key) |> ignore
 
     let clearFile (file: string) =
-        let suffix = "--" + file
-
         for key in cache.Keys |> Seq.toArray do
             let struct (compKey, _) = key
 
-            if compKey.EndsWith(suffix) then
+            if compKey.File = Some file then
                 cache.TryRemove(key) |> ignore
 
     let clearPluginFile (plugin: string) (file: string) =
-        let target = plugin + "--" + file
-
         for key in cache.Keys |> Seq.toArray do
             let struct (compKey, _) = key
 
-            if compKey = target then
+            if compKey.Plugin = plugin && compKey.File = Some file then
                 cache.TryRemove(key) |> ignore
 
-    /// Try to retrieve a cached result. Returns Some only when the compositeKey
-    /// matches AND the stored result's CacheKey matches the provided cacheKey.
-    member _.TryGet(compositeKey: string, cacheKey: string) = tryGet compositeKey cacheKey
+    /// Try to retrieve a cached result.
+    member _.TryGet(compositeKey: CompositeKey, cacheKey: string) = tryGet compositeKey cacheKey
 
     /// Store a result under the given compositeKey.
-    member _.Set(compositeKey: string, cacheKey: string, result: TaskCacheResult) = set compositeKey cacheKey result
+    member _.Set(compositeKey: CompositeKey, cacheKey: string, result: TaskCacheResult) =
+        set compositeKey cacheKey result
 
     /// Remove all cached entries.
     member _.Clear() = clear ()

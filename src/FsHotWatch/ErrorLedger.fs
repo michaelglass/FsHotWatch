@@ -25,6 +25,22 @@ type IErrorReporter =
     abstract ClearPlugin: plugin: string -> unit
     abstract ClearAll: unit -> unit
 
+module DiagnosticSeverity =
+    let toString (severity: DiagnosticSeverity) =
+        match severity with
+        | Error -> "error"
+        | Warning -> "warning"
+        | Info -> "info"
+        | Hint -> "hint"
+
+    let fromString (s: string) =
+        match s with
+        | "error" -> Error
+        | "warning" -> Warning
+        | "info" -> Info
+        | "hint" -> Hint
+        | _ -> Error
+
 module ErrorEntry =
     /// True if the entry counts as a failure given the warningsAreFailures flag.
     let isFailing (warningsAreFailures: bool) (e: ErrorEntry) : bool =

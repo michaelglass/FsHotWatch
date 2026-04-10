@@ -34,8 +34,8 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
             | true, hash -> hash
             | false, _ -> getProjectOptionsHash options
 
-        { FileHash = keyProvider.GetFileHash(filePath)
-          ProjectOptionsHash = optionsHash }
+        { FileHash = ContentHash.create (keyProvider.GetFileHash(filePath))
+          ProjectOptionsHash = ContentHash.create optionsHash }
 
     member _.NextVersion() = Interlocked.Increment(&nextVersion)
 
@@ -129,7 +129,11 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
                         | _ -> None
 
                     match cached with
-                    | Some result when result.CheckResults.IsSome ->
+                    | Some result when
+                        (match result.CheckResults with
+                         | FullCheck _ -> true
+                         | ParseOnly -> false)
+                        ->
                         // Full cache hit (e.g., InMemoryCache) — result has usable FCS data
                         Logging.debug "check" $"Cache hit: %s{Path.GetFileName(absPath)}"
                         return Some result
@@ -166,7 +170,7 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
                                     { File = absPath
                                       Source = source
                                       ParseResults = parseResults
-                                      CheckResults = Some checkResults
+                                      CheckResults = FullCheck checkResults
                                       ProjectOptions = options
                                       Version = version }
 
@@ -183,7 +187,7 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
                                         { File = absPath
                                           Source = source
                                           ParseResults = parseResults
-                                          CheckResults = None
+                                          CheckResults = ParseOnly
                                           ProjectOptions = options
                                           Version = version }
                         with ex ->

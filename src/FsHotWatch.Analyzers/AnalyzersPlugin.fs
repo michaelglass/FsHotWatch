@@ -121,7 +121,7 @@ let create
 
     info "analyzers" $"Loaded %d{loadedCount} analyzers from %d{analyzerPaths.Length} paths"
 
-    { Name = "analyzers"
+    { Name = PluginName.create "analyzers"
       Init =
         { DiagnosticsByFile = Map.empty
           LoadedCount = loadedCount }
@@ -133,11 +133,11 @@ let create
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
                     match result.CheckResults with
-                    | None ->
+                    | ParseOnly ->
                         warn "analyzers" $"Skipping %s{result.File} — no type check results"
                         ctx.ReportStatus(Completed(DateTime.UtcNow))
                         return state
-                    | Some checkResults ->
+                    | FullCheck checkResults ->
                         // Dispatch analysis to thread pool, semaphore-gated
                         async {
                             do! semaphore.WaitAsync(cts.Token) |> Async.AwaitTask
@@ -231,7 +231,10 @@ let create
                              diagnostics = totalDiags |}
                       )
               } ]
-      Subscriptions =
-        { PluginSubscriptions.none with
-            FileChecked = true }
-      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId }
+      Subscriptions = Set.ofList [ SubscribeFileChecked ]
+      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId
+      Teardown =
+        Some(fun () ->
+            cts.Cancel()
+            cts.Dispose()
+            semaphore.Dispose()) }

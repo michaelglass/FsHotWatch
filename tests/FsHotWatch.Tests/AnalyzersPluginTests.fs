@@ -10,7 +10,7 @@ open FsHotWatch.Analyzers.AnalyzersPlugin
 [<Fact>]
 let ``plugin has correct name`` () =
     let handler = create [] None
-    test <@ handler.Name = "analyzers" @>
+    test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "analyzers" @>
 
 [<Fact>]
 let ``diagnostics command returns zeroes when no files checked`` () =
@@ -36,7 +36,7 @@ let ``analyzer error path does not crash`` () =
         { File = "/tmp/nonexistent/Fake.fs"
           Source = ""
           ParseResults = Unchecked.defaultof<_>
-          CheckResults = None
+          CheckResults = ParseOnly
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L }
 
@@ -100,4 +100,4 @@ let ``analyzer with mix of valid and invalid paths`` () =
 [<Fact>]
 let ``concurrent analyzer runs are bounded`` () =
     let handler = create [] None
-    test <@ handler.Name = "analyzers" @>
+    test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "analyzers" @>
