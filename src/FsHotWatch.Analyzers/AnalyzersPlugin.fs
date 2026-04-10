@@ -132,76 +132,77 @@ let create
                 | FileChecked result ->
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
-                    match result.CheckResults with
-                    | ParseOnly ->
-                        warn "analyzers" $"Skipping %s{result.File} — no type check results"
-                        ctx.ReportStatus(Completed(DateTime.UtcNow))
-                        return state
-                    | FullCheck checkResults ->
-                        // Dispatch analysis to thread pool, semaphore-gated
-                        async {
-                            do! semaphore.WaitAsync(cts.Token) |> Async.AwaitTask
+                    let checkResultsObj =
+                        match result.CheckResults with
+                        | FullCheck cr -> box cr
+                        | ParseOnly ->
+                            debug "analyzers" $"Running parse-only analyzers for %s{result.File}"
+                            null
 
+                    // Dispatch analysis to thread pool, semaphore-gated
+                    async {
+                        do! semaphore.WaitAsync(cts.Token) |> Async.AwaitTask
+
+                        try
                             try
-                                try
-                                    let sourceText = result.Source |> SourceText.ofString
+                                let sourceText = result.Source |> SourceText.ofString
 
-                                    let context =
-                                        createCliContext
-                                            (box result.File)
-                                            (box sourceText)
-                                            (box result.ParseResults)
-                                            (box checkResults)
-                                            (box result.ProjectOptions)
+                                let context =
+                                    createCliContext
+                                        (box result.File)
+                                        (box sourceText)
+                                        (box result.ParseResults)
+                                        checkResultsObj
+                                        (box result.ProjectOptions)
 
-                                    let! messages =
-                                        try
-                                            client.RunAnalyzersSafely(context)
-                                        with ex ->
-                                            error
-                                                "analyzers"
-                                                $"RunAnalyzersSafely failed for %s{result.File}: %s{ex.ToString()}"
+                                let! messages =
+                                    try
+                                        client.RunAnalyzersSafely(context)
+                                    with ex ->
+                                        error
+                                            "analyzers"
+                                            $"RunAnalyzersSafely failed for %s{result.File}: %s{ex.ToString()}"
 
-                                            reraise ()
+                                        reraise ()
 
-                                    let entries =
-                                        messages
-                                        |> List.collect (fun ar ->
-                                            match ar.Output with
-                                            | Ok msgs ->
-                                                msgs
-                                                |> List.map (fun m ->
-                                                    { Message = m.Message
-                                                      Severity =
-                                                        match m.Severity with
-                                                        | Severity.Error -> DiagnosticSeverity.Error
-                                                        | Severity.Warning -> DiagnosticSeverity.Warning
-                                                        | Severity.Info -> DiagnosticSeverity.Info
-                                                        | Severity.Hint -> DiagnosticSeverity.Hint
-                                                      Line = m.Range.StartLine
-                                                      Column = m.Range.StartColumn
-                                                      Detail = None })
-                                            | Result.Error _ -> [])
+                                let entries =
+                                    messages
+                                    |> List.collect (fun ar ->
+                                        match ar.Output with
+                                        | Ok msgs ->
+                                            msgs
+                                            |> List.map (fun m ->
+                                                { Message = m.Message
+                                                  Severity =
+                                                    match m.Severity with
+                                                    | Severity.Error -> DiagnosticSeverity.Error
+                                                    | Severity.Warning -> DiagnosticSeverity.Warning
+                                                    | Severity.Info -> DiagnosticSeverity.Info
+                                                    | Severity.Hint -> DiagnosticSeverity.Hint
+                                                  Line = m.Range.StartLine
+                                                  Column = m.Range.StartColumn
+                                                  Detail = None })
+                                        | Result.Error _ -> [])
 
-                                    debug
-                                        "analyzers"
-                                        $"Analyzed %s{Path.GetFileName result.File}: %d{entries.Length} diagnostics"
+                                debug
+                                    "analyzers"
+                                    $"Analyzed %s{Path.GetFileName result.File}: %d{entries.Length} diagnostics"
 
-                                    if entries.IsEmpty then
-                                        ctx.ClearErrors result.File
-                                    else
-                                        ctx.ReportErrors result.File entries
+                                if entries.IsEmpty then
+                                    ctx.ClearErrors result.File
+                                else
+                                    ctx.ReportErrors result.File entries
 
-                                    ctx.Post(AnalysisComplete(result.File, entries))
-                                with ex ->
-                                    ctx.Post(AnalysisFailed(result.File, ex.ToString()))
-                                    error "analyzers" $"Error analyzing %s{result.File}: %s{ex.ToString()}"
-                            finally
-                                semaphore.Release() |> ignore
-                        }
-                        |> fun a -> Async.Start(a, cts.Token)
+                                ctx.Post(AnalysisComplete(result.File, entries))
+                            with ex ->
+                                ctx.Post(AnalysisFailed(result.File, ex.ToString()))
+                                error "analyzers" $"Error analyzing %s{result.File}: %s{ex.ToString()}"
+                        finally
+                            semaphore.Release() |> ignore
+                    }
+                    |> fun a -> Async.Start(a, cts.Token)
 
-                        return state
+                    return state
                 | Custom(AnalysisComplete(file, entries)) ->
                     ctx.ReportStatus(Completed(DateTime.UtcNow))
 
@@ -232,7 +233,19 @@ let create
                       )
               } ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
-      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId
+      CacheKey =
+        getCommitId
+        |> Option.map (fun getId ->
+            fun (event: PluginEvent<AnalyzersMsg>) ->
+                match event with
+                | FileChecked result ->
+                    getId ()
+                    |> Option.map (fun id ->
+                        match result.CheckResults with
+                        | ParseOnly -> id + ":parse-only"
+                        | FullCheck _ -> id)
+                | Custom _ -> None
+                | _ -> getId ())
       Teardown =
         Some(fun () ->
             cts.Cancel()
