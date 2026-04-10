@@ -6,18 +6,33 @@ All notable changes to FsHotWatch packages are documented here.
 
 ### FsHotWatch
 
+#### Added
+- Enable TransparentCompiler for hash-based deterministic FCS caching (`useTransparentCompiler = true`)
+- Parse `#nowarn` directives to suppress FCS TransparentCompiler warnings (workaround for dotnet/fsharp#9796)
+- Plugin teardown support in `PluginHandler`
+
+#### Changed (Breaking)
+- Type safety overhaul: `AbsFilePath`/`AbsProjectPath` single-case DUs replace raw strings; `PluginName` DU with uniqueness check; `ContentHash` wrapper; `CommandOutcome` DU replaces `Succeeded: bool` + `Output: string`; `FileCheckState` DU replaces `CheckResults option`; `AffectedTestsState` DU; `RerunIntent` DU; `Set<SubscribedEvent>` replaces `PluginSubscriptions` bool record; `TaskCacheKey` struct; `TestExtensionKind` DU; `CacheClearFilter` DU
+- Plugin registration uses `PluginHostServices` record instead of multi-param function
+- `Daemon` changed from F# record to class with `internal` constructor
+- `IProjectGraphReader` interface decouples `BuildPlugin` from mutable `ProjectGraph`
+
 #### Fixed
-- `RunWithIpc` no longer hangs the test process when `cts` is cancelled during the initial scan. Previously, cancellation was only registered after `ScanAll` completed, so cancelling during a slow scan (e.g. under thread-pool contention in large test suites) left the daemon task running indefinitely. The scan now races against the cancellation signal so shutdown is immediate regardless of scan progress.
-- `Daemon` now implements `IDisposable` and stops all internal `MailboxProcessor` agents on dispose. Previously, agents started in `Daemon.createWith` ran indefinitely since they had no cancellation token, keeping the process alive after tests completed.
-- `Daemon` changed from an F# record to a class with an `internal` constructor, hiding internal fields (`Lifetime`, `Watcher`, `ScanAgent`, etc.) from consumers. `createWith` now disposes the `CancellationTokenSource` if construction fails.
+- `Daemon` implements `IDisposable` and stops all internal `MailboxProcessor` agents on dispose
+- `RunWithIpc` races initial scan against cancellation to prevent test-process hangs
+- Standalone files not in any project now checked via uncovered-files fallback
 
 ### FsHotWatch.Cli
 
-#### Fixed
-- `startFreshDaemon` startup poll deadline is now configurable via the `startupTimeoutSeconds` parameter (default: 30s). Previously the 30-second deadline was hardcoded, making tests that exercise startup failure unnecessarily slow.
-- Process launch in `startFreshDaemon` is now injectable via `IpcOps.LaunchDaemon`, so tests can skip the real `nohup` subprocess spawn.
+#### Added
+- Filter Info/Hint diagnostics from CLI output — only Error and Warning shown
+
+#### Changed
+- `DiagnosticEntry.Severity` typed as `DiagnosticSeverity` DU instead of string
+- `startFreshDaemon` startup poll deadline configurable via `startupTimeoutSeconds` parameter (default: 30s)
+- Process launch in `startFreshDaemon` injectable via `IpcOps.LaunchDaemon`
 
 ### FsHotWatch.TestPrune
 
 #### Fixed
-- Comment-only source changes no longer add the file to `ChangedFiles`. Previously, `newChangedFiles` was computed before `changedNames` (the set of changed symbols), so any `FileChecked` event — including those where only comments changed — would add the file to `ChangedFiles` and trigger extension-based tests (e.g. Falco route matching). The fix gates `newChangedFiles` on `changedNames` being non-empty, so only genuine AST changes propagate.
+- Comment-only source changes no longer add the file to `ChangedFiles` — only genuine AST changes propagate to extension-based tests
