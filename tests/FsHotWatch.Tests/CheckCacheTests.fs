@@ -13,12 +13,12 @@ open FsHotWatch.Tests.TestHelpers
 [<Fact>]
 let ``CacheKey produces consistent hash for same inputs`` () =
     let key1 =
-        { FileHash = "abc123"
-          ProjectOptionsHash = "def456" }
+        { FileHash = ContentHash.create "abc123"
+          ProjectOptionsHash = ContentHash.create "def456" }
 
     let key2 =
-        { FileHash = "abc123"
-          ProjectOptionsHash = "def456" }
+        { FileHash = ContentHash.create "abc123"
+          ProjectOptionsHash = ContentHash.create "def456" }
 
     let hash1 = hashCacheKey key1
     let hash2 = hashCacheKey key2
@@ -28,12 +28,12 @@ let ``CacheKey produces consistent hash for same inputs`` () =
 [<Fact>]
 let ``CacheKey produces different hash for different FileHash`` () =
     let key1 =
-        { FileHash = "abc123"
-          ProjectOptionsHash = "def456" }
+        { FileHash = ContentHash.create "abc123"
+          ProjectOptionsHash = ContentHash.create "def456" }
 
     let key2 =
-        { FileHash = "xyz789"
-          ProjectOptionsHash = "def456" }
+        { FileHash = ContentHash.create "xyz789"
+          ProjectOptionsHash = ContentHash.create "def456" }
 
     let hash1 = hashCacheKey key1
     let hash2 = hashCacheKey key2
@@ -43,12 +43,12 @@ let ``CacheKey produces different hash for different FileHash`` () =
 [<Fact>]
 let ``CacheKey produces different hash for different ProjectOptionsHash`` () =
     let key1 =
-        { FileHash = "abc123"
-          ProjectOptionsHash = "def456" }
+        { FileHash = ContentHash.create "abc123"
+          ProjectOptionsHash = ContentHash.create "def456" }
 
     let key2 =
-        { FileHash = "abc123"
-          ProjectOptionsHash = "xyz789" }
+        { FileHash = ContentHash.create "abc123"
+          ProjectOptionsHash = ContentHash.create "xyz789" }
 
     let hash1 = hashCacheKey key1
     let hash2 = hashCacheKey key2
@@ -58,8 +58,8 @@ let ``CacheKey produces different hash for different ProjectOptionsHash`` () =
 [<Fact>]
 let ``hash format is lowercase hex with no dashes`` () =
     let key =
-        { FileHash = "abc123"
-          ProjectOptionsHash = "def456" }
+        { FileHash = ContentHash.create "abc123"
+          ProjectOptionsHash = ContentHash.create "def456" }
 
     let hash = hashCacheKey key
 
@@ -124,7 +124,7 @@ let ``makeCacheKey produces different keys for different files`` () =
     let key2 = makeCacheKey provider tempFile2 opts1
 
     try
-        Assert.NotEqual<string>(key1.FileHash, key2.FileHash)
+        Assert.NotEqual<string>(ContentHash.value key1.FileHash, ContentHash.value key2.FileHash)
     finally
         File.Delete(tempFile1)
         File.Delete(tempFile2)
@@ -135,13 +135,13 @@ let private makeTestResult (file: string) (version: int64) : FileCheckResult =
     { File = file
       Source = "test"
       ParseResults = Unchecked.defaultof<_>
-      CheckResults = None
+      CheckResults = ParseOnly
       ProjectOptions = Unchecked.defaultof<_>
       Version = version }
 
 let private makeKey (fileHash: string) : CacheKey =
-    { FileHash = fileHash
-      ProjectOptionsHash = "proj" }
+    { FileHash = ContentHash.create fileHash
+      ProjectOptionsHash = ContentHash.create "proj" }
 
 [<Fact>]
 let ``InMemoryCheckCache stores and retrieves results`` () =

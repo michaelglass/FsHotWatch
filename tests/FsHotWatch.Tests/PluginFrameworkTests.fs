@@ -18,17 +18,17 @@ let private registerWith
     let registerCommand = defaultArg registerCommand (fun _ -> ())
 
     registerHandler
-        checker
-        "/tmp/repo"
-        (fun _ _ -> ())
-        (fun _ _ _ -> ())
-        (fun _ _ -> ())
-        (fun _ -> ())
-        (fun _ -> ())
-        (fun _ -> ())
-        (fun _ -> ())
-        registerCommand
-        None
+        { Checker = checker
+          RepoRoot = "/tmp/repo"
+          ReportStatus = fun _ _ -> ()
+          ReportErrors = fun _ _ _ -> ()
+          ClearErrors = fun _ _ -> ()
+          ClearPlugin = fun _ -> ()
+          EmitBuildCompleted = fun _ -> ()
+          EmitTestCompleted = fun _ -> ()
+          EmitCommandCompleted = fun _ -> ()
+          RegisterCommand = registerCommand
+          TaskCache = None }
         handler
 
 /// Register with all defaults.
@@ -39,7 +39,7 @@ let ``registered plugin dispatches FileChanged`` () =
     let mutable registeredCmd: (string * CommandHandler) option = None
 
     let handler =
-        { Name = "test-fc"
+        { Name = PluginName.create "test-fc"
           Init = false
           Update =
             fun _ctx _state event ->
@@ -49,15 +49,13 @@ let ``registered plugin dispatches FileChanged`` () =
                     | _ -> return _state
                 }
           Commands = [ "was-called", fun state _args -> async { return $"%b{state}" } ]
-          Subscriptions =
-            { PluginSubscriptions.none with
-                FileChanged = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
 
-    test <@ reg.OnFileChanged.IsSome @>
-    reg.OnFileChanged.Value(SourceChanged [ "/tmp/repo/Foo.fs" ])
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/Foo.fs" ]))
 
     // Poll the command deterministically — it queues behind the FileChanged message
     let (_, cmdHandler) = registeredCmd.Value
@@ -66,26 +64,45 @@ let ``registered plugin dispatches FileChanged`` () =
 
 [<Fact>]
 let ``registered plugin skips unsubscribed events`` () =
+    let mutable registeredCmd: (string * CommandHandler) option = None
+
     let handler =
-        { Name = "test-skip"
+        { Name = PluginName.create "test-skip"
           Init = 0
           Update = fun _ctx state _event -> async { return state + 1 }
-          Commands = []
-          Subscriptions =
-            { FileChanged = true
-              FileChecked = false
-              BuildCompleted = false
-              TestCompleted = true
-              CommandCompleted = false }
-          CacheKey = None }
+          Commands = [ "get-count", fun state _args -> async { return $"%d{state}" } ]
+          Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeTestCompleted ]
+          CacheKey = None
+          Teardown = None }
 
-    let reg = registerDefault handler
+    let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
 
-    test <@ reg.OnFileChanged.IsSome @>
-    test <@ reg.OnFileChecked.IsNone @>
-    test <@ reg.OnBuildCompleted.IsNone @>
-    test <@ reg.OnTestCompleted.IsSome @>
-    test <@ reg.OnCommandCompleted.IsNone @>
+    // Dispatch subscribed events — should increment state
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/Foo.fs" ]))
+
+    // Dispatch unsubscribed events — should be ignored
+    reg.Dispatch(
+        DispatchFileChecked
+            { File = "/tmp/repo/Foo.fs"
+              Source = ""
+              ParseResults = Unchecked.defaultof<_>
+              CheckResults = ParseOnly
+              ProjectOptions = Unchecked.defaultof<_>
+              Version = 0L }
+    )
+
+    reg.Dispatch(DispatchBuildCompleted BuildSucceeded)
+
+    reg.Dispatch(
+        DispatchCommandCompleted
+            { Name = "test"
+              Outcome = CommandSucceeded "" }
+    )
+
+    // Only the FileChanged should have incremented
+    let (_, cmdHandler) = registeredCmd.Value
+    let result = cmdHandler [||] |> Async.RunSynchronously
+    test <@ result = "1" @>
 
 [<Fact>]
 let ``commands query agent state`` () =
@@ -93,7 +110,7 @@ let ``commands query agent state`` () =
         let mutable registeredCmd: (string * CommandHandler) option = None
 
         let handler =
-            { Name = "test-cmd"
+            { Name = PluginName.create "test-cmd"
               Init = 42
               Update =
                 fun _ctx state event ->
@@ -103,10 +120,9 @@ let ``commands query agent state`` () =
                         | _ -> return state
                     }
               Commands = [ "get-count", fun state _args -> async { return $"%d{state}" } ]
-              Subscriptions =
-                { PluginSubscriptions.none with
-                    FileChanged = true }
-              CacheKey = None }
+              Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              CacheKey = None
+              Teardown = None }
 
         let _reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
 
@@ -128,7 +144,7 @@ let ``Custom messages work for self-posting`` () =
         let mutable registeredCmd: (string * CommandHandler) option = None
 
         let handler =
-            { Name = "test-custom"
+            { Name = PluginName.create "test-custom"
               Init = false
               Update =
                 fun ctx state event ->
@@ -143,14 +159,13 @@ let ``Custom messages work for self-posting`` () =
                         | _ -> return state
                     }
               Commands = [ "got-custom", fun state _args -> async { return $"%b{state}" } ]
-              Subscriptions =
-                { PluginSubscriptions.none with
-                    FileChanged = true }
-              CacheKey = None }
+              Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              CacheKey = None
+              Teardown = None }
 
         let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
 
-        reg.OnFileChanged.Value(SourceChanged [ "/tmp/repo/Foo.fs" ])
+        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/Foo.fs" ]))
 
         // Poll command deterministically — queues behind FileChanged AND Custom messages
         let (_, cmdHandler) = registeredCmd.Value
@@ -172,7 +187,7 @@ let ``handler errors are recovered`` () =
         let mutable registeredCmd: CommandHandler option = None
 
         let handler =
-            { Name = "test-recover"
+            { Name = PluginName.create "test-recover"
               Init = 0
               Update =
                 fun _ctx state event ->
@@ -185,16 +200,15 @@ let ``handler errors are recovered`` () =
                         | _ -> return state
                     }
               Commands = [ "get-state", fun state _args -> async { return $"%d{state}" } ]
-              Subscriptions =
-                { PluginSubscriptions.none with
-                    FileChanged = true }
-              CacheKey = None }
+              Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              CacheKey = None
+              Teardown = None }
 
         let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
 
         // First: throw. Second: normal — should still work.
-        reg.OnFileChanged.Value(SourceChanged [ "/throw" ])
-        reg.OnFileChanged.Value(SourceChanged [ "/ok" ])
+        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/throw" ]))
+        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/ok" ]))
 
         // Poll command — deterministic, queues behind both messages
         waitUntil
@@ -214,7 +228,7 @@ let ``plugin subscribing to CommandCompleted receives event`` () =
     let mutable registeredCmd: (string * CommandHandler) option = None
 
     let handler =
-        { Name = "test-cc"
+        { Name = PluginName.create "test-cc"
           Init = false
           Update =
             fun _ctx _state event ->
@@ -224,19 +238,16 @@ let ``plugin subscribing to CommandCompleted receives event`` () =
                     | _ -> return _state
                 }
           Commands = [ "was-called", fun state _args -> async { return $"%b{state}" } ]
-          Subscriptions =
-            { PluginSubscriptions.none with
-                CommandCompleted = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeCommandCompleted ]
+          CacheKey = None
+          Teardown = None }
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
 
-    test <@ reg.OnCommandCompleted.IsSome @>
-
-    reg.OnCommandCompleted.Value(
-        { Name = "my-cmd"
-          Succeeded = true
-          Output = "done" }
+    reg.Dispatch(
+        DispatchCommandCompleted
+            { Name = "my-cmd"
+              Outcome = CommandSucceeded "done" }
     )
 
     // Poll the command deterministically — it queues behind the CommandCompleted message

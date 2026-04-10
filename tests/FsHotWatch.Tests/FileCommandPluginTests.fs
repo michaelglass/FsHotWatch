@@ -11,16 +11,28 @@ open FsHotWatch.Tests.TestHelpers
 [<Fact>]
 let ``plugin has correct name`` () =
     let handler =
-        create "run-scripts" (fun f -> f.EndsWith(".fsx")) "echo" "hello" false None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "run-scripts")
+            (fun f -> f.EndsWith(".fsx"))
+            "echo"
+            "hello"
+            false
+            None
 
-    test <@ handler.Name = "run-scripts" @>
+    test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "run-scripts" @>
 
 [<Fact>]
 let ``command runs when matching files change`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create "run-scripts" (fun f -> f.EndsWith(".fsx")) "echo" "hello" false None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "run-scripts")
+            (fun f -> f.EndsWith(".fsx"))
+            "echo"
+            "hello"
+            false
+            None
 
     host.RegisterHandler(handler)
 
@@ -48,7 +60,13 @@ let ``command does not run for non-matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create "run-scripts" (fun f -> f.EndsWith(".fsx")) "echo" "hello" false None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "run-scripts")
+            (fun f -> f.EndsWith(".fsx"))
+            "echo"
+            "hello"
+            false
+            None
 
     host.RegisterHandler(handler)
 
@@ -71,7 +89,16 @@ let ``command does not run for non-matching files`` () =
 [<Fact>]
 let ``command captures stdout output`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create "echo-test" (fun _ -> true) "echo" "captured-output" false None
+
+    let handler =
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "echo-test")
+            (fun _ -> true)
+            "echo"
+            "captured-output"
+            false
+            None
+
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "anything.txt" ])
@@ -91,7 +118,16 @@ let ``command captures stdout output`` () =
 [<Fact>]
 let ``command with environment variables`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create "env-test" (fun _ -> true) "echo" "env-test-output" false None
+
+    let handler =
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "env-test")
+            (fun _ -> true)
+            "echo"
+            "env-test-output"
+            false
+            None
+
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "file.txt" ])
@@ -118,7 +154,13 @@ let ``command runs on ProjectChanged with matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create "proj-watcher" (fun f -> f.EndsWith(".fsproj")) "echo" "project changed" false None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "proj-watcher")
+            (fun f -> f.EndsWith(".fsproj"))
+            "echo"
+            "project changed"
+            false
+            None
 
     host.RegisterHandler(handler)
 
@@ -144,7 +186,10 @@ let ``command runs on ProjectChanged with matching files`` () =
 [<Fact>]
 let ``command ignores SolutionChanged`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create "sln-watcher" (fun _ -> true) "echo" "hello" false None
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "sln-watcher") (fun _ -> true) "echo" "hello" false None
+
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SolutionChanged "test.sln")
@@ -165,7 +210,10 @@ let ``command ignores SolutionChanged`` () =
 [<Fact>]
 let ``command reports Failed status on command failure`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create "fail-cmd" (fun _ -> true) "false" "" false None
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "fail-cmd") (fun _ -> true) "false" "" false None
+
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "file.txt" ])
@@ -194,7 +242,13 @@ let ``command reports Failed status on exception`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create "bad-cmd" (fun _ -> true) "this-command-does-not-exist-xyz" "" false None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "bad-cmd")
+            (fun _ -> true)
+            "this-command-does-not-exist-xyz"
+            ""
+            false
+            None
 
     host.RegisterHandler(handler)
 
@@ -222,7 +276,10 @@ let ``command reports Failed status on exception`` () =
 [<Fact>]
 let ``status command returns not run when no files matched`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create "no-match" (fun _ -> false) "echo" "hello" false None
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "no-match") (fun _ -> false) "echo" "hello" false None
+
     host.RegisterHandler(handler)
 
     // No files match, so command never runs
@@ -244,7 +301,10 @@ let ``status command returns not run when no files matched`` () =
 [<Fact>]
 let ``status command returns false when command failed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create "fail-status" (fun _ -> true) "false" "" false None
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "fail-status") (fun _ -> true) "false" "" false None
+
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "file.txt" ])
@@ -265,7 +325,10 @@ let ``emits CommandCompleted on success`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getCommand, recorder) = commandRecorder ()
     host.RegisterHandler(recorder)
-    let handler = create "echo-cmd" (fun _ -> true) "echo" "hello" false None
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "echo-cmd") (fun _ -> true) "echo" "hello" false None
+
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "file.txt" ])
@@ -280,15 +343,23 @@ let ``emits CommandCompleted on success`` () =
     let cmd = getCommand ()
     test <@ cmd.IsSome @>
     test <@ cmd.Value.Name = "echo-cmd" @>
-    test <@ cmd.Value.Succeeded = true @>
-    test <@ cmd.Value.Output.Contains("hello") @>
+
+    test
+        <@
+            match cmd.Value.Outcome with
+            | FsHotWatch.Events.CommandSucceeded output -> output.Contains("hello")
+            | _ -> false
+        @>
 
 [<Fact>]
 let ``emits CommandCompleted on failure`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getCommand, recorder) = commandRecorder ()
     host.RegisterHandler(recorder)
-    let handler = create "fail-cmd-emit" (fun _ -> true) "false" "" false None
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "fail-cmd-emit") (fun _ -> true) "false" "" false None
+
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "file.txt" ])
@@ -303,12 +374,21 @@ let ``emits CommandCompleted on failure`` () =
     let cmd = getCommand ()
     test <@ cmd.IsSome @>
     test <@ cmd.Value.Name = "fail-cmd-emit" @>
-    test <@ cmd.Value.Succeeded = false @>
+
+    test
+        <@
+            match cmd.Value.Outcome with
+            | FsHotWatch.Events.CommandFailed _ -> true
+            | _ -> false
+        @>
 
 [<Fact>]
 let ``runOnStart runs command on first FileChanged even without matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create "setup-cmd" (fun _ -> false) "echo" "setup" true None
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "setup-cmd") (fun _ -> false) "echo" "setup" true None
+
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -333,7 +413,10 @@ let ``runOnStart runs command on first FileChanged even without matching files``
 [<Fact>]
 let ``runOnStart only triggers once`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create "setup-once" (fun _ -> false) "echo" "setup" true None
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "setup-once") (fun _ -> false) "echo" "setup" true None
+
     host.RegisterHandler(handler)
 
     // First event — runs despite no matching files

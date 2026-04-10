@@ -10,20 +10,8 @@ open FsHotWatch.ErrorLedger
 
 let private sanitizeKey = FsHotWatch.StringHelpers.sanitizeFileName
 
-let private severityToString (sev: DiagnosticSeverity) =
-    match sev with
-    | Error -> "error"
-    | Warning -> "warning"
-    | Info -> "info"
-    | Hint -> "hint"
-
-let private stringToSeverity (s: string) =
-    match s with
-    | "error" -> Error
-    | "warning" -> Warning
-    | "info" -> Info
-    | "hint" -> Hint
-    | _ -> Error
+let private severityToString = DiagnosticSeverity.toString
+let private stringToSeverity = DiagnosticSeverity.fromString
 
 let private serializeErrorEntry (e: ErrorEntry) =
     let obj = JsonObject()
@@ -131,8 +119,14 @@ let private serializeCachedEvent (evt: CachedEvent) =
     | CachedCommandCompleted result ->
         obj["type"] <- "command"
         obj["name"] <- result.Name
-        obj["succeeded"] <- result.Succeeded
-        obj["output"] <- result.Output
+
+        match result.Outcome with
+        | CommandSucceeded output ->
+            obj["succeeded"] <- true
+            obj["output"] <- output
+        | CommandFailed output ->
+            obj["succeeded"] <- false
+            obj["output"] <- output
 
     obj
 
@@ -156,10 +150,16 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
         let elapsed = TimeSpan.FromMilliseconds(obj["elapsedMs"].GetValue<float>())
         CachedTestCompleted { Results = results; Elapsed = elapsed }
     | "command" ->
-        CachedCommandCompleted
-            { Name = obj["name"].GetValue<string>()
-              Succeeded = obj["succeeded"].GetValue<bool>()
-              Output = obj["output"].GetValue<string>() }
+        let name = obj["name"].GetValue<string>()
+        let output = obj["output"].GetValue<string>()
+
+        let outcome =
+            if obj["succeeded"].GetValue<bool>() then
+                CommandSucceeded output
+            else
+                CommandFailed output
+
+        CachedCommandCompleted { Name = name; Outcome = outcome }
     | t -> failwith $"Unknown cached event type: %s{t}"
 
 let private serializeResult (result: TaskCacheResult) =
@@ -220,18 +220,24 @@ let private deserializeResult (json: string) : TaskCacheResult =
 let private hashCacheKey (cacheKey: string) =
     (FsHotWatch.CheckCache.sha256Hex cacheKey).Substring(0, 12)
 
+/// Serialize a CompositeKey to a file-safe string.
+let private compositeKeyToString (key: CompositeKey) =
+    match key.File with
+    | Some file -> $"%s{key.Plugin}--%s{file}"
+    | None -> key.Plugin
+
 /// On-disk task cache. Each entry is a JSON file in the cache directory.
 /// Files are named `{compositeKey}@{cacheKeyHash}.json` so multiple versions coexist.
 type FileTaskCache(cacheDir: string) =
     do Directory.CreateDirectory(cacheDir) |> ignore
 
-    let filePath compositeKey cacheKey =
+    let filePath (compositeKey: CompositeKey) cacheKey =
         let keyHash = hashCacheKey cacheKey
-        Path.Combine(cacheDir, $"%s{sanitizeKey compositeKey}@%s{keyHash}.json")
+        Path.Combine(cacheDir, $"%s{sanitizeKey (compositeKeyToString compositeKey)}@%s{keyHash}.json")
 
     let jsonWriteOptions = System.Text.Json.JsonSerializerOptions(WriteIndented = true)
 
-    let tryGet (compositeKey: string) (cacheKey: string) =
+    let tryGet (compositeKey: CompositeKey) (cacheKey: string) =
         let path = filePath compositeKey cacheKey
 
         try
@@ -242,7 +248,7 @@ type FileTaskCache(cacheDir: string) =
         with _ ->
             None
 
-    let set (compositeKey: string) (cacheKey: string) (result: TaskCacheResult) =
+    let set (compositeKey: CompositeKey) (cacheKey: string) (result: TaskCacheResult) =
         let path = filePath compositeKey cacheKey
         let json = serializeResult result
         File.WriteAllText(path, json.ToJsonString(jsonWriteOptions))
@@ -280,12 +286,12 @@ type FileTaskCache(cacheDir: string) =
             if name.StartsWith(prefix) then
                 File.Delete(f)
 
-    /// Try to retrieve a cached result. Returns Some only when the compositeKey
-    /// matches AND the stored result's CacheKey matches the provided cacheKey.
-    member _.TryGet(compositeKey: string, cacheKey: string) = tryGet compositeKey cacheKey
+    /// Try to retrieve a cached result.
+    member _.TryGet(compositeKey: CompositeKey, cacheKey: string) = tryGet compositeKey cacheKey
 
     /// Store a result under the given compositeKey.
-    member _.Set(compositeKey: string, cacheKey: string, result: TaskCacheResult) = set compositeKey cacheKey result
+    member _.Set(compositeKey: CompositeKey, cacheKey: string, result: TaskCacheResult) =
+        set compositeKey cacheKey result
 
     /// Remove all cached entries.
     member _.Clear() = clear ()

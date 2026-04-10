@@ -2,6 +2,7 @@ module FsHotWatch.Tests.TestPrunePluginTests
 
 open System
 open System.IO
+open System.Text.Json
 open Xunit
 open Swensen.Unquote
 open FSharp.Compiler.CodeAnalysis
@@ -27,7 +28,7 @@ let private waitForPluginTerminal (host: PluginHost) (pluginName: string) (timeo
 [<Fact>]
 let ``plugin has correct name`` () =
     let handler = create ":memory:" "/tmp" None None None None None None
-    test <@ handler.Name = "test-prune" @>
+    test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "test-prune" @>
 
 [<Fact>]
 let ``affected-tests command returns not-analyzed when no files checked`` () =
@@ -62,7 +63,7 @@ let ``test-prune error path sets Failed status on null check results`` () =
         { File = "/tmp/nonexistent/Fake.fs"
           Source = ""
           ParseResults = Unchecked.defaultof<_>
-          CheckResults = None
+          CheckResults = ParseOnly
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L }
 
@@ -107,7 +108,7 @@ let ``changed-files tracks files after emit with valid relative path`` () =
             { File = fakeFile
               Source = "module Lib\nlet x = 1\n"
               ParseResults = Unchecked.defaultof<_>
-              CheckResults = None
+              CheckResults = ParseOnly
               ProjectOptions = Unchecked.defaultof<_>
               Version = 0L }
 
@@ -136,7 +137,7 @@ let ``duplicate file checks do not duplicate in changed-files list`` () =
             { File = fakeFile
               Source = "module Dup\n"
               ParseResults = Unchecked.defaultof<_>
-              CheckResults = None
+              CheckResults = ParseOnly
               ProjectOptions = Unchecked.defaultof<_>
               Version = 0L }
 
@@ -341,7 +342,7 @@ let ``FileChecked does not report Completed when testConfigs are provided (error
             { File = fakeFile
               Source = "module Lib\nlet x = 1\n"
               ParseResults = Unchecked.defaultof<_>
-              CheckResults = None
+              CheckResults = ParseOnly
               ProjectOptions = Unchecked.defaultof<_>
               Version = 0L }
 
@@ -389,7 +390,7 @@ let ``FileChecked reports terminal status when no testConfigs (analysis-only mod
             { File = fakeFile
               Source = "module Lib\nlet x = 1\n"
               ParseResults = Unchecked.defaultof<_>
-              CheckResults = None
+              CheckResults = ParseOnly
               ProjectOptions = Unchecked.defaultof<_>
               Version = 0L }
 
@@ -438,7 +439,7 @@ let ``plugin reports Running status on FileChecked after tests complete`` () =
             { File = fakeFile
               Source = "module New"
               ParseResults = Unchecked.defaultof<_>
-              CheckResults = None
+              CheckResults = ParseOnly
               ProjectOptions = Unchecked.defaultof<_>
               Version = 0L }
 
@@ -482,8 +483,11 @@ let ``run-tests command runs all projects and returns results`` () =
 
         let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
         test <@ result.IsSome @>
-        test <@ result.Value.Contains("\"status\": \"passed\"") @>
-        test <@ result.Value.Contains("\"elapsed\":") @>)
+        let doc = JsonDocument.Parse(result.Value)
+        let projects = doc.RootElement.GetProperty("projects")
+        Assert.True(projects.GetArrayLength() > 0)
+        Assert.Equal("passed", projects.[0].GetProperty("status").GetString())
+        Assert.True(doc.RootElement.TryGetProperty("elapsed") |> fst))
 
 [<Fact>]
 let ``run-tests with project filter runs only named project`` () =
@@ -1111,7 +1115,7 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
             { File = fakeFile
               Source = "module Late\nlet x = 1\n"
               ParseResults = Unchecked.defaultof<_>
-              CheckResults = None
+              CheckResults = ParseOnly
               ProjectOptions = Unchecked.defaultof<_>
               Version = 0L }
 
@@ -1184,7 +1188,7 @@ let ``FileChecked does not query DB for affected tests`` () =
             { File = fakeFile
               Source = "module Lib\nlet foo = 2\n"
               ParseResults = Unchecked.defaultof<_>
-              CheckResults = None
+              CheckResults = ParseOnly
               ProjectOptions = Unchecked.defaultof<_>
               Version = 0L }
 

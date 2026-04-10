@@ -13,7 +13,7 @@ open FsHotWatch.Tests.TestHelpers
 [<Fact>]
 let ``plugin has correct name`` () =
     let handler = createFormatCheck None
-    test <@ handler.Name = "format-check" @>
+    test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "format-check" @>
 
 [<Fact>]
 let ``unformatted command returns zero count when no files processed`` () =

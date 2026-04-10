@@ -17,13 +17,12 @@ type BuildOutcome =
     | BuildOutputFailed of output: string
 
 type BuildPhase =
-    | IdlePhase of Lifecycle<Idle, BuildOutcome>
+    | IdlePhase of Lifecycle<Idle, BuildOutcome> * pendingFiles: FileChangeKind list
     | RunningPhase of Lifecycle<Running, BuildOutcome>
 
 type BuildState =
     { Phase: BuildPhase
-      SatisfiedDeps: Set<string>
-      PendingFiles: FileChangeKind list }
+      SatisfiedDeps: Set<string> }
 
 type BuildMsg = BuildDone of BuildOutcome
 
@@ -31,7 +30,7 @@ let create
     (command: string)
     (args: string)
     (environment: (string * string) list)
-    (graph: FsHotWatch.ProjectGraph.ProjectGraph)
+    (graph: FsHotWatch.ProjectGraph.IProjectGraphReader)
     (testProjectNames: string list)
     (buildTemplate: string option)
     (dependsOn: string list)
@@ -43,12 +42,12 @@ let create
     let testProjectNameSet = testProjectNames |> Set.ofList
 
     let isTestFile (file: string) =
-        match graph.GetProjectForFile(file) with
-        | Some proj -> testProjectNameSet.Contains(Path.GetFileNameWithoutExtension(proj))
+        match graph.GetProjectForFile(AbsFilePath.create file) with
+        | Some proj -> testProjectNameSet.Contains(Path.GetFileNameWithoutExtension(AbsProjectPath.value proj))
         | None -> false
 
-    let isTestProject (proj: string) =
-        testProjectNameSet.Contains(Path.GetFileNameWithoutExtension(proj))
+    let isTestProject (proj: AbsProjectPath) =
+        testProjectNameSet.Contains(Path.GetFileNameWithoutExtension(AbsProjectPath.value proj))
 
     let depNames = dependsOn |> Set.ofList
     let allDepsSatisfied deps = Set.isSubset depNames deps
@@ -98,8 +97,7 @@ let create
         |> Async.Start
 
         { Phase = RunningPhase running
-          SatisfiedDeps = Set.empty
-          PendingFiles = [] }
+          SatisfiedDeps = Set.empty }
 
     let startTemplateBuild
         (ctx: PluginCtx<BuildMsg>)
@@ -108,7 +106,10 @@ let create
         (files: string list)
         =
         let nonTestFiles = files |> List.filter (fun f -> not (isTestFile f))
-        let affected = graph.GetAffectedProjects(nonTestFiles)
+
+        let affected =
+            graph.GetAffectedProjects(nonTestFiles |> List.map AbsFilePath.create)
+
         let buildable = affected |> List.filter (fun p -> not (isTestProject p))
 
         if buildable.IsEmpty then
@@ -131,7 +132,8 @@ let create
                     let mutable outputs = []
 
                     for root in roots do
-                        let rendered = template.Replace("{project}", root)
+                        let rootStr = AbsProjectPath.value root
+                        let rendered = template.Replace("{project}", rootStr)
                         let (cmd, cmdArgs) = splitCommand rendered
                         info "build" $"Running template: %s{cmd} %s{cmdArgs}"
 
@@ -140,10 +142,10 @@ let create
                             outputs <- output :: outputs
 
                             if not success then
-                                error "build" $"Template build FAILED for %s{root}"
+                                error "build" $"Template build FAILED for %s{rootStr}"
                                 failures <- output :: failures
                         with ex ->
-                            error "build" $"Template build exception for %s{root}: %s{ex.Message}"
+                            error "build" $"Template build exception for %s{rootStr}: %s{ex.Message}"
                             failures <- ex.Message :: failures
 
                     let combinedOutput = outputs |> List.rev |> String.concat "\n"
@@ -180,8 +182,7 @@ let create
             |> Async.Start
 
             { Phase = RunningPhase running
-              SatisfiedDeps = Set.empty
-              PendingFiles = [] }
+              SatisfiedDeps = Set.empty }
 
     let handleSourceChanged
         (ctx: PluginCtx<BuildMsg>)
@@ -195,76 +196,82 @@ let create
             info "build" "Skipping build — only test files changed"
             ctx.EmitBuildCompleted(BuildSucceeded)
             ctx.ReportStatus(Completed(DateTime.UtcNow))
-            { state with Phase = IdlePhase idle }
+
+            { state with
+                Phase = IdlePhase(idle, []) }
         else
             match buildTemplate with
             | Some template ->
                 { (startTemplateBuild ctx idle template files) with
-                    SatisfiedDeps = state.SatisfiedDeps
-                    PendingFiles = [] }
+                    SatisfiedDeps = state.SatisfiedDeps }
             | None ->
                 { (startBuild ctx idle) with
-                    SatisfiedDeps = state.SatisfiedDeps
-                    PendingFiles = [] }
+                    SatisfiedDeps = state.SatisfiedDeps }
 
     let handleProjectChanged (ctx: PluginCtx<BuildMsg>) (state: BuildState) (idle: Lifecycle<Idle, BuildOutcome>) =
         { (startBuild ctx idle) with
-            SatisfiedDeps = state.SatisfiedDeps
-            PendingFiles = [] }
+            SatisfiedDeps = state.SatisfiedDeps }
 
-    { Name = "build"
+    { Name = PluginName.create "build"
       Init =
-        { Phase = IdlePhase(Lifecycle.create NotBuilt)
-          SatisfiedDeps = Set.empty
-          PendingFiles = [] }
+        { Phase = IdlePhase(Lifecycle.create NotBuilt, [])
+          SatisfiedDeps = Set.empty }
       Update =
         fun ctx state event ->
             async {
                 match event, state.Phase with
                 // --- CommandCompleted: track dependency satisfaction ---
                 | CommandCompleted result, _ when depNames.Contains(result.Name) ->
-                    if not result.Succeeded then
+                    match result.Outcome with
+                    | FsHotWatch.Events.CommandFailed _ ->
                         ctx.ReportStatus(PluginStatus.Failed($"dependency failed: %s{result.Name}", DateTime.UtcNow))
                         return state
-                    else
+                    | FsHotWatch.Events.CommandSucceeded _ ->
                         let newDeps = Set.add result.Name state.SatisfiedDeps
 
                         if allDepsSatisfied newDeps then
+                            let pendingFiles =
+                                match state.Phase with
+                                | IdlePhase(_, pending) -> pending
+                                | RunningPhase _ -> []
+
                             let updatedState = { state with SatisfiedDeps = newDeps }
 
                             let hasProjectChange =
-                                updatedState.PendingFiles
+                                pendingFiles
                                 |> List.exists (function
                                     | ProjectChanged _ -> true
                                     | _ -> false)
 
                             let sourceFiles =
-                                updatedState.PendingFiles
+                                pendingFiles
                                 |> List.collect (function
                                     | SourceChanged files -> files
                                     | _ -> [])
                                 |> List.distinct
 
                             match hasProjectChange, sourceFiles, updatedState.Phase with
-                            | true, _, IdlePhase idle -> return handleProjectChanged ctx updatedState idle
-                            | _, _ :: _, IdlePhase idle -> return handleSourceChanged ctx updatedState idle sourceFiles
+                            | true, _, IdlePhase(idle, _) -> return handleProjectChanged ctx updatedState idle
+                            | _, _ :: _, IdlePhase(idle, _) ->
+                                return handleSourceChanged ctx updatedState idle sourceFiles
                             | _ -> return updatedState
                         else
                             return { state with SatisfiedDeps = newDeps }
 
                 // --- FileChanged: buffer if deps not yet satisfied ---
-                | FileChanged change, IdlePhase _ when
+                | FileChanged change, IdlePhase(idle, pending) when
                     not depNames.IsEmpty && not (allDepsSatisfied state.SatisfiedDeps)
                     ->
                     info "build" "Buffering file change — waiting for dependencies"
 
                     return
                         { state with
-                            PendingFiles = state.PendingFiles @ [ change ] }
+                            Phase = IdlePhase(idle, pending @ [ change ]) }
 
                 // --- FileChanged: normal handling (no deps or all satisfied) ---
-                | FileChanged(SourceChanged files), IdlePhase idle -> return handleSourceChanged ctx state idle files
-                | FileChanged(ProjectChanged _), IdlePhase idle -> return handleProjectChanged ctx state idle
+                | FileChanged(SourceChanged files), IdlePhase(idle, _) ->
+                    return handleSourceChanged ctx state idle files
+                | FileChanged(ProjectChanged _), IdlePhase(idle, _) -> return handleProjectChanged ctx state idle
                 | Custom(BuildDone outcome), RunningPhase running ->
                     let idle = Lifecycle.complete outcome running
 
@@ -277,9 +284,8 @@ let create
 
                     return
                         { state with
-                            Phase = IdlePhase idle
-                            SatisfiedDeps = Set.empty
-                            PendingFiles = [] }
+                            Phase = IdlePhase(idle, [])
+                            SatisfiedDeps = Set.empty }
                 | FileChanged _, RunningPhase _ ->
                     info "build" "Skipping: build already in progress"
                     return state
@@ -291,20 +297,31 @@ let create
               async {
                   let lastResult =
                       match state.Phase with
-                      | IdlePhase idle -> Lifecycle.value idle
+                      | IdlePhase(idle, _) -> Lifecycle.value idle
                       | RunningPhase running -> Lifecycle.value running
 
                   match lastResult with
                   | BuildPassed output ->
-                      let escapedOutput = JsonSerializer.Serialize(truncateOutput 200 output)
-                      return $"{{\"status\": \"passed\", \"output\": %s{escapedOutput}}}"
+                      return
+                          JsonSerializer.Serialize(
+                              {| status = "passed"
+                                 output = truncateOutput 200 output |}
+                          )
                   | BuildOutputFailed output ->
-                      let escapedOutput = JsonSerializer.Serialize(truncateOutput 200 output)
-                      return $"{{\"status\": \"failed\", \"output\": %s{escapedOutput}}}"
-                  | NotBuilt -> return "{\"status\": \"not run\"}"
+                      return
+                          JsonSerializer.Serialize(
+                              {| status = "failed"
+                                 output = truncateOutput 200 output |}
+                          )
+                  | NotBuilt -> return JsonSerializer.Serialize({| status = "not run" |})
               } ]
       Subscriptions =
-        { PluginSubscriptions.none with
-            FileChanged = true
-            CommandCompleted = not dependsOn.IsEmpty }
-      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId }
+        Set.ofList (
+            [ SubscribeFileChanged ]
+            @ (if dependsOn.IsEmpty then
+                   []
+               else
+                   [ SubscribeCommandCompleted ])
+        )
+      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId
+      Teardown = None }
