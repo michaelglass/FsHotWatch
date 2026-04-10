@@ -5,8 +5,6 @@ open System.Collections.Generic
 open Microsoft.Data.Sqlite
 open TestPrune.AstAnalyzer
 
-let private warnedUnknownKinds = HashSet<string>()
-
 let private schema =
     """
     CREATE TABLE IF NOT EXISTS symbols (
@@ -78,7 +76,7 @@ let private symbolKindToString (kind: SymbolKind) =
     | Property -> "Property"
     | ExternRef -> "ExternRef"
 
-let private stringToSymbolKind (s: string) =
+let private stringToSymbolKind (warned: HashSet<string>) (s: string) =
     match s with
     | "Function" -> Function
     | "Type" -> Type
@@ -88,7 +86,7 @@ let private stringToSymbolKind (s: string) =
     | "Property" -> Property
     | "ExternRef" -> ExternRef
     | unknown ->
-        if warnedUnknownKinds.Add($"SymbolKind:%s{unknown}") then
+        if warned.Add($"SymbolKind:%s{unknown}") then
             eprintfn $"Warning: unknown SymbolKind '%s{unknown}' in database, defaulting to Value"
 
         Value
@@ -100,14 +98,14 @@ let private depKindToString =
     | PatternMatches -> "pattern_matches"
     | References -> "references"
 
-let private stringToDepKind =
+let private stringToDepKind (warned: HashSet<string>) =
     function
     | "calls" -> Calls
     | "uses_type" -> UsesType
     | "pattern_matches" -> PatternMatches
     | "references" -> References
     | unknown ->
-        if warnedUnknownKinds.Add($"DependencyKind:%s{unknown}") then
+        if warned.Add($"DependencyKind:%s{unknown}") then
             eprintfn $"Warning: unknown DependencyKind '%s{unknown}' in database, defaulting to References"
 
         References
@@ -138,6 +136,7 @@ let private openConnection (dbPath: string) =
 
 /// SQLite-backed dependency graph storage.
 type Database(dbPath: string) =
+    let warnedUnknownKinds = HashSet<string>()
 
     do
         use conn = openConnection dbPath
@@ -370,7 +369,7 @@ type Database(dbPath: string) =
 
         readAll reader (fun r ->
             { FullName = r.GetString(0)
-              Kind = stringToSymbolKind (r.GetString(1))
+              Kind = stringToSymbolKind warnedUnknownKinds (r.GetString(1))
               SourceFile = r.GetString(2)
               LineStart = r.GetInt32(3)
               LineEnd = r.GetInt32(4)
@@ -401,7 +400,7 @@ type Database(dbPath: string) =
 
         readAll reader (fun r ->
             { FullName = r.GetString(0)
-              Kind = stringToSymbolKind (r.GetString(1))
+              Kind = stringToSymbolKind warnedUnknownKinds (r.GetString(1))
               SourceFile = r.GetString(2)
               LineStart = r.GetInt32(3)
               LineEnd = r.GetInt32(4)
@@ -601,7 +600,7 @@ type Database(dbPath: string) =
         readAll reader (fun r ->
             { FromSymbol = r.GetString(0)
               ToSymbol = r.GetString(1)
-              Kind = stringToDepKind (r.GetString(2)) })
+              Kind = stringToDepKind warnedUnknownKinds (r.GetString(2)) })
 
     /// Insert an audit event into the analysis_events table.
     member _.InsertEvent(runId: string, timestamp: string, eventType: string, eventData: string) =

@@ -322,8 +322,8 @@ module ``analyzeChanges`` =
 
                 match result with
                 | Ok(RunAll(AnalysisFailedFallback _), _) -> ()
-                | Ok(RunAll _, _) -> () // May fall through to RunAll for a new file — still covers parse warning path
-                | other -> failwith $"expected Ok(RunAll _, _) but got %A{other}"
+                | Ok(RunAll(NewFileNotIndexed _), _) -> ()
+                | other -> failwith $"expected AnalysisFailedFallback or NewFileNotIndexed, got %A{other}"
             finally
                 Console.SetError(oldErr)
         finally

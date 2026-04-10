@@ -6,9 +6,9 @@
       "reason": "loosened: ExternRef case added to isTrackedSymbol"
     },
     "Database.fs": {
-      "line": 97,
+      "line": 84,
       "branch": 69.31818181818183,
-      "reason": "loosened automatically"
+      "reason": "loosened: moved warnedUnknownKinds to instance field, coverage tool splits module/class calculation"
     },
     "DeadCode.fs": {
       "line": 100,
