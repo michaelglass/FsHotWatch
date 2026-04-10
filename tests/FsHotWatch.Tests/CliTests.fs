@@ -448,7 +448,8 @@ let private fakeIpc () : IpcOps =
       TriggerBuild = fun _ -> async { return "{}" }
       FormatAll = fun _ -> async { return "formatted 0 files" }
       InvalidateCache = fun _ _ -> async { return "{\"status\": \"rechecked\"}" }
-      IsRunning = fun _ -> true }
+      IsRunning = fun _ -> true
+      LaunchDaemon = fun _ _ _ -> () }
 
 [<Fact>]
 let ``executeCommand Stop calls shutdown`` () =
@@ -464,7 +465,7 @@ let ``executeCommand Stop calls shutdown`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Stop "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Stop "" false fakeConfig 30.0
 
     test <@ result = 0 @>
     test <@ called @>
@@ -472,7 +473,16 @@ let ``executeCommand Stop calls shutdown`` () =
 [<Fact>]
 let ``executeCommand Status returns 0`` () =
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" (Status None) "" false fakeConfig
+        executeCommand
+            (fun _ -> Unchecked.defaultof<_>)
+            (fakeIpc ())
+            "/tmp"
+            "pipe"
+            (Status None)
+            ""
+            false
+            fakeConfig
+            30.0
 
     test <@ result = 0 @>
 
@@ -508,7 +518,7 @@ let ``executeCommand Scan calls scan IPC`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Scan []) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Scan []) "" false fakeConfig 30.0
 
     test <@ result = 0 @>
     test <@ called @>
@@ -527,33 +537,43 @@ let ``executeCommand Status with plugin name calls getPluginStatus`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status(Some "lint")) "" false fakeConfig
+        executeCommand
+            (fun _ -> Unchecked.defaultof<_>)
+            ipc
+            "/tmp"
+            "pipe"
+            (Status(Some "lint"))
+            ""
+            false
+            fakeConfig
+            30.0
 
     test <@ result = 0 @>
     test <@ calledWith = "lint" @>
 
 [<Fact>]
 let ``executeCommand Start with fake daemon throws on null daemon`` () =
-    // A defaultof Daemon has null fields, so RunWithIpc will throw.
-    // This verifies the createDaemon parameter is actually called and used.
-    let mutable createCalled = false
-    let fakeDaemon = Unchecked.defaultof<Daemon>
+    // Use a unique temp dir to avoid writing the test process PID to /tmp/.fs-hot-watch/daemon.pid
+    // where killStaleDaemon from other tests would read it and kill the test process.
+    withTempDir "cli-start" (fun tmpDir ->
+        let mutable createCalled = false
+        let fakeDaemon = Unchecked.defaultof<Daemon>
 
-    let createDaemon _ =
-        createCalled <- true
-        fakeDaemon
+        let createDaemon _ =
+            createCalled <- true
+            fakeDaemon
 
-    let threw =
-        try
-            executeCommand createDaemon (fakeIpc ()) "/tmp" "pipe" Start "" false fakeConfig
-            |> ignore
+        let threw =
+            try
+                executeCommand createDaemon (fakeIpc ()) tmpDir "pipe" Start "" false fakeConfig 30.0
+                |> ignore
 
-            false
-        with _ ->
-            true
+                false
+            with _ ->
+                true
 
-    test <@ createCalled @>
-    test <@ threw @>
+        test <@ createCalled @>
+        test <@ threw @>)
 
 [<Fact>]
 let ``executeCommand returns 1 when IPC fails`` () =
@@ -562,7 +582,7 @@ let ``executeCommand returns 1 when IPC fails`` () =
             GetStatus = fun _ -> async { return failwith "connection refused" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status None) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status None) "" false fakeConfig 30.0
 
     test <@ result = 1 @>
 
@@ -597,7 +617,7 @@ let ``executeCommand Errors with count 0 returns exit code 0`` () =
             GetDiagnostics = fun _ _ -> async { return """{"count": 0}""" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig 30.0
 
     test <@ result = 0 @>
 
@@ -613,7 +633,7 @@ let ``executeCommand Errors with count 5 returns exit code 1`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig 30.0
 
     test <@ result = 1 @>
 
@@ -624,7 +644,7 @@ let ``executeCommand Errors with IPC failure returns exit code 1`` () =
             GetDiagnostics = fun _ _ -> async { return failwith "connection refused" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig 30.0
 
     test <@ result = 1 @>
 
@@ -635,7 +655,7 @@ let ``executeCommand Build with status passed returns exit code 0`` () =
             TriggerBuild = fun _ -> async { return """{"status": "passed"}""" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build []) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build []) "" false fakeConfig 30.0
 
     test <@ result = 0 @>
 
@@ -646,7 +666,7 @@ let ``executeCommand Build with status failed returns exit code 1`` () =
             TriggerBuild = fun _ -> async { return """{"status": "failed"}""" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build []) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build []) "" false fakeConfig 30.0
 
     test <@ result = 1 @>
 
@@ -657,7 +677,7 @@ let ``executeCommand Build with plain text returns exit code 0`` () =
             TriggerBuild = fun _ -> async { return "build completed successfully" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build []) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build []) "" false fakeConfig 30.0
 
     test <@ result = 0 @>
 
@@ -677,7 +697,7 @@ let ``executeCommand Build calls triggerBuild`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build []) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build []) "" false fakeConfig 30.0
 
     test <@ result = 0 @>
     test <@ called @>
@@ -696,7 +716,7 @@ let ``executeCommand Test calls runCommand with run-tests`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Test []) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Test []) "" false fakeConfig 30.0
 
     test <@ result = 0 @>
     test <@ cmdName = "run-tests" @>
@@ -715,7 +735,7 @@ let ``executeCommand Format calls formatAll`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Format []) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Format []) "" false fakeConfig 30.0
 
     test <@ result = 0 @>
     test <@ called @>
@@ -734,7 +754,7 @@ let ``executeCommand FormatCheck uses format-check filter not format`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (FormatCheck []) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (FormatCheck []) "" false fakeConfig 30.0
 
     test <@ result = 0 @>
     test <@ errorFilter = "format-check" @>
@@ -753,7 +773,7 @@ let ``executeCommand Lint scans waits and gets lint errors`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Lint []) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Lint []) "" false fakeConfig 30.0
 
     test <@ result = 0 @>
     test <@ errorFilter = "lint" @>
@@ -772,7 +792,7 @@ let ``executeCommand Errors calls getErrors`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig 30.0
 
     test <@ result = 0 @>
     test <@ called @>
@@ -805,7 +825,7 @@ let ``executeCommand Check waits for scan and returns errors`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Check []) "" false fakeConfig
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Check []) "" false fakeConfig 30.0
 
     test <@ result = 0 @>
     test <@ waitForScanCalled @>
@@ -837,66 +857,42 @@ let ``executeCommand InvalidateCache calls invalidateCache with file path`` () =
             ""
             false
             fakeConfig
+            30.0
 
     test <@ result = 0 @>
     test <@ calledWithPath = "some/file.fs" @>
 
 // --- Regression tests for bug fixes ---
 
+/// Run a test that triggers daemon startup failure using an isolated temp dir
+/// so that killStaleDaemon cannot read another test's PID file.
+let private withStartupFailure command =
+    withTempDir "cli-fail" (fun tmpDir ->
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> false }
+
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" command "" false fakeConfig 0.0)
+
 [<Fact>]
 let ``executeCommand Check returns 1 when daemon startup fails`` () =
-    let ipc =
-        { fakeIpc () with
-            IsRunning = fun _ -> false }
-
-    let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Check []) "" false fakeConfig
-
-    test <@ result = 1 @>
+    test <@ withStartupFailure (Check []) = 1 @>
 
 [<Fact>]
 let ``executeCommand Build returns 1 when daemon startup fails`` () =
-    let ipc =
-        { fakeIpc () with
-            IsRunning = fun _ -> false }
-
-    let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Build []) "" false fakeConfig
-
-    test <@ result = 1 @>
+    test <@ withStartupFailure (Build []) = 1 @>
 
 [<Fact>]
 let ``executeCommand Test returns 1 when daemon startup fails`` () =
-    let ipc =
-        { fakeIpc () with
-            IsRunning = fun _ -> false }
-
-    let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Test []) "" false fakeConfig
-
-    test <@ result = 1 @>
+    test <@ withStartupFailure (Test []) = 1 @>
 
 [<Fact>]
 let ``executeCommand Lint returns 1 when daemon startup fails`` () =
-    let ipc =
-        { fakeIpc () with
-            IsRunning = fun _ -> false }
-
-    let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Lint []) "" false fakeConfig
-
-    test <@ result = 1 @>
+    test <@ withStartupFailure (Lint []) = 1 @>
 
 [<Fact>]
 let ``executeCommand Errors returns 1 when daemon startup fails`` () =
-    let ipc =
-        { fakeIpc () with
-            IsRunning = fun _ -> false }
-
-    let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig
-
-    test <@ result = 1 @>
+    test <@ withStartupFailure Errors = 1 @>
 
 // --- computeLaunchCommand tests ---
 

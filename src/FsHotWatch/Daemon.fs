@@ -165,39 +165,42 @@ type private ScanSignalMsg =
     | WaitFor of afterGen: int64 * TaskCompletionSource<unit>
     | Signal of newGen: int64
 
-type ScanSignal() =
+type ScanSignal(?cancellationToken: CancellationToken) =
     let agent =
-        MailboxProcessor.Start(fun inbox ->
-            let rec loop (waiters: (int64 * TaskCompletionSource<unit>) list) =
-                async {
-                    let! msg = inbox.Receive()
+        MailboxProcessor.Start(
+            (fun inbox ->
+                let rec loop (waiters: (int64 * TaskCompletionSource<unit>) list) =
+                    async {
+                        let! msg = inbox.Receive()
 
-                    try
-                        match msg with
-                        | WaitFor(afterGeneration, tcs) ->
-                            Logging.debug "scan-signal" $"WaitFor(%d{afterGeneration}) — registering waiter"
+                        try
+                            match msg with
+                            | WaitFor(afterGeneration, tcs) ->
+                                Logging.debug "scan-signal" $"WaitFor(%d{afterGeneration}) — registering waiter"
 
-                            return! loop ((afterGeneration, tcs) :: waiters)
+                                return! loop ((afterGeneration, tcs) :: waiters)
 
-                        | Signal newGeneration ->
-                            let toSignal, remaining =
-                                waiters
-                                |> List.partition (fun (afterGen, _) -> afterGen < 0L || newGeneration > afterGen)
+                            | Signal newGeneration ->
+                                let toSignal, remaining =
+                                    waiters
+                                    |> List.partition (fun (afterGen, _) -> afterGen < 0L || newGeneration > afterGen)
 
-                            Logging.debug
-                                "scan-signal"
-                                $"SignalGeneration(%d{newGeneration}) — resolving %d{toSignal.Length} waiters, %d{remaining.Length} remaining"
+                                Logging.debug
+                                    "scan-signal"
+                                    $"SignalGeneration(%d{newGeneration}) — resolving %d{toSignal.Length} waiters, %d{remaining.Length} remaining"
 
-                            for _, tcs in toSignal do
-                                tcs.TrySetResult(()) |> ignore
+                                for _, tcs in toSignal do
+                                    tcs.TrySetResult(()) |> ignore
 
-                            return! loop remaining
-                    with ex ->
-                        Logging.error "scan-signal" $"Agent failed: %s{ex.ToString()}"
-                        return! loop waiters
-                }
+                                return! loop remaining
+                        with ex ->
+                            Logging.error "scan-signal" $"Agent failed: %s{ex.ToString()}"
+                            return! loop waiters
+                    }
 
-            loop [])
+                loop []),
+            ?cancellationToken = cancellationToken
+        )
 
     /// Register a waiter that resolves when generation exceeds afterGeneration.
     /// If afterGeneration < 0, resolves on the next generation increment.
@@ -415,69 +418,79 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
 
 /// The daemon ties together a warm FSharpChecker, file watcher, check pipeline, and plugin host.
 /// It runs until the provided CancellationToken is cancelled.
-[<NoComparison; NoEquality>]
-type Daemon =
-    {
-        /// The plugin host that manages plugin lifecycle and event dispatch.
-        Host: PluginHost
-        /// The file watcher monitoring the repository for changes.
-        Watcher: FileWatcher
-        /// The warm FSharpChecker instance used for incremental checking.
-        Checker: FSharpChecker
-        /// The check pipeline that performs incremental file checking.
-        Pipeline: CheckPipeline
-        /// The project dependency graph.
-        Graph: ProjectGraph
-        /// The repository root directory.
-        RepoRoot: string
-        /// Cached MSBuild workspace loader (created once at startup to avoid
-        /// accumulating MSBuild BuildManager instances on each re-discovery).
-        WorkspaceLoader: IWorkspaceLoader
-        /// MailboxProcessor that serializes scan requests (replaces SemaphoreSlim).
-        ScanAgent: ScanAgent
-        /// Shared cancellation token ref for processChanges (set by RunWithIpc).
-        CancellationTokenRef: CancellationToken ref
-        /// Signalled when the daemon is ready to accept file change events.
-        Ready: ManualResetEventSlim
-        /// Signal-based notification for WaitForScan clients.
-        ScanSignal: ScanSignal
-        /// Optional jj scan guard for content-addressed cache optimization.
-        JjGuard: JjHelper.JjScanGuard option
-        /// FCS diagnostic codes to suppress (default: [1182] SqlHydra CE "value unused").
-        FcsSuppressedCodes: Set<int>
-    }
+type Daemon
+    internal
+    (
+        host: PluginHost,
+        watcher: FileWatcher,
+        pipeline: CheckPipeline,
+        graph: ProjectGraph,
+        repoRoot: string,
+        workspaceLoader: IWorkspaceLoader,
+        scanAgent: ScanAgent,
+        cancellationTokenRef: CancellationToken ref,
+        ready: ManualResetEventSlim,
+        scanSignal: ScanSignal,
+        _jjGuard: JjHelper.JjScanGuard option,
+        fcsSuppressedCodes: Set<int>,
+        lifetime: CancellationTokenSource
+    ) =
+
+    let mutable disposed = false
+
+    /// The plugin host that manages plugin lifecycle and event dispatch.
+    member _.Host = host
+
+    /// The check pipeline that performs incremental file checking.
+    member _.Pipeline = pipeline
+
+    /// The project dependency graph.
+    member _.Graph = graph
+
+    /// The repository root directory.
+    member _.RepoRoot = repoRoot
+
+    /// Signalled when the daemon is ready to accept file change events.
+    member _.Ready = ready
+
+    interface IDisposable with
+        member this.Dispose() =
+            if not disposed then
+                disposed <- true
+                lifetime.Cancel()
+                lifetime.Dispose()
+                (watcher :> IDisposable).Dispose()
 
     /// Register a declarative framework-managed plugin handler.
-    member this.RegisterHandler<'State, 'Msg>(handler: PluginFramework.PluginHandler<'State, 'Msg>) =
-        this.Host.RegisterHandler(handler)
+    member _.RegisterHandler<'State, 'Msg>(handler: PluginFramework.PluginHandler<'State, 'Msg>) =
+        host.RegisterHandler(handler)
 
     /// Register a preprocessor (e.g., formatter) that runs before events are dispatched.
-    member this.RegisterPreprocessor(preprocessor: IFsHotWatchPreprocessor) =
-        this.Host.RegisterPreprocessor(preprocessor)
+    member _.RegisterPreprocessor(preprocessor: IFsHotWatchPreprocessor) = host.RegisterPreprocessor(preprocessor)
 
     /// Register a project's options so its files can be checked incrementally.
-    member this.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
-        this.Pipeline.RegisterProject(projectPath, options)
+    member _.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
+        pipeline.RegisterProject(projectPath, options)
 
     /// Get current scan state.
-    member this.GetScanState() = getScanStatus this.ScanAgent
+    member _.GetScanState() = getScanStatus scanAgent
 
     /// Get current scan generation (incremented after each completed scan).
-    member this.GetScanGeneration() = getScanGeneration this.ScanAgent
+    member _.GetScanGeneration() = getScanGeneration scanAgent
 
     /// Set scan state (internal, for testing).
-    member internal this.SetScanState(state: ScanState) = setScanStatus this.ScanAgent state
+    member internal _.SetScanState(state: ScanState) = setScanStatus scanAgent state
 
     /// Invalidate cache for a file, re-check it, and emit results to plugins.
-    member this.InvalidateAndRecheck(filePath: string) =
+    member _.InvalidateAndRecheck(filePath: string) =
         async {
-            this.Pipeline.InvalidateFile(filePath)
-            let! result = this.Pipeline.CheckFile(filePath)
+            pipeline.InvalidateFile(filePath)
+            let! result = pipeline.CheckFile(filePath)
 
             match result with
             | Some checkResult ->
-                this.Host.EmitFileChecked(checkResult)
-                reportFcsDiagnostics this.FcsSuppressedCodes this.Host checkResult
+                host.EmitFileChecked(checkResult)
+                reportFcsDiagnostics fcsSuppressedCodes host checkResult
 
                 return
                     JsonSerializer.Serialize(
@@ -494,12 +507,12 @@ type Daemon =
 
     /// Scan all registered files — check each one and emit events to plugins.
     /// Blocks until complete. If a scan is already running, waits for it to finish.
-    member this.ScanAll(?force: bool) =
+    member _.ScanAll(?force: bool) =
         async {
             let force = defaultArg force false
             let! ct = Async.CancellationToken
 
-            do! requestScan this.ScanAgent force ct
+            do! requestScan scanAgent force ct
         }
 
     /// Run a single full scan in-process without watcher or IPC.
@@ -509,17 +522,16 @@ type Daemon =
             do! this.ScanAll(force = true)
 
             do!
-                waitForAllTerminal this.Host (System.TimeSpan.FromMinutes(30.0)) ()
+                waitForAllTerminal host (System.TimeSpan.FromMinutes(30.0)) ()
                 |> Async.AwaitTask
 
-            return this.Host.GetAllStatuses()
+            return host.GetAllStatuses()
         }
 
     /// Run the daemon until cancellation is requested.
     member this.Run(cancellationToken: CancellationToken) =
         async {
-            use _ = this.Watcher :> System.IDisposable
-            this.Ready.Set()
+            ready.Set()
 
             try
                 let tcs = System.Threading.Tasks.TaskCompletionSource<unit>()
@@ -528,16 +540,17 @@ type Daemon =
 
                 do! tcs.Task |> Async.AwaitTask
             finally
-                this.Ready.Dispose()
+                ready.Dispose()
+                (this :> IDisposable).Dispose()
         }
 
     /// Discover .fsproj files in src/ and tests/ and register them with the pipeline.
-    member this.DiscoverAndRegisterProjects() =
-        discoverAndRegisterProjects this.RepoRoot this.WorkspaceLoader this.Graph this.Pipeline
+    member _.DiscoverAndRegisterProjects() =
+        discoverAndRegisterProjects repoRoot workspaceLoader graph pipeline
 
     /// Format scan state as a human-readable string.
-    member this.FormatScanStatus() =
-        let scanState = getScanStatus this.ScanAgent
+    member _.FormatScanStatus() =
+        let scanState = getScanStatus scanAgent
 
         match scanState with
         | ScanIdle -> "idle"
@@ -550,29 +563,27 @@ type Daemon =
     /// Discovers projects, performs initial scan, then watches for changes.
     member this.RunWithIpc(pipeName: string, cts: CancellationTokenSource) =
         async {
-            use _ = this.Watcher :> System.IDisposable
-
             try
                 let onScan (force: bool) =
                     Async.StartAsTask(this.ScanAll(force = force)) |> ignore
 
                 let triggerBuild () =
                     async {
-                        let files = this.Pipeline.GetAllRegisteredFiles()
+                        let files = pipeline.GetAllRegisteredFiles()
 
                         if not files.IsEmpty then
-                            this.Host.EmitFileChanged(SourceChanged files)
+                            host.EmitFileChanged(SourceChanged files)
                     }
 
                 let formatAll () =
                     async {
-                        let files = this.Pipeline.GetAllRegisteredFiles()
-                        let modified = this.Host.RunPreprocessors(files)
+                        let files = pipeline.GetAllRegisteredFiles()
+                        let modified = host.RunPreprocessors(files)
                         return $"formatted %d{modified.Length} files"
                     }
 
                 let rpcConfig: DaemonRpcConfig =
-                    { Host = this.Host
+                    { Host = host
                       RequestShutdown = fun () -> cts.Cancel()
                       RequestScan = onScan
                       GetScanStatus = this.FormatScanStatus
@@ -580,14 +591,14 @@ type Daemon =
                       TriggerBuild = triggerBuild
                       FormatAll = formatAll
                       WaitForScanGeneration =
-                        fun afterGen -> this.ScanSignal.WaitForGeneration(afterGen, this.GetScanGeneration())
-                      WaitForAllTerminal = waitForAllTerminal this.Host (System.TimeSpan.FromMinutes(30.0))
+                        fun afterGen -> scanSignal.WaitForGeneration(afterGen, this.GetScanGeneration())
+                      WaitForAllTerminal = waitForAllTerminal host (System.TimeSpan.FromMinutes(30.0))
                       InvalidateAndRecheck = fun filePath -> this.InvalidateAndRecheck(filePath) }
 
                 let ipcTask = Async.StartAsTask(IpcServer.start pipeName rpcConfig cts)
 
-                this.CancellationTokenRef.Value <- cts.Token
-                this.Ready.Set()
+                cancellationTokenRef.Value <- cts.Token
+                ready.Set()
 
                 // Register cancellation before starting the scan so that cancellation during
                 // the initial scan unblocks RunWithIpc immediately rather than waiting for the
@@ -596,8 +607,6 @@ type Daemon =
                 let tcs = System.Threading.Tasks.TaskCompletionSource<unit>()
                 use _reg = cts.Token.Register(fun () -> tcs.TrySetResult() |> ignore)
 
-                // Initial full scan — performScan handles discovery when LastFingerprint
-                // differs from current (always true on first run since it starts empty).
                 // force bypasses jj guard since plugins have no state from previous daemon runs.
                 // Race against cancellation so a slow scan doesn't block shutdown.
                 let scanTask = Async.StartAsTask(this.ScanAll(force = true))
@@ -616,7 +625,8 @@ type Daemon =
                 with ex ->
                     Logging.debug "daemon" $"IPC shutdown: %s{ex.Message}"
             finally
-                this.Ready.Dispose()
+                ready.Dispose()
+                (this :> IDisposable).Dispose()
         }
 
 /// Execute the full scan logic, returning the updated agent state.
@@ -763,260 +773,274 @@ module Daemon =
         (cacheKeyProvider: ICacheKeyProvider option)
         (fcsSuppressedCodes: Set<int>)
         =
-        let errorDir = Path.Combine(repoRoot, ".fshw", "errors")
+        let lifetime = new CancellationTokenSource()
 
-        let fileReporter: IErrorReporter =
-            FsHotWatch.FileErrorReporter.FileErrorReporter(errorDir)
+        try
+            let errorDir = Path.Combine(repoRoot, ".fshw", "errors")
 
-        fileReporter.ClearAll()
-        let taskCacheDir = Path.Combine(repoRoot, ".fshw", "cache", "tasks")
-        let taskCache = FsHotWatch.FileTaskCache.FileTaskCache(taskCacheDir)
+            let fileReporter: IErrorReporter =
+                FsHotWatch.FileErrorReporter.FileErrorReporter(errorDir)
 
-        let host =
-            PluginHost(checker, repoRoot, reporters = [ fileReporter ], taskCache = taskCache)
+            fileReporter.ClearAll()
+            let taskCacheDir = Path.Combine(repoRoot, ".fshw", "cache", "tasks")
+            let taskCache = FsHotWatch.FileTaskCache.FileTaskCache(taskCacheDir)
 
-        let pipeline =
-            match cacheBackend, cacheKeyProvider with
-            | Some b, Some kp -> CheckPipeline(checker, cacheBackend = b, cacheKeyProvider = kp)
-            | Some b, None -> CheckPipeline(checker, cacheBackend = b)
-            | _ -> CheckPipeline(checker)
+            let host =
+                PluginHost(checker, repoRoot, reporters = [ fileReporter ], taskCache = taskCache)
 
-        let graph = ProjectGraph()
-        let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
-        let loader = WorkspaceLoader.Create(toolsPath, [])
+            let pipeline =
+                match cacheBackend, cacheKeyProvider with
+                | Some b, Some kp -> CheckPipeline(checker, cacheBackend = b, cacheKeyProvider = kp)
+                | Some b, None -> CheckPipeline(checker, cacheBackend = b)
+                | _ -> CheckPipeline(checker)
 
-        let daemonCtRef = ref CancellationToken.None
+            let graph = ProjectGraph()
+            let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
+            let loader = WorkspaceLoader.Create(toolsPath, [])
 
-        let delayForChange change =
-            match change with
-            | ProjectChanged _
-            | SolutionChanged _ -> projectDebounceMs
-            | SourceChanged _ -> sourceDebounceMs
+            let daemonCtRef = ref CancellationToken.None
 
-        let processBatch (changes: FileChangeKind list) (suppressed: Set<string>) =
-            async {
-                let mutable sourceFiles = []
-                let mutable projFiles = []
-                let mutable solutionFile = None
+            let delayForChange change =
+                match change with
+                | ProjectChanged _
+                | SolutionChanged _ -> projectDebounceMs
+                | SourceChanged _ -> sourceDebounceMs
 
-                for c in changes do
-                    match c with
-                    | SourceChanged files -> sourceFiles <- files @ sourceFiles
-                    | ProjectChanged files -> projFiles <- files @ projFiles
-                    | SolutionChanged f -> solutionFile <- Some f
+            let processBatch (changes: FileChangeKind list) (suppressed: Set<string>) =
+                async {
+                    let mutable sourceFiles = []
+                    let mutable projFiles = []
+                    let mutable solutionFile = None
 
-                let hasSolution = solutionFile.IsSome
+                    for c in changes do
+                        match c with
+                        | SourceChanged files -> sourceFiles <- files @ sourceFiles
+                        | ProjectChanged files -> projFiles <- files @ projFiles
+                        | SolutionChanged f -> solutionFile <- Some f
 
-                Logging.debug
-                    "daemon"
-                    $"processChanges: %d{sourceFiles.Length} source, %d{projFiles.Length} project, solution=%b{hasSolution}"
+                    let hasSolution = solutionFile.IsSome
 
-                for f in sourceFiles do
-                    Logging.debug "daemon" $"source: %s{f}"
-
-                for f in projFiles do
-                    Logging.debug "daemon" $"project: %s{f}"
-
-                // Filter out files written by preprocessors (suppress re-trigger)
-                let filteredSourceFiles, remainingSuppressed =
-                    sourceFiles
-                    |> List.distinct
-                    |> List.fold
-                        (fun (accepted, sup) f ->
-                            if Set.contains f sup then
-                                Logging.debug "daemon" $"suppressed: %s{f}"
-                                (accepted, Set.remove f sup)
-                            else
-                                (f :: accepted, sup))
-                        ([], suppressed)
-
-                let allSourceFiles =
-                    filteredSourceFiles
-                    |> List.rev
-                    |> List.filter (fun f ->
-                        let changed = hasContentChanged f
-
-                        if not changed then
-                            Logging.debug "daemon" $"content unchanged: %s{f}"
-
-                        changed)
-
-                let projFilesChanged =
-                    projFiles
-                    |> List.distinct
-                    |> List.filter (fun f ->
-                        let changed = hasContentChanged f
-
-                        if not changed then
-                            Logging.debug "daemon" $"content unchanged: %s{f}"
-
-                        changed)
-
-                if hasSolution then
-                    host.EmitFileChanged(SolutionChanged solutionFile.Value)
-
-                if not projFilesChanged.IsEmpty || hasSolution then
-                    Logging.info "daemon" "Project/solution change detected — re-discovering projects"
-
-                    // Guard: tests may pass Unchecked.defaultof for checker
-                    if not (isNull (box checker)) then
-                        checker.InvalidateAll()
-                        checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
-
-                    let! _ = rediscoverAndClearRemoved repoRoot loader graph pipeline host "daemon"
-
-                    Logging.info
+                    Logging.debug
                         "daemon"
-                        $"Re-discovery complete: %d{graph.GetAllProjects().Length} projects, %d{pipeline.GetAllRegisteredFiles().Length} files"
+                        $"processChanges: %d{sourceFiles.Length} source, %d{projFiles.Length} project, solution=%b{hasSolution}"
 
-                    if not projFilesChanged.IsEmpty then
-                        host.EmitFileChanged(ProjectChanged projFilesChanged)
+                    for f in sourceFiles do
+                        Logging.debug "daemon" $"source: %s{f}"
 
-                if not allSourceFiles.IsEmpty then
-                    let modifiedByPreprocessors = host.RunPreprocessors(allSourceFiles)
+                    for f in projFiles do
+                        Logging.debug "daemon" $"project: %s{f}"
 
-                    let newSuppressed =
-                        modifiedByPreprocessors
-                        |> List.fold (fun s f -> Set.add f s) remainingSuppressed
-
-                    let changedProjects =
-                        allSourceFiles
-                        |> List.choose (fun f -> graph.GetProjectForFile(f))
+                    // Filter out files written by preprocessors (suppress re-trigger)
+                    let filteredSourceFiles, remainingSuppressed =
+                        sourceFiles
                         |> List.distinct
+                        |> List.fold
+                            (fun (accepted, sup) f ->
+                                if Set.contains f sup then
+                                    Logging.debug "daemon" $"suppressed: %s{f}"
+                                    (accepted, Set.remove f sup)
+                                else
+                                    (f :: accepted, sup))
+                            ([], suppressed)
 
-                    let dependentProjectFiles =
-                        changedProjects
-                        |> List.collect (fun p -> graph.GetTransitiveDependents(p))
+                    let allSourceFiles =
+                        filteredSourceFiles
+                        |> List.rev
+                        |> List.filter (fun f ->
+                            let changed = hasContentChanged f
+
+                            if not changed then
+                                Logging.debug "daemon" $"content unchanged: %s{f}"
+
+                            changed)
+
+                    let projFilesChanged =
+                        projFiles
                         |> List.distinct
-                        |> List.filter (fun p -> not (changedProjects |> List.contains p))
-                        |> List.collect (fun proj -> graph.GetSourceFiles(proj))
+                        |> List.filter (fun f ->
+                            let changed = hasContentChanged f
 
-                    let allFilesToCheck = (allSourceFiles @ dependentProjectFiles) |> List.distinct
+                            if not changed then
+                                Logging.debug "daemon" $"content unchanged: %s{f}"
 
-                    host.EmitFileChanged(SourceChanged allFilesToCheck)
+                            changed)
 
-                    Logging.debug "daemon" $"Checking %d{allFilesToCheck.Length} files after change"
+                    if hasSolution then
+                        host.EmitFileChanged(SolutionChanged solutionFile.Value)
 
-                    for file in allFilesToCheck do
-                        let! result = pipeline.CheckFile(file, daemonCtRef.Value)
+                    if not projFilesChanged.IsEmpty || hasSolution then
+                        Logging.info "daemon" "Project/solution change detected — re-discovering projects"
 
-                        match result with
-                        | Some checkResult ->
-                            Logging.debug "daemon" $"EmitFileChecked: %s{Path.GetFileName(file)}"
-                            host.EmitFileChecked(checkResult)
-                            reportFcsDiagnostics fcsSuppressedCodes host checkResult
+                        // Guard: tests may pass Unchecked.defaultof for checker
+                        if not (isNull (box checker)) then
+                            checker.InvalidateAll()
+                            checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
 
-                        | None -> ()
+                        let! _ = rediscoverAndClearRemoved repoRoot loader graph pipeline host "daemon"
 
-                    return newSuppressed
-                else
-                    return remainingSuppressed
-            }
+                        Logging.info
+                            "daemon"
+                            $"Re-discovery complete: %d{graph.GetAllProjects().Length} projects, %d{pipeline.GetAllRegisteredFiles().Length} files"
 
-        let changeAgent =
-            MailboxProcessor.Start(fun inbox ->
-                let rec idle (suppressed: Set<string>) =
-                    async {
-                        let! msg = inbox.Receive()
-                        let delayMs = delayForChange msg
-                        return! debouncing [ msg ] delayMs suppressed
-                    }
+                        if not projFilesChanged.IsEmpty then
+                            host.EmitFileChanged(ProjectChanged projFilesChanged)
 
-                and debouncing (pending: FileChangeKind list) (delayMs: int) (suppressed: Set<string>) =
-                    async {
-                        let! msg = inbox.TryReceive(delayMs)
+                    if not allSourceFiles.IsEmpty then
+                        let modifiedByPreprocessors = host.RunPreprocessors(allSourceFiles)
 
-                        match msg with
-                        | Some change ->
-                            let newDelay = max delayMs (delayForChange change)
-                            return! debouncing (change :: pending) newDelay suppressed
-                        | None ->
-                            // Debounce expired — process batch
-                            try
-                                let! newSuppressed = processBatch (List.rev pending) suppressed
-                                return! idle newSuppressed
-                            with ex ->
-                                Logging.error "daemon" $"processChanges failed: %s{ex.ToString()}"
-                                return! idle suppressed
-                    }
+                        let newSuppressed =
+                            modifiedByPreprocessors
+                            |> List.fold (fun s f -> Set.add f s) remainingSuppressed
 
-                idle Set.empty)
+                        let changedProjects =
+                            allSourceFiles
+                            |> List.choose (fun f -> graph.GetProjectForFile(f))
+                            |> List.distinct
 
-        let onChange change =
-            Logging.debug "watcher" $"%O{change}"
-            changeAgent.Post(change)
+                        let dependentProjectFiles =
+                            changedProjects
+                            |> List.collect (fun p -> graph.GetTransitiveDependents(p))
+                            |> List.distinct
+                            |> List.filter (fun p -> not (changedProjects |> List.contains p))
+                            |> List.collect (fun proj -> graph.GetSourceFiles(proj))
 
-        let watcher = FileWatcher.create repoRoot onChange
+                        let allFilesToCheck = (allSourceFiles @ dependentProjectFiles) |> List.distinct
 
-        let jjGuard =
-            match cacheKeyProvider with
-            | Some(:? JjCacheKeyProvider) -> Some(JjHelper.JjScanGuard(repoRoot))
-            | _ -> None
+                        host.EmitFileChanged(SourceChanged allFilesToCheck)
 
-        let scanSignal = ScanSignal()
+                        Logging.debug "daemon" $"Checking %d{allFilesToCheck.Length} files after change"
 
-        // Mutable ref allows the agent loop (which starts immediately) to
-        // update volatile fields on the wrapper created after MailboxProcessor.Start.
-        let scanAgentRef: ScanAgent option ref = ref None
+                        for file in allFilesToCheck do
+                            let! result = pipeline.CheckFile(file, daemonCtRef.Value)
 
-        let scanMailbox =
-            MailboxProcessor.Start(fun inbox ->
-                let rec loop (state: ScanAgentState) =
-                    async {
-                        let! msg = inbox.Receive()
+                            match result with
+                            | Some checkResult ->
+                                Logging.debug "daemon" $"EmitFileChecked: %s{Path.GetFileName(file)}"
+                                host.EmitFileChecked(checkResult)
+                                reportFcsDiagnostics fcsSuppressedCodes host checkResult
 
-                        match msg with
-                        | RequestScan(force, ct, reply) ->
-                            try
-                                let! newState =
-                                    performScan
-                                        host
-                                        pipeline
-                                        graph
-                                        repoRoot
-                                        loader
-                                        jjGuard
-                                        scanSignal
-                                        fcsSuppressedCodes
-                                        state
-                                        force
-                                        ct
+                            | None -> ()
 
-                                match scanAgentRef.Value with
-                                | Some sa ->
-                                    Volatile.Write(&sa.CurrentState, newState.ScanState)
-                                    Volatile.Write(&sa.CurrentGeneration, newState.Generation)
-                                | None -> ()
+                        return newSuppressed
+                    else
+                        return remainingSuppressed
+                }
 
-                                reply.Reply(())
-                                return! loop newState
-                            with ex ->
-                                Logging.error "scan" $"performScan failed: %s{ex.ToString()}"
-                                reply.Reply(())
-                                return! loop state
-                    }
+            let changeAgent =
+                MailboxProcessor.Start(
+                    (fun inbox ->
+                        let rec idle (suppressed: Set<string>) =
+                            async {
+                                let! msg = inbox.Receive()
+                                let delayMs = delayForChange msg
+                                return! debouncing [ msg ] delayMs suppressed
+                            }
 
-                loop
-                    { ScanState = ScanIdle
-                      Generation = 0L
-                      LastFingerprint = Set.empty })
+                        and debouncing (pending: FileChangeKind list) (delayMs: int) (suppressed: Set<string>) =
+                            async {
+                                let! msg = inbox.TryReceive(delayMs)
 
-        let scanAgentWrapper = createScanAgent scanMailbox
-        scanAgentRef.Value <- Some scanAgentWrapper
+                                match msg with
+                                | Some change ->
+                                    let newDelay = max delayMs (delayForChange change)
+                                    return! debouncing (change :: pending) newDelay suppressed
+                                | None ->
+                                    // Debounce expired — process batch
+                                    try
+                                        let! newSuppressed = processBatch (List.rev pending) suppressed
+                                        return! idle newSuppressed
+                                    with ex ->
+                                        Logging.error "daemon" $"processChanges failed: %s{ex.ToString()}"
+                                        return! idle suppressed
+                            }
 
-        { Host = host
-          Watcher = watcher
-          Checker = checker
-          Pipeline = pipeline
-          Graph = graph
-          RepoRoot = repoRoot
-          WorkspaceLoader = loader
-          ScanAgent = scanAgentWrapper
-          CancellationTokenRef = daemonCtRef
-          Ready = new ManualResetEventSlim(false)
-          ScanSignal = scanSignal
-          JjGuard = jjGuard
-          FcsSuppressedCodes = fcsSuppressedCodes }
+                        idle Set.empty),
+                    cancellationToken = lifetime.Token
+                )
+
+            let onChange change =
+                Logging.debug "watcher" $"%O{change}"
+                changeAgent.Post(change)
+
+            let watcher = FileWatcher.create repoRoot onChange
+
+            let jjGuard =
+                match cacheKeyProvider with
+                | Some(:? JjCacheKeyProvider) -> Some(JjHelper.JjScanGuard(repoRoot))
+                | _ -> None
+
+            let scanSignal = ScanSignal(cancellationToken = lifetime.Token)
+
+            // Mutable ref allows the agent loop (which starts immediately) to
+            // update volatile fields on the wrapper created after MailboxProcessor.Start.
+            let scanAgentRef: ScanAgent option ref = ref None
+
+            let scanMailbox =
+                MailboxProcessor.Start(
+                    (fun inbox ->
+                        let rec loop (state: ScanAgentState) =
+                            async {
+                                let! msg = inbox.Receive()
+
+                                match msg with
+                                | RequestScan(force, ct, reply) ->
+                                    try
+                                        let! newState =
+                                            performScan
+                                                host
+                                                pipeline
+                                                graph
+                                                repoRoot
+                                                loader
+                                                jjGuard
+                                                scanSignal
+                                                fcsSuppressedCodes
+                                                state
+                                                force
+                                                ct
+
+                                        match scanAgentRef.Value with
+                                        | Some sa ->
+                                            Volatile.Write(&sa.CurrentState, newState.ScanState)
+                                            Volatile.Write(&sa.CurrentGeneration, newState.Generation)
+                                        | None -> ()
+
+                                        reply.Reply(())
+                                        return! loop newState
+                                    with ex ->
+                                        Logging.error "scan" $"performScan failed: %s{ex.ToString()}"
+                                        reply.Reply(())
+                                        return! loop state
+                            }
+
+                        loop
+                            { ScanState = ScanIdle
+                              Generation = 0L
+                              LastFingerprint = Set.empty }),
+                    cancellationToken = lifetime.Token
+                )
+
+            let scanAgentWrapper = createScanAgent scanMailbox
+            scanAgentRef.Value <- Some scanAgentWrapper
+
+            new Daemon(
+                host,
+                watcher,
+                pipeline,
+                graph,
+                repoRoot,
+                loader,
+                scanAgentWrapper,
+                daemonCtRef,
+                new ManualResetEventSlim(false),
+                scanSignal,
+                jjGuard,
+                fcsSuppressedCodes,
+                lifetime
+            )
+        with _ ->
+            lifetime.Dispose()
+            reraise ()
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     /// When cacheBackend or cacheKeyProvider are None, defaults to FileCheckCache + TimestampCacheKeyProvider.
