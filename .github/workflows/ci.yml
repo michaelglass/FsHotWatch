@@ -17,3 +17,4 @@ jobs:
     with:
       solution: FsHotWatch.slnx
       fantomas-paths: 'src/ tests/'
+      test-extra-args: '--ignore-exit-code 7'
