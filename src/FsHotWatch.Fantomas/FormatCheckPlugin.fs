@@ -46,7 +46,7 @@ type FormatCheckState = { Unformatted: Set<string> }
 /// Read-only format check plugin (reports unformatted files without modifying them).
 /// Use this instead of FormatPreprocessor if you don't want auto-formatting.
 let createFormatCheck (getCommitId: (unit -> string option) option) : PluginHandler<FormatCheckState, unit> =
-    { Name = "format-check"
+    { Name = PluginName.create "format-check"
       Init = { Unformatted = Set.empty }
       Update =
         fun ctx state event ->
@@ -102,7 +102,6 @@ let createFormatCheck (getCommitId: (unit -> string option) option) : PluginHand
                   let files = state.Unformatted |> Set.toList |> String.concat ", "
                   return $"{{\"count\": %d{state.Unformatted.Count}, \"files\": \"%s{files}\"}}"
               } ]
-      Subscriptions =
-        { PluginSubscriptions.none with
-            FileChanged = true }
-      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId }
+      Subscriptions = Set.ofList [ SubscribeFileChanged ]
+      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId
+      Teardown = None }

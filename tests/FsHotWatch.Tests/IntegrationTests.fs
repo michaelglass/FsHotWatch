@@ -4,6 +4,7 @@ open System
 open System.Diagnostics
 open System.IO
 open System.Reflection
+open System.Text.Json
 open Xunit
 open Swensen.Unquote
 open FSharp.Compiler.CodeAnalysis
@@ -847,7 +848,7 @@ let ``BuildPlugin succeeds with echo command`` () =
     let mutable receivedBuild: BuildResult option = None
 
     let recorder =
-        { Name = "build-recorder"
+        { Name = PluginName.create "build-recorder"
           Init = ()
           Update =
             fun _ctx state event ->
@@ -859,10 +860,9 @@ let ``BuildPlugin succeeds with echo command`` () =
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                BuildCompleted = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+          CacheKey = None
+          Teardown = None }
 
     let handler =
         BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None
@@ -893,7 +893,7 @@ let ``BuildPlugin fails with false command`` () =
     let mutable receivedBuild: BuildResult option = None
 
     let recorder =
-        { Name = "build-recorder"
+        { Name = PluginName.create "build-recorder"
           Init = ()
           Update =
             fun _ctx state event ->
@@ -905,10 +905,9 @@ let ``BuildPlugin fails with false command`` () =
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                BuildCompleted = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+          CacheKey = None
+          Teardown = None }
 
     let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None
     host.RegisterHandler(recorder)
@@ -968,7 +967,8 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
 
         let cmdResult = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ cmdResult.IsSome @>
-        test <@ cmdResult.Value.Contains("\"status\": \"passed\"") @>
+        let doc = JsonDocument.Parse(cmdResult.Value)
+        Assert.Equal("passed", doc.RootElement.GetProperty("projects").[0].GetProperty("status").GetString())
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
@@ -1021,7 +1021,8 @@ let ``TestPrunePlugin with failing test reports failure`` () =
 
         let cmdResult = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ cmdResult.IsSome @>
-        test <@ cmdResult.Value.Contains("\"status\": \"failed\"") @>
+        let doc = JsonDocument.Parse(cmdResult.Value)
+        Assert.Equal("failed", doc.RootElement.GetProperty("projects").[0].GetProperty("status").GetString())
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
@@ -1193,7 +1194,7 @@ let ``FileCommandPlugin runs command for matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create "fsx-runner" (fun f -> f.EndsWith(".fsx")) "echo" "hello" false None
+        create (PluginName.create "fsx-runner") (fun f -> f.EndsWith(".fsx")) "echo" "hello" false None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "scripts/build.fsx" ])
@@ -1220,7 +1221,7 @@ let ``FileCommandPlugin ignores non-matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create "fsx-runner" (fun f -> f.EndsWith(".fsx")) "echo" "hello" false None
+        create (PluginName.create "fsx-runner") (fun f -> f.EndsWith(".fsx")) "echo" "hello" false None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -1243,7 +1244,7 @@ let ``FileCommandPlugin reports failure on bad command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create "fsx-runner" (fun f -> f.EndsWith(".fsx")) "false" "" false None
+        create (PluginName.create "fsx-runner") (fun f -> f.EndsWith(".fsx")) "false" "" false None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "scripts/build.fsx" ])
@@ -1390,7 +1391,7 @@ let ``BuildPlugin does not run concurrent builds`` () =
     let mutable buildCount = 0
 
     let recorder =
-        { Name = "build-counter"
+        { Name = PluginName.create "build-counter"
           Init = ()
           Update =
             fun _ctx state event ->
@@ -1402,10 +1403,9 @@ let ``BuildPlugin does not run concurrent builds`` () =
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                BuildCompleted = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+          CacheKey = None
+          Teardown = None }
 
     // Use /bin/sleep 1 as a slow build command so the second emit arrives while the first is running
     let handler =
@@ -1487,11 +1487,13 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
         test <@ cmdResult.IsSome @>
         // The rerun with 0 affected classes is now correctly skipped (empty results),
         // or the first cold-start run produces passed results — either is acceptable.
-        test
-            <@
-                cmdResult.Value.Contains("\"status\": \"passed\"")
-                || cmdResult.Value.Contains("\"projects\": []")
-            @>
+        let doc = JsonDocument.Parse(cmdResult.Value)
+        let projects = doc.RootElement.GetProperty("projects")
+
+        Assert.True(
+            projects.GetArrayLength() = 0
+            || projects.[0].GetProperty("status").GetString() = "passed"
+        )
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
@@ -1564,7 +1566,13 @@ let ``file cache enables fast cold-start check`` () =
 
         // Partial cache hit triggers FCS re-check — result has real CheckResults
         test <@ result2.IsSome @>
-        test <@ result2.Value.CheckResults.IsSome @>
+
+        test
+            <@
+                match result2.Value.CheckResults with
+                | FullCheck _ -> true
+                | ParseOnly -> false
+            @>
     finally
         if Directory.Exists(cacheDir) then
             Directory.Delete(cacheDir, true)
@@ -1608,7 +1616,13 @@ let ``cached check returns None because partial FCS results are unusable by plug
         let cached = pipeline2.CheckFile(sourceFile) |> Async.RunSynchronously
 
         test <@ cached.IsSome @>
-        test <@ cached.Value.CheckResults.IsSome @>
+
+        test
+            <@
+                match cached.Value.CheckResults with
+                | FullCheck _ -> true
+                | ParseOnly -> false
+            @>
     finally
         if Directory.Exists(cacheDir) then
             Directory.Delete(cacheDir, true)

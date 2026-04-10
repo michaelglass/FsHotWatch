@@ -642,7 +642,7 @@ let ``parseConfig tests with extensions`` () =
     test <@ config.Tests.IsSome @>
     let tests = config.Tests.Value
     test <@ tests.Extensions.Length = 1 @>
-    test <@ tests.Extensions.[0].Type = "falco" @>
+    test <@ tests.Extensions.[0].Kind = Falco @>
     test <@ tests.Extensions.[0].Project = "IntTests" @>
     test <@ tests.Extensions.[0].TestDir = "tests/IntTests" @>
 

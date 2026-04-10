@@ -7,6 +7,14 @@ open FsHotWatch.ErrorLedger
 open FsHotWatch.Logging
 open FsHotWatch.Plugin
 
+/// Opaque plugin name — prevents accidental mixing with other strings.
+[<Struct>]
+type PluginName = private PluginName of string
+
+module PluginName =
+    let create (name: string) = PluginName name
+    let value (PluginName n) = n
+
 /// Side-effect context provided to plugin handlers.
 [<NoComparison; NoEquality>]
 type PluginCtx<'Msg> =
@@ -33,37 +41,28 @@ type PluginCtx<'Msg> =
         Post: 'Msg -> unit
     }
 
+/// Tags for events a plugin can subscribe to.
+type SubscribedEvent =
+    | SubscribeFileChanged
+    | SubscribeFileChecked
+    | SubscribeBuildCompleted
+    | SubscribeTestCompleted
+    | SubscribeCommandCompleted
+
 /// Which events the plugin subscribes to.
-type PluginSubscriptions =
-    {
-        /// Subscribe to file change events.
-        FileChanged: bool
-        /// Subscribe to file check events.
-        FileChecked: bool
-        /// Subscribe to build completed events.
-        BuildCompleted: bool
-        /// Subscribe to test completed events.
-        TestCompleted: bool
-        /// Subscribe to command completed events.
-        CommandCompleted: bool
-    }
+type PluginSubscriptions = Set<SubscribedEvent>
 
 /// Helper functions for PluginSubscriptions.
 module PluginSubscriptions =
     /// No subscriptions — the plugin only handles Custom messages.
-    let none =
-        { FileChanged = false
-          FileChecked = false
-          BuildCompleted = false
-          TestCompleted = false
-          CommandCompleted = false }
+    let none: PluginSubscriptions = Set.empty
 
 /// Declarative plugin definition.
 [<NoComparison; NoEquality>]
 type PluginHandler<'State, 'Msg> =
     {
         /// The display name of this plugin.
-        Name: string
+        Name: PluginName
         /// Initial state.
         Init: 'State
         /// Pure-ish update function: given context, current state, and event, produce next state.
@@ -75,72 +74,77 @@ type PluginHandler<'State, 'Msg> =
         /// Optional cache key function. When provided, the framework checks the task cache
         /// before calling Update. Returns Some(key) for cacheable events, None to skip cache.
         CacheKey: (PluginEvent<'Msg> -> string option) option
+        /// Optional teardown function called when the plugin host is disposed.
+        Teardown: (unit -> unit) option
     }
+
+/// Type-erased event for host → plugin dispatch (no generic Custom variant).
+[<NoComparison; NoEquality>]
+type PluginDispatchEvent =
+    | DispatchFileChanged of FileChangeKind
+    | DispatchFileChecked of FileCheckResult
+    | DispatchBuildCompleted of BuildResult
+    | DispatchTestCompleted of TestResults
+    | DispatchCommandCompleted of CommandCompletedResult
 
 /// Type-erased plugin registration stored by PluginHost.
 [<NoComparison; NoEquality>]
 type RegisteredPlugin =
     {
         /// The display name of this plugin.
-        Name: string
-        /// Handler for file change events, if subscribed.
-        OnFileChanged: (FileChangeKind -> unit) option
-        /// Handler for file check events, if subscribed.
-        OnFileChecked: (FileCheckResult -> unit) option
-        /// Handler for build completed events, if subscribed.
-        OnBuildCompleted: (BuildResult -> unit) option
-        /// Handler for test completed events, if subscribed.
-        OnTestCompleted: (TestResults -> unit) option
-        /// Handler for command completed events, if subscribed.
-        OnCommandCompleted: (CommandCompletedResult -> unit) option
+        Name: PluginName
+        /// Dispatch an event to this plugin. Filtering by subscription is built in.
+        Dispatch: PluginDispatchEvent -> unit
+        /// Optional teardown function for releasing resources.
+        Teardown: (unit -> unit) option
     }
+
+/// Host-provided services bundled into a record to avoid fragile positional params.
+[<NoComparison; NoEquality>]
+type PluginHostServices =
+    { Checker: FSharp.Compiler.CodeAnalysis.FSharpChecker
+      RepoRoot: string
+      ReportStatus: PluginName -> PluginStatus -> unit
+      ReportErrors: PluginName -> string -> ErrorEntry list -> unit
+      ClearErrors: PluginName -> string -> unit
+      ClearPlugin: PluginName -> unit
+      EmitBuildCompleted: BuildResult -> unit
+      EmitTestCompleted: TestResults -> unit
+      EmitCommandCompleted: CommandCompletedResult -> unit
+      RegisterCommand: string * CommandHandler -> unit
+      TaskCache: TaskCache.ITaskCache option }
 
 /// Register a declarative plugin handler, returning a type-erased RegisteredPlugin.
 /// Creates a MailboxProcessor with error recovery and wires up event dispatch.
-let registerHandler
-    (checker: FSharp.Compiler.CodeAnalysis.FSharpChecker)
-    (repoRoot: string)
-    (reportStatus: string -> PluginStatus -> unit)
-    (reportErrors: string -> string -> ErrorEntry list -> unit)
-    (clearErrors: string -> string -> unit)
-    (clearPlugin: string -> unit)
-    (emitBuildCompleted: BuildResult -> unit)
-    (emitTestCompleted: TestResults -> unit)
-    (emitCommandCompleted: CommandCompletedResult -> unit)
-    (registerCommand: string * CommandHandler -> unit)
-    (taskCache: TaskCache.ITaskCache option)
-    (handler: PluginHandler<'State, 'Msg>)
-    : RegisteredPlugin =
+let registerHandler (services: PluginHostServices) (handler: PluginHandler<'State, 'Msg>) : RegisteredPlugin =
 
     let agent =
         MailboxProcessor<Choice<PluginEvent<'Msg>, AsyncReplyChannel<'State>>>
             .Start(
                 (fun inbox ->
                     let ctx =
-                        { ReportStatus = fun s -> reportStatus handler.Name s
-                          ReportErrors = fun file entries -> reportErrors handler.Name file entries
-                          ClearErrors = fun file -> clearErrors handler.Name file
-                          ClearAllErrors = fun () -> clearPlugin handler.Name
-                          EmitBuildCompleted = emitBuildCompleted
-                          EmitTestCompleted = emitTestCompleted
-                          EmitCommandCompleted = emitCommandCompleted
-                          Checker = checker
-                          RepoRoot = repoRoot
+                        { ReportStatus = fun s -> services.ReportStatus handler.Name s
+                          ReportErrors = fun file entries -> services.ReportErrors handler.Name file entries
+                          ClearErrors = fun file -> services.ClearErrors handler.Name file
+                          ClearAllErrors = fun () -> services.ClearPlugin handler.Name
+                          EmitBuildCompleted = services.EmitBuildCompleted
+                          EmitTestCompleted = services.EmitTestCompleted
+                          EmitCommandCompleted = services.EmitCommandCompleted
+                          Checker = services.Checker
+                          RepoRoot = services.RepoRoot
                           Post = fun msg -> inbox.Post(Choice1Of2(Custom msg)) }
 
                     /// Compute the composite key for a given event.
-                    let compositeKey (event: PluginEvent<'Msg>) =
+                    let compositeKey (event: PluginEvent<'Msg>) : TaskCache.CompositeKey =
+                        let nameStr = PluginName.value handler.Name
+
                         match event with
-                        | FileChecked r -> $"%s{handler.Name}--%s{r.File}"
-                        | FileChanged _ -> handler.Name
-                        | BuildCompleted _ -> handler.Name
-                        | TestCompleted _ -> handler.Name
-                        | CommandCompleted _ -> handler.Name
-                        | Custom _ -> handler.Name
+                        | FileChecked r -> { Plugin = nameStr; File = Some r.File }
+                        | _ -> { Plugin = nameStr; File = None }
 
                     /// Try to replay a cached result. Returns true if cache hit.
                     let tryReplayCache (event: PluginEvent<'Msg>) =
-                        match taskCache, handler.CacheKey with
+                        match services.TaskCache, handler.CacheKey with
                         | Some cache, Some cacheKeyFn ->
                             match cacheKeyFn event with
                             | Some cacheKey ->
@@ -150,24 +154,27 @@ let registerHandler
                                 | Some result ->
                                     // Clear stale errors before replay
                                     match event with
-                                    | FileChecked r -> clearErrors handler.Name r.File
-                                    | _ -> clearPlugin handler.Name
+                                    | FileChecked r -> services.ClearErrors handler.Name r.File
+                                    | _ -> services.ClearPlugin handler.Name
 
                                     // Replay errors
                                     for (file, entries) in result.Errors do
-                                        if file = "*" then clearPlugin handler.Name
-                                        elif entries.IsEmpty then clearErrors handler.Name file
-                                        else reportErrors handler.Name file entries
+                                        if file = "*" then
+                                            services.ClearPlugin handler.Name
+                                        elif entries.IsEmpty then
+                                            services.ClearErrors handler.Name file
+                                        else
+                                            services.ReportErrors handler.Name file entries
 
                                     // Replay status
-                                    reportStatus handler.Name result.Status
+                                    services.ReportStatus handler.Name result.Status
 
                                     // Replay emitted events
                                     for emitted in result.EmittedEvents do
                                         match emitted with
-                                        | TaskCache.CachedBuildCompleted r -> emitBuildCompleted r
-                                        | TaskCache.CachedTestCompleted r -> emitTestCompleted r
-                                        | TaskCache.CachedCommandCompleted r -> emitCommandCompleted r
+                                        | TaskCache.CachedBuildCompleted r -> services.EmitBuildCompleted r
+                                        | TaskCache.CachedTestCompleted r -> services.EmitTestCompleted r
+                                        | TaskCache.CachedCommandCompleted r -> services.EmitCommandCompleted r
 
                                     true
                                 | None -> false
@@ -179,14 +186,14 @@ let registerHandler
                             try
                                 return! handler.Update pluginCtx state event
                             with ex ->
-                                error handler.Name $"Plugin handler failed: %s{ex.ToString()}"
+                                error (PluginName.value handler.Name) $"Plugin handler failed: %s{ex.ToString()}"
                                 return state
                         }
 
                     /// Run Update with a capturing context that records side effects, then store in cache if terminal.
                     let runAndCache (event: PluginEvent<'Msg>) (state: 'State) =
                         async {
-                            match taskCache, handler.CacheKey with
+                            match services.TaskCache, handler.CacheKey with
                             | Some cache, Some cacheKeyFn ->
                                 match cacheKeyFn event with
                                 | Some cacheKey ->
@@ -198,33 +205,33 @@ let registerHandler
                                         { ReportStatus =
                                             fun s ->
                                                 capturedStatus <- Some s
-                                                reportStatus handler.Name s
+                                                services.ReportStatus handler.Name s
                                           ReportErrors =
                                             fun file entries ->
                                                 capturedErrors.Add(file, entries)
-                                                reportErrors handler.Name file entries
+                                                services.ReportErrors handler.Name file entries
                                           ClearErrors =
                                             fun file ->
                                                 capturedErrors.Add(file, [])
-                                                clearErrors handler.Name file
+                                                services.ClearErrors handler.Name file
                                           ClearAllErrors =
                                             fun () ->
                                                 capturedErrors.Add("*", [])
-                                                clearPlugin handler.Name
+                                                services.ClearPlugin handler.Name
                                           EmitBuildCompleted =
                                             fun r ->
                                                 capturedEvents.Add(TaskCache.CachedBuildCompleted r)
-                                                emitBuildCompleted r
+                                                services.EmitBuildCompleted r
                                           EmitTestCompleted =
                                             fun r ->
                                                 capturedEvents.Add(TaskCache.CachedTestCompleted r)
-                                                emitTestCompleted r
+                                                services.EmitTestCompleted r
                                           EmitCommandCompleted =
                                             fun r ->
                                                 capturedEvents.Add(TaskCache.CachedCommandCompleted r)
-                                                emitCommandCompleted r
-                                          Checker = checker
-                                          RepoRoot = repoRoot
+                                                services.EmitCommandCompleted r
+                                          Checker = services.Checker
+                                          RepoRoot = services.RepoRoot
                                           Post = fun msg -> inbox.Post(Choice1Of2(Custom msg)) }
 
                                     let! nextState = safeUpdate capturingCtx state event
@@ -270,7 +277,7 @@ let registerHandler
 
     // Register commands
     for (cmdName, cmdHandler) in handler.Commands do
-        registerCommand (
+        services.RegisterCommand(
             cmdName,
             fun args ->
                 async {
@@ -279,32 +286,19 @@ let registerHandler
                 }
         )
 
-    // Build type-erased registration
+    // Build type-erased registration with subscription-filtered dispatch
     let post event = agent.Post(Choice1Of2 event)
+    let has e = handler.Subscriptions.Contains(e)
+
+    let dispatch event =
+        match event with
+        | DispatchFileChanged c when has SubscribeFileChanged -> post (FileChanged c)
+        | DispatchFileChecked r when has SubscribeFileChecked -> post (FileChecked r)
+        | DispatchBuildCompleted r when has SubscribeBuildCompleted -> post (BuildCompleted r)
+        | DispatchTestCompleted r when has SubscribeTestCompleted -> post (TestCompleted r)
+        | DispatchCommandCompleted r when has SubscribeCommandCompleted -> post (CommandCompleted r)
+        | _ -> ()
 
     { Name = handler.Name
-      OnFileChanged =
-        if handler.Subscriptions.FileChanged then
-            Some(fun c -> post (FileChanged c))
-        else
-            None
-      OnFileChecked =
-        if handler.Subscriptions.FileChecked then
-            Some(fun r -> post (FileChecked r))
-        else
-            None
-      OnBuildCompleted =
-        if handler.Subscriptions.BuildCompleted then
-            Some(fun r -> post (BuildCompleted r))
-        else
-            None
-      OnTestCompleted =
-        if handler.Subscriptions.TestCompleted then
-            Some(fun r -> post (TestCompleted r))
-        else
-            None
-      OnCommandCompleted =
-        if handler.Subscriptions.CommandCompleted then
-            Some(fun r -> post (CommandCompleted r))
-        else
-            None }
+      Dispatch = dispatch
+      Teardown = handler.Teardown }

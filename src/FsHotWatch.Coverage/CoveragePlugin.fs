@@ -81,7 +81,7 @@ let create
     (afterCheck: (unit -> unit) option)
     (getCommitId: (unit -> string option) option)
     : PluginHandler<CoverageState, unit> =
-    { Name = "coverage"
+    { Name = PluginName.create "coverage"
       Init = { Results = [] }
       Update =
         fun ctx state event ->
@@ -177,7 +177,6 @@ let create
 
                   return $"{{%s{entries}}}"
               } ]
-      Subscriptions =
-        { PluginSubscriptions.none with
-            TestCompleted = true }
-      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId }
+      Subscriptions = Set.ofList [ SubscribeTestCompleted ]
+      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId
+      Teardown = None }

@@ -1,6 +1,7 @@
 module FsHotWatch.Tests.BuildPluginTests
 
 open System
+open System.Text.Json
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
@@ -14,14 +15,14 @@ open FsHotWatch.Tests.TestHelpers
 let ``create accepts graph and test project names`` () =
     let graph = FsHotWatch.ProjectGraph.ProjectGraph()
     let handler = BuildPlugin.create "echo" "build" [] graph [] None [] None
-    test <@ handler.Name = "build" @>
+    test <@ handler.Name = PluginName.create "build" @>
 
 [<Fact>]
 let ``plugin has correct name`` () =
     let handler =
         BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None
 
-    test <@ handler.Name = "build" @>
+    test <@ handler.Name = PluginName.create "build" @>
 
 [<Fact>]
 let ``build-status command returns not run initially`` () =
@@ -79,7 +80,8 @@ let ``build-status command returns passed true after successful build`` () =
 
     let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
-    test <@ result.Value.Contains("\"status\": \"passed\"") @>
+    let doc = JsonDocument.Parse(result.Value)
+    Assert.Equal("passed", doc.RootElement.GetProperty("status").GetString())
 
 [<Fact>]
 let ``build-status command returns failed after failed build`` () =
@@ -94,7 +96,8 @@ let ``build-status command returns failed after failed build`` () =
 
     let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
-    test <@ result.Value.Contains("\"status\": \"failed\"") @>
+    let doc = JsonDocument.Parse(result.Value)
+    Assert.Equal("failed", doc.RootElement.GetProperty("status").GetString())
 
 [<Fact>]
 let ``build plugin reports Failed status on failed build`` () =
@@ -220,7 +223,11 @@ let ``build is skipped when only test files change`` () =
 
     let graph = ProjectGraph()
 
-    graph.RegisterProject("/tmp/tests/MyTests/MyTests.fsproj", [ "/tmp/tests/MyTests/Tests.fs" ], [])
+    graph.RegisterProject(
+        AbsProjectPath.create "/tmp/tests/MyTests/MyTests.fsproj",
+        [ AbsFilePath.create "/tmp/tests/MyTests/Tests.fs" ],
+        []
+    )
 
     let handler = BuildPlugin.create "false" "" [] graph [ "MyTests" ] None [] None
 
@@ -241,7 +248,11 @@ let ``build uses template for affected project`` () =
 
     let graph = ProjectGraph()
 
-    graph.RegisterProject("/tmp/src/MyLib/MyLib.fsproj", [ "/tmp/src/MyLib/Lib.fs" ], [])
+    graph.RegisterProject(
+        AbsProjectPath.create "/tmp/src/MyLib/MyLib.fsproj",
+        [ AbsFilePath.create "/tmp/src/MyLib/Lib.fs" ],
+        []
+    )
 
     let handler =
         BuildPlugin.create "false" "should-not-run" [] graph [] (Some "echo {project}") [] None
@@ -263,7 +274,11 @@ let ``build falls back to original command when no template`` () =
 
     let graph = ProjectGraph()
 
-    graph.RegisterProject("/tmp/src/MyLib/MyLib.fsproj", [ "/tmp/src/MyLib/Lib.fs" ], [])
+    graph.RegisterProject(
+        AbsProjectPath.create "/tmp/src/MyLib/MyLib.fsproj",
+        [ AbsFilePath.create "/tmp/src/MyLib/Lib.fs" ],
+        []
+    )
 
     let handler = BuildPlugin.create "echo" "fallback-build" [] graph [] None [] None
 
@@ -340,8 +355,7 @@ let ``build with dependsOn buffers FileChanged until dependency satisfied`` () =
     // Now satisfy the dependency
     host.EmitCommandCompleted(
         { Name = "setup"
-          Succeeded = true
-          Output = "ok" }
+          Outcome = CommandSucceeded "ok" }
     )
 
     waitForTerminalStatus host "build" 5000
@@ -362,8 +376,7 @@ let ``build with dependsOn proceeds immediately when deps already satisfied`` ()
     // Satisfy dependency first
     host.EmitCommandCompleted(
         { Name = "setup"
-          Succeeded = true
-          Output = "ok" }
+          Outcome = CommandSucceeded "ok" }
     )
 
     // Now FileChanged should proceed immediately
@@ -386,8 +399,7 @@ let ``build with dependsOn reports Failed when dependency fails`` () =
 
     host.EmitCommandCompleted(
         { Name = "setup"
-          Succeeded = false
-          Output = "error" }
+          Outcome = CommandFailed "error" }
     )
 
     waitForTerminalStatus host "build" 5000
@@ -435,8 +447,7 @@ let ``build with multiple dependsOn waits for all`` () =
     // Satisfy only one dependency
     host.EmitCommandCompleted(
         { Name = "setup"
-          Succeeded = true
-          Output = "ok" }
+          Outcome = CommandSucceeded "ok" }
     )
 
     // Build should still NOT start
@@ -446,8 +457,7 @@ let ``build with multiple dependsOn waits for all`` () =
     // Satisfy the second dependency
     host.EmitCommandCompleted(
         { Name = "codegen"
-          Succeeded = true
-          Output = "ok" }
+          Outcome = CommandSucceeded "ok" }
     )
 
     waitForTerminalStatus host "build" 5000
