@@ -94,7 +94,8 @@ type IpcOps =
       TriggerBuild: string -> Async<string>
       FormatAll: string -> Async<string>
       InvalidateCache: string -> string -> Async<string>
-      IsRunning: string -> bool }
+      IsRunning: string -> bool
+      LaunchDaemon: string -> string -> string -> unit }
 
 /// Default IPC operations using the real IpcClient.
 let defaultIpcOps: IpcOps =
@@ -110,7 +111,21 @@ let defaultIpcOps: IpcOps =
       TriggerBuild = IpcClient.triggerBuild
       FormatAll = IpcClient.formatAll
       InvalidateCache = IpcClient.invalidateCache
-      IsRunning = IpcClient.isRunning }
+      IsRunning = IpcClient.isRunning
+      LaunchDaemon =
+        fun repoRoot extraArgs logFile ->
+            let (exe, toolPrefix) = computeLaunchCommand Environment.ProcessPath
+
+            let psi =
+                System.Diagnostics.ProcessStartInfo(
+                    "/bin/sh",
+                    $"-c \"nohup '%s{exe}' %s{toolPrefix}%s{extraArgs}start >> '%s{logFile}' 2>&1 &\""
+                )
+
+            psi.WorkingDirectory <- repoRoot
+            psi.UseShellExecute <- false
+            let proc = System.Diagnostics.Process.Start(psi)
+            proc.WaitForExit() }
 
 /// Wrap an IPC call with connection error handling.
 let private withIpc (action: unit -> int) : int =
@@ -199,27 +214,17 @@ let private startFreshDaemon
     (pipeName: string)
     (currentHash: string)
     (extraArgs: string)
+    (startupTimeoutSeconds: float)
     : bool =
     let stateDir = Path.Combine(repoRoot, ".fs-hot-watch")
     let logDir = Path.Combine(repoRoot, "log")
     Directory.CreateDirectory(logDir) |> ignore
     let logFile = Path.Combine(logDir, "daemon.log")
     eprintfn "Starting daemon... (log: %s)" logFile
-    let (exe, toolPrefix) = computeLaunchCommand Environment.ProcessPath
-    // nohup detaches from the parent process group so mise/task-runners don't hang.
-    let psi =
-        System.Diagnostics.ProcessStartInfo(
-            "/bin/sh",
-            $"-c \"nohup '%s{exe}' %s{toolPrefix}%s{extraArgs}start >> '%s{logFile}' 2>&1 &\""
-        )
-
-    psi.WorkingDirectory <- repoRoot
-    psi.UseShellExecute <- false
-    let proc = System.Diagnostics.Process.Start(psi)
-    proc.WaitForExit()
+    ipc.LaunchDaemon repoRoot extraArgs logFile
     Directory.CreateDirectory(stateDir) |> ignore
     File.WriteAllText(Path.Combine(stateDir, "config.hash"), currentHash)
-    let deadline = DateTime.UtcNow.AddSeconds(30.0)
+    let deadline = DateTime.UtcNow.AddSeconds(startupTimeoutSeconds)
     let mutable isUp = ipc.IsRunning pipeName
 
     while not isUp && DateTime.UtcNow < deadline do
@@ -228,7 +233,13 @@ let private startFreshDaemon
 
     isUp
 
-let private ensureDaemon (ipc: IpcOps) (repoRoot: string) (pipeName: string) (extraArgs: string) : bool =
+let private ensureDaemon
+    (ipc: IpcOps)
+    (repoRoot: string)
+    (pipeName: string)
+    (extraArgs: string)
+    (startupTimeoutSeconds: float)
+    : bool =
     let stateDir = Path.Combine(repoRoot, ".fs-hot-watch")
     let hashPath = Path.Combine(stateDir, "config.hash")
     let currentHash = computeConfigHash repoRoot
@@ -252,10 +263,10 @@ let private ensureDaemon (ipc: IpcOps) (repoRoot: string) (pipeName: string) (ex
             eprintfn "  Shutdown request failed: %s" ex.Message
 
         killStaleDaemon repoRoot
-        startFreshDaemon ipc repoRoot pipeName currentHash extraArgs
+        startFreshDaemon ipc repoRoot pipeName currentHash extraArgs startupTimeoutSeconds
     | StartFresh ->
         killStaleDaemon repoRoot
-        startFreshDaemon ipc repoRoot pipeName currentHash extraArgs
+        startFreshDaemon ipc repoRoot pipeName currentHash extraArgs startupTimeoutSeconds
 
 /// Execute a parsed command with injectable dependencies.
 let executeCommand
@@ -267,9 +278,10 @@ let executeCommand
     (daemonExtraArgs: string)
     (noWarnFail: bool)
     (config: DaemonConfiguration)
+    (startupTimeoutSeconds: float)
     : int =
     let ensureDaemonFn () =
-        ensureDaemon ipc repoRoot pipeName daemonExtraArgs
+        ensureDaemon ipc repoRoot pipeName daemonExtraArgs startupTimeoutSeconds
 
     let queryPlugin filter =
         ensureAndQueryErrors noWarnFail ensureDaemonFn ipc pipeName filter
@@ -507,7 +519,7 @@ let main args =
             let createDaemon (root: string) =
                 Daemon.create root backend keyProvider None
 
-            executeCommand createDaemon defaultIpcOps repoRoot pipeName command daemonExtraArgs noWarnFail config
+            executeCommand createDaemon defaultIpcOps repoRoot pipeName command daemonExtraArgs noWarnFail config 30.0
         | Error(HelpRequested path) ->
             printfn "%s" (CommandTree.helpForPath commandTree path cliName)
             0
