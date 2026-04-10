@@ -71,12 +71,7 @@ let internal classifyChange (path: string) =
 module FileWatcher =
     /// Create a FileWatcher that monitors src/ and tests/ for F#-relevant file changes.
     /// Pass isMacOSOverride to force a specific code path (useful for testing).
-    let create
-        (repoRoot: string)
-        (onChange: FileChangeKind -> unit)
-        (isMacOSOverride: bool option)
-        : FileWatcher
-        =
+    let create (repoRoot: string) (onChange: FileChangeKind -> unit) (isMacOSOverride: bool option) : FileWatcher =
         let handle (path: string) =
             if isRelevantFile path then
                 onChange (classifyChange path)

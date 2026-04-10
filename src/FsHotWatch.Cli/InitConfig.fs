@@ -14,7 +14,7 @@ type ProjectKind =
 /// Projects under tests/ or test/, or with a .Tests suffix, are test projects.
 let classifyProject (relativePath: string) : ProjectKind =
     let normalized = relativePath.Replace('\\', '/')
-    let name = Path.GetFileNameWithoutExtension(relativePath)
+    let name = Path.GetFileNameWithoutExtension(normalized)
 
     let isTestDir = normalized.StartsWith("tests/") || normalized.StartsWith("test/")
 
