@@ -25,6 +25,7 @@ type SymbolKind =
     | Module
     | Value
     | Property
+    | ExternRef
 
 /// A symbol's fully-qualified name, kind, source file, and line span.
 type SymbolInfo =
@@ -35,6 +36,9 @@ type SymbolInfo =
       LineEnd: int
       ContentHash: string
       IsExtern: bool }
+
+[<Literal>]
+let ExternSourceFile = "_extern"
 
 /// The kind of edge in a dependency graph (calls, uses type, pattern match, etc.).
 type DependencyKind =
@@ -596,6 +600,7 @@ let private extractResults
                 | Property -> true
                 | Function
                 | Value -> allBindingRangeMap |> Map.containsKey (shortName symbolInfo.FullName)
+                | ExternRef -> false
 
             let symbols =
                 definitions
@@ -758,18 +763,23 @@ let private extractResults
             let localSymbolNames = symbols |> List.map (fun s -> s.FullName) |> Set.ofList
 
             let externSymbols =
+                let seen = System.Collections.Generic.HashSet<string>()
+
                 dependencies
-                |> List.map (fun d -> d.ToSymbol)
-                |> List.distinct
-                |> List.filter (fun name -> not (Set.contains name localSymbolNames))
-                |> List.map (fun name ->
-                    { FullName = name
-                      Kind = Type
-                      SourceFile = "_extern"
-                      LineStart = 0
-                      LineEnd = 0
-                      ContentHash = ""
-                      IsExtern = true })
+                |> List.choose (fun d ->
+                    let name = d.ToSymbol
+
+                    if seen.Add(name) && not (Set.contains name localSymbolNames) then
+                        Some
+                            { FullName = name
+                              Kind = ExternRef
+                              SourceFile = ExternSourceFile
+                              LineStart = 0
+                              LineEnd = 0
+                              ContentHash = ""
+                              IsExtern = true }
+                    else
+                        None)
 
             let allSymbols = symbols @ externSymbols
 

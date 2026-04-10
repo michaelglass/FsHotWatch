@@ -1455,6 +1455,7 @@ let buildString () =
             |> List.tryFind (fun s -> s.FullName.Contains("StringBuilder") && s.IsExtern)
 
         test <@ externSym.IsSome @>
+        test <@ externSym.Value.Kind = ExternRef @>
 
     [<Fact>]
     let ``cross-assembly dependency enables test selection through extern symbols`` () =
