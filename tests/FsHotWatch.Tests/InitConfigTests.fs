@@ -25,6 +25,11 @@ let ``classifyProject identifies test project by Tests suffix`` () =
     test <@ result = TestProject "MyApp.Tests" @>
 
 [<Fact>]
+let ``classifyProject identifies test project by Test suffix`` () =
+    let result = classifyProject "src/MyApp.Test/MyApp.Test.fsproj"
+    test <@ result = TestProject "MyApp.Test" @>
+
+[<Fact>]
 let ``classifyProject identifies source project in src directory`` () =
     let result = classifyProject "src/MyApp/MyApp.fsproj"
     test <@ result = SourceProject "MyApp" @>
@@ -33,6 +38,11 @@ let ``classifyProject identifies source project in src directory`` () =
 let ``classifyProject identifies source project at root`` () =
     let result = classifyProject "MyApp/MyApp.fsproj"
     test <@ result = SourceProject "MyApp" @>
+
+[<Fact>]
+let ``classifyProject normalizes backslashes`` () =
+    let result = classifyProject @"tests\MyApp.Tests\MyApp.Tests.fsproj"
+    test <@ result = TestProject "MyApp.Tests" @>
 
 // --- generateConfig ---
 
@@ -89,6 +99,26 @@ let ``generateConfig with multiple test projects groups by default`` () =
     test <@ tests.Projects.[0].Project = "Unit.Tests" @>
     test <@ tests.Projects.[1].Project = "Integration.Tests" @>
 
+[<Fact>]
+let ``generateConfig with empty project list`` () =
+    let config = generateConfig [] false
+    test <@ config.Tests = None @>
+    test <@ config.Build.IsSome @>
+
+[<Fact>]
+let ``generateConfig test project sets coverage to true`` () =
+    let projects = [ "tests/MyApp.Tests/MyApp.Tests.fsproj" ]
+    let config = generateConfig projects false
+    let p = config.Tests.Value.Projects.[0]
+    test <@ p.Coverage = true @>
+
+[<Fact>]
+let ``generateConfig test project group is default`` () =
+    let projects = [ "tests/MyApp.Tests/MyApp.Tests.fsproj" ]
+    let config = generateConfig projects false
+    let p = config.Tests.Value.Projects.[0]
+    test <@ p.Group = "default" @>
+
 // --- serializeConfig ---
 
 [<Fact>]
@@ -98,7 +128,6 @@ let ``serializeConfig produces valid JSON with build and tests`` () =
     let config = generateConfig projects false
     let json = serializeConfig config
 
-    // Should be parseable back
     let parsed =
         parseConfig
             json
@@ -116,6 +145,276 @@ let ``serializeConfig produces valid JSON with build and tests`` () =
     test <@ parsed.Tests.IsSome @>
     test <@ parsed.Tests.Value.Projects.Length = 1 @>
 
+[<Fact>]
+let ``serializeConfig with no build omits build section`` () =
+    let config =
+        { Build = None
+          Format = Auto
+          Lint = true
+          Cache = FileBackend
+          Analyzers = None
+          Tests = None
+          Coverage = None
+          FileCommands = [] }
+
+    let json = serializeConfig config
+    test <@ not (json.Contains("\"build\"")) @>
+
+[<Fact>]
+let ``serializeConfig with empty build list omits build section`` () =
+    let config =
+        { Build = Some []
+          Format = Auto
+          Lint = true
+          Cache = FileBackend
+          Analyzers = None
+          Tests = None
+          Coverage = None
+          FileCommands = [] }
+
+    let json = serializeConfig config
+    test <@ not (json.Contains("\"build\"")) @>
+
+[<Fact>]
+let ``serializeConfig with multiple builds writes array`` () =
+    let config =
+        { Build =
+            Some
+                [ {| Command = "dotnet"
+                     Args = "build src/A"
+                     BuildTemplate = None
+                     DependsOn = [] |}
+                  {| Command = "dotnet"
+                     Args = "build src/B"
+                     BuildTemplate = None
+                     DependsOn = [] |} ]
+          Format = Auto
+          Lint = true
+          Cache = FileBackend
+          Analyzers = None
+          Tests = None
+          Coverage = None
+          FileCommands = [] }
+
+    let json = serializeConfig config
+    test <@ json.Contains("build src/A") @>
+    test <@ json.Contains("build src/B") @>
+
+[<Fact>]
+let ``serializeConfig format Off writes false`` () =
+    let config =
+        { Build = None
+          Format = Off
+          Lint = true
+          Cache = FileBackend
+          Analyzers = None
+          Tests = None
+          Coverage = None
+          FileCommands = [] }
+
+    let json = serializeConfig config
+
+    let parsed =
+        parseConfig
+            json
+            { Build = None
+              Format = Auto
+              Lint = false
+              Cache = NoCache
+              Analyzers = None
+              Tests = None
+              Coverage = None
+              FileCommands = [] }
+
+    test <@ parsed.Format = Off @>
+
+[<Fact>]
+let ``serializeConfig format Check writes check string`` () =
+    let config =
+        { Build = None
+          Format = Check
+          Lint = true
+          Cache = FileBackend
+          Analyzers = None
+          Tests = None
+          Coverage = None
+          FileCommands = [] }
+
+    let json = serializeConfig config
+
+    let parsed =
+        parseConfig
+            json
+            { Build = None
+              Format = Off
+              Lint = false
+              Cache = NoCache
+              Analyzers = None
+              Tests = None
+              Coverage = None
+              FileCommands = [] }
+
+    test <@ parsed.Format = Check @>
+
+[<Fact>]
+let ``serializeConfig cache InMemoryOnly writes memory`` () =
+    let config =
+        { Build = None
+          Format = Auto
+          Lint = true
+          Cache = InMemoryOnly 100
+          Analyzers = None
+          Tests = None
+          Coverage = None
+          FileCommands = [] }
+
+    let json = serializeConfig config
+    test <@ json.Contains("\"memory\"") @>
+
+[<Fact>]
+let ``serializeConfig cache NoCache writes false`` () =
+    let config =
+        { Build = None
+          Format = Auto
+          Lint = true
+          Cache = NoCache
+          Analyzers = None
+          Tests = None
+          Coverage = None
+          FileCommands = [] }
+
+    let json = serializeConfig config
+
+    let parsed =
+        parseConfig
+            json
+            { Build = None
+              Format = Off
+              Lint = false
+              Cache = FileBackend
+              Analyzers = None
+              Tests = None
+              Coverage = None
+              FileCommands = [] }
+
+    test <@ parsed.Cache = NoCache @>
+
+[<Fact>]
+let ``serializeConfig with no tests omits tests section`` () =
+    let config =
+        { Build = None
+          Format = Auto
+          Lint = true
+          Cache = FileBackend
+          Analyzers = None
+          Tests = None
+          Coverage = None
+          FileCommands = [] }
+
+    let json = serializeConfig config
+    test <@ not (json.Contains("\"tests\"")) @>
+
+[<Fact>]
+let ``serializeConfig with empty test projects omits tests section`` () =
+    let config =
+        { Build = None
+          Format = Auto
+          Lint = true
+          Cache = FileBackend
+          Analyzers = None
+          Tests =
+            Some
+                {| BeforeRun = None
+                   Extensions = []
+                   Projects = [] |}
+          Coverage = None
+          FileCommands = [] }
+
+    let json = serializeConfig config
+    test <@ not (json.Contains("\"tests\"")) @>
+
+[<Fact>]
+let ``serializeConfig with coverage includes directory`` () =
+    let config =
+        { Build = None
+          Format = Auto
+          Lint = true
+          Cache = FileBackend
+          Analyzers = None
+          Tests = None
+          Coverage =
+            Some
+                {| AfterCheck = None
+                   Directory = "./cov"
+                   ThresholdsFile = None |}
+          FileCommands = [] }
+
+    let json = serializeConfig config
+    test <@ json.Contains("\"coverage\"") @>
+    test <@ json.Contains("./cov") @>
+
+[<Fact>]
+let ``serializeConfig with coverage thresholdsFile and afterCheck`` () =
+    let config =
+        { Build = None
+          Format = Auto
+          Lint = true
+          Cache = FileBackend
+          Analyzers = None
+          Tests = None
+          Coverage =
+            Some
+                {| AfterCheck = Some "echo done"
+                   Directory = "./cov"
+                   ThresholdsFile = Some "thresholds.json" |}
+          FileCommands = [] }
+
+    let json = serializeConfig config
+    test <@ json.Contains("thresholds.json") @>
+    test <@ json.Contains("echo done") @>
+
+[<Fact>]
+let ``serializeConfig with no coverage omits section`` () =
+    let config =
+        { Build = None
+          Format = Auto
+          Lint = true
+          Cache = FileBackend
+          Analyzers = None
+          Tests = None
+          Coverage = None
+          FileCommands = [] }
+
+    let json = serializeConfig config
+    test <@ not (json.Contains("\"coverage\"")) @>
+
+[<Fact>]
+let ``serializeConfig test project without filterTemplate omits it`` () =
+    let config =
+        { Build = None
+          Format = Auto
+          Lint = true
+          Cache = FileBackend
+          Analyzers = None
+          Tests =
+            Some
+                {| BeforeRun = None
+                   Extensions = []
+                   Projects =
+                    [ { Project = "MyTests"
+                        Command = "dotnet"
+                        Args = "test"
+                        Group = "default"
+                        Environment = []
+                        FilterTemplate = None
+                        ClassJoin = " "
+                        Coverage = true } ] |}
+          Coverage = None
+          FileCommands = [] }
+
+    let json = serializeConfig config
+    test <@ not (json.Contains("filterTemplate")) @>
+
 // --- discoverProjects ---
 
 [<Fact>]
@@ -128,7 +427,7 @@ let ``discoverProjects finds fsproj files in directory tree`` () =
         File.WriteAllText(Path.Combine(srcDir, "MyApp.fsproj"), "<Project/>")
         File.WriteAllText(Path.Combine(testDir, "MyApp.Tests.fsproj"), "<Project/>")
 
-        let projects = discoverProjects tmpDir
+        let projects = discoverProjects tmpDir None
         test <@ projects |> List.length = 2 @>
         test <@ projects |> List.exists (fun p -> p.Contains("MyApp.fsproj")) @>
         test <@ projects |> List.exists (fun p -> p.Contains("MyApp.Tests.fsproj")) @>)
@@ -140,8 +439,93 @@ let ``discoverProjects returns paths relative to repo root`` () =
         Directory.CreateDirectory(srcDir) |> ignore
         File.WriteAllText(Path.Combine(srcDir, "App.fsproj"), "<Project/>")
 
-        let projects = discoverProjects tmpDir
+        let projects = discoverProjects tmpDir None
         test <@ projects.Length = 1 @>
-        // Should be relative, not absolute
         test <@ not (Path.IsPathRooted(projects.[0])) @>
         test <@ projects.[0] = Path.Combine("src", "App", "App.fsproj") @>)
+
+[<Fact>]
+let ``discoverProjects excludes bin directories`` () =
+    withTempDir "init-bin" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src", "App")
+        let binDir = Path.Combine(tmpDir, "src", "App", "bin", "Debug")
+        Directory.CreateDirectory(srcDir) |> ignore
+        Directory.CreateDirectory(binDir) |> ignore
+        File.WriteAllText(Path.Combine(srcDir, "App.fsproj"), "<Project/>")
+        File.WriteAllText(Path.Combine(binDir, "App.fsproj"), "<Project/>")
+
+        let projects = discoverProjects tmpDir None
+        test <@ projects.Length = 1 @>
+        test <@ projects.[0] = Path.Combine("src", "App", "App.fsproj") @>)
+
+[<Fact>]
+let ``discoverProjects excludes obj directories`` () =
+    withTempDir "init-obj" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src", "App")
+        let objDir = Path.Combine(tmpDir, "src", "App", "obj")
+        Directory.CreateDirectory(srcDir) |> ignore
+        Directory.CreateDirectory(objDir) |> ignore
+        File.WriteAllText(Path.Combine(srcDir, "App.fsproj"), "<Project/>")
+        File.WriteAllText(Path.Combine(objDir, "App.fsproj"), "<Project/>")
+
+        let projects = discoverProjects tmpDir None
+        test <@ projects.Length = 1 @>
+        test <@ projects.[0] = Path.Combine("src", "App", "App.fsproj") @>)
+
+[<Fact>]
+let ``discoverProjects returns empty list for empty directory`` () =
+    withTempDir "init-empty" (fun tmpDir ->
+        let projects = discoverProjects tmpDir None
+        test <@ projects = [] @>)
+
+[<Fact>]
+let ``discoverProjects returns sorted results`` () =
+    withTempDir "init-sort" (fun tmpDir ->
+        let dir1 = Path.Combine(tmpDir, "z-project")
+        let dir2 = Path.Combine(tmpDir, "a-project")
+        Directory.CreateDirectory(dir1) |> ignore
+        Directory.CreateDirectory(dir2) |> ignore
+        File.WriteAllText(Path.Combine(dir1, "Z.fsproj"), "<Project/>")
+        File.WriteAllText(Path.Combine(dir2, "A.fsproj"), "<Project/>")
+
+        let projects = discoverProjects tmpDir None
+        test <@ projects.Length = 2 @>
+        test <@ projects.[0] < projects.[1] @>)
+
+[<Fact>]
+let ``discoverProjects returns empty list for missing directory`` () =
+    let projects = discoverProjects "/nonexistent/path/that/does/not/exist" None
+    test <@ projects = [] @>
+
+[<Fact>]
+let ``discoverProjects returns empty list on permission error`` () =
+    let failEnumerate _ _ _ =
+        raise (System.UnauthorizedAccessException("Access denied"))
+
+    let projects = discoverProjects "/some/path" (Some failEnumerate)
+    test <@ projects = [] @>
+
+[<Fact>]
+let ``discoverProjects with injected enumerator uses it`` () =
+    let fakeEnumerate (root: string) (_pattern: string) (_opt: SearchOption) =
+        seq {
+            Path.Combine(root, "src", "Foo", "Foo.fsproj")
+            Path.Combine(root, "tests", "Bar.Tests", "Bar.Tests.fsproj")
+        }
+
+    let projects = discoverProjects "/fake/root" (Some fakeEnumerate)
+    test <@ projects.Length = 2 @>
+    test <@ projects |> List.exists (fun p -> p.Contains("Foo.fsproj")) @>
+    test <@ projects |> List.exists (fun p -> p.Contains("Bar.Tests.fsproj")) @>
+
+[<Fact>]
+let ``discoverProjects with injected enumerator still filters bin and obj`` () =
+    let fakeEnumerate (root: string) (_pattern: string) (_opt: SearchOption) =
+        seq {
+            Path.Combine(root, "src", "App", "App.fsproj")
+            Path.Combine(root, "src", "App", "bin", "App.fsproj")
+            Path.Combine(root, "src", "App", "obj", "App.fsproj")
+        }
+
+    let projects = discoverProjects "/fake/root" (Some fakeEnumerate)
+    test <@ projects.Length = 1 @>

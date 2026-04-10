@@ -27,14 +27,25 @@ let classifyProject (relativePath: string) : ProjectKind =
 
 /// Discover all .fsproj files under a directory, returning paths relative to repoRoot.
 /// Excludes bin/, obj/, and other artifact directories.
-let discoverProjects (repoRoot: string) : string list =
-    Directory.EnumerateFiles(repoRoot, "*.fsproj", SearchOption.AllDirectories)
-    |> Seq.map (fun fullPath -> Path.GetRelativePath(repoRoot, fullPath))
-    |> Seq.filter (fun p ->
-        let n = p.Replace('\\', '/')
-        not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
-    |> Seq.sort
-    |> Seq.toList
+/// An optional enumerateFiles function can be injected for testing (permission errors, etc.).
+let discoverProjects
+    (repoRoot: string)
+    (enumerateFiles: (string -> string -> SearchOption -> seq<string>) option)
+    : string list =
+    let enumerate =
+        defaultArg enumerateFiles (fun dir pattern opt -> Directory.EnumerateFiles(dir, pattern, opt))
+
+    try
+        enumerate repoRoot "*.fsproj" SearchOption.AllDirectories
+        |> Seq.map (fun fullPath -> Path.GetRelativePath(repoRoot, fullPath))
+        |> Seq.filter (fun p ->
+            let n = p.Replace('\\', '/')
+            not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
+        |> Seq.sort
+        |> Seq.toList
+    with
+    | :? DirectoryNotFoundException -> []
+    | :? System.UnauthorizedAccessException -> []
 
 /// Generate a DaemonConfiguration from discovered project paths.
 let generateConfig (projectPaths: string list) (hasJj: bool) : DaemonConfiguration =

@@ -983,7 +983,7 @@ module Daemon =
                 Logging.debug "watcher" $"%O{change}"
                 changeAgent.Post(Choice1Of2 change)
 
-            let watcher = FileWatcher.create repoRoot onChange
+            let watcher = FileWatcher.create repoRoot onChange None
 
             let jjGuard =
                 match cacheKeyProvider with
