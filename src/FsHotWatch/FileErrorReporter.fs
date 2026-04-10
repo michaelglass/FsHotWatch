@@ -22,12 +22,7 @@ type FileErrorReporter(errorDir: string) =
             entries
             |> List.map (fun e ->
                 {| message = e.Message
-                   severity =
-                    match e.Severity with
-                    | Error -> "error"
-                    | Warning -> "warning"
-                    | Info -> "info"
-                    | Hint -> "hint"
+                   severity = DiagnosticSeverity.toString e.Severity
                    line = e.Line
                    column = e.Column
                    detail = e.Detail |})

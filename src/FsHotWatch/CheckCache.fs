@@ -15,7 +15,7 @@ let sha256Hex (content: string) : string =
 
 /// Hash a CacheKey to produce a stable, unique identifier
 let hashCacheKey (key: CacheKey) : string =
-    sha256Hex $"%s{key.FileHash}||%s{key.ProjectOptionsHash}"
+    sha256Hex $"%s{ContentHash.value key.FileHash}||%s{ContentHash.value key.ProjectOptionsHash}"
 
 /// Backend interface for storing/retrieving cached results
 type ICheckCacheBackend =
@@ -72,5 +72,5 @@ type JjCacheKeyProvider(_repoRoot: string) =
 
 /// Compute a CacheKey for a file using the given provider
 let makeCacheKey (provider: ICacheKeyProvider) (filePath: string) (options: FSharpProjectOptions) : CacheKey =
-    { FileHash = provider.GetFileHash(filePath)
-      ProjectOptionsHash = getProjectOptionsHash options }
+    { FileHash = ContentHash.create (provider.GetFileHash(filePath))
+      ProjectOptionsHash = ContentHash.create (getProjectOptionsHash options) }

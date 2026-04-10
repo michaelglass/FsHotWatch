@@ -17,15 +17,14 @@ open FsHotWatch.Plugin
 open FsHotWatch.Watcher
 open FsHotWatch.PluginHost
 open FsHotWatch.ProjectGraph
-open FsHotWatch.Watcher
 
 /// Extract FCS diagnostics from check results and report to the error ledger.
 /// Reports all severity levels (Error, Warning, Info, Hidden) with configurable
 /// suppressed diagnostic codes.
 let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) (checkResult: Events.FileCheckResult) =
     match checkResult.CheckResults with
-    | None -> ()
-    | Some checkResults ->
+    | ParseOnly -> ()
+    | FullCheck checkResults ->
         let mapSeverity =
             function
             | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error -> DiagnosticSeverity.Error
@@ -101,12 +100,12 @@ let private discoverAndRegisterProjects
             // Register projects in the graph using Ionide-derived data (not XML parse)
             // so source file lists match what FCS sees (handles globs, conditionals, generated files)
             for proj in loaded do
-                let absProject = Path.GetFullPath(proj.ProjectFileName)
-                let sourceFiles = proj.SourceFiles |> List.map Path.GetFullPath
+                let absProject = AbsProjectPath.create proj.ProjectFileName
+                let sourceFiles = proj.SourceFiles |> List.map AbsFilePath.create
 
                 let references =
                     proj.ReferencedProjects
-                    |> List.map (fun r -> Path.GetFullPath(r.ProjectFileName))
+                    |> List.map (fun r -> AbsProjectPath.create r.ProjectFileName)
 
                 graph.RegisterProject(absProject, sourceFiles, references)
 
@@ -151,7 +150,7 @@ let private rediscoverAndClearRemoved
         let removedFiles = Set.difference oldFiles newFiles
 
         for file in removedFiles do
-            host.ClearErrors("fcs", file)
+            host.ClearErrors("fcs", AbsFilePath.value file)
 
         if not removedFiles.IsEmpty then
             Logging.info logTag $"Cleared errors for %d{removedFiles.Count} removed files"
@@ -272,149 +271,224 @@ let private isTerminal (s: PluginStatus) =
 let private allTerminal (statuses: Map<string, PluginStatus>) =
     not statuses.IsEmpty && statuses |> Map.forall (fun _ s -> isTerminal s)
 
+/// Dependencies for processBatch, bundled to avoid a long closure capture list.
+[<NoComparison; NoEquality>]
+type internal BatchContext =
+    { Host: PluginHost
+      InvalidateFcs: (unit -> unit) option
+      RepoRoot: string
+      Loader: IWorkspaceLoader
+      Graph: ProjectGraph.ProjectGraph
+      Pipeline: CheckPipeline
+      DaemonCt: CancellationToken ref
+      FcsSuppressedCodes: Set<int> }
+
+/// Process a batch of debounced file changes: filter, re-discover projects if needed,
+/// run preprocessors, emit events, and check files.
+let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (suppressed: Set<string>) =
+    async {
+        let mutable sourceFiles = []
+        let mutable projFiles = []
+        let mutable solutionFile = None
+
+        for c in changes do
+            match c with
+            | SourceChanged files -> sourceFiles <- files @ sourceFiles
+            | ProjectChanged files -> projFiles <- files @ projFiles
+            | SolutionChanged f -> solutionFile <- Some f
+
+        let hasSolution = solutionFile.IsSome
+
+        Logging.debug
+            "daemon"
+            $"processChanges: %d{sourceFiles.Length} source, %d{projFiles.Length} project, solution=%b{hasSolution}"
+
+        for f in sourceFiles do
+            Logging.debug "daemon" $"source: %s{f}"
+
+        for f in projFiles do
+            Logging.debug "daemon" $"project: %s{f}"
+
+        // Filter out files written by preprocessors (suppress re-trigger)
+        let filteredSourceFiles, remainingSuppressed =
+            sourceFiles
+            |> List.distinct
+            |> List.fold
+                (fun (accepted, sup) f ->
+                    if Set.contains f sup then
+                        Logging.debug "daemon" $"suppressed: %s{f}"
+                        (accepted, Set.remove f sup)
+                    else
+                        (f :: accepted, sup))
+                ([], suppressed)
+
+        let allSourceFiles =
+            filteredSourceFiles
+            |> List.rev
+            |> List.filter (fun f ->
+                let changed = Watcher.hasContentChanged f
+
+                if not changed then
+                    Logging.debug "daemon" $"content unchanged: %s{f}"
+
+                changed)
+
+        let projFilesChanged =
+            projFiles
+            |> List.distinct
+            |> List.filter (fun f ->
+                let changed = Watcher.hasContentChanged f
+
+                if not changed then
+                    Logging.debug "daemon" $"content unchanged: %s{f}"
+
+                changed)
+
+        if hasSolution then
+            ctx.Host.EmitFileChanged(SolutionChanged solutionFile.Value)
+
+        if not projFilesChanged.IsEmpty || hasSolution then
+            Logging.info "daemon" "Project/solution change detected — re-discovering projects"
+
+            ctx.InvalidateFcs |> Option.iter (fun invalidate -> invalidate ())
+
+            let! _ = rediscoverAndClearRemoved ctx.RepoRoot ctx.Loader ctx.Graph ctx.Pipeline ctx.Host "daemon"
+
+            Logging.info
+                "daemon"
+                $"Re-discovery complete: %d{ctx.Graph.GetAllProjects().Length} projects, %d{ctx.Pipeline.GetAllRegisteredFiles().Length} files"
+
+            if not projFilesChanged.IsEmpty then
+                ctx.Host.EmitFileChanged(ProjectChanged projFilesChanged)
+
+        if not allSourceFiles.IsEmpty then
+            let modifiedByPreprocessors = ctx.Host.RunPreprocessors(allSourceFiles)
+
+            let newSuppressed =
+                Set.union remainingSuppressed (Set.ofList modifiedByPreprocessors)
+
+            let absSourceFiles = allSourceFiles |> List.map AbsFilePath.create
+
+            let changedProjects =
+                absSourceFiles
+                |> List.choose (fun f -> ctx.Graph.GetProjectForFile(f))
+                |> List.distinct
+
+            let changedProjectSet = Set.ofList changedProjects
+
+            let dependentProjectFiles =
+                changedProjects
+                |> List.collect (fun p -> ctx.Graph.GetTransitiveDependents(p))
+                |> List.distinct
+                |> List.filter (fun p -> not (Set.contains p changedProjectSet))
+                |> List.collect (fun proj -> ctx.Graph.GetSourceFiles(proj))
+                |> List.map AbsFilePath.value
+
+            let allFilesToCheck = (allSourceFiles @ dependentProjectFiles) |> List.distinct
+
+            ctx.Host.EmitFileChanged(SourceChanged allFilesToCheck)
+
+            Logging.debug "daemon" $"Checking %d{allFilesToCheck.Length} files after change"
+            let mutable checkedFiles = Set.empty
+            let filesToCheckSet = allFilesToCheck |> Set.ofList
+            let tiers = ctx.Graph.GetParallelTiers()
+
+            let emitResults (results: FileCheckResult option array) =
+                for result in results do
+                    match result with
+                    | Some checkResult ->
+                        Logging.debug "daemon" $"EmitFileChecked: %s{Path.GetFileName(checkResult.File)}"
+                        ctx.Host.EmitFileChecked(checkResult)
+                        reportFcsDiagnostics ctx.FcsSuppressedCodes ctx.Host checkResult
+                    | None -> ()
+
+            for tier in tiers do
+                let tierFiles =
+                    tier
+                    |> List.collect (fun proj -> ctx.Graph.GetSourceFiles(proj))
+                    |> List.map AbsFilePath.value
+                    |> List.filter filesToCheckSet.Contains
+
+                checkedFiles <- Set.union checkedFiles (Set.ofList tierFiles)
+
+                let! results =
+                    tierFiles
+                    |> List.map (fun file -> ctx.Pipeline.CheckFile(file, ctx.DaemonCt.Value))
+                    |> Async.Parallel
+
+                emitResults results
+
+            // Check files not belonging to any project (e.g. standalone .fsx files)
+            let uncovered = Set.difference filesToCheckSet checkedFiles |> Set.toList
+
+            if not uncovered.IsEmpty then
+                let! results =
+                    uncovered
+                    |> List.map (fun file -> ctx.Pipeline.CheckFile(file, ctx.DaemonCt.Value))
+                    |> Async.Parallel
+
+                emitResults results
+
+            return newSuppressed
+        else
+            return remainingSuppressed
+    }
+
 /// Wait for all plugins to reach a terminal state with 1-second stability confirmation.
 /// Times out with TimeoutException after the specified timeout.
 let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) () : Task<unit> =
-    let tcs =
-        TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+    let deadline = System.DateTime.UtcNow + timeout
+    let mutable lastLogTime = System.DateTime.UtcNow
 
-    let mutable timerCts: CancellationTokenSource option = None
-    let mutable timeoutCts: CancellationTokenSource option = None
-    let mutable subscription: System.IDisposable option = None
-    let mutable resolved = false
-    let lockObj = obj ()
+    let getRunningPlugins () =
+        host.GetAllStatuses()
+        |> Map.toList
+        |> List.choose (fun (name, s) ->
+            match s with
+            | Running since -> Some $"%s{name} (since %O{since})"
+            | _ -> None)
 
-    let cleanup () =
-        timerCts
-        |> Option.iter (fun c ->
-            c.Cancel()
-            c.Dispose())
+    let logRunningPlugins () =
+        let now = System.DateTime.UtcNow
 
-        timerCts <- None
+        if (now - lastLogTime).TotalSeconds >= 10.0 then
+            lastLogTime <- now
 
-        timeoutCts
-        |> Option.iter (fun c ->
-            c.Cancel()
-            c.Dispose())
+            match getRunningPlugins () with
+            | [] -> Logging.info "wait" "All plugins terminal, waiting for stability confirmation..."
+            | plugins ->
+                let joined = plugins |> String.concat ", "
+                Logging.info "wait" $"Waiting for plugins: %s{joined}"
 
-        timeoutCts <- None
+    let formatTimeoutDetail () =
+        match getRunningPlugins () with
+        | [] -> "all terminal but stability check failed"
+        | running ->
+            let joined = running |> String.concat ", "
+            $"still running: %s{joined}"
 
-        subscription |> Option.iter (fun s -> s.Dispose())
-        subscription <- None
+    let rec loop () =
+        async {
+            if timeout <> System.TimeSpan.MaxValue && System.DateTime.UtcNow >= deadline then
+                let detail = formatTimeoutDetail ()
 
-    let checkAndSchedule () =
-        lock lockObj (fun () ->
-            if resolved then
-                ()
+                raise (System.TimeoutException($"WaitForComplete timed out after %O{timeout} — %s{detail}"))
+
+            let statuses = host.GetAllStatuses()
+
+            if allTerminal statuses then
+                // Stability check: wait 1 second, then confirm still terminal
+                do! Async.Sleep 1000
+                let final = host.GetAllStatuses()
+
+                if allTerminal final then return () else return! loop ()
             else
+                logRunningPlugins ()
+                do! Async.Sleep 100
+                return! loop ()
+        }
 
-                let statuses = host.GetAllStatuses()
-
-                timerCts
-                |> Option.iter (fun c ->
-                    c.Cancel()
-                    c.Dispose())
-
-                timerCts <- None
-
-                if allTerminal statuses then
-                    let newCts = new CancellationTokenSource()
-                    timerCts <- Some newCts
-
-                    Task
-                        .Delay(1000, newCts.Token)
-                        .ContinueWith(fun (t: Task) ->
-                            if not t.IsCanceled then
-                                lock lockObj (fun () ->
-                                    if not resolved then
-                                        let final = host.GetAllStatuses()
-
-                                        if allTerminal final then
-                                            resolved <- true
-                                            cleanup ()
-                                            tcs.TrySetResult(()) |> ignore))
-                    |> ignore)
-
-    // Subscribe before initial check to avoid TOCTOU gap
-    subscription <- Some(host.OnStatusChanged.Subscribe(fun _ -> checkAndSchedule ()))
-    checkAndSchedule ()
-
-    // Periodic status logging so operators can see what's blocking completion
-    let logCts = new CancellationTokenSource()
-
-    let rec logLoop () =
-        Task
-            .Delay(10_000, logCts.Token)
-            .ContinueWith(fun (t: Task) ->
-                if not t.IsCanceled then
-                    lock lockObj (fun () ->
-                        if not resolved then
-                            let statuses = host.GetAllStatuses()
-
-                            let running =
-                                statuses
-                                |> Map.toList
-                                |> List.choose (fun (name, s) ->
-                                    match s with
-                                    | Running since -> Some $"%s{name} (since %O{since})"
-                                    | _ -> None)
-
-                            match running with
-                            | [] -> Logging.info "wait" "All plugins terminal, waiting for stability confirmation..."
-                            | plugins ->
-                                let joined = plugins |> String.concat ", "
-
-                                Logging.info "wait" $"Waiting for plugins: %s{joined}")
-
-                    logLoop ())
-        |> ignore
-
-    logLoop ()
-
-    // Clean up log timer when resolved
-    tcs.Task.ContinueWith(fun (_: Task<unit>) ->
-        logCts.Cancel()
-        logCts.Dispose())
-    |> ignore
-
-    // Set up timeout — cancellable so the delay task doesn't hold closure refs for the full 30 min on normal completion
-    if timeout <> System.TimeSpan.MaxValue then
-        let cts = new CancellationTokenSource()
-        timeoutCts <- Some cts
-
-        Task
-            .Delay(timeout, cts.Token)
-            .ContinueWith(fun (t: Task) ->
-                if not t.IsCanceled then
-                    lock lockObj (fun () ->
-                        if not resolved then
-                            resolved <- true
-                            cleanup ()
-
-                            let statuses = host.GetAllStatuses()
-
-                            let running =
-                                statuses
-                                |> Map.toList
-                                |> List.choose (fun (name, s) ->
-                                    match s with
-                                    | Running since -> Some $"%s{name} (since %O{since})"
-                                    | _ -> None)
-
-                            let detail =
-                                if running.IsEmpty then
-                                    "all terminal but stability check failed"
-                                else
-                                    let joined = running |> String.concat ", "
-                                    $"still running: %s{joined}"
-
-                            tcs.TrySetException(
-                                System.TimeoutException($"WaitForComplete timed out after %O{timeout} — %s{detail}")
-                            )
-                            |> ignore))
-        |> ignore
-
-    tcs.Task
+    loop () |> Async.StartAsTask
 
 /// The daemon ties together a warm FSharpChecker, file watcher, check pipeline, and plugin host.
 /// It runs until the provided CancellationToken is cancelled.
@@ -433,7 +507,8 @@ type Daemon
         scanSignal: ScanSignal,
         _jjGuard: JjHelper.JjScanGuard option,
         fcsSuppressedCodes: Set<int>,
-        lifetime: CancellationTokenSource
+        lifetime: CancellationTokenSource,
+        formatAllFn: (unit -> Async<string>) option
     ) =
 
     let mutable disposed = false
@@ -576,11 +651,14 @@ type Daemon
                     }
 
                 let formatAll () =
-                    async {
-                        let files = pipeline.GetAllRegisteredFiles()
-                        let modified = host.RunPreprocessors(files)
-                        return $"formatted %d{modified.Length} files"
-                    }
+                    match formatAllFn with
+                    | Some fn -> fn ()
+                    | None ->
+                        async {
+                            let files = pipeline.GetAllRegisteredFiles()
+                            let modified = host.RunPreprocessors(files)
+                            return $"formatted %d{modified.Length} files"
+                        }
 
                 let rpcConfig: DaemonRpcConfig =
                     { Host = host
@@ -692,11 +770,13 @@ let private performScan
 
                         let dependentFiles =
                             directlyChanged
+                            |> List.map AbsFilePath.create
                             |> List.choose (fun f -> graph.GetProjectForFile(f))
                             |> List.distinct
                             |> List.collect (fun p -> graph.GetTransitiveDependents(p))
                             |> List.distinct
                             |> List.collect (fun proj -> graph.GetSourceFiles(proj))
+                            |> List.map AbsFilePath.value
 
                         (directlyChanged @ dependentFiles) |> List.distinct
                     | _ -> files
@@ -719,7 +799,10 @@ let private performScan
                 let tiers = graph.GetParallelTiers()
 
                 for tier in tiers do
-                    let tierFiles = tier |> List.collect (fun proj -> graph.GetSourceFiles(proj))
+                    let tierFiles =
+                        tier
+                        |> List.collect (fun proj -> graph.GetSourceFiles(proj))
+                        |> List.map AbsFilePath.value
 
                     let! results =
                         tierFiles
@@ -806,161 +889,80 @@ module Daemon =
                 | SolutionChanged _ -> projectDebounceMs
                 | SourceChanged _ -> sourceDebounceMs
 
-            let processBatch (changes: FileChangeKind list) (suppressed: Set<string>) =
-                async {
-                    let mutable sourceFiles = []
-                    let mutable projFiles = []
-                    let mutable solutionFile = None
-
-                    for c in changes do
-                        match c with
-                        | SourceChanged files -> sourceFiles <- files @ sourceFiles
-                        | ProjectChanged files -> projFiles <- files @ projFiles
-                        | SolutionChanged f -> solutionFile <- Some f
-
-                    let hasSolution = solutionFile.IsSome
-
-                    Logging.debug
-                        "daemon"
-                        $"processChanges: %d{sourceFiles.Length} source, %d{projFiles.Length} project, solution=%b{hasSolution}"
-
-                    for f in sourceFiles do
-                        Logging.debug "daemon" $"source: %s{f}"
-
-                    for f in projFiles do
-                        Logging.debug "daemon" $"project: %s{f}"
-
-                    // Filter out files written by preprocessors (suppress re-trigger)
-                    let filteredSourceFiles, remainingSuppressed =
-                        sourceFiles
-                        |> List.distinct
-                        |> List.fold
-                            (fun (accepted, sup) f ->
-                                if Set.contains f sup then
-                                    Logging.debug "daemon" $"suppressed: %s{f}"
-                                    (accepted, Set.remove f sup)
-                                else
-                                    (f :: accepted, sup))
-                            ([], suppressed)
-
-                    let allSourceFiles =
-                        filteredSourceFiles
-                        |> List.rev
-                        |> List.filter (fun f ->
-                            let changed = hasContentChanged f
-
-                            if not changed then
-                                Logging.debug "daemon" $"content unchanged: %s{f}"
-
-                            changed)
-
-                    let projFilesChanged =
-                        projFiles
-                        |> List.distinct
-                        |> List.filter (fun f ->
-                            let changed = hasContentChanged f
-
-                            if not changed then
-                                Logging.debug "daemon" $"content unchanged: %s{f}"
-
-                            changed)
-
-                    if hasSolution then
-                        host.EmitFileChanged(SolutionChanged solutionFile.Value)
-
-                    if not projFilesChanged.IsEmpty || hasSolution then
-                        Logging.info "daemon" "Project/solution change detected — re-discovering projects"
-
-                        // Guard: tests may pass Unchecked.defaultof for checker
-                        if not (isNull (box checker)) then
-                            checker.InvalidateAll()
-                            checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
-
-                        let! _ = rediscoverAndClearRemoved repoRoot loader graph pipeline host "daemon"
-
-                        Logging.info
-                            "daemon"
-                            $"Re-discovery complete: %d{graph.GetAllProjects().Length} projects, %d{pipeline.GetAllRegisteredFiles().Length} files"
-
-                        if not projFilesChanged.IsEmpty then
-                            host.EmitFileChanged(ProjectChanged projFilesChanged)
-
-                    if not allSourceFiles.IsEmpty then
-                        let modifiedByPreprocessors = host.RunPreprocessors(allSourceFiles)
-
-                        let newSuppressed =
-                            modifiedByPreprocessors
-                            |> List.fold (fun s f -> Set.add f s) remainingSuppressed
-
-                        let changedProjects =
-                            allSourceFiles
-                            |> List.choose (fun f -> graph.GetProjectForFile(f))
-                            |> List.distinct
-
-                        let dependentProjectFiles =
-                            changedProjects
-                            |> List.collect (fun p -> graph.GetTransitiveDependents(p))
-                            |> List.distinct
-                            |> List.filter (fun p -> not (changedProjects |> List.contains p))
-                            |> List.collect (fun proj -> graph.GetSourceFiles(proj))
-
-                        let allFilesToCheck = (allSourceFiles @ dependentProjectFiles) |> List.distinct
-
-                        host.EmitFileChanged(SourceChanged allFilesToCheck)
-
-                        Logging.debug "daemon" $"Checking %d{allFilesToCheck.Length} files after change"
-
-                        for file in allFilesToCheck do
-                            let! result = pipeline.CheckFile(file, daemonCtRef.Value)
-
-                            match result with
-                            | Some checkResult ->
-                                Logging.debug "daemon" $"EmitFileChecked: %s{Path.GetFileName(file)}"
-                                host.EmitFileChecked(checkResult)
-                                reportFcsDiagnostics fcsSuppressedCodes host checkResult
-
-                            | None -> ()
-
-                        return newSuppressed
+            let batchCtx: BatchContext =
+                { Host = host
+                  InvalidateFcs =
+                    if isNull (box checker) then
+                        None
                     else
-                        return remainingSuppressed
-                }
+                        Some(fun () ->
+                            checker.InvalidateAll()
+                            checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients())
+                  RepoRoot = repoRoot
+                  Loader = loader
+                  Graph = graph
+                  Pipeline = pipeline
+                  DaemonCt = daemonCtRef
+                  FcsSuppressedCodes = fcsSuppressedCodes }
+
+            let formatAllAndSuppress (suppressed: Set<string>) (replyChannel: AsyncReplyChannel<string>) =
+                let files = pipeline.GetAllRegisteredFiles()
+                let modified = host.RunPreprocessors(files)
+                let newSuppressed = Set.union suppressed (Set.ofList modified)
+                replyChannel.Reply($"formatted %d{modified.Length} files")
+                newSuppressed
 
             let changeAgent =
-                MailboxProcessor.Start(
-                    (fun inbox ->
-                        let rec idle (suppressed: Set<string>) =
-                            async {
-                                let! msg = inbox.Receive()
-                                let delayMs = delayForChange msg
-                                return! debouncing [ msg ] delayMs suppressed
-                            }
+                MailboxProcessor<Choice<FileChangeKind, AsyncReplyChannel<string>>>
+                    .Start(
+                        (fun inbox ->
+                            let rec idle (suppressed: Set<string>) =
+                                async {
+                                    let! msg = inbox.Receive()
 
-                        and debouncing (pending: FileChangeKind list) (delayMs: int) (suppressed: Set<string>) =
-                            async {
-                                let! msg = inbox.TryReceive(delayMs)
-
-                                match msg with
-                                | Some change ->
-                                    let newDelay = max delayMs (delayForChange change)
-                                    return! debouncing (change :: pending) newDelay suppressed
-                                | None ->
-                                    // Debounce expired — process batch
-                                    try
-                                        let! newSuppressed = processBatch (List.rev pending) suppressed
+                                    match msg with
+                                    | Choice2Of2 replyChannel ->
+                                        let newSuppressed = formatAllAndSuppress suppressed replyChannel
                                         return! idle newSuppressed
-                                    with ex ->
-                                        Logging.error "daemon" $"processChanges failed: %s{ex.ToString()}"
-                                        return! idle suppressed
-                            }
+                                    | Choice1Of2 change ->
+                                        let delayMs = delayForChange change
+                                        return! debouncing [ change ] delayMs suppressed
+                                }
 
-                        idle Set.empty),
-                    cancellationToken = lifetime.Token
-                )
+                            and debouncing (pending: FileChangeKind list) (delayMs: int) (suppressed: Set<string>) =
+                                async {
+                                    let! msg = inbox.TryReceive(delayMs)
+
+                                    match msg with
+                                    | Some(Choice1Of2 change) ->
+                                        let newDelay = max delayMs (delayForChange change)
+                                        return! debouncing (change :: pending) newDelay suppressed
+                                    | Some(Choice2Of2 replyChannel) ->
+                                        try
+                                            let! newSuppressed = processBatch batchCtx (List.rev pending) suppressed
+                                            let finalSuppressed = formatAllAndSuppress newSuppressed replyChannel
+                                            return! idle finalSuppressed
+                                        with ex ->
+                                            Logging.error "daemon" $"processChanges failed: %s{ex.ToString()}"
+                                            replyChannel.Reply("format failed")
+                                            return! idle suppressed
+                                    | None ->
+                                        // Debounce expired — process batch
+                                        try
+                                            let! newSuppressed = processBatch batchCtx (List.rev pending) suppressed
+                                            return! idle newSuppressed
+                                        with ex ->
+                                            Logging.error "daemon" $"processChanges failed: %s{ex.ToString()}"
+                                            return! idle suppressed
+                                }
+
+                            idle Set.empty),
+                        cancellationToken = lifetime.Token
+                    )
 
             let onChange change =
                 Logging.debug "watcher" $"%O{change}"
-                changeAgent.Post(change)
+                changeAgent.Post(Choice1Of2 change)
 
             let watcher = FileWatcher.create repoRoot onChange
 
@@ -1023,6 +1025,9 @@ module Daemon =
             let scanAgentWrapper = createScanAgent scanMailbox
             scanAgentRef.Value <- Some scanAgentWrapper
 
+            let formatAllViaAgent () =
+                changeAgent.PostAndAsyncReply(Choice2Of2)
+
             new Daemon(
                 host,
                 watcher,
@@ -1036,7 +1041,8 @@ module Daemon =
                 scanSignal,
                 jjGuard,
                 fcsSuppressedCodes,
-                lifetime
+                lifetime,
+                Some formatAllViaAgent
             )
         with _ ->
             lifetime.Dispose()

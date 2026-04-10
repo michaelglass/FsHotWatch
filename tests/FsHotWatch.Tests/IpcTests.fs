@@ -44,12 +44,13 @@ let ``server responds to GetStatus`` () =
 
     // Register a plugin so there's something in status
     let handler =
-        { Name = "test-plugin"
+        { Name = PluginName.create "test-plugin"
           Init = ()
           Update = fun _ctx state _event -> async { return state }
           Commands = []
           Subscriptions = PluginSubscriptions.none
-          CacheKey = None }
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(handler)
 
@@ -76,12 +77,13 @@ let ``server responds to RunCommand`` () =
     let cts = new CancellationTokenSource()
 
     let handler =
-        { Name = "greeter"
+        { Name = PluginName.create "greeter"
           Init = ()
           Update = fun _ctx state _event -> async { return state }
           Commands = [ "greet", fun _state _args -> async { return "hello world" } ]
           Subscriptions = PluginSubscriptions.none
-          CacheKey = None }
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(handler)
 
@@ -108,12 +110,13 @@ let ``GetPluginStatus returns specific plugin's status`` () =
     let cts = new CancellationTokenSource()
 
     let handler =
-        { Name = "status-plugin"
+        { Name = PluginName.create "status-plugin"
           Init = ()
           Update = fun _ctx state _event -> async { return state }
           Commands = []
           Subscriptions = PluginSubscriptions.none
-          CacheKey = None }
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(handler)
 
@@ -166,7 +169,7 @@ let ``RunCommand with plugin that returns a result`` () =
     let cts = new CancellationTokenSource()
 
     let handler =
-        { Name = "echo-plugin"
+        { Name = PluginName.create "echo-plugin"
           Init = ()
           Update = fun _ctx state _event -> async { return state }
           Commands =
@@ -177,7 +180,8 @@ let ``RunCommand with plugin that returns a result`` () =
                       return $"echoed: {msg}"
                   } ]
           Subscriptions = PluginSubscriptions.none
-          CacheKey = None }
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(handler)
 
@@ -230,7 +234,7 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
     let cts = new CancellationTokenSource()
 
     let makeStatusHandler name (reportFn: PluginCtx<unit> -> unit) =
-        { Name = name
+        { Name = PluginName.create name
           Init = ()
           Update =
             fun ctx state event ->
@@ -242,10 +246,9 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                FileChanged = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(makeStatusHandler "idle-p" (fun ctx -> ctx.ReportStatus(Idle)))
 
@@ -301,7 +304,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let makeStatusHandler name (reportFn: PluginCtx<unit> -> unit) =
-        { Name = name
+        { Name = PluginName.create name
           Init = ()
           Update =
             fun ctx state event ->
@@ -313,10 +316,9 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                FileChanged = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(makeStatusHandler "a" (fun ctx -> ctx.ReportStatus(Idle)))
 
@@ -367,7 +369,7 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        { Name = "cmd-test"
+        { Name = PluginName.create "cmd-test"
           Init = ()
           Update = fun _ctx state _event -> async { return state }
           Commands =
@@ -378,7 +380,8 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
                       return $"hello {arg}"
                   } ]
           Subscriptions = PluginSubscriptions.none
-          CacheKey = None }
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(handler)
 
@@ -403,7 +406,7 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let makeStatusHandler name (reportFn: PluginCtx<unit> -> unit) =
-        { Name = name
+        { Name = PluginName.create name
           Init = ()
           Update =
             fun ctx state event ->
@@ -415,10 +418,9 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                FileChanged = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(makeStatusHandler "idle-test" (fun ctx -> ctx.ReportStatus(Idle)))
 
@@ -716,7 +718,7 @@ let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        { Name = "test-prune"
+        { Name = PluginName.create "test-prune"
           Init = ()
           Update =
             fun ctx state event ->
@@ -729,10 +731,9 @@ let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                FileChanged = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -756,7 +757,7 @@ let ``WaitForComplete times out when plugin stays Running`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        { Name = "stuck-plugin"
+        { Name = PluginName.create "stuck-plugin"
           Init = ()
           Update =
             fun ctx state event ->
@@ -768,10 +769,9 @@ let ``WaitForComplete times out when plugin stays Running`` () =
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                FileChanged = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(handler)
 

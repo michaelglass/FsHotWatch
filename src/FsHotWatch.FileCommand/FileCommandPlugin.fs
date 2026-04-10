@@ -1,33 +1,32 @@
 module FsHotWatch.FileCommand.FileCommandPlugin
 
 open System
+open System.Text.Json
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 open FsHotWatch.ProcessHelper
 
 type CommandResult =
-    | NotRun
+    | NeverRun
     | Succeeded of output: string
     | CommandFailed of output: string
 
-type FileCommandState =
-    { LastResult: CommandResult
-      HasRunOnce: bool }
+type FileCommandState = { LastResult: CommandResult }
 
 /// Creates a framework plugin handler that runs a command when files matching a filter change.
 let create
-    (name: string)
+    (name: PluginName)
     (fileFilter: string -> bool)
     (command: string)
     (args: string)
     (runOnStart: bool)
     (getCommitId: (unit -> string option) option)
     : PluginHandler<FileCommandState, unit> =
+    let nameStr = PluginName.value name
+
     { Name = name
-      Init =
-        { LastResult = NotRun
-          HasRunOnce = false }
+      Init = { LastResult = NeverRun }
       Update =
         fun ctx state event ->
             async {
@@ -42,10 +41,8 @@ let create
                     let matching = files |> List.filter fileFilter
 
                     let shouldRun =
-                        if runOnStart && not state.HasRunOnce then
-                            true
-                        else
-                            matching |> (not << List.isEmpty)
+                        (runOnStart && state.LastResult = NeverRun)
+                        || (matching |> (not << List.isEmpty))
 
                     if not shouldRun then
                         return state
@@ -58,47 +55,44 @@ let create
                             let result = if success then Succeeded output else CommandFailed output
 
                             if success then
-                                ctx.ClearErrors $"<%s{name}>"
+                                ctx.ClearErrors $"<%s{nameStr}>"
                                 ctx.ReportStatus(Completed(DateTime.UtcNow))
                             else
-                                ctx.ReportErrors $"<%s{name}>" [ ErrorEntry.error output ]
-                                ctx.ReportStatus(PluginStatus.Failed($"%s{name} failed", DateTime.UtcNow))
+                                ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error output ]
+                                ctx.ReportStatus(PluginStatus.Failed($"%s{nameStr} failed", DateTime.UtcNow))
 
                             ctx.EmitCommandCompleted(
-                                { Name = name
-                                  Succeeded = success
-                                  Output = output }
+                                { Name = nameStr
+                                  Outcome =
+                                    if success then
+                                        FsHotWatch.Events.CommandSucceeded output
+                                    else
+                                        FsHotWatch.Events.CommandFailed output }
                             )
 
-                            return
-                                { LastResult = result
-                                  HasRunOnce = true }
+                            return { LastResult = result }
                         with ex ->
-                            ctx.ReportErrors $"<%s{name}>" [ ErrorEntry.error ex.Message ]
+                            ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error ex.Message ]
 
                             ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
 
                             ctx.EmitCommandCompleted(
-                                { Name = name
-                                  Succeeded = false
-                                  Output = ex.Message }
+                                { Name = nameStr
+                                  Outcome = FsHotWatch.Events.CommandFailed ex.Message }
                             )
 
-                            return
-                                { LastResult = CommandFailed ex.Message
-                                  HasRunOnce = true }
+                            return { LastResult = CommandFailed ex.Message }
                 | _ -> return state
             }
       Commands =
-        [ $"%s{name}-status",
+        [ $"%s{nameStr}-status",
           fun state _args ->
               async {
                   match state.LastResult with
-                  | Succeeded _ -> return "{\"passed\": true}"
-                  | CommandFailed _ -> return "{\"passed\": false}"
-                  | NotRun -> return "{\"status\": \"not run\"}"
+                  | Succeeded _ -> return JsonSerializer.Serialize({| passed = true |})
+                  | CommandFailed _ -> return JsonSerializer.Serialize({| passed = false |})
+                  | NeverRun -> return JsonSerializer.Serialize({| status = "not run" |})
               } ]
-      Subscriptions =
-        { PluginSubscriptions.none with
-            FileChanged = true }
-      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId }
+      Subscriptions = Set.ofList [ SubscribeFileChanged ]
+      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId
+      Teardown = None }

@@ -37,7 +37,7 @@ let create
             Logging.error "lint" $"Failed to load lint config: %s{ex.Message} — using defaults"
             Lint.OptionalLintParameters.Default
 
-    { Name = "lint"
+    { Name = PluginName.create "lint"
       Init = { WarningsByFile = Map.empty }
       Update =
         fun ctx state event ->
@@ -52,7 +52,10 @@ let create
                         return state
                     else
 
-                        let typeCheckResults = result.CheckResults
+                        let typeCheckResults =
+                            match result.CheckResults with
+                            | FullCheck r -> Some r
+                            | ParseOnly -> None
 
                         let parsedInfo: Lint.ParsedFileInformation =
                             { Ast = result.ParseResults.ParseTree
@@ -104,7 +107,6 @@ let create
                   let count = current |> Map.toList |> List.sumBy (fun (_, w) -> w.Length)
                   return $"{{\"files\": %d{current.Count}, \"warnings\": %d{count}}}"
               } ]
-      Subscriptions =
-        { PluginSubscriptions.none with
-            FileChecked = true }
-      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId }
+      Subscriptions = Set.ofList [ SubscribeFileChecked ]
+      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId
+      Teardown = None }

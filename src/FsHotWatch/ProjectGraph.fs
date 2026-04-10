@@ -3,14 +3,24 @@ module FsHotWatch.ProjectGraph
 open System.Collections.Concurrent
 open System.IO
 open System.Xml.Linq
+open FsHotWatch.Events
+
+/// Read-only view of the project graph for consumers that don't need mutation.
+type IProjectGraphReader =
+    abstract GetProjectForFile: filePath: AbsFilePath -> AbsProjectPath option
+    abstract GetSourceFiles: projectPath: AbsProjectPath -> AbsFilePath list
+    abstract GetDependents: projectPath: AbsProjectPath -> AbsProjectPath list
+    abstract GetAffectedProjects: changedFiles: AbsFilePath list -> AbsProjectPath list
+    abstract GetAllProjects: unit -> AbsProjectPath list
+    abstract GetAllFiles: unit -> AbsFilePath list
 
 /// Tracks project structure: which files belong to which project,
 /// which projects reference which, and dependency ordering.
-type ProjectGraph() =
-    let fileToProject = ConcurrentDictionary<string, string>()
-    let projectFiles = ConcurrentDictionary<string, string list>()
-    let projectReferences = ConcurrentDictionary<string, string list>()
-    let projectDependents = ConcurrentDictionary<string, string list>()
+type ProjectGraph() as this =
+    let fileToProject = ConcurrentDictionary<AbsFilePath, AbsProjectPath>()
+    let projectFiles = ConcurrentDictionary<AbsProjectPath, AbsFilePath list>()
+    let projectReferences = ConcurrentDictionary<AbsProjectPath, AbsProjectPath list>()
+    let projectDependents = ConcurrentDictionary<AbsProjectPath, AbsProjectPath list>()
 
     /// Clear all state so the next round of RegisterProject/RegisterFromFsproj calls
     /// rebuild from scratch. Call before re-discovery to remove deleted projects,
@@ -22,33 +32,34 @@ type ProjectGraph() =
         projectDependents.Clear()
 
     /// Register a project with its source files and references.
-    member _.RegisterProject(projectPath: string, sourceFiles: string list, references: string list) =
-        let absProject = Path.GetFullPath(projectPath)
-        projectFiles[absProject] <- sourceFiles
+    member _.RegisterProject
+        (projectPath: AbsProjectPath, sourceFiles: AbsFilePath list, references: AbsProjectPath list)
+        =
+        projectFiles[projectPath] <- sourceFiles
 
         for file in sourceFiles do
-            fileToProject[Path.GetFullPath(file)] <- absProject
+            fileToProject[file] <- projectPath
 
-        let absRefs = references |> List.map Path.GetFullPath
-        projectReferences[absProject] <- absRefs
+        projectReferences[projectPath] <- references
 
-        for ref in absRefs do
+        for ref in references do
             projectDependents.AddOrUpdate(
                 ref,
-                [ absProject ],
+                [ projectPath ],
                 fun _ existing ->
-                    if List.contains absProject existing then
+                    if List.contains projectPath existing then
                         existing
                     else
-                        absProject :: existing
+                        projectPath :: existing
             )
             |> ignore
 
     /// Parse a .fsproj file and register it. Returns (sourceFiles, projectReferences).
     member this.RegisterFromFsproj(fsprojPath: string) =
-        let absPath = Path.GetFullPath(fsprojPath)
-        let doc = XDocument.Load(absPath)
-        let projDir = Path.GetDirectoryName(absPath)
+        let absPath = AbsProjectPath.create fsprojPath
+        let absPathStr = AbsProjectPath.value absPath
+        let doc = XDocument.Load(absPathStr)
+        let projDir = Path.GetDirectoryName(absPathStr)
 
         let sourceFiles =
             doc.Descendants(XName.Get "Compile")
@@ -56,7 +67,7 @@ type ProjectGraph() =
                 let inc = el.Attribute(XName.Get "Include")
 
                 if inc <> null then
-                    Some(Path.GetFullPath(Path.Combine(projDir, inc.Value)))
+                    Some(AbsFilePath.create (Path.Combine(projDir, inc.Value)))
                 else
                     None)
             |> Seq.toList
@@ -67,7 +78,7 @@ type ProjectGraph() =
                 let inc = el.Attribute(XName.Get "Include")
 
                 if inc <> null then
-                    Some(Path.GetFullPath(Path.Combine(projDir, inc.Value)))
+                    Some(AbsProjectPath.create (Path.Combine(projDir, inc.Value)))
                 else
                     None)
             |> Seq.toList
@@ -76,33 +87,32 @@ type ProjectGraph() =
         (sourceFiles, references)
 
     /// Get the project that owns a file, or None.
-    member _.GetProjectForFile(filePath: string) : string option =
-        match fileToProject.TryGetValue(Path.GetFullPath(filePath)) with
+    member _.GetProjectForFile(filePath: AbsFilePath) : AbsProjectPath option =
+        match fileToProject.TryGetValue(filePath) with
         | true, proj -> Some proj
         | false, _ -> None
 
     /// Get all source files for a project.
-    member _.GetSourceFiles(projectPath: string) : string list =
+    member _.GetSourceFiles(projectPath: AbsProjectPath) : AbsFilePath list =
         match projectFiles.TryGetValue(projectPath) with
         | true, files -> files
         | false, _ -> []
 
     /// Get direct project references for a project.
-    member _.GetReferences(projectPath: string) : string list =
+    member _.GetReferences(projectPath: AbsProjectPath) : AbsProjectPath list =
         match projectReferences.TryGetValue(projectPath) with
         | true, refs -> refs
         | false, _ -> []
 
     /// Get projects that directly depend on the given project.
-    member _.GetDependents(projectPath: string) : string list =
+    member _.GetDependents(projectPath: AbsProjectPath) : AbsProjectPath list =
         match projectDependents.TryGetValue(projectPath) with
         | true, deps -> deps
         | false, _ -> []
 
     /// Get all projects transitively affected by a change in the given project.
     /// Returns in topological order (changed project first, then dependents).
-    member this.GetTransitiveDependents(projectPath: string) : string list =
-        let absPath = Path.GetFullPath(projectPath)
+    member this.GetTransitiveDependents(projectPath: AbsProjectPath) : AbsProjectPath list =
         let mutable visited = Set.empty
         let mutable result = []
 
@@ -114,12 +124,12 @@ type ProjectGraph() =
                 for dep in this.GetDependents(proj) do
                     walk dep
 
-        walk absPath
+        walk projectPath
         result |> List.rev
 
     /// Get all projects affected by changes to the given files.
     /// Single DFS from all changed projects (efficient when multiple projects change).
-    member this.GetAffectedProjects(changedFiles: string list) : string list =
+    member this.GetAffectedProjects(changedFiles: AbsFilePath list) : AbsProjectPath list =
         let roots =
             changedFiles
             |> List.choose (fun f -> this.GetProjectForFile(f))
@@ -142,18 +152,18 @@ type ProjectGraph() =
         result |> List.rev
 
     /// Get all registered projects.
-    member _.GetAllProjects() : string list = projectFiles.Keys |> Seq.toList
+    member _.GetAllProjects() : AbsProjectPath list = projectFiles.Keys |> Seq.toList
 
     /// Get all registered file paths across all projects.
-    member _.GetAllFiles() : string list = fileToProject.Keys |> Seq.toList
+    member _.GetAllFiles() : AbsFilePath list = fileToProject.Keys |> Seq.toList
 
     /// Group projects into parallel tiers where each tier's projects
     /// have all dependencies satisfied by earlier tiers.
-    member this.GetParallelTiers() : string list list =
+    member this.GetParallelTiers() : AbsProjectPath list list =
         let projects = this.GetAllProjects()
         let allProjects = projects |> Set.ofList
 
-        let rec buildTiers remaining (sortedSet: Set<string>) acc =
+        let rec buildTiers remaining (sortedSet: Set<AbsProjectPath>) acc =
             if remaining |> List.isEmpty then
                 acc |> List.rev
             else
@@ -173,5 +183,13 @@ type ProjectGraph() =
         buildTiers projects Set.empty []
 
     /// Topological sort of all registered projects (dependencies before dependents).
-    member this.GetTopologicalOrder() : string list =
+    member this.GetTopologicalOrder() : AbsProjectPath list =
         this.GetParallelTiers() |> List.collect id
+
+    interface IProjectGraphReader with
+        member _.GetProjectForFile(filePath) = this.GetProjectForFile(filePath)
+        member _.GetSourceFiles(projectPath) = this.GetSourceFiles(projectPath)
+        member _.GetDependents(projectPath) = this.GetDependents(projectPath)
+        member _.GetAffectedProjects(changedFiles) = this.GetAffectedProjects(changedFiles)
+        member _.GetAllProjects() = this.GetAllProjects()
+        member _.GetAllFiles() = this.GetAllFiles()
