@@ -80,6 +80,36 @@ let computePipeName (repoRoot: string) =
     let short = Convert.ToHexStringLower(hash).Substring(0, 12)
     $"fs-hot-watch-{short}"
 
+/// Injectable file system operations for testability.
+type FileOps =
+    { FileExists: string -> bool
+      ReadAllText: string -> string
+      WriteAllText: string -> string -> unit
+      DeleteFile: string -> unit
+      GetLastWriteTimeUtc: string -> DateTime
+      CreateDirectory: string -> unit }
+
+/// Default file system operations.
+let defaultFileOps: FileOps =
+    { FileExists = File.Exists
+      ReadAllText = File.ReadAllText
+      WriteAllText = fun path content -> File.WriteAllText(path, content)
+      DeleteFile = File.Delete
+      GetLastWriteTimeUtc = fun path -> File.GetLastWriteTimeUtc(path)
+      CreateDirectory = fun path -> Directory.CreateDirectory(path) |> ignore }
+
+/// Injectable process operations for testability.
+type ProcessOps =
+    { GetProcessById: int -> System.Diagnostics.Process
+      KillProcess: System.Diagnostics.Process -> unit
+      WaitForExit: System.Diagnostics.Process -> int -> bool }
+
+/// Default process operations.
+let defaultProcessOps: ProcessOps =
+    { GetProcessById = System.Diagnostics.Process.GetProcessById
+      KillProcess = fun proc -> proc.Kill()
+      WaitForExit = fun proc timeout -> proc.WaitForExit(timeout) }
+
 /// Injectable IPC operations for testability.
 type IpcOps =
     { Shutdown: string -> Async<string>
@@ -153,20 +183,19 @@ let private ensureAndQueryErrors
             (fun () -> ipc.GetStatus pipeName |> Async.RunSynchronously)
             (fun () -> ipc.GetDiagnostics pipeName pluginFilter |> Async.RunSynchronously)
 
-/// Compute a hash of the config file + CLI binary for staleness detection.
-let private computeConfigHash (repoRoot: string) =
+/// Compute a hash of the config file + CLI binary for staleness detection (injectable).
+let computeConfigHashWith (fileOps: FileOps) (repoRoot: string) (exePath: string) =
     let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
-    let exePath = Environment.ProcessPath
 
     let configContent =
-        if File.Exists configPath then
-            File.ReadAllText configPath
+        if fileOps.FileExists configPath then
+            fileOps.ReadAllText configPath
         else
             ""
 
     let exeModTime =
-        if File.Exists exePath then
-            File.GetLastWriteTimeUtc(exePath).Ticks.ToString()
+        if fileOps.FileExists exePath then
+            fileOps.GetLastWriteTimeUtc(exePath).Ticks.ToString()
         else
             ""
 
@@ -174,6 +203,10 @@ let private computeConfigHash (repoRoot: string) =
         Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(configContent + exeModTime))
 
     Convert.ToHexStringLower(hash).Substring(0, 16)
+
+/// Compute a hash of the config file + CLI binary for staleness detection.
+let private computeConfigHash (repoRoot: string) =
+    computeConfigHashWith defaultFileOps repoRoot Environment.ProcessPath
 
 /// What action ensureDaemon should take.
 type DaemonAction =
@@ -188,27 +221,33 @@ let decideDaemonAction (isRunning: bool) (storedHash: string) (currentHash: stri
     else
         StartFresh
 
-/// Kill a stale daemon process by PID file.
-let private killStaleDaemon (repoRoot: string) =
+/// Kill a stale daemon process by PID file (injectable).
+let killStaleDaemonWith (fileOps: FileOps) (processOps: ProcessOps) (repoRoot: string) =
     let pidPath = Path.Combine(repoRoot, ".fs-hot-watch", "daemon.pid")
 
-    if File.Exists pidPath then
+    if fileOps.FileExists pidPath then
         try
-            let pid = File.ReadAllText(pidPath).Trim() |> int
+            let pid = (fileOps.ReadAllText pidPath).Trim() |> int
 
             try
-                let proc = System.Diagnostics.Process.GetProcessById(pid)
+                let proc = processOps.GetProcessById pid
                 eprintfn "  Killing stale daemon (PID %d)..." pid
-                proc.Kill()
-                proc.WaitForExit(5000) |> ignore
+                processOps.KillProcess proc
+                processOps.WaitForExit proc 5000 |> ignore
             with ex ->
                 eprintfn "  Could not kill PID %d: %s" pid ex.Message
 
-            File.Delete(pidPath)
+            fileOps.DeleteFile pidPath
         with ex ->
             eprintfn "  Could not clean up stale daemon: %s" ex.Message
 
-let private startFreshDaemon
+/// Kill a stale daemon process by PID file.
+let private killStaleDaemon (repoRoot: string) =
+    killStaleDaemonWith defaultFileOps defaultProcessOps repoRoot
+
+/// Start a fresh daemon process (injectable for testing).
+let startFreshDaemonWith
+    (fileOps: FileOps)
     (ipc: IpcOps)
     (repoRoot: string)
     (pipeName: string)
@@ -218,12 +257,12 @@ let private startFreshDaemon
     : bool =
     let stateDir = Path.Combine(repoRoot, ".fs-hot-watch")
     let logDir = Path.Combine(repoRoot, "log")
-    Directory.CreateDirectory(logDir) |> ignore
+    fileOps.CreateDirectory logDir
     let logFile = Path.Combine(logDir, "daemon.log")
     eprintfn "Starting daemon... (log: %s)" logFile
     ipc.LaunchDaemon repoRoot extraArgs logFile
-    Directory.CreateDirectory(stateDir) |> ignore
-    File.WriteAllText(Path.Combine(stateDir, "config.hash"), currentHash)
+    fileOps.CreateDirectory stateDir
+    fileOps.WriteAllText (Path.Combine(stateDir, "config.hash")) currentHash
     let deadline = DateTime.UtcNow.AddSeconds(startupTimeoutSeconds)
     let mutable isUp = ipc.IsRunning pipeName
 
@@ -232,6 +271,16 @@ let private startFreshDaemon
         isUp <- ipc.IsRunning pipeName
 
     isUp
+
+let private startFreshDaemon
+    (ipc: IpcOps)
+    (repoRoot: string)
+    (pipeName: string)
+    (currentHash: string)
+    (extraArgs: string)
+    (startupTimeoutSeconds: float)
+    : bool =
+    startFreshDaemonWith defaultFileOps ipc repoRoot pipeName currentHash extraArgs startupTimeoutSeconds
 
 let private ensureDaemon
     (ipc: IpcOps)
@@ -428,7 +477,7 @@ let executeCommand
                 IpcOutput.renderIpcResult noWarnFail result))
     | Init ->
         let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
-        let projects = InitConfig.discoverProjects repoRoot
+        let projects = InitConfig.discoverProjects repoRoot None
         let hasJj = detectDefaultCacheBackend repoRoot = JjFileBackend
         let config = InitConfig.generateConfig projects hasJj
         let json = InitConfig.serializeConfig config

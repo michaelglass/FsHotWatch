@@ -21,7 +21,9 @@ type LintState =
 let create
     (lintConfigPath: string option)
     (getCommitId: (unit -> string option) option)
+    (lintRunner: (FileCheckResult -> Lint.LintResult) option)
     : PluginHandler<LintState, unit> =
+
     let lintParams =
         try
             match lintConfigPath with
@@ -36,6 +38,21 @@ let create
         with ex ->
             Logging.error "lint" $"Failed to load lint config: %s{ex.Message} — using defaults"
             Lint.OptionalLintParameters.Default
+
+    let runLint =
+        defaultArg lintRunner (fun result ->
+            let typeCheckResults =
+                match result.CheckResults with
+                | FullCheck r -> Some r
+                | ParseOnly -> None
+
+            let parsedInfo: Lint.ParsedFileInformation =
+                { Ast = result.ParseResults.ParseTree
+                  Source = result.Source
+                  TypeCheckResults = typeCheckResults
+                  ProjectCheckResults = None }
+
+            Lint.lintParsedSource lintParams parsedInfo)
 
     { Name = PluginName.create "lint"
       Init = { WarningsByFile = Map.empty }
@@ -52,18 +69,7 @@ let create
                         return state
                     else
 
-                        let typeCheckResults =
-                            match result.CheckResults with
-                            | FullCheck r -> Some r
-                            | ParseOnly -> None
-
-                        let parsedInfo: Lint.ParsedFileInformation =
-                            { Ast = result.ParseResults.ParseTree
-                              Source = result.Source
-                              TypeCheckResults = typeCheckResults
-                              ProjectCheckResults = None }
-
-                        match Lint.lintParsedSource lintParams parsedInfo with
+                        match runLint result with
                         | Lint.LintResult.Success warnings ->
                             Logging.debug
                                 "lint"
