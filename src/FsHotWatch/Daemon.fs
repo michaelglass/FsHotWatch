@@ -18,6 +18,20 @@ open FsHotWatch.Watcher
 open FsHotWatch.PluginHost
 open FsHotWatch.ProjectGraph
 
+/// Parse #nowarn directives from F# source text, returning the set of suppressed warning codes.
+/// Workaround for https://github.com/dotnet/fsharp/issues/9796 — FCS TransparentCompiler
+/// ignores #nowarn directives for warnaserror codes. When that issue is resolved, this
+/// function and its callers can be removed.
+let parseNowarnCodes (source: string) : Set<int> =
+    source.Split('\n')
+    |> Array.filter (fun line -> line.TrimStart().StartsWith("#nowarn"))
+    |> Array.collect (fun line -> line.TrimStart().Split('"'))
+    |> Array.choose (fun part ->
+        match System.Int32.TryParse(part) with
+        | true, code -> Some code
+        | _ -> None)
+    |> Set.ofArray
+
 /// Extract FCS diagnostics from check results and report to the error ledger.
 /// Reports all severity levels (Error, Warning, Info, Hidden) with configurable
 /// suppressed diagnostic codes.
@@ -32,10 +46,15 @@ let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) 
             | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Info -> DiagnosticSeverity.Info
             | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Hidden -> DiagnosticSeverity.Hint
 
+        // Merge global suppressed codes with per-file #nowarn directives.
+        // Workaround for https://github.com/dotnet/fsharp/issues/9796
+        let nowarnCodes = parseNowarnCodes checkResult.Source
+        let allSuppressed = Set.union suppressedCodes nowarnCodes
+
         let diagnostics =
             checkResults.Diagnostics
             |> Array.choose (fun d ->
-                if suppressedCodes.Contains(d.ErrorNumber) then
+                if allSuppressed.Contains(d.ErrorNumber) then
                     None
                 else
                     Some
