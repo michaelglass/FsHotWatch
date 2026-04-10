@@ -137,3 +137,80 @@ let ``formatErrors shows count summary`` () =
 let ``formatErrors with no errors shows clean message`` () =
     let result = formatErrors Map.empty
     test <@ result.Contains("No errors") @>
+
+[<Fact>]
+let ``formatErrors hides info-severity entries from output`` () =
+    let errors =
+        Map.ofList
+            [ "src/Foo.fs",
+              [ ("fcs",
+                 { Message = "XML comment is not placed on a valid language element."
+                   Severity = Info
+                   Line = 3
+                   Column = 0
+                   Detail = None }) ] ]
+
+    let result = formatErrors errors
+    test <@ not (result.Contains("XML comment")) @>
+    test <@ result.Contains("No errors") @>
+
+[<Fact>]
+let ``formatErrors hides hint-severity entries from output`` () =
+    let errors =
+        Map.ofList
+            [ "src/Foo.fs",
+              [ ("fcs",
+                 { Message = "some hint"
+                   Severity = Hint
+                   Line = 5
+                   Column = 0
+                   Detail = None }) ] ]
+
+    let result = formatErrors errors
+    test <@ not (result.Contains("some hint")) @>
+    test <@ result.Contains("No errors") @>
+
+[<Fact>]
+let ``formatErrors shows warnings but hides info in same file`` () =
+    let errors =
+        Map.ofList
+            [ "src/Foo.fs",
+              [ ("fcs",
+                 { Message = "XML comment is not placed on a valid language element."
+                   Severity = Info
+                   Line = 3
+                   Column = 0
+                   Detail = None })
+                ("format-check",
+                 { Message = "File is not formatted"
+                   Severity = Warning
+                   Line = 1
+                   Column = 0
+                   Detail = None }) ] ]
+
+    let result = formatErrors errors
+    test <@ result.Contains("File is not formatted") @>
+    test <@ not (result.Contains("XML comment")) @>
+    test <@ result.Contains("1 warning(s) in 1 file(s)") @>
+
+[<Fact>]
+let ``formatErrors excludes files with only info entries from file count`` () =
+    let errors =
+        Map.ofList
+            [ "src/A.fs",
+              [ ("fcs",
+                 { Message = "XML comment"
+                   Severity = Info
+                   Line = 3
+                   Column = 0
+                   Detail = None }) ]
+              "src/B.fs",
+              [ ("lint",
+                 { Message = "bad name"
+                   Severity = Warning
+                   Line = 1
+                   Column = 0
+                   Detail = None }) ] ]
+
+    let result = formatErrors errors
+    test <@ result.Contains("1 warning(s) in 1 file(s)") @>

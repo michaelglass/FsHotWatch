@@ -37,15 +37,26 @@ let formatSummary (statuses: Map<string, PluginStatus>) : string =
 /// Format the errors section with colored severity labels.
 /// Groups errors by file with colored severity.
 let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
-    if errors.IsEmpty then
+    let actionable =
+        errors
+        |> Map.map (fun _ entries ->
+            entries
+            |> List.filter (fun (_, e) ->
+                match e.Severity with
+                | Error
+                | Warning -> true
+                | Info
+                | Hint -> false))
+        |> Map.filter (fun _ entries -> not entries.IsEmpty)
+
+    if actionable.IsEmpty then
         $"%s{Color.green}No errors%s{Color.reset}"
     else
         let sb = StringBuilder()
         let mutable errorCount = 0
         let mutable warnCount = 0
-        let fileCount = errors.Count
 
-        for KeyValue(file, entries) in errors do
+        for KeyValue(file, entries) in actionable do
             sb.AppendLine() |> ignore
             sb.AppendLine($"%s{Color.bold}%s{file}%s{Color.reset}") |> ignore
 
@@ -68,6 +79,7 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
                 |> ignore
 
         sb.AppendLine() |> ignore
+        let fileCount = actionable.Count
 
         let summary =
             match errorCount, warnCount with
