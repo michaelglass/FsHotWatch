@@ -39,6 +39,7 @@
     <Compile Include="RunOnceOutputTests.fs" />
     <Compile Include="IpcOutputTests.fs" />
     <Compile Include="CliTests.fs" />
+    <Compile Include="ProgramTests.fs" />
     <Compile Include="BuildDiagnosticTests.fs" />
     <Compile Include="BuildPluginTests.fs" />
     <Compile Include="CoveragePluginTests.fs" />
