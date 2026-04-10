@@ -4,6 +4,20 @@ Note: as of the Unreleased cycle, CLI versions and releases together with the co
 
 ## Unreleased
 
+### Added
+
+- Filter Info/Hint diagnostics from CLI output — only Error and Warning shown in both daemon and run-once modes
+
+### Changed
+
+- `DiagnosticEntry.Severity` typed as `DiagnosticSeverity` DU instead of string in `IpcOutput`
+- `startFreshDaemon` startup poll deadline now configurable via `startupTimeoutSeconds` parameter (default: 30s)
+- Process launch in `startFreshDaemon` injectable via `IpcOps.LaunchDaemon` for testing
+
+---
+
+## 0.3.0-alpha.1 (2026-04-08)
+
 ### Bug fixes
 
 - **Breaking:** `run-once` positional subcommand replaced by `--run-once` flag (e.g. `check --run-once`, `build --run-once`) — uses CommandTree flag list support
