@@ -70,7 +70,13 @@ let internal classifyChange (path: string) =
 /// Functions for creating file watchers.
 module FileWatcher =
     /// Create a FileWatcher that monitors src/ and tests/ for F#-relevant file changes.
-    let create (repoRoot: string) (onChange: FileChangeKind -> unit) : FileWatcher =
+    /// Pass isMacOSOverride to force a specific code path (useful for testing).
+    let create
+        (repoRoot: string)
+        (onChange: FileChangeKind -> unit)
+        (isMacOSOverride: bool option)
+        : FileWatcher
+        =
         let handle (path: string) =
             if isRelevantFile path then
                 onChange (classifyChange path)
@@ -78,9 +84,11 @@ module FileWatcher =
         let handleFsw (e: FileSystemEventArgs) = handle e.FullPath
 
         let isMacOS =
-            System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
-                System.Runtime.InteropServices.OSPlatform.OSX
-            )
+            defaultArg
+                isMacOSOverride
+                (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+                    System.Runtime.InteropServices.OSPlatform.OSX
+                ))
 
         // Solution file watcher: always FileSystemWatcher (single dir, non-recursive)
         let slnWatcher =

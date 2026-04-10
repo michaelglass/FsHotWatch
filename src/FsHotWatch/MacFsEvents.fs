@@ -48,6 +48,67 @@ let private ItemIsFile = 0x00010000u
 [<Literal>]
 let private MustScanSubDirs = 0x00000001u
 
+// ─── Public pure functions for flag interpretation ─────────────────
+
+/// FSEvent flag constants exposed for testing and external use.
+[<RequireQualifiedAccess>]
+module EventFlags =
+    /// Item is a file (not a directory).
+    [<Literal>]
+    let ItemIsFile = 0x00010000u
+
+    /// Item was created.
+    [<Literal>]
+    let ItemCreated = 0x00000100u
+
+    /// Item was removed.
+    [<Literal>]
+    let ItemRemoved = 0x00000200u
+
+    /// Item was renamed.
+    [<Literal>]
+    let ItemRenamed = 0x00000800u
+
+    /// Item was modified.
+    [<Literal>]
+    let ItemModified = 0x00001000u
+
+    /// Kernel coalesced events — must re-scan subdirectories.
+    [<Literal>]
+    let MustScanSubDirs = 0x00000001u
+
+/// Result of classifying an FSEvent flag set.
+[<RequireQualifiedAccess>]
+type EventClassification =
+    /// A file-level change event (create, remove, rename, or modify).
+    | FileChange
+    /// Kernel coalesced events — directory must be re-scanned.
+    | CoalescedScan
+    /// Event we don't care about (directory events, metadata-only, etc.).
+    | Ignored
+
+/// Classify an FSEvent flag set into the kind of event we should handle.
+let classifyEvent (flags: uint32) =
+    if (flags &&& EventFlags.ItemIsFile <> 0u)
+       && (flags
+           &&& (EventFlags.ItemCreated
+                ||| EventFlags.ItemRemoved
+                ||| EventFlags.ItemRenamed
+                ||| EventFlags.ItemModified) <> 0u) then
+        EventClassification.FileChange
+    elif flags &&& EventFlags.MustScanSubDirs <> 0u then
+        EventClassification.CoalescedScan
+    else
+        EventClassification.Ignored
+
+/// Check if an FSEvent flag set indicates a file event we care about.
+let isFileChangeEvent (flags: uint32) =
+    classifyEvent flags = EventClassification.FileChange
+
+/// Check if an FSEvent flag set indicates a coalesced/must-scan event.
+let isMustScanEvent (flags: uint32) =
+    classifyEvent flags = EventClassification.CoalescedScan
+
 // ─── Callback delegate ──────────────────────────────────────────────
 [<UnmanagedFunctionPointer(CallingConvention.Cdecl)>]
 type private FSEventStreamCallback =
@@ -133,11 +194,6 @@ let private createCFStringArray (paths: string list) =
 
     arr, cfStrings
 
-/// Check if an FSEvent flag set indicates a file event we care about.
-let private isFileChangeEvent (flags: uint32) =
-    (flags &&& ItemIsFile <> 0u)
-    && (flags &&& (ItemCreated ||| ItemRemoved ||| ItemRenamed ||| ItemModified) <> 0u)
-
 // ─── FsEventStream ──────────────────────────────────────────────────
 
 /// Managed wrapper around a native FSEventStream.
@@ -173,7 +229,8 @@ type FsEventStream
                 for i in 0 .. count - 1 do
                     let flags = uint32 (Marshal.ReadInt32(eventFlags + nativeint (i * 4)))
 
-                    if isFileChangeEvent flags then
+                    match classifyEvent flags with
+                    | EventClassification.FileChange ->
                         let pathPtr = Marshal.ReadIntPtr(eventPaths, i * IntPtr.Size)
                         let path = Marshal.PtrToStringUTF8(pathPtr)
 
@@ -182,7 +239,7 @@ type FsEventStream
                                 onFileEvent path
                             with ex ->
                                 debug "fsevents" $"callback exception: %s{ex.Message}"
-                    elif flags &&& MustScanSubDirs <> 0u then
+                    | EventClassification.CoalescedScan ->
                         let pathPtr = Marshal.ReadIntPtr(eventPaths, i * IntPtr.Size)
                         let path = Marshal.PtrToStringUTF8(pathPtr)
                         debug "fsevents" $"MustScanSubDirs event for: %s{path}"
@@ -194,7 +251,7 @@ type FsEventStream
                             with ex ->
                                 debug "fsevents" $"coalesced event handler exception: %s{ex.Message}"
                         | None -> ()
-                    else
+                    | EventClassification.Ignored ->
                         debug "fsevents" $"filtered event: flags=0x%08X{flags}")
 
     let cleanup () =
@@ -323,5 +380,6 @@ type FsEventStream
 let create (directories: string list) (onFileEvent: string -> unit) =
     new FsEventStream(directories, onFileEvent, None, 0.05)
 
+/// Create an FsEventStream with a handler for coalesced (MustScanSubDirs) events.
 let createWithCoalesced (directories: string list) (onFileEvent: string -> unit) (onCoalescedEvent: string -> unit) =
     new FsEventStream(directories, onFileEvent, Some onCoalescedEvent, 0.05)
