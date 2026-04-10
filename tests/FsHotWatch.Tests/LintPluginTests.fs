@@ -1,23 +1,42 @@
 module FsHotWatch.Tests.LintPluginTests
 
+open System.Runtime.CompilerServices
 open Xunit
 open Swensen.Unquote
+open FSharp.Compiler.CodeAnalysis
+open FSharpLint.Application
+open FSharpLint.Framework.Suggestion
+open FSharp.Compiler.Text
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
+open FsHotWatch.ErrorLedger
 open FsHotWatch.Lint.LintPlugin
 open FsHotWatch.Tests.TestHelpers
 
+/// Create a non-null FSharpParseFileResults without calling the constructor.
+/// The injected lint runner won't access any fields, so uninitialized is fine.
+let private dummyParseResults () =
+    RuntimeHelpers.GetUninitializedObject(typeof<FSharpParseFileResults>) :?> FSharpParseFileResults
+
+let private fakeFileCheckResult file =
+    { File = file
+      Source = "module Fake"
+      ParseResults = dummyParseResults ()
+      CheckResults = ParseOnly
+      ProjectOptions = Unchecked.defaultof<_>
+      Version = 0L }
+
 [<Fact>]
 let ``plugin has correct name`` () =
-    let handler = create None None
+    let handler = create None None None
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "lint" @>
 
 [<Fact>]
 let ``warnings command returns zeroes when no files checked`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create None None
+    let handler = create None None None
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
@@ -27,14 +46,14 @@ let ``warnings command returns zeroes when no files checked`` () =
 
 [<Fact>]
 let ``LintPlugin with configPath sets up lint params`` () =
-    let handler = create (Some "/tmp/nonexistent-config.json") None
+    let handler = create (Some "/tmp/nonexistent-config.json") None None
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "lint" @>
 
 [<Fact>]
 let ``lint error path sets Failed status on null check results`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create None None
+    let handler = create None None None
     host.RegisterHandler(handler)
 
     let fakeResult: FileCheckResult =
@@ -70,7 +89,7 @@ let ``lint error path sets Failed status on null check results`` () =
 let ``warnings command with args passes through`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create None None
+    let handler = create None None None
     host.RegisterHandler(handler)
 
     // The warnings command ignores args, but verify it handles non-empty args
@@ -84,10 +103,9 @@ let ``warnings command with args passes through`` () =
 let ``lint skips file with null ParseResults without crashing`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create None None
+    let handler = create None None None
     host.RegisterHandler(handler)
 
-    // Null ParseResults — lint should skip, not crash
     let fakeResult: FileCheckResult =
         { File = "/tmp/test/Empty.fs"
           Source = "module Empty"
@@ -111,5 +129,132 @@ let ``lint skips file with null ParseResults without crashing`` () =
 
     // Should be Running (set at start of handler), not Failed
     match status.Value with
-    | Failed(msg, _) -> Assert.Fail($"Should not fail — got: %s{msg}")
+    | Failed(msg, _) -> Assert.Fail($"Should not fail -- got: %s{msg}")
     | _ -> ()
+
+[<Fact>]
+let ``lint runner returning Failure reports errors and sets Failed status`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let runner (_result: FileCheckResult) =
+        Lint.LintResult.Failure(Lint.LintFailure.RunTimeConfigError "bad config")
+
+    let handler = create None None (Some runner)
+    host.RegisterHandler(handler)
+
+    host.EmitFileChecked(fakeFileCheckResult "/tmp/test/Bad.fs")
+
+    waitForTerminalStatus host "lint" 3000
+
+    let status = host.GetStatus("lint")
+
+    match status with
+    | Some(Failed(msg, _)) -> test <@ msg.Contains("bad config") @>
+    | other -> Assert.Fail($"Expected Failed, got: %A{other}")
+
+    let errors = host.GetErrorsByPlugin("lint")
+    test <@ errors |> Map.isEmpty |> not @>
+
+[<Fact>]
+let ``lint runner returning Success with warnings reports them to error ledger`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let range = Range.mkRange "Warn.fs" (Position.mkPos 10 4) (Position.mkPos 10 20)
+
+    let warning: LintWarning =
+        { Details =
+            { Range = range
+              Message = "Consider using List.isEmpty"
+              SuggestedFix = None
+              TypeChecks = [] }
+          ErrorText = "FL0065"
+          FilePath = "/tmp/test/Warn.fs"
+          RuleName = "Hints"
+          RuleIdentifier = "FL0065" }
+
+    let runner (_result: FileCheckResult) = Lint.LintResult.Success [ warning ]
+
+    let handler = create None None (Some runner)
+    host.RegisterHandler(handler)
+
+    host.EmitFileChecked(fakeFileCheckResult "/tmp/test/Warn.fs")
+
+    waitForTerminalStatus host "lint" 3000
+
+    let status = host.GetStatus("lint")
+
+    match status with
+    | Some(Completed _) -> ()
+    | other -> Assert.Fail($"Expected Completed, got: %A{other}")
+
+    let errors = host.GetErrorsByPlugin("lint")
+    let fileErrors = errors |> Map.tryFind "/tmp/test/Warn.fs"
+    test <@ fileErrors.IsSome @>
+
+    let entries = fileErrors.Value
+    test <@ entries.Length = 1 @>
+    test <@ entries.[0].Message = "Consider using List.isEmpty" @>
+    test <@ entries.[0].Severity = DiagnosticSeverity.Warning @>
+    test <@ entries.[0].Line = 10 @>
+    test <@ entries.[0].Column = 4 @>
+
+[<Fact>]
+let ``lint runner returning Success with no warnings clears errors`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let runner (_result: FileCheckResult) = Lint.LintResult.Success []
+
+    let handler = create None None (Some runner)
+    host.RegisterHandler(handler)
+
+    host.EmitFileChecked(fakeFileCheckResult "/tmp/test/Clean.fs")
+
+    waitForTerminalStatus host "lint" 3000
+
+    let status = host.GetStatus("lint")
+
+    match status with
+    | Some(Completed _) -> ()
+    | other -> Assert.Fail($"Expected Completed, got: %A{other}")
+
+    let errors = host.GetErrorsByPlugin("lint")
+    let fileErrors = errors |> Map.tryFind "/tmp/test/Clean.fs"
+    // Either no entry or empty list
+    test <@ fileErrors.IsNone || fileErrors.Value.IsEmpty @>
+
+    // Verify warnings command reflects zero warnings
+    let cmdResult = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
+    test <@ cmdResult.IsSome @>
+    test <@ cmdResult.Value.Contains("\"warnings\": 0") @>
+
+[<Fact>]
+let ``warnings command reflects warning count after lint with warnings`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let range = Range.mkRange "A.fs" (Position.mkPos 1 0) (Position.mkPos 1 5)
+
+    let mkWarning msg : LintWarning =
+        { Details =
+            { Range = range
+              Message = msg
+              SuggestedFix = None
+              TypeChecks = [] }
+          ErrorText = "FL0001"
+          FilePath = "/tmp/test/A.fs"
+          RuleName = "TestRule"
+          RuleIdentifier = "FL0001" }
+
+    let runner (_result: FileCheckResult) =
+        Lint.LintResult.Success [ mkWarning "warn1"; mkWarning "warn2" ]
+
+    let handler = create None None (Some runner)
+    host.RegisterHandler(handler)
+
+    host.EmitFileChecked(fakeFileCheckResult "/tmp/test/A.fs")
+
+    waitForTerminalStatus host "lint" 3000
+
+    let cmdResult = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
+    test <@ cmdResult.IsSome @>
+    test <@ cmdResult.Value.Contains("\"files\": 1") @>
+    test <@ cmdResult.Value.Contains("\"warnings\": 2") @>

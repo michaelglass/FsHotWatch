@@ -36,9 +36,7 @@ module ``classifyEvent pure tests`` =
     [<Fact>]
     let ``file with multiple change flags is FileChange`` () =
         let flags =
-            EventFlags.ItemIsFile
-            ||| EventFlags.ItemCreated
-            ||| EventFlags.ItemModified
+            EventFlags.ItemIsFile ||| EventFlags.ItemCreated ||| EventFlags.ItemModified
 
         test <@ classifyEvent flags = EventClassification.FileChange @>
 
@@ -99,9 +97,7 @@ module ``classifyEvent pure tests`` =
     let ``file change takes priority over MustScanSubDirs when both present`` () =
         // If both ItemIsFile+change AND MustScanSubDirs are set, FileChange wins
         let flags =
-            EventFlags.ItemIsFile
-            ||| EventFlags.ItemCreated
-            ||| EventFlags.MustScanSubDirs
+            EventFlags.ItemIsFile ||| EventFlags.ItemCreated ||| EventFlags.MustScanSubDirs
 
         test <@ classifyEvent flags = EventClassification.FileChange @>
 
@@ -128,8 +124,7 @@ module ``isFileChangeEvent pure tests`` =
         test <@ isFileChangeEvent flags = false @>
 
     [<Fact>]
-    let ``returns false for zero`` () =
-        test <@ isFileChangeEvent 0u = false @>
+    let ``returns false for zero`` () = test <@ isFileChangeEvent 0u = false @>
 
     [<Fact>]
     let ``returns false for ItemIsFile alone`` () =
@@ -152,16 +147,13 @@ module ``isMustScanEvent pure tests`` =
         test <@ isMustScanEvent flags = false @>
 
     [<Fact>]
-    let ``returns false for zero`` () =
-        test <@ isMustScanEvent 0u = false @>
+    let ``returns false for zero`` () = test <@ isMustScanEvent 0u = false @>
 
     [<Fact>]
     let ``returns false when file change and MustScanSubDirs both present`` () =
         // FileChange takes priority
         let flags =
-            EventFlags.ItemIsFile
-            ||| EventFlags.ItemRemoved
-            ||| EventFlags.MustScanSubDirs
+            EventFlags.ItemIsFile ||| EventFlags.ItemRemoved ||| EventFlags.MustScanSubDirs
 
         test <@ isMustScanEvent flags = false @>
 

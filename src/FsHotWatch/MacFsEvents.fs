@@ -89,12 +89,15 @@ type EventClassification =
 
 /// Classify an FSEvent flag set into the kind of event we should handle.
 let classifyEvent (flags: uint32) =
-    if (flags &&& EventFlags.ItemIsFile <> 0u)
-       && (flags
-           &&& (EventFlags.ItemCreated
-                ||| EventFlags.ItemRemoved
-                ||| EventFlags.ItemRenamed
-                ||| EventFlags.ItemModified) <> 0u) then
+    if
+        (flags &&& EventFlags.ItemIsFile <> 0u)
+        && (flags
+            &&& (EventFlags.ItemCreated
+                 ||| EventFlags.ItemRemoved
+                 ||| EventFlags.ItemRenamed
+                 ||| EventFlags.ItemModified)
+            <> 0u)
+    then
         EventClassification.FileChange
     elif flags &&& EventFlags.MustScanSubDirs <> 0u then
         EventClassification.CoalescedScan
@@ -251,8 +254,7 @@ type FsEventStream
                             with ex ->
                                 debug "fsevents" $"coalesced event handler exception: %s{ex.Message}"
                         | None -> ()
-                    | EventClassification.Ignored ->
-                        debug "fsevents" $"filtered event: flags=0x%08X{flags}")
+                    | EventClassification.Ignored -> debug "fsevents" $"filtered event: flags=0x%08X{flags}")
 
     let cleanup () =
         if streamRef <> nativeint 0 then

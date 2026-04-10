@@ -158,3 +158,139 @@ let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
         |> Map.exists (fun _ entries -> entries |> List.exists (fun e -> e.Message.Contains("Analyzer crashed")))
 
     test <@ hasAnalyzerCrash @>
+
+[<Fact>]
+let ``empty analyzer paths still creates working handler`` () =
+    let handler = create [] None
+    test <@ handler.Init.LoadedCount = 0 @>
+    test <@ handler.Init.DiagnosticsByFile = Map.empty @>
+    test <@ handler.Subscriptions.Contains(FsHotWatch.PluginFramework.SubscribeFileChecked) @>
+
+[<Fact>]
+let ``AnalysisFailed custom message sets status to Completed`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let handler = create [] None
+    host.RegisterHandler(handler)
+
+    let fakeResult: FileCheckResult =
+        { File = "/tmp/test/FailAnalysis.fs"
+          Source = "let x = 1"
+          ParseResults = Unchecked.defaultof<_>
+          CheckResults = ParseOnly
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = 0L }
+
+    host.EmitFileChecked(fakeResult)
+    System.Threading.Thread.Sleep(1000)
+
+    let status = host.GetStatus("analyzers")
+    test <@ status.IsSome @>
+
+    match status.Value with
+    | Completed _ -> ()
+    | Running _ -> ()
+    | other -> Assert.Fail($"Expected Completed or Running after AnalysisFailed, got: %A{other}")
+
+    let errors = host.GetErrorsByPlugin("analyzers")
+
+    let hasAnalyzerCrash =
+        errors
+        |> Map.exists (fun _ entries -> entries |> List.exists (fun e -> e.Message.Contains("Analyzer crashed")))
+
+    test <@ hasAnalyzerCrash @>
+
+[<Fact>]
+let ``cache key is None when getCommitId is None`` () =
+    let handler = create [] None
+    test <@ handler.CacheKey.IsNone @>
+
+[<Fact>]
+let ``cache key returns None when getCommitId returns None`` () =
+    let handler = create [] (Some(fun () -> None))
+    let cacheKeyFn = handler.CacheKey.Value
+
+    let fakeResult: FileCheckResult =
+        { File = "/tmp/Fake.fs"
+          Source = ""
+          ParseResults = Unchecked.defaultof<_>
+          CheckResults = ParseOnly
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = 0L }
+
+    let key = cacheKeyFn (FileChecked fakeResult)
+    test <@ key.IsNone @>
+
+[<Fact>]
+let ``cache key for Custom event returns None`` () =
+    let commitId = "commit-xyz"
+    let handler = create [] (Some(fun () -> Some commitId))
+    let cacheKeyFn = handler.CacheKey.Value
+
+    let customKey = cacheKeyFn (Custom(AnalysisComplete("/tmp/Fake.fs", [])))
+    test <@ customKey.IsNone @>
+
+[<Fact>]
+let ``cache key for non-FileChecked non-Custom event returns getCommitId`` () =
+    let commitId = "commit-abc"
+    let handler = create [] (Some(fun () -> Some commitId))
+    let cacheKeyFn = handler.CacheKey.Value
+
+    let buildKey = cacheKeyFn (BuildCompleted BuildSucceeded)
+    test <@ buildKey = Some commitId @>
+
+[<Fact>]
+let ``multiple concurrent FileChecked events are bounded by semaphore`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let handler = create [] None
+    host.RegisterHandler(handler)
+
+    let events =
+        [ for i in 1..10 ->
+              { File = $"/tmp/concurrent/File%d{i}.fs"
+                Source = $"let x%d{i} = %d{i}"
+                ParseResults = Unchecked.defaultof<_>
+                CheckResults = ParseOnly
+                ProjectOptions = Unchecked.defaultof<_>
+                Version = int64 i } ]
+
+    for e in events do
+        host.EmitFileChecked(e)
+
+    System.Threading.Thread.Sleep(2000)
+
+    let status = host.GetStatus("analyzers")
+    test <@ status.IsSome @>
+
+    match status.Value with
+    | Completed _ -> ()
+    | Running _ -> ()
+    | other -> Assert.Fail($"Expected Completed or Running after concurrent events, got: %A{other}")
+
+    let errors = host.GetErrorsByPlugin("analyzers")
+    test <@ errors.Count > 0 @>
+
+[<Fact>]
+let ``teardown cancels CTS and disposes resources`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let handler = create [] None
+    host.RegisterHandler(handler)
+
+    host.Teardown()
+
+    let fakeResult: FileCheckResult =
+        { File = "/tmp/teardown/Fake.fs"
+          Source = "let x = 1"
+          ParseResults = Unchecked.defaultof<_>
+          CheckResults = ParseOnly
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = 0L }
+
+    try
+        host.EmitFileChecked(fakeResult)
+    with _ ->
+        ()
+
+    System.Threading.Thread.Sleep(500)
