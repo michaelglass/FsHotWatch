@@ -1064,7 +1064,8 @@ module Daemon =
                 projectCacheSize = 200,
                 keepAssemblyContents = true,
                 keepAllBackgroundResolutions = true,
-                parallelReferenceResolution = true
+                parallelReferenceResolution = true,
+                useTransparentCompiler = true
             )
 
         createWith checker repoRoot cacheBackend cacheKeyProvider suppressedCodes
