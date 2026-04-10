@@ -2,6 +2,7 @@ module FsHotWatch.Tests.IpcOutputTests
 
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.ErrorLedger
 open FsHotWatch.Cli.IpcOutput
 
 [<Fact>]
@@ -21,7 +22,7 @@ let ``parseDiagnosticsResponse extracts files with entries`` () =
     test <@ entries.Length = 1 @>
     test <@ entries[0].Plugin = "lint" @>
     test <@ entries[0].Message = "bad name" @>
-    test <@ entries[0].Severity = "warning" @>
+    test <@ entries[0].Severity = Warning @>
     test <@ entries[0].Line = 17 @>
 
 [<Fact>]
@@ -169,7 +170,7 @@ let ``exitCodeFromResponse returns 1 for errors`` () =
                 [ "src/Foo.fs",
                   [ { Plugin = "fcs"
                       Message = "bad"
-                      Severity = "error"
+                      Severity = DiagnosticSeverity.Error
                       Line = 1
                       Column = 0
                       Detail = None } ] ]
@@ -186,7 +187,7 @@ let ``exitCodeFromResponse with noWarnFail ignores warnings`` () =
                 [ "src/Foo.fs",
                   [ { Plugin = "lint"
                       Message = "bad"
-                      Severity = "warning"
+                      Severity = DiagnosticSeverity.Warning
                       Line = 1
                       Column = 0
                       Detail = None } ] ]
@@ -203,7 +204,7 @@ let ``exitCodeFromResponse without noWarnFail fails on warnings`` () =
                 [ "src/Foo.fs",
                   [ { Plugin = "lint"
                       Message = "bad"
-                      Severity = "warning"
+                      Severity = DiagnosticSeverity.Warning
                       Line = 1
                       Column = 0
                       Detail = None } ] ]
@@ -259,3 +260,50 @@ let ``renderIpcResult with error field returns 1`` () =
 let ``renderIpcResult with plain text returns 0`` () =
     let result = renderIpcResult false "build completed successfully"
     test <@ result = 0 @>
+
+[<Fact>]
+let ``formatDiagnosticsResponse hides info-severity entries`` () =
+    let json =
+        """{"count":1,"files":{"src/Foo.fs":[{"plugin":"fcs","message":"XML comment is not placed on a valid language element.","severity":"info","line":3,"column":0,"detail":null}]},"statuses":{}}"""
+
+    let result = parseDiagnosticsResponse json
+    let output = formatDiagnosticsResponse result
+    test <@ not (output.Contains("XML comment")) @>
+    test <@ output.Contains("No errors") @>
+
+[<Fact>]
+let ``formatDiagnosticsResponse shows warnings but hides info in same file`` () =
+    let json =
+        """{"count":2,"files":{"src/Foo.fs":[{"plugin":"fcs","message":"XML comment","severity":"info","line":3,"column":0,"detail":null},{"plugin":"format-check","message":"File is not formatted","severity":"warning","line":1,"column":0,"detail":null}]},"statuses":{}}"""
+
+    let result = parseDiagnosticsResponse json
+    let output = formatDiagnosticsResponse result
+    test <@ output.Contains("File is not formatted") @>
+    test <@ not (output.Contains("XML comment")) @>
+    test <@ output.Contains("1 warning(s) in 1 file(s)") @>
+
+[<Fact>]
+let ``formatDiagnosticsResponse excludes info-only files from count`` () =
+    let json =
+        """{"count":2,"files":{"src/A.fs":[{"plugin":"fcs","message":"XML comment","severity":"info","line":3,"column":0,"detail":null}],"src/B.fs":[{"plugin":"lint","message":"bad","severity":"warning","line":1,"column":0,"detail":null}]},"statuses":{}}"""
+
+    let result = parseDiagnosticsResponse json
+    let output = formatDiagnosticsResponse result
+    test <@ output.Contains("1 warning(s) in 1 file(s)") @>
+
+[<Fact>]
+let ``exitCodeFromResponse ignores info-severity entries`` () =
+    let resp =
+        { Count = 1
+          Files =
+            Map.ofList
+                [ "src/Foo.fs",
+                  [ { Plugin = "fcs"
+                      Message = "XML comment"
+                      Severity = DiagnosticSeverity.Info
+                      Line = 3
+                      Column = 0
+                      Detail = None } ] ]
+          Statuses = Map.empty }
+
+    test <@ exitCodeFromResponse false resp = 0 @>
