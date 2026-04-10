@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+*No changes since 0.3.0-alpha.1.*
+
+---
+
+## 0.3.0-alpha.1 (2026-04-08)
+
 ### Bug fixes
 
 - Fix `format-check` plugin not reporting errors to the ErrorLedger — unformatted files now appear in `fs-hot-watch errors` output and are cleared when the file is fixed
