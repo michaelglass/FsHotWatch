@@ -58,7 +58,7 @@ let buildRecorder () =
     let mutable receivedBuild: FsHotWatch.Events.BuildResult option = None
 
     let handler: FsHotWatch.PluginFramework.PluginHandler<unit, obj> =
-        { Name = "build-recorder"
+        { Name = FsHotWatch.PluginFramework.PluginName.create "build-recorder"
           Init = ()
           Update =
             fun _ctx state event ->
@@ -70,10 +70,9 @@ let buildRecorder () =
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { FsHotWatch.PluginFramework.PluginSubscriptions.none with
-                BuildCompleted = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeBuildCompleted ]
+          CacheKey = None
+          Teardown = None }
 
     ((fun () -> receivedBuild), handler)
 
@@ -83,7 +82,7 @@ let commandRecorder () =
     let mutable receivedCommand: FsHotWatch.Events.CommandCompletedResult option = None
 
     let handler: FsHotWatch.PluginFramework.PluginHandler<unit, obj> =
-        { Name = "command-recorder"
+        { Name = FsHotWatch.PluginFramework.PluginName.create "command-recorder"
           Init = ()
           Update =
             fun _ctx state event ->
@@ -95,10 +94,9 @@ let commandRecorder () =
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { FsHotWatch.PluginFramework.PluginSubscriptions.none with
-                CommandCompleted = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeCommandCompleted ]
+          CacheKey = None
+          Teardown = None }
 
     ((fun () -> receivedCommand), handler)
 

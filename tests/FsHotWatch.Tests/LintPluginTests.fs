@@ -11,7 +11,7 @@ open FsHotWatch.Tests.TestHelpers
 [<Fact>]
 let ``plugin has correct name`` () =
     let handler = create None None
-    test <@ handler.Name = "lint" @>
+    test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "lint" @>
 
 [<Fact>]
 let ``warnings command returns zeroes when no files checked`` () =
@@ -28,7 +28,7 @@ let ``warnings command returns zeroes when no files checked`` () =
 [<Fact>]
 let ``LintPlugin with configPath sets up lint params`` () =
     let handler = create (Some "/tmp/nonexistent-config.json") None
-    test <@ handler.Name = "lint" @>
+    test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "lint" @>
 
 [<Fact>]
 let ``lint error path sets Failed status on null check results`` () =
@@ -41,7 +41,7 @@ let ``lint error path sets Failed status on null check results`` () =
         { File = "/tmp/nonexistent/Fake.fs"
           Source = ""
           ParseResults = Unchecked.defaultof<_>
-          CheckResults = None
+          CheckResults = ParseOnly
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L }
 
@@ -92,7 +92,7 @@ let ``lint skips file with null ParseResults without crashing`` () =
         { File = "/tmp/test/Empty.fs"
           Source = "module Empty"
           ParseResults = Unchecked.defaultof<_>
-          CheckResults = None
+          CheckResults = ParseOnly
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L }
 

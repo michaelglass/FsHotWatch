@@ -23,46 +23,55 @@ type PluginHost
     let mutable statuses: Map<string, PluginStatus> = Map.empty
     let statusLock = obj ()
 
-    let setStatus name status =
+    let setStatus (name: string) status =
         lock statusLock (fun () -> statuses <- Map.add name status statuses)
         statusChanged.Trigger(name, status)
 
+    let setPluginStatus (name: PluginFramework.PluginName) status =
+        setStatus (PluginFramework.PluginName.value name) status
+
     let registeredPlugins = ResizeArray<PluginFramework.RegisteredPlugin>()
 
-    /// Dispatch a payload to all registered plugins that have a matching handler.
-    let dispatchToRegistered (selector: PluginFramework.RegisteredPlugin -> ('a -> unit) option) (payload: 'a) =
+    /// Dispatch an event to all registered plugins (filtering is built into each plugin's Dispatch).
+    let dispatchToAll (event: PluginFramework.PluginDispatchEvent) =
         for p in registeredPlugins do
-            match selector p with
-            | Some f -> f payload
-            | None -> ()
+            p.Dispatch event
 
     /// Register a declarative framework-managed plugin handler.
     member this.RegisterHandler<'State, 'Msg>(handler: PluginFramework.PluginHandler<'State, 'Msg>) =
-        let plugin =
-            PluginFramework.registerHandler
-                checker
-                repoRoot
-                (fun name status ->
-                    setStatus name status
+        let services: PluginFramework.PluginHostServices =
+            { Checker = checker
+              RepoRoot = repoRoot
+              ReportStatus =
+                fun name status ->
+                    setPluginStatus name status
+                    let nameStr = PluginFramework.PluginName.value name
 
                     Logging.debug
-                        name
+                        nameStr
                         (match status with
                          | Idle -> "Idle"
                          | Running _ -> "Running"
                          | Completed _ -> "Completed"
-                         | Failed(e, _) -> $"Failed: %s{e.Substring(0, min 80 e.Length)}"))
-                (fun name file entries -> ledger.Report(name, file, entries))
-                (fun name file -> ledger.Clear(name, file))
-                (fun name -> ledger.ClearPlugin(name))
-                (fun result -> dispatchToRegistered (fun p -> p.OnBuildCompleted) result)
-                (fun results -> dispatchToRegistered (fun p -> p.OnTestCompleted) results)
-                (fun result -> dispatchToRegistered (fun p -> p.OnCommandCompleted) result)
-                (fun cmd -> commands[fst cmd] <- snd cmd)
-                taskCache
-                handler
+                         | Failed(e, _) -> $"Failed: %s{e.Substring(0, min 80 e.Length)}")
+              ReportErrors =
+                fun name file entries -> ledger.Report(PluginFramework.PluginName.value name, file, entries)
+              ClearErrors = fun name file -> ledger.Clear(PluginFramework.PluginName.value name, file)
+              ClearPlugin = fun name -> ledger.ClearPlugin(PluginFramework.PluginName.value name)
+              EmitBuildCompleted = fun result -> dispatchToAll (PluginFramework.DispatchBuildCompleted result)
+              EmitTestCompleted = fun results -> dispatchToAll (PluginFramework.DispatchTestCompleted results)
+              EmitCommandCompleted = fun result -> dispatchToAll (PluginFramework.DispatchCommandCompleted result)
+              RegisterCommand = fun cmd -> commands[fst cmd] <- snd cmd
+              TaskCache = taskCache }
 
-        setStatus plugin.Name Idle
+        let plugin = PluginFramework.registerHandler services handler
+
+        if registeredPlugins |> Seq.exists (fun p -> p.Name = plugin.Name) then
+            Logging.warn
+                "plugin-host"
+                $"Plugin name '%s{PluginFramework.PluginName.value plugin.Name}' is already registered — commands and status may be overwritten"
+
+        setPluginStatus plugin.Name Idle
         registeredPlugins.Add(plugin)
 
     /// Register a preprocessor (runs before events are dispatched).
@@ -88,11 +97,11 @@ type PluginHost
 
     /// Emit a file change event to all registered plugins.
     member _.EmitFileChanged(change: FileChangeKind) =
-        dispatchToRegistered (fun p -> p.OnFileChanged) change
+        dispatchToAll (PluginFramework.DispatchFileChanged change)
 
     /// Emit a build completed event to all registered plugins.
     member _.EmitBuildCompleted(result: BuildResult) =
-        dispatchToRegistered (fun p -> p.OnBuildCompleted) result
+        dispatchToAll (PluginFramework.DispatchBuildCompleted result)
 
     /// Report errors to the ledger on behalf of a named source (e.g., "fcs").
     member _.ReportErrors(pluginName: string, filePath: string, entries: ErrorEntry list, ?version: int64) =
@@ -104,15 +113,15 @@ type PluginHost
 
     /// Emit a file checked event to all registered plugins.
     member _.EmitFileChecked(result: FileCheckResult) =
-        dispatchToRegistered (fun p -> p.OnFileChecked) result
+        dispatchToAll (PluginFramework.DispatchFileChecked result)
 
     /// Emit a test completed event to all registered plugins.
     member _.EmitTestCompleted(results: TestResults) =
-        dispatchToRegistered (fun p -> p.OnTestCompleted) results
+        dispatchToAll (PluginFramework.DispatchTestCompleted results)
 
     /// Emit a command completed event to all registered plugins.
     member _.EmitCommandCompleted(result: CommandCompletedResult) =
-        dispatchToRegistered (fun p -> p.OnCommandCompleted) result
+        dispatchToAll (PluginFramework.DispatchCommandCompleted result)
 
     /// Run a registered command by name. Returns None if the command is unknown.
     member _.RunCommand(name: string, args: string array) : Async<string option> =
@@ -173,4 +182,15 @@ type PluginHost
         | None -> ()
 
     /// Create a new PluginHost.
+    /// Tear down all plugins that have a Teardown function.
+    member _.Teardown() =
+        for p in registeredPlugins do
+            match p.Teardown with
+            | Some teardown ->
+                try
+                    teardown ()
+                with ex ->
+                    Logging.error (PluginFramework.PluginName.value p.Name) $"Teardown failed: %s{ex.Message}"
+            | None -> ()
+
     static member create (checker: FSharpChecker) (repoRoot: string) = PluginHost(checker, repoRoot)

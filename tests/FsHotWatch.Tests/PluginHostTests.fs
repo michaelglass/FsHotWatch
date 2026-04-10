@@ -22,7 +22,7 @@ let ``plugin receives file change events`` () =
     let mutable fileChanges: FileChangeKind list = []
 
     let handler =
-        { Name = "recorder"
+        { Name = PluginName.create "recorder"
           Init = ()
           Update =
             fun _ctx state event ->
@@ -34,10 +34,9 @@ let ``plugin receives file change events`` () =
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                FileChanged = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -49,12 +48,13 @@ let ``plugin registers command`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let handler =
-        { Name = "cmd-test"
+        { Name = PluginName.create "cmd-test"
           Init = ()
           Update = fun _ctx state _event -> async { return state }
           Commands = [ "greet", fun _state _args -> async { return "hello" } ]
           Subscriptions = PluginSubscriptions.none
-          CacheKey = None }
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(handler)
     let result = host.RunCommand("greet", [||]) |> Async.RunSynchronously
@@ -71,7 +71,7 @@ let ``plugin reports status`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let handler =
-        { Name = "status-test"
+        { Name = PluginName.create "status-test"
           Init = ()
           Update =
             fun ctx state event ->
@@ -83,10 +83,9 @@ let ``plugin reports status`` () =
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                FileChanged = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -107,12 +106,13 @@ let ``GetAllStatuses returns all plugin statuses`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let makeHandler name =
-        { Name = name
+        { Name = PluginName.create name
           Init = ()
           Update = fun _ctx state _event -> async { return state }
           Commands = []
           Subscriptions = PluginSubscriptions.none
-          CacheKey = None }
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(makeHandler "a")
     host.RegisterHandler(makeHandler "b")
@@ -127,7 +127,7 @@ let ``EmitBuildCompleted reaches plugins`` () =
     let mutable receivedBuild: BuildResult option = None
 
     let handler =
-        { Name = "build-listener"
+        { Name = PluginName.create "build-listener"
           Init = ()
           Update =
             fun _ctx state event ->
@@ -139,10 +139,9 @@ let ``EmitBuildCompleted reaches plugins`` () =
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                BuildCompleted = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(handler)
     host.EmitBuildCompleted(BuildSucceeded)
@@ -155,7 +154,7 @@ let ``EmitBuildCompleted with failure reaches plugins`` () =
     let mutable receivedBuild: BuildResult option = None
 
     let handler =
-        { Name = "build-fail-listener"
+        { Name = PluginName.create "build-fail-listener"
           Init = ()
           Update =
             fun _ctx state event ->
@@ -167,10 +166,9 @@ let ``EmitBuildCompleted with failure reaches plugins`` () =
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                BuildCompleted = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(handler)
     let errors = [ "error CS0001: Something broke" ]
@@ -257,7 +255,7 @@ let ``multiple plugins receive the same event`` () =
     let mutable received3 = false
 
     let makeHandler name (setter: unit -> unit) =
-        { Name = name
+        { Name = PluginName.create name
           Init = ()
           Update =
             fun _ctx state event ->
@@ -269,10 +267,9 @@ let ``multiple plugins receive the same event`` () =
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                FileChanged = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(makeHandler "p1" (fun () -> received1 <- true))
     host.RegisterHandler(makeHandler "p2" (fun () -> received2 <- true))
@@ -290,7 +287,7 @@ let ``plugin can report and query errors via host`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let handler =
-        { Name = "error-reporter"
+        { Name = PluginName.create "error-reporter"
           Init = ()
           Update =
             fun ctx state event ->
@@ -309,10 +306,9 @@ let ``plugin can report and query errors via host`` () =
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                FileChanged = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -334,7 +330,7 @@ let ``plugin ClearErrors removes errors from ledger`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let handler =
-        { Name = "clear-test"
+        { Name = PluginName.create "clear-test"
           Init = false
           Update =
             fun ctx state event ->
@@ -356,10 +352,9 @@ let ``plugin ClearErrors removes errors from ledger`` () =
                     | _ -> return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                FileChanged = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -413,7 +408,7 @@ let ``EmitFileChecked dispatches to framework plugin handlers`` () =
     let ref2 = ref false
 
     let makeHandler name (r: bool ref) =
-        { Name = name
+        { Name = PluginName.create name
           Init = ()
           Update =
             fun _ctx state event ->
@@ -425,10 +420,9 @@ let ``EmitFileChecked dispatches to framework plugin handlers`` () =
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                FileChecked = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeFileChecked ]
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(makeHandler "p1" ref1)
     host.RegisterHandler(makeHandler "p2" ref2)
@@ -437,7 +431,7 @@ let ``EmitFileChecked dispatches to framework plugin handlers`` () =
         { File = "/tmp/test.fs"
           Source = ""
           ParseResults = Unchecked.defaultof<_>
-          CheckResults = None
+          CheckResults = ParseOnly
           ProjectOptions = Unchecked.defaultof<_>
           Version = 0L }
 
@@ -543,7 +537,7 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
     host.OnStatusChanged.Add(fun (name, status) -> statusEvents <- (name, status) :: statusEvents)
 
     let handler =
-        { Name = "status-eventer"
+        { Name = PluginName.create "status-eventer"
           Init = ()
           Update =
             fun ctx state event ->
@@ -557,10 +551,9 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                FileChanged = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -595,7 +588,7 @@ let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let handler =
-        { Name = "deadlock-test"
+        { Name = PluginName.create "deadlock-test"
           Init = ()
           Update =
             fun ctx state event ->
@@ -610,10 +603,9 @@ let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls
                     return state
                 }
           Commands = []
-          Subscriptions =
-            { PluginSubscriptions.none with
-                FileChanged = true }
-          CacheKey = None }
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
 
     host.RegisterHandler(handler)
 
