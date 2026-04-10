@@ -5,6 +5,7 @@ open System.Globalization
 open System.Text.Json
 open System.Threading
 open CommandTree
+open FsHotWatch.ErrorLedger
 
 /// Parsed status for display purposes (no dependency on FsHotWatch.Events).
 type DisplayStatus =
@@ -17,7 +18,7 @@ type DisplayStatus =
 type DiagnosticEntry =
     { Plugin: string
       Message: string
-      Severity: string
+      Severity: DiagnosticSeverity
       Line: int
       Column: int
       Detail: string option }
@@ -46,7 +47,7 @@ let parseDiagnosticsResponse (json: string) : DiagnosticsResponse =
                       [ for entry in prop.Value.EnumerateArray() do
                             { Plugin = entry.GetProperty("plugin").GetString()
                               Message = entry.GetProperty("message").GetString()
-                              Severity = entry.GetProperty("severity").GetString()
+                              Severity = DiagnosticSeverity.fromString (entry.GetProperty("severity").GetString())
                               Line = entry.GetProperty("line").GetInt32()
                               Column = entry.GetProperty("column").GetInt32()
                               Detail =
@@ -155,28 +156,42 @@ let formatDiagnosticsResponse (resp: DiagnosticsResponse) : string =
     if not parsedStatuses.IsEmpty then
         sb.AppendLine() |> ignore
 
-    // Error details
-    if resp.Count = 0 then
+    // Error details — only show errors and warnings (skip info/hint)
+    let actionableFiles =
+        resp.Files
+        |> Map.map (fun _ entries ->
+            entries
+            |> List.filter (fun e ->
+                match e.Severity with
+                | Error
+                | Warning -> true
+                | Info
+                | Hint -> false))
+        |> Map.filter (fun _ entries -> not entries.IsEmpty)
+
+    if actionableFiles.IsEmpty then
         sb.Append($"%s{Color.green}No errors%s{Color.reset}") |> ignore
     else
         let mutable errorCount = 0
         let mutable warnCount = 0
 
-        for KeyValue(file, entries) in resp.Files do
+        for KeyValue(file, entries) in actionableFiles do
             sb.AppendLine() |> ignore
             sb.AppendLine($"%s{Color.bold}%s{file}%s{Color.reset}") |> ignore
 
             for entry in entries do
                 match entry.Severity with
-                | "error" -> errorCount <- errorCount + 1
-                | "warning" -> warnCount <- warnCount + 1
-                | _ -> ()
+                | Error -> errorCount <- errorCount + 1
+                | Warning -> warnCount <- warnCount + 1
+                | Info
+                | Hint -> ()
 
                 let severityLabel =
                     match entry.Severity with
-                    | "error" -> $"%s{Color.red}error%s{Color.reset}: "
-                    | "warning" -> $"%s{Color.yellow}warning%s{Color.reset}: "
-                    | _ -> ""
+                    | Error -> $"%s{Color.red}error%s{Color.reset}: "
+                    | Warning -> $"%s{Color.yellow}warning%s{Color.reset}: "
+                    | Info
+                    | Hint -> ""
 
                 sb.AppendLine(
                     $"  %s{Color.dim}[%s{entry.Plugin}]%s{Color.reset} L%d{entry.Line}: %s{severityLabel}%s{entry.Message}"
@@ -184,7 +199,7 @@ let formatDiagnosticsResponse (resp: DiagnosticsResponse) : string =
                 |> ignore
 
         sb.AppendLine() |> ignore
-        let fileCount = resp.Files.Count
+        let fileCount = actionableFiles.Count
 
         let summary =
             match errorCount, warnCount with
@@ -202,9 +217,10 @@ let formatDiagnosticsResponse (resp: DiagnosticsResponse) : string =
 let exitCodeFromResponse (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
     let isFailure (e: DiagnosticEntry) =
         match e.Severity with
-        | "error" -> true
-        | "warning" -> not noWarnFail
-        | _ -> false
+        | Error -> true
+        | Warning -> not noWarnFail
+        | Info
+        | Hint -> false
 
     let failCount =
         resp.Files |> Map.toSeq |> Seq.collect snd |> Seq.filter isFailure |> Seq.length
