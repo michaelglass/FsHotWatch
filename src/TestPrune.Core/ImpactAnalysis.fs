@@ -64,7 +64,7 @@ let selectTests
             let selectionReason =
                 match allChanges with
                 | [ change ] -> SymbolChanged(SymbolDiff.symbolName change, SymbolDiff.changeKind change)
-                | _ -> TransitiveDependency(allChanges |> List.map SymbolDiff.symbolName)
+                | _ -> MultipleChanges(allChanges |> List.map SymbolDiff.symbolName)
 
             let testEvents =
                 affectedTests

@@ -1,8 +1,11 @@
 module TestPrune.Database
 
 open System
+open System.Collections.Generic
 open Microsoft.Data.Sqlite
 open TestPrune.AstAnalyzer
+
+let private warnedUnknownKinds = HashSet<string>()
 
 let private schema =
     """
@@ -82,7 +85,11 @@ let private stringToSymbolKind (s: string) =
     | "Module" -> Module
     | "Value" -> Value
     | "Property" -> Property
-    | _ -> Value // fallback for unknown kinds
+    | unknown ->
+        if warnedUnknownKinds.Add($"SymbolKind:%s{unknown}") then
+            eprintfn $"Warning: unknown SymbolKind '%s{unknown}' in database, defaulting to Value"
+
+        Value
 
 let private depKindToString =
     function
@@ -97,7 +104,11 @@ let private stringToDepKind =
     | "uses_type" -> UsesType
     | "pattern_matches" -> PatternMatches
     | "references" -> References
-    | _ -> References // fallback for unknown values
+    | unknown ->
+        if warnedUnknownKinds.Add($"DependencyKind:%s{unknown}") then
+            eprintfn $"Warning: unknown DependencyKind '%s{unknown}' in database, defaulting to References"
+
+        References
 
 let private readAll (reader: SqliteDataReader) (f: SqliteDataReader -> 'T) : 'T list =
     let mutable results = []

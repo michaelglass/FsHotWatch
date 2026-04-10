@@ -499,6 +499,7 @@ let private extractResults
     (source: string)
     (parseResults: FSharpParseFileResults)
     (checkAnswer: FSharpCheckFileAnswer)
+    (projectName: string)
     : Result<AnalysisResult, string> =
     if parseResults.ParseHadErrors then
         let errors =
@@ -744,7 +745,7 @@ let private extractResults
 
                             Some
                                 { SymbolFullName = mfv.FullName
-                                  TestProject = ""
+                                  TestProject = projectName
                                   TestClass = testClass
                                   TestMethod = testMethod }
                         | _ -> None
@@ -768,6 +769,7 @@ let analyzeSource
     (sourceFileName: string)
     (source: string)
     (projectOptions: FSharpProjectOptions)
+    (projectName: string)
     =
     async {
         let sourceText = SourceText.ofString source
@@ -775,7 +777,7 @@ let analyzeSource
         let! parseResults, checkAnswer =
             checker.ParseAndCheckFileInProject(sourceFileName, 0, sourceText, projectOptions)
 
-        return extractResults sourceFileName source parseResults checkAnswer
+        return extractResults sourceFileName source parseResults checkAnswer projectName
     }
 
 /// Parse and analyze a single F# source file using a project snapshot.
@@ -785,11 +787,12 @@ let analyzeSourceWithSnapshot
     (sourceFileName: string)
     (source: string)
     (projectSnapshot: FSharpProjectSnapshot)
+    (projectName: string)
     =
     async {
         let! parseResults, checkAnswer = checker.ParseAndCheckFileInProject(sourceFileName, projectSnapshot)
 
-        return extractResults sourceFileName source parseResults checkAnswer
+        return extractResults sourceFileName source parseResults checkAnswer projectName
     }
 
 /// Create a project snapshot from project options, using file modification times as version keys.

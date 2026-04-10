@@ -25,6 +25,7 @@ type ChangeKind =
 
 type SelectionReason =
     | SymbolChanged of symbolName: string * change: ChangeKind
+    | MultipleChanges of symbolNames: string list
     | TransitiveDependency of chain: string list
     | FsprojChanged of file: string
     | NewFileNotIndexed of file: string
@@ -34,6 +35,9 @@ module SelectionReason =
     let describe (reason: SelectionReason) =
         match reason with
         | SymbolChanged(symbolName, change) -> $"Symbol '%s{symbolName}' was %A{change}"
+        | MultipleChanges symbolNames ->
+            let names = symbolNames |> String.concat ", "
+            $"Multiple symbols changed: %s{names}"
         | TransitiveDependency chain ->
             let path = chain |> String.concat " -> "
             $"Transitive dependency: %s{path}"

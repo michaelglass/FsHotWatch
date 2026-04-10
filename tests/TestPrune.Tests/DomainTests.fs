@@ -47,6 +47,12 @@ let ``SelectionReason.describe SymbolChanged includes symbol and kind`` () =
     test <@ msg.Contains("Modified") @>
 
 [<Fact>]
+let ``SelectionReason.describe MultipleChanges includes symbol names`` () =
+    let reason = MultipleChanges [ "A"; "B"; "C" ]
+    let msg = SelectionReason.describe reason
+    test <@ msg.Contains("A, B, C") @>
+
+[<Fact>]
 let ``SelectionReason.describe TransitiveDependency includes chain`` () =
     let reason = TransitiveDependency [ "A"; "B"; "C" ]
     let msg = SelectionReason.describe reason

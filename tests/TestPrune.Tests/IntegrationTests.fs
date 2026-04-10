@@ -20,7 +20,8 @@ let checker = FSharpChecker.Create()
 let analyze source =
     let fileName = "/tmp/IntegrationTest.fsx"
     let options = getScriptOptions checker fileName source |> Async.RunSynchronously
-    let result = analyzeSource checker fileName source options |> Async.RunSynchronously
+    let result =
+        analyzeSource checker fileName source options "TestProject" |> Async.RunSynchronously
 
     match result with
     | Ok r -> r

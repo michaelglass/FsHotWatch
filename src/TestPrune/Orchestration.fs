@@ -47,8 +47,9 @@ let parseFile (checker: FSharpChecker) (filePath: string) : Result<AnalysisResul
         let fileName = Path.GetFullPath(filePath)
 
         let projOptions = getScriptOptions checker fileName source |> Async.RunSynchronously
+        let projectName = Path.GetFileNameWithoutExtension(filePath)
 
-        analyzeSource checker fileName source projOptions |> Async.RunSynchronously
+        analyzeSource checker fileName source projOptions projectName |> Async.RunSynchronously
     with ex ->
         Error $"Exception reading %s{filePath}: %s{ex.Message}"
 
@@ -104,19 +105,26 @@ let createChecker () =
         useTransparentCompiler = true
     )
 
-type ProjectResult =
-    { ProjectName: string
-      ProjectPath: string
-      Analysis: AnalysisResult option
+type IndexedData =
+    { Analysis: AnalysisResult option
       FileKeys: (string * string) list
-      ProjectKey: (string * string) option
-      Reindexed: bool
+      ProjectKey: string * string
       SymbolCount: int
       DepCount: int
       TestCount: int
       SkippedFiles: int
       AnalyzedFiles: int
-      TotalFiles: int
+      TotalFiles: int }
+
+type ProjectOutcome =
+    | Cached of totalFiles: int
+    | Indexed of IndexedData
+    | Failed
+
+type ProjectResult =
+    { ProjectName: string
+      ProjectPath: string
+      Outcome: ProjectOutcome
       Events: AnalysisEvent list }
 
 /// Sort project infos into topological levels based on project references.
@@ -164,16 +172,7 @@ let indexProject
 
             { ProjectName = projName
               ProjectPath = fsprojPath
-              Analysis = None
-              FileKeys = []
-              ProjectKey = None
-              Reindexed = false
-              SymbolCount = 0
-              DepCount = 0
-              TestCount = 0
-              SkippedFiles = 0
-              AnalyzedFiles = 0
-              TotalFiles = compileFiles.Length
+              Outcome = Cached compileFiles.Length
               Events = [ ProjectCacheHitEvent projName ] }
         | _ ->
             let projOptions = lazy (getOptions checker fsprojPath)
@@ -223,7 +222,7 @@ let indexProject
                                 let source = File.ReadAllText(sourceFile)
 
                                 match
-                                    analyzeSourceWithSnapshot checker sourceFile source (projSnapshot.Force())
+                                    analyzeSourceWithSnapshot checker sourceFile source (projSnapshot.Force()) projName
                                     |> Async.RunSynchronously
                                 with
                                 | Ok result ->
@@ -236,8 +235,7 @@ let indexProject
                                     let symbols = normalizeSymbolPaths repoRoot result.Symbols
                                     let deps = result.Dependencies
 
-                                    let testMethods =
-                                        result.TestMethods |> List.map (fun t -> { t with TestProject = projName })
+                                    let testMethods = result.TestMethods
 
                                     if result.Diagnostics.DroppedEdges > 0 then
                                         eprintfn
@@ -287,32 +285,24 @@ let indexProject
 
             { ProjectName = projName
               ProjectPath = fsprojPath
-              Analysis = if analyzedFiles > 0 then Some combined else None
-              FileKeys = localFileKeys |> List.rev
-              ProjectKey = Some(projName, hash)
-              Reindexed = true
-              SymbolCount = combined.Symbols.Length
-              DepCount = combined.Dependencies.Length
-              TestCount = combined.TestMethods.Length
-              SkippedFiles = localSkippedFiles
-              AnalyzedFiles = analyzedFiles
-              TotalFiles = fileCount
+              Outcome =
+                Indexed
+                    { Analysis = if analyzedFiles > 0 then Some combined else None
+                      FileKeys = localFileKeys |> List.rev
+                      ProjectKey = (projName, hash)
+                      SymbolCount = combined.Symbols.Length
+                      DepCount = combined.Dependencies.Length
+                      TestCount = combined.TestMethods.Length
+                      SkippedFiles = localSkippedFiles
+                      AnalyzedFiles = analyzedFiles
+                      TotalFiles = fileCount }
               Events = allEvents }
     with ex ->
         eprintfn $"  Error processing %s{projName}: %s{ex.Message}"
 
         { ProjectName = projName
           ProjectPath = fsprojPath
-          Analysis = None
-          FileKeys = []
-          ProjectKey = None
-          Reindexed = false
-          SymbolCount = 0
-          DepCount = 0
-          TestCount = 0
-          SkippedFiles = 0
-          AnalyzedFiles = 0
-          TotalFiles = 0
+          Outcome = Failed
           Events = [] }
 
 /// Run the index command with injectable build runner and project options provider.
@@ -377,26 +367,32 @@ let runIndexWith
 
             let newReindexed =
                 levelResults
-                |> List.choose (fun r -> if r.Reindexed then Some r.ProjectPath else None)
+                |> List.choose (fun r ->
+                    match r.Outcome with
+                    | Indexed _ -> Some r.ProjectPath
+                    | Cached _ | Failed -> None)
                 |> Set.ofList
 
             reindexedSet <- Set.union reindexedSet newReindexed
             allProjectResults <- levelResults :: allProjectResults
 
         let allProjectResults = allProjectResults |> List.rev |> List.collect id
-        let allResults = allProjectResults |> List.choose (fun r -> r.Analysis)
-        let allFileKeys = allProjectResults |> List.collect (fun r -> r.FileKeys)
-        let allProjectKeys = allProjectResults |> List.choose (fun r -> r.ProjectKey)
-        let totalSymbols = allProjectResults |> List.sumBy (fun r -> r.SymbolCount)
-        let totalDeps = allProjectResults |> List.sumBy (fun r -> r.DepCount)
-        let totalTests = allProjectResults |> List.sumBy (fun r -> r.TestCount)
 
-        let skippedProjects =
+        let allResults, allFileKeys, allProjectKeys, totalSymbols, totalDeps, totalTests, skippedProjects, skippedFiles =
             allProjectResults
-            |> List.filter (fun r -> r.Analysis.IsNone && not r.Reindexed)
-            |> List.length
+            |> List.fold
+                (fun (results, fileKeys, projKeys, syms, deps, tests, skippedProj, skippedF) r ->
+                    match r.Outcome with
+                    | Indexed d ->
+                        let results = match d.Analysis with Some a -> a :: results | None -> results
 
-        let skippedFiles = allProjectResults |> List.sumBy (fun r -> r.SkippedFiles)
+                        (results, d.FileKeys @ fileKeys, d.ProjectKey :: projKeys, syms + d.SymbolCount,
+                         deps + d.DepCount, tests + d.TestCount, skippedProj, skippedF + d.SkippedFiles)
+                    | Cached _ -> (results, fileKeys, projKeys, syms, deps, tests, skippedProj + 1, skippedF)
+                    | Failed -> (results, fileKeys, projKeys, syms, deps, tests, skippedProj, skippedF))
+                ([], [], [], 0, 0, 0, 0, 0)
+
+        let allResults = allResults |> List.rev
 
         if not allResults.IsEmpty then
             sink.RebuildProjects allResults allFileKeys allProjectKeys
@@ -536,14 +532,14 @@ let runStatusWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSi
             printfn $"Would run ALL tests (reason: %s{SelectionReason.describe reason})"
             0)
 
-let private printTestResult (result: TestRunner.TestResult) (exitCode: byref<int>) =
+let private runAndReport (runTests: string -> TestRunner.TestResult) (dll: string) : int =
+    let result = runTests dll
     printfn "%s" result.Stdout
 
     if not (String.IsNullOrWhiteSpace(result.Stderr)) then
         eprintfn "%s" result.Stderr
 
-    if result.ExitCode <> 0 then
-        exitCode <- result.ExitCode
+    result.ExitCode
 
 /// Run the run command with an injectable diff provider.
 let runRunWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink) : int =
@@ -555,35 +551,35 @@ let runRunWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink)
         | RunAll reason ->
             eprintfn $"Running ALL tests (reason: %s{SelectionReason.describe reason})"
             let testProjects = discoverTestProjects repoRoot
-            let mutable exitCode = 0
 
-            for projPath in testProjects do
-                let dll = findTestDll projPath
-                eprintfn $"Running: %s{Path.GetFileName(projPath)}"
-                let result = runAllTests dll
-                printTestResult result &exitCode
-
-            exitCode
+            testProjects
+            |> List.fold
+                (fun worstExit projPath ->
+                    let dll = findTestDll projPath
+                    eprintfn $"Running: %s{Path.GetFileName(projPath)}"
+                    max worstExit (runAndReport runAllTests dll))
+                0
         | RunSubset tests ->
             let byProject = tests |> List.groupBy (fun t -> t.TestProject)
             let projects = discoverTestProjects repoRoot
-            let mutable exitCode = 0
 
-            for (projName, projTests) in byProject do
-                let classes = projTests |> List.map (fun t -> t.TestClass) |> List.distinct
+            byProject
+            |> List.fold
+                (fun worstExit (projName, projTests) ->
+                    let classes = projTests |> List.map (fun t -> t.TestClass) |> List.distinct
 
-                match
-                    projects
-                    |> List.tryFind (fun p -> Path.GetFileNameWithoutExtension(p) = projName)
-                with
-                | Some projPath ->
-                    let dll = findTestDll projPath
-                    eprintfn $"Running %d{classes.Length} class(es) in %s{projName}"
-                    let result = runFilteredTests dll classes
-                    printTestResult result &exitCode
-                | None -> eprintfn $"WARNING: project %s{projName} not found"
-
-            exitCode)
+                    match
+                        projects
+                        |> List.tryFind (fun p -> Path.GetFileNameWithoutExtension(p) = projName)
+                    with
+                    | Some projPath ->
+                        let dll = findTestDll projPath
+                        eprintfn $"Running %d{classes.Length} class(es) in %s{projName}"
+                        max worstExit (runAndReport (fun d -> runFilteredTests d classes) dll)
+                    | None ->
+                        eprintfn $"WARNING: project %s{projName} not found"
+                        worstExit)
+                0)
 
 /// Run the dead-code command: detect unreachable symbols from entry points.
 let runDeadCode
