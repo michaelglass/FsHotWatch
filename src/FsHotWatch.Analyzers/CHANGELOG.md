@@ -2,7 +2,13 @@
 
 ## Unreleased
 
-### Infrastructure / CI
+*No changes since 0.3.0-alpha.1.*
+
+---
+
+## 0.3.0-alpha.1 (2026-04-08)
+
+Infrastructure release. No public API changes.
 
 - Fix per-platform coverage threshold for `AnalyzersPlugin.fs` — macOS reports 83% branch coverage vs Linux 66% due to reflection-based `CliContext` branches
 - Bump internal tooling: `coverageratchet` 0.10.0-alpha.1, `syncdocs` 0.10.0-alpha.1, `fssemantictagger` 0.10.0-alpha.1, `fsprojlint` 0.7.0-alpha.1

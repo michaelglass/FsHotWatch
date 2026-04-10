@@ -2,7 +2,31 @@
 
 ## Unreleased
 
-### Infrastructure / CI
+### Added
+
+- Enable TransparentCompiler for hash-based deterministic FCS caching (`useTransparentCompiler = true`)
+- Parse `#nowarn` directives to suppress FCS TransparentCompiler warnings (workaround for dotnet/fsharp#9796)
+- Plugin teardown support in `PluginHandler` (disposes semaphores, CTS, DB handles)
+
+### Changed (Breaking)
+
+- Type safety overhaul: `AbsFilePath`/`AbsProjectPath` single-case DUs replace raw strings; `PluginName` single-case DU with uniqueness check; `ContentHash` wrapper; `CommandOutcome` DU replaces `Succeeded: bool` + `Output: string`; `FileCheckState` DU replaces `CheckResults option`; `AffectedTestsState` DU; `RerunIntent` DU; `Set<SubscribedEvent>` replaces `PluginSubscriptions` bool record; `TaskCacheKey` struct replaces string key; `TestExtensionKind` DU; `CacheClearFilter` DU
+- Plugin registration uses `PluginHostServices` record instead of multi-param function
+- `Daemon` changed from F# record to class with `internal` constructor
+- `IProjectGraphReader` interface decouples `BuildPlugin` from mutable `ProjectGraph`
+- `BuildPhase` folds `PendingFiles` into `IdlePhase` (only meaningful when idle)
+
+### Fixed
+
+- `Daemon` implements `IDisposable` and stops all internal `MailboxProcessor` agents on dispose — agents previously ran indefinitely, keeping processes alive after tests
+- `RunWithIpc` races initial scan against cancellation to prevent test-process hangs when `cts` is cancelled during slow `ScanAll`
+- Standalone files not in any project now checked via uncovered-files fallback
+
+---
+
+## 0.3.0-alpha.1 (2026-04-08)
+
+Infrastructure and tooling release. No public API changes.
 
 - CLI moved under core's shared tag in `semantic-tagger.json` — CLI now versions and releases together with the core package
 - Bump internal tooling: `coverageratchet` 0.10.0-alpha.1, `syncdocs` 0.10.0-alpha.1, `fssemantictagger` 0.10.0-alpha.1, `fsprojlint` 0.7.0-alpha.1
