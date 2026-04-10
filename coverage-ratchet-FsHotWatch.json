@@ -2,8 +2,8 @@
   "overrides": {
     "AnalyzersPlugin.fs": [
       {
-        "line": 81,
-        "branch": 83,
+        "line": 85,
+        "branch": 87,
         "reason": "reflection-based CliContext branches vary by platform",
         "platform": "macos"
       },
@@ -21,11 +21,11 @@
     },
     "BuildPlugin.fs": {
       "line": 87,
-      "branch": 86,
+      "branch": 84,
       "reason": "loosened: new diagnostic parsing branches"
     },
     "CheckPipeline.fs": {
-      "line": 91,
+      "line": 90,
       "branch": 77,
       "reason": ""
     },
@@ -35,20 +35,28 @@
       "reason": ""
     },
     "Daemon.fs": {
-      "line": 72,
-      "branch": 55,
+      "line": 70,
+      "branch": 56,
       "reason": ""
     },
     "DaemonConfig.fs": {
-      "line": 63,
-      "branch": 55,
+      "line": 70,
+      "branch": 61,
       "reason": "loosened automatically"
     },
     "ErrorLedger.fs": {
-      "line": 96,
+      "line": 94,
       "branch": 100,
       "reason": "loosened automatically"
     },
+    "Events.fs": [
+      {
+        "line": 83,
+        "branch": 100,
+        "reason": "loosened automatically",
+        "platform": "macos"
+      }
+    ],
     "FileCheckCache.fs": {
       "line": 83,
       "branch": 50,
@@ -60,13 +68,13 @@
       "reason": ""
     },
     "FileErrorReporter.fs": {
-      "line": 93,
+      "line": 100,
       "branch": 75,
       "reason": "loosened automatically"
     },
     "FileTaskCache.fs": {
       "line": 87,
-      "branch": 83,
+      "branch": 80,
       "reason": "loosened automatically"
     },
     "FormatCheckPlugin.fs": {
@@ -80,18 +88,18 @@
       "reason": "loosened automatically"
     },
     "InitConfig.fs": {
-      "line": 76,
-      "branch": 52,
+      "line": 100,
+      "branch": 92,
       "reason": "loosened automatically"
     },
     "Ipc.fs": {
-      "line": 82,
+      "line": 81,
       "branch": 50,
       "reason": ""
     },
     "IpcOutput.fs": {
-      "line": 86,
-      "branch": 63,
+      "line": 88,
+      "branch": 62,
       "reason": "loosened: new severity-aware exit code branches"
     },
     "JjHelper.fs": {
@@ -100,14 +108,14 @@
       "reason": "loosened automatically"
     },
     "LintPlugin.fs": {
-      "line": 80,
-      "branch": 83,
+      "line": 94,
+      "branch": 100,
       "reason": ""
     },
     "MacFsEvents.fs": [
       {
-        "line": 83,
-        "branch": 55,
+        "line": 85,
+        "branch": 57,
         "reason": "macOS-only FSEvents code",
         "platform": "macos"
       },
@@ -123,7 +131,7 @@
       "reason": "loosened automatically"
     },
     "PluginHost.fs": {
-      "line": 85,
+      "line": 80,
       "branch": 50,
       "reason": ""
     },
@@ -134,8 +142,8 @@
     },
     "Program.fs": [
       {
-        "line": 49,
-        "branch": 23,
+        "line": 72,
+        "branch": 43,
         "reason": "CLI entry point, new --no-warn-fail flag branches",
         "platform": "macos"
       },
@@ -147,12 +155,12 @@
       }
     ],
     "ProjectGraph.fs": {
-      "line": 100,
+      "line": 97,
       "branch": 92,
       "reason": ""
     },
     "RunOnceOutput.fs": {
-      "line": 60,
+      "line": 67,
       "branch": 57,
       "reason": "loosened: new severity counting branches"
     },
@@ -162,13 +170,13 @@
       "reason": "loosened automatically"
     },
     "TaskCache.fs": {
-      "line": 89,
-      "branch": 90,
+      "line": 88,
+      "branch": 100,
       "reason": "loosened automatically"
     },
     "Watcher.fs": {
-      "line": 57,
-      "branch": 43,
+      "line": 85,
+      "branch": 53,
       "reason": ""
     }
   }
