@@ -1,7 +1,17 @@
 # Changelog — TestPrune.Core
 
 ## Unreleased
+- feat: cross-project dependency extraction via extern symbols
+- feat: add ExternRef SymbolKind for honest extern symbol classification
+- feat: add TestExecutor DI record for injectable test execution in runRunWith
+- fix: exit code bug where later test project results overwrote earlier failures
+- fix: add warnings for unknown DB enum deserialization instead of silent fallback
+- refactor: move warnedUnknownKinds to Database instance for proper test isolation
+- refactor: simplify extern symbol handling (HashSet dedup, ExternSourceFile constant)
+- test: improve coverage across Orchestration (86%→98%), Program (39%→50%), Database, AstAnalyzer
+- test: fix test parallelization — Console-mutating tests use xUnit Collection to serialize
 - fix: add semantic-tagger.json with CLI under core's shared tag
+- fix: trigger docs deploy on release tags, not push to main
 - chore: update NuGet dependencies to latest versions
 - chore: bump local tool versions (coverageratchet, fssemantictagger, syncdocs, fsprojlint) to latest alpha
 
