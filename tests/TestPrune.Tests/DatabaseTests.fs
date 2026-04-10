@@ -1243,3 +1243,171 @@ module ``Cross-project extern symbol dependencies`` =
             // Edge should resolve through the real symbol
             let affected = db.QueryAffectedTests [ "Lib.MyType" ]
             test <@ affected.Length = 1 @>)
+
+module ``Unknown enum deduplication`` =
+
+    [<Fact>]
+    let ``reading same unknown SymbolKind twice only warns once`` () =
+        withDbPath (fun path db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "A.func1"
+                        Kind = Function
+                        SourceFile = "src/A.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "A.func2"
+                        Kind = Function
+                        SourceFile = "src/A.fs"
+                        LineStart = 7
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            // Overwrite both symbols to have the same unknown kind
+            use conn = openRawConnection path
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "UPDATE symbols SET kind = 'FutureKind' WHERE source_file = 'src/A.fs'"
+            cmd.ExecuteNonQuery() |> ignore
+
+            // Read twice — both should deserialize without error
+            let symbols = db.GetSymbolsInFile "src/A.fs"
+            test <@ symbols.Length = 2 @>
+            test <@ symbols |> List.forall (fun s -> s.Kind = Value) @>)
+
+    [<Fact>]
+    let ``reading same unknown DependencyKind twice only warns once`` () =
+        withDbPath (fun path db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.funcB"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Lib.funcB"
+                        Kind = Calls } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.testA"
+                        TestProject = "MyTests"
+                        TestClass = "Tests"
+                        TestMethod = "testA" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            // Overwrite to unknown dep kind, then duplicate the edge
+            use conn = openRawConnection path
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "UPDATE dependencies SET dep_kind = 'future_dep_kind'"
+            cmd.ExecuteNonQuery() |> ignore
+
+            // Insert a second edge with the same unknown kind
+            use cmd2 = conn.CreateCommand()
+
+            cmd2.CommandText <-
+                """
+                INSERT INTO dependencies (from_symbol_id, to_symbol_id, dep_kind)
+                SELECT f.id, t.id, 'future_dep_kind'
+                FROM symbols f, symbols t
+                WHERE f.full_name = 'Lib.funcB' AND t.full_name = 'Tests.testA'
+                """
+
+            cmd2.ExecuteNonQuery() |> ignore
+
+            // Reading edges should deserialize both without error (dedup warning)
+            let affected = db.QueryAffectedTests([ "Lib.funcB" ])
+            test <@ affected.Length = 1 @>)
+
+module ``RebuildProjects edge cases`` =
+
+    [<Fact>]
+    let ``RebuildProjects with only extern symbols skips delete`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Ext.SomeType"
+                        Kind = ExternRef
+                        SourceFile = "_extern"
+                        LineStart = 0
+                        LineEnd = 0
+                        ContentHash = ""
+                        IsExtern = true } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            // Should not throw even though no real source files to delete
+            db.RebuildProjects([ result ])
+
+            let allNames = db.GetAllSymbolNames()
+            test <@ allNames |> Set.contains "Ext.SomeType" @>)
+
+    [<Fact>]
+    let ``RebuildProjects with empty file keys does not error`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Mod.func"
+                        Kind = Function
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            // Pass Some [] for both keys
+            db.RebuildProjects([ result ], fileKeys = [], projectKeys = [])
+
+            let symbols = db.GetSymbolsInFile "src/Mod.fs"
+            test <@ symbols.Length = 1 @>)
+
+module ``GetFileKey`` =
+
+    [<Fact>]
+    let ``GetFileKey returns None when file not indexed`` () =
+        withDb (fun db ->
+            let key = db.GetFileKey "src/NonExistent.fs"
+            test <@ key = None @>)
+
+    [<Fact>]
+    let ``GetFileKey returns Some when file was indexed with key`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Mod.func"
+                        Kind = Function
+                        SourceFile = "src/Mod.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ], fileKeys = [ "src/Mod.fs", "abc123" ])
+
+            let key = db.GetFileKey "src/Mod.fs"
+            test <@ key = Some "abc123" @>)

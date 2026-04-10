@@ -302,6 +302,44 @@ module ``Only shallowest unreachable reported`` =
             test <@ names = [ "App.Lib.outerFunc" ] @>)
 
     [<Fact>]
+    let ``DU case parent does not suppress contained unreachable symbol`` () =
+        withDb (fun db ->
+            let graph =
+                { Symbols =
+                    [ { FullName = "App.Program.main"
+                        Kind = Function
+                        SourceFile = "src/App/Program.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Lib.MyUnion.CaseA"
+                        Kind = DuCase
+                        SourceFile = "src/App/Lib.fs"
+                        LineStart = 2
+                        LineEnd = 8
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "App.Lib.innerFunc"
+                        Kind = Function
+                        SourceFile = "src/App/Lib.fs"
+                        LineStart = 3
+                        LineEnd = 6
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ graph ])
+
+            let result, _events = runDeadCode db [ "*.Program.main" ] false
+
+            let names = result.UnreachableSymbols |> List.map (fun s -> s.FullName)
+            // DU case should NOT suppress innerFunc even though it contains it
+            test <@ names |> List.contains "App.Lib.innerFunc" @>)
+
+    [<Fact>]
     let ``top-level unreachable value is still reported`` () =
         withDb (fun db ->
             let graph =

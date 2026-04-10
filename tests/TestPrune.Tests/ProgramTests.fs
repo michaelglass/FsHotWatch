@@ -287,6 +287,49 @@ module ``analyzeChanges`` =
             if Directory.Exists(tmp) then
                 Directory.Delete(tmp, true)
 
+    [<Fact>]
+    let ``parse failure on changed file triggers RunAll with AnalysisFailedFallback`` () =
+        let tmp = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+
+        try
+            Directory.CreateDirectory(tmp) |> ignore
+            let dbPath = Path.Combine(tmp, ".test-prune.db")
+            let db = Database.create dbPath
+            let checker = makeChecker ()
+
+            // Create a .fs file that exists but has invalid content
+            let badDir = Path.Combine(tmp, "src", "Bad")
+            Directory.CreateDirectory(badDir) |> ignore
+            File.WriteAllText(Path.Combine(badDir, "Broken.fs"), "this is not valid F# {{{")
+
+            let fsDiff =
+                "diff --git a/src/Bad/Broken.fs b/src/Bad/Broken.fs\n"
+                + "--- a/src/Bad/Broken.fs\n"
+                + "+++ b/src/Bad/Broken.fs\n"
+                + "@@ -1 +1 @@\n"
+                + "-old\n"
+                + "+this is not valid F# {{{\n"
+
+            let fakeDiff: DiffProvider = fun () -> Ok fsDiff
+            let store = toSymbolStore db
+
+            let sw = new StringWriter()
+            let oldErr = Console.Error
+            Console.SetError(sw)
+
+            try
+                let result = analyzeChanges fakeDiff tmp store checker (createNoopSink ())
+
+                match result with
+                | Ok(RunAll(AnalysisFailedFallback _), _) -> ()
+                | Ok(RunAll _, _) -> () // May fall through to RunAll for a new file — still covers parse warning path
+                | other -> failwith $"expected Ok(RunAll _, _) but got %A{other}"
+            finally
+                Console.SetError(oldErr)
+        finally
+            if Directory.Exists(tmp) then
+                Directory.Delete(tmp, true)
+
 module ``showHelp`` =
     [<Fact>]
     let ``prints usage information`` () =

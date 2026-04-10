@@ -22,7 +22,7 @@
     },
     "ImpactAnalysis.fs": {
       "line": 100,
-      "branch": 66.66666666666666,
+      "branch": 83,
       "reason": "loosened automatically"
     },
     "InMemoryStore.fs": {
@@ -31,8 +31,8 @@
       "reason": "loosened automatically"
     },
     "Orchestration.fs": {
-      "line": 82.3,
-      "branch": 78.5,
+      "line": 86,
+      "branch": 79,
       "reason": "loosened: ProjectOutcome DU fold refactoring added uncovered branches"
     },
     "Program.fs": {

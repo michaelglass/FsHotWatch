@@ -270,6 +270,45 @@ module ``File that had symbols but now has none`` =
             test <@ tests[0].TestMethod = "testA" @>
         | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{SelectionReason.describe reason}"
 
+module ``Unchanged file in changed list`` =
+
+    [<Fact>]
+    let ``file with unchanged symbol hashes returns empty subset`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+
+        // src/Lib.fs is in changedFiles but symbols have identical hashes (empty → empty)
+        let currentSymbols =
+            Map.ofList
+                [ "src/Lib.fs",
+                  [ { FullName = "Lib.funcB"
+                      Kind = Function
+                      SourceFile = "src/Lib.fs"
+                      LineStart = 1
+                      LineEnd = 5
+                      ContentHash = ""
+                      IsExtern = false } ] ]
+
+        let result, _events =
+            selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/Lib.fs" ] currentSymbols
+
+        match result with
+        | RunSubset tests -> test <@ tests |> List.isEmpty @>
+        | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{SelectionReason.describe reason}"
+
+module ``File absent from current symbols map`` =
+
+    [<Fact>]
+    let ``changed file not in currentSymbolsByFile and not stored returns empty subset`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+
+        // "src/Unknown.fs" is in changedFiles but absent from currentSymbolsByFile AND not in store
+        let result, _events =
+            selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/Unknown.fs" ] Map.empty
+
+        match result with
+        | RunSubset tests -> test <@ tests |> List.isEmpty @>
+        | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{SelectionReason.describe reason}"
+
 module ``Event emission`` =
 
     [<Fact>]

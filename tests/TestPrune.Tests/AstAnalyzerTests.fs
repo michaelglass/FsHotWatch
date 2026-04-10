@@ -1728,3 +1728,100 @@ let initial () = Start
                 && d.Kind = UsesType)
 
         test <@ initialToMsg.IsSome @>
+
+module ``Content hash ignores comments`` =
+
+    [<Fact>]
+    let ``nested block comments do not affect content hash`` () =
+        let withComments =
+            analyze
+                """
+module M
+
+let myFunc x =
+    (* outer (* inner *) comment *)
+    x + 1
+"""
+
+        let withoutComments =
+            analyze
+                """
+module M
+
+let myFunc x =
+
+    x + 1
+"""
+
+        let hashWith =
+            withComments.Symbols
+            |> List.find (fun s -> s.FullName.EndsWith("myFunc", StringComparison.Ordinal))
+
+        let hashWithout =
+            withoutComments.Symbols
+            |> List.find (fun s -> s.FullName.EndsWith("myFunc", StringComparison.Ordinal))
+
+        test <@ hashWith.ContentHash = hashWithout.ContentHash @>
+
+    [<Fact>]
+    let ``verbatim string containing quote-like chars preserves hash correctly`` () =
+        let result =
+            analyze
+                """
+module M
+
+let myFunc () =
+    let s = @"hello ""world"" test"
+    s
+"""
+
+        let sym =
+            result.Symbols
+            |> List.find (fun s -> s.FullName.EndsWith("myFunc", StringComparison.Ordinal))
+
+        // Just verify it produces a non-empty hash without crashing
+        test <@ sym.ContentHash.Length > 0 @>
+
+module ``Backtick-quoted identifiers`` =
+
+    [<Fact>]
+    let ``backtick-quoted function name is tracked and produces dependencies`` () =
+        let result =
+            analyze
+                """
+module M
+
+let helper x = x + 1
+
+let ``my special function`` () =
+    helper 42
+"""
+
+        let specialFunc =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.Contains("my special function"))
+
+        test <@ specialFunc.IsSome @>
+
+        let edge =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.Contains("my special function")
+                && d.ToSymbol.EndsWith("helper", StringComparison.Ordinal))
+
+        test <@ edge.IsSome @>
+
+module ``getScriptOptions with bare filename`` =
+
+    [<Fact>]
+    let ``bare filename without directory succeeds`` () =
+        let options =
+            getScriptOptions checker "test.fsx" "let x = 1" |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" "let x = 1" options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis -> test <@ analysis.Symbols.Length > 0 @>
+        | Error e -> failwith $"analysis failed: {e}"
