@@ -101,3 +101,60 @@ let ``analyzer with mix of valid and invalid paths`` () =
 let ``concurrent analyzer runs are bounded`` () =
     let handler = create [] None
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "analyzers" @>
+
+[<Fact>]
+let ``cache key includes parse-only suffix for ParseOnly results`` () =
+    let commitId = "abc123"
+    let handler = create [] (Some(fun () -> Some commitId))
+
+    let parseOnlyResult: FileCheckResult =
+        { File = "/tmp/Fake.fs"
+          Source = ""
+          ParseResults = Unchecked.defaultof<_>
+          CheckResults = ParseOnly
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = 0L }
+
+    let fullCheckResult: FileCheckResult =
+        { parseOnlyResult with
+            CheckResults = FullCheck(Unchecked.defaultof<_>) }
+
+    let cacheKeyFn = handler.CacheKey.Value
+
+    let parseOnlyKey = cacheKeyFn (FileChecked parseOnlyResult)
+    let fullCheckKey = cacheKeyFn (FileChecked fullCheckResult)
+
+    // ParseOnly should have a different cache key than FullCheck
+    test <@ parseOnlyKey.IsSome @>
+    test <@ fullCheckKey.IsSome @>
+    test <@ parseOnlyKey <> fullCheckKey @>
+
+[<Fact>]
+let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let handler = create [] None
+    host.RegisterHandler(handler)
+
+    let fakeResult: FileCheckResult =
+        { File = "/tmp/nonexistent/Fake.fs"
+          Source = "let x = 1"
+          ParseResults = Unchecked.defaultof<_>
+          CheckResults = ParseOnly
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = 0L }
+
+    host.EmitFileChecked(fakeResult)
+    System.Threading.Thread.Sleep(500)
+
+    // ParseOnly should dispatch to the async worker (not skip synchronously).
+    // With Unchecked.defaultof ParseResults, the analyzer will crash — but it
+    // should crash via the AnalysisFailed path (proving the worker ran),
+    // not silently complete via the old skip path.
+    let errors = host.GetErrorsByPlugin("analyzers")
+
+    let hasAnalyzerCrash =
+        errors
+        |> Map.exists (fun _ entries -> entries |> List.exists (fun e -> e.Message.Contains("Analyzer crashed")))
+
+    test <@ hasAnalyzerCrash @>
