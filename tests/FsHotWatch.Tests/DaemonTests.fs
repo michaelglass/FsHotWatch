@@ -10,6 +10,55 @@ open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 open FsHotWatch.Tests.TestHelpers
 
+// ============================================================================
+// parseNowarnCodes tests
+// Workaround for https://github.com/dotnet/fsharp/issues/9796 —
+// FCS TransparentCompiler ignores #nowarn directives for warnaserror codes.
+// When that issue is resolved, parseNowarnCodes and these tests can be removed.
+// ============================================================================
+
+[<Fact>]
+let ``parseNowarnCodes extracts single nowarn code`` () =
+    let source =
+        """#nowarn "3536"
+module Foo
+let x = 1"""
+
+    test <@ parseNowarnCodes source = Set.ofList [ 3536 ] @>
+
+[<Fact>]
+let ``parseNowarnCodes extracts multiple nowarn directives`` () =
+    let source =
+        """#nowarn "1182"
+#nowarn "3536"
+module Foo"""
+
+    test <@ parseNowarnCodes source = Set.ofList [ 1182; 3536 ] @>
+
+[<Fact>]
+let ``parseNowarnCodes returns empty set when no directives`` () =
+    let source =
+        """module Foo
+let x = 1"""
+
+    test <@ parseNowarnCodes source = Set.empty @>
+
+[<Fact>]
+let ``parseNowarnCodes ignores non-numeric nowarn`` () =
+    let source =
+        """#nowarn "notanumber"
+module Foo"""
+
+    test <@ parseNowarnCodes source = Set.empty @>
+
+[<Fact>]
+let ``parseNowarnCodes handles multiple codes on one line`` () =
+    let source =
+        """#nowarn "1182" "3536"
+module Foo"""
+
+    test <@ parseNowarnCodes source = Set.ofList [ 1182; 3536 ] @>
+
 /// A null checker is fine for tests that don't perform actual compilation.
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
