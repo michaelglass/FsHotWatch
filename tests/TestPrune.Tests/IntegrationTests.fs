@@ -20,8 +20,10 @@ let checker = FSharpChecker.Create()
 let analyze source =
     let fileName = "/tmp/IntegrationTest.fsx"
     let options = getScriptOptions checker fileName source |> Async.RunSynchronously
+
     let result =
-        analyzeSource checker fileName source options "TestProject" |> Async.RunSynchronously
+        analyzeSource checker fileName source options "TestProject"
+        |> Async.RunSynchronously
 
     match result with
     | Ok r -> r
@@ -1419,3 +1421,71 @@ type ComputeTests() =
 
             // The class-based test should be found when its dependency changes
             test <@ testMethods |> List.exists (fun t -> t.TestMethod.Contains("compute")) @>)
+
+module ``Cross-assembly dependency extraction`` =
+
+    [<Fact>]
+    let ``using a type from another assembly produces extern symbol and dependency edge`` () =
+        let source =
+            """
+module M
+
+open System.Text
+
+let buildString () =
+    let sb = StringBuilder()
+    sb.Append("hello") |> ignore
+    sb.ToString()
+"""
+
+        let result = analyze source
+
+        // Should have a dependency edge from buildString to System.Text.StringBuilder
+        let sbEdge =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("buildString", System.StringComparison.Ordinal)
+                && d.ToSymbol.Contains("StringBuilder"))
+
+        test <@ sbEdge.IsSome @>
+
+        // Should have an extern symbol for StringBuilder in the symbols list
+        let externSym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.Contains("StringBuilder") && s.IsExtern)
+
+        test <@ externSym.IsSome @>
+
+    [<Fact>]
+    let ``cross-assembly dependency enables test selection through extern symbols`` () =
+        withDb (fun db ->
+            let testSource =
+                """
+module Tests
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+open System.Text
+
+[<Fact>]
+let ``test uses string builder`` () =
+    let sb = StringBuilder()
+    sb.Append("hello") |> ignore
+    ()
+"""
+
+            let result = analyze testSource
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "tests/Tests.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ analysis ])
+
+            // Changing StringBuilder should affect the test
+            let affected = db.QueryAffectedTests [ "System.Text.StringBuilder" ]
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod.Contains("string builder") @>)

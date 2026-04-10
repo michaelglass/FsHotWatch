@@ -752,10 +752,31 @@ let private extractResults
                     else
                         None)
 
+            // Collect extern symbols: ToSymbol names in dependencies that aren't
+            // defined in this file. These are cross-assembly references that need
+            // to exist in the symbols table for dependency edges to resolve.
+            let localSymbolNames = symbols |> List.map (fun s -> s.FullName) |> Set.ofList
+
+            let externSymbols =
+                dependencies
+                |> List.map (fun d -> d.ToSymbol)
+                |> List.distinct
+                |> List.filter (fun name -> not (Set.contains name localSymbolNames))
+                |> List.map (fun name ->
+                    { FullName = name
+                      Kind = Type
+                      SourceFile = "_extern"
+                      LineStart = 0
+                      LineEnd = 0
+                      ContentHash = ""
+                      IsExtern = true })
+
+            let allSymbols = symbols @ externSymbols
+
             let filteredSymbolCount = definitions.Length - symbols.Length
 
             Ok
-                { Symbols = symbols
+                { Symbols = allSymbols
                   Dependencies = dependencies
                   TestMethods = testMethods
                   Diagnostics =

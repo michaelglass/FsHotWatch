@@ -49,7 +49,8 @@ let parseFile (checker: FSharpChecker) (filePath: string) : Result<AnalysisResul
         let projOptions = getScriptOptions checker fileName source |> Async.RunSynchronously
         let projectName = Path.GetFileNameWithoutExtension(filePath)
 
-        analyzeSource checker fileName source projOptions projectName |> Async.RunSynchronously
+        analyzeSource checker fileName source projOptions projectName
+        |> Async.RunSynchronously
     with ex ->
         Error $"Exception reading %s{filePath}: %s{ex.Message}"
 
@@ -370,7 +371,8 @@ let runIndexWith
                 |> List.choose (fun r ->
                     match r.Outcome with
                     | Indexed _ -> Some r.ProjectPath
-                    | Cached _ | Failed -> None)
+                    | Cached _
+                    | Failed -> None)
                 |> Set.ofList
 
             reindexedSet <- Set.union reindexedSet newReindexed
@@ -384,10 +386,19 @@ let runIndexWith
                 (fun (results, fileKeys, projKeys, syms, deps, tests, skippedProj, skippedF) r ->
                     match r.Outcome with
                     | Indexed d ->
-                        let results = match d.Analysis with Some a -> a :: results | None -> results
+                        let results =
+                            match d.Analysis with
+                            | Some a -> a :: results
+                            | None -> results
 
-                        (results, d.FileKeys @ fileKeys, d.ProjectKey :: projKeys, syms + d.SymbolCount,
-                         deps + d.DepCount, tests + d.TestCount, skippedProj, skippedF + d.SkippedFiles)
+                        (results,
+                         d.FileKeys @ fileKeys,
+                         d.ProjectKey :: projKeys,
+                         syms + d.SymbolCount,
+                         deps + d.DepCount,
+                         tests + d.TestCount,
+                         skippedProj,
+                         skippedF + d.SkippedFiles)
                     | Cached _ -> (results, fileKeys, projKeys, syms, deps, tests, skippedProj + 1, skippedF)
                     | Failed -> (results, fileKeys, projKeys, syms, deps, tests, skippedProj, skippedF))
                 ([], [], [], 0, 0, 0, 0, 0)

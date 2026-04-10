@@ -158,6 +158,7 @@ type Database(dbPath: string) =
             results
             |> List.collect (fun r -> r.Symbols |> List.map (fun s -> s.SourceFile))
             |> List.distinct
+            |> List.filter (fun f -> f <> "_extern")
 
         use conn = openConnection dbPath
 
@@ -182,6 +183,7 @@ type Database(dbPath: string) =
 
             let now = DateTime.UtcNow.ToString("o")
 
+            // Real symbols use INSERT OR REPLACE to update on re-index
             use insCmd = conn.CreateCommand()
             insCmd.Transaction <- txn
 
@@ -200,17 +202,47 @@ type Database(dbPath: string) =
             let pIsExtern = insCmd.Parameters.Add("@isExtern", SqliteType.Integer)
             let pIndexedAt = insCmd.Parameters.Add("@indexedAt", SqliteType.Text)
 
+            // Extern symbols use INSERT OR IGNORE so they don't overwrite real symbols
+            use externCmd = conn.CreateCommand()
+            externCmd.Transaction <- txn
+
+            externCmd.CommandText <-
+                """
+                INSERT OR IGNORE INTO symbols (full_name, kind, source_file, line_start, line_end, content_hash, is_extern, indexed_at)
+                VALUES (@fullName, @kind, @sourceFile, @lineStart, @lineEnd, @contentHash, @isExtern, @indexedAt)
+                """
+
+            let eFullName = externCmd.Parameters.Add("@fullName", SqliteType.Text)
+            let eKind = externCmd.Parameters.Add("@kind", SqliteType.Text)
+            let eSourceFile = externCmd.Parameters.Add("@sourceFile", SqliteType.Text)
+            let eLineStart = externCmd.Parameters.Add("@lineStart", SqliteType.Integer)
+            let eLineEnd = externCmd.Parameters.Add("@lineEnd", SqliteType.Integer)
+            let eContentHash = externCmd.Parameters.Add("@contentHash", SqliteType.Text)
+            let eIsExtern = externCmd.Parameters.Add("@isExtern", SqliteType.Integer)
+            let eIndexedAt = externCmd.Parameters.Add("@indexedAt", SqliteType.Text)
+
             for result in results do
                 for sym in result.Symbols do
-                    pFullName.Value <- sym.FullName
-                    pKind.Value <- symbolKindToString sym.Kind
-                    pSourceFile.Value <- sym.SourceFile
-                    pLineStart.Value <- sym.LineStart
-                    pLineEnd.Value <- sym.LineEnd
-                    pContentHash.Value <- sym.ContentHash
-                    pIsExtern.Value <- if sym.IsExtern then 1 else 0
-                    pIndexedAt.Value <- now
-                    insCmd.ExecuteNonQuery() |> ignore
+                    if sym.IsExtern then
+                        eFullName.Value <- sym.FullName
+                        eKind.Value <- symbolKindToString sym.Kind
+                        eSourceFile.Value <- sym.SourceFile
+                        eLineStart.Value <- sym.LineStart
+                        eLineEnd.Value <- sym.LineEnd
+                        eContentHash.Value <- sym.ContentHash
+                        eIsExtern.Value <- 1
+                        eIndexedAt.Value <- now
+                        externCmd.ExecuteNonQuery() |> ignore
+                    else
+                        pFullName.Value <- sym.FullName
+                        pKind.Value <- symbolKindToString sym.Kind
+                        pSourceFile.Value <- sym.SourceFile
+                        pLineStart.Value <- sym.LineStart
+                        pLineEnd.Value <- sym.LineEnd
+                        pContentHash.Value <- sym.ContentHash
+                        pIsExtern.Value <- 0
+                        pIndexedAt.Value <- now
+                        insCmd.ExecuteNonQuery() |> ignore
 
             // Dependencies are inserted after all symbols so cross-project edges resolve
             use depCmd = conn.CreateCommand()

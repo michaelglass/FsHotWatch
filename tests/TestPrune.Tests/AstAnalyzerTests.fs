@@ -16,7 +16,8 @@ let analyze source =
     let options = getScriptOptions checker fileName source |> Async.RunSynchronously
 
     let result =
-        analyzeSource checker fileName source options "TestProject" |> Async.RunSynchronously
+        analyzeSource checker fileName source options "TestProject"
+        |> Async.RunSynchronously
 
     match result with
     | Ok r -> r
@@ -301,7 +302,8 @@ let f x = x
         let options = getScriptOptions checker fileName source |> Async.RunSynchronously
 
         let result =
-            analyzeSource checker fileName source options "TestProject" |> Async.RunSynchronously
+            analyzeSource checker fileName source options "TestProject"
+            |> Async.RunSynchronously
 
         match result with
         | Ok r ->
@@ -537,7 +539,9 @@ type Counter() =
 let analyzeRaw source =
     let fileName = "/tmp/AstAnalyzerTest.fsx"
     let options = getScriptOptions checker fileName source |> Async.RunSynchronously
-    analyzeSource checker fileName source options "TestProject" |> Async.RunSynchronously
+
+    analyzeSource checker fileName source options "TestProject"
+    |> Async.RunSynchronously
 
 module ``Parse error handling`` =
 
@@ -601,7 +605,8 @@ let test () =
 
             // Both should be analyzable
             let libResult =
-                analyzeSource checker libFile libSource libOptions "Lib" |> Async.RunSynchronously
+                analyzeSource checker libFile libSource libOptions "Lib"
+                |> Async.RunSynchronously
 
             let consumerResult =
                 analyzeSource checker consumerFile consumerSource consumerOptions "Consumer"
@@ -775,7 +780,7 @@ let c = 3
 
         let result =
             analyzeSource checker "test.fsx" source options "TestProject"
-                |> Async.RunSynchronously
+            |> Async.RunSynchronously
 
         match result with
         | Ok analysis ->
@@ -799,7 +804,7 @@ type MyClass() =
 
         let result =
             analyzeSource checker "test.fsx" source options "TestProject"
-                |> Async.RunSynchronously
+            |> Async.RunSynchronously
 
         match result with
         | Ok analysis ->
@@ -829,7 +834,7 @@ type Worker() =
 
         let result =
             analyzeSource checker "test.fsx" source options "TestProject"
-                |> Async.RunSynchronously
+            |> Async.RunSynchronously
 
         match result with
         | Ok analysis ->
@@ -857,7 +862,7 @@ let moduleValue = 42
 
         let result =
             analyzeSource checker "test.fsx" source options "TestProject"
-                |> Async.RunSynchronously
+            |> Async.RunSynchronously
 
         match result with
         | Ok analysis -> test <@ analysis.Symbols.Length > 0 @>
@@ -911,7 +916,7 @@ let moduleLevel = 42
 
         let result =
             analyzeSource checker "test.fsx" source options "TestProject"
-                |> Async.RunSynchronously
+            |> Async.RunSynchronously
 
         match result with
         | Ok analysis ->
@@ -977,7 +982,7 @@ let handleAction act =
 
         let result =
             analyzeSource checker "test.fsx" source options "TestProject"
-                |> Async.RunSynchronously
+            |> Async.RunSynchronously
 
         match result with
         | Ok analysis ->
@@ -1047,7 +1052,7 @@ let processResult r =
 
         let result =
             analyzeSource checker "test.fsx" source options "TestProject"
-                |> Async.RunSynchronously
+            |> Async.RunSynchronously
 
         match result with
         | Ok analysis ->
@@ -1089,7 +1094,7 @@ let statusMessage s =
 
         let result =
             analyzeSource checker "test.fsx" source options "TestProject"
-                |> Async.RunSynchronously
+            |> Async.RunSynchronously
 
         match result with
         | Ok analysis ->
@@ -1122,7 +1127,7 @@ let useHandler (h: IHandler) =
 
         let result =
             analyzeSource checker "test.fsx" source options "TestProject"
-                |> Async.RunSynchronously
+            |> Async.RunSynchronously
 
         match result with
         | Ok analysis ->
@@ -1173,7 +1178,7 @@ let myTheoryTest (x: int) =
 
         let result =
             analyzeSource checker "test.fsx" source options "TestProject"
-                |> Async.RunSynchronously
+            |> Async.RunSynchronously
 
         match result with
         | Ok analysis ->
@@ -1199,7 +1204,10 @@ module ``Edge cases and error handling`` =
         // Edge case: empty source file
         // FCS will create a default module even for empty/whitespace-only source
         let options = getScriptOptions checker "test.fsx" "" |> Async.RunSynchronously
-        let result = analyzeSource checker "test.fsx" "" options "TestProject" |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" "" options "TestProject"
+            |> Async.RunSynchronously
 
         match result with
         | Ok analysis ->
@@ -1221,7 +1229,7 @@ module ``Edge cases and error handling`` =
 
         let result =
             analyzeSource checker "test.fsx" source options "TestProject"
-                |> Async.RunSynchronously
+            |> Async.RunSynchronously
 
         match result with
         | Ok analysis ->
@@ -1243,7 +1251,7 @@ let broken =  // missing right side
 
         let result =
             analyzeSource checker "test.fsx" source options "TestProject"
-                |> Async.RunSynchronously
+            |> Async.RunSynchronously
 
         match result with
         | Error msg ->
@@ -1287,7 +1295,7 @@ and processLevel3 l3 =
 
         let result =
             analyzeSource checker "test.fsx" source options "TestProject"
-                |> Async.RunSynchronously
+            |> Async.RunSynchronously
 
         match result with
         | Ok analysis ->
@@ -1314,7 +1322,7 @@ module M =
 
         let result =
             analyzeSource checker "test.fsx" source options "TestProject"
-                |> Async.RunSynchronously
+            |> Async.RunSynchronously
 
         match result with
         | Ok analysis ->

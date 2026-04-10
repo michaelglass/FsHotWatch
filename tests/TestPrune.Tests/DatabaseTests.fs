@@ -1086,3 +1086,160 @@ module ``GetTestMethodsInFile`` =
 
             let tests = db.GetTestMethodsInFile "src/Lib.fs"
             test <@ tests |> List.isEmpty @>)
+
+module ``Cross-project extern symbol dependencies`` =
+
+    [<Fact>]
+    let ``QueryAffectedTests traverses through extern symbols`` () =
+        withDb (fun db ->
+            let testProjectResult =
+                { Symbols =
+                    [ { FullName = "Tests.testConstructsType"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "abc"
+                        IsExtern = false }
+                      { FullName = "Lib.MyType"
+                        Kind = Type
+                        SourceFile = "_extern"
+                        LineStart = 0
+                        LineEnd = 0
+                        ContentHash = ""
+                        IsExtern = true } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.testConstructsType"
+                        ToSymbol = "Lib.MyType"
+                        Kind = UsesType } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.testConstructsType"
+                        TestProject = "TestProject"
+                        TestClass = "Tests"
+                        TestMethod = "testConstructsType" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ testProjectResult ])
+
+            let affected = db.QueryAffectedTests [ "Lib.MyType" ]
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "testConstructsType" @>)
+
+    [<Fact>]
+    let ``extern symbol does not overwrite real symbol when both are in same RebuildProjects call`` () =
+        withDb (fun db ->
+            // Library defines the real symbol
+            let libResult =
+                { Symbols =
+                    [ { FullName = "Lib.MyType"
+                        Kind = Type
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = "real-hash"
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            // Test project produces an extern stub for the same symbol
+            let testResult =
+                { Symbols =
+                    [ { FullName = "Tests.myTest"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "test-hash"
+                        IsExtern = false }
+                      { FullName = "Lib.MyType"
+                        Kind = Type
+                        SourceFile = "_extern"
+                        LineStart = 0
+                        LineEnd = 0
+                        ContentHash = ""
+                        IsExtern = true } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.myTest"
+                        ToSymbol = "Lib.MyType"
+                        Kind = UsesType } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.myTest"
+                        TestProject = "TestProject"
+                        TestClass = "Tests"
+                        TestMethod = "myTest" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            // Both results in same call — real symbol should win
+            db.RebuildProjects([ libResult; testResult ])
+
+            // The real symbol should be preserved (not overwritten by extern stub)
+            let storedSymbols = db.GetSymbolsInFile "src/Lib.fs"
+            let myType = storedSymbols |> List.tryFind (fun s -> s.FullName = "Lib.MyType")
+            test <@ myType.IsSome @>
+            test <@ myType.Value.ContentHash = "real-hash" @>
+            test <@ not myType.Value.IsExtern @>
+
+            // The dependency edge should still resolve
+            let affected = db.QueryAffectedTests [ "Lib.MyType" ]
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "myTest" @>)
+
+    [<Fact>]
+    let ``re-indexing test project does not destroy real symbol from library project`` () =
+        withDb (fun db ->
+            // First: index library project
+            let libResult =
+                { Symbols =
+                    [ { FullName = "Lib.MyType"
+                        Kind = Type
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = "real-hash"
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ libResult ])
+
+            // Second: re-index test project (separate call, as happens in incremental indexing)
+            let testResult =
+                { Symbols =
+                    [ { FullName = "Tests.myTest"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "test-hash"
+                        IsExtern = false }
+                      { FullName = "Lib.MyType"
+                        Kind = Type
+                        SourceFile = "_extern"
+                        LineStart = 0
+                        LineEnd = 0
+                        ContentHash = ""
+                        IsExtern = true } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.myTest"
+                        ToSymbol = "Lib.MyType"
+                        Kind = UsesType } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.myTest"
+                        TestProject = "TestProject"
+                        TestClass = "Tests"
+                        TestMethod = "myTest" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ testResult ])
+
+            // Real symbol from library should still be intact
+            let storedSymbols = db.GetSymbolsInFile "src/Lib.fs"
+            let myType = storedSymbols |> List.tryFind (fun s -> s.FullName = "Lib.MyType")
+            test <@ myType.IsSome @>
+            test <@ myType.Value.ContentHash = "real-hash" @>
+
+            // Edge should resolve through the real symbol
+            let affected = db.QueryAffectedTests [ "Lib.MyType" ]
+            test <@ affected.Length = 1 @>)
