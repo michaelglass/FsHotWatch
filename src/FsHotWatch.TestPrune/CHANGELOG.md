@@ -2,7 +2,15 @@
 
 ## Unreleased
 
-### Infrastructure / CI
+### Fixed
+
+- Comment-only source changes no longer add the file to `ChangedFiles` — only genuine AST changes (non-empty `changedNames`) propagate to extension-based tests (e.g. Falco route matching)
+
+---
+
+## 0.3.0-alpha.1 (2026-04-08)
+
+Infrastructure release. No public API changes.
 
 - Bump internal tooling: `coverageratchet` 0.10.0-alpha.1, `syncdocs` 0.10.0-alpha.1, `fssemantictagger` 0.10.0-alpha.1, `fsprojlint` 0.7.0-alpha.1
 
