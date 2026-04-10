@@ -446,7 +446,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         | Some path -> Logging.info "config" $"Registering LintPlugin with config: %s{path}"
         | None -> Logging.info "config" "Registering LintPlugin (no fsharplint.json found)"
 
-        daemon.RegisterHandler(FsHotWatch.Lint.LintPlugin.create lintConfigPath getCommitId)
+        daemon.RegisterHandler(FsHotWatch.Lint.LintPlugin.create lintConfigPath getCommitId None)
 
     // Analyzers plugin
     match config.Analyzers with
