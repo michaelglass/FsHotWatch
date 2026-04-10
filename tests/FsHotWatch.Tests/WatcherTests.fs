@@ -80,8 +80,7 @@ let ``classifyChange maps .fsproj to ProjectChanged`` () =
 
 [<Fact>]
 let ``classifyChange maps .props to ProjectChanged`` () =
-    test
-        <@ classifyChange "/repo/Directory.Build.props" = ProjectChanged [ "/repo/Directory.Build.props" ] @>
+    test <@ classifyChange "/repo/Directory.Build.props" = ProjectChanged [ "/repo/Directory.Build.props" ] @>
 
 [<Fact>]
 let ``classifyChange maps .sln to SolutionChanged`` () =
