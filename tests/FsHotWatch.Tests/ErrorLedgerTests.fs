@@ -270,7 +270,7 @@ let ``ErrorLedger notifies reporters on Report`` () =
 
     let ledger = ErrorLedger([ reporter ])
     ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
-    System.Threading.Thread.Sleep(100)
+    ledger.GetAll() |> ignore // sync barrier: ensures all prior Posts have been processed
     test <@ reported.Length = 1 @>
     test <@ let (p, f, _) = reported.[0] in p = "lint" && f = "/src/A.fs" @>
 
@@ -288,7 +288,7 @@ let ``ErrorLedger notifies reporters on Clear`` () =
     let ledger = ErrorLedger([ reporter ])
     ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
     ledger.Clear("lint", "/src/A.fs")
-    System.Threading.Thread.Sleep(100)
+    ledger.GetAll() |> ignore
     test <@ cleared.Length = 1 @>
 
 [<Fact>]
@@ -308,7 +308,7 @@ let ``ErrorLedger notifies reporters on ClearPlugin`` () =
     let ledger = ErrorLedger([ reporter ])
     ledger.Report("lint", "/src/A.fs", [ entry "a" DiagnosticSeverity.Warning 1 ])
     ledger.ClearPlugin("lint")
-    System.Threading.Thread.Sleep(100)
+    ledger.GetAll() |> ignore
     test <@ clearedPlugins = [ "lint" ] @>
 
 [<Fact>]
@@ -325,5 +325,5 @@ let ``ErrorLedger does not notify reporters on stale version`` () =
     let ledger = ErrorLedger([ reporter ])
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry "new" DiagnosticSeverity.Error 1 ], version = 2L)
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry "stale" DiagnosticSeverity.Error 1 ], version = 1L)
-    System.Threading.Thread.Sleep(100)
+    ledger.GetAll() |> ignore
     test <@ reportCount = 1 @>

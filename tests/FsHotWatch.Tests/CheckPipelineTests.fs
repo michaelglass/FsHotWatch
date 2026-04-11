@@ -71,7 +71,7 @@ let ``RegisterProject makes CheckFile find the project for its source files`` ()
     Directory.CreateDirectory(tmpDir) |> ignore
 
     try
-        let checker = FSharpChecker.Create(projectCacheSize = 10)
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let pipeline = CheckPipeline(checker)
 
@@ -136,7 +136,7 @@ let ``CheckProject returns results for all registered source files`` () =
     Directory.CreateDirectory(tmpDir) |> ignore
 
     try
-        let checker = FSharpChecker.Create(projectCacheSize = 10)
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let pipeline = CheckPipeline(checker)
 
@@ -248,7 +248,7 @@ let ``CheckFile assigns increasing version numbers`` () =
     Directory.CreateDirectory(tmpDir) |> ignore
 
     try
-        let checker = FSharpChecker.Create(projectCacheSize = 10)
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
         let sourceFile = Path.Combine(tmpDir, "Lib.fs")
         File.WriteAllText(sourceFile, "module Lib\nlet x = 42\n")

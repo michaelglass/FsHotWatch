@@ -315,6 +315,15 @@ let ``format check clears errors when file becomes formatted`` () =
         File.WriteAllText(file, "module Fix\n\nlet x = 1\n")
         host.EmitFileChanged(SourceChanged [ file ])
 
+        // Wait for the second run to start (status leaves Completed)
+        waitUntil
+            (fun () ->
+                match host.GetStatus("format-check") with
+                | Some(Completed _) -> false
+                | _ -> true)
+            5000
+
+        // Then wait for it to finish
         waitUntil
             (fun () ->
                 match host.GetStatus("format-check") with

@@ -477,8 +477,7 @@ let ``daemon RegisterProject stores options in pipeline`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
-        let checker =
-            FSharp.Compiler.CodeAnalysis.FSharpChecker.Create(projectCacheSize = 10)
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let daemon = Daemon.createWith checker tmpDir None None (set [ 1182 ])
 

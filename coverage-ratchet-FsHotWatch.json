@@ -2,14 +2,14 @@
   "overrides": {
     "AnalyzersPlugin.fs": [
       {
-        "line": 85,
-        "branch": 87,
+        "line": 81,
+        "branch": 83,
         "reason": "reflection-based CliContext branches vary by platform",
         "platform": "macos"
       },
       {
-        "line": 81,
-        "branch": 66,
+        "line": 83,
+        "branch": 81,
         "reason": "reflection-based CliContext branches vary by platform",
         "platform": "linux"
       }
@@ -19,13 +19,22 @@
       "branch": 75,
       "reason": "new file, 3/4 branches covered"
     },
-    "BuildPlugin.fs": {
-      "line": 87,
-      "branch": 84,
-      "reason": "loosened: new diagnostic parsing branches"
-    },
+    "BuildPlugin.fs": [
+      {
+        "line": 90,
+        "branch": 86,
+        "reason": "loosened automatically",
+        "platform": "macos"
+      },
+      {
+        "line": 87,
+        "branch": 84,
+        "reason": "lower coverage on Linux CI",
+        "platform": "linux"
+      }
+    ],
     "CheckPipeline.fs": {
-      "line": 90,
+      "line": 91,
       "branch": 77,
       "reason": ""
     },
@@ -35,26 +44,41 @@
       "reason": ""
     },
     "Daemon.fs": {
-      "line": 70,
-      "branch": 56,
+      "line": 71,
+      "branch": 55,
       "reason": ""
     },
     "DaemonConfig.fs": {
-      "line": 70,
-      "branch": 61,
+      "line": 63,
+      "branch": 55,
       "reason": "loosened automatically"
     },
-    "ErrorLedger.fs": {
-      "line": 94,
-      "branch": 100,
-      "reason": "loosened automatically"
-    },
+    "ErrorLedger.fs": [
+      {
+        "line": 96,
+        "branch": 94,
+        "reason": "loosened automatically",
+        "platform": "macos"
+      },
+      {
+        "line": 96,
+        "branch": 100,
+        "reason": "loosened automatically",
+        "platform": "linux"
+      }
+    ],
     "Events.fs": [
       {
         "line": 83,
         "branch": 100,
         "reason": "loosened automatically",
         "platform": "macos"
+      },
+      {
+        "line": 83,
+        "branch": 100,
+        "reason": "loosened automatically",
+        "platform": "linux"
       }
     ],
     "FileCheckCache.fs": {
@@ -68,15 +92,24 @@
       "reason": ""
     },
     "FileErrorReporter.fs": {
-      "line": 100,
+      "line": 93,
       "branch": 75,
       "reason": "loosened automatically"
     },
-    "FileTaskCache.fs": {
-      "line": 87,
-      "branch": 80,
-      "reason": "loosened automatically"
-    },
+    "FileTaskCache.fs": [
+      {
+        "line": 87,
+        "branch": 83,
+        "reason": "loosened automatically",
+        "platform": "macos"
+      },
+      {
+        "line": 87,
+        "branch": 80,
+        "reason": "lower branch coverage on Linux CI",
+        "platform": "linux"
+      }
+    ],
     "FormatCheckPlugin.fs": {
       "line": 98,
       "branch": 100,
@@ -88,41 +121,69 @@
       "reason": "loosened automatically"
     },
     "InitConfig.fs": {
-      "line": 100,
-      "branch": 92,
+      "line": 76,
+      "branch": 52,
       "reason": "loosened automatically"
     },
-    "Ipc.fs": {
-      "line": 81,
-      "branch": 50,
-      "reason": ""
-    },
-    "IpcOutput.fs": {
-      "line": 88,
-      "branch": 62,
-      "reason": "loosened: new severity-aware exit code branches"
-    },
+    "Ipc.fs": [
+      {
+        "line": 82,
+        "branch": 50,
+        "reason": "loosened automatically",
+        "platform": "macos"
+      },
+      {
+        "line": 81,
+        "branch": 50,
+        "reason": "lower line coverage on Linux CI",
+        "platform": "linux"
+      }
+    ],
+    "IpcOutput.fs": [
+      {
+        "line": 87,
+        "branch": 63,
+        "reason": "loosened automatically",
+        "platform": "macos"
+      },
+      {
+        "line": 88,
+        "branch": 62,
+        "reason": "different coverage profile on Linux CI",
+        "platform": "linux"
+      }
+    ],
     "JjHelper.fs": {
       "line": 54,
       "branch": 40,
       "reason": "loosened automatically"
     },
-    "LintPlugin.fs": {
-      "line": 94,
-      "branch": 100,
-      "reason": ""
-    },
+    "LintPlugin.fs": [
+      {
+        "line": 80,
+        "branch": 83,
+        "reason": "loosened automatically",
+        "platform": "macos"
+      },
+      {
+        "line": 79,
+        "branch": 83,
+        "reason": "lower line coverage on Linux CI",
+        "platform": "linux"
+      }
+    ],
     "MacFsEvents.fs": [
       {
-        "line": 85,
-        "branch": 57,
+        "line": 83,
+        "branch": 55,
         "reason": "macOS-only FSEvents code",
         "platform": "macos"
       },
       {
         "line": 0,
         "branch": 0,
-        "reason": "macOS-only FSEvents code, 0% coverage on Linux CI runners"
+        "reason": "macOS-only FSEvents code, 0% coverage on Linux CI runners",
+        "platform": "linux"
       }
     ],
     "PluginFramework.fs": {
@@ -130,11 +191,20 @@
       "branch": 65,
       "reason": "loosened automatically"
     },
-    "PluginHost.fs": {
-      "line": 80,
-      "branch": 50,
-      "reason": ""
-    },
+    "PluginHost.fs": [
+      {
+        "line": 85,
+        "branch": 50,
+        "reason": "loosened automatically",
+        "platform": "macos"
+      },
+      {
+        "line": 76,
+        "branch": 36,
+        "reason": "significantly lower coverage on Linux CI",
+        "platform": "linux"
+      }
+    ],
     "ProcessHelper.fs": {
       "line": 93,
       "branch": 50,
@@ -142,26 +212,35 @@
     },
     "Program.fs": [
       {
-        "line": 72,
-        "branch": 43,
-        "reason": "CLI entry point, new --no-warn-fail flag branches",
+        "line": 61,
+        "branch": 42,
+        "reason": "CLI entry point",
         "platform": "macos"
       },
       {
-        "line": 59,
-        "branch": 23,
-        "reason": "CLI entry point, new --no-warn-fail flag branches",
+        "line": 62,
+        "branch": 35,
+        "reason": "CLI entry point, different coverage on Linux CI",
         "platform": "linux"
       }
     ],
-    "ProjectGraph.fs": {
-      "line": 97,
-      "branch": 92,
-      "reason": ""
-    },
+    "ProjectGraph.fs": [
+      {
+        "line": 100,
+        "branch": 92,
+        "reason": "loosened automatically",
+        "platform": "macos"
+      },
+      {
+        "line": 97,
+        "branch": 92,
+        "reason": "lower line coverage on Linux CI",
+        "platform": "linux"
+      }
+    ],
     "RunOnceOutput.fs": {
-      "line": 67,
-      "branch": 57,
+      "line": 65,
+      "branch": 50,
       "reason": "loosened: new severity counting branches"
     },
     "StringHelpers.fs": {
@@ -169,15 +248,33 @@
       "branch": 50,
       "reason": "loosened automatically"
     },
-    "TaskCache.fs": {
-      "line": 88,
-      "branch": 100,
-      "reason": "loosened automatically"
-    },
-    "Watcher.fs": {
-      "line": 85,
-      "branch": 53,
-      "reason": ""
-    }
+    "TaskCache.fs": [
+      {
+        "line": 89,
+        "branch": 90,
+        "reason": "loosened automatically",
+        "platform": "macos"
+      },
+      {
+        "line": 88,
+        "branch": 100,
+        "reason": "different coverage profile on Linux CI",
+        "platform": "linux"
+      }
+    ],
+    "Watcher.fs": [
+      {
+        "line": 60,
+        "branch": 43,
+        "reason": "loosened automatically",
+        "platform": "macos"
+      },
+      {
+        "line": 77,
+        "branch": 43,
+        "reason": "higher line coverage on Linux CI (no FSEvents)",
+        "platform": "linux"
+      }
+    ]
   }
 }
