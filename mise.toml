@@ -65,12 +65,12 @@ depends = ["restore"]
 
 [tasks.format-check]
 description = "Check formatting (single pass)"
-run = "dotnet run --project src/FsHotWatch.Cli --no-build -- format-check run-once"
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- format-check --run-once"
 depends = ["build"]
 
 [tasks.lint-direct]
 description = "Run linter (single pass)"
-run = "dotnet run --project src/FsHotWatch.Cli --no-build -- lint run-once"
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- lint --run-once"
 depends = ["build"]
 
 [tasks.coverage-check]
@@ -111,10 +111,15 @@ description = "Tag an alpha release"
 run = "dotnet tool run fssemantictagger release --prerelease alpha"
 depends = ["restore"]
 
+[tasks.compile]
+description = "Compile the solution (dotnet build)"
+run = "dotnet build"
+depends = ["restore"]
+
 [tasks.ci]
 description = "Run all CI checks (single pass, no daemon)"
-run = "dotnet run --project src/FsHotWatch.Cli --no-build -- check run-once"
-depends = ["build", "lint-project"]
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- check --run-once"
+depends = ["compile", "lint-project"]
 
 [tasks.run]
 description = "Run the CLI"
