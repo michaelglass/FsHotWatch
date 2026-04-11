@@ -1303,7 +1303,7 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
         // The plugin's BuildCompleted flush only runs when testConfigs is provided,
         // so we populate the baseline here via analyzeSource + RebuildProjects.
         let seedResult =
-            analyzeSource checker filePath initialSource projOptions
+            analyzeSource checker filePath initialSource projOptions "TestProject"
             |> Async.RunSynchronously
 
         match seedResult with
