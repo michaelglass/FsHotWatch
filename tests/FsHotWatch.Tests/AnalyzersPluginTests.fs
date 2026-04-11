@@ -6,6 +6,15 @@ open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
 open FsHotWatch.Analyzers.AnalyzersPlugin
+open FsHotWatch.Tests.TestHelpers
+
+let private fakeResult file : FileCheckResult =
+    { File = file
+      Source = "let x = 1"
+      ParseResults = Unchecked.defaultof<_>
+      CheckResults = ParseOnly
+      ProjectOptions = Unchecked.defaultof<_>
+      Version = 0L }
 
 [<Fact>]
 let ``plugin has correct name`` () =
@@ -173,24 +182,8 @@ let ``AnalysisFailed custom message sets status to Completed`` () =
     let handler = create [] None
     host.RegisterHandler(handler)
 
-    let fakeResult: FileCheckResult =
-        { File = "/tmp/test/FailAnalysis.fs"
-          Source = "let x = 1"
-          ParseResults = Unchecked.defaultof<_>
-          CheckResults = ParseOnly
-          ProjectOptions = Unchecked.defaultof<_>
-          Version = 0L }
-
-    host.EmitFileChecked(fakeResult)
-    System.Threading.Thread.Sleep(1000)
-
-    let status = host.GetStatus("analyzers")
-    test <@ status.IsSome @>
-
-    match status.Value with
-    | Completed _ -> ()
-    | Running _ -> ()
-    | other -> Assert.Fail($"Expected Completed or Running after AnalysisFailed, got: %A{other}")
+    host.EmitFileChecked(fakeResult "/tmp/test/FailAnalysis.fs")
+    waitForTerminalStatus host "analyzers" 3000
 
     let errors = host.GetErrorsByPlugin("analyzers")
 
@@ -210,15 +203,7 @@ let ``cache key returns None when getCommitId returns None`` () =
     let handler = create [] (Some(fun () -> None))
     let cacheKeyFn = handler.CacheKey.Value
 
-    let fakeResult: FileCheckResult =
-        { File = "/tmp/Fake.fs"
-          Source = ""
-          ParseResults = Unchecked.defaultof<_>
-          CheckResults = ParseOnly
-          ProjectOptions = Unchecked.defaultof<_>
-          Version = 0L }
-
-    let key = cacheKeyFn (FileChecked fakeResult)
+    let key = cacheKeyFn (FileChecked(fakeResult "/tmp/Fake.fs"))
     test <@ key.IsNone @>
 
 [<Fact>]
@@ -248,25 +233,13 @@ let ``multiple concurrent FileChecked events are bounded by semaphore`` () =
 
     let events =
         [ for i in 1..10 ->
-              { File = $"/tmp/concurrent/File%d{i}.fs"
-                Source = $"let x%d{i} = %d{i}"
-                ParseResults = Unchecked.defaultof<_>
-                CheckResults = ParseOnly
-                ProjectOptions = Unchecked.defaultof<_>
-                Version = int64 i } ]
+              { fakeResult $"/tmp/concurrent/File%d{i}.fs" with
+                  Version = int64 i } ]
 
     for e in events do
         host.EmitFileChecked(e)
 
-    System.Threading.Thread.Sleep(2000)
-
-    let status = host.GetStatus("analyzers")
-    test <@ status.IsSome @>
-
-    match status.Value with
-    | Completed _ -> ()
-    | Running _ -> ()
-    | other -> Assert.Fail($"Expected Completed or Running after concurrent events, got: %A{other}")
+    waitForTerminalStatus host "analyzers" 5000
 
     let errors = host.GetErrorsByPlugin("analyzers")
     test <@ errors.Count > 0 @>
@@ -280,17 +253,7 @@ let ``teardown cancels CTS and disposes resources`` () =
 
     host.Teardown()
 
-    let fakeResult: FileCheckResult =
-        { File = "/tmp/teardown/Fake.fs"
-          Source = "let x = 1"
-          ParseResults = Unchecked.defaultof<_>
-          CheckResults = ParseOnly
-          ProjectOptions = Unchecked.defaultof<_>
-          Version = 0L }
-
     try
-        host.EmitFileChecked(fakeResult)
+        host.EmitFileChecked(fakeResult "/tmp/teardown/Fake.fs")
     with _ ->
         ()
-
-    System.Threading.Thread.Sleep(500)
