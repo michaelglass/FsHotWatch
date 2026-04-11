@@ -476,7 +476,7 @@ let ``discoverProjects excludes obj directories`` () =
 let ``discoverProjects returns empty list for empty directory`` () =
     withTempDir "init-empty" (fun tmpDir ->
         let projects = discoverProjects tmpDir None
-        test <@ projects = [] @>)
+        test <@ List.isEmpty projects @>)
 
 [<Fact>]
 let ``discoverProjects returns sorted results`` () =
@@ -495,7 +495,7 @@ let ``discoverProjects returns sorted results`` () =
 [<Fact>]
 let ``discoverProjects returns empty list for missing directory`` () =
     let projects = discoverProjects "/nonexistent/path/that/does/not/exist" None
-    test <@ projects = [] @>
+    test <@ List.isEmpty projects @>
 
 [<Fact>]
 let ``discoverProjects returns empty list on permission error`` () =
@@ -503,7 +503,7 @@ let ``discoverProjects returns empty list on permission error`` () =
         raise (System.UnauthorizedAccessException("Access denied"))
 
     let projects = discoverProjects "/some/path" (Some failEnumerate)
-    test <@ projects = [] @>
+    test <@ List.isEmpty projects @>
 
 [<Fact>]
 let ``discoverProjects with injected enumerator uses it`` () =
