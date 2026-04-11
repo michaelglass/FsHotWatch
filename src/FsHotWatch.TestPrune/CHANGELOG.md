@@ -5,6 +5,8 @@
 ### Changed
 
 - Bump `TestPrune.Core` 1.0.1 → 2.0.0 — adds cross-project extern symbol support via `projectName` parameter in `analyzeSource`
+- `buildFilterArgs` changed from private to internal for testability
+- Add `InternalsVisibleTo` for FsHotWatch.Tests
 
 ### Fixed
 

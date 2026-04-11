@@ -18,6 +18,7 @@ All notable changes to FsHotWatch packages are documented here.
 - `IProjectGraphReader` interface decouples `BuildPlugin` from mutable `ProjectGraph`
 
 #### Fixed
+- Handle shared source files (linked items): `fileToProjects` now stores all projects per file; `GetProjectsForFile` returns all; Daemon checks shared files in each project context via `CheckFileWithOptions`
 - `Daemon` implements `IDisposable` and stops all internal `MailboxProcessor` agents on dispose
 - `RunWithIpc` races initial scan against cancellation to prevent test-process hangs
 - Standalone files not in any project now checked via uncovered-files fallback
