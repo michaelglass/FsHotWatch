@@ -16,6 +16,11 @@
 - `IProjectGraphReader` interface decouples `BuildPlugin` from mutable `ProjectGraph`
 - `BuildPhase` folds `PendingFiles` into `IdlePhase` (only meaningful when idle)
 
+### Improved
+
+- Extract pure filtering functions from `MacFsEvents` for testability
+- `Watcher` accepts injectable `isMacOS` flag for cross-platform testability
+
 ### Fixed
 
 - `Daemon` implements `IDisposable` and stops all internal `MailboxProcessor` agents on dispose — agents previously ran indefinitely, keeping processes alive after tests

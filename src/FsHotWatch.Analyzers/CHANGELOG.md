@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-*No changes since 0.3.0-alpha.1.*
+### Changed
+
+- Run parse-only analyzers instead of skipping files without full type-check results — passes `null` for `checkResults` in `CliContext`, enabling syntax-only analyzers to run on all files
 
 ---
 

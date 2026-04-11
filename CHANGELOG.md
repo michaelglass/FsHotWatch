@@ -31,8 +31,26 @@ All notable changes to FsHotWatch packages are documented here.
 - `DiagnosticEntry.Severity` typed as `DiagnosticSeverity` DU instead of string
 - `startFreshDaemon` startup poll deadline configurable via `startupTimeoutSeconds` parameter (default: 30s)
 - Process launch in `startFreshDaemon` injectable via `IpcOps.LaunchDaemon`
+- Bump `CommandTree` 0.3.5 → 0.4.0, `TestPrune.Falco` 1.0.1 → 1.0.2
+
+#### Fixed
+- `renderIpcResult` crash on JSON containing array values (e.g. test results)
+- Deduplicate `DisplayStatus`/`formatStatusLine`/error formatting — reuse `PluginStatus` from core and shared formatting from `RunOnceOutput`
+
+### FsHotWatch.Analyzers
+
+#### Changed
+- Run parse-only analyzers (passing `null` for check results) instead of skipping files without full type-check results
+
+### FsHotWatch.Lint
+
+#### Changed
+- Lint runner injectable via `lintRunner` parameter for testability
 
 ### FsHotWatch.TestPrune
+
+#### Changed
+- Bump `TestPrune.Core` 1.0.1 → 2.0.0 — cross-project extern symbol support
 
 #### Fixed
 - Comment-only source changes no longer add the file to `ChangedFiles` — only genuine AST changes propagate to extension-based tests
