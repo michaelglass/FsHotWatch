@@ -8,6 +8,7 @@ open FsHotWatch.Events
 /// Read-only view of the project graph for consumers that don't need mutation.
 type IProjectGraphReader =
     abstract GetProjectForFile: filePath: AbsFilePath -> AbsProjectPath option
+    abstract GetProjectsForFile: filePath: AbsFilePath -> AbsProjectPath list
     abstract GetSourceFiles: projectPath: AbsProjectPath -> AbsFilePath list
     abstract GetDependents: projectPath: AbsProjectPath -> AbsProjectPath list
     abstract GetAffectedProjects: changedFiles: AbsFilePath list -> AbsProjectPath list
@@ -17,7 +18,7 @@ type IProjectGraphReader =
 /// Tracks project structure: which files belong to which project,
 /// which projects reference which, and dependency ordering.
 type ProjectGraph() as this =
-    let fileToProject = ConcurrentDictionary<AbsFilePath, AbsProjectPath>()
+    let fileToProjects = ConcurrentDictionary<AbsFilePath, AbsProjectPath list>()
     let projectFiles = ConcurrentDictionary<AbsProjectPath, AbsFilePath list>()
     let projectReferences = ConcurrentDictionary<AbsProjectPath, AbsProjectPath list>()
     let projectDependents = ConcurrentDictionary<AbsProjectPath, AbsProjectPath list>()
@@ -26,7 +27,7 @@ type ProjectGraph() as this =
     /// rebuild from scratch. Call before re-discovery to remove deleted projects,
     /// removed files, and stale dependent relationships.
     member _.PrepareForRediscovery() =
-        fileToProject.Clear()
+        fileToProjects.Clear()
         projectFiles.Clear()
         projectReferences.Clear()
         projectDependents.Clear()
@@ -38,7 +39,16 @@ type ProjectGraph() as this =
         projectFiles[projectPath] <- sourceFiles
 
         for file in sourceFiles do
-            fileToProject[file] <- projectPath
+            fileToProjects.AddOrUpdate(
+                file,
+                [ projectPath ],
+                fun _ existing ->
+                    if List.contains projectPath existing then
+                        existing
+                    else
+                        projectPath :: existing
+            )
+            |> ignore
 
         projectReferences[projectPath] <- references
 
@@ -87,10 +97,17 @@ type ProjectGraph() as this =
         (sourceFiles, references)
 
     /// Get the project that owns a file, or None.
+    /// For shared files, returns the first registered project.
     member _.GetProjectForFile(filePath: AbsFilePath) : AbsProjectPath option =
-        match fileToProject.TryGetValue(filePath) with
-        | true, proj -> Some proj
-        | false, _ -> None
+        match fileToProjects.TryGetValue(filePath) with
+        | true, (first :: _) -> Some first
+        | _ -> None
+
+    /// Get all projects that contain the given file.
+    member _.GetProjectsForFile(filePath: AbsFilePath) : AbsProjectPath list =
+        match fileToProjects.TryGetValue(filePath) with
+        | true, projects -> projects
+        | false, _ -> []
 
     /// Get all source files for a project.
     member _.GetSourceFiles(projectPath: AbsProjectPath) : AbsFilePath list =
@@ -132,7 +149,7 @@ type ProjectGraph() as this =
     member this.GetAffectedProjects(changedFiles: AbsFilePath list) : AbsProjectPath list =
         let roots =
             changedFiles
-            |> List.choose (fun f -> this.GetProjectForFile(f))
+            |> List.collect (fun f -> this.GetProjectsForFile(f))
             |> List.distinct
 
         let mutable visited = Set.empty
@@ -155,7 +172,7 @@ type ProjectGraph() as this =
     member _.GetAllProjects() : AbsProjectPath list = projectFiles.Keys |> Seq.toList
 
     /// Get all registered file paths across all projects.
-    member _.GetAllFiles() : AbsFilePath list = fileToProject.Keys |> Seq.toList
+    member _.GetAllFiles() : AbsFilePath list = fileToProjects.Keys |> Seq.toList
 
     /// Group projects into parallel tiers where each tier's projects
     /// have all dependencies satisfied by earlier tiers.
@@ -188,6 +205,7 @@ type ProjectGraph() as this =
 
     interface IProjectGraphReader with
         member _.GetProjectForFile(filePath) = this.GetProjectForFile(filePath)
+        member _.GetProjectsForFile(filePath) = this.GetProjectsForFile(filePath)
         member _.GetSourceFiles(projectPath) = this.GetSourceFiles(projectPath)
         member _.GetDependents(projectPath) = this.GetDependents(projectPath)
         member _.GetAffectedProjects(changedFiles) = this.GetAffectedProjects(changedFiles)

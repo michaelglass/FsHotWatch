@@ -390,7 +390,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
 
             let changedProjects =
                 absSourceFiles
-                |> List.choose (fun f -> ctx.Graph.GetProjectForFile(f))
+                |> List.collect (fun f -> ctx.Graph.GetProjectsForFile(f))
                 |> List.distinct
 
             let changedProjectSet = Set.ofList changedProjects
@@ -422,19 +422,34 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                     | None -> ()
 
             for tier in tiers do
-                let tierFiles =
-                    tier
-                    |> List.collect (fun proj -> ctx.Graph.GetSourceFiles(proj))
-                    |> List.map AbsFilePath.value
-                    |> List.filter filesToCheckSet.Contains
+                let tierChecks = ResizeArray<Async<FileCheckResult option>>()
 
-                checkedFiles <- Set.union checkedFiles (Set.ofList tierFiles)
+                for proj in tier do
+                    let projPath = AbsProjectPath.value proj
 
-                let! results =
-                    tierFiles
-                    |> List.map (fun file -> ctx.Pipeline.CheckFile(file, ctx.DaemonCt.Value))
-                    |> Async.Parallel
+                    match ctx.Pipeline.GetProjectOptions(projPath) with
+                    | Some options ->
+                        let projFiles =
+                            ctx.Graph.GetSourceFiles(proj)
+                            |> List.map AbsFilePath.value
+                            |> List.filter filesToCheckSet.Contains
 
+                        checkedFiles <- Set.union checkedFiles (Set.ofList projFiles)
+
+                        for file in projFiles do
+                            tierChecks.Add(ctx.Pipeline.CheckFileWithOptions(file, options, ctx.DaemonCt.Value))
+                    | None ->
+                        let projFiles =
+                            ctx.Graph.GetSourceFiles(proj)
+                            |> List.map AbsFilePath.value
+                            |> List.filter filesToCheckSet.Contains
+
+                        checkedFiles <- Set.union checkedFiles (Set.ofList projFiles)
+
+                        for file in projFiles do
+                            tierChecks.Add(ctx.Pipeline.CheckFile(file, ctx.DaemonCt.Value))
+
+                let! results = tierChecks |> Seq.toList |> Async.Parallel
                 emitResults results
 
             // Check files not belonging to any project (e.g. standalone .fsx files)
@@ -790,7 +805,7 @@ let private performScan
                         let dependentFiles =
                             directlyChanged
                             |> List.map AbsFilePath.create
-                            |> List.choose (fun f -> graph.GetProjectForFile(f))
+                            |> List.collect (fun f -> graph.GetProjectsForFile(f))
                             |> List.distinct
                             |> List.collect (fun p -> graph.GetTransitiveDependents(p))
                             |> List.distinct
@@ -818,19 +833,26 @@ let private performScan
                 let tiers = graph.GetParallelTiers()
 
                 for tier in tiers do
-                    let tierFiles =
-                        tier
-                        |> List.collect (fun proj -> graph.GetSourceFiles(proj))
-                        |> List.map AbsFilePath.value
+                    let tierChecks = ResizeArray<Async<FileCheckResult option>>()
 
-                    let! results =
-                        tierFiles
-                        |> List.map (fun file ->
-                            if filesToCheckSet.Contains(file) then
-                                pipeline.CheckFile(file, ct)
-                            else
-                                async { return None })
-                        |> Async.Parallel
+                    for proj in tier do
+                        let projPath = AbsProjectPath.value proj
+
+                        match pipeline.GetProjectOptions(projPath) with
+                        | Some options ->
+                            for file in graph.GetSourceFiles(proj) |> List.map AbsFilePath.value do
+                                if filesToCheckSet.Contains(file) then
+                                    tierChecks.Add(pipeline.CheckFileWithOptions(file, options, ct))
+                                else
+                                    tierChecks.Add(async { return None })
+                        | None ->
+                            for file in graph.GetSourceFiles(proj) |> List.map AbsFilePath.value do
+                                if filesToCheckSet.Contains(file) then
+                                    tierChecks.Add(pipeline.CheckFile(file, ct))
+                                else
+                                    tierChecks.Add(async { return None })
+
+                    let! results = tierChecks |> Seq.toList |> Async.Parallel
 
                     for result in results do
                         match result with
