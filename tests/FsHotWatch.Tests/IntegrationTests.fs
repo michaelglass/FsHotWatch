@@ -79,8 +79,7 @@ let private exampleAnalyzerPath =
 let ``all plugins receive events when checking a file`` () =
     let repoRoot = findRepoRoot ()
 
-    let checker =
-        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let pipeline = CheckPipeline(checker)
     let host = PluginHost.create checker repoRoot
@@ -188,8 +187,7 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
 
     let analyzers = AnalyzersPlugin.create analyzerPaths None
 
-    let checker =
-        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let host = PluginHost.create checker repoRoot
     host.RegisterHandler(analyzers)
@@ -271,8 +269,7 @@ let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> stri
     let repoRoot = findRepoRoot ()
     let analyzerPath = exampleAnalyzerPath.Value
 
-    let checker =
-        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let host = PluginHost.create checker repoRoot
     let analyzers = AnalyzersPlugin.create [ analyzerPath ] None
@@ -296,12 +293,7 @@ let x = 5
 """
 
     withTempFsFile badCode (fun _dir filePath ->
-        let checker =
-            FSharpChecker.Create(
-                projectCacheSize = 200,
-                keepAssemblyContents = true,
-                keepAllBackgroundResolutions = true
-            )
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
@@ -345,8 +337,7 @@ let ``format check plugin detects unformatted code`` () =
     let badlyFormatted = "module    Temp\nlet   x   =   5\nlet y=       10\n"
 
     withTempFsFile badlyFormatted (fun _dir filePath ->
-        let checker =
-            FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true)
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
@@ -377,8 +368,7 @@ let ``format check plugin passes on well-formatted code`` () =
         |> Async.RunSynchronously
 
     withTempFsFile wellFormatted.Code (fun _dir filePath ->
-        let checker =
-            FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true)
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
@@ -406,8 +396,7 @@ let ``plugin status reflects running to completed lifecycle`` () =
     let content = "module Temp\n\nlet x = 5\n"
 
     withTempFsFile content (fun _dir filePath ->
-        let checker =
-            FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true)
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
@@ -462,8 +451,7 @@ let ``multiple file changes are debounced into one batch by SourceChanged`` () =
                   File.WriteAllText(fp, content)
                   fp ]
 
-        let checker =
-            FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true)
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
@@ -634,8 +622,7 @@ let ``FormatPreprocessor reformats badly formatted file`` () =
 let ``LintPlugin reports no warnings on clean code`` () =
     let repoRoot = findRepoRoot ()
 
-    let checker =
-        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let host = PluginHost.create checker repoRoot
     let lint = LintPlugin.create None None None
@@ -682,8 +669,7 @@ let ``LintPlugin reports no warnings on clean code`` () =
 let ``LintPlugin reports warnings on code with issues`` () =
     let repoRoot = findRepoRoot ()
 
-    let checker =
-        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let host = PluginHost.create checker repoRoot
     let lint = LintPlugin.create None None None
@@ -725,8 +711,7 @@ let x = 5
 let ``AnalyzersPlugin completes without crashing on checked file`` () =
     let repoRoot = findRepoRoot ()
 
-    let checker =
-        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let host = PluginHost.create checker repoRoot
     let analyzers = AnalyzersPlugin.create [] None
@@ -765,8 +750,7 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
     let repoRoot = findRepoRoot ()
     let analyzerPath = exampleAnalyzerPath.Value
 
-    let checker =
-        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let host = PluginHost.create checker repoRoot
     let analyzers = AnalyzersPlugin.create [ analyzerPath ] None
@@ -1526,8 +1510,7 @@ let ``file cache enables fast cold-start check`` () =
     let repoRoot = findRepoRoot ()
     let cacheDir = Path.Combine(Path.GetTempPath(), $"fshw-cache-{Guid.NewGuid():N}")
 
-    let checker =
-        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
     let source = File.ReadAllText(sourceFile)
@@ -1584,8 +1567,7 @@ let ``cached check returns None because partial FCS results are unusable by plug
     let cacheDir =
         Path.Combine(Path.GetTempPath(), $"fshw-cache-meta-{Guid.NewGuid():N}")
 
-    let checker =
-        FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
     let source = File.ReadAllText(sourceFile)

@@ -7,8 +7,8 @@ open FsHotWatch.Plugin
 open FsHotWatch.PluginFramework
 open FsHotWatch.Tests.TestHelpers
 
-/// Create an FSharpChecker for tests.
-let private checker = FSharp.Compiler.CodeAnalysis.FSharpChecker.Create()
+/// Shared FSharpChecker for tests.
+let private checker = TestHelpers.sharedChecker.Value
 
 /// Helper: register a handler with no-op host functions by default.
 let private registerWith

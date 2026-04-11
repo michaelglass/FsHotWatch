@@ -651,10 +651,16 @@ let ``test errors are cleared when all tests pass`` () =
         // Remove fail flag so second run passes
         File.Delete(Path.Combine(tmpDir, "fail_flag"))
         host.EmitBuildCompleted(BuildSucceeded)
+        // Wait for second run to start (status leaves terminal from first run)
+        waitUntil
+            (fun () ->
+                match host.GetStatus("test-prune") with
+                | Some(Completed _)
+                | Some(Failed _) -> false
+                | _ -> true)
+            5000
+
         waitForPluginTerminal host "test-prune" 5.0
-        // Small delay to let the ledger's ClearPlugin message process
-        // (status and ledger are separate async systems)
-        Threading.Thread.Sleep(100)
         test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>)
 
 // Inline FactAttribute so test detection works without xUnit assemblies in script options.
@@ -733,7 +739,7 @@ let ``FileChecked reports Completed when testConfigs provided (analysis done, aw
                 FilterTemplate = None
                 ClassJoin = " " } ]
 
-        let checker = FSharpChecker.Create(keepAssemblyContents = true)
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
         let host = PluginHost.create checker tmpDir
 
@@ -763,7 +769,7 @@ let ``FileChecked reports Completed when no testConfigs (success path)`` () =
     withTempDir "tp-complete-real" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
-        let checker = FSharpChecker.Create(keepAssemblyContents = true)
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
         let host = PluginHost.create checker tmpDir
 
@@ -794,7 +800,7 @@ let ``after scan and build, test methods are in the sqlite database`` () =
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let testFile = Path.Combine(tmpDir, "MyTests.fsx")
 
-        let checker = FSharpChecker.Create(keepAssemblyContents = true)
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
 
         let testConfigs =
@@ -857,7 +863,7 @@ let ``after a symbol change, affected-tests identifies the dependent test`` () =
                 FilterTemplate = Some "-- --filter-class {classes}"
                 ClassJoin = "|" } ]
 
-        let checker = FSharpChecker.Create(keepAssemblyContents = true)
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
         let host = PluginHost.create checker tmpDir
         let handler = create dbPath tmpDir (Some testConfigs) None None None None None
@@ -933,7 +939,7 @@ let ``cross-file type change only runs affected test classes`` () =
                 FilterTemplate = Some "-- --filter-class {classes}"
                 ClassJoin = "|" } ]
 
-        let checker = FSharpChecker.Create(keepAssemblyContents = true)
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
         let host = PluginHost.create checker tmpDir
         let handler = create dbPath tmpDir (Some testConfigs) None None None None None
@@ -1058,7 +1064,7 @@ let validate (cfg: Config) = cfg.Value.Length > 0
             | None -> ()
 
             if not (affectedTests.Contains("testValidateTrue")) then
-                System.Threading.Thread.Sleep(500)
+                System.Threading.Thread.Sleep(50)
 
         test <@ affectedTests.Contains("testValidateTrue") @>
         test <@ affectedTests.Contains("testValidateFalse") @>
@@ -1126,7 +1132,7 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
 
         // Wait for the plugin to process the FileChecked event and settle.
         // With the fix, plugin goes Running → Completed. Without the fix, it stays Running.
-        System.Threading.Thread.Sleep(500)
+        waitForSettled host "test-prune" 5000
 
         // 3. WaitForComplete should resolve within a few seconds (1s stability + margin).
         //    Before the fix, the plugin stayed Running indefinitely after this FileChecked.
@@ -1283,12 +1289,7 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
 
         // Create a single checker and project options shared by both DB setup and the plugin.
         // Using the same checker ensures analyzeSource (inside the plugin) can reuse FCS results.
-        let checker =
-            FSharpChecker.Create(
-                projectCacheSize = 200,
-                keepAssemblyContents = true,
-                keepAllBackgroundResolutions = true
-            )
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         File.WriteAllText(filePath, initialSource)
         let initialSourceText = SourceText.ofString initialSource
