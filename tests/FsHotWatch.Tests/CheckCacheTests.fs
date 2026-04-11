@@ -114,7 +114,7 @@ let ``makeCacheKey produces different keys for different files`` () =
     File.WriteAllText(tempFile1, "content1")
     File.WriteAllText(tempFile2, "content2")
 
-    let checker = FSharp.Compiler.CodeAnalysis.FSharpChecker.Create()
+    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let opts1, _ =
         checker.GetProjectOptionsFromScript(tempFile1, FSharp.Compiler.Text.SourceText.ofString "module A")

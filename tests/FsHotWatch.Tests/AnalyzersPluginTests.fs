@@ -154,7 +154,9 @@ let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
           Version = 0L }
 
     host.EmitFileChecked(fakeResult)
-    System.Threading.Thread.Sleep(500)
+
+    // Wait for the plugin to finish processing (status reaches Completed/Failed)
+    waitForTerminalStatus host "analyzers" 5000
 
     // ParseOnly should dispatch to the async worker (not skip synchronously).
     // With Unchecked.defaultof ParseResults, the analyzer will crash — but it
