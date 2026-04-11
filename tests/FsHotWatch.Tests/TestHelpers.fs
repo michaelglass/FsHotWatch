@@ -3,6 +3,12 @@ module FsHotWatch.Tests.TestHelpers
 open System
 open System.IO
 open System.Threading
+open FSharp.Compiler.CodeAnalysis
+
+/// Shared FSharpChecker for tests that only need basic compilation.
+/// Lazy so it's only created if actually used.
+let sharedChecker =
+    lazy FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
 /// Poll until condition is true or timeout (default 50ms poll interval).
 let waitUntil (condition: unit -> bool) (timeoutMs: int) =
