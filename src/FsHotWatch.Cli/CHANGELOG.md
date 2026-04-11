@@ -13,6 +13,15 @@ Note: as of the Unreleased cycle, CLI versions and releases together with the co
 - `DiagnosticEntry.Severity` typed as `DiagnosticSeverity` DU instead of string in `IpcOutput`
 - `startFreshDaemon` startup poll deadline now configurable via `startupTimeoutSeconds` parameter (default: 30s)
 - Process launch in `startFreshDaemon` injectable via `IpcOps.LaunchDaemon` for testing
+- Bump `CommandTree` 0.3.5 → 0.4.0, `TestPrune.Falco` 1.0.1 → 1.0.2
+- Deduplicate `DisplayStatus` type — reuse `PluginStatus` from core `Events` module
+- Deduplicate `formatStatusLine`/error formatting — reuse `RunOnceOutput.formatStepResult` and `RunOnceOutput.formatErrors`
+- File/process operations injectable via `FileOps`/`ProcessOps` records for testability
+
+### Fixed
+
+- `renderIpcResult` crash (`InvalidOperationException`) on JSON containing array values (e.g. test results with `projects` array)
+- Guard `statusMap` fallback against non-string JSON values
 
 ---
 
