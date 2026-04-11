@@ -602,13 +602,14 @@ let create
                     try
                         let relPath = Path.GetRelativePath(repoRoot, result.File).Replace('\\', '/')
 
-                        let! analysisResult = analyzeSource ctx.Checker result.File result.Source result.ProjectOptions
+                        let projectName =
+                            result.ProjectOptions.ProjectFileName |> Path.GetFileNameWithoutExtension
+
+                        let! analysisResult =
+                            analyzeSource ctx.Checker result.File result.Source result.ProjectOptions projectName
 
                         match analysisResult with
                         | Ok analysisResult ->
-                            let projectName =
-                                result.ProjectOptions.ProjectFileName |> Path.GetFileNameWithoutExtension
-
                             let normalizedSymbols = normalizeSymbolPaths repoRoot analysisResult.Symbols
 
                             let fileAnalysis =
