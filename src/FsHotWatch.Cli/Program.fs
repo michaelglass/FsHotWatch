@@ -544,7 +544,7 @@ let main args =
 
     // Handle --help/-h as global flags (CommandTree handles subcommand help via HelpRequested)
     if argList |> List.exists (fun a -> a = "--help" || a = "-h" || a = "help") then
-        printfn "%s" (CommandTree.helpWithGlobals globalSpec.GlobalFlags commandTree cliName)
+        printfn "%s" (CommandTree.helpWithGlobals commandTree globalSpec.GlobalFlags cliName)
         0
     else
 
