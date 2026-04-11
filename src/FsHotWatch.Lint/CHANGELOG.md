@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-*No changes since 0.3.0-alpha.1.*
+### Changed
+
+- Lint runner injectable via `lintRunner` parameter on `create` for testability — allows tests to run without FSharpLint config
 
 ---
 
