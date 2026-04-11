@@ -125,9 +125,15 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
         newCts
 
     /// Core check logic: check a file with explicit options.
-    member private this.CheckFileCore(absPath: string, options: FSharpProjectOptions) : Async<FileCheckResult option> =
+    /// The ct token is checked before and after the expensive FCS call so that
+    /// CancelPreviousCheck cancellations are observed even when the async CE's
+    /// implicit token differs from the per-file token.
+    member private this.CheckFileCore
+        (absPath: string, options: FSharpProjectOptions, ct: CancellationToken)
+        : Async<FileCheckResult option> =
         async {
-            // Check cache before running expensive FCS check
+            ct.ThrowIfCancellationRequested()
+
             let cacheKey =
                 cacheBackend |> Option.map (fun _ -> makeCacheKeyFast absPath options)
 
@@ -155,11 +161,13 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
                 let version = this.NextVersion()
 
                 try
+                    ct.ThrowIfCancellationRequested()
                     let sw = System.Diagnostics.Stopwatch.StartNew()
 
                     let! parseResults, checkAnswer = checker.ParseAndCheckFileInProject(absPath, 0, sourceText, options)
 
                     sw.Stop()
+                    ct.ThrowIfCancellationRequested()
 
                     if sw.Elapsed.TotalSeconds > 2.0 then
                         Logging.debug "check" $"SLOW: %s{Path.GetFileName(absPath)} took %.1f{sw.Elapsed.TotalSeconds}s"
@@ -210,7 +218,7 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
                 | false, _ ->
                     Logging.debug "check" $"No project options for: %s{absPath}"
                     return None
-                | true, (options :: _) -> return! this.CheckFileCore(absPath, options)
+                | true, (options :: _) -> return! this.CheckFileCore(absPath, options, fileToken)
                 | true, [] ->
                     Logging.debug "check" $"No project options for: %s{absPath}"
                     return None
@@ -232,7 +240,7 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
 
             try
                 fileToken.ThrowIfCancellationRequested()
-                return! this.CheckFileCore(absPath, options)
+                return! this.CheckFileCore(absPath, options, fileToken)
             with :? OperationCanceledException ->
                 Logging.debug "check" $"Cancelled: %s{Path.GetFileName(absPath)}"
                 return None
