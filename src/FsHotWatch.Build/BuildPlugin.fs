@@ -42,9 +42,9 @@ let create
     let testProjectNameSet = testProjectNames |> Set.ofList
 
     let isTestFile (file: string) =
-        match graph.GetProjectForFile(AbsFilePath.create file) with
-        | Some proj -> testProjectNameSet.Contains(Path.GetFileNameWithoutExtension(AbsProjectPath.value proj))
-        | None -> false
+        graph.GetProjectsForFile(AbsFilePath.create file)
+        |> List.exists (fun proj ->
+            testProjectNameSet.Contains(Path.GetFileNameWithoutExtension(AbsProjectPath.value proj)))
 
     let isTestProject (proj: AbsProjectPath) =
         testProjectNameSet.Contains(Path.GetFileNameWithoutExtension(AbsProjectPath.value proj))

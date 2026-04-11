@@ -21,7 +21,17 @@
 - Extract pure filtering functions from `MacFsEvents` for testability
 - `Watcher` accepts injectable `isMacOS` flag for cross-platform testability
 
+### Changed (Breaking)
+
+- `IProjectGraphReader` adds `GetProjectsForFile` method returning `AbsProjectPath list`
+- `ProjectGraph.fileToProjects` now stores all projects per file (was `fileToProject` storing one)
+- `CheckPipeline.projectOptionsByFile` stores all project options per file (list instead of single)
+- New `CheckPipeline.CheckFileWithOptions` method for checking a file with explicit project options
+- New `CheckPipeline.GetProjectOptions` method
+
 ### Fixed
+
+- Handle shared source files (linked items): a file appearing in multiple projects now triggers re-checks in all projects, not just the last-registered one
 
 - `Daemon` implements `IDisposable` and stops all internal `MailboxProcessor` agents on dispose — agents previously ran indefinitely, keeping processes alive after tests
 - `RunWithIpc` races initial scan against cancellation to prevent test-process hangs when `cts` is cancelled during slow `ScanAll`
