@@ -166,6 +166,53 @@ let ``GetParallelTiers handles linear chain`` () =
     test <@ tiers.[1] = [ pp "/proj/B.fsproj" ] @>
     test <@ tiers.[2] = [ pp "/proj/C.fsproj" ] @>
 
+// --- Shared source files (linked items) ---
+
+[<Fact>]
+let ``GetProjectsForFile returns all projects for shared file`` () =
+    let graph = ProjectGraph()
+    let shared = fp "/proj/Shared.fs"
+    graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs"; shared ], [])
+    graph.RegisterProject(pp "/proj/B.fsproj", [ fp "/proj/B.fs"; shared ], [])
+    let projects = graph.GetProjectsForFile(shared)
+    test <@ projects |> List.contains (pp "/proj/A.fsproj") @>
+    test <@ projects |> List.contains (pp "/proj/B.fsproj") @>
+    test <@ projects.Length = 2 @>
+
+[<Fact>]
+let ``GetProjectsForFile returns empty for unknown file`` () =
+    let graph = ProjectGraph()
+    graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs" ], [])
+    test <@ graph.GetProjectsForFile(fp "/proj/Unknown.fs") |> List.isEmpty @>
+
+[<Fact>]
+let ``GetProjectForFile still works for shared file`` () =
+    let graph = ProjectGraph()
+    let shared = fp "/proj/Shared.fs"
+    graph.RegisterProject(pp "/proj/A.fsproj", [ shared ], [])
+    graph.RegisterProject(pp "/proj/B.fsproj", [ shared ], [])
+    test <@ graph.GetProjectForFile(shared).IsSome @>
+
+[<Fact>]
+let ``GetAffectedProjects returns all projects for shared file`` () =
+    let graph = ProjectGraph()
+    let shared = fp "/proj/Shared.fs"
+    graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs"; shared ], [])
+    graph.RegisterProject(pp "/proj/B.fsproj", [ fp "/proj/B.fs"; shared ], [])
+    let affected = graph.GetAffectedProjects([ shared ])
+    test <@ affected |> List.contains (pp "/proj/A.fsproj") @>
+    test <@ affected |> List.contains (pp "/proj/B.fsproj") @>
+
+[<Fact>]
+let ``GetAllFiles does not duplicate shared files`` () =
+    let graph = ProjectGraph()
+    let shared = fp "/proj/Shared.fs"
+    graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs"; shared ], [])
+    graph.RegisterProject(pp "/proj/B.fsproj", [ fp "/proj/B.fs"; shared ], [])
+    let files = graph.GetAllFiles()
+    test <@ files |> List.filter (fun f -> f = shared) |> List.length = 1 @>
+    test <@ files.Length = 3 @>
+
 // --- Coverage for uncovered edge cases ---
 
 // Line 41: RegisterProject duplicate dependent (existing list already contains project)

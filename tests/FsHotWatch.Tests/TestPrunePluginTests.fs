@@ -1351,3 +1351,81 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
             host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
 
         test <@ changedAfterAst.Value.Contains(relPath) @>)
+
+// --- buildFilterArgs unit tests ---
+
+[<Fact>]
+let ``buildFilterArgs returns None when no classes for project`` () =
+    let config =
+        { Project = "TestProj"
+          Command = "dotnet"
+          Args = "test"
+          Group = "default"
+          Environment = []
+          FilterTemplate = Some "-- --filter-class {classes}"
+          ClassJoin = "|" }
+
+    let result = buildFilterArgs config Map.empty
+    test <@ result = None @>
+
+[<Fact>]
+let ``buildFilterArgs returns None when no FilterTemplate configured`` () =
+    let config =
+        { Project = "TestProj"
+          Command = "dotnet"
+          Args = "test"
+          Group = "default"
+          Environment = []
+          FilterTemplate = None
+          ClassJoin = "|" }
+
+    let classesByProject = Map.ofList [ "TestProj", [ "TestClassA"; "TestClassB" ] ]
+    let result = buildFilterArgs config classesByProject
+    test <@ result = None @>
+
+[<Fact>]
+let ``buildFilterArgs applies template with ClassJoin`` () =
+    let config =
+        { Project = "TestProj"
+          Command = "dotnet"
+          Args = "test"
+          Group = "default"
+          Environment = []
+          FilterTemplate = Some "-- --filter-class {classes}"
+          ClassJoin = "|" }
+
+    let classesByProject = Map.ofList [ "TestProj", [ "ClassA"; "ClassB" ] ]
+    let result = buildFilterArgs config classesByProject
+    test <@ result = Some "-- --filter-class ClassA|ClassB" @>
+
+[<Fact>]
+let ``buildFilterArgs applies template with default space join`` () =
+    let config =
+        { Project = "TestProj"
+          Command = "dotnet"
+          Args = "test"
+          Group = "default"
+          Environment = []
+          FilterTemplate = Some "-- --filter-class {classes}"
+          ClassJoin = " " }
+
+    let classesByProject = Map.ofList [ "TestProj", [ "ClassA"; "ClassB" ] ]
+    let result = buildFilterArgs config classesByProject
+    test <@ result = Some "-- --filter-class ClassA ClassB" @>
+
+[<Fact>]
+let ``buildFilterArgs ignores classes from other projects`` () =
+    let config =
+        { Project = "TestProjA"
+          Command = "dotnet"
+          Args = "test"
+          Group = "default"
+          Environment = []
+          FilterTemplate = Some "-- --filter-class {classes}"
+          ClassJoin = "|" }
+
+    let classesByProject =
+        Map.ofList [ "TestProjA", [ "ClassA" ]; "TestProjB", [ "ClassB" ] ]
+
+    let result = buildFilterArgs config classesByProject
+    test <@ result = Some "-- --filter-class ClassA" @>
