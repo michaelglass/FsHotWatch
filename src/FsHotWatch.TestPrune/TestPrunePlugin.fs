@@ -79,7 +79,7 @@ let private formatTestResultsJson (results: TestResults) =
     )
 
 /// Build the filter arg string for a config given affected classes.
-let private buildFilterArgs (config: TestConfig) (classesByProject: Map<string, string list>) : string option =
+let internal buildFilterArgs (config: TestConfig) (classesByProject: Map<string, string list>) : string option =
     let classes =
         classesByProject |> Map.tryFind config.Project |> Option.defaultValue []
 
