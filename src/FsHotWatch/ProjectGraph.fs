@@ -23,6 +23,18 @@ type ProjectGraph() as this =
     let projectReferences = ConcurrentDictionary<AbsProjectPath, AbsProjectPath list>()
     let projectDependents = ConcurrentDictionary<AbsProjectPath, AbsProjectPath list>()
 
+    let appendIfAbsent (dict: ConcurrentDictionary<'K, 'V list>) (key: 'K) (value: 'V) =
+        dict.AddOrUpdate(
+            key,
+            [ value ],
+            fun _ existing ->
+                if List.contains value existing then
+                    existing
+                else
+                    value :: existing
+        )
+        |> ignore
+
     /// Clear all state so the next round of RegisterProject/RegisterFromFsproj calls
     /// rebuild from scratch. Call before re-discovery to remove deleted projects,
     /// removed files, and stale dependent relationships.
@@ -39,30 +51,12 @@ type ProjectGraph() as this =
         projectFiles[projectPath] <- sourceFiles
 
         for file in sourceFiles do
-            fileToProjects.AddOrUpdate(
-                file,
-                [ projectPath ],
-                fun _ existing ->
-                    if List.contains projectPath existing then
-                        existing
-                    else
-                        projectPath :: existing
-            )
-            |> ignore
+            appendIfAbsent fileToProjects file projectPath
 
         projectReferences[projectPath] <- references
 
         for ref in references do
-            projectDependents.AddOrUpdate(
-                ref,
-                [ projectPath ],
-                fun _ existing ->
-                    if List.contains projectPath existing then
-                        existing
-                    else
-                        projectPath :: existing
-            )
-            |> ignore
+            appendIfAbsent projectDependents ref projectPath
 
     /// Parse a .fsproj file and register it. Returns (sourceFiles, projectReferences).
     member this.RegisterFromFsproj(fsprojPath: string) =

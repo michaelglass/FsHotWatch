@@ -427,25 +427,18 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 for proj in tier do
                     let projPath = AbsProjectPath.value proj
 
+                    let projFiles =
+                        ctx.Graph.GetSourceFiles(proj)
+                        |> List.map AbsFilePath.value
+                        |> List.filter filesToCheckSet.Contains
+
+                    checkedFiles <- Set.union checkedFiles (Set.ofList projFiles)
+
                     match ctx.Pipeline.GetProjectOptions(projPath) with
                     | Some options ->
-                        let projFiles =
-                            ctx.Graph.GetSourceFiles(proj)
-                            |> List.map AbsFilePath.value
-                            |> List.filter filesToCheckSet.Contains
-
-                        checkedFiles <- Set.union checkedFiles (Set.ofList projFiles)
-
                         for file in projFiles do
                             tierChecks.Add(ctx.Pipeline.CheckFileWithOptions(file, options, ctx.DaemonCt.Value))
                     | None ->
-                        let projFiles =
-                            ctx.Graph.GetSourceFiles(proj)
-                            |> List.map AbsFilePath.value
-                            |> List.filter filesToCheckSet.Contains
-
-                        checkedFiles <- Set.union checkedFiles (Set.ofList projFiles)
-
                         for file in projFiles do
                             tierChecks.Add(ctx.Pipeline.CheckFile(file, ctx.DaemonCt.Value))
 
@@ -838,19 +831,20 @@ let private performScan
                     for proj in tier do
                         let projPath = AbsProjectPath.value proj
 
+                        let projFiles =
+                            graph.GetSourceFiles(proj)
+                            |> List.map AbsFilePath.value
+                            |> List.filter filesToCheckSet.Contains
+
+                        skippedCount <- skippedCount + ((graph.GetSourceFiles(proj) |> List.length) - projFiles.Length)
+
                         match pipeline.GetProjectOptions(projPath) with
                         | Some options ->
-                            for file in graph.GetSourceFiles(proj) |> List.map AbsFilePath.value do
-                                if filesToCheckSet.Contains(file) then
-                                    tierChecks.Add(pipeline.CheckFileWithOptions(file, options, ct))
-                                else
-                                    tierChecks.Add(async { return None })
+                            for file in projFiles do
+                                tierChecks.Add(pipeline.CheckFileWithOptions(file, options, ct))
                         | None ->
-                            for file in graph.GetSourceFiles(proj) |> List.map AbsFilePath.value do
-                                if filesToCheckSet.Contains(file) then
-                                    tierChecks.Add(pipeline.CheckFile(file, ct))
-                                else
-                                    tierChecks.Add(async { return None })
+                            for file in projFiles do
+                                tierChecks.Add(pipeline.CheckFile(file, ct))
 
                     let! results = tierChecks |> Seq.toList |> Async.Parallel
 
@@ -860,7 +854,7 @@ let private performScan
                             checkedCount <- checkedCount + 1
                             host.EmitFileChecked(checkResult)
                             reportFcsDiagnostics fcsSuppressedCodes host checkResult
-                        | None -> skippedCount <- skippedCount + 1
+                        | None -> ()
 
                         completed <- completed + 1
                         scanState <- Scanning(total, completed, System.DateTime.UtcNow)
