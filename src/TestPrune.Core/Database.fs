@@ -2,6 +2,7 @@ module TestPrune.Database
 
 open System
 open System.Collections.Generic
+open System.IO
 open Microsoft.Data.Sqlite
 open TestPrune.AstAnalyzer
 
@@ -134,15 +135,59 @@ let private openConnection (dbPath: string) =
         conn.Dispose()
         raise ex
 
+/// Increment this whenever the schema changes in a backwards-incompatible way.
+/// A mismatch causes the database file to be deleted and recreated.
+[<Literal>]
+let private SchemaVersion = 1
+
+let private deleteDbFiles (dbPath: string) =
+    File.Delete(dbPath)
+
+    for ext in [ "-wal"; "-shm" ] do
+        let p = dbPath + ext
+
+        if File.Exists(p) then
+            File.Delete(p)
+
+/// Open a connection, deleting and recreating the database if the schema version is incompatible.
+let private openCheckedConnection (dbPath: string) =
+    if File.Exists(dbPath) then
+        let conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- "PRAGMA user_version;"
+        let version = cmd.ExecuteScalar() :?> int64 |> int
+
+        if version <> 0 && version <> SchemaVersion then
+            eprintfn
+                $"Schema version mismatch (found v%d{version}, expected v%d{SchemaVersion}). Recreating database."
+
+            SqliteConnection.ClearPool(conn)
+            conn.Dispose()
+            deleteDbFiles dbPath
+            openConnection dbPath
+        else
+            conn
+    else
+        openConnection dbPath
+
 /// SQLite-backed dependency graph storage.
 type Database(dbPath: string) =
     let warnedUnknownKinds = HashSet<string>()
 
     do
-        use conn = openConnection dbPath
+        use conn = openCheckedConnection dbPath
         use cmd = conn.CreateCommand()
         cmd.CommandText <- schema
         cmd.ExecuteNonQuery() |> ignore
+
+        use versionCmd = conn.CreateCommand()
+        versionCmd.CommandText <- "PRAGMA user_version;"
+        let currentVersion = versionCmd.ExecuteScalar() :?> int64 |> int
+
+        if currentVersion <> SchemaVersion then
+            use setCmd = conn.CreateCommand()
+            setCmd.CommandText <- $"PRAGMA user_version = %d{SchemaVersion};"
+            setCmd.ExecuteNonQuery() |> ignore
 
     /// Create a Database instance, initializing the schema if needed.
     static member create(dbPath: string) = Database(dbPath)

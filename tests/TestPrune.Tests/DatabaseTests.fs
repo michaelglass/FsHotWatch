@@ -1665,3 +1665,62 @@ module ``GetTestMethodSymbolNames with data`` =
 
             let names = db.GetTestMethodSymbolNames()
             test <@ names |> Set.contains "Tests.testA" @>)
+
+module ``Schema version migration`` =
+
+    let private setUserVersion (dbPath: string) (version: int) =
+        use conn = openRawConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- $"PRAGMA user_version = %d{version};"
+        cmd.ExecuteNonQuery() |> ignore
+
+    let private getUserVersion (dbPath: string) =
+        use conn = openRawConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- "PRAGMA user_version;"
+        cmd.ExecuteScalar() :?> int64 |> int
+
+    [<Fact>]
+    let ``recreates database when schema version is outdated`` () =
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+            let symbols = db.GetSymbolsInFile "src/Lib.fs"
+            test <@ symbols.Length = 1 @>
+
+            setUserVersion path 999
+
+            let db2 = Database.create path
+            let symbols2 = db2.GetSymbolsInFile "src/Lib.fs"
+            test <@ symbols2 |> List.isEmpty @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``sets schema version on new database`` () =
+        let path = tempDbPath ()
+
+        try
+            let _db = Database.create path
+            let version = getUserVersion path
+            test <@ version > 0 @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``preserves database when schema version matches`` () =
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+            let symbols = db.GetSymbolsInFile "src/Lib.fs"
+            test <@ symbols.Length = 1 @>
+
+            let db2 = Database.create path
+            let symbols2 = db2.GetSymbolsInFile "src/Lib.fs"
+            test <@ symbols2.Length = 1 @>
+        finally
+            cleanupDb path

@@ -10,7 +10,7 @@ open TestPrune.Domain
 let tempDbPath () =
     Path.Combine(Path.GetTempPath(), $"test-prune-%A{Guid.NewGuid()}.db")
 
-let private cleanupDb (path: string) =
+let cleanupDb (path: string) =
     for ext in [ ""; "-wal"; "-shm" ] do
         let p = path + ext
 
