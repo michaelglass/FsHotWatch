@@ -278,23 +278,40 @@ let renderIpcResult (noWarnFail: bool) (result: string) : int =
                     0
                 | _ ->
 
-                    let statusMap =
-                        [ for prop in root.EnumerateObject() do
-                              prop.Name, prop.Value.GetString() ]
-                        |> Map.ofList
+                    match root.TryGetProperty("projects") with
+                    | true, projects when projects.ValueKind = System.Text.Json.JsonValueKind.Array ->
+                        let hasFailed =
+                            projects.EnumerateArray()
+                            |> Seq.exists (fun p ->
+                                match p.TryGetProperty("status") with
+                                | true, s -> s.GetString() = "failed"
+                                | false, _ -> false)
 
-                    let parsed = parseStatusMap statusMap
-                    let output = renderProgress parsed
-                    eprintfn "%s" output
+                        if hasFailed then
+                            UI.fail "Tests failed"
+                            1
+                        else
+                            UI.success "Tests passed"
+                            0
+                    | _ ->
 
-                    let hasFailed =
-                        parsed
-                        |> Map.exists (fun _ s ->
-                            match s with
-                            | DisplayFailed _ -> true
-                            | _ -> false)
+                        let statusMap =
+                            [ for prop in root.EnumerateObject() do
+                                  prop.Name, prop.Value.GetString() ]
+                            |> Map.ofList
 
-                    if hasFailed then 1 else 0
+                        let parsed = parseStatusMap statusMap
+                        let output = renderProgress parsed
+                        eprintfn "%s" output
+
+                        let hasFailed =
+                            parsed
+                            |> Map.exists (fun _ s ->
+                                match s with
+                                | DisplayFailed _ -> true
+                                | _ -> false)
+
+                        if hasFailed then 1 else 0
 
 /// Poll daemon status, render live progress, then format final errors.
 /// Returns exit code (0 = no errors, 1 = errors).
