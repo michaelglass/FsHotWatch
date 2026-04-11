@@ -262,6 +262,22 @@ let ``renderIpcResult with plain text returns 0`` () =
     test <@ result = 0 @>
 
 [<Fact>]
+let ``renderIpcResult with test results JSON containing arrays does not crash`` () =
+    let json =
+        """{"elapsed":"1.5s","projects":[{"project":"TestProject","status":"passed","output":"ok"}]}"""
+
+    let result = renderIpcResult false json
+    test <@ result = 0 @>
+
+[<Fact>]
+let ``renderIpcResult with test results JSON with failed project returns 1`` () =
+    let json =
+        """{"elapsed":"2.0s","projects":[{"project":"FailProject","status":"failed","output":"FAIL: test1"}]}"""
+
+    let result = renderIpcResult false json
+    test <@ result = 1 @>
+
+[<Fact>]
 let ``formatDiagnosticsResponse hides info-severity entries`` () =
     let json =
         """{"count":1,"files":{"src/Foo.fs":[{"plugin":"fcs","message":"XML comment is not placed on a valid language element.","severity":"info","line":3,"column":0,"detail":null}]},"statuses":{}}"""
