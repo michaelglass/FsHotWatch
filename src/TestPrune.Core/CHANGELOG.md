@@ -1,6 +1,6 @@
 # Changelog — TestPrune.Core
 
-## Unreleased
+## [2.0.0] - 2026-04-11
 - feat: cross-project dependency extraction via extern symbols
 - feat: add ExternRef SymbolKind for honest extern symbol classification
 - feat: add TestExecutor DI record for injectable test execution in runRunWith
