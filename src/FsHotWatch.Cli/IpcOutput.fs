@@ -5,14 +5,8 @@ open System.Globalization
 open System.Text.Json
 open System.Threading
 open CommandTree
+open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
-
-/// Parsed status for display purposes (no dependency on FsHotWatch.Events).
-type DisplayStatus =
-    | DisplayIdle
-    | DisplayRunning of since: DateTime
-    | DisplayCompleted of at: DateTime
-    | DisplayFailed of error: string * at: DateTime
 
 /// A single diagnostic entry parsed from IPC JSON.
 type DiagnosticEntry =
@@ -71,76 +65,62 @@ let parseDiagnosticsResponse (json: string) : DiagnosticsResponse =
       Files = files
       Statuses = statuses }
 
-/// Parse a status string from IPC into DisplayStatus.
-let private parseStatus (s: string) : DisplayStatus =
+/// Parse a status string from IPC into PluginStatus.
+let private parseStatus (s: string) : PluginStatus =
     let tryParseUtc (s: string) =
         DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal)
 
     if s = "Idle" then
-        DisplayIdle
+        Idle
     elif s.StartsWith("Running since ") then
         match tryParseUtc (s.Substring("Running since ".Length)) with
-        | true, dt -> DisplayRunning dt
-        | false, _ -> DisplayIdle
+        | true, dt -> Running dt
+        | false, _ -> Idle
     elif s.StartsWith("Completed at ") then
         match tryParseUtc (s.Substring("Completed at ".Length)) with
-        | true, dt -> DisplayCompleted dt
-        | false, _ -> DisplayCompleted DateTime.UtcNow
+        | true, dt -> Completed dt
+        | false, _ -> Completed DateTime.UtcNow
     elif s.StartsWith("Failed at ") then
         let rest = s.Substring("Failed at ".Length)
 
         match rest.IndexOf(": ") with
         | -1 ->
             match tryParseUtc rest with
-            | true, dt -> DisplayFailed("", dt)
-            | false, _ -> DisplayFailed(rest, DateTime.UtcNow)
+            | true, dt -> Failed("", dt)
+            | false, _ -> Failed(rest, DateTime.UtcNow)
         | idx ->
             let dtStr = rest.Substring(0, idx)
             let msg = rest.Substring(idx + 2)
 
             match tryParseUtc dtStr with
-            | true, dt -> DisplayFailed(msg, dt)
-            | false, _ -> DisplayFailed(msg, DateTime.UtcNow)
+            | true, dt -> Failed(msg, dt)
+            | false, _ -> Failed(msg, DateTime.UtcNow)
     else
-        DisplayIdle
+        Idle
 
-/// Parse a map of status strings into DisplayStatus values.
-let parseStatusMap (statuses: Map<string, string>) : Map<string, DisplayStatus> =
+/// Parse a map of status strings into PluginStatus values.
+let parseStatusMap (statuses: Map<string, string>) : Map<string, PluginStatus> =
     statuses |> Map.map (fun _ s -> parseStatus s)
 
 /// Check if all statuses are terminal (Completed, Failed, or Idle).
 /// Returns false for empty maps (no plugins registered yet).
 /// Idle is treated as terminal because this is only called after WaitForScan returns,
 /// at which point Idle means the plugin was not triggered by this scan cycle.
-let isAllTerminal (statuses: Map<string, DisplayStatus>) : bool =
+let isAllTerminal (statuses: Map<string, PluginStatus>) : bool =
     not statuses.IsEmpty
     && statuses
        |> Map.forall (fun _ s ->
            match s with
-           | DisplayCompleted _
-           | DisplayFailed _
-           | DisplayIdle -> true
+           | Completed _
+           | Failed _
+           | Idle -> true
            | _ -> false)
 
-/// Format a single status line with icon, name, and timing.
-let formatStatusLine (name: string) (status: DisplayStatus) : string =
-    let paddedName = name.PadRight(24)
-
-    match status with
-    | DisplayCompleted _ -> $"  %s{Color.green}\u2713%s{Color.reset} %s{paddedName}"
-    | DisplayFailed(error, _) ->
-        $"  %s{Color.red}\u2717%s{Color.reset} %s{paddedName} %s{Color.dim}\u2014 %s{error}%s{Color.reset}"
-    | DisplayRunning since ->
-        let elapsed = DateTime.UtcNow - since
-        let timingStr = UI.timing elapsed
-        $"  %s{Color.yellow}\u2026%s{Color.reset} %s{paddedName} %s{timingStr}"
-    | DisplayIdle -> $"  %s{Color.dim}\u2014 %s{paddedName}%s{Color.reset}"
-
 /// Render all plugin statuses as a multi-line progress display.
-let renderProgress (statuses: Map<string, DisplayStatus>) : string =
+let renderProgress (statuses: Map<string, PluginStatus>) : string =
     statuses
     |> Map.toList
-    |> List.map (fun (name, status) -> formatStatusLine name status)
+    |> List.map (fun (name, status) -> RunOnceOutput.formatStepResult name status)
     |> String.concat "\n"
 
 /// Format the full errors response with colored status lines and error details.
@@ -149,67 +129,26 @@ let formatDiagnosticsResponse (resp: DiagnosticsResponse) : string =
 
     // Status summary
     let parsedStatuses = parseStatusMap resp.Statuses
+    let summary = RunOnceOutput.formatSummary parsedStatuses
 
-    for KeyValue(name, status) in parsedStatuses do
-        sb.AppendLine(formatStatusLine name status) |> ignore
-
-    if not parsedStatuses.IsEmpty then
+    if summary <> "" then
+        sb.AppendLine(summary) |> ignore
         sb.AppendLine() |> ignore
 
-    // Error details — only show errors and warnings (skip info/hint)
-    let actionableFiles =
+    // Convert DiagnosticEntry to (pluginName * ErrorEntry) for shared formatting
+    let errorMap =
         resp.Files
         |> Map.map (fun _ entries ->
             entries
-            |> List.filter (fun e ->
-                match e.Severity with
-                | Error
-                | Warning -> true
-                | Info
-                | Hint -> false))
-        |> Map.filter (fun _ entries -> not entries.IsEmpty)
+            |> List.map (fun d ->
+                d.Plugin,
+                { Message = d.Message
+                  Severity = d.Severity
+                  Line = d.Line
+                  Column = d.Column
+                  Detail = d.Detail }))
 
-    if actionableFiles.IsEmpty then
-        sb.Append($"%s{Color.green}No errors%s{Color.reset}") |> ignore
-    else
-        let mutable errorCount = 0
-        let mutable warnCount = 0
-
-        for KeyValue(file, entries) in actionableFiles do
-            sb.AppendLine() |> ignore
-            sb.AppendLine($"%s{Color.bold}%s{file}%s{Color.reset}") |> ignore
-
-            for entry in entries do
-                match entry.Severity with
-                | Error -> errorCount <- errorCount + 1
-                | Warning -> warnCount <- warnCount + 1
-                | Info
-                | Hint -> ()
-
-                let severityLabel =
-                    match entry.Severity with
-                    | Error -> $"%s{Color.red}error%s{Color.reset}: "
-                    | Warning -> $"%s{Color.yellow}warning%s{Color.reset}: "
-                    | Info
-                    | Hint -> ""
-
-                sb.AppendLine(
-                    $"  %s{Color.dim}[%s{entry.Plugin}]%s{Color.reset} L%d{entry.Line}: %s{severityLabel}%s{entry.Message}"
-                )
-                |> ignore
-
-        sb.AppendLine() |> ignore
-        let fileCount = actionableFiles.Count
-
-        let summary =
-            match errorCount, warnCount with
-            | 0, 0 -> "No errors"
-            | e, 0 -> $"%d{e} error(s)"
-            | 0, w -> $"%d{w} warning(s)"
-            | e, w -> $"%d{e} error(s), %d{w} warning(s)"
-
-        sb.Append($"%s{summary} in %d{fileCount} file(s)") |> ignore
-
+    sb.Append(RunOnceOutput.formatErrors errorMap) |> ignore
     sb.ToString().TrimEnd('\n', '\r')
 
 /// Determine exit code from a DiagnosticsResponse.
@@ -279,7 +218,7 @@ let renderIpcResult (noWarnFail: bool) (result: string) : int =
                 | _ ->
 
                     match root.TryGetProperty("projects") with
-                    | true, projects when projects.ValueKind = System.Text.Json.JsonValueKind.Array ->
+                    | true, projects when projects.ValueKind = JsonValueKind.Array ->
                         let hasFailed =
                             projects.EnumerateArray()
                             |> Seq.exists (fun p ->
@@ -297,7 +236,8 @@ let renderIpcResult (noWarnFail: bool) (result: string) : int =
 
                         let statusMap =
                             [ for prop in root.EnumerateObject() do
-                                  prop.Name, prop.Value.GetString() ]
+                                  if prop.Value.ValueKind = JsonValueKind.String then
+                                      prop.Name, prop.Value.GetString() ]
                             |> Map.ofList
 
                         let parsed = parseStatusMap statusMap
@@ -308,7 +248,7 @@ let renderIpcResult (noWarnFail: bool) (result: string) : int =
                             parsed
                             |> Map.exists (fun _ s ->
                                 match s with
-                                | DisplayFailed _ -> true
+                                | Failed _ -> true
                                 | _ -> false)
 
                         if hasFailed then 1 else 0

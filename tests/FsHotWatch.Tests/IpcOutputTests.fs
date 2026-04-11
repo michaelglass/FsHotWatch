@@ -2,7 +2,9 @@ module FsHotWatch.Tests.IpcOutputTests
 
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
+open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcOutput
 
 [<Fact>]
@@ -41,8 +43,8 @@ let ``parseStatusMap parses completed status`` () =
     test <@ parsed.ContainsKey("build") @>
 
     match parsed["build"] with
-    | DisplayCompleted _ -> ()
-    | other -> failwith $"Expected DisplayCompleted, got %A{other}"
+    | Completed _ -> ()
+    | other -> failwith $"Expected Completed, got %A{other}"
 
 [<Fact>]
 let ``parseStatusMap parses running status`` () =
@@ -51,8 +53,8 @@ let ``parseStatusMap parses running status`` () =
     test <@ parsed.ContainsKey("lint") @>
 
     match parsed["lint"] with
-    | DisplayRunning _ -> ()
-    | other -> failwith $"Expected DisplayRunning, got %A{other}"
+    | Running _ -> ()
+    | other -> failwith $"Expected Running, got %A{other}"
 
 [<Fact>]
 let ``parseStatusMap parses failed status`` () =
@@ -62,8 +64,8 @@ let ``parseStatusMap parses failed status`` () =
     let parsed = parseStatusMap statuses
 
     match parsed["build"] with
-    | DisplayFailed(msg, _) -> test <@ msg = "compile error" @>
-    | other -> failwith $"Expected DisplayFailed, got %A{other}"
+    | Failed(msg, _) -> test <@ msg = "compile error" @>
+    | other -> failwith $"Expected Failed, got %A{other}"
 
 [<Fact>]
 let ``parseStatusMap parses idle status`` () =
@@ -71,8 +73,8 @@ let ``parseStatusMap parses idle status`` () =
     let parsed = parseStatusMap statuses
 
     match parsed["format"] with
-    | DisplayIdle -> ()
-    | other -> failwith $"Expected DisplayIdle, got %A{other}"
+    | Idle -> ()
+    | other -> failwith $"Expected Idle, got %A{other}"
 
 [<Fact>]
 let ``formatDiagnosticsResponse with no errors shows clean message`` () =
@@ -105,15 +107,15 @@ let ``formatDiagnosticsResponse with errors shows count summary`` () =
     test <@ output.Contains("1 error(s), 1 warning(s) in 2 file(s)") @>
 
 [<Fact>]
-let ``formatStatusLine shows checkmark for completed`` () =
-    let line = formatStatusLine "build" (DisplayCompleted(System.DateTime.UtcNow))
+let ``formatStepResult shows checkmark for completed`` () =
+    let line = formatStepResult "build" (Completed(System.DateTime.UtcNow))
     test <@ line.Contains("\u2713") @>
     test <@ line.Contains("build") @>
 
 [<Fact>]
-let ``formatStatusLine shows X for failed`` () =
+let ``formatStepResult shows X for failed`` () =
     let line =
-        formatStatusLine "build" (DisplayFailed("compile error", System.DateTime.UtcNow))
+        formatStepResult "build" (Failed("compile error", System.DateTime.UtcNow))
 
     test <@ line.Contains("\u2717") @>
     test <@ line.Contains("compile error") @>
@@ -126,29 +128,29 @@ let ``isAllTerminal returns false for empty map`` () =
 let ``isAllTerminal returns true when all completed or failed`` () =
     let statuses =
         Map.ofList
-            [ "build", DisplayCompleted System.DateTime.UtcNow
-              "lint", DisplayFailed("x", System.DateTime.UtcNow) ]
+            [ "build", Completed System.DateTime.UtcNow
+              "lint", Failed("x", System.DateTime.UtcNow) ]
 
     test <@ isAllTerminal statuses @>
 
 [<Fact>]
 let ``isAllTerminal returns true when some plugins are idle`` () =
     let statuses =
-        Map.ofList [ "build", DisplayCompleted System.DateTime.UtcNow; "file-cmd", DisplayIdle ]
+        Map.ofList [ "build", Completed System.DateTime.UtcNow; "file-cmd", Idle ]
 
     test <@ isAllTerminal statuses @>
 
 [<Fact>]
 let ``isAllTerminal returns true when all plugins are idle`` () =
-    let statuses = Map.ofList [ "file-cmd", DisplayIdle ]
+    let statuses = Map.ofList [ "file-cmd", Idle ]
     test <@ isAllTerminal statuses @>
 
 [<Fact>]
 let ``isAllTerminal returns false when any running`` () =
     let statuses =
         Map.ofList
-            [ "build", DisplayCompleted System.DateTime.UtcNow
-              "lint", DisplayRunning System.DateTime.UtcNow ]
+            [ "build", Completed System.DateTime.UtcNow
+              "lint", Running System.DateTime.UtcNow ]
 
     test <@ not (isAllTerminal statuses) @>
 
@@ -216,8 +218,8 @@ let ``exitCodeFromResponse without noWarnFail fails on warnings`` () =
 let ``renderProgress shows all plugins`` () =
     let statuses =
         Map.ofList
-            [ "build", DisplayCompleted System.DateTime.UtcNow
-              "lint", DisplayRunning(System.DateTime.UtcNow.AddSeconds(-3.0)) ]
+            [ "build", Completed System.DateTime.UtcNow
+              "lint", Running(System.DateTime.UtcNow.AddSeconds(-3.0)) ]
 
     let output = renderProgress statuses
     test <@ output.Contains("build") @>
