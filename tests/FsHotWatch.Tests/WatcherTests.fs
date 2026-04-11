@@ -166,41 +166,28 @@ let ``hasContentChanged returns true on IOException`` () =
 
 [<Fact>]
 let ``FileWatcher.create with isMacOS=false watches src and tests dirs`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshotwatch-fsw-{Guid.NewGuid():N}")
-    let srcDir = Path.Combine(tmpDir, "src")
-    let testsDir = Path.Combine(tmpDir, "tests")
-    Directory.CreateDirectory(srcDir) |> ignore
-    Directory.CreateDirectory(testsDir) |> ignore
+    withTempDir "watcher-fsw" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src")
+        let testsDir = Path.Combine(tmpDir, "tests")
+        Directory.CreateDirectory(srcDir) |> ignore
+        Directory.CreateDirectory(testsDir) |> ignore
 
-    let mutable changes: FileChangeKind list = []
-    let onChange change = changes <- change :: changes
+        let mutable changes: FileChangeKind list = []
+        let onChange change = changes <- change :: changes
 
-    try
         use watcher = FileWatcher.create tmpDir onChange (Some false)
 
-        // Write a file and wait for the event
         probeUntilEvent srcDir (fun () -> changes.Length >= 1) 10000
-        test <@ changes.Length >= 1 @>
-    finally
-        Directory.Delete(tmpDir, true)
+        test <@ changes.Length >= 1 @>)
 
 [<Fact>]
 let ``FileWatcher.create with isMacOS=false when neither src nor tests exist`` () =
-    let tmpDir =
-        Path.Combine(Path.GetTempPath(), $"fshotwatch-nosrc-{Guid.NewGuid():N}")
+    withTempDir "watcher-nosrc" (fun tmpDir ->
+        let mutable changes: FileChangeKind list = []
+        let onChange change = changes <- change :: changes
 
-    Directory.CreateDirectory(tmpDir) |> ignore
-
-    let mutable changes: FileChangeKind list = []
-    let onChange change = changes <- change :: changes
-
-    try
-        // Should not throw even without src/ or tests/
         use watcher = FileWatcher.create tmpDir onChange (Some false)
-        // Only sln watcher should be present
-        test <@ watcher.Disposables.Length = 1 @>
-    finally
-        Directory.Delete(tmpDir, true)
+        test <@ watcher.Disposables.Length = 1 @>)
 
 // === Integration test: verify FileWatcher.create produces a working watcher (default OS path) ===
 

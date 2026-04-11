@@ -29,25 +29,6 @@ let private kFSEventStreamCreateFlagNoDefer = 0x00000002u
 [<Literal>]
 let private kCFStringEncodingUTF8 = 0x08000100u
 
-// Event flags we care about (kFSEventStreamEventFlagItem*)
-[<Literal>]
-let private ItemCreated = 0x00000100u
-
-[<Literal>]
-let private ItemRemoved = 0x00000200u
-
-[<Literal>]
-let private ItemRenamed = 0x00000800u
-
-[<Literal>]
-let private ItemModified = 0x00001000u
-
-[<Literal>]
-let private ItemIsFile = 0x00010000u
-
-[<Literal>]
-let private MustScanSubDirs = 0x00000001u
-
 // ─── Public pure functions for flag interpretation ─────────────────
 
 /// FSEvent flag constants exposed for testing and external use.
