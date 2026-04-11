@@ -460,59 +460,27 @@ let ``reuse path does not launch daemon when hash matches`` () =
 
 // --- Daemon startup failure for various commands ---
 
-[<Fact>]
-let ``executeCommand Format returns 1 when daemon startup fails`` () =
-    withTempDir "prog-format-fail" (fun tmpDir ->
+let private assertFailsWhenDaemonDown (cmd: Command) =
+    withTempDir "prog-daemon-down" (fun tmpDir ->
         let ipc =
             { fakeIpc () with
                 IsRunning = fun _ -> false }
 
         let result =
-            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" (Format []) "" false fakeConfig 0.0
+            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" cmd "" false fakeConfig 0.0
 
         test <@ result = 1 @>)
+
+[<Fact>]
+let ``executeCommand Format returns 1 when daemon startup fails`` () = assertFailsWhenDaemonDown (Format [])
 
 [<Fact>]
 let ``executeCommand FormatCheck returns 1 when daemon startup fails`` () =
-    withTempDir "prog-fmtchk-fail" (fun tmpDir ->
-        let ipc =
-            { fakeIpc () with
-                IsRunning = fun _ -> false }
-
-        let result =
-            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" (FormatCheck []) "" false fakeConfig 0.0
-
-        test <@ result = 1 @>)
+    assertFailsWhenDaemonDown (FormatCheck [])
 
 [<Fact>]
-let ``executeCommand Analyze returns 1 when daemon startup fails`` () =
-    withTempDir "prog-analyze-fail" (fun tmpDir ->
-        let ipc =
-            { fakeIpc () with
-                IsRunning = fun _ -> false }
-
-        let result =
-            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" (Analyze []) "" false fakeConfig 0.0
-
-        test <@ result = 1 @>)
+let ``executeCommand Analyze returns 1 when daemon startup fails`` () = assertFailsWhenDaemonDown (Analyze [])
 
 [<Fact>]
 let ``executeCommand InvalidateCache returns 1 when daemon startup fails`` () =
-    withTempDir "prog-invcache-fail" (fun tmpDir ->
-        let ipc =
-            { fakeIpc () with
-                IsRunning = fun _ -> false }
-
-        let result =
-            executeCommand
-                (fun _ -> Unchecked.defaultof<_>)
-                ipc
-                tmpDir
-                "pipe"
-                (InvalidateCache "foo.fs")
-                ""
-                false
-                fakeConfig
-                0.0
-
-        test <@ result = 1 @>)
+    assertFailsWhenDaemonDown (InvalidateCache "foo.fs")
