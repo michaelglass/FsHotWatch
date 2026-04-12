@@ -2,7 +2,7 @@
 
 All notable changes to FsHotWatch packages are documented here.
 
-## Unreleased
+## 0.5.0-alpha.1 (2026-04-12)
 
 ### FsHotWatch
 

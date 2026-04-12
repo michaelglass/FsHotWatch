@@ -1,6 +1,6 @@
 # Changelog — FsHotWatch.Lint
 
-## Unreleased
+## 0.5.0-alpha.1 (2026-04-12)
 
 ### Changed
 
