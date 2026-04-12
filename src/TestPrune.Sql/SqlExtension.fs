@@ -23,11 +23,18 @@ type AutoSqlExtension() =
         |> Array.filter (fun s -> s <> "")
         |> Array.toList
 
+    static let readsFromNames =
+        let full = nameof ReadsFromAttribute
+        Set.ofList [ full; full.Replace("Attribute", "") ]
+
+    static let writesToNames =
+        let full = nameof WritesToAttribute
+        Set.ofList [ full; full.Replace("Attribute", "") ]
+
     static let classifyAttribute (attrName: string) : AccessKind option =
-        match attrName with
-        | "ReadsFromAttribute" | "ReadsFrom" -> Some Read
-        | "WritesToAttribute" | "WritesTo" -> Some Write
-        | _ -> None
+        if readsFromNames.Contains(attrName) then Some Read
+        elif writesToNames.Contains(attrName) then Some Write
+        else None
 
     static member ExtractFacts(symbolStore: SymbolStore) : SqlFact list =
         symbolStore.GetAllAttributes()

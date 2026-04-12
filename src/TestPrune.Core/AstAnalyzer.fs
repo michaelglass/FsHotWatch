@@ -747,12 +747,15 @@ let private extractResults
                 |> Seq.distinct
                 |> Seq.toList
 
-            let testMethods =
-                allUses
-                |> List.choose (fun u ->
-                    if u.IsFromDefinition then
-                        match u.Symbol with
-                        | :? FSharpMemberOrFunctionOrValue as mfv when isTestAttribute mfv ->
+            // Single pass over allUses definitions to extract both test methods and attributes
+            let mutable testMethods = []
+            let mutable attributes = []
+
+            for u in allUses do
+                if u.IsFromDefinition then
+                    match u.Symbol with
+                    | :? FSharpMemberOrFunctionOrValue as mfv ->
+                        if isTestAttribute mfv then
                             let fallbackClass, testMethod = extractTestClass mfv.FullName
 
                             let testClass =
@@ -763,48 +766,41 @@ let private extractResults
                                 with :? System.InvalidOperationException ->
                                     fallbackClass
 
-                            Some
+                            testMethods <-
                                 { SymbolFullName = mfv.FullName
                                   TestProject = projectName
                                   TestClass = testClass
                                   TestMethod = testMethod }
-                        | _ -> None
-                    else
-                        None)
+                                :: testMethods
 
-            let attributes =
-                allUses
-                |> List.choose (fun u ->
-                    if u.IsFromDefinition then
-                        match u.Symbol with
-                        | :? FSharpMemberOrFunctionOrValue as mfv ->
-                            try
-                                let attrs =
-                                    mfv.Attributes
-                                    |> Seq.choose (fun attr ->
-                                        try
-                                            let name = attr.AttributeType.DisplayName
-                                            let args =
-                                                attr.ConstructorArguments
-                                                |> Seq.map (fun (_ty, value) ->
-                                                    match value with
-                                                    | :? string as s -> $"\"%s{s}\""
-                                                    | v -> string v)
-                                                |> String.concat ", "
-                                            let argsJson = $"[%s{args}]"
-                                            Some
-                                                { SymbolFullName = mfv.FullName
-                                                  AttributeName = name
-                                                  ArgsJson = argsJson }
-                                        with _ -> None)
-                                    |> Seq.toList
+                        try
+                            for attr in mfv.Attributes do
+                                try
+                                    let name = attr.AttributeType.DisplayName
 
-                                if attrs.IsEmpty then None else Some attrs
-                            with :? InvalidOperationException -> None
-                        | _ -> None
-                    else
-                        None)
-                |> List.collect id
+                                    let args =
+                                        attr.ConstructorArguments
+                                        |> Seq.map (fun (_ty, value) ->
+                                            match value with
+                                            | :? string as s -> $"\"%s{s}\""
+                                            | v -> string v)
+                                        |> String.concat ", "
+
+                                    let argsJson = $"[%s{args}]"
+
+                                    attributes <-
+                                        { SymbolFullName = mfv.FullName
+                                          AttributeName = name
+                                          ArgsJson = argsJson }
+                                        :: attributes
+                                with _ ->
+                                    ()
+                        with :? InvalidOperationException ->
+                            ()
+                    | _ -> ()
+
+            let testMethods = List.rev testMethods
+            let attributes = List.rev attributes
 
             // Collect extern symbols: ToSymbol names in dependencies that aren't
             // defined in this file. These are cross-assembly references that need
