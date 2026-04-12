@@ -17,6 +17,7 @@
     <ItemGroup>
         <Compile Include="Attributes.fs" />
         <Compile Include="SqlCoupling.fs" />
+        <Compile Include="SqlExtension.fs" />
     </ItemGroup>
 
     <ItemGroup>

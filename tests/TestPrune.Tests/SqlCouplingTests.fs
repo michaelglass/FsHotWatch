@@ -4,6 +4,7 @@ open Xunit
 open Swensen.Unquote
 open TestPrune.AstAnalyzer
 open TestPrune.Database
+open TestPrune.Extensions
 open TestPrune.Sql
 open TestPrune.Tests.TestHelpers
 
@@ -283,3 +284,29 @@ module ``SQL coupling end-to-end`` =
             let affected = db.QueryAffectedTests([ "Jobs.writeItems" ])
             test <@ affected.Length = 1 @>
             test <@ affected[0].TestMethod = "testA" @>)
+
+module ``SqlExtension as ITestPruneExtension`` =
+
+    [<Fact>]
+    let ``SqlExtension produces edges from facts`` () =
+        let facts =
+            [ { Symbol = "Queries.save"
+                Table = "articles"
+                Column = "*"
+                Access = Write }
+              { Symbol = "Queries.load"
+                Table = "articles"
+                Column = "*"
+                Access = Read } ]
+
+        let extension = SqlExtension(facts)
+        let edges = (extension :> ITestPruneExtension).AnalyzeEdges Unchecked.defaultof<_> [] ""
+        test <@ edges.Length = 1 @>
+        test <@ edges[0].Kind = SharedState @>
+        test <@ edges[0].Source = "sql" @>
+
+    [<Fact>]
+    let ``SqlExtension with no facts produces no edges`` () =
+        let extension = SqlExtension([])
+        let edges = (extension :> ITestPruneExtension).AnalyzeEdges Unchecked.defaultof<_> [] ""
+        test <@ edges.IsEmpty @>
