@@ -68,5 +68,8 @@ DONE.md
 .fs-hot-watch/
 .fshw/
 
+# TestPrune database
+.test-prune.db*
+
 # Implementation plans (working documents)
 docs/plans/
