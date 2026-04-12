@@ -67,24 +67,34 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
         | None -> ()
 
     /// Register project options for a project. Maps each source file to this project's options.
+    /// Filters out generated files in obj/ and bin/ directories that should not be checked.
     member _.RegisterProject(projectPath: string, options: FSharpProjectOptions) =
-        projectOptionsByProject[projectPath] <- options
-        projectOptionsHashCache[projectPath] <- getProjectOptionsHash options
+        let filteredOptions =
+            { options with
+                SourceFiles =
+                    options.SourceFiles
+                    |> Array.filter (fun f -> not (PathFilter.isGeneratedPath f)) }
 
-        for sourceFile in options.SourceFiles do
+        projectOptionsByProject[projectPath] <- filteredOptions
+        projectOptionsHashCache[projectPath] <- getProjectOptionsHash filteredOptions
+
+        for sourceFile in filteredOptions.SourceFiles do
             projectOptionsByFile.AddOrUpdate(
                 sourceFile,
-                [ options ],
+                [ filteredOptions ],
                 fun _ existing ->
-                    if existing |> List.exists (fun o -> o.ProjectFileName = options.ProjectFileName) then
+                    if
+                        existing
+                        |> List.exists (fun o -> o.ProjectFileName = filteredOptions.ProjectFileName)
+                    then
                         existing
                         |> List.map (fun o ->
-                            if o.ProjectFileName = options.ProjectFileName then
-                                options
+                            if o.ProjectFileName = filteredOptions.ProjectFileName then
+                                filteredOptions
                             else
                                 o)
                     else
-                        options :: existing
+                        filteredOptions :: existing
             )
             |> ignore
 

@@ -2,6 +2,32 @@
 
 All notable changes to FsHotWatch packages are documented here.
 
+## Unreleased
+
+### FsHotWatch
+
+#### Added
+- `PathFilter` module — shared path filtering with gitignore-style glob matching (via `Ignore` 0.2.1 package)
+- `excludePatterns` parameter on `Daemon.create` / `Daemon.createWith` for excluding project trees from discovery
+- `CheckPipeline.RegisterProject` filters out generated files in obj/ and bin/
+- `IgnoreFilterCache` — caches .gitignore/.fantomasignore rules, auto-reloads on file changes
+
+#### Changed
+- `performScan` takes `BatchContext` instead of 12 individual parameters
+- Path filtering consolidated through `PathFilter` module (Watcher, CheckPipeline, Daemon)
+
+### FsHotWatch.Cli
+
+#### Added
+- `exclude` config field in `.fs-hot-watch.json` — gitignore-style glob patterns to exclude project trees
+
+### FsHotWatch.Fantomas
+
+#### Added
+- Format preprocessor and format-check plugin respect `.gitignore` and `.fantomasignore`
+
+---
+
 ## 0.5.0-alpha.1 (2026-04-12)
 
 ### FsHotWatch
