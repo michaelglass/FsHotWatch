@@ -43,11 +43,10 @@ let private withTestSetup
             for (fileName, content) in testFiles do
                 File.WriteAllText(Path.Combine(testDir, fileName), content)
 
-        let extension = FalcoRouteExtension(integrationTestProject, integrationTestSubDir)
         let routeStore = toRouteStore db
+        let extension = FalcoRouteExtension(integrationTestProject, integrationTestSubDir, routeStore)
 
-        let result =
-            (extension :> ITestPruneExtension).FindAffectedTests routeStore changedFiles tempDir
+        let result = extension.FindAffectedTestClasses(changedFiles, tempDir)
 
         f result
     finally
@@ -93,11 +92,10 @@ module ``debug db roundtrip`` =
 
             test <@ files.Length = 1 @>
 
-            let extension = FalcoRouteExtension("IntTests", "tests/IntTests")
             let routeStore = toRouteStore db
+            let extension = FalcoRouteExtension("IntTests", "tests/IntTests", routeStore)
 
-            let result =
-                (extension :> ITestPruneExtension).FindAffectedTests routeStore [ "src/Handlers/Users.fs" ] tempDir
+            let result = extension.FindAffectedTestClasses([ "src/Handlers/Users.fs" ], tempDir)
 
             test <@ result.Length = 1 @>
         finally

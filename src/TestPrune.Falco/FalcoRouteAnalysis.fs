@@ -3,12 +3,13 @@ namespace TestPrune.Falco
 open System
 open System.IO
 open System.Text.RegularExpressions
+open TestPrune.AstAnalyzer
 open TestPrune.Ports
 open TestPrune.Extensions
 
 /// Route-based integration test filtering.
 /// Scans integration test source files for URL patterns that map to changed handler files.
-type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: string) =
+type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: string, routeStore: RouteStore) =
 
     let urlPatternToRegex (urlPattern: string) : Regex =
         // Replace {param} placeholders with a sentinel before escaping,
@@ -58,29 +59,57 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                 not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
             |> Array.toList
 
+    /// Find affected test classes using route-based matching.
+    /// Returns AffectedTest list for backward compatibility.
+    member _.FindAffectedTestClasses(changedFiles: string list, repoRoot: string) : AffectedTest list =
+        let handlerSourceFiles = routeStore.GetAllHandlerSourceFiles()
+
+        let affectedUrlPatterns =
+            changedFiles
+            |> List.collect (fun file ->
+                if handlerSourceFiles |> Set.contains file then
+                    routeStore.GetUrlPatternsForSourceFile(file)
+                else
+                    [])
+            |> List.distinct
+
+        if affectedUrlPatterns.IsEmpty then
+            []
+        else
+            let regexes = affectedUrlPatterns |> List.map urlPatternToRegex
+            let testFiles = findTestFiles repoRoot
+            let classes = findTestClassesInFiles testFiles regexes
+
+            classes
+            |> List.map (fun cls ->
+                { TestProject = integrationTestProject
+                  TestClass = cls })
+
     interface ITestPruneExtension with
         member _.Name = "Falco Routes"
 
-        member _.FindAffectedTests (routeStore: RouteStore) (changedFiles: string list) (repoRoot: string) =
+        member this.AnalyzeEdges (symbolStore: SymbolStore) (changedFiles: string list) (repoRoot: string) =
+            let affectedClasses = this.FindAffectedTestClasses(changedFiles, repoRoot)
+
+            // For each changed handler file, get its symbols
             let handlerSourceFiles = routeStore.GetAllHandlerSourceFiles()
 
-            let affectedUrlPatterns =
+            let changedHandlerSymbols =
                 changedFiles
-                |> List.collect (fun file ->
-                    if handlerSourceFiles |> Set.contains file then
-                        routeStore.GetUrlPatternsForSourceFile(file)
-                    else
-                        [])
-                |> List.distinct
+                |> List.filter (fun f -> handlerSourceFiles |> Set.contains f)
+                |> List.collect symbolStore.GetSymbolsInFile
 
-            if affectedUrlPatterns.IsEmpty then
-                []
-            else
-                let regexes = affectedUrlPatterns |> List.map urlPatternToRegex
-                let testFiles = findTestFiles repoRoot
-                let classes = findTestClassesInFiles testFiles regexes
+            // For each affected test class, find test methods via symbol store
+            let affectedTestMethods =
+                affectedClasses
+                |> List.collect (fun at ->
+                    symbolStore.GetAllSymbols()
+                    |> List.filter (fun s -> s.FullName.Contains($".%s{at.TestClass}.") || s.FullName.EndsWith($".%s{at.TestClass}")))
 
-                classes
-                |> List.map (fun cls ->
-                    { TestProject = integrationTestProject
-                      TestClass = cls })
+            // Create edges between each handler symbol and each affected test symbol
+            [ for handler in changedHandlerSymbols do
+                  for testSym in affectedTestMethods do
+                      { FromSymbol = testSym.FullName
+                        ToSymbol = handler.FullName
+                        Kind = SharedState
+                        Source = "falco" } ]
