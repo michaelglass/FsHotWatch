@@ -202,6 +202,26 @@ let ``PrepareForRediscovery clears stale file options`` () =
     test <@ pipeline.GetRegisteredProjects() |> List.contains "/tmp/MyProject.fsproj" @>
 
 [<Fact>]
+let ``RegisterProject excludes obj and bin files from registration`` () =
+    let pipeline = CheckPipeline(nullChecker)
+
+    let options =
+        dummyOptions
+            "/tmp/MyProject.fsproj"
+            [ "/tmp/src/Real.fs"
+              "/tmp/src/obj/Debug/net10.0/AssemblyInfo.fs"
+              "/tmp/src/obj/Debug/net10.0/.NETCoreApp,Version=v10.0.AssemblyAttributes.fs"
+              "/tmp/src/bin/Release/net10.0/SomeThing.fs"
+              "/tmp/src/Another.fs" ]
+
+    pipeline.RegisterProject("/tmp/MyProject.fsproj", options)
+
+    let registered = pipeline.GetAllRegisteredFiles()
+    test <@ registered |> List.contains "/tmp/src/Real.fs" @>
+    test <@ registered |> List.contains "/tmp/src/Another.fs" @>
+    test <@ registered |> List.length = 2 @>
+
+[<Fact>]
 let ``CheckFile returns None when token is cancelled`` () =
     let pipeline = CheckPipeline(nullChecker)
     let cts = new CancellationTokenSource()

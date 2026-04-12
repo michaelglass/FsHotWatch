@@ -79,9 +79,7 @@ let private fingerprintFsprojFiles (repoRoot: string) =
 
     searchDirs
     |> List.collect (fun dir -> Directory.GetFiles(dir, "*.fsproj", SearchOption.AllDirectories) |> Array.toList)
-    |> List.filter (fun f ->
-        let n = f.Replace('\\', '/')
-        not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
+    |> List.filter (fun f -> not (PathFilter.isGeneratedPath f))
     |> List.map (fun f -> f, File.GetLastWriteTimeUtc(f).Ticks)
     |> Set.ofList
 
@@ -93,8 +91,11 @@ let private discoverAndRegisterProjects
     (loader: IWorkspaceLoader)
     (graph: ProjectGraph)
     (pipeline: CheckPipeline)
+    (excludePatterns: string list)
     =
     async {
+        let isExcluded = PathFilter.isExcludedPath excludePatterns
+
         let searchDirs =
             [ Path.Combine(repoRoot, "src"); Path.Combine(repoRoot, "tests") ]
             |> List.filter Directory.Exists
@@ -103,9 +104,7 @@ let private discoverAndRegisterProjects
             searchDirs
             |> List.collect (fun dir ->
                 Directory.GetFiles(dir, "*.fsproj", SearchOption.AllDirectories) |> Array.toList)
-            |> List.filter (fun f ->
-                let n = f.Replace('\\', '/')
-                not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
+            |> List.filter (fun f -> not (isExcluded f))
 
         graph.PrepareForRediscovery()
         pipeline.PrepareForRediscovery()
@@ -119,14 +118,15 @@ let private discoverAndRegisterProjects
             // Register projects in the graph using Ionide-derived data (not XML parse)
             // so source file lists match what FCS sees (handles globs, conditionals, generated files)
             for proj in loaded do
-                let absProject = AbsProjectPath.create proj.ProjectFileName
-                let sourceFiles = proj.SourceFiles |> List.map AbsFilePath.create
+                if not (isExcluded proj.ProjectFileName) then
+                    let absProject = AbsProjectPath.create proj.ProjectFileName
+                    let sourceFiles = proj.SourceFiles |> List.map AbsFilePath.create
 
-                let references =
-                    proj.ReferencedProjects
-                    |> List.map (fun r -> AbsProjectPath.create r.ProjectFileName)
+                    let references =
+                        proj.ReferencedProjects
+                        |> List.map (fun r -> AbsProjectPath.create r.ProjectFileName)
 
-                graph.RegisterProject(absProject, sourceFiles, references)
+                    graph.RegisterProject(absProject, sourceFiles, references)
 
             let fcsOptionsList = Ionide.ProjInfo.FCS.mapManyOptions loaded |> Seq.toList
             sw.Stop()
@@ -136,17 +136,18 @@ let private discoverAndRegisterProjects
                 $"MSBuild evaluation complete: %d{fcsOptionsList.Length} projects in %.1f{sw.Elapsed.TotalSeconds}s"
 
             for fcsOptions in fcsOptionsList do
-                try
-                    let absProject = Path.GetFullPath(fcsOptions.ProjectFileName)
-                    pipeline.RegisterProject(absProject, fcsOptions)
+                if not (isExcluded fcsOptions.ProjectFileName) then
+                    try
+                        let absProject = Path.GetFullPath(fcsOptions.ProjectFileName)
+                        pipeline.RegisterProject(absProject, fcsOptions)
 
-                    Logging.info
-                        "discover"
-                        $"Registered %s{Path.GetFileName fcsOptions.ProjectFileName} (%d{fcsOptions.SourceFiles.Length} files, %d{fcsOptions.OtherOptions.Length} opts)"
-                with ex ->
-                    Logging.error
-                        "discover"
-                        $"Failed to register %s{Path.GetFileName fcsOptions.ProjectFileName}: %s{ex.Message}"
+                        Logging.info
+                            "discover"
+                            $"Registered %s{Path.GetFileName fcsOptions.ProjectFileName} (%d{fcsOptions.SourceFiles.Length} files, %d{fcsOptions.OtherOptions.Length} opts)"
+                    with ex ->
+                        Logging.error
+                            "discover"
+                            $"Failed to register %s{Path.GetFileName fcsOptions.ProjectFileName}: %s{ex.Message}"
         with ex ->
             sw.Stop()
             Logging.error "discover" $"MSBuild evaluation failed (%.1f{sw.Elapsed.TotalSeconds}s): %s{ex.Message}"
@@ -161,10 +162,11 @@ let private rediscoverAndClearRemoved
     (pipeline: CheckPipeline)
     (host: PluginHost)
     (logTag: string)
+    (excludePatterns: string list)
     =
     async {
         let oldFiles = graph.GetAllFiles() |> Set.ofList
-        do! discoverAndRegisterProjects repoRoot loader graph pipeline
+        do! discoverAndRegisterProjects repoRoot loader graph pipeline excludePatterns
         let newFiles = graph.GetAllFiles() |> Set.ofList
         let removedFiles = Set.difference oldFiles newFiles
 
@@ -300,7 +302,8 @@ type internal BatchContext =
       Graph: ProjectGraph.ProjectGraph
       Pipeline: CheckPipeline
       DaemonCt: CancellationToken ref
-      FcsSuppressedCodes: Set<int> }
+      FcsSuppressedCodes: Set<int>
+      ExcludePatterns: string list }
 
 /// Process a batch of debounced file changes: filter, re-discover projects if needed,
 /// run preprocessors, emit events, and check files.
@@ -371,7 +374,15 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
 
             ctx.InvalidateFcs |> Option.iter (fun invalidate -> invalidate ())
 
-            let! _ = rediscoverAndClearRemoved ctx.RepoRoot ctx.Loader ctx.Graph ctx.Pipeline ctx.Host "daemon"
+            let! _ =
+                rediscoverAndClearRemoved
+                    ctx.RepoRoot
+                    ctx.Loader
+                    ctx.Graph
+                    ctx.Pipeline
+                    ctx.Host
+                    "daemon"
+                    ctx.ExcludePatterns
 
             Logging.info
                 "daemon"
@@ -535,7 +546,8 @@ type Daemon
         _jjGuard: JjHelper.JjScanGuard option,
         fcsSuppressedCodes: Set<int>,
         lifetime: CancellationTokenSource,
-        formatAllFn: (unit -> Async<string>) option
+        formatAllFn: (unit -> Async<string>) option,
+        excludePatterns: string list
     ) =
 
     let mutable disposed = false
@@ -648,7 +660,7 @@ type Daemon
 
     /// Discover .fsproj files in src/ and tests/ and register them with the pipeline.
     member _.DiscoverAndRegisterProjects() =
-        discoverAndRegisterProjects repoRoot workspaceLoader graph pipeline
+        discoverAndRegisterProjects repoRoot workspaceLoader graph pipeline excludePatterns
 
     /// Format scan state as a human-readable string.
     member _.FormatScanStatus() =
@@ -736,19 +748,18 @@ type Daemon
 
 /// Execute the full scan logic, returning the updated agent state.
 let private performScan
-    (host: PluginHost)
-    (pipeline: CheckPipeline)
-    (graph: ProjectGraph)
-    (repoRoot: string)
-    (loader: IWorkspaceLoader)
+    (ctx: BatchContext)
     (jjGuard: JjHelper.JjScanGuard option)
     (scanSignal: ScanSignal)
-    (fcsSuppressedCodes: Set<int>)
     (state: ScanAgentState)
     (force: bool)
     (ct: CancellationToken)
     =
     async {
+        let host = ctx.Host
+        let pipeline = ctx.Pipeline
+        let graph = ctx.Graph
+
         // Re-discover projects before scanning so that removed files/projects
         // are cleared before results are returned to the client. Without this,
         // a concurrent processChanges re-discovery (triggered by the file watcher
@@ -756,11 +767,11 @@ let private performScan
         // leaving stale FCS errors visible for one cycle.
         // Guarded by fsproj fingerprint to skip expensive MSBuild evaluation
         // when no project files have changed.
-        let currentFingerprint = fingerprintFsprojFiles repoRoot
+        let currentFingerprint = fingerprintFsprojFiles ctx.RepoRoot
         let mutable lastFingerprint = state.LastFingerprint
 
         if currentFingerprint <> state.LastFingerprint then
-            let! _ = rediscoverAndClearRemoved repoRoot loader graph pipeline host "scan"
+            let! _ = rediscoverAndClearRemoved ctx.RepoRoot ctx.Loader graph pipeline host "scan" ctx.ExcludePatterns
 
             lastFingerprint <- currentFingerprint
 
@@ -853,7 +864,7 @@ let private performScan
                         | Some checkResult ->
                             checkedCount <- checkedCount + 1
                             host.EmitFileChecked(checkResult)
-                            reportFcsDiagnostics fcsSuppressedCodes host checkResult
+                            reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
                         | None -> ()
 
                         completed <- completed + 1
@@ -890,6 +901,7 @@ module Daemon =
         (cacheBackend: ICheckCacheBackend option)
         (cacheKeyProvider: ICacheKeyProvider option)
         (fcsSuppressedCodes: Set<int>)
+        (excludePatterns: string list)
         =
         let lifetime = new CancellationTokenSource()
 
@@ -938,7 +950,8 @@ module Daemon =
                   Graph = graph
                   Pipeline = pipeline
                   DaemonCt = daemonCtRef
-                  FcsSuppressedCodes = fcsSuppressedCodes }
+                  FcsSuppressedCodes = fcsSuppressedCodes
+                  ExcludePatterns = excludePatterns }
 
             let formatAllAndSuppress (suppressed: Set<string>) (replyChannel: AsyncReplyChannel<string>) =
                 let files = pipeline.GetAllRegisteredFiles()
@@ -1022,19 +1035,7 @@ module Daemon =
                                 match msg with
                                 | RequestScan(force, ct, reply) ->
                                     try
-                                        let! newState =
-                                            performScan
-                                                host
-                                                pipeline
-                                                graph
-                                                repoRoot
-                                                loader
-                                                jjGuard
-                                                scanSignal
-                                                fcsSuppressedCodes
-                                                state
-                                                force
-                                                ct
+                                        let! newState = performScan batchCtx jjGuard scanSignal state force ct
 
                                         match scanAgentRef.Value with
                                         | Some sa ->
@@ -1077,7 +1078,8 @@ module Daemon =
                 jjGuard,
                 fcsSuppressedCodes,
                 lifetime,
-                Some formatAllViaAgent
+                Some formatAllViaAgent,
+                excludePatterns
             )
         with _ ->
             lifetime.Dispose()
@@ -1090,6 +1092,7 @@ module Daemon =
         (cacheBackend: ICheckCacheBackend option)
         (cacheKeyProvider: ICacheKeyProvider option)
         (fcsSuppressedCodes: int list option)
+        (excludePatterns: string list)
         =
         let suppressedCodes =
             fcsSuppressedCodes |> Option.defaultValue [ 1182 ] |> Set.ofList
@@ -1103,4 +1106,4 @@ module Daemon =
                 useTransparentCompiler = true
             )
 
-        createWith checker repoRoot cacheBackend cacheKeyProvider suppressedCodes
+        createWith checker repoRoot cacheBackend cacheKeyProvider suppressedCodes excludePatterns

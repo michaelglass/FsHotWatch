@@ -18,7 +18,8 @@ let private fakeConfig: DaemonConfiguration =
       Analyzers = None
       Tests = None
       Coverage = None
-      FileCommands = [] }
+      FileCommands = []
+      Exclude = [] }
 
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
