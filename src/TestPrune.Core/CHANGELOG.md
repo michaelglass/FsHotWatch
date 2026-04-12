@@ -1,5 +1,8 @@
 # Changelog — TestPrune.Core
 
+## [Unreleased]
+- feat: auto-recreate database when schema version is incompatible with current build
+
 ## [2.0.0] - 2026-04-11
 - feat: cross-project dependency extraction via extern symbols
 - feat: add ExternRef SymbolKind for honest extern symbol classification
