@@ -772,6 +772,40 @@ let private extractResults
                     else
                         None)
 
+            let attributes =
+                allUses
+                |> List.choose (fun u ->
+                    if u.IsFromDefinition then
+                        match u.Symbol with
+                        | :? FSharpMemberOrFunctionOrValue as mfv ->
+                            try
+                                let attrs =
+                                    mfv.Attributes
+                                    |> Seq.choose (fun attr ->
+                                        try
+                                            let name = attr.AttributeType.DisplayName
+                                            let args =
+                                                attr.ConstructorArguments
+                                                |> Seq.map (fun (_ty, value) ->
+                                                    match value with
+                                                    | :? string as s -> $"\"%s{s}\""
+                                                    | v -> string v)
+                                                |> String.concat ", "
+                                            let argsJson = $"[%s{args}]"
+                                            Some
+                                                { SymbolFullName = mfv.FullName
+                                                  AttributeName = name
+                                                  ArgsJson = argsJson }
+                                        with _ -> None)
+                                    |> Seq.toList
+
+                                if attrs.IsEmpty then None else Some attrs
+                            with :? InvalidOperationException -> None
+                        | _ -> None
+                    else
+                        None)
+                |> List.collect id
+
             // Collect extern symbols: ToSymbol names in dependencies that aren't
             // defined in this file. These are cross-assembly references that need
             // to exist in the symbols table for dependency edges to resolve.
@@ -804,7 +838,7 @@ let private extractResults
                 { Symbols = allSymbols
                   Dependencies = dependencies
                   TestMethods = testMethods
-                  Attributes = []
+                  Attributes = attributes
                   Diagnostics =
                     { DroppedEdges = droppedEdgeCount
                       FilteredSymbols = filteredSymbolCount

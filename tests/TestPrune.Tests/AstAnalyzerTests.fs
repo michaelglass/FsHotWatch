@@ -2082,3 +2082,34 @@ module ``normalizeSymbolPaths`` =
 
         let normalized = normalizeSymbolPaths "/repo/root" symbols
         test <@ normalized[0].SourceFile = "src/MyModule.fs" @>
+
+module ``Custom attribute extraction`` =
+
+    [<Fact>]
+    let ``extracts custom attributes with constructor arguments`` () =
+        let source =
+            """
+module TestModule
+
+open System
+
+[<AttributeUsage(AttributeTargets.Method, AllowMultiple = true)>]
+type ReadsFromAttribute(table: string, column: string) =
+    inherit Attribute()
+    member _.Table = table
+    member _.Column = column
+
+[<ReadsFrom("articles", "status")>]
+let getArticles () = ()
+"""
+
+        let result = analyze source
+        let attrs = result.Attributes
+
+        let readsFromAttrs =
+            attrs |> List.filter (fun a -> a.AttributeName = "ReadsFromAttribute")
+
+        test <@ readsFromAttrs.Length = 1 @>
+        test <@ readsFromAttrs[0].SymbolFullName.EndsWith("getArticles") @>
+        test <@ readsFromAttrs[0].ArgsJson.Contains("articles") @>
+        test <@ readsFromAttrs[0].ArgsJson.Contains("status") @>
