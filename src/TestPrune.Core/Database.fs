@@ -60,12 +60,20 @@ let private schema =
         event_data TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS symbol_attributes (
+        symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+        attribute_name TEXT NOT NULL,
+        args_json TEXT NOT NULL DEFAULT '[]',
+        PRIMARY KEY (symbol_id, attribute_name, args_json)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_symbols_by_file ON symbols (source_file);
     CREATE INDEX IF NOT EXISTS idx_deps_to ON dependencies (to_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_deps_from ON dependencies (from_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_route_handlers_source ON route_handlers (handler_source_file);
     CREATE INDEX IF NOT EXISTS idx_events_run_id ON analysis_events(run_id);
     CREATE INDEX IF NOT EXISTS idx_events_type ON analysis_events(event_type);
+    CREATE INDEX IF NOT EXISTS idx_symbol_attrs_by_symbol ON symbol_attributes (symbol_id);
     """
 
 let private symbolKindToString (kind: SymbolKind) =
@@ -141,7 +149,7 @@ let private openConnection (dbPath: string) =
 /// Increment this whenever the schema changes in a backwards-incompatible way.
 /// A mismatch causes the database file to be deleted and recreated.
 [<Literal>]
-let private SchemaVersion = 2
+let private SchemaVersion = 3
 
 let private deleteDbFiles (dbPath: string) =
     File.Delete(dbPath)
@@ -320,6 +328,27 @@ type Database(dbPath: string) =
                     pTestClass.Value <- tm.TestClass
                     pTestMethod.Value <- tm.TestMethod
                     tmCmd.ExecuteNonQuery() |> ignore
+
+            use attrCmd = conn.CreateCommand()
+            attrCmd.Transaction <- txn
+
+            attrCmd.CommandText <-
+                """
+                INSERT OR IGNORE INTO symbol_attributes (symbol_id, attribute_name, args_json)
+                SELECT id, @attrName, @argsJson
+                FROM symbols WHERE full_name = @symbolFullName
+                """
+
+            let pAttrSymbol = attrCmd.Parameters.Add("@symbolFullName", SqliteType.Text)
+            let pAttrName = attrCmd.Parameters.Add("@attrName", SqliteType.Text)
+            let pArgsJson = attrCmd.Parameters.Add("@argsJson", SqliteType.Text)
+
+            for result in results do
+                for attr in result.Attributes do
+                    pAttrSymbol.Value <- attr.SymbolFullName
+                    pAttrName.Value <- attr.AttributeName
+                    pArgsJson.Value <- attr.ArgsJson
+                    attrCmd.ExecuteNonQuery() |> ignore
 
             // Write cache keys in the same transaction
             match fileKeys with
@@ -687,6 +716,23 @@ type Database(dbPath: string) =
         cmd.CommandText <- "DELETE FROM analysis_events WHERE run_id = @runId"
         cmd.Parameters.AddWithValue("@runId", runId) |> ignore
         cmd.ExecuteNonQuery() |> ignore
+
+    /// Get attributes for a symbol by its full name.
+    member _.GetAttributesForSymbol(symbolFullName: string) : (string * string) list =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            """
+            SELECT sa.attribute_name, sa.args_json
+            FROM symbol_attributes sa
+            JOIN symbols s ON s.id = sa.symbol_id
+            WHERE s.full_name = @symbolFullName
+            """
+
+        cmd.Parameters.AddWithValue("@symbolFullName", symbolFullName) |> ignore
+        use reader = cmd.ExecuteReader()
+        readAll reader (fun r -> r.GetString(0), r.GetString(1))
 
     /// Get test methods whose symbol is defined in the given source file.
     member _.GetTestMethodsInFile(sourceFile: string) : TestMethodInfo list =

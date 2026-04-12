@@ -8,6 +8,12 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
     let allSymbols = results |> List.collect (fun r -> r.Symbols)
     let allDeps = results |> List.collect (fun r -> r.Dependencies)
     let allTests = results |> List.collect (fun r -> r.TestMethods)
+    let allAttrs = results |> List.collect (fun r -> r.Attributes)
+
+    let attrsBySymbol =
+        allAttrs
+        |> List.groupBy (fun a -> a.SymbolFullName)
+        |> Map.ofList
 
     let symbolsByFile = allSymbols |> List.groupBy (fun s -> s.SourceFile) |> Map.ofList
 
@@ -83,4 +89,10 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
                 reverseEdges
                 |> Map.tryFind name
                 |> Option.map (fun froms -> name, Set.toList froms))
-            |> Map.ofList }
+            |> Map.ofList
+      GetAttributesForSymbol =
+        fun symbolName ->
+            attrsBySymbol
+            |> Map.tryFind symbolName
+            |> Option.defaultValue []
+            |> List.map (fun a -> a.AttributeName, a.ArgsJson) }

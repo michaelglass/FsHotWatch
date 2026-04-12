@@ -87,6 +87,7 @@ let standardGraph =
             TestProject = "MyTests"
             TestClass = "Tests"
             TestMethod = "testA" } ]
+      Attributes = []
       Diagnostics = AnalysisDiagnostics.Zero }
 
 let withDbPath (f: string -> Database -> unit) =

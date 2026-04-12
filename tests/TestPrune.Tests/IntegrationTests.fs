@@ -79,6 +79,7 @@ let ``counter starts at zero`` () =
                 { Symbols = remapSymbols "src/Lib.fs" libResult.Symbols
                   Dependencies = libResult.Dependencies
                   TestMethods = []
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             let testAnalysis =
@@ -87,6 +88,7 @@ let ``counter starts at zero`` () =
                   TestMethods =
                     testResult.TestMethods
                     |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             // Store both in DB
@@ -147,6 +149,7 @@ let testMethod () = helperFunc 5 |> ignore
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -222,6 +225,7 @@ let testDescribe () = describe (Circle 1.0) |> ignore
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -275,6 +279,7 @@ let f x = x
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = []
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -315,6 +320,7 @@ let f x = x
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = []
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -346,6 +352,7 @@ let deadFunc x = x * 2
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = []
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -393,6 +400,7 @@ let orphan x = x - 1
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = []
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -447,6 +455,7 @@ let main () = area (Circle 1.0) |> ignore
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = []
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -818,6 +827,7 @@ let myTest () = used 5 |> ignore
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -868,6 +878,7 @@ let testBeta () = wrapperB 2 |> ignore
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -915,6 +926,7 @@ let testLoad () = loadConfigs () |> ignore
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -962,6 +974,7 @@ let testMake () = makePerson () |> ignore
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -1015,6 +1028,7 @@ let testDescribe () = describe Red |> ignore
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -1063,6 +1077,7 @@ let testDeep () = depth1 5 |> ignore
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -1120,6 +1135,7 @@ let testProcess () =
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -1162,6 +1178,7 @@ let main () = loadAll () |> ignore
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = []
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -1198,6 +1215,7 @@ let main () = defaultSettings () |> ignore
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = []
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -1241,6 +1259,7 @@ let main () = isVertical North |> ignore
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = []
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -1315,6 +1334,7 @@ type MyTests() =
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = result.Attributes
                   Diagnostics = result.Diagnostics }
 
             db.RebuildProjects([ analysis ])
@@ -1400,6 +1420,7 @@ type ComputeTests() =
                 { Symbols = libResult.Symbols |> List.map (fun s -> { s with SourceFile = "src/Lib.fs" })
                   Dependencies = libResult.Dependencies
                   TestMethods = []
+                  Attributes = libResult.Attributes
                   Diagnostics = libResult.Diagnostics }
 
             let testAnalysis =
@@ -1412,6 +1433,7 @@ type ComputeTests() =
                   TestMethods =
                     testResult.TestMethods
                     |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = testResult.Attributes
                   Diagnostics = testResult.Diagnostics }
 
             db.RebuildProjects([ libAnalysis; testAnalysis ])
@@ -1482,6 +1504,7 @@ let ``test uses string builder`` () =
                 { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "tests/Tests.fs" })
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])

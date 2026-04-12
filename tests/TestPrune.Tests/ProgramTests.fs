@@ -389,6 +389,7 @@ module ``runDeadCode`` =
             { Symbols = symbols
               Dependencies = deps
               TestMethods = []
+              Attributes = []
               Diagnostics = AnalysisDiagnostics.Zero }
 
         db.RebuildProjects([ result ])
@@ -706,6 +707,7 @@ module ``runStatusWith RunSubset`` =
             { Symbols = symbols
               Dependencies = deps
               TestMethods = testMethods
+              Attributes = []
               Diagnostics = AnalysisDiagnostics.Zero }
 
         db.RebuildProjects([ result ])
@@ -880,6 +882,7 @@ module ``runRunWithExecutor`` =
             { Symbols = symbols
               Dependencies = deps
               TestMethods = testMethods
+              Attributes = []
               Diagnostics = AnalysisDiagnostics.Zero }
 
         db.RebuildProjects([ result ])

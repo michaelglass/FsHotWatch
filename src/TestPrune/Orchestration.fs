@@ -210,6 +210,7 @@ let indexProject
                                     {| Symbols = store.GetSymbolsInFile(relPath)
                                        Dependencies = store.GetDependenciesFromFile(relPath)
                                        TestMethods = store.GetTestMethodsInFile(relPath)
+                                       Attributes = []
                                        Diagnostics = AnalysisDiagnostics.Zero |}
 
                                 (idx + 1,
@@ -246,6 +247,7 @@ let indexProject
                                         {| Symbols = symbols
                                            Dependencies = deps
                                            TestMethods = testMethods
+                                           Attributes = result.Attributes
                                            Diagnostics = result.Diagnostics |}
 
                                     (idx + 1,
@@ -271,6 +273,7 @@ let indexProject
                 { Symbols = results |> List.collect (fun r -> r.Symbols)
                   Dependencies = results |> List.collect (fun r -> r.Dependencies)
                   TestMethods = results |> List.collect (fun r -> r.TestMethods)
+                  Attributes = results |> List.collect (fun r -> r.Attributes)
                   Diagnostics =
                     { DroppedEdges = results |> List.sumBy (fun r -> r.Diagnostics.DroppedEdges)
                       FilteredSymbols = results |> List.sumBy (fun r -> r.Diagnostics.FilteredSymbols)

@@ -139,6 +139,7 @@ module ``Multiple changed symbols`` =
                     TestProject = "MyTests"
                     TestClass = "Tests"
                     TestMethod = "test2" } ]
+              Attributes = []
               Diagnostics = AnalysisDiagnostics.Zero }
 
         let store = fromAnalysisResults [ graph ]

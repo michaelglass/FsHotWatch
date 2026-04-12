@@ -164,6 +164,7 @@ module ``InMemoryStore basics`` =
                     Kind = Calls
                     Source = "core" } ]
               TestMethods = []
+              Attributes = []
               Diagnostics = AnalysisDiagnostics.Zero }
 
         let store = fromAnalysisResults [ cycleGraph ]
@@ -192,6 +193,7 @@ module ``InMemoryStore basics`` =
                     Kind = Calls
                     Source = "core" } ]
               TestMethods = []
+              Attributes = []
               Diagnostics = AnalysisDiagnostics.Zero }
 
         let store = fromAnalysisResults [ graph ]
@@ -210,6 +212,7 @@ module ``InMemoryStore basics`` =
                     TestProject = "Proj"
                     TestClass = "Tests"
                     TestMethod = "test1" } ]
+              Attributes = []
               Diagnostics = AnalysisDiagnostics.Zero }
 
         let store = fromAnalysisResults [ graph ]

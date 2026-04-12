@@ -94,10 +94,17 @@ type AnalysisDiagnostics =
           FilteredSymbols = 0
           TotalDefinitions = 0 }
 
+/// A custom attribute on a symbol, with its name and JSON-encoded constructor arguments.
+type SymbolAttribute =
+    { SymbolFullName: string
+      AttributeName: string
+      ArgsJson: string }
+
 type AnalysisResult =
     { Symbols: SymbolInfo list
       Dependencies: Dependency list
       TestMethods: TestMethodInfo list
+      Attributes: SymbolAttribute list
       Diagnostics: AnalysisDiagnostics }
 
     /// Create an AnalysisResult with default (zero) diagnostics.
@@ -106,6 +113,7 @@ type AnalysisResult =
         { Symbols = symbols
           Dependencies = dependencies
           TestMethods = testMethods
+          Attributes = []
           Diagnostics = AnalysisDiagnostics.Zero }
 
 /// Internal classification logic that can be tested with injected symbolClassifier.
@@ -796,6 +804,7 @@ let private extractResults
                 { Symbols = allSymbols
                   Dependencies = dependencies
                   TestMethods = testMethods
+                  Attributes = []
                   Diagnostics =
                     { DroppedEdges = droppedEdgeCount
                       FilteredSymbols = filteredSymbolCount
