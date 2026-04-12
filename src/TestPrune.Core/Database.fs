@@ -717,10 +717,8 @@ type Database(dbPath: string) =
         cmd.Parameters.AddWithValue("@runId", runId) |> ignore
         cmd.ExecuteNonQuery() |> ignore
 
-    /// Get distinct edge sources in the transitive path from changed symbols to a test.
-    /// Walks the dependency graph backwards from changedSymbolNames, collecting all edges
-    /// until it reaches testSymbolName, then returns the distinct source values found.
-    member _.QueryEdgeSourcesForTest(testSymbolName: string, changedSymbolNames: string list) : string list =
+    /// Get distinct edge sources in the transitive closure reachable from changed symbols.
+    member _.QueryEdgeSourcesForTest(changedSymbolNames: string list) : string list =
         if changedSymbolNames.IsEmpty then
             []
         else
@@ -729,8 +727,6 @@ type Database(dbPath: string) =
             let placeholders = String.Join(", ", paramNames)
             use cmd = conn.CreateCommand()
 
-            // Walk edges backwards from changed symbols to the test symbol,
-            // collecting distinct source values along the way.
             cmd.CommandText <-
                 $"""
                 WITH RECURSIVE transitive_path AS (
@@ -750,9 +746,27 @@ type Database(dbPath: string) =
             changedSymbolNames
             |> List.iteri (fun i name -> cmd.Parameters.AddWithValue($"@p%d{i}", name) |> ignore)
 
-            cmd.Parameters.AddWithValue("@testSymbol", testSymbolName) |> ignore
             use reader = cmd.ExecuteReader()
             readAll reader (fun r -> r.GetString(0))
+
+    /// Get all symbol attributes, grouped by symbol full name.
+    member _.GetAllAttributes() : Map<string, (string * string) list> =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            """
+            SELECT s.full_name, sa.attribute_name, sa.args_json
+            FROM symbol_attributes sa
+            JOIN symbols s ON s.id = sa.symbol_id
+            """
+
+        use reader = cmd.ExecuteReader()
+
+        readAll reader (fun r -> r.GetString(0), (r.GetString(1), r.GetString(2)))
+        |> List.groupBy fst
+        |> List.map (fun (sym, pairs) -> sym, pairs |> List.map snd)
+        |> Map.ofList
 
     /// Get attributes for a symbol by its full name.
     member _.GetAttributesForSymbol(symbolFullName: string) : (string * string) list =

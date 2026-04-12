@@ -23,27 +23,24 @@ type AutoSqlExtension() =
         |> Array.filter (fun s -> s <> "")
         |> Array.toList
 
-    static member ExtractFacts(symbolStore: SymbolStore) : SqlFact list =
-        symbolStore.GetAllSymbols()
-        |> List.collect (fun sym ->
-            let attrs = symbolStore.GetAttributesForSymbol sym.FullName
+    static let classifyAttribute (attrName: string) : AccessKind option =
+        match attrName with
+        | "ReadsFromAttribute" | "ReadsFrom" -> Some Read
+        | "WritesToAttribute" | "WritesTo" -> Some Write
+        | _ -> None
 
+    static member ExtractFacts(symbolStore: SymbolStore) : SqlFact list =
+        symbolStore.GetAllAttributes()
+        |> Map.toList
+        |> List.collect (fun (symbolName, attrs) ->
             attrs
             |> List.choose (fun (attrName, argsJson) ->
-                let args = parseArgsJson argsJson
-
-                match attrName with
-                | "ReadsFromAttribute"
-                | "ReadsFrom" ->
+                classifyAttribute attrName
+                |> Option.map (fun access ->
+                    let args = parseArgsJson argsJson
                     let table = args |> List.tryHead |> Option.defaultValue ""
                     let column = args |> List.tryItem 1 |> Option.defaultValue "*"
-                    Some { Symbol = sym.FullName; Table = table; Column = column; Access = Read }
-                | "WritesToAttribute"
-                | "WritesTo" ->
-                    let table = args |> List.tryHead |> Option.defaultValue ""
-                    let column = args |> List.tryItem 1 |> Option.defaultValue "*"
-                    Some { Symbol = sym.FullName; Table = table; Column = column; Access = Write }
-                | _ -> None))
+                    { Symbol = symbolName; Table = table; Column = column; Access = access })))
 
     interface ITestPruneExtension with
         member _.Name = "SQL Coupling (Auto)"

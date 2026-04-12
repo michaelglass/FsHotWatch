@@ -2003,12 +2003,12 @@ module ``Edge source provenance`` =
                 )
 
             db.RebuildProjects([ result ])
-            let sources = db.QueryEdgeSourcesForTest("Tests.testA", [ "Jobs.writeItems" ])
+            let sources = db.QueryEdgeSourcesForTest([ "Jobs.writeItems" ])
             test <@ sources |> Set.ofList = set [ "core"; "sql" ] @>)
 
     [<Fact>]
     let ``returns only core for pure AST path`` () =
         withDb (fun db ->
             db.RebuildProjects([ standardGraph ])
-            let sources = db.QueryEdgeSourcesForTest("Tests.testA", [ "Domain.TypeC" ])
+            let sources = db.QueryEdgeSourcesForTest([ "Domain.TypeC" ])
             test <@ sources = [ "core" ] @>)

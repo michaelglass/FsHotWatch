@@ -1,5 +1,8 @@
 namespace TestPrune.SqlHydra
 
+open TestPrune.AstAnalyzer
+open TestPrune.Extensions
+open TestPrune.Ports
 open TestPrune.Sql
 
 /// Parsed table reference from a SqlHydra generated type name.
@@ -38,10 +41,6 @@ module SqlHydraAnalyzer =
         else
             None
 
-open TestPrune.AstAnalyzer
-open TestPrune.Extensions
-open TestPrune.Ports
-
 /// Extension that detects SqlHydra query patterns in the dependency graph
 /// and produces SharedState edges via SqlCoupling.
 type SqlHydraExtension(generatedModulePrefix: string) =
@@ -51,49 +50,52 @@ type SqlHydraExtension(generatedModulePrefix: string) =
     /// 1. Has a Calls edge to a SqlHydra DSL function (selectTask, insertTask, etc.)
     /// 2. Has a UsesType edge to a type matching the generated module prefix
     static member extractFacts (generatedModulePrefix: string) (store: SymbolStore) : SqlFact list =
-        let allSymbols = store.GetAllSymbols()
+        let allSymbols = store.GetAllSymbols() |> List.filter (fun s -> not s.IsExtern)
+
+        // Group by file to avoid redundant GetDependenciesFromFile calls
+        let depsByFile =
+            allSymbols
+            |> List.map (fun s -> s.SourceFile)
+            |> List.distinct
+            |> List.map (fun f -> f, store.GetDependenciesFromFile f)
+            |> Map.ofList
 
         allSymbols
         |> List.collect (fun sym ->
-            if sym.IsExtern then
-                []
-            else
-                let deps =
-                    store.GetDependenciesFromFile sym.SourceFile
-                    |> List.filter (fun d -> d.FromSymbol = sym.FullName)
+            let deps =
+                depsByFile
+                |> Map.tryFind sym.SourceFile
+                |> Option.defaultValue []
+                |> List.filter (fun d -> d.FromSymbol = sym.FullName)
 
-                // Find DSL function calls (selectTask, insertTask, etc.)
-                let dslAccess =
-                    deps
-                    |> List.choose (fun d ->
-                        if d.Kind = Calls then
-                            let funcName =
-                                let i = d.ToSymbol.LastIndexOf('.')
-                                if i >= 0 then d.ToSymbol.[i + 1 ..] else d.ToSymbol
+            let dslAccess =
+                deps
+                |> List.choose (fun d ->
+                    if d.Kind = Calls then
+                        let i = d.ToSymbol.LastIndexOf('.')
+                        let funcName = if i >= 0 then d.ToSymbol.[i + 1 ..] else d.ToSymbol
+                        SqlHydraAnalyzer.classifyDslContext funcName
+                    else
+                        None)
+                |> List.tryHead
 
-                            SqlHydraAnalyzer.classifyDslContext funcName
-                        else
-                            None)
-                    |> List.tryHead
+            let tableRefs =
+                deps
+                |> List.choose (fun d ->
+                    if d.Kind = UsesType && d.ToSymbol.Contains(generatedModulePrefix) then
+                        SqlHydraAnalyzer.parseTableReference d.ToSymbol
+                    else
+                        None)
 
-                // Find SqlHydra table type references
-                let tableRefs =
-                    deps
-                    |> List.choose (fun d ->
-                        if d.Kind = UsesType && d.ToSymbol.Contains(generatedModulePrefix) then
-                            SqlHydraAnalyzer.parseTableReference d.ToSymbol
-                        else
-                            None)
-
-                match dslAccess with
-                | Some access ->
-                    tableRefs
-                    |> List.map (fun tref ->
-                        { Symbol = sym.FullName
-                          Table = tref.Table
-                          Column = "*"
-                          Access = access })
-                | None -> [])
+            match dslAccess with
+            | Some access ->
+                tableRefs
+                |> List.map (fun tref ->
+                    { Symbol = sym.FullName
+                      Table = tref.Table
+                      Column = "*"
+                      Access = access })
+            | None -> [])
 
     interface ITestPruneExtension with
         member _.Name = "SqlHydra"

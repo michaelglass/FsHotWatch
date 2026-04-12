@@ -95,4 +95,8 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
             attrsBySymbol
             |> Map.tryFind symbolName
             |> Option.defaultValue []
-            |> List.map (fun a -> a.AttributeName, a.ArgsJson) }
+            |> List.map (fun a -> a.AttributeName, a.ArgsJson)
+      GetAllAttributes =
+        fun () ->
+            attrsBySymbol
+            |> Map.map (fun _ attrs -> attrs |> List.map (fun a -> a.AttributeName, a.ArgsJson)) }

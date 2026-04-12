@@ -533,14 +533,22 @@ let runStatusWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSi
             printfn "No tests affected."
             0
         | RunSubset tests ->
-            // Compute changed symbol names for provenance display
             let store = toSymbolStore db
             let changedSymbolNames =
                 changedFiles
                 |> List.collect (fun f ->
                     store.GetSymbolsInFile f |> List.map (fun s -> s.FullName))
 
-            printfn $"Would run %d{tests.Length} test(s):"
+            let sources = db.QueryEdgeSourcesForTest(changedSymbolNames)
+
+            let sourceTag =
+                if sources.IsEmpty || sources = [ "core" ] then
+                    ""
+                else
+                    let s = sources |> List.sort |> String.concat ", "
+                    $"  [sources: %s{s}]"
+
+            printfn $"Would run %d{tests.Length} test(s):%s{sourceTag}"
 
             let byProject = tests |> List.groupBy (fun t -> t.TestProject)
 
@@ -553,16 +561,7 @@ let runStatusWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSi
                     printfn $"    %s{cls}"
 
                     for m in methods do
-                        let sources = db.QueryEdgeSourcesForTest(m.SymbolFullName, changedSymbolNames)
-
-                        let sourceTag =
-                            if sources.IsEmpty || sources = [ "core" ] then
-                                ""
-                            else
-                                let s = sources |> List.sort |> String.concat ", "
-                                $"  [sources: %s{s}]"
-
-                        printfn $"      - %s{m.TestMethod}%s{sourceTag}"
+                        printfn $"      - %s{m.TestMethod}"
 
             0
         | RunAll reason ->
