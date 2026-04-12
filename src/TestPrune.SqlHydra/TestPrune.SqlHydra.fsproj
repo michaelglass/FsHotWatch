@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <NoWarn>$(NoWarn);NU1605;MSB3277;NETSDK1188</NoWarn>
+        <PackageId>TestPrune.SqlHydra</PackageId>
+        <Authors>Michael Glass</Authors>
+        <Description>SqlHydra integration for TestPrune — automatic SQL coupling detection from typed queries</Description>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <RepositoryUrl>https://github.com/michaelglass/TestPrune</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+        <Version>0.1.0</Version>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="SqlHydraAnalyzer.fs" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../TestPrune.Core/TestPrune.Core.fsproj" />
+        <ProjectReference Include="../TestPrune.Sql/TestPrune.Sql.fsproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Update="FSharp.Core" Version="10.1.*" />
+    </ItemGroup>
+
+</Project>
