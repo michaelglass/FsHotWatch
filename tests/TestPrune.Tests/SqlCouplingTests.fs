@@ -310,3 +310,43 @@ module ``SqlExtension as ITestPruneExtension`` =
         let extension = SqlExtension([])
         let edges = (extension :> ITestPruneExtension).AnalyzeEdges Unchecked.defaultof<_> [] ""
         test <@ edges.IsEmpty @>
+
+module ``SqlExtension auto-discovery`` =
+
+    [<Fact>]
+    let ``discovers ReadsFrom and WritesTo from symbol attributes`` () =
+        let result =
+            { AnalysisResult.Create(
+                  [ { FullName = "Queries.save"
+                      Kind = Function
+                      SourceFile = "src/Queries.fs"
+                      LineStart = 1; LineEnd = 5
+                      ContentHash = "a"; IsExtern = false }
+                    { FullName = "Queries.load"
+                      Kind = Function
+                      SourceFile = "src/Queries.fs"
+                      LineStart = 6; LineEnd = 10
+                      ContentHash = "b"; IsExtern = false } ],
+                  [],
+                  []
+              ) with
+                Attributes =
+                    [ { SymbolFullName = "Queries.save"
+                        AttributeName = "WritesToAttribute"
+                        ArgsJson = "[\"articles\", \"*\"]" }
+                      { SymbolFullName = "Queries.load"
+                        AttributeName = "ReadsFromAttribute"
+                        ArgsJson = "[\"articles\", \"*\"]" } ] }
+
+        let store = TestPrune.InMemoryStore.fromAnalysisResults [ result ]
+        let extension = AutoSqlExtension()
+        let edges = (extension :> ITestPruneExtension).AnalyzeEdges store [] ""
+        test <@ edges.Length = 1 @>
+        test <@ edges[0].Kind = SharedState @>
+
+    [<Fact>]
+    let ``no edges when no sql attributes`` () =
+        let store = TestPrune.InMemoryStore.fromAnalysisResults [ standardGraph ]
+        let extension = AutoSqlExtension()
+        let edges = (extension :> ITestPruneExtension).AnalyzeEdges store [] ""
+        test <@ edges.IsEmpty @>
