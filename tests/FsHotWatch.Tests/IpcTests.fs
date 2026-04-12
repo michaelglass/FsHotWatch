@@ -810,7 +810,7 @@ let ``repeated scan force via IPC increments generation each time`` () =
     let cts = new CancellationTokenSource()
 
     let daemon =
-        Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ])
+        Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ]) []
 
     let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
     waitForServer pipeName

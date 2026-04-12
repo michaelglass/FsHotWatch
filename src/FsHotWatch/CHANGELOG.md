@@ -1,5 +1,28 @@
 # Changelog — FsHotWatch (core)
 
+## Unreleased
+
+### Added
+
+- `PathFilter` module with shared path filtering utilities:
+  - `isGeneratedPath` — checks if a path is inside obj/ or bin/ directories
+  - `isExcludedPath` — gitignore-style glob matching via the `Ignore` package (replaces string-contains matching)
+  - `loadIgnoreFile` / `collectIgnoreRules` — load .gitignore and .fantomasignore files and combine into a single predicate
+  - `IgnoreFilterCache` — caches ignore rules per repo root, auto-reloads when files change on disk
+- `excludePatterns` parameter on `Daemon.create` / `Daemon.createWith` — exclude entire project trees from discovery using gitignore-style globs
+- `CheckPipeline.RegisterProject` filters out generated files in obj/ and bin/ directories
+
+### Changed
+
+- `Daemon.performScan` takes `BatchContext` instead of 12 individual parameters
+- Path filtering across Watcher, CheckPipeline, and Daemon consolidated through `PathFilter` module
+
+### Dependencies
+
+- Added `Ignore` 0.2.1 (gitignore-style pattern matching, same package used by Fantomas)
+
+---
+
 ## 0.5.0-alpha.1 (2026-04-12)
 
 ### Added

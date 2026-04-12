@@ -1,5 +1,14 @@
 # Changelog — FsHotWatch.Fantomas
 
+## Unreleased
+
+### Added
+
+- `FormatPreprocessor` and `createFormatCheck` respect `.gitignore` and `.fantomasignore` — files matching either are skipped during format and format-check
+- Ignore rules cached per repo root via `IgnoreFilterCache`, auto-reloaded when ignore files change on disk
+
+---
+
 ## 0.5.0-alpha.1 (2026-04-12)
 
 *No changes since 0.3.0-alpha.1.*

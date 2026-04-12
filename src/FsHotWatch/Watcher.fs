@@ -41,7 +41,6 @@ type FileWatcher =
 
 /// Returns true if the file path has a relevant extension and is not in obj/ or bin/.
 let internal isRelevantFile (path: string) =
-    let normalized = path.Replace('\\', '/')
     let ext = Path.GetExtension(path).ToLowerInvariant()
 
     let isRelevantExt =
@@ -52,9 +51,7 @@ let internal isRelevantFile (path: string) =
         || ext = ".slnx"
         || ext = ".props"
 
-    let isExcluded = normalized.Contains("/obj/") || normalized.Contains("/bin/")
-
-    isRelevantExt && not isExcluded
+    isRelevantExt && not (PathFilter.isGeneratedPath path)
 
 /// Classify a file path as a solution, project, or source change.
 let internal classifyChange (path: string) =
