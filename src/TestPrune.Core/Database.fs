@@ -130,6 +130,13 @@ let private readAll (reader: SqliteDataReader) (f: SqliteDataReader -> 'T) : 'T 
 
     results |> List.rev
 
+let private buildPlaceholders (names: string list) =
+    let paramNames = names |> List.mapi (fun i _ -> $"@p%d{i}")
+    String.Join(", ", paramNames)
+
+let private bindPlaceholders (cmd: SqliteCommand) (names: string list) =
+    names |> List.iteri (fun i name -> cmd.Parameters.AddWithValue($"@p%d{i}", name) |> ignore)
+
 let private openConnection (dbPath: string) =
     let connStr = $"Data Source=%s{dbPath}"
     let conn = new SqliteConnection(connStr)
@@ -397,9 +404,7 @@ type Database(dbPath: string) =
             use conn = openConnection dbPath
 
             // Build parameter placeholders
-            let paramNames = changedSymbolNames |> List.mapi (fun i _ -> $"@p%d{i}")
-
-            let placeholders = String.Join(", ", paramNames)
+            let placeholders = buildPlaceholders changedSymbolNames
 
             use cmd = conn.CreateCommand()
 
@@ -419,8 +424,7 @@ type Database(dbPath: string) =
                 JOIN symbols s ON s.id = tm.symbol_id
                 """
 
-            changedSymbolNames
-            |> List.iteri (fun i name -> cmd.Parameters.AddWithValue($"@p%d{i}", name) |> ignore)
+            bindPlaceholders cmd changedSymbolNames
 
             use reader = cmd.ExecuteReader()
 
@@ -507,8 +511,7 @@ type Database(dbPath: string) =
         else
             use conn = openConnection dbPath
 
-            let paramNames = rootSymbolNames |> List.mapi (fun i _ -> $"@p%d{i}")
-            let placeholders = String.Join(", ", paramNames)
+            let placeholders = buildPlaceholders rootSymbolNames
 
             use cmd = conn.CreateCommand()
 
@@ -524,8 +527,7 @@ type Database(dbPath: string) =
                 SELECT DISTINCT full_name FROM reachable
                 """
 
-            rootSymbolNames
-            |> List.iteri (fun i name -> cmd.Parameters.AddWithValue($"@p%d{i}", name) |> ignore)
+            bindPlaceholders cmd rootSymbolNames
 
             use reader = cmd.ExecuteReader()
             readAll reader (fun r -> r.GetString(0)) |> Set.ofList
@@ -634,8 +636,7 @@ type Database(dbPath: string) =
         else
             use conn = openConnection dbPath
 
-            let paramNames = symbolNames |> List.mapi (fun i _ -> $"@p%d{i}")
-            let placeholders = String.Join(", ", paramNames)
+            let placeholders = buildPlaceholders symbolNames
 
             use cmd = conn.CreateCommand()
 
@@ -648,8 +649,7 @@ type Database(dbPath: string) =
                 WHERE s_to.full_name IN (%s{placeholders})
                 """
 
-            symbolNames
-            |> List.iteri (fun i name -> cmd.Parameters.AddWithValue($"@p%d{i}", name) |> ignore)
+            bindPlaceholders cmd symbolNames
 
             use reader = cmd.ExecuteReader()
 
@@ -743,8 +743,7 @@ type Database(dbPath: string) =
                 SELECT DISTINCT source FROM transitive_path
                 """
 
-            changedSymbolNames
-            |> List.iteri (fun i name -> cmd.Parameters.AddWithValue($"@p%d{i}", name) |> ignore)
+            bindPlaceholders cmd changedSymbolNames
 
             use reader = cmd.ExecuteReader()
             readAll reader (fun r -> r.GetString(0))

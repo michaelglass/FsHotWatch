@@ -533,11 +533,10 @@ let runStatusWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSi
             printfn "No tests affected."
             0
         | RunSubset tests ->
-            let store = toSymbolStore db
             let changedSymbolNames =
                 changedFiles
                 |> List.collect (fun f ->
-                    store.GetSymbolsInFile f |> List.map (fun s -> s.FullName))
+                    db.GetSymbolsInFile f |> List.map (fun s -> s.FullName))
 
             let sources = db.QueryEdgeSourcesForTest(changedSymbolNames)
 

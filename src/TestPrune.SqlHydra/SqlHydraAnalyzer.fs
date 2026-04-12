@@ -45,14 +45,9 @@ module SqlHydraAnalyzer =
 /// and produces SharedState edges via SqlCoupling.
 type SqlHydraExtension(generatedModulePrefix: string) =
 
-    /// Extract SqlFacts by analyzing the dependency graph for SqlHydra patterns.
-    /// A function is classified as a reader/writer if it:
-    /// 1. Has a Calls edge to a SqlHydra DSL function (selectTask, insertTask, etc.)
-    /// 2. Has a UsesType edge to a type matching the generated module prefix
-    static member extractFacts (generatedModulePrefix: string) (store: SymbolStore) : SqlFact list =
+    static member extractFacts (prefix: string) (store: SymbolStore) : SqlFact list =
         let allSymbols = store.GetAllSymbols() |> List.filter (fun s -> not s.IsExtern)
 
-        // Group by file to avoid redundant GetDependenciesFromFile calls
         let depsByFile =
             allSymbols
             |> List.map (fun s -> s.SourceFile)
@@ -82,7 +77,7 @@ type SqlHydraExtension(generatedModulePrefix: string) =
             let tableRefs =
                 deps
                 |> List.choose (fun d ->
-                    if d.Kind = UsesType && d.ToSymbol.Contains(generatedModulePrefix) then
+                    if d.Kind = UsesType && d.ToSymbol.Contains(prefix) then
                         SqlHydraAnalyzer.parseTableReference d.ToSymbol
                     else
                         None)
@@ -101,6 +96,6 @@ type SqlHydraExtension(generatedModulePrefix: string) =
         member _.Name = "SqlHydra"
 
         member _.AnalyzeEdges (symbolStore: SymbolStore) (_changedFiles: string list) (_repoRoot: string) =
-            let facts = SqlHydraExtension.extractFacts generatedModulePrefix symbolStore
-            SqlCoupling.buildEdges facts
+            SqlHydraExtension.extractFacts generatedModulePrefix symbolStore
+            |> SqlCoupling.buildEdges
             |> List.map (fun d -> { d with Source = "sql-hydra" })
