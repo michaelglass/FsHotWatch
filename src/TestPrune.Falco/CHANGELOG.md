@@ -1,5 +1,8 @@
 # Changelog — TestPrune.Falco
 
+## [Unreleased]
+- refactor: adapt to revised ITestPruneExtension edge-injection interface
+
 ## [1.0.2] - 2026-04-11
 - chore: update NuGet dependencies to latest versions
 - chore: bump local tool versions (coverageratchet, fssemantictagger, syncdocs, fsprojlint) to latest alpha

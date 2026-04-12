@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 - feat: auto-recreate database when schema version is incompatible with current build
+- feat: add SharedState dependency kind for cross-test coupling via shared resources
+- feat: revise ITestPruneExtension to inject edges into dependency graph
+- feat: add TestPrune.Sql package with ReadsFrom/WritesTo attributes and SQL coupling engine
+- feat: add TestPrune.SqlHydra package with graph-based SqlHydra query pattern detection
+- feat: generic symbol attribute extraction from FCS during analysis (schema v3)
+- feat: AutoSqlExtension auto-discovers ReadsFrom/WritesTo from indexed attributes
+- feat: show edge source provenance (core, sql, sql-hydra, falco) in status output
+- refactor: extract DB placeholder helpers, batch attribute queries, single-pass extraction
 
 ## [2.0.0] - 2026-04-11
 - feat: cross-project dependency extraction via extern symbols
