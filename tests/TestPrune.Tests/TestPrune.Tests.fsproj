@@ -27,6 +27,7 @@
     <Compile Include="TestRunnerTests.fs" />
     <Compile Include="ProjectLoaderTests.fs" />
     <Compile Include="FalcoRouteExtensionTests.fs" />
+    <Compile Include="SqlCouplingTests.fs" />
   </ItemGroup>
 
   <!-- xUnit runner configuration -->
@@ -38,6 +39,7 @@
     <ProjectReference Include="../../src/TestPrune.Core/TestPrune.Core.fsproj" />
     <ProjectReference Include="../../src/TestPrune/TestPrune.fsproj" />
     <ProjectReference Include="../../src/TestPrune.Falco/TestPrune.Falco.fsproj" />
+    <ProjectReference Include="../../src/TestPrune.Sql/TestPrune.Sql.fsproj" />
   </ItemGroup>
 
   <ItemGroup>

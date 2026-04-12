@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/TestPrune.Core/TestPrune.Core.fsproj" />
     <Project Path="src/TestPrune.Falco/TestPrune.Falco.fsproj" />
+    <Project Path="src/TestPrune.Sql/TestPrune.Sql.fsproj" />
     <Project Path="src/TestPrune/TestPrune.fsproj" />
   </Folder>
   <Folder Name="/tests/">
