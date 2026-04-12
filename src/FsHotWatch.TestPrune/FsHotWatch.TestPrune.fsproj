@@ -7,7 +7,7 @@
 
     <!-- Package metadata -->
     <PackageId>FsHotWatch.TestPrune</PackageId>
-    <Version>0.3.0-alpha.1</Version>
+    <Version>0.4.0-alpha.1</Version>
     <Authors>Michael Glass</Authors>
     <Description>FsHotWatch plugin for TestPrune test impact analysis</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
