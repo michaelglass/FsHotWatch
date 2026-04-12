@@ -111,6 +111,20 @@
       "line": 98,
       "branch": 100
     },
+    "PathFilter.fs": [
+      {
+        "line": 95,
+        "branch": 56,
+        "reason": "exception-handling branches for missing .gitignore/.fantomasignore files",
+        "platform": "macos"
+      },
+      {
+        "line": 95,
+        "branch": 56,
+        "reason": "exception-handling branches for missing .gitignore/.fantomasignore files",
+        "platform": "linux"
+      }
+    ],
     "InMemoryCheckCache.fs": {
       "line": 95,
       "branch": 100,
