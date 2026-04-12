@@ -1812,3 +1812,46 @@ module ``Dependency source attribution`` =
             let deps = db.GetDependenciesFromFile("src/A.fs")
             test <@ deps.Length = 1 @>
             test <@ deps[0].Source = "core" @>)
+
+    [<Fact>]
+    let ``multiple sources coexist in dependency graph`` () =
+        withDb (fun db ->
+            let result =
+                AnalysisResult.Create(
+                    [ { FullName = "A.func"
+                        Kind = Function
+                        SourceFile = "src/A.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "abc"
+                        IsExtern = false }
+                      { FullName = "B.func"
+                        Kind = Function
+                        SourceFile = "src/B.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "def"
+                        IsExtern = false }
+                      { FullName = "C.func"
+                        Kind = Function
+                        SourceFile = "src/C.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "ghi"
+                        IsExtern = false } ],
+                    [ { FromSymbol = "A.func"
+                        ToSymbol = "B.func"
+                        Kind = Calls
+                        Source = "core" }
+                      { FromSymbol = "A.func"
+                        ToSymbol = "C.func"
+                        Kind = SharedState
+                        Source = "sql" } ],
+                    []
+                )
+
+            db.RebuildProjects([ result ])
+            let deps = db.GetDependenciesFromFile("src/A.fs")
+            test <@ deps.Length = 2 @>
+            let sources = deps |> List.map (fun d -> d.Source) |> Set.ofList
+            test <@ sources = set [ "core"; "sql" ] @>)
