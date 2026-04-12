@@ -33,7 +33,8 @@ module SqlCoupling =
             [ for w in writers do
                   for r in readers do
                       if w.Symbol <> r.Symbol && columnsMatch w.Column r.Column then
-                          { FromSymbol = w.Symbol
-                            ToSymbol = r.Symbol
+                          // Reader depends on writer: when writer changes, reader is affected
+                          { FromSymbol = r.Symbol
+                            ToSymbol = w.Symbol
                             Kind = SharedState
                             Source = "sql" } ])
