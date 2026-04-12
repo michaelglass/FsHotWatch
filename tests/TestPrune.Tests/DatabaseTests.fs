@@ -1959,3 +1959,56 @@ module ``Symbol attribute storage`` =
             let store = TestPrune.Ports.toSymbolStore db
             let attrs = store.GetAttributesForSymbol "Lib.funcB"
             test <@ attrs.IsEmpty @>)
+
+module ``Edge source provenance`` =
+
+    [<Fact>]
+    let ``returns distinct sources in transitive path`` () =
+        withDb (fun db ->
+            let result =
+                AnalysisResult.Create(
+                    [ { FullName = "Tests.testA"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1; LineEnd = 5
+                        ContentHash = "t1"; IsExtern = false }
+                      { FullName = "Service.process"
+                        Kind = Function
+                        SourceFile = "src/Service.fs"
+                        LineStart = 1; LineEnd = 5
+                        ContentHash = "s1"; IsExtern = false }
+                      { FullName = "Queries.readItems"
+                        Kind = Function
+                        SourceFile = "src/Queries.fs"
+                        LineStart = 1; LineEnd = 5
+                        ContentHash = "q1"; IsExtern = false }
+                      { FullName = "Jobs.writeItems"
+                        Kind = Function
+                        SourceFile = "src/Jobs.fs"
+                        LineStart = 1; LineEnd = 5
+                        ContentHash = "j1"; IsExtern = false } ],
+                    [ { FromSymbol = "Tests.testA"
+                        ToSymbol = "Service.process"
+                        Kind = Calls; Source = "core" }
+                      { FromSymbol = "Service.process"
+                        ToSymbol = "Queries.readItems"
+                        Kind = Calls; Source = "core" }
+                      { FromSymbol = "Queries.readItems"
+                        ToSymbol = "Jobs.writeItems"
+                        Kind = SharedState; Source = "sql" } ],
+                    [ { SymbolFullName = "Tests.testA"
+                        TestProject = "MyTests"
+                        TestClass = "Tests"
+                        TestMethod = "testA" } ]
+                )
+
+            db.RebuildProjects([ result ])
+            let sources = db.QueryEdgeSourcesForTest("Tests.testA", [ "Jobs.writeItems" ])
+            test <@ sources |> Set.ofList = set [ "core"; "sql" ] @>)
+
+    [<Fact>]
+    let ``returns only core for pure AST path`` () =
+        withDb (fun db ->
+            db.RebuildProjects([ standardGraph ])
+            let sources = db.QueryEdgeSourcesForTest("Tests.testA", [ "Domain.TypeC" ])
+            test <@ sources = [ "core" ] @>)

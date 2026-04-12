@@ -717,6 +717,43 @@ type Database(dbPath: string) =
         cmd.Parameters.AddWithValue("@runId", runId) |> ignore
         cmd.ExecuteNonQuery() |> ignore
 
+    /// Get distinct edge sources in the transitive path from changed symbols to a test.
+    /// Walks the dependency graph backwards from changedSymbolNames, collecting all edges
+    /// until it reaches testSymbolName, then returns the distinct source values found.
+    member _.QueryEdgeSourcesForTest(testSymbolName: string, changedSymbolNames: string list) : string list =
+        if changedSymbolNames.IsEmpty then
+            []
+        else
+            use conn = openConnection dbPath
+            let paramNames = changedSymbolNames |> List.mapi (fun i _ -> $"@p%d{i}")
+            let placeholders = String.Join(", ", paramNames)
+            use cmd = conn.CreateCommand()
+
+            // Walk edges backwards from changed symbols to the test symbol,
+            // collecting distinct source values along the way.
+            cmd.CommandText <-
+                $"""
+                WITH RECURSIVE transitive_path AS (
+                    SELECT from_symbol_id, source
+                    FROM dependencies
+                    WHERE to_symbol_id IN (
+                        SELECT id FROM symbols WHERE full_name IN (%s{placeholders})
+                    )
+                    UNION
+                    SELECT d.from_symbol_id, d.source
+                    FROM dependencies d
+                    JOIN transitive_path tp ON d.to_symbol_id = tp.from_symbol_id
+                )
+                SELECT DISTINCT source FROM transitive_path
+                """
+
+            changedSymbolNames
+            |> List.iteri (fun i name -> cmd.Parameters.AddWithValue($"@p%d{i}", name) |> ignore)
+
+            cmd.Parameters.AddWithValue("@testSymbol", testSymbolName) |> ignore
+            use reader = cmd.ExecuteReader()
+            readAll reader (fun r -> r.GetString(0))
+
     /// Get attributes for a symbol by its full name.
     member _.GetAttributesForSymbol(symbolFullName: string) : (string * string) list =
         use conn = openConnection dbPath
