@@ -32,6 +32,8 @@
     <Compile Include="AnalyzersPluginTests.fs" />
     <Compile Include="LintPluginTests.fs" />
     <Compile Include="FormatCheckPluginTests.fs" />
+    <Compile Include="FormatIgnoreTests.fs" />
+    <Compile Include="PathFilterTests.fs" />
     <Compile Include="ProjectGraphTests.fs" />
     <Compile Include="CheckPipelineTests.fs" />
     <Compile Include="DaemonConfigTests.fs" />

@@ -237,7 +237,7 @@ let ``shutdown via IPC stops the daemon`` () =
     let cts = new CancellationTokenSource()
 
     let daemon =
-        Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ])
+        Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ]) []
 
     let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
     waitForIpcServer pipeName
@@ -295,7 +295,7 @@ let ``CLI status query works against running daemon`` () =
     let cts = new CancellationTokenSource()
 
     let daemon =
-        Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ])
+        Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ]) []
 
     let handler =
         { Name = PluginName.create "test-plugin"
@@ -333,7 +333,7 @@ let ``CLI plugin status query works against running daemon`` () =
     let cts = new CancellationTokenSource()
 
     let daemon =
-        Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ])
+        Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ]) []
 
     let handler =
         { Name = PluginName.create "my-lint"
@@ -387,7 +387,7 @@ let ``CLI command proxying works against running daemon`` () =
     let cts = new CancellationTokenSource()
 
     let daemon =
-        Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ])
+        Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ]) []
 
     let handler =
         { Name = PluginName.create "greeter"
@@ -434,7 +434,8 @@ let private fakeConfig: DaemonConfiguration =
       Analyzers = None
       Tests = None
       Coverage = None
-      FileCommands = [] }
+      FileCommands = []
+      Exclude = [] }
 
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }

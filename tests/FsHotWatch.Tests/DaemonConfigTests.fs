@@ -23,7 +23,8 @@ let private defaults: DaemonConfiguration =
       Analyzers = None
       Tests = None
       Coverage = None
-      FileCommands = [] }
+      FileCommands = []
+      Exclude = [] }
 
 // --- parseConfig: empty JSON ---
 
@@ -47,6 +48,24 @@ let ``parseConfig with empty JSON returns defaults`` () =
     test <@ config.Tests = None @>
     test <@ config.Coverage = None @>
     test <@ config.FileCommands |> List.isEmpty @>
+    test <@ config.Exclude |> List.isEmpty @>
+
+// --- parseConfig: exclude ---
+
+[<Fact>]
+let ``parseConfig exclude with patterns`` () =
+    let config = parseConfig """{"exclude": ["vendor/", "generated/"]}""" defaults
+    test <@ config.Exclude = [ "vendor/"; "generated/" ] @>
+
+[<Fact>]
+let ``parseConfig exclude empty array`` () =
+    let config = parseConfig """{"exclude": []}""" defaults
+    test <@ config.Exclude |> List.isEmpty @>
+
+[<Fact>]
+let ``parseConfig no exclude returns empty list`` () =
+    let config = parseConfig """{}""" defaults
+    test <@ config.Exclude |> List.isEmpty @>
 
 // --- parseConfig: build ---
 
@@ -747,7 +766,7 @@ let ``registerPlugins with build config registers build plugin`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
         let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ])
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ]) []
 
         let config =
             { stripConfig defaults with
@@ -763,7 +782,7 @@ let ``registerPlugins with stripped config does not register build plugin`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
         let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ])
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ]) []
 
         let config = stripConfig defaults
         registerPlugins daemon tmpDir config

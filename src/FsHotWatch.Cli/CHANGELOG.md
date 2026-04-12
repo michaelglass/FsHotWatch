@@ -2,6 +2,15 @@
 
 Note: as of the Unreleased cycle, CLI versions and releases together with the core package under the `core-v` tag (no separate `cli-v` tag prefix).
 
+## Unreleased
+
+### Added
+
+- `exclude` config field in `.fs-hot-watch.json` — array of gitignore-style glob patterns to exclude entire project trees from discovery (e.g. `["vendor/"]`)
+- Pass `config.Exclude` to `Daemon.create` for project-level exclusion
+
+---
+
 ## 0.5.0-alpha.1 (2026-04-12)
 
 ### Added

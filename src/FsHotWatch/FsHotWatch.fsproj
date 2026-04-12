@@ -50,6 +50,7 @@
     <Compile Include="Logging.fs" />
 <Compile Include="Lifecycle.fs" />
     <Compile Include="Events.fs" />
+    <Compile Include="PathFilter.fs" />
     <Compile Include="ProcessHelper.fs" />
     <Compile Include="JjHelper.fs" />
     <Compile Include="CheckCache.fs" />
@@ -72,6 +73,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Ignore" Version="0.2.1" />
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.201" PrivateAssets="All" />
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
     <PackageReference Include="FSharp.Data.Adaptive" Version="1.2.26" />

@@ -102,7 +102,8 @@ type DaemonConfiguration =
           {| Pattern: string
              Command: string
              Args: string
-             RunOnStart: bool |} list }
+             RunOnStart: bool |} list
+      Exclude: string list }
 
 let private defaultConfigFor (repoRoot: string) =
     { Build =
@@ -117,7 +118,8 @@ let private defaultConfigFor (repoRoot: string) =
       Analyzers = None
       Tests = None
       Coverage = None
-      FileCommands = [] }
+      FileCommands = []
+      Exclude = [] }
 
 /// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
 let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfiguration =
@@ -366,6 +368,12 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             |> Seq.toList
         | _ -> []
 
+    let exclude =
+        match root.TryGetProperty("exclude") with
+        | true, arr when arr.ValueKind = JsonValueKind.Array ->
+            arr.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList
+        | _ -> defaults.Exclude
+
     { Build = build
       Format = format
       Lint = lint
@@ -373,7 +381,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       Analyzers = analyzers
       Tests = tests
       Coverage = coverage
-      FileCommands = fileCommands }
+      FileCommands = fileCommands
+      Exclude = exclude }
 
 /// Strip a config down to a minimal base for run-once subcommands.
 /// Disables all plugins except format preprocessor. Caller overrides specific fields.
