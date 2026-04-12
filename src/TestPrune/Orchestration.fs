@@ -502,7 +502,7 @@ let private withAnalysis
     (getDiff: DiffProvider)
     (repoRoot: string)
     (auditSink: AuditSink)
-    (f: TestSelection * string list -> int)
+    (f: Database -> TestSelection * string list -> int)
     : int =
     let dbPath = Path.Combine(repoRoot, ".test-prune.db")
 
@@ -518,11 +518,11 @@ let private withAnalysis
         | Error msg ->
             eprintfn $"Error: %s{msg}"
             1
-        | Ok result -> f result
+        | Ok result -> f db result
 
 /// Run the status command with an injectable diff provider.
 let runStatusWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSink) : int =
-    withAnalysis getDiff repoRoot auditSink (fun (selection, changedFiles) ->
+    withAnalysis getDiff repoRoot auditSink (fun db (selection, changedFiles) ->
         printfn $"Changed files: %d{changedFiles.Length}"
 
         for f in changedFiles do
@@ -533,6 +533,13 @@ let runStatusWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSi
             printfn "No tests affected."
             0
         | RunSubset tests ->
+            // Compute changed symbol names for provenance display
+            let store = toSymbolStore db
+            let changedSymbolNames =
+                changedFiles
+                |> List.collect (fun f ->
+                    store.GetSymbolsInFile f |> List.map (fun s -> s.FullName))
+
             printfn $"Would run %d{tests.Length} test(s):"
 
             let byProject = tests |> List.groupBy (fun t -> t.TestProject)
@@ -546,7 +553,16 @@ let runStatusWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSi
                     printfn $"    %s{cls}"
 
                     for m in methods do
-                        printfn $"      - %s{m.TestMethod}"
+                        let sources = db.QueryEdgeSourcesForTest(m.SymbolFullName, changedSymbolNames)
+
+                        let sourceTag =
+                            if sources.IsEmpty || sources = [ "core" ] then
+                                ""
+                            else
+                                let s = sources |> List.sort |> String.concat ", "
+                                $"  [sources: %s{s}]"
+
+                        printfn $"      - %s{m.TestMethod}%s{sourceTag}"
 
             0
         | RunAll reason ->
@@ -576,7 +592,7 @@ let runRunWithExecutor
     (repoRoot: string)
     (auditSink: AuditSink)
     : int =
-    withAnalysis getDiff repoRoot auditSink (fun (selection, _changedFiles) ->
+    withAnalysis getDiff repoRoot auditSink (fun _db (selection, _changedFiles) ->
         match selection with
         | RunSubset [] ->
             printfn "No tests affected — nothing to run."
