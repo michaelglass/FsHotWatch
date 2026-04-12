@@ -5,7 +5,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <NoWarn>$(NoWarn);NU1605;MSB3277;NETSDK1188</NoWarn>
     <PackageId>FsHotWatch.Coverage</PackageId>
-    <Version>0.4.0-alpha.1</Version>
+    <Version>0.5.0-alpha.1</Version>
     <Authors>Michael Glass</Authors>
     <Description>FsHotWatch plugin that checks coverage thresholds after tests complete</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
