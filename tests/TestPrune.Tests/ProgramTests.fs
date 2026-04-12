@@ -498,7 +498,8 @@ module ``runDeadCode`` =
         let deps =
             [ { FromSymbol = "Lib.caller"
                 ToSymbol = "Lib.target"
-                Kind = Calls } ]
+                Kind = Calls
+                Source = "core" } ]
 
         makeDbWithSymbols tmpDir symbols deps |> ignore
         let sw = new System.IO.StringWriter()
@@ -569,16 +570,20 @@ module ``runDeadCode`` =
         let deps =
             [ { FromSymbol = "Lib.callerA"
                 ToSymbol = "Lib.target"
-                Kind = Calls }
+                Kind = Calls
+                Source = "core" }
               { FromSymbol = "Lib.callerB"
                 ToSymbol = "Lib.target"
-                Kind = Calls }
+                Kind = Calls
+                Source = "core" }
               { FromSymbol = "Lib.callerC"
                 ToSymbol = "Lib.target"
-                Kind = Calls }
+                Kind = Calls
+                Source = "core" }
               { FromSymbol = "Lib.callerD"
                 ToSymbol = "Lib.target"
-                Kind = Calls } ]
+                Kind = Calls
+                Source = "core" } ]
 
         makeDbWithSymbols tmpDir symbols deps |> ignore
         let sw = new System.IO.StringWriter()
@@ -737,7 +742,8 @@ module ``runStatusWith RunSubset`` =
             let deps =
                 [ { FromSymbol = "MyTests.Tests.testHelper"
                     ToSymbol = "Lib.helper"
-                    Kind = Calls } ]
+                    Kind = Calls
+                    Source = "core" } ]
 
             let testMethods =
                 [ { SymbolFullName = "MyTests.Tests.testHelper"
@@ -813,7 +819,8 @@ module ``runStatusWith RunSubset`` =
             let deps =
                 [ { FromSymbol = "MyTests.Tests.testHelper"
                     ToSymbol = "Lib.helper"
-                    Kind = Calls } ]
+                    Kind = Calls
+                    Source = "core" } ]
 
             let testMethods =
                 [ { SymbolFullName = "MyTests.Tests.testHelper"
@@ -1045,7 +1052,8 @@ module ``runRunWithExecutor`` =
             let deps =
                 [ { FromSymbol = "MyTests.Tests.testHelper"
                     ToSymbol = "Lib.helper"
-                    Kind = Calls } ]
+                    Kind = Calls
+                    Source = "core" } ]
 
             let testMethods =
                 [ { SymbolFullName = "MyTests.Tests.testHelper"
@@ -1142,10 +1150,12 @@ module ``runRunWithExecutor`` =
             let deps =
                 [ { FromSymbol = "ProjA.Tests.testA"
                     ToSymbol = "Lib.helper"
-                    Kind = Calls }
+                    Kind = Calls
+                    Source = "core" }
                   { FromSymbol = "ProjB.Tests.testB"
                     ToSymbol = "Lib.helper"
-                    Kind = Calls } ]
+                    Kind = Calls
+                    Source = "core" } ]
 
             let testMethods =
                 [ { SymbolFullName = "ProjA.Tests.testA"
@@ -1235,7 +1245,8 @@ module ``runRunWithExecutor`` =
             let deps =
                 [ { FromSymbol = "MissingProj.Tests.testHelper"
                     ToSymbol = "Lib.helper"
-                    Kind = Calls } ]
+                    Kind = Calls
+                    Source = "core" } ]
 
             let testMethods =
                 [ { SymbolFullName = "MissingProj.Tests.testHelper"

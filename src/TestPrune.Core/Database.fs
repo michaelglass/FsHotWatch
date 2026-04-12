@@ -24,6 +24,7 @@ let private schema =
         from_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
         to_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
         dep_kind TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'core',
         PRIMARY KEY (from_symbol_id, to_symbol_id, dep_kind)
     );
 
@@ -138,7 +139,7 @@ let private openConnection (dbPath: string) =
 /// Increment this whenever the schema changes in a backwards-incompatible way.
 /// A mismatch causes the database file to be deleted and recreated.
 [<Literal>]
-let private SchemaVersion = 1
+let private SchemaVersion = 2
 
 let private deleteDbFiles (dbPath: string) =
     File.Delete(dbPath)
@@ -276,8 +277,8 @@ type Database(dbPath: string) =
 
             depCmd.CommandText <-
                 """
-                INSERT OR IGNORE INTO dependencies (from_symbol_id, to_symbol_id, dep_kind)
-                SELECT f.id, t.id, @depKind
+                INSERT OR IGNORE INTO dependencies (from_symbol_id, to_symbol_id, dep_kind, source)
+                SELECT f.id, t.id, @depKind, @source
                 FROM symbols f, symbols t
                 WHERE f.full_name = @fromSymbol AND t.full_name = @toSymbol
                 """
@@ -285,12 +286,14 @@ type Database(dbPath: string) =
             let pFromSymbol = depCmd.Parameters.Add("@fromSymbol", SqliteType.Text)
             let pToSymbol = depCmd.Parameters.Add("@toSymbol", SqliteType.Text)
             let pDepKind = depCmd.Parameters.Add("@depKind", SqliteType.Text)
+            let pSource = depCmd.Parameters.Add("@source", SqliteType.Text)
 
             for result in results do
                 for dep in result.Dependencies do
                     pFromSymbol.Value <- dep.FromSymbol
                     pToSymbol.Value <- dep.ToSymbol
                     pDepKind.Value <- depKindToString dep.Kind
+                    pSource.Value <- dep.Source
                     depCmd.ExecuteNonQuery() |> ignore
 
             use tmCmd = conn.CreateCommand()
@@ -631,7 +634,7 @@ type Database(dbPath: string) =
 
         cmd.CommandText <-
             """
-            SELECT f.full_name, t.full_name, d.dep_kind
+            SELECT f.full_name, t.full_name, d.dep_kind, d.source
             FROM dependencies d
             JOIN symbols f ON f.id = d.from_symbol_id
             JOIN symbols t ON t.id = d.to_symbol_id
@@ -645,7 +648,8 @@ type Database(dbPath: string) =
         readAll reader (fun r ->
             { FromSymbol = r.GetString(0)
               ToSymbol = r.GetString(1)
-              Kind = stringToDepKind warnedUnknownKinds (r.GetString(2)) })
+              Kind = stringToDepKind warnedUnknownKinds (r.GetString(2))
+              Source = r.GetString(3) })
 
     /// Insert an audit event into the analysis_events table.
     member _.InsertEvent(runId: string, timestamp: string, eventType: string, eventData: string) =

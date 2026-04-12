@@ -51,7 +51,8 @@ type DependencyKind =
 type Dependency =
     { FromSymbol: string
       ToSymbol: string
-      Kind: DependencyKind }
+      Kind: DependencyKind
+      Source: string }
 
 /// Maps an HTTP route (method + URL pattern) to its handler's source file.
 type RouteHandlerEntry =
@@ -672,7 +673,8 @@ let private extractResults
                                     | Some enclosingSi when enclosingSi.FullName <> recName ->
                                         [ { FromSymbol = enclosingSi.FullName
                                             ToSymbol = recName
-                                            Kind = UsesType } ]
+                                            Kind = UsesType
+                                            Source = "core" } ]
                                     | _ -> []
                                 | None -> []
                             | _ -> []
@@ -691,7 +693,8 @@ let private extractResults
                                     let primary =
                                         { FromSymbol = enclosingSi.FullName
                                           ToSymbol = usedFullName
-                                          Kind = classifyDependency u.Symbol }
+                                          Kind = classifyDependency u.Symbol
+                                          Source = "core" }
 
                                     let parentEdge =
                                         tryGetUnionParentType u.Symbol
@@ -702,7 +705,8 @@ let private extractResults
                                                 Some
                                                     { FromSymbol = enclosingSi.FullName
                                                       ToSymbol = parentName
-                                                      Kind = UsesType })
+                                                      Kind = UsesType
+                                                      Source = "core" })
 
                                     let genericArgEdges =
                                         tryGetGenericTypeArgEdges u.Symbol
@@ -713,7 +717,8 @@ let private extractResults
                                                 Some
                                                     { FromSymbol = enclosingSi.FullName
                                                       ToSymbol = argName
-                                                      Kind = UsesType })
+                                                      Kind = UsesType
+                                                      Source = "core" })
 
                                     let recordTypeEdge =
                                         tryGetRecordTypeFromField u.Symbol
@@ -724,7 +729,8 @@ let private extractResults
                                                 Some
                                                     { FromSymbol = enclosingSi.FullName
                                                       ToSymbol = recName
-                                                      Kind = UsesType })
+                                                      Kind = UsesType
+                                                      Source = "core" })
 
                                     primary :: (parentEdge |> Option.toList)
                                     @ genericArgEdges
