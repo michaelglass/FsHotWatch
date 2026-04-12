@@ -46,6 +46,7 @@ type DependencyKind =
     | UsesType
     | PatternMatches
     | References
+    | SharedState
 
 /// A directed dependency from one symbol to another, with its kind.
 type Dependency =

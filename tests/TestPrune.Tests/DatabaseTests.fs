@@ -989,6 +989,38 @@ module ``depKindToString and round-trip`` =
             test <@ deps.Length = 1 @>
             test <@ deps[0].Kind = References @>)
 
+    [<Fact>]
+    let ``SharedState dep kind round-trips through database`` () =
+        withDb (fun db ->
+            let result =
+                AnalysisResult.Create(
+                    [ { FullName = "Writer.save"
+                        Kind = Function
+                        SourceFile = "src/Writer.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "aaa"
+                        IsExtern = false }
+                      { FullName = "Reader.load"
+                        Kind = Function
+                        SourceFile = "src/Reader.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "bbb"
+                        IsExtern = false } ],
+                    [ { FromSymbol = "Writer.save"
+                        ToSymbol = "Reader.load"
+                        Kind = SharedState
+                        Source = "sql" } ],
+                    []
+                )
+
+            db.RebuildProjects([ result ])
+            let deps = db.GetDependenciesFromFile("src/Writer.fs")
+            test <@ deps.Length = 1 @>
+            test <@ deps[0].Kind = SharedState @>
+            test <@ deps[0].Source = "sql" @>)
+
 module ``GetDependenciesFromFile`` =
 
     [<Fact>]

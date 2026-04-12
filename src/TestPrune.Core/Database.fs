@@ -99,6 +99,7 @@ let private depKindToString =
     | UsesType -> "uses_type"
     | PatternMatches -> "pattern_matches"
     | References -> "references"
+    | SharedState -> "shared_state"
 
 let private stringToDepKind (warned: HashSet<string>) =
     function
@@ -106,6 +107,7 @@ let private stringToDepKind (warned: HashSet<string>) =
     | "uses_type" -> UsesType
     | "pattern_matches" -> PatternMatches
     | "references" -> References
+    | "shared_state" -> SharedState
     | unknown ->
         if warned.Add($"DependencyKind:%s{unknown}") then
             eprintfn $"Warning: unknown DependencyKind '%s{unknown}' in database, defaulting to References"
