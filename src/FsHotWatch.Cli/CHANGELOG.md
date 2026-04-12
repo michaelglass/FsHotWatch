@@ -2,7 +2,7 @@
 
 Note: as of the Unreleased cycle, CLI versions and releases together with the core package under the `core-v` tag (no separate `cli-v` tag prefix).
 
-## Unreleased
+## 0.5.0-alpha.1 (2026-04-12)
 
 ### Added
 
