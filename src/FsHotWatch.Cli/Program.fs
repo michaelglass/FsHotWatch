@@ -566,7 +566,7 @@ let main args =
             let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
 
             let createDaemon (root: string) =
-                Daemon.create root backend keyProvider None
+                Daemon.create root backend keyProvider None config.Exclude
 
             executeCommand createDaemon defaultIpcOps repoRoot pipeName command daemonExtraArgs noWarnFail config 30.0
         | Error(HelpRequested path) ->
