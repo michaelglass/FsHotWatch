@@ -27,7 +27,8 @@ In `.fs-hot-watch.json`:
 {
   "coverage": {
     "directory": "./coverage",
-    "thresholdsFile": "coverage-thresholds.json"
+    "thresholdsFile": "coverage-thresholds.json",
+    "afterCheck": "dotnet tool run coverageratchet"
   }
 }
 ```
@@ -36,6 +37,7 @@ In `.fs-hot-watch.json`:
 |-------|------|---------|-------------|
 | `directory` | `string` | `"./coverage"` | Directory containing Cobertura XML coverage reports. |
 | `thresholdsFile` | `string` | -- | Path to JSON file with per-project coverage thresholds. |
+| `afterCheck` | `string` | -- | Shell command to run after coverage check. Non-zero exit reports to error ledger. |
 
 ### Thresholds file format
 
@@ -64,7 +66,7 @@ daemon.RegisterHandler(
     CoveragePlugin.create
         "./coverage"                    // coverage report directory
         (Some "coverage-thresholds.json")  // thresholds file
-        None                            // afterCheck callback
+        None                            // afterCheck hook: (unit -> bool * string) option
         None                            // getCommitId for caching
 )
 ```
