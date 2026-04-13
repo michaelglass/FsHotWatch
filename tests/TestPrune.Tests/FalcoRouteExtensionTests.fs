@@ -44,7 +44,9 @@ let private withTestSetup
                 File.WriteAllText(Path.Combine(testDir, fileName), content)
 
         let routeStore = toRouteStore db
-        let extension = FalcoRouteExtension(integrationTestProject, integrationTestSubDir, routeStore)
+
+        let extension =
+            FalcoRouteExtension(integrationTestProject, integrationTestSubDir, routeStore)
 
         let result = extension.FindAffectedTestClasses(changedFiles, tempDir)
 

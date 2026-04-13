@@ -17,5 +17,4 @@ type ITestPruneExtension =
 
     /// Given a symbol store and a list of changed source files (repo-relative paths),
     /// return additional dependency edges to inject into the graph.
-    abstract AnalyzeEdges:
-        symbolStore: SymbolStore -> changedFiles: string list -> repoRoot: string -> Dependency list
+    abstract AnalyzeEdges: symbolStore: SymbolStore -> changedFiles: string list -> repoRoot: string -> Dependency list

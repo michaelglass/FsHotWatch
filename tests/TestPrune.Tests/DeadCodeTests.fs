@@ -32,7 +32,8 @@ module ``All symbols reachable`` =
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.helper"
-                        Kind = Calls; Source = "core" } ]
+                        Kind = Calls
+                        Source = "core" } ]
                   TestMethods = []
                   Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
@@ -76,7 +77,8 @@ module ``Unreachable function detected`` =
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.usedHelper"
-                        Kind = Calls; Source = "core" } ]
+                        Kind = Calls
+                        Source = "core" } ]
                   TestMethods = []
                   Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
@@ -126,13 +128,16 @@ module ``Transitive reachability`` =
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.funcA"
-                        Kind = Calls; Source = "core" }
+                        Kind = Calls
+                        Source = "core" }
                       { FromSymbol = "App.Lib.funcA"
                         ToSymbol = "App.Lib.funcB"
-                        Kind = Calls; Source = "core" }
+                        Kind = Calls
+                        Source = "core" }
                       { FromSymbol = "App.Lib.funcB"
                         ToSymbol = "App.Domain.TypeC"
-                        Kind = UsesType; Source = "core" } ]
+                        Kind = UsesType
+                        Source = "core" } ]
                   TestMethods = []
                   Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
@@ -555,7 +560,8 @@ module ``Test file symbols excluded`` =
                   Dependencies =
                     [ { FromSymbol = "Tests.MyTest.testSomething"
                         ToSymbol = "TestHelpers.setup"
-                        Kind = Calls; Source = "core" } ]
+                        Kind = Calls
+                        Source = "core" } ]
                   TestMethods =
                     [ { SymbolFullName = "Tests.MyTest.testSomething"
                         TestProject = "Tests"
@@ -795,7 +801,8 @@ module ``matchesPattern — exact match (false, false)`` =
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.helper"
-                        Kind = Calls; Source = "core" } ]
+                        Kind = Calls
+                        Source = "core" } ]
                   TestMethods = []
                   Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
@@ -878,7 +885,8 @@ module ``No matching entry points`` =
                   Dependencies =
                     [ { FromSymbol = "App.Lib.funcA"
                         ToSymbol = "App.Lib.funcB"
-                        Kind = Calls; Source = "core" } ]
+                        Kind = Calls
+                        Source = "core" } ]
                   TestMethods = []
                   Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
@@ -928,10 +936,12 @@ module ``Multiple entry point patterns`` =
                   Dependencies =
                     [ { FromSymbol = "App.Api.handler"
                         ToSymbol = "App.Shared.helper"
-                        Kind = Calls; Source = "core" }
+                        Kind = Calls
+                        Source = "core" }
                       { FromSymbol = "App.Worker.run"
                         ToSymbol = "App.Shared.helper"
-                        Kind = Calls; Source = "core" } ]
+                        Kind = Calls
+                        Source = "core" } ]
                   TestMethods = []
                   Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
@@ -968,7 +978,8 @@ module ``matchesPattern — prefix positive`` =
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.helper"
-                        Kind = Calls; Source = "core" } ]
+                        Kind = Calls
+                        Source = "core" } ]
                   TestMethods = []
                   Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
@@ -1011,7 +1022,8 @@ module ``Event emission`` =
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.usedHelper"
-                        Kind = Calls; Source = "core" } ]
+                        Kind = Calls
+                        Source = "core" } ]
                   TestMethods = []
                   Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
@@ -1126,7 +1138,8 @@ module ``Verbose diagnostics`` =
                   Dependencies =
                     [ { FromSymbol = "App.Island.root"
                         ToSymbol = "App.Island.helper"
-                        Kind = Calls; Source = "core" } ]
+                        Kind = Calls
+                        Source = "core" } ]
                   TestMethods = []
                   Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
@@ -1195,13 +1208,16 @@ module ``Generic type parameter reachability`` =
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Agent.create"
-                        Kind = Calls; Source = "core" }
+                        Kind = Calls
+                        Source = "core" }
                       { FromSymbol = "App.Agent.create"
                         ToSymbol = "App.Domain.BuildState"
-                        Kind = UsesType; Source = "core" }
+                        Kind = UsesType
+                        Source = "core" }
                       { FromSymbol = "App.Agent.create"
                         ToSymbol = "App.Domain.BuildMsg"
-                        Kind = UsesType; Source = "core" } ]
+                        Kind = UsesType
+                        Source = "core" } ]
                   TestMethods = []
                   Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
@@ -1243,10 +1259,12 @@ module ``Record type reachable via field construction`` =
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.createPerson"
-                        Kind = Calls; Source = "core" }
+                        Kind = Calls
+                        Source = "core" }
                       { FromSymbol = "App.Lib.createPerson"
                         ToSymbol = "App.Domain.Person"
-                        Kind = UsesType; Source = "core" } ]
+                        Kind = UsesType
+                        Source = "core" } ]
                   TestMethods = []
                   Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
@@ -1302,13 +1320,16 @@ module ``DU type reachable via case usage`` =
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.process"
-                        Kind = Calls; Source = "core" }
+                        Kind = Calls
+                        Source = "core" }
                       { FromSymbol = "App.Lib.process"
                         ToSymbol = "App.Domain.Shape.Circle"
-                        Kind = PatternMatches; Source = "core" }
+                        Kind = PatternMatches
+                        Source = "core" }
                       { FromSymbol = "App.Lib.process"
                         ToSymbol = "App.Domain.Shape"
-                        Kind = UsesType; Source = "core" } ]
+                        Kind = UsesType
+                        Source = "core" } ]
                   TestMethods = []
                   Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
@@ -1362,10 +1383,12 @@ module ``DU type reachable via case usage`` =
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Lib.process"
-                        Kind = Calls; Source = "core" }
+                        Kind = Calls
+                        Source = "core" }
                       { FromSymbol = "App.Lib.process"
                         ToSymbol = "App.Domain.Shape.Circle"
-                        Kind = PatternMatches; Source = "core" } ]
+                        Kind = PatternMatches
+                        Source = "core" } ]
                   TestMethods = []
                   Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
@@ -1416,13 +1439,16 @@ module ``Edge coverage for test impact`` =
                   Dependencies =
                     [ { FromSymbol = "Tests.ShapeTests.test_process"
                         ToSymbol = "App.Lib.process"
-                        Kind = Calls; Source = "core" }
+                        Kind = Calls
+                        Source = "core" }
                       { FromSymbol = "App.Lib.process"
                         ToSymbol = "App.Domain.Shape.Circle"
-                        Kind = PatternMatches; Source = "core" }
+                        Kind = PatternMatches
+                        Source = "core" }
                       { FromSymbol = "App.Lib.process"
                         ToSymbol = "App.Domain.Shape"
-                        Kind = UsesType; Source = "core" } ]
+                        Kind = UsesType
+                        Source = "core" } ]
                   TestMethods =
                     [ { SymbolFullName = "Tests.ShapeTests.test_process"
                         TestProject = "Tests"
@@ -1466,10 +1492,12 @@ module ``Edge coverage for test impact`` =
                   Dependencies =
                     [ { FromSymbol = "Tests.ConfigTests.test_load"
                         ToSymbol = "App.Lib.loadConfigs"
-                        Kind = Calls; Source = "core" }
+                        Kind = Calls
+                        Source = "core" }
                       { FromSymbol = "App.Lib.loadConfigs"
                         ToSymbol = "App.Domain.Config"
-                        Kind = UsesType; Source = "core" } ]
+                        Kind = UsesType
+                        Source = "core" } ]
                   TestMethods =
                     [ { SymbolFullName = "Tests.ConfigTests.test_load"
                         TestProject = "Tests"
@@ -1513,10 +1541,12 @@ module ``Edge coverage for test impact`` =
                   Dependencies =
                     [ { FromSymbol = "Tests.AlphaTests.test_alpha"
                         ToSymbol = "App.Shared.helper"
-                        Kind = Calls; Source = "core" }
+                        Kind = Calls
+                        Source = "core" }
                       { FromSymbol = "Tests.BetaTests.test_beta"
                         ToSymbol = "App.Shared.helper"
-                        Kind = Calls; Source = "core" } ]
+                        Kind = Calls
+                        Source = "core" } ]
                   TestMethods =
                     [ { SymbolFullName = "Tests.AlphaTests.test_alpha"
                         TestProject = "Tests"
@@ -1564,10 +1594,12 @@ module ``Edge coverage for test impact`` =
                   Dependencies =
                     [ { FromSymbol = "Tests.GreetTests.test_greet"
                         ToSymbol = "App.Lib.greet"
-                        Kind = Calls; Source = "core" }
+                        Kind = Calls
+                        Source = "core" }
                       { FromSymbol = "App.Lib.greet"
                         ToSymbol = "App.Domain.Person"
-                        Kind = UsesType; Source = "core" } ]
+                        Kind = UsesType
+                        Source = "core" } ]
                   TestMethods =
                     [ { SymbolFullName = "Tests.GreetTests.test_greet"
                         TestProject = "Tests"
@@ -1613,10 +1645,12 @@ module ``Module function reachable when called from another module function`` =
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Daemon.createWith"
-                        Kind = Calls; Source = "core" }
+                        Kind = Calls
+                        Source = "core" }
                       { FromSymbol = "App.Daemon.createWith"
                         ToSymbol = "App.Daemon.processChanges"
-                        Kind = Calls; Source = "core" } ]
+                        Kind = Calls
+                        Source = "core" } ]
                   TestMethods = []
                   Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
@@ -1665,13 +1699,16 @@ module ``Interface implementation reachability`` =
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Handlers.IHandler"
-                        Kind = UsesType; Source = "core" }
+                        Kind = UsesType
+                        Source = "core" }
                       { FromSymbol = "App.Handlers.ConcreteHandler"
                         ToSymbol = "App.Handlers.IHandler"
-                        Kind = UsesType; Source = "core" }
+                        Kind = UsesType
+                        Source = "core" }
                       { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Handlers.ConcreteHandler"
-                        Kind = UsesType; Source = "core" } ]
+                        Kind = UsesType
+                        Source = "core" } ]
                   TestMethods = []
                   Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
@@ -1712,10 +1749,12 @@ module ``Interface implementation reachability`` =
                   Dependencies =
                     [ { FromSymbol = "App.Program.main"
                         ToSymbol = "App.Handlers.IHandler"
-                        Kind = UsesType; Source = "core" }
+                        Kind = UsesType
+                        Source = "core" }
                       { FromSymbol = "App.Handlers.ConcreteHandler"
                         ToSymbol = "App.Handlers.IHandler"
-                        Kind = UsesType; Source = "core" } ]
+                        Kind = UsesType
+                        Source = "core" } ]
                   TestMethods = []
                   Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }

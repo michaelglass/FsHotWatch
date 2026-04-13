@@ -17,8 +17,7 @@ type SqlFact =
 /// Build SharedState dependency edges from SQL access facts.
 module SqlCoupling =
 
-    let private columnsMatch (a: string) (b: string) =
-        a = "*" || b = "*" || a = b
+    let private columnsMatch (a: string) (b: string) = a = "*" || b = "*" || a = b
 
     /// For each (table, column) pair, connect every writer to every reader.
     /// Wildcard columns ("*") match any specific column.

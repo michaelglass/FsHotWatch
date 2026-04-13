@@ -135,7 +135,8 @@ let private buildPlaceholders (names: string list) =
     String.Join(", ", paramNames)
 
 let private bindPlaceholders (cmd: SqliteCommand) (names: string list) =
-    names |> List.iteri (fun i name -> cmd.Parameters.AddWithValue($"@p%d{i}", name) |> ignore)
+    names
+    |> List.iteri (fun i name -> cmd.Parameters.AddWithValue($"@p%d{i}", name) |> ignore)
 
 let private openConnection (dbPath: string) =
     let connStr = $"Data Source=%s{dbPath}"
@@ -176,8 +177,7 @@ let private openCheckedConnection (dbPath: string) =
         let version = cmd.ExecuteScalar() :?> int64 |> int
 
         if version <> 0 && version <> SchemaVersion then
-            eprintfn
-                $"Schema version mismatch (found v%d{version}, expected v%d{SchemaVersion}). Recreating database."
+            eprintfn $"Schema version mismatch (found v%d{version}, expected v%d{SchemaVersion}). Recreating database."
 
             SqliteConnection.ClearPool(conn)
             conn.Dispose()

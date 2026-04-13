@@ -300,7 +300,10 @@ module ``SqlExtension as ITestPruneExtension`` =
                 Access = Read } ]
 
         let extension = SqlExtension(facts)
-        let edges = (extension :> ITestPruneExtension).AnalyzeEdges Unchecked.defaultof<_> [] ""
+
+        let edges =
+            (extension :> ITestPruneExtension).AnalyzeEdges Unchecked.defaultof<_> [] ""
+
         test <@ edges.Length = 1 @>
         test <@ edges[0].Kind = SharedState @>
         test <@ edges[0].Source = "sql" @>
@@ -308,7 +311,10 @@ module ``SqlExtension as ITestPruneExtension`` =
     [<Fact>]
     let ``SqlExtension with no facts produces no edges`` () =
         let extension = SqlExtension([])
-        let edges = (extension :> ITestPruneExtension).AnalyzeEdges Unchecked.defaultof<_> [] ""
+
+        let edges =
+            (extension :> ITestPruneExtension).AnalyzeEdges Unchecked.defaultof<_> [] ""
+
         test <@ edges.IsEmpty @>
 
 module ``SqlExtension auto-discovery`` =
@@ -320,13 +326,17 @@ module ``SqlExtension auto-discovery`` =
                   [ { FullName = "Queries.save"
                       Kind = Function
                       SourceFile = "src/Queries.fs"
-                      LineStart = 1; LineEnd = 5
-                      ContentHash = "a"; IsExtern = false }
+                      LineStart = 1
+                      LineEnd = 5
+                      ContentHash = "a"
+                      IsExtern = false }
                     { FullName = "Queries.load"
                       Kind = Function
                       SourceFile = "src/Queries.fs"
-                      LineStart = 6; LineEnd = 10
-                      ContentHash = "b"; IsExtern = false } ],
+                      LineStart = 6
+                      LineEnd = 10
+                      ContentHash = "b"
+                      IsExtern = false } ],
                   [],
                   []
               ) with

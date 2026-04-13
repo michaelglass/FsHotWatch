@@ -535,8 +535,7 @@ let runStatusWith (getDiff: DiffProvider) (repoRoot: string) (auditSink: AuditSi
         | RunSubset tests ->
             let changedSymbolNames =
                 changedFiles
-                |> List.collect (fun f ->
-                    db.GetSymbolsInFile f |> List.map (fun s -> s.FullName))
+                |> List.collect (fun f -> db.GetSymbolsInFile f |> List.map (fun s -> s.FullName))
 
             let sources = db.QueryEdgeSourcesForTest(changedSymbolNames)
 

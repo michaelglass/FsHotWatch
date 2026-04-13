@@ -104,7 +104,9 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                 affectedClasses
                 |> List.collect (fun at ->
                     symbolStore.GetAllSymbols()
-                    |> List.filter (fun s -> s.FullName.Contains($".%s{at.TestClass}.") || s.FullName.EndsWith($".%s{at.TestClass}")))
+                    |> List.filter (fun s ->
+                        s.FullName.Contains($".%s{at.TestClass}.")
+                        || s.FullName.EndsWith($".%s{at.TestClass}")))
 
             // Create edges between each handler symbol and each affected test symbol
             [ for handler in changedHandlerSymbols do

@@ -11,9 +11,7 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
     let allAttrs = results |> List.collect (fun r -> r.Attributes)
 
     let attrsBySymbol =
-        allAttrs
-        |> List.groupBy (fun a -> a.SymbolFullName)
-        |> Map.ofList
+        allAttrs |> List.groupBy (fun a -> a.SymbolFullName) |> Map.ofList
 
     let symbolsByFile = allSymbols |> List.groupBy (fun s -> s.SourceFile) |> Map.ofList
 

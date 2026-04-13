@@ -1970,32 +1970,43 @@ module ``Edge source provenance`` =
                     [ { FullName = "Tests.testA"
                         Kind = Function
                         SourceFile = "tests/Tests.fs"
-                        LineStart = 1; LineEnd = 5
-                        ContentHash = "t1"; IsExtern = false }
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "t1"
+                        IsExtern = false }
                       { FullName = "Service.process"
                         Kind = Function
                         SourceFile = "src/Service.fs"
-                        LineStart = 1; LineEnd = 5
-                        ContentHash = "s1"; IsExtern = false }
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "s1"
+                        IsExtern = false }
                       { FullName = "Queries.readItems"
                         Kind = Function
                         SourceFile = "src/Queries.fs"
-                        LineStart = 1; LineEnd = 5
-                        ContentHash = "q1"; IsExtern = false }
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "q1"
+                        IsExtern = false }
                       { FullName = "Jobs.writeItems"
                         Kind = Function
                         SourceFile = "src/Jobs.fs"
-                        LineStart = 1; LineEnd = 5
-                        ContentHash = "j1"; IsExtern = false } ],
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "j1"
+                        IsExtern = false } ],
                     [ { FromSymbol = "Tests.testA"
                         ToSymbol = "Service.process"
-                        Kind = Calls; Source = "core" }
+                        Kind = Calls
+                        Source = "core" }
                       { FromSymbol = "Service.process"
                         ToSymbol = "Queries.readItems"
-                        Kind = Calls; Source = "core" }
+                        Kind = Calls
+                        Source = "core" }
                       { FromSymbol = "Queries.readItems"
                         ToSymbol = "Jobs.writeItems"
-                        Kind = SharedState; Source = "sql" } ],
+                        Kind = SharedState
+                        Source = "sql" } ],
                     [ { SymbolFullName = "Tests.testA"
                         TestProject = "MyTests"
                         TestClass = "Tests"

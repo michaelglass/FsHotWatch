@@ -58,7 +58,13 @@ module ``Table reference parsing`` =
     [<Fact>]
     let ``handles deeply nested generated module`` () =
         let result = SqlHydraAnalyzer.parseTableReference "MyDb.Generated.public.articles"
-        test <@ result = Some { Schema = "public"; Table = "articles" } @>
+
+        test
+            <@
+                result = Some
+                    { Schema = "public"
+                      Table = "articles" }
+            @>
 
 module ``SqlHydraExtension graph analysis`` =
 
@@ -69,18 +75,24 @@ module ``SqlHydraExtension graph analysis`` =
                 [ { FullName = "Queries.getArticles"
                     Kind = Function
                     SourceFile = "src/Queries.fs"
-                    LineStart = 1; LineEnd = 10
-                    ContentHash = "a"; IsExtern = false }
+                    LineStart = 1
+                    LineEnd = 10
+                    ContentHash = "a"
+                    IsExtern = false }
                   { FullName = "SqlHydra.Query.selectTask"
                     Kind = Function
                     SourceFile = "_extern"
-                    LineStart = 0; LineEnd = 0
-                    ContentHash = ""; IsExtern = true }
+                    LineStart = 0
+                    LineEnd = 0
+                    ContentHash = ""
+                    IsExtern = true }
                   { FullName = "Generated.public.articles"
                     Kind = Type
                     SourceFile = "src/DbTypes.fs"
-                    LineStart = 1; LineEnd = 5
-                    ContentHash = "t"; IsExtern = false } ],
+                    LineStart = 1
+                    LineEnd = 5
+                    ContentHash = "t"
+                    IsExtern = false } ],
                 [ { FromSymbol = "Queries.getArticles"
                     ToSymbol = "SqlHydra.Query.selectTask"
                     Kind = Calls
@@ -105,18 +117,24 @@ module ``SqlHydraExtension graph analysis`` =
                 [ { FullName = "Commands.createArticle"
                     Kind = Function
                     SourceFile = "src/Commands.fs"
-                    LineStart = 1; LineEnd = 10
-                    ContentHash = "a"; IsExtern = false }
+                    LineStart = 1
+                    LineEnd = 10
+                    ContentHash = "a"
+                    IsExtern = false }
                   { FullName = "SqlHydra.Query.insertTask"
                     Kind = Function
                     SourceFile = "_extern"
-                    LineStart = 0; LineEnd = 0
-                    ContentHash = ""; IsExtern = true }
+                    LineStart = 0
+                    LineEnd = 0
+                    ContentHash = ""
+                    IsExtern = true }
                   { FullName = "Generated.public.articles"
                     Kind = Type
                     SourceFile = "src/DbTypes.fs"
-                    LineStart = 1; LineEnd = 5
-                    ContentHash = "t"; IsExtern = false } ],
+                    LineStart = 1
+                    LineEnd = 5
+                    ContentHash = "t"
+                    IsExtern = false } ],
                 [ { FromSymbol = "Commands.createArticle"
                     ToSymbol = "SqlHydra.Query.insertTask"
                     Kind = Calls
@@ -141,46 +159,63 @@ module ``SqlHydraExtension graph analysis`` =
                 [ { FullName = "Queries.getArticles"
                     Kind = Function
                     SourceFile = "src/Queries.fs"
-                    LineStart = 1; LineEnd = 10
-                    ContentHash = "a"; IsExtern = false }
+                    LineStart = 1
+                    LineEnd = 10
+                    ContentHash = "a"
+                    IsExtern = false }
                   { FullName = "Commands.createArticle"
                     Kind = Function
                     SourceFile = "src/Commands.fs"
-                    LineStart = 1; LineEnd = 10
-                    ContentHash = "b"; IsExtern = false }
+                    LineStart = 1
+                    LineEnd = 10
+                    ContentHash = "b"
+                    IsExtern = false }
                   { FullName = "SqlHydra.Query.selectTask"
                     Kind = Function
                     SourceFile = "_extern"
-                    LineStart = 0; LineEnd = 0
-                    ContentHash = ""; IsExtern = true }
+                    LineStart = 0
+                    LineEnd = 0
+                    ContentHash = ""
+                    IsExtern = true }
                   { FullName = "SqlHydra.Query.insertTask"
                     Kind = Function
                     SourceFile = "_extern"
-                    LineStart = 0; LineEnd = 0
-                    ContentHash = ""; IsExtern = true }
+                    LineStart = 0
+                    LineEnd = 0
+                    ContentHash = ""
+                    IsExtern = true }
                   { FullName = "Generated.public.articles"
                     Kind = Type
                     SourceFile = "src/DbTypes.fs"
-                    LineStart = 1; LineEnd = 5
-                    ContentHash = "t"; IsExtern = false } ],
+                    LineStart = 1
+                    LineEnd = 5
+                    ContentHash = "t"
+                    IsExtern = false } ],
                 [ { FromSymbol = "Queries.getArticles"
                     ToSymbol = "SqlHydra.Query.selectTask"
-                    Kind = Calls; Source = "core" }
+                    Kind = Calls
+                    Source = "core" }
                   { FromSymbol = "Queries.getArticles"
                     ToSymbol = "Generated.public.articles"
-                    Kind = UsesType; Source = "core" }
+                    Kind = UsesType
+                    Source = "core" }
                   { FromSymbol = "Commands.createArticle"
                     ToSymbol = "SqlHydra.Query.insertTask"
-                    Kind = Calls; Source = "core" }
+                    Kind = Calls
+                    Source = "core" }
                   { FromSymbol = "Commands.createArticle"
                     ToSymbol = "Generated.public.articles"
-                    Kind = UsesType; Source = "core" } ],
+                    Kind = UsesType
+                    Source = "core" } ],
                 []
             )
 
         let store = InMemoryStore.fromAnalysisResults [ result ]
         let extension = SqlHydraExtension("Generated")
-        let edges = (extension :> TestPrune.Extensions.ITestPruneExtension).AnalyzeEdges store [] ""
+
+        let edges =
+            (extension :> TestPrune.Extensions.ITestPruneExtension).AnalyzeEdges store [] ""
+
         test <@ edges.Length = 1 @>
         test <@ edges[0].Kind = SharedState @>
         test <@ edges[0].Source = "sql-hydra" @>
@@ -192,16 +227,21 @@ module ``SqlHydraExtension graph analysis`` =
                 [ { FullName = "Helpers.mapArticle"
                     Kind = Function
                     SourceFile = "src/Helpers.fs"
-                    LineStart = 1; LineEnd = 5
-                    ContentHash = "a"; IsExtern = false }
+                    LineStart = 1
+                    LineEnd = 5
+                    ContentHash = "a"
+                    IsExtern = false }
                   { FullName = "Generated.public.articles"
                     Kind = Type
                     SourceFile = "src/DbTypes.fs"
-                    LineStart = 1; LineEnd = 5
-                    ContentHash = "t"; IsExtern = false } ],
+                    LineStart = 1
+                    LineEnd = 5
+                    ContentHash = "t"
+                    IsExtern = false } ],
                 [ { FromSymbol = "Helpers.mapArticle"
                     ToSymbol = "Generated.public.articles"
-                    Kind = UsesType; Source = "core" } ],
+                    Kind = UsesType
+                    Source = "core" } ],
                 []
             )
 

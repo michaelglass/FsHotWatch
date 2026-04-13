@@ -10,6 +10,7 @@
 - feat: AutoSqlExtension auto-discovers ReadsFrom/WritesTo from indexed attributes
 - feat: show edge source provenance (core, sql, sql-hydra, falco) in status output
 - refactor: extract DB placeholder helpers, batch attribute queries, single-pass extraction
+- chore: add SourceLink, symbol packages, and NuGet packaging metadata to Sql and SqlHydra projects
 
 ## [2.0.0] - 2026-04-11
 - feat: cross-project dependency extraction via extern symbols
