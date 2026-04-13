@@ -159,8 +159,7 @@ let create
 
                                     let afterCheckEntries =
                                         match afterCheckOk, afterCheckOutput with
-                                        | false, Some output ->
-                                            [ ErrorEntry.error $"afterCheck failed: %s{output}" ]
+                                        | false, Some output -> [ ErrorEntry.error $"afterCheck failed: %s{output}" ]
                                         | _ -> []
 
                                     let entries = thresholdEntries @ afterCheckEntries
