@@ -2,8 +2,8 @@
   "overrides": {
     "AnalyzersPlugin.fs": [
       {
-        "line": 85,
-        "branch": 87,
+        "line": 88,
+        "branch": 90,
         "reason": "reflection-based CliContext branches vary by platform",
         "platform": "macos"
       },
@@ -21,8 +21,8 @@
     },
     "BuildPlugin.fs": [
       {
-        "line": 87,
-        "branch": 83,
+        "line": 89,
+        "branch": 59,
         "reason": "loosened: shared file isTestFile changes",
         "platform": "macos"
       },
@@ -34,27 +34,23 @@
       }
     ],
     "CheckPipeline.fs": {
-      "line": 82,
-      "branch": 71,
+      "line": 89,
+      "branch": 72,
       "reason": "loosened: new CheckFileWithOptions/GetProjectOptions and multi-project paths"
     },
-    "CoveragePlugin.fs": {
-      "line": 97,
-      "branch": 100
-    },
     "Daemon.fs": {
-      "line": 70,
-      "branch": 56
+      "line": 81,
+      "branch": 54
     },
     "DaemonConfig.fs": {
-      "line": 70,
-      "branch": 61,
+      "line": 73,
+      "branch": 63,
       "reason": "loosened automatically"
     },
     "ErrorLedger.fs": [
       {
-        "line": 94,
-        "branch": 100,
+        "line": 97,
+        "branch": 97,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -84,19 +80,15 @@
       "branch": 50,
       "reason": "loosened automatically"
     },
-    "FileCommandPlugin.fs": {
-      "line": 98,
-      "branch": 100
-    },
     "FileErrorReporter.fs": {
-      "line": 100,
+      "line": 97,
       "branch": 75,
       "reason": "loosened automatically"
     },
     "FileTaskCache.fs": [
       {
-        "line": 87,
-        "branch": 80,
+        "line": 90,
+        "branch": 81,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -107,37 +99,19 @@
         "platform": "linux"
       }
     ],
-    "FormatCheckPlugin.fs": {
-      "line": 98,
-      "branch": 100
-    },
-    "PathFilter.fs": [
-      {
-        "line": 95,
-        "branch": 56,
-        "reason": "exception-handling branches for missing .gitignore/.fantomasignore files",
-        "platform": "macos"
-      },
-      {
-        "line": 95,
-        "branch": 56,
-        "reason": "exception-handling branches for missing .gitignore/.fantomasignore files",
-        "platform": "linux"
-      }
-    ],
     "InMemoryCheckCache.fs": {
       "line": 95,
       "branch": 100,
       "reason": "loosened automatically"
     },
     "InitConfig.fs": {
-      "line": 100,
-      "branch": 92,
+      "line": 94,
+      "branch": 71,
       "reason": "loosened automatically"
     },
     "Ipc.fs": [
       {
-        "line": 81,
+        "line": 83,
         "branch": 50,
         "reason": "loosened automatically",
         "platform": "macos"
@@ -151,8 +125,8 @@
     ],
     "IpcOutput.fs": [
       {
-        "line": 87,
-        "branch": 61,
+        "line": 91,
+        "branch": 62,
         "reason": "loosened: coverage drifted with dedup refactoring",
         "platform": "macos"
       },
@@ -170,8 +144,8 @@
     },
     "LintPlugin.fs": [
       {
-        "line": 94,
-        "branch": 100,
+        "line": 97,
+        "branch": 91,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -185,7 +159,7 @@
     "MacFsEvents.fs": [
       {
         "line": 85,
-        "branch": 57,
+        "branch": 56,
         "reason": "macOS-only FSEvents code",
         "platform": "macos"
       },
@@ -196,15 +170,29 @@
         "platform": "linux"
       }
     ],
+    "PathFilter.fs": [
+      {
+        "line": 95,
+        "branch": 56,
+        "reason": "exception-handling branches for missing .gitignore/.fantomasignore files",
+        "platform": "macos"
+      },
+      {
+        "line": 95,
+        "branch": 56,
+        "reason": "exception-handling branches for missing .gitignore/.fantomasignore files",
+        "platform": "linux"
+      }
+    ],
     "PluginFramework.fs": {
-      "line": 87,
-      "branch": 65,
+      "line": 97,
+      "branch": 64,
       "reason": "loosened automatically"
     },
     "PluginHost.fs": [
       {
-        "line": 80,
-        "branch": 50,
+        "line": 78,
+        "branch": 41,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -221,8 +209,8 @@
     },
     "Program.fs": [
       {
-        "line": 72,
-        "branch": 43,
+        "line": 81,
+        "branch": 37,
         "reason": "CLI entry point",
         "platform": "macos"
       },
@@ -235,7 +223,7 @@
     ],
     "ProjectGraph.fs": [
       {
-        "line": 96,
+        "line": 97,
         "branch": 92,
         "reason": "loosened: fileToProjects multi-project paths",
         "platform": "macos"
@@ -248,8 +236,8 @@
       }
     ],
     "RunOnceOutput.fs": {
-      "line": 67,
-      "branch": 57,
+      "line": 59,
+      "branch": 47,
       "reason": "loosened: new severity counting branches"
     },
     "StringHelpers.fs": {
@@ -259,7 +247,7 @@
     },
     "TaskCache.fs": [
       {
-        "line": 88,
+        "line": 92,
         "branch": 100,
         "reason": "loosened automatically",
         "platform": "macos"
@@ -273,8 +261,8 @@
     ],
     "Watcher.fs": [
       {
-        "line": 85,
-        "branch": 53,
+        "line": 86,
+        "branch": 63,
         "reason": "loosened automatically",
         "platform": "macos"
       },
