@@ -1,5 +1,13 @@
 # Changelog — FsHotWatch.Coverage
 
+## Unreleased
+
+### Changed
+
+- `afterCheck` hook now returns `bool * string` instead of `unit` — non-zero exit codes report failures to the error ledger under `<coverage>`
+
+---
+
 ## 0.5.0-alpha.1 (2026-04-12)
 
 *No changes since 0.3.0-alpha.1.*
