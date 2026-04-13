@@ -417,8 +417,8 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
             defaults
 
 /// Wrap a shell command string into a callback that runs via splitCommand + runProcess.
-/// If failOnError is true, raises on failure; otherwise only logs.
-let private makeShellHook (label: string) (failOnError: bool) (repoRoot: string) (cmd: string) : unit -> unit =
+/// Returns (success, output).
+let private makeShellHookWithResult (label: string) (repoRoot: string) (cmd: string) : unit -> bool * string =
     fun () ->
         Logging.info label $"Running %s{label}: %s{cmd}"
         let (command, args) = FsHotWatch.StringHelpers.splitCommand cmd
@@ -427,8 +427,18 @@ let private makeShellHook (label: string) (failOnError: bool) (repoRoot: string)
         if not success then
             Logging.error label $"%s{label} failed:\n%s{output}"
 
-            if failOnError then
-                failwith $"%s{label} failed: %s{cmd}"
+        success, output
+
+/// Wrap a shell command string into a fire-and-forget callback.
+/// If failOnError is true, raises on failure; otherwise only logs.
+let private makeShellHook (label: string) (failOnError: bool) (repoRoot: string) (cmd: string) : unit -> unit =
+    let hook = makeShellHookWithResult label repoRoot cmd
+
+    fun () ->
+        let (success, _) = hook ()
+
+        if not success && failOnError then
+            failwith $"%s{label} failed: %s{cmd}"
 
 /// Register plugins on the daemon based on the loaded configuration.
 let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
@@ -571,7 +581,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         Logging.info "config" $"Registering CoveragePlugin: %s{cov.Directory}"
 
         let afterCheck =
-            cov.AfterCheck |> Option.map (makeShellHook "afterCheck" false repoRoot)
+            cov.AfterCheck |> Option.map (makeShellHookWithResult "afterCheck" repoRoot)
 
         daemon.RegisterHandler(
             FsHotWatch.Coverage.CoveragePlugin.create cov.Directory cov.ThresholdsFile afterCheck getCommitId

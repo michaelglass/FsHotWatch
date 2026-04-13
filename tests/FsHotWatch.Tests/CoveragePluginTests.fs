@@ -36,7 +36,15 @@ let ``coverage plugin reads Cobertura XML`` () =
 
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let handler = create tmpDir None (Some(fun () -> checkDone <- true)) None
+        let handler =
+            create
+                tmpDir
+                None
+                (Some(fun () ->
+                    checkDone <- true
+                    true, ""))
+                None
+
         host.RegisterHandler(handler)
 
         let testResults =
@@ -417,6 +425,81 @@ let ``coverage plugin handles XML with missing attributes`` () =
             Directory.Delete(tmpDir, true)
         with _ ->
             ()
+
+[<Fact>]
+let ``coverage plugin reports error when afterCheck fails`` () =
+    withTempDir "cov-aftercheck-fail" (fun tmpDir ->
+        let subDir = Path.Combine(tmpDir, "TestProject")
+        Directory.CreateDirectory(subDir) |> ignore
+        let xmlPath = Path.Combine(subDir, "cobertura.xml")
+        File.WriteAllText(xmlPath, """<?xml version="1.0" ?><coverage line-rate="0.85" branch-rate="0.70" />""")
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+        let handler =
+            create tmpDir None (Some(fun () -> false, "ratchet failed: coverage regressed")) None
+
+        host.RegisterHandler(handler)
+
+        let testResults =
+            { Results = Map.ofList [ "TestProject", TestsPassed "ok" ]
+              Elapsed = TimeSpan.FromSeconds(1.0) }
+
+        host.EmitTestCompleted(testResults)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Failed _) -> true
+                | _ -> false)
+            5000
+
+        let status = host.GetStatus("coverage")
+
+        test
+            <@
+                match status.Value with
+                | Failed(msg, _) -> msg.Contains("afterCheck failed")
+                | _ -> false
+            @>
+
+        test <@ host.HasFailingReasons(warningsAreFailures = true) @>)
+
+[<Fact>]
+let ``coverage plugin clears afterCheck error on success`` () =
+    withTempDir "cov-aftercheck-pass" (fun tmpDir ->
+        let subDir = Path.Combine(tmpDir, "TestProject")
+        Directory.CreateDirectory(subDir) |> ignore
+        let xmlPath = Path.Combine(subDir, "cobertura.xml")
+        File.WriteAllText(xmlPath, """<?xml version="1.0" ?><coverage line-rate="0.85" branch-rate="0.70" />""")
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+        let handler = create tmpDir None (Some(fun () -> true, "all good")) None
+        host.RegisterHandler(handler)
+
+        let testResults =
+            { Results = Map.ofList [ "TestProject", TestsPassed "ok" ]
+              Elapsed = TimeSpan.FromSeconds(1.0) }
+
+        host.EmitTestCompleted(testResults)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
+
+        let status = host.GetStatus("coverage")
+
+        test
+            <@
+                match status.Value with
+                | Completed _ -> true
+                | _ -> false
+            @>
+
+        test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>)
 
 [<Fact>]
 let ``coverage plugin handles invalid XML file`` () =
