@@ -78,7 +78,7 @@ let private parseCoberturaXml (path: string) : (float * float) option =
 let create
     (coverageDir: string)
     (thresholdsFile: string option)
-    (afterCheck: (unit -> unit) option)
+    (afterCheck: (unit -> bool * string) option)
     (getCommitId: (unit -> string option) option)
     : PluginHandler<CoverageState, unit> =
     { Name = PluginName.create "coverage"
@@ -135,21 +135,35 @@ let create
                             else
                                 let allPass = results |> List.forall (fun r -> r.MeetsThreshold)
 
-                                match afterCheck with
-                                | Some hook -> hook ()
-                                | None -> ()
+                                let afterCheckOk, afterCheckOutput =
+                                    match afterCheck with
+                                    | Some hook ->
+                                        let (success, output) = hook ()
 
-                                if allPass then
+                                        if not success then
+                                            Logging.error "coverage" $"afterCheck failed:\n%s{output}"
+
+                                        success, Some output
+                                    | None -> true, None
+
+                                if allPass && afterCheckOk then
                                     ctx.ClearErrors "<coverage>"
                                     ctx.ReportStatus(Completed(DateTime.UtcNow))
                                 else
-                                    let failedResults = results |> List.filter (fun r -> not r.MeetsThreshold)
-
-                                    let entries =
-                                        failedResults
+                                    let thresholdEntries =
+                                        results
+                                        |> List.filter (fun r -> not r.MeetsThreshold)
                                         |> List.map (fun r ->
                                             ErrorEntry.error
                                                 $"%s{r.Project}: line=%.1f{r.LineRate}%% branch=%.1f{r.BranchRate}%%")
+
+                                    let afterCheckEntries =
+                                        match afterCheckOk, afterCheckOutput with
+                                        | false, Some output ->
+                                            [ ErrorEntry.error $"afterCheck failed: %s{output}" ]
+                                        | _ -> []
+
+                                    let entries = thresholdEntries @ afterCheckEntries
 
                                     ctx.ReportErrors "<coverage>" entries
 

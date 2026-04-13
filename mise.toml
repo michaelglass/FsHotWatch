@@ -42,7 +42,7 @@ depends = ["build"]
 [tasks.check]
 description = "Run all checks via daemon (auto-starts daemon if needed)"
 run = "dotnet run --project src/FsHotWatch.Cli --no-build -- check"
-depends = ["build", "lint-project"]
+depends = ["build", "lint-project", "coverage-ratchet"]
 # Note: depends on build to ensure CLI binary is compiled.
 # The daemon handles its own build/test/lint cycle internally.
 
@@ -80,7 +80,17 @@ depends = ["test-direct"]
 
 [tasks.coverage-ratchet]
 description = "Ratchet coverage thresholds to current values"
-run = "dotnet tool run coverageratchet ratchet coverage-ratchet-FsHotWatch.json"
+run = "sh -c 'dotnet tool run coverageratchet ratchet coverage-ratchet-FsHotWatch.json; c=$?; [ $c -eq 1 ] && exit 0; exit $c'"
+depends = ["test-direct"]
+
+[tasks.coverage-loosen]
+description = "Loosen coverage thresholds to current values"
+run = "dotnet tool run coverageratchet loosen coverage-ratchet-FsHotWatch.json"
+depends = ["test-direct"]
+
+[tasks.loosen-from-ci]
+description = "Merge coverage thresholds from CI artifacts"
+run = "dotnet tool run coverageratchet loosen-from-ci coverage-ratchet-FsHotWatch.json"
 depends = ["test-direct"]
 
 [tasks.lint-project]
@@ -119,7 +129,7 @@ depends = ["restore"]
 [tasks.ci]
 description = "Run all CI checks (single pass, no daemon)"
 run = "dotnet run --project src/FsHotWatch.Cli --no-build -- check --run-once"
-depends = ["compile", "lint-project"]
+depends = ["compile", "lint-project", "coverage-check"]
 
 [tasks.run]
 description = "Run the CLI"
