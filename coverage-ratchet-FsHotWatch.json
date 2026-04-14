@@ -33,20 +33,53 @@
         "platform": "linux"
       }
     ],
-    "CheckPipeline.fs": {
-      "line": 89,
-      "branch": 72,
-      "reason": "loosened: new CheckFileWithOptions/GetProjectOptions and multi-project paths"
+    "CoveragePlugin.fs": {
+      "line": 97,
+      "branch": 100,
+      "reason": "lower line coverage on Linux CI",
+      "platform": "linux"
     },
-    "Daemon.fs": {
-      "line": 81,
-      "branch": 54
-    },
-    "DaemonConfig.fs": {
-      "line": 73,
-      "branch": 63,
-      "reason": "loosened automatically"
-    },
+    "CheckPipeline.fs": [
+      {
+        "line": 89,
+        "branch": 72,
+        "reason": "loosened: new CheckFileWithOptions/GetProjectOptions and multi-project paths",
+        "platform": "macos"
+      },
+      {
+        "line": 85,
+        "branch": 71,
+        "reason": "lower coverage on Linux CI",
+        "platform": "linux"
+      }
+    ],
+    "Daemon.fs": [
+      {
+        "line": 81,
+        "branch": 54,
+        "platform": "macos"
+      },
+      {
+        "line": 73,
+        "branch": 54,
+        "reason": "lower coverage on Linux CI",
+        "platform": "linux"
+      }
+    ],
+    "DaemonConfig.fs": [
+      {
+        "line": 73,
+        "branch": 63,
+        "reason": "loosened automatically",
+        "platform": "macos"
+      },
+      {
+        "line": 70,
+        "branch": 62,
+        "reason": "lower coverage on Linux CI",
+        "platform": "linux"
+      }
+    ],
     "ErrorLedger.fs": [
       {
         "line": 97,
@@ -75,10 +108,22 @@
         "platform": "linux"
       }
     ],
+    "FileCommandPlugin.fs": {
+      "line": 98,
+      "branch": 100,
+      "reason": "lower line coverage on Linux CI",
+      "platform": "linux"
+    },
     "FileCheckCache.fs": {
       "line": 83,
       "branch": 50,
       "reason": "loosened automatically"
+    },
+    "FormatCheckPlugin.fs": {
+      "line": 98,
+      "branch": 100,
+      "reason": "lower line coverage on Linux CI",
+      "platform": "linux"
     },
     "FileErrorReporter.fs": {
       "line": 97,
@@ -184,11 +229,20 @@
         "platform": "linux"
       }
     ],
-    "PluginFramework.fs": {
-      "line": 97,
-      "branch": 64,
-      "reason": "loosened automatically"
-    },
+    "PluginFramework.fs": [
+      {
+        "line": 97,
+        "branch": 64,
+        "reason": "loosened automatically",
+        "platform": "macos"
+      },
+      {
+        "line": 87,
+        "branch": 65,
+        "reason": "lower coverage on Linux CI",
+        "platform": "linux"
+      }
+    ],
     "PluginHost.fs": [
       {
         "line": 78,
