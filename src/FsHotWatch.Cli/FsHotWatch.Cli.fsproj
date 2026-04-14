@@ -7,7 +7,7 @@
         <PackAsTool>true</PackAsTool>
         <ToolCommandName>fs-hot-watch</ToolCommandName>
         <PackageId>FsHotWatch.Cli</PackageId>
-        <Version>0.6.0-alpha.1</Version>
+        <Version>0.8.0-alpha.2</Version>
         <Authors>Michael Glass</Authors>
         <Description>CLI for FsHotWatch — F# file watcher daemon</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
