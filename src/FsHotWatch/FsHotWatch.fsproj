@@ -18,7 +18,7 @@
     </WarnOn>
 
     <!-- Suppress version mismatch warnings -->
-    <NoWarn>NU1605;MSB3277;NETSDK1188</NoWarn>
+    <NoWarn>NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
 
     <!-- Package metadata -->
     <PackageId>FsHotWatch</PackageId>
