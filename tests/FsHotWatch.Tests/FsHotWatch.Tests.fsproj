@@ -24,6 +24,7 @@
     <Compile Include="TaskCacheTests.fs" />
     <Compile Include="PluginFrameworkTests.fs" />
     <Compile Include="PluginHostTests.fs" />
+    <Compile Include="PluginActivityTests.fs" />
     <Compile Include="MacFsEventsTests.fs" />
     <Compile Include="WatcherTests.fs" />
     <Compile Include="DaemonTests.fs" />
