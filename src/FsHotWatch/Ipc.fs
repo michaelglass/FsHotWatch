@@ -28,6 +28,48 @@ let private formatStatus (status: PluginStatus) =
     | Completed at -> $"Completed at {at:O}"
     | Failed(error, at) -> $"Failed at {at:O}: {error}"
 
+/// Build a per-plugin structured status payload from host activity state.
+let private pluginStatusPayload (host: PluginHost) (name: string) (status: PluginStatus) : obj =
+    let subtasks =
+        host.GetSubtasks(name)
+        |> List.map (fun t ->
+            {| key = t.Key
+               label = t.Label
+               startedAt = t.StartedAt.ToString("O") |}
+            :> obj)
+
+    let activityTail = host.GetActivityTail(name)
+
+    let lastRun: obj =
+        match host.GetHistory(name) with
+        | [] -> null
+        | runs ->
+            let r = runs |> List.last
+
+            let outcomeStr, errorStr =
+                match r.Outcome with
+                | CompletedRun -> "Completed", (null: obj)
+                | FailedRun e -> "Failed", (box e)
+
+            let summary =
+                match r.Summary with
+                | Some s -> box s
+                | None -> null
+
+            {| startedAt = r.StartedAt.ToString("O")
+               elapsedMs = int64 r.Elapsed.TotalMilliseconds
+               outcome = outcomeStr
+               summary = summary
+               activityTail = r.ActivityTail
+               error = errorStr |}
+            :> obj
+
+    {| status = formatStatus status
+       subtasks = subtasks
+       activityTail = activityTail
+       lastRun = lastRun |}
+    :> obj
+
 /// Configuration record for DaemonRpcTarget.
 [<NoComparison; NoEquality>]
 type DaemonRpcConfig =
@@ -48,7 +90,11 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
     /// Returns a JSON string of all plugin statuses.
     member _.GetStatus() : string =
         let statuses = config.Host.GetAllStatuses()
-        let entries = statuses |> Map.map (fun _name status -> formatStatus status)
+
+        let entries =
+            statuses
+            |> Map.map (fun name status -> pluginStatusPayload config.Host name status)
+
         JsonSerializer.Serialize(entries)
 
     /// Returns a single plugin's status or "not found".
@@ -118,7 +164,7 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
 
         let statuses =
             config.Host.GetAllStatuses()
-            |> Map.map (fun _name status -> formatStatus status)
+            |> Map.map (fun name status -> pluginStatusPayload config.Host name status)
 
         let result =
             {| count = count
