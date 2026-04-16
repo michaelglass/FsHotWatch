@@ -21,10 +21,35 @@ type PluginHost
     // without deadlocking (a MailboxProcessor fires events inside its loop,
     // causing re-entrant PostAndReply deadlocks).
     let mutable statuses: Map<string, PluginStatus> = Map.empty
+    let mutable runStartedAt: Map<string, System.DateTime> = Map.empty
     let statusLock = obj ()
+    let activity = PluginActivity.State()
 
     let setStatus (name: string) status =
-        lock statusLock (fun () -> statuses <- Map.add name status statuses)
+        lock statusLock (fun () ->
+            let prev = Map.tryFind name statuses
+            statuses <- Map.add name status statuses
+
+            match prev, status with
+            | _, Running since -> runStartedAt <- Map.add name since runStartedAt
+            | _, Completed at ->
+                let startedAt =
+                    match Map.tryFind name runStartedAt with
+                    | Some s -> s
+                    | None -> at
+
+                activity.RecordTerminal(name, CompletedRun, startedAt, at)
+                runStartedAt <- Map.remove name runStartedAt
+            | _, Failed(err, at) ->
+                let startedAt =
+                    match Map.tryFind name runStartedAt with
+                    | Some s -> s
+                    | None -> at
+
+                activity.RecordTerminal(name, FailedRun err, startedAt, at)
+                runStartedAt <- Map.remove name runStartedAt
+            | _ -> ())
+
         statusChanged.Trigger(name, status)
 
     let setPluginStatus (name: PluginFramework.PluginName) status =
@@ -63,10 +88,15 @@ type PluginHost
               EmitCommandCompleted = fun result -> dispatchToAll (PluginFramework.DispatchCommandCompleted result)
               RegisterCommand = fun cmd -> commands[fst cmd] <- snd cmd
               TaskCache = taskCache
-              StartSubtask = fun _ _ _ -> ()
-              EndSubtask = fun _ _ -> ()
-              Log = fun _ _ -> ()
-              SetSummary = fun _ _ -> () }
+              StartSubtask =
+                fun name key label -> activity.StartSubtask(PluginFramework.PluginName.value name, key, label)
+              EndSubtask = fun name key -> activity.EndSubtask(PluginFramework.PluginName.value name, key)
+              Log =
+                fun name msg ->
+                    let nameStr = PluginFramework.PluginName.value name
+                    activity.Log(nameStr, msg)
+                    Logging.info nameStr msg
+              SetSummary = fun name s -> activity.SetSummary(PluginFramework.PluginName.value name, s) }
 
         let plugin = PluginFramework.registerHandler services handler
 
@@ -145,13 +175,13 @@ type PluginHost
     member _.GetAllStatuses() : Map<string, PluginStatus> = lock statusLock (fun () -> statuses)
 
     /// Get the currently running subtasks for a plugin.
-    member _.GetSubtasks(_pluginName: string) : Subtask list = []
+    member _.GetSubtasks(pluginName: string) : Subtask list = activity.GetSubtasks(pluginName)
 
     /// Get the activity tail for a plugin's current run.
-    member _.GetActivityTail(_pluginName: string) : string list = []
+    member _.GetActivityTail(pluginName: string) : string list = activity.GetActivityTail(pluginName)
 
     /// Get run history for a plugin.
-    member _.GetHistory(_pluginName: string) : RunRecord list = []
+    member _.GetHistory(pluginName: string) : RunRecord list = activity.GetHistory(pluginName)
 
     /// Get all errors grouped by file path.
     member _.GetErrors() = ledger.GetAll()
