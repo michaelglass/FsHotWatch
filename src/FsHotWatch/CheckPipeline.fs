@@ -17,8 +17,32 @@ let private cancelAndDispose (cts: CancellationTokenSource) =
     with :? ObjectDisposedException ->
         ()
 
+/// Optional activity callbacks the pipeline emits to surface progress
+/// under the synthetic "fcs" plugin name. All members are safe no-ops by default.
+[<NoComparison; NoEquality>]
+type CheckActivityReporter =
+    { StartSubtask: string -> string -> unit
+      EndSubtask: string -> unit
+      Log: string -> unit
+      CompleteWithSummary: string -> unit }
+
+module CheckActivityReporter =
+    let noop =
+        { StartSubtask = fun _ _ -> ()
+          EndSubtask = fun _ -> ()
+          Log = fun _ -> ()
+          CompleteWithSummary = fun _ -> () }
+
 /// Manages project options and performs incremental file checking with the warm FSharpChecker.
-type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?cacheKeyProvider: ICacheKeyProvider) =
+type CheckPipeline
+    (
+        checker: FSharpChecker,
+        ?cacheBackend: ICheckCacheBackend,
+        ?cacheKeyProvider: ICacheKeyProvider,
+        ?activityReporter: CheckActivityReporter
+    ) =
+    let activity = defaultArg activityReporter CheckActivityReporter.noop
+
     let keyProvider =
         defaultArg cacheKeyProvider (TimestampCacheKeyProvider() :> ICacheKeyProvider)
 
@@ -196,6 +220,7 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
                         | Some backend, Some key -> backend.Set key result
                         | _ -> ()
 
+                        activity.Log $"checked {Path.GetFileName absPath}"
                         return Some result
                     | FSharpCheckFileAnswer.Aborted ->
                         return
@@ -262,14 +287,21 @@ type CheckPipeline(checker: FSharpChecker, ?cacheBackend: ICheckCacheBackend, ?c
             match projectOptionsByProject.TryGetValue(projectPath) with
             | false, _ -> return None
             | true, options ->
+                let projectKey = Path.GetFileName projectPath
+                activity.StartSubtask projectKey $"checking {projectKey}"
                 let results = System.Collections.Generic.Dictionary<string, FileCheckResult>()
 
-                for sourceFile in options.SourceFiles do
-                    let! result = this.CheckFile(sourceFile, ?ct = ct)
+                try
+                    for sourceFile in options.SourceFiles do
+                        let! result = this.CheckFile(sourceFile, ?ct = ct)
 
-                    match result with
-                    | Some r -> results[sourceFile] <- r
-                    | None -> ()
+                        match result with
+                        | Some r -> results[sourceFile] <- r
+                        | None -> ()
+                finally
+                    activity.EndSubtask projectKey
+
+                activity.CompleteWithSummary $"checked {results.Count} files in {projectKey}"
 
                 return
                     Some
