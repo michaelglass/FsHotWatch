@@ -49,12 +49,21 @@ let create
                     else
                         ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
+                        let triggerKey =
+                            match matching with
+                            | [] -> $"{nameStr}:startup"
+                            | first :: _ -> $"{nameStr}:{System.IO.Path.GetFileName first}"
+
+                        ctx.StartSubtask triggerKey $"running {nameStr}"
+
                         try
                             let (success, output) = runProcess command args ctx.RepoRoot []
+                            ctx.EndSubtask triggerKey
 
                             let result = if success then Succeeded output else CommandFailed output
 
                             if success then
+                                ctx.CompleteWithSummary $"ran {nameStr}"
                                 ctx.ClearErrors $"<%s{nameStr}>"
                                 ctx.ReportStatus(Completed(DateTime.UtcNow))
                             else
@@ -72,6 +81,7 @@ let create
 
                             return { LastResult = result }
                         with ex ->
+                            ctx.EndSubtask triggerKey
                             ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error ex.Message ]
 
                             ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
