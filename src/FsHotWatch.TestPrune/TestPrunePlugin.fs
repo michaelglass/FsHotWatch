@@ -157,7 +157,19 @@ let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<str
 /// Execute test configs with optional affected classes for filtering.
 /// Handles beforeRun, coverageArgs, process execution, result storage.
 /// rawFilter is a passthrough filter string (from run-tests command), bypassing the template.
+[<NoComparison; NoEquality>]
+type private ExecuteHooks =
+    { StartSubtask: string -> string -> unit
+      EndSubtask: string -> unit
+      Log: string -> unit }
+
+let private noHooks =
+    { StartSubtask = fun _ _ -> ()
+      EndSubtask = fun _ -> ()
+      Log = fun _ -> () }
+
 let private executeTests
+    (hooks: ExecuteHooks)
     (repoRoot: string)
     (beforeRun: (unit -> unit) option)
     (coverageArgs: (string -> string) option)
@@ -223,13 +235,18 @@ let private executeTests
                                     config.Args
 
                             Logging.info "test-prune" $"Running: %s{config.Command} %s{finalArgs}"
+                            hooks.StartSubtask config.Project $"testing {config.Project}"
 
                             let (success, output) =
                                 runProcess config.Command finalArgs repoRoot config.Environment
 
+                            hooks.EndSubtask config.Project
+
                             if success then
+                                hooks.Log $"{config.Project}: passed"
                                 Logging.info "test-prune" $"%s{config.Project}: PASSED"
                             else
+                                hooks.Log $"{config.Project}: failed"
                                 Logging.error "test-prune" $"%s{config.Project}: FAILED"
 
                             if not success then
@@ -431,7 +448,13 @@ let create
                         for (proj, classes) in affectedByProject |> Map.toList do
                             Logging.info "test-prune" $"Affected classes for %s{proj}: %A{classes}"
 
-                    let! results = executeTests repoRoot beforeRun coverageArgs afterRun configs affectedByProject None
+                    let hooks =
+                        { StartSubtask = ctx.StartSubtask
+                          EndSubtask = ctx.EndSubtask
+                          Log = ctx.Log }
+
+                    let! results =
+                        executeTests hooks repoRoot beforeRun coverageArgs afterRun configs affectedByProject None
 
                     ctx.EmitTestCompleted(results)
 
@@ -568,6 +591,7 @@ let create
                                     | Ok configs ->
                                         let! results =
                                             executeTests
+                                                noHooks
                                                 repoRoot
                                                 beforeRun
                                                 coverageArgs
@@ -710,6 +734,8 @@ let create
                     | BuildSucceeded ->
                         match state.TestPhase with
                         | TestsRunning(running, _) ->
+                            ctx.Log "queued re-run (tests already running)"
+
                             Logging.info
                                 "test-prune"
                                 "BuildSucceeded received but tests already running — will re-run after"
@@ -776,6 +802,19 @@ let create
                                 match r with
                                 | TestsPassed _ -> true
                                 | _ -> false)
+
+                        let total = testResults.Results.Count
+
+                        let failed =
+                            testResults.Results
+                            |> Map.toList
+                            |> List.filter (fun (_, r) ->
+                                match r with
+                                | TestsFailed _ -> true
+                                | _ -> false)
+                            |> List.length
+
+                        ctx.CompleteWithSummary $"ran {total} projects, {failed} failed"
 
                         if allPassed || testResults.Results.IsEmpty then
                             ctx.ReportStatus(Completed(DateTime.UtcNow))
