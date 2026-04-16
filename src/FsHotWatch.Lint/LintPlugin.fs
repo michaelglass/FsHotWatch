@@ -63,14 +63,18 @@ let create
                 | FileChecked result ->
                     Logging.debug "lint" $"FileChecked received: %s{result.File}"
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                    ctx.StartSubtask result.File $"linting {System.IO.Path.GetFileName result.File}"
 
                     if isNull (box result.ParseResults) then
+                        ctx.EndSubtask result.File
                         Logging.warn "lint" $"Skipping %s{result.File} — no parse results"
                         return state
                     else
 
                         match runLint result with
                         | Lint.LintResult.Success warnings ->
+                            ctx.EndSubtask result.File
+
                             Logging.debug
                                 "lint"
                                 $"Linted %s{System.IO.Path.GetFileName result.File}: %d{warnings.Length} warnings"
@@ -94,9 +98,14 @@ let create
                                 ctx.ReportErrors result.File entries
 
                             let newState = { WarningsByFile = newWarnings }
+
+                            let totalIssues = newWarnings |> Map.toList |> List.sumBy (fun (_, w) -> w.Length)
+
+                            ctx.CompleteWithSummary $"linted {newWarnings.Count} files, {totalIssues} issues"
                             ctx.ReportStatus(Completed(DateTime.UtcNow))
                             return newState
                         | Lint.LintResult.Failure failure ->
+                            ctx.EndSubtask result.File
                             let msg = $"Lint failed for %s{result.File}: %A{failure}"
 
                             ctx.ReportErrors result.File [ ErrorEntry.error msg ]
