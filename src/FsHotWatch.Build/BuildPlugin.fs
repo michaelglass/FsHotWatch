@@ -52,19 +52,31 @@ let create
     let depNames = dependsOn |> Set.ofList
     let allDepsSatisfied deps = Set.isSubset depNames deps
 
+    let countBuiltProjects (output: string) =
+        output.Split('\n')
+        |> Array.filter (fun line -> line.Contains(" -> ") && not (line.Contains("error")))
+        |> Array.length
+
     let startBuild (ctx: PluginCtx<BuildMsg>) (idle: Lifecycle<Idle, BuildOutcome>) =
         ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
         let running = Lifecycle.start idle
-        info "build" $"Running: %s{buildCommand} %s{buildArgs}"
+        ctx.StartSubtask "build" $"dotnet build"
+        ctx.Log $"Running: %s{buildCommand} %s{buildArgs}"
 
         async {
             try
                 try
                     let (success, output) = runProcess buildCommand buildArgs ctx.RepoRoot env
                     let parsed = BuildDiagnostics.parseMSBuildDiagnostics output
+                    ctx.EndSubtask "build"
 
                     if success then
-                        info "build" "Build succeeded"
+                        let n = countBuiltProjects output
+
+                        let summary = if n > 0 then $"built {n} projects" else "build succeeded"
+
+                        ctx.Log summary
+                        ctx.CompleteWithSummary summary
 
                         if parsed.IsEmpty then
                             ctx.ClearErrors "<build>"
@@ -74,6 +86,7 @@ let create
                         ctx.EmitBuildCompleted(BuildSucceeded)
                         ctx.Post(BuildDone(BuildPassed output))
                     else
+                        ctx.Log "Build FAILED"
                         error "build" "Build FAILED"
 
                         let entries =
@@ -86,11 +99,13 @@ let create
                         ctx.EmitBuildCompleted(BuildFailed [ output ])
                         ctx.Post(BuildDone(BuildOutputFailed output))
                 with ex ->
+                    ctx.EndSubtask "build"
                     ctx.ReportErrors "<build>" [ ErrorEntry.error ex.Message ]
 
                     ctx.EmitBuildCompleted(BuildFailed [ ex.Message ])
                     ctx.Post(BuildDone(BuildOutputFailed ex.Message))
             with ex ->
+                ctx.EndSubtask "build"
                 error "build" $"Unexpected error: %s{ex.Message}"
                 ctx.Post(BuildDone(BuildOutputFailed ex.Message))
         }
@@ -125,6 +140,7 @@ let create
 
             ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
             let running = Lifecycle.start idle
+            ctx.StartSubtask "build" $"dotnet build ({roots.Length} roots)"
 
             async {
                 try
@@ -135,23 +151,31 @@ let create
                         let rootStr = AbsProjectPath.value root
                         let rendered = template.Replace("{project}", rootStr)
                         let (cmd, cmdArgs) = splitCommand rendered
-                        info "build" $"Running template: %s{cmd} %s{cmdArgs}"
+                        ctx.Log $"Running template: %s{cmd} %s{cmdArgs}"
 
                         try
                             let (success, output) = runProcess cmd cmdArgs ctx.RepoRoot env
                             outputs <- output :: outputs
 
                             if not success then
+                                ctx.Log $"Template build FAILED for %s{rootStr}"
                                 error "build" $"Template build FAILED for %s{rootStr}"
                                 failures <- output :: failures
                         with ex ->
+                            ctx.Log $"Template build exception for %s{rootStr}: %s{ex.Message}"
                             error "build" $"Template build exception for %s{rootStr}: %s{ex.Message}"
                             failures <- ex.Message :: failures
 
+                    ctx.EndSubtask "build"
                     let combinedOutput = outputs |> List.rev |> String.concat "\n"
 
                     if failures.IsEmpty then
-                        info "build" "All template builds succeeded"
+                        let n = countBuiltProjects combinedOutput
+
+                        let summary = if n > 0 then $"built {n} projects" else "build succeeded"
+
+                        ctx.Log summary
+                        ctx.CompleteWithSummary summary
                         let parsed = BuildDiagnostics.parseMSBuildDiagnostics combinedOutput
 
                         if parsed.IsEmpty then
@@ -176,6 +200,7 @@ let create
                         ctx.EmitBuildCompleted(BuildFailed errors)
                         ctx.Post(BuildDone(BuildOutputFailed(errors |> String.concat "\n")))
                 with ex ->
+                    ctx.EndSubtask "build"
                     error "build" $"Unexpected error: %s{ex.Message}"
                     ctx.Post(BuildDone(BuildOutputFailed ex.Message))
             }
