@@ -63,6 +63,7 @@
     <Compile Include="TaskCache.fs" />
     <Compile Include="FileTaskCache.fs" />
     <Compile Include="PluginFramework.fs" />
+    <Compile Include="PluginActivity.fs" />
     <Compile Include="PluginHost.fs" />
     <Compile Include="MacFsEvents.fs" />
     <Compile Include="Watcher.fs" />
