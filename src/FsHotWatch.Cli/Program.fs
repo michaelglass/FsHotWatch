@@ -386,7 +386,7 @@ let executeCommand
     | Status None ->
         withIpc (fun () ->
             let json = ipc.GetStatus pipeName |> Async.RunSynchronously
-            let parsed = IpcOutput.parseStatusMap (IpcOutput.parseStatusJson json)
+            let parsed = IpcOutput.statusOnly (IpcOutput.parsePluginStatuses json)
             eprintfn "%s" (IpcOutput.renderProgress parsed)
             0)
     | Status(Some pluginName) ->
