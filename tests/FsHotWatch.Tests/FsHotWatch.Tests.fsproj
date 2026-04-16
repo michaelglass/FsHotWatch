@@ -30,6 +30,7 @@
     <Compile Include="WatcherTests.fs" />
     <Compile Include="DaemonTests.fs" />
     <Compile Include="IpcTests.fs" />
+    <Compile Include="IpcPayloadTests.fs" />
     <Compile Include="TestPrunePluginTests.fs" />
     <Compile Include="AnalyzersPluginTests.fs" />
     <Compile Include="LintPluginTests.fs" />
