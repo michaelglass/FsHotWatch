@@ -93,6 +93,7 @@ let create
                         return state
                     else
                         ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                        ctx.StartSubtask "checking thresholds" "checking thresholds"
 
                         try
                             let thresholds = loadThresholds thresholdsFile
@@ -126,6 +127,8 @@ let create
                                               MeetsThreshold = meetsThreshold }
                                     | None -> None)
 
+                            ctx.EndSubtask "checking thresholds"
+
                             if coverageFiles.IsEmpty then
                                 ctx.ReportStatus(
                                     PluginStatus.Failed($"No coverage files found in %s{coverageDir}", DateTime.UtcNow)
@@ -134,6 +137,11 @@ let create
                                 return { Results = results }
                             else
                                 let allPass = results |> List.forall (fun r -> r.MeetsThreshold)
+
+                                let belowCount =
+                                    results |> List.filter (fun r -> not r.MeetsThreshold) |> List.length
+
+                                ctx.CompleteWithSummary $"{belowCount} files below threshold"
 
                                 let afterCheckOk, afterCheckOutput =
                                     match afterCheck with
@@ -174,6 +182,7 @@ let create
 
                                 return { Results = results }
                         with ex ->
+                            ctx.EndSubtask "checking thresholds"
                             ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                             return state
                 | _ -> return state
