@@ -30,11 +30,14 @@ let ``parseDiagnosticsResponse extracts files with entries`` () =
 [<Fact>]
 let ``parseDiagnosticsResponse extracts statuses`` () =
     let json =
-        """{"count":0,"files":{},"statuses":{"build":"Completed at 2026-04-05T12:00:00.0000000Z","lint":"Idle"}}"""
+        """{"count":0,"files":{},"statuses":{"build":{"status":"Completed at 2026-04-05T12:00:00.0000000Z","subtasks":[],"activityTail":[],"lastRun":null},"lint":{"status":"Idle","subtasks":[],"activityTail":[],"lastRun":null}}}"""
 
     let result = parseDiagnosticsResponse json
     test <@ result.Statuses.ContainsKey("build") @>
-    test <@ result.Statuses["build"].Contains("Completed") @>
+
+    match result.Statuses["build"].Status with
+    | Completed _ -> ()
+    | other -> failwithf "expected Completed, got %A" other
 
 [<Fact>]
 let ``parseStatusMap parses completed status`` () =
