@@ -84,6 +84,7 @@ let createFormatCheck (getCommitId: (unit -> string option) option) : PluginHand
 
                                 if formatted.Code <> source then
                                     newUnformatted <- newUnformatted |> Set.add file
+                                    ctx.Log $"unformatted: {Path.GetFileName file}"
 
                                     ctx.ReportErrors
                                         file
@@ -100,6 +101,7 @@ let createFormatCheck (getCommitId: (unit -> string option) option) : PluginHand
                                 failed <- true
 
                     if not failed then
+                        ctx.CompleteWithSummary $"{newUnformatted.Count} unformatted files"
                         ctx.ReportStatus(Completed(DateTime.UtcNow))
 
                     return { Unformatted = newUnformatted }
