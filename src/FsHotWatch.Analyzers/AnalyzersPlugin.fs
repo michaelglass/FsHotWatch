@@ -131,6 +131,7 @@ let create
                 match event with
                 | FileChecked result ->
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                    ctx.StartSubtask result.File $"analyzing {Path.GetFileName result.File}"
 
                     let checkResultsObj =
                         match result.CheckResults with
@@ -198,17 +199,23 @@ let create
                                 ctx.Post(AnalysisFailed(result.File, ex.ToString()))
                                 error "analyzers" $"Error analyzing %s{result.File}: %s{ex.ToString()}"
                         finally
+                            ctx.EndSubtask result.File
                             semaphore.Release() |> ignore
                     }
                     |> fun a -> Async.Start(a, cts.Token)
 
                     return state
                 | Custom(AnalysisComplete(file, entries)) ->
+                    let updated = state.DiagnosticsByFile |> Map.add file entries
+
+                    let totalIssues = updated |> Map.toList |> List.sumBy (fun (_, e) -> e.Length)
+
+                    ctx.CompleteWithSummary $"analyzed {updated.Count} files, {totalIssues} issues"
                     ctx.ReportStatus(Completed(DateTime.UtcNow))
 
                     return
                         { state with
-                            DiagnosticsByFile = state.DiagnosticsByFile |> Map.add file entries }
+                            DiagnosticsByFile = updated }
                 | Custom(AnalysisFailed(file, error)) ->
                     ctx.ReportErrors file [ ErrorEntry.error $"Analyzer crashed: %s{error}" ]
 
