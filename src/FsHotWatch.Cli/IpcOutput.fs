@@ -17,56 +17,15 @@ type DiagnosticEntry =
       Column: int
       Detail: string option }
 
-/// Parsed GetDiagnostics response.
-type DiagnosticsResponse =
-    { Count: int
-      Files: Map<string, DiagnosticEntry list>
-      Statuses: Map<string, string> }
-
-/// Parse the JSON response from GetDiagnostics RPC.
-let parseDiagnosticsResponse (json: string) : DiagnosticsResponse =
-    use doc = JsonDocument.Parse(json)
-    let root = doc.RootElement
-
-    let count =
-        match root.TryGetProperty("count") with
-        | true, v -> v.GetInt32()
-        | false, _ -> 0
-
-    let files =
-        match root.TryGetProperty("files") with
-        | true, filesEl ->
-            [ for prop in filesEl.EnumerateObject() do
-                  let entries =
-                      [ for entry in prop.Value.EnumerateArray() do
-                            { Plugin = entry.GetProperty("plugin").GetString()
-                              Message = entry.GetProperty("message").GetString()
-                              Severity = DiagnosticSeverity.fromString (entry.GetProperty("severity").GetString())
-                              Line = entry.GetProperty("line").GetInt32()
-                              Column = entry.GetProperty("column").GetInt32()
-                              Detail =
-                                match entry.TryGetProperty("detail") with
-                                | true, d when d.ValueKind <> JsonValueKind.Null -> Some(d.GetString())
-                                | _ -> None } ]
-
-                  prop.Name, entries ]
-            |> Map.ofList
-        | false, _ -> Map.empty
-
-    let statuses =
-        match root.TryGetProperty("statuses") with
-        | true, statusEl ->
-            [ for prop in statusEl.EnumerateObject() do
-                  prop.Name, prop.Value.GetString() ]
-            |> Map.ofList
-        | false, _ -> Map.empty
-
-    { Count = count
-      Files = files
-      Statuses = statuses }
+/// Fully parsed per-plugin status including subtasks, activity tail, and last-run history.
+type ParsedPluginStatus =
+    { Status: PluginStatus
+      Subtasks: Subtask list
+      ActivityTail: string list
+      LastRun: RunRecord option }
 
 /// Parse a status string from IPC into PluginStatus.
-let private parseStatus (s: string) : PluginStatus =
+let parseStatus (s: string) : PluginStatus =
     let tryParseUtc (s: string) =
         DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal)
 
@@ -102,6 +61,139 @@ let private parseStatus (s: string) : PluginStatus =
 let parseStatusMap (statuses: Map<string, string>) : Map<string, PluginStatus> =
     statuses |> Map.map (fun _ s -> parseStatus s)
 
+/// Parse a single structured plugin-status JSON element.
+let parsePluginStatusElement (el: JsonElement) : ParsedPluginStatus =
+    let status =
+        match el.TryGetProperty("status") with
+        | true, s -> parseStatus (s.GetString())
+        | false, _ -> Idle
+
+    let tryParseUtc (s: string) =
+        let ok, v =
+            DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal)
+
+        if ok then v else DateTime.UtcNow
+
+    let subtasks =
+        match el.TryGetProperty("subtasks") with
+        | true, arr when arr.ValueKind = JsonValueKind.Array ->
+            [ for item in arr.EnumerateArray() ->
+                  { Key = item.GetProperty("key").GetString()
+                    Label = item.GetProperty("label").GetString()
+                    StartedAt = tryParseUtc (item.GetProperty("startedAt").GetString()) } ]
+        | _ -> []
+
+    let activityTail =
+        match el.TryGetProperty("activityTail") with
+        | true, arr when arr.ValueKind = JsonValueKind.Array -> [ for item in arr.EnumerateArray() -> item.GetString() ]
+        | _ -> []
+
+    let lastRun =
+        match el.TryGetProperty("lastRun") with
+        | true, r when r.ValueKind = JsonValueKind.Object ->
+            let startedAt = tryParseUtc (r.GetProperty("startedAt").GetString())
+            let elapsedMs = r.GetProperty("elapsedMs").GetInt64()
+            let outcomeStr = r.GetProperty("outcome").GetString()
+
+            let error =
+                match r.TryGetProperty("error") with
+                | true, e when e.ValueKind <> JsonValueKind.Null -> e.GetString()
+                | _ -> ""
+
+            let outcome =
+                match outcomeStr with
+                | "Failed" -> FailedRun error
+                | _ -> CompletedRun
+
+            let summary =
+                match r.TryGetProperty("summary") with
+                | true, s when s.ValueKind <> JsonValueKind.Null -> Some(s.GetString())
+                | _ -> None
+
+            let tail =
+                match r.TryGetProperty("activityTail") with
+                | true, arr when arr.ValueKind = JsonValueKind.Array ->
+                    [ for item in arr.EnumerateArray() -> item.GetString() ]
+                | _ -> []
+
+            Some
+                { StartedAt = startedAt
+                  Elapsed = TimeSpan.FromMilliseconds(float elapsedMs)
+                  Outcome = outcome
+                  Summary = summary
+                  ActivityTail = tail }
+        | _ -> None
+
+    { Status = status
+      Subtasks = subtasks
+      ActivityTail = activityTail
+      LastRun = lastRun }
+
+/// Parse the top-level JSON object returned by GetStatus into structured per-plugin status.
+let parsePluginStatuses (json: string) : Map<string, ParsedPluginStatus> =
+    try
+        use doc = JsonDocument.Parse(json)
+
+        [ for prop in doc.RootElement.EnumerateObject() do
+              if prop.Value.ValueKind = JsonValueKind.Object then
+                  prop.Name, parsePluginStatusElement prop.Value ]
+        |> Map.ofList
+    with _ ->
+        Map.empty
+
+/// Project a ParsedPluginStatus map to plain PluginStatus values.
+let statusOnly (parsed: Map<string, ParsedPluginStatus>) : Map<string, PluginStatus> =
+    parsed |> Map.map (fun _ p -> p.Status)
+
+/// Parsed GetDiagnostics response.
+type DiagnosticsResponse =
+    { Count: int
+      Files: Map<string, DiagnosticEntry list>
+      Statuses: Map<string, ParsedPluginStatus> }
+
+/// Parse the JSON response from GetDiagnostics RPC.
+let parseDiagnosticsResponse (json: string) : DiagnosticsResponse =
+    use doc = JsonDocument.Parse(json)
+    let root = doc.RootElement
+
+    let count =
+        match root.TryGetProperty("count") with
+        | true, v -> v.GetInt32()
+        | false, _ -> 0
+
+    let files =
+        match root.TryGetProperty("files") with
+        | true, filesEl ->
+            [ for prop in filesEl.EnumerateObject() do
+                  let entries =
+                      [ for entry in prop.Value.EnumerateArray() do
+                            { Plugin = entry.GetProperty("plugin").GetString()
+                              Message = entry.GetProperty("message").GetString()
+                              Severity = DiagnosticSeverity.fromString (entry.GetProperty("severity").GetString())
+                              Line = entry.GetProperty("line").GetInt32()
+                              Column = entry.GetProperty("column").GetInt32()
+                              Detail =
+                                match entry.TryGetProperty("detail") with
+                                | true, d when d.ValueKind <> JsonValueKind.Null -> Some(d.GetString())
+                                | _ -> None } ]
+
+                  prop.Name, entries ]
+            |> Map.ofList
+        | false, _ -> Map.empty
+
+    let statuses =
+        match root.TryGetProperty("statuses") with
+        | true, statusEl ->
+            [ for prop in statusEl.EnumerateObject() do
+                  if prop.Value.ValueKind = JsonValueKind.Object then
+                      prop.Name, parsePluginStatusElement prop.Value ]
+            |> Map.ofList
+        | false, _ -> Map.empty
+
+    { Count = count
+      Files = files
+      Statuses = statuses }
+
 /// Check if all statuses are terminal (Completed, Failed, or Idle).
 /// Returns false for empty maps (no plugins registered yet).
 /// Idle is treated as terminal because this is only called after WaitForScan returns,
@@ -128,7 +220,7 @@ let formatDiagnosticsResponse (resp: DiagnosticsResponse) : string =
     let sb = System.Text.StringBuilder()
 
     // Status summary
-    let parsedStatuses = parseStatusMap resp.Statuses
+    let parsedStatuses = statusOnly resp.Statuses
     let summary = RunOnceOutput.formatSummary parsedStatuses
 
     if summary <> "" then
@@ -167,12 +259,14 @@ let exitCodeFromResponse (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
     if failCount > 0 then 1 else 0
 
 /// Parse a JSON object into a string-to-string map (for status responses).
+/// Used for legacy flat-map status payloads. New structured payloads use parsePluginStatuses.
 let parseStatusJson (json: string) : Map<string, string> =
     try
         use doc = JsonDocument.Parse(json)
 
         [ for prop in doc.RootElement.EnumerateObject() do
-              prop.Name, prop.Value.GetString() ]
+              if prop.Value.ValueKind = JsonValueKind.String then
+                  prop.Name, prop.Value.GetString() ]
         |> Map.ofList
     with _ ->
         Map.empty
@@ -209,10 +303,10 @@ let renderIpcResult (noWarnFail: bool) (result: string) : int =
             | false, _ ->
 
                 match root.TryGetProperty("status") with
-                | true, v when v.GetString() = "failed" ->
+                | true, v when v.ValueKind = JsonValueKind.String && v.GetString() = "failed" ->
                     UI.fail "Failed"
                     1
-                | true, v when v.GetString() = "passed" ->
+                | true, v when v.ValueKind = JsonValueKind.String && v.GetString() = "passed" ->
                     UI.success "Passed"
                     0
                 | _ ->
@@ -234,18 +328,13 @@ let renderIpcResult (noWarnFail: bool) (result: string) : int =
                             0
                     | _ ->
 
-                        let statusMap =
-                            [ for prop in root.EnumerateObject() do
-                                  if prop.Value.ValueKind = JsonValueKind.String then
-                                      prop.Name, prop.Value.GetString() ]
-                            |> Map.ofList
-
-                        let parsed = parseStatusMap statusMap
-                        let output = renderProgress parsed
+                        let parsed = parsePluginStatuses result
+                        let plain = statusOnly parsed
+                        let output = renderProgress plain
                         eprintfn "%s" output
 
                         let hasFailed =
-                            parsed
+                            plain
                             |> Map.exists (fun _ s ->
                                 match s with
                                 | Failed _ -> true
@@ -274,7 +363,8 @@ let pollAndRender
 
     while not allDone do
         let statusJson = getStatus ()
-        let parsed = parseStatusMap (parseStatusJson statusJson)
+        let parsed = parsePluginStatuses statusJson
+        let plain = statusOnly parsed
 
         if UI.isInteractive then
             // Move cursor up to overwrite previous lines
@@ -283,11 +373,11 @@ let pollAndRender
                     Console.Error.Write("\x1b[A\x1b[2K")
 
             // Render current state
-            let progress = renderProgress parsed
+            let progress = renderProgress plain
             eprintfn "%s" progress
-            prevLineCount <- parsed.Count
+            prevLineCount <- plain.Count
 
-        allDone <- isAllTerminal parsed
+        allDone <- isAllTerminal plain
 
         if not allDone then
             Thread.Sleep(200)
