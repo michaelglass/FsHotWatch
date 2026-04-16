@@ -97,6 +97,25 @@ type PluginStatus =
     /// Plugin encountered an error.
     | Failed of error: string * at: System.DateTime
 
+/// A named, timestamped unit of concurrent work within a plugin run.
+type Subtask =
+    { Key: string
+      Label: string
+      StartedAt: System.DateTime }
+
+/// Outcome of a completed plugin run.
+type RunOutcome =
+    | CompletedRun
+    | FailedRun of error: string
+
+/// Record of a single completed or failed plugin run.
+type RunRecord =
+    { StartedAt: System.DateTime
+      Elapsed: System.TimeSpan
+      Outcome: RunOutcome
+      Summary: string option
+      ActivityTail: string list }
+
 
 /// Result of a single test project execution.
 type TestResult =
