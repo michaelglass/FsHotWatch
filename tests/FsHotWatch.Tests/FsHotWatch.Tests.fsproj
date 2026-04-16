@@ -5,7 +5,7 @@
     <IsPackable>false</IsPackable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <!-- FS0988: existing suppression; FS3511: state machine not statically compilable; NETSDK1188: harmless locale warnings from Microsoft.Testing.Platform -->
-    <NoWarn>$(NoWarn);FS0988;3511;NETSDK1188;NU1605;NU1608</NoWarn>
+    <NoWarn>$(NoWarn);FS0988;3511;NETSDK1188;NU1605;NU1608;NU1903</NoWarn>
     <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
   </PropertyGroup>
 
@@ -25,6 +25,7 @@
     <Compile Include="PluginFrameworkTests.fs" />
     <Compile Include="PluginHostTests.fs" />
     <Compile Include="PluginActivityTests.fs" />
+    <Compile Include="PluginHostActivityTests.fs" />
     <Compile Include="MacFsEventsTests.fs" />
     <Compile Include="WatcherTests.fs" />
     <Compile Include="DaemonTests.fs" />

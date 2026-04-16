@@ -28,7 +28,11 @@ let private registerWith
           EmitTestCompleted = fun _ -> ()
           EmitCommandCompleted = fun _ -> ()
           RegisterCommand = registerCommand
-          TaskCache = None }
+          TaskCache = None
+          StartSubtask = fun _ _ _ -> ()
+          EndSubtask = fun _ _ -> ()
+          Log = fun _ _ -> ()
+          SetSummary = fun _ _ -> () }
         handler
 
 /// Register with all defaults.
