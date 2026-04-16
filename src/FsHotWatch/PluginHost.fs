@@ -62,7 +62,11 @@ type PluginHost
               EmitTestCompleted = fun results -> dispatchToAll (PluginFramework.DispatchTestCompleted results)
               EmitCommandCompleted = fun result -> dispatchToAll (PluginFramework.DispatchCommandCompleted result)
               RegisterCommand = fun cmd -> commands[fst cmd] <- snd cmd
-              TaskCache = taskCache }
+              TaskCache = taskCache
+              StartSubtask = fun _ _ _ -> ()
+              EndSubtask = fun _ _ -> ()
+              Log = fun _ _ -> ()
+              SetSummary = fun _ _ -> () }
 
         let plugin = PluginFramework.registerHandler services handler
 
@@ -139,6 +143,15 @@ type PluginHost
 
     /// Get all plugin statuses as an immutable map.
     member _.GetAllStatuses() : Map<string, PluginStatus> = lock statusLock (fun () -> statuses)
+
+    /// Get the currently running subtasks for a plugin.
+    member _.GetSubtasks(_pluginName: string) : Subtask list = []
+
+    /// Get the activity tail for a plugin's current run.
+    member _.GetActivityTail(_pluginName: string) : string list = []
+
+    /// Get run history for a plugin.
+    member _.GetHistory(_pluginName: string) : RunRecord list = []
 
     /// Get all errors grouped by file path.
     member _.GetErrors() = ledger.GetAll()

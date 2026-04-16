@@ -39,6 +39,14 @@ type PluginCtx<'Msg> =
         RepoRoot: string
         /// Post a custom message back to this plugin's agent.
         Post: 'Msg -> unit
+        /// Start a named concurrent subtask. Duplicate keys are no-ops.
+        StartSubtask: string -> string -> unit
+        /// End a named subtask. No-op if not started.
+        EndSubtask: string -> unit
+        /// Append an activity log line. Also routes to Logging.info.
+        Log: string -> unit
+        /// Override the auto-derived summary captured on the next terminal transition.
+        CompleteWithSummary: string -> unit
     }
 
 /// Tags for events a plugin can subscribe to.
@@ -112,7 +120,11 @@ type PluginHostServices =
       EmitTestCompleted: TestResults -> unit
       EmitCommandCompleted: CommandCompletedResult -> unit
       RegisterCommand: string * CommandHandler -> unit
-      TaskCache: TaskCache.ITaskCache option }
+      TaskCache: TaskCache.ITaskCache option
+      StartSubtask: PluginName -> string -> string -> unit
+      EndSubtask: PluginName -> string -> unit
+      Log: PluginName -> string -> unit
+      SetSummary: PluginName -> string -> unit }
 
 /// Register a declarative plugin handler, returning a type-erased RegisteredPlugin.
 /// Creates a MailboxProcessor with error recovery and wires up event dispatch.
@@ -132,7 +144,11 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                           EmitCommandCompleted = services.EmitCommandCompleted
                           Checker = services.Checker
                           RepoRoot = services.RepoRoot
-                          Post = fun msg -> inbox.Post(Choice1Of2(Custom msg)) }
+                          Post = fun msg -> inbox.Post(Choice1Of2(Custom msg))
+                          StartSubtask = fun key label -> services.StartSubtask handler.Name key label
+                          EndSubtask = fun key -> services.EndSubtask handler.Name key
+                          Log = fun msg -> services.Log handler.Name msg
+                          CompleteWithSummary = fun s -> services.SetSummary handler.Name s }
 
                     /// Compute the composite key for a given event.
                     let compositeKey (event: PluginEvent<'Msg>) : TaskCache.CompositeKey =
@@ -232,7 +248,11 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                                 services.EmitCommandCompleted r
                                           Checker = services.Checker
                                           RepoRoot = services.RepoRoot
-                                          Post = fun msg -> inbox.Post(Choice1Of2(Custom msg)) }
+                                          Post = fun msg -> inbox.Post(Choice1Of2(Custom msg))
+                                          StartSubtask = fun key label -> services.StartSubtask handler.Name key label
+                                          EndSubtask = fun key -> services.EndSubtask handler.Name key
+                                          Log = fun msg -> services.Log handler.Name msg
+                                          CompleteWithSummary = fun s -> services.SetSummary handler.Name s }
 
                                     let! nextState = safeUpdate capturingCtx state event
 
