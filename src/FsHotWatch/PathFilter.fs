@@ -1,6 +1,7 @@
 module FsHotWatch.PathFilter
 
 open System.IO
+open System.Threading
 open Ignore
 
 let private normalize (path: string) = path.Replace('\\', '/')
@@ -64,7 +65,11 @@ type private CacheEntry =
 /// Cache for collectIgnoreRules, keyed by repo root.
 /// Automatically reloads when .gitignore or .fantomasignore change on disk.
 type IgnoreFilterCache() =
+    // Double-checked locking so concurrent startup misses don't all run
+    // collectIgnoreRules: on miss, acquire syncRoot and re-check Volatile.Read
+    // before rebuilding.
     let mutable cached: CacheEntry option = None
+    let syncRoot = obj ()
 
     member _.Get(repoRoot: string) =
         let gitignorePath = Path.Combine(repoRoot, ".gitignore")
@@ -72,21 +77,27 @@ type IgnoreFilterCache() =
         let gitTs = getFileTimestamp gitignorePath
         let fantTs = getFileTimestamp fantomasignorePath
 
-        match cached with
-        | Some entry when
+        let isFresh entry =
             entry.RepoRoot = repoRoot
             && entry.GitignoreTimestamp = gitTs
             && entry.FantomasignoreTimestamp = fantTs
-            ->
-            entry.Filter
+
+        match Volatile.Read(&cached) with
+        | Some entry when isFresh entry -> entry.Filter
         | _ ->
-            let filter = collectIgnoreRules repoRoot
+            lock syncRoot (fun () ->
+                match Volatile.Read(&cached) with
+                | Some entry when isFresh entry -> entry.Filter
+                | _ ->
+                    let filter = collectIgnoreRules repoRoot
 
-            cached <-
-                Some
-                    { RepoRoot = repoRoot
-                      Filter = filter
-                      GitignoreTimestamp = gitTs
-                      FantomasignoreTimestamp = fantTs }
+                    Volatile.Write(
+                        &cached,
+                        Some
+                            { RepoRoot = repoRoot
+                              Filter = filter
+                              GitignoreTimestamp = gitTs
+                              FantomasignoreTimestamp = fantTs }
+                    )
 
-            filter
+                    filter)

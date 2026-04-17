@@ -164,7 +164,7 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
 
 let private serializeResult (result: TaskCacheResult) =
     let root = JsonObject()
-    root["cacheKey"] <- result.CacheKey
+    root["cacheKey"] <- ContentHash.value result.CacheKey
     root["status"] <- serializeStatus result.Status
 
     let errorsArr = JsonArray()
@@ -212,13 +212,13 @@ let private deserializeResult (json: string) : TaskCacheResult =
         |> Seq.map (fun n -> deserializeCachedEvent (n.AsObject()))
         |> Seq.toList
 
-    { CacheKey = root["cacheKey"].GetValue<string>()
+    { CacheKey = ContentHash.create (root["cacheKey"].GetValue<string>())
       Errors = errors
       Status = deserializeStatus (root["status"].AsObject())
       EmittedEvents = emittedEvents }
 
-let private hashCacheKey (cacheKey: string) =
-    (FsHotWatch.CheckCache.sha256Hex cacheKey).Substring(0, 12)
+let private hashCacheKey (cacheKey: ContentHash) =
+    (FsHotWatch.CheckCache.sha256Hex (ContentHash.value cacheKey)).Substring(0, 12)
 
 /// Serialize a CompositeKey to a file-safe string.
 let private compositeKeyToString (key: CompositeKey) =
@@ -237,7 +237,7 @@ type FileTaskCache(cacheDir: string) =
 
     let jsonWriteOptions = System.Text.Json.JsonSerializerOptions(WriteIndented = true)
 
-    let tryGet (compositeKey: CompositeKey) (cacheKey: string) =
+    let tryGet (compositeKey: CompositeKey) (cacheKey: ContentHash) =
         let path = filePath compositeKey cacheKey
 
         try
@@ -248,7 +248,7 @@ type FileTaskCache(cacheDir: string) =
         with _ ->
             None
 
-    let set (compositeKey: CompositeKey) (cacheKey: string) (result: TaskCacheResult) =
+    let set (compositeKey: CompositeKey) (cacheKey: ContentHash) (result: TaskCacheResult) =
         let path = filePath compositeKey cacheKey
         let json = serializeResult result
         File.WriteAllText(path, json.ToJsonString(jsonWriteOptions))
@@ -287,10 +287,10 @@ type FileTaskCache(cacheDir: string) =
                 File.Delete(f)
 
     /// Try to retrieve a cached result.
-    member _.TryGet(compositeKey: CompositeKey, cacheKey: string) = tryGet compositeKey cacheKey
+    member _.TryGet(compositeKey: CompositeKey, cacheKey: ContentHash) = tryGet compositeKey cacheKey
 
     /// Store a result under the given compositeKey.
-    member _.Set(compositeKey: CompositeKey, cacheKey: string, result: TaskCacheResult) =
+    member _.Set(compositeKey: CompositeKey, cacheKey: ContentHash, result: TaskCacheResult) =
         set compositeKey cacheKey result
 
     /// Remove all cached entries.

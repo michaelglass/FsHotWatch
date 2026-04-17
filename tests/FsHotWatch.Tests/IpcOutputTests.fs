@@ -5,6 +5,7 @@ open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Cli.RunOnceOutput
+open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Cli.IpcOutput
 
 [<Fact(Timeout = 5000)>]
@@ -30,7 +31,7 @@ let ``parseDiagnosticsResponse extracts files with entries`` () =
 [<Fact(Timeout = 5000)>]
 let ``parseDiagnosticsResponse extracts statuses`` () =
     let json =
-        """{"count":0,"files":{},"statuses":{"build":{"status":"Completed at 2026-04-05T12:00:00.0000000Z","subtasks":[],"activityTail":[],"lastRun":null},"lint":{"status":"Idle","subtasks":[],"activityTail":[],"lastRun":null}}}"""
+        """{"count":0,"files":{},"statuses":{"build":{"status":{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"},"subtasks":[],"activityTail":[],"lastRun":null},"lint":{"status":{"tag":"idle"},"subtasks":[],"activityTail":[],"lastRun":null}}}"""
 
     let result = parseDiagnosticsResponse json
     test <@ result.Statuses.ContainsKey("build") @>
@@ -40,49 +41,9 @@ let ``parseDiagnosticsResponse extracts statuses`` () =
     | other -> failwithf "expected Completed, got %A" other
 
 [<Fact(Timeout = 5000)>]
-let ``parseStatusMap parses completed status`` () =
-    let statuses = Map.ofList [ "build", "Completed at 2026-04-05T12:00:00.0000000Z" ]
-    let parsed = parseStatusMap statuses
-    test <@ parsed.ContainsKey("build") @>
-
-    match parsed["build"] with
-    | Completed _ -> ()
-    | other -> failwith $"Expected Completed, got %A{other}"
-
-[<Fact(Timeout = 5000)>]
-let ``parseStatusMap parses running status`` () =
-    let statuses = Map.ofList [ "lint", "Running since 2026-04-05T12:00:00.0000000Z" ]
-    let parsed = parseStatusMap statuses
-    test <@ parsed.ContainsKey("lint") @>
-
-    match parsed["lint"] with
-    | Running _ -> ()
-    | other -> failwith $"Expected Running, got %A{other}"
-
-[<Fact(Timeout = 5000)>]
-let ``parseStatusMap parses failed status`` () =
-    let statuses =
-        Map.ofList [ "build", "Failed at 2026-04-05T12:00:00.0000000Z: compile error" ]
-
-    let parsed = parseStatusMap statuses
-
-    match parsed["build"] with
-    | Failed(msg, _) -> test <@ msg = "compile error" @>
-    | other -> failwith $"Expected Failed, got %A{other}"
-
-[<Fact(Timeout = 5000)>]
-let ``parseStatusMap parses idle status`` () =
-    let statuses = Map.ofList [ "format", "Idle" ]
-    let parsed = parseStatusMap statuses
-
-    match parsed["format"] with
-    | Idle -> ()
-    | other -> failwith $"Expected Idle, got %A{other}"
-
-[<Fact(Timeout = 5000)>]
 let ``formatDiagnosticsResponse with no errors shows clean message`` () =
     let json =
-        """{"count":0,"files":{},"statuses":{"build":"Completed at 2026-04-05T12:00:00.0000000Z"}}"""
+        """{"count":0,"files":{},"statuses":{"build":{"status":{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"},"subtasks":[],"activityTail":[],"lastRun":null}}}"""
 
     let result = parseDiagnosticsResponse json
     let output = formatDiagnosticsResponse result
@@ -91,7 +52,7 @@ let ``formatDiagnosticsResponse with no errors shows clean message`` () =
 [<Fact(Timeout = 5000)>]
 let ``formatDiagnosticsResponse with errors shows file and message`` () =
     let json =
-        """{"count":1,"files":{"src/Foo.fs":[{"plugin":"lint","message":"bad name","severity":"warning","line":17,"column":0,"detail":null}]},"statuses":{"lint":"Completed at 2026-04-05T12:00:00.0000000Z"}}"""
+        """{"count":1,"files":{"src/Foo.fs":[{"plugin":"lint","message":"bad name","severity":"warning","line":17,"column":0,"detail":null}]},"statuses":{"lint":{"status":{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"},"subtasks":[],"activityTail":[],"lastRun":null}}}"""
 
     let result = parseDiagnosticsResponse json
     let output = formatDiagnosticsResponse result
@@ -356,7 +317,7 @@ let ``parsePluginStatuses rejects bare-string values and returns empty`` () =
 let ``parsePluginStatuses accepts object-valued entries with status field`` () =
     // The real GetStatus JSON shape. Object-per-plugin with a status string.
     let json =
-        """{"plugin": {"status": "Completed at 2026-01-01T00:00:00Z", "subtasks": [], "activityTail": [], "lastRun": null}}"""
+        """{"plugin": {"status": {"tag": "completed", "at": "2026-01-01T00:00:00Z"}, "subtasks": [], "activityTail": [], "lastRun": null}}"""
 
     let parsed = parsePluginStatuses json
     test <@ Map.containsKey "plugin" parsed @>
