@@ -4,7 +4,10 @@
     "args": "build"
   },
   "format": true,
-  "lint": true,
+  "lint": false,
+  "analyzers": {
+    "paths": ["tools/fsharplint-shim/bin/Release/net10.0/"]
+  },
   "tests": {
     "beforeRun": "dotnet build",
     "projects": [
