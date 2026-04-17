@@ -24,6 +24,27 @@ let private noopSink =
         member _.Log _ = ()
         member _.SetSummary _ = () }
 
+/// Pure cache-lookup decision: returns Some only when the cached entry is a
+/// FullCheck. ParseOnly entries are treated as misses so the file is re-checked.
+/// Exposed so cache-invalidation logic can be tested without disk or FCS.
+let tryGetCachedFullCheck (backend: ICheckCacheBackend option) (key: CacheKey option) : FileCheckResult option =
+    match backend, key with
+    | Some b, Some k ->
+        match b.TryGet k with
+        | Some r ->
+            match r.CheckResults with
+            | FullCheck _ -> Some r
+            | ParseOnly -> None
+        | None -> None
+    | _ -> None
+
+let private readSourceOrEmpty (absPath: string) : string =
+    try
+        File.ReadAllText(absPath)
+    with
+    | :? FileNotFoundException
+    | :? DirectoryNotFoundException -> ""
+
 /// Manages project options and performs incremental file checking with the warm FSharpChecker.
 type CheckPipeline
     (
@@ -149,11 +170,61 @@ type CheckPipeline
 
         newCts
 
-    /// Core check logic: check a file with explicit options.
+    /// FCS-only check: takes already-read source text, performs parse+check,
+    /// returns the result. Pure of disk I/O and cache concerns so it can be
+    /// composed by callers that manage caching separately.
     /// The ct token is checked before and after the expensive FCS call so that
     /// CancelPreviousCheck cancellations are observed even when the async CE's
     /// implicit token differs from the per-file token.
     member private this.CheckFileCore
+        (absPath: string, source: string, options: FSharpProjectOptions, ct: CancellationToken)
+        : Async<FileCheckResult option> =
+        async {
+            ct.ThrowIfCancellationRequested()
+            let sourceText = SourceText.ofString source
+            let version = this.NextVersion()
+
+            try
+                ct.ThrowIfCancellationRequested()
+                let sw = System.Diagnostics.Stopwatch.StartNew()
+
+                let! parseResults, checkAnswer = checker.ParseAndCheckFileInProject(absPath, 0, sourceText, options)
+
+                sw.Stop()
+                ct.ThrowIfCancellationRequested()
+
+                if sw.Elapsed.TotalSeconds > 2.0 then
+                    Logging.debug "check" $"SLOW: %s{Path.GetFileName(absPath)} took %.1f{sw.Elapsed.TotalSeconds}s"
+
+                match checkAnswer with
+                | FSharpCheckFileAnswer.Succeeded checkResults ->
+                    activity.Log($"checked {Path.GetFileName absPath}")
+
+                    return
+                        Some
+                            { File = absPath
+                              Source = source
+                              ParseResults = parseResults
+                              CheckResults = FullCheck checkResults
+                              ProjectOptions = options
+                              Version = version }
+                | FSharpCheckFileAnswer.Aborted ->
+                    return
+                        Some
+                            { File = absPath
+                              Source = source
+                              ParseResults = parseResults
+                              CheckResults = ParseOnly
+                              ProjectOptions = options
+                              Version = version }
+            with ex ->
+                Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
+                return None
+        }
+
+    /// Cache-aware wrapper: looks up the cache, on miss reads disk and calls
+    /// CheckFileCore, then stores FullCheck results back into the cache.
+    member private this.CheckFileCached
         (absPath: string, options: FSharpProjectOptions, ct: CancellationToken)
         : Async<FileCheckResult option> =
         async {
@@ -162,69 +233,22 @@ type CheckPipeline
             let cacheKey =
                 cacheBackend |> Option.map (fun _ -> makeCacheKeyFast absPath options)
 
-            let cached =
-                match cacheBackend, cacheKey with
-                | Some backend, Some key -> backend.TryGet(key)
-                | _ -> None
-
-            match cached with
-            | Some result when
-                (match result.CheckResults with
-                 | FullCheck _ -> true
-                 | ParseOnly -> false)
-                ->
+            match tryGetCachedFullCheck cacheBackend cacheKey with
+            | Some cached ->
                 Logging.debug "check" $"Cache hit: %s{Path.GetFileName(absPath)}"
-                return Some result
-            | _ ->
-                let source =
-                    if File.Exists(absPath) then
-                        File.ReadAllText(absPath)
-                    else
-                        ""
+                return Some cached
+            | None ->
+                let source = readSourceOrEmpty absPath
+                let! result = this.CheckFileCore(absPath, source, options, ct)
 
-                let sourceText = SourceText.ofString source
-                let version = this.NextVersion()
+                match result, cacheBackend, cacheKey with
+                | Some r, Some backend, Some key ->
+                    match r.CheckResults with
+                    | FullCheck _ -> backend.Set key r
+                    | ParseOnly -> ()
+                | _ -> ()
 
-                try
-                    ct.ThrowIfCancellationRequested()
-                    let sw = System.Diagnostics.Stopwatch.StartNew()
-
-                    let! parseResults, checkAnswer = checker.ParseAndCheckFileInProject(absPath, 0, sourceText, options)
-
-                    sw.Stop()
-                    ct.ThrowIfCancellationRequested()
-
-                    if sw.Elapsed.TotalSeconds > 2.0 then
-                        Logging.debug "check" $"SLOW: %s{Path.GetFileName(absPath)} took %.1f{sw.Elapsed.TotalSeconds}s"
-
-                    match checkAnswer with
-                    | FSharpCheckFileAnswer.Succeeded checkResults ->
-                        let result =
-                            { File = absPath
-                              Source = source
-                              ParseResults = parseResults
-                              CheckResults = FullCheck checkResults
-                              ProjectOptions = options
-                              Version = version }
-
-                        match cacheBackend, cacheKey with
-                        | Some backend, Some key -> backend.Set key result
-                        | _ -> ()
-
-                        activity.Log($"checked {Path.GetFileName absPath}")
-                        return Some result
-                    | FSharpCheckFileAnswer.Aborted ->
-                        return
-                            Some
-                                { File = absPath
-                                  Source = source
-                                  ParseResults = parseResults
-                                  CheckResults = ParseOnly
-                                  ProjectOptions = options
-                                  Version = version }
-                with ex ->
-                    Logging.error "check" $"Failed to check %s{absPath}: %s{ex.Message}"
-                    return None
+                return result
         }
 
     /// Check a single file using the warm checker. Returns FileCheckResult if successful.
@@ -244,7 +268,7 @@ type CheckPipeline
                 | false, _ ->
                     Logging.debug "check" $"No project options for: %s{absPath}"
                     return None
-                | true, (options :: _) -> return! this.CheckFileCore(absPath, options, fileToken)
+                | true, (options :: _) -> return! this.CheckFileCached(absPath, options, fileToken)
                 | true, [] ->
                     Logging.debug "check" $"No project options for: %s{absPath}"
                     return None
@@ -266,7 +290,7 @@ type CheckPipeline
 
             try
                 fileToken.ThrowIfCancellationRequested()
-                return! this.CheckFileCore(absPath, options, fileToken)
+                return! this.CheckFileCached(absPath, options, fileToken)
             with :? OperationCanceledException ->
                 Logging.debug "check" $"Cancelled: %s{Path.GetFileName(absPath)}"
                 return None

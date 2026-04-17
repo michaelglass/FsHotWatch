@@ -313,7 +313,7 @@ let ``CLI status query works against running daemon`` () =
     try
         let result = IpcClient.getStatus pipeName |> Async.RunSynchronously
         test <@ result.Contains("test-plugin") @>
-        test <@ result.Contains("Idle") @>
+        test <@ result.Contains("\"tag\":\"idle\"") @>
     finally
         cts.Cancel()
 
