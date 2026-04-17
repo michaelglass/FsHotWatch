@@ -97,6 +97,23 @@ type PluginStatus =
     /// Plugin encountered an error.
     | Failed of error: string * at: System.DateTime
 
+module PluginStatus =
+    let inline isTerminal status =
+        match status with
+        | Idle
+        | Running _ -> false
+        | Completed _
+        | Failed _ -> true
+
+    // Idle counts as quiescent for status-aggregation callers that query after
+    // WaitForScan: Idle there means "not triggered by this scan", not "pending".
+    let inline isQuiescent status =
+        match status with
+        | Running _ -> false
+        | Idle
+        | Completed _
+        | Failed _ -> true
+
 /// A named, timestamped unit of concurrent work within a plugin run.
 type Subtask =
     { Key: string
