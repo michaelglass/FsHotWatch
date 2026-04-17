@@ -69,7 +69,7 @@ let ``ctx.StartSubtask and EndSubtask reflected in host`` () =
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("subtasker") |> List.isEmpty |> not) 5000
     test <@ observedDuring.Value |> List.length = 2 @>
-    test <@ host.GetSubtasks("subtasker") = [] @>
+    test <@ List.isEmpty (host.GetSubtasks("subtasker")) @>
 
 [<Fact(Timeout = 5000)>]
 let ``CompleteWithSummary captured in history`` () =
@@ -110,4 +110,4 @@ let ``Terminal transition auto-ends open subtasks`` () =
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("leaker") |> List.isEmpty |> not) 5000
-    test <@ host.GetSubtasks("leaker") = [] @>
+    test <@ List.isEmpty (host.GetSubtasks("leaker")) @>

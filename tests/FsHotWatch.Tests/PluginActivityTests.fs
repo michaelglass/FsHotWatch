@@ -19,7 +19,7 @@ let ``EndSubtask removes the subtask`` () =
     let s = State()
     s.StartSubtask("p", "k1", "label 1")
     s.EndSubtask("p", "k1")
-    test <@ s.GetSubtasks("p") = [] @>
+    test <@ List.isEmpty (s.GetSubtasks("p")) @>
 
 [<Fact(Timeout = 5000)>]
 let ``Log appends in order to activity tail`` () =
@@ -95,8 +95,8 @@ let ``RecordTerminal auto-ends open subtasks and clears run state`` () =
     s.Log("p", "msg")
     let now = DateTime.UtcNow
     s.RecordTerminal("p", CompletedRun, now, now.AddMilliseconds(1.0))
-    test <@ s.GetSubtasks("p") = [] @>
-    test <@ s.GetActivityTail("p") = [] @>
+    test <@ List.isEmpty (s.GetSubtasks("p")) @>
+    test <@ List.isEmpty (s.GetActivityTail("p")) @>
 
 [<Fact(Timeout = 5000)>]
 let ``RecordTerminal captures Failed outcome`` () =
@@ -123,8 +123,8 @@ let ``ResetRun clears current subtasks, activity, summary override but keeps his
     s.Log("p", "midway")
     s.SetSummary("p", "override")
     s.ResetRun("p")
-    test <@ s.GetSubtasks("p") = [] @>
-    test <@ s.GetActivityTail("p") = [] @>
+    test <@ List.isEmpty (s.GetSubtasks("p")) @>
+    test <@ List.isEmpty (s.GetActivityTail("p")) @>
     test <@ (s.GetHistory("p")).Length = 1 @>
 
 [<Fact(Timeout = 5000)>]
@@ -157,7 +157,7 @@ let ``RecordTerminal twice does not leak state from first run into second`` () =
     let hist = s.GetHistory("p")
     test <@ hist.Length = 2 @>
     test <@ (List.item 0 hist).ActivityTail = [ "first-run line" ] @>
-    test <@ (List.item 1 hist).ActivityTail = [] @>
+    test <@ List.isEmpty (List.item 1 hist).ActivityTail @>
     test <@ (List.item 1 hist).Summary = None @>
 
 [<Fact(Timeout = 5000)>]
@@ -169,8 +169,8 @@ let ``ResetRun on idle plugin is a no-op and does not touch history`` () =
     // Plugin is now Idle. ResetRun must not throw nor alter history.
     s.ResetRun("p")
     s.ResetRun("p")
-    test <@ s.GetSubtasks("p") = [] @>
-    test <@ s.GetActivityTail("p") = [] @>
+    test <@ List.isEmpty (s.GetSubtasks("p")) @>
+    test <@ List.isEmpty (s.GetActivityTail("p")) @>
     test <@ (s.GetHistory("p")).Length = 1 @>
 
 [<Fact(Timeout = 5000)>]
@@ -202,4 +202,4 @@ let ``Thread-safe under concurrent StartSubtask EndSubtask calls`` () =
                ) |]
 
     Task.WaitAll(tasks)
-    test <@ s.GetSubtasks("p") = [] @>
+    test <@ List.isEmpty (s.GetSubtasks("p")) @>

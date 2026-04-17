@@ -8,19 +8,6 @@ open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Cli.IpcParsing
 
-// Re-export types and pure parsers for existing callers that open IpcOutput.
-type DiagnosticEntry = IpcParsing.DiagnosticEntry
-type DiagnosticsResponse = IpcParsing.DiagnosticsResponse
-type ParsedPluginStatus = IpcParsing.ParsedPluginStatus
-
-let parseStatus = IpcParsing.parseStatus
-let parseStatusMap = IpcParsing.parseStatusMap
-let parsePluginStatusElement = IpcParsing.parsePluginStatusElement
-let parsePluginStatuses = IpcParsing.parsePluginStatuses
-let parseDiagnosticsResponse = IpcParsing.parseDiagnosticsResponse
-let statusOnly = IpcParsing.statusOnly
-let isAllTerminal = IpcParsing.isAllTerminal
-
 /// Render all plugin statuses as a multi-line progress display.
 let renderProgress (statuses: Map<string, PluginStatus>) : string =
     statuses

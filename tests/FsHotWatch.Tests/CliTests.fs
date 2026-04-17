@@ -7,6 +7,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.Cli.DaemonConfig
 open CommandTree
+open FsHotWatch.Cli
 open FsHotWatch.Cli.Program
 open FsHotWatch.Daemon
 open FsHotWatch.Ipc
@@ -367,7 +368,11 @@ let ``CLI plugin status query works against running daemon`` () =
 
     try
         let result = IpcClient.getPluginStatus pipeName "my-lint" |> Async.RunSynchronously
-        test <@ result.Contains("Running") @>
+        let parsed = IpcParsing.parsePluginStatuses result
+
+        match parsed.["my-lint"].Status with
+        | Running _ -> ()
+        | other -> failwithf "expected Running, got %A" other
     finally
         cts.Cancel()
 
@@ -449,7 +454,7 @@ let private fakeIpc () : IpcOps =
       Scan = fun _ _ -> async { return "scan started" }
       ScanStatus = fun _ -> async { return "idle" }
       GetStatus = fun _ -> async { return completedStatusJson }
-      GetPluginStatus = fun _ _ -> async { return "not found" }
+      GetPluginStatus = fun _ _ -> async { return "{}" }
       RunCommand = fun _ _ _ -> async { return "unknown command" }
       GetDiagnostics = fun _ _ -> async { return """{"count": 0, "files": {}}""" }
       WaitForScan = fun _ _ -> async { return "idle" }
@@ -542,7 +547,9 @@ let ``executeCommand Status with plugin name calls getPluginStatus`` () =
                 fun _ name ->
                     async {
                         calledWith <- name
-                        return "Running"
+
+                        return
+                            """{"lint": {"status": {"tag": "running", "since": "2026-01-01T00:00:00Z"}, "subtasks": [], "activityTail": [], "lastRun": null}}"""
                     } }
 
     let result =
