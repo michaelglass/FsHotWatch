@@ -234,13 +234,16 @@ let ``renderProgress shows all plugins`` () =
 
 [<Fact>]
 let ``renderIpcResult with GetDiagnostics format count 0 returns 0`` () =
-    let result = renderIpcResult false """{"count":0,"files":{},"statuses":{}}"""
+    let result =
+        renderIpcResult (fun _ -> []) false """{"count":0,"files":{},"statuses":{}}"""
+
     test <@ result = 0 @>
 
 [<Fact>]
 let ``renderIpcResult with GetDiagnostics format count > 0 returns 1`` () =
     let result =
         renderIpcResult
+            (fun _ -> [])
             false
             """{"count":1,"files":{"src/Foo.fs":[{"plugin":"lint","message":"bad","severity":"warning","line":1,"column":0,"detail":null}]},"statuses":{}}"""
 
@@ -248,22 +251,24 @@ let ``renderIpcResult with GetDiagnostics format count > 0 returns 1`` () =
 
 [<Fact>]
 let ``renderIpcResult with status passed returns 0`` () =
-    let result = renderIpcResult false """{"status":"passed"}"""
+    let result = renderIpcResult (fun _ -> []) false """{"status":"passed"}"""
     test <@ result = 0 @>
 
 [<Fact>]
 let ``renderIpcResult with status failed returns 1`` () =
-    let result = renderIpcResult false """{"status":"failed"}"""
+    let result = renderIpcResult (fun _ -> []) false """{"status":"failed"}"""
     test <@ result = 1 @>
 
 [<Fact>]
 let ``renderIpcResult with error field returns 1`` () =
-    let result = renderIpcResult false """{"error":"something went wrong"}"""
+    let result =
+        renderIpcResult (fun _ -> []) false """{"error":"something went wrong"}"""
+
     test <@ result = 1 @>
 
 [<Fact>]
 let ``renderIpcResult with plain text returns 0`` () =
-    let result = renderIpcResult false "build completed successfully"
+    let result = renderIpcResult (fun _ -> []) false "build completed successfully"
     test <@ result = 0 @>
 
 [<Fact>]
@@ -271,7 +276,7 @@ let ``renderIpcResult with test results JSON containing arrays does not crash`` 
     let json =
         """{"elapsed":"1.5s","projects":[{"project":"TestProject","status":"passed","output":"ok"}]}"""
 
-    let result = renderIpcResult false json
+    let result = renderIpcResult (fun _ -> []) false json
     test <@ result = 0 @>
 
 [<Fact>]
@@ -279,7 +284,7 @@ let ``renderIpcResult with test results JSON with failed project returns 1`` () 
     let json =
         """{"elapsed":"2.0s","projects":[{"project":"FailProject","status":"failed","output":"FAIL: test1"}]}"""
 
-    let result = renderIpcResult false json
+    let result = renderIpcResult (fun _ -> []) false json
     test <@ result = 1 @>
 
 [<Fact>]
