@@ -157,19 +157,8 @@ let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<str
 /// Execute test configs with optional affected classes for filtering.
 /// Handles beforeRun, coverageArgs, process execution, result storage.
 /// rawFilter is a passthrough filter string (from run-tests command), bypassing the template.
-[<NoComparison; NoEquality>]
-type private ExecuteHooks =
-    { StartSubtask: string -> string -> unit
-      EndSubtask: string -> unit
-      Log: string -> unit }
-
-let private noHooks =
-    { StartSubtask = fun _ _ -> ()
-      EndSubtask = fun _ -> ()
-      Log = fun _ -> () }
-
 let private executeTests
-    (hooks: ExecuteHooks)
+    (ctx: PluginCtx<'msg> option)
     (repoRoot: string)
     (beforeRun: (unit -> unit) option)
     (coverageArgs: (string -> string) option)
@@ -235,18 +224,21 @@ let private executeTests
                                     config.Args
 
                             Logging.info "test-prune" $"Running: %s{config.Command} %s{finalArgs}"
-                            hooks.StartSubtask config.Project $"testing {config.Project}"
 
-                            let (success, output) =
-                                runProcess config.Command finalArgs repoRoot config.Environment
+                            let runProc =
+                                async { return runProcess config.Command finalArgs repoRoot config.Environment }
 
-                            hooks.EndSubtask config.Project
+                            let! (success, output) =
+                                match ctx with
+                                | Some c ->
+                                    PluginCtxHelpers.withSubtask c config.Project $"testing {config.Project}" runProc
+                                | None -> runProc
 
                             if success then
-                                hooks.Log $"{config.Project}: passed"
+                                ctx |> Option.iter (fun c -> c.Log $"{config.Project}: passed")
                                 Logging.info "test-prune" $"%s{config.Project}: PASSED"
                             else
-                                hooks.Log $"{config.Project}: failed"
+                                ctx |> Option.iter (fun c -> c.Log $"{config.Project}: failed")
                                 Logging.error "test-prune" $"%s{config.Project}: FAILED"
 
                             if not success then
@@ -448,13 +440,8 @@ let create
                         for (proj, classes) in affectedByProject |> Map.toList do
                             Logging.info "test-prune" $"Affected classes for %s{proj}: %A{classes}"
 
-                    let hooks =
-                        { StartSubtask = ctx.StartSubtask
-                          EndSubtask = ctx.EndSubtask
-                          Log = ctx.Log }
-
                     let! results =
-                        executeTests hooks repoRoot beforeRun coverageArgs afterRun configs affectedByProject None
+                        executeTests (Some ctx) repoRoot beforeRun coverageArgs afterRun configs affectedByProject None
 
                     ctx.EmitTestCompleted(results)
 
@@ -591,7 +578,7 @@ let create
                                     | Ok configs ->
                                         let! results =
                                             executeTests
-                                                noHooks
+                                                None
                                                 repoRoot
                                                 beforeRun
                                                 coverageArgs
