@@ -17,12 +17,7 @@ type DiagnosticEntry =
       Column: int
       Detail: string option }
 
-/// Fully parsed per-plugin status including subtasks, activity tail, and last-run history.
-type ParsedPluginStatus =
-    { Status: PluginStatus
-      Subtasks: Subtask list
-      ActivityTail: string list
-      LastRun: RunRecord option }
+type ParsedPluginStatus = RunOnceOutput.ParsedPluginStatus
 
 /// Parse a status string from IPC into PluginStatus.
 let parseStatus (s: string) : PluginStatus =
@@ -258,22 +253,7 @@ let exitCodeFromResponse (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
 
     if failCount > 0 then 1 else 0
 
-/// Parse a JSON object into a string-to-string map (for status responses).
-/// Used for legacy flat-map status payloads. New structured payloads use parsePluginStatuses.
-let parseStatusJson (json: string) : Map<string, string> =
-    try
-        use doc = JsonDocument.Parse(json)
-
-        [ for prop in doc.RootElement.EnumerateObject() do
-              if prop.Value.ValueKind = JsonValueKind.String then
-                  prop.Name, prop.Value.GetString() ]
-        |> Map.ofList
-    with _ ->
-        Map.empty
-
 /// Render a generic IPC result (status JSON or plain text).
-/// Dispatches on JSON shape: GetDiagnostics format (has "count"), error/status fields, status map, or plain text.
-/// `renderStatuses` is injected so callers choose the progress renderer (compact/verbose).
 let renderIpcResult
     (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
     (noWarnFail: bool)
@@ -367,6 +347,7 @@ let pollAndRender
 
     // Phase 2: Poll status until all terminal
     let mutable prevLineCount = 0
+    let mutable prevRendered = ""
     let mutable allDone = false
 
     while not allDone do
@@ -375,17 +356,17 @@ let pollAndRender
         let plain = statusOnly parsed
 
         if UI.isInteractive then
-            // Move cursor up to overwrite previous lines
-            if prevLineCount > 0 then
-                for _ in 1..prevLineCount do
-                    Console.Error.Write("\x1b[A\x1b[2K")
-
-            // Render current state; track total emitted line count so the next
-            // iteration erases the whole block regardless of per-plugin line height.
             let lines = renderStatuses parsed
             let progress = String.concat "\n" lines
-            eprintfn "%s" progress
-            prevLineCount <- List.length lines
+
+            if progress <> prevRendered then
+                if prevLineCount > 0 then
+                    for _ in 1..prevLineCount do
+                        Console.Error.Write("\x1b[A\x1b[2K")
+
+                eprintfn "%s" progress
+                prevLineCount <- List.length lines
+                prevRendered <- progress
 
         allDone <- isAllTerminal plain
 
