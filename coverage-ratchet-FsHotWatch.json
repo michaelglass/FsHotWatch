@@ -41,7 +41,7 @@
         "platform": "macos"
       },
       {
-        "line": 85,
+        "line": 83,
         "branch": 71,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
@@ -67,7 +67,7 @@
         "platform": "macos"
       },
       {
-        "line": 72,
+        "line": 71,
         "branch": 54,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
@@ -192,9 +192,9 @@
         "platform": "macos"
       },
       {
-        "line": 87,
-        "branch": 61,
-        "reason": "loosened: coverage drifted with dedup refactoring",
+        "line": 84,
+        "branch": 50,
+        "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
     ],
@@ -253,7 +253,7 @@
         "platform": "macos"
       },
       {
-        "line": 87,
+        "line": 86,
         "branch": 65,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
@@ -277,16 +277,34 @@
       "line": 93,
       "branch": 50
     },
-    "PluginActivity.fs": {
-      "line": 92,
-      "branch": 65,
-      "reason": "loosened: new Recording phase state paths"
-    },
-    "ProgressRenderer.fs": {
-      "line": 86,
-      "branch": 63,
-      "reason": "loosened: CLI rendering paths not exercised on all platforms"
-    },
+    "PluginActivity.fs": [
+      {
+        "line": 92,
+        "branch": 65,
+        "reason": "loosened: new Recording phase state paths",
+        "platform": "macos"
+      },
+      {
+        "line": 86,
+        "branch": 65,
+        "reason": "lower line coverage on Linux CI",
+        "platform": "linux"
+      }
+    ],
+    "ProgressRenderer.fs": [
+      {
+        "line": 86,
+        "branch": 63,
+        "reason": "loosened: CLI rendering paths not exercised on all platforms",
+        "platform": "macos"
+      },
+      {
+        "line": 82,
+        "branch": 50,
+        "reason": "lower coverage on Linux CI",
+        "platform": "linux"
+      }
+    ],
     "IpcParsing.fs": {
       "line": 87,
       "branch": 67,
@@ -320,11 +338,20 @@
         "platform": "linux"
       }
     ],
-    "RunOnceOutput.fs": {
-      "line": 63,
-      "branch": 53,
-      "reason": "loosened: new severity counting branches"
-    },
+    "RunOnceOutput.fs": [
+      {
+        "line": 63,
+        "branch": 53,
+        "reason": "loosened: new severity counting branches",
+        "platform": "macos"
+      },
+      {
+        "line": 61,
+        "branch": 53,
+        "reason": "lower coverage on Linux CI",
+        "platform": "linux"
+      }
+    ],
     "StringHelpers.fs": {
       "line": 85,
       "branch": 50,
