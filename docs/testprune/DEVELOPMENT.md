@@ -51,7 +51,10 @@ mise run release-alpha  # Tag an alpha pre-release
 - 4-space indentation
 - VCS: jj (Jujutsu), not git
 - Tests use xUnit v3 with Microsoft Testing Platform v2
-- FSharp.Core 10.1.x pinned explicitly (FCS 43.12.201 dependency)
+- Package versions managed centrally in `Directory.Packages.props` (CPM) with
+  floats enabled and transitive pinning on
+- Restore uses lockfiles (`packages.lock.json` per project); CI runs in
+  locked mode — update locks locally with `dotnet restore --force-evaluate`
 - NU1605 suppressed across projects (FSharp.Core version mismatch with SDK)
 
 ## Shared Tooling

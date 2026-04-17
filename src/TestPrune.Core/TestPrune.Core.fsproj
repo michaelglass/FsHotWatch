@@ -45,10 +45,9 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Update="FSharp.Core" Version="10.1.*" />
-        <PackageReference Include="FSharp.Compiler.Service" Version="43.12.202" />
-        <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.5" />
-        <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.201" PrivateAssets="All" />
+        <PackageReference Include="FSharp.Compiler.Service" />
+        <PackageReference Include="Microsoft.Data.Sqlite" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
     </ItemGroup>
 
 </Project>

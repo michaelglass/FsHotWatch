@@ -37,10 +37,9 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Update="FSharp.Core" Version="10.1.*" />
-        <PackageReference Include="Ionide.ProjInfo" Version="0.74.2" />
-        <PackageReference Include="Ionide.ProjInfo.FCS" Version="0.74.2" />
-        <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.201" PrivateAssets="All" />
+        <PackageReference Include="Ionide.ProjInfo" />
+        <PackageReference Include="Ionide.ProjInfo.FCS" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
     </ItemGroup>
 
 </Project>

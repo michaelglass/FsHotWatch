@@ -1,5 +1,6 @@
 # Claude
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # Build results
 [Bb]in/

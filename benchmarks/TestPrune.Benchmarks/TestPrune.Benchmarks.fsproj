@@ -15,8 +15,4 @@
         <ProjectReference Include="../../src/TestPrune/TestPrune.fsproj" />
     </ItemGroup>
 
-    <ItemGroup>
-        <PackageReference Update="FSharp.Core" Version="10.1.*" />
-    </ItemGroup>
-
 </Project>
