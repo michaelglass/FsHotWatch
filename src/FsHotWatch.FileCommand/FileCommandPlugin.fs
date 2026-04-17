@@ -54,44 +54,50 @@ let create
                             | [] -> $"{nameStr}:startup"
                             | first :: _ -> $"{nameStr}:{System.IO.Path.GetFileName first}"
 
-                        ctx.StartSubtask triggerKey $"running {nameStr}"
+                        return!
+                            PluginCtxHelpers.withSubtask
+                                ctx
+                                triggerKey
+                                $"running {nameStr}"
+                                (async {
+                                    try
+                                        let (success, output) = runProcess command args ctx.RepoRoot []
 
-                        try
-                            let (success, output) = runProcess command args ctx.RepoRoot []
-                            ctx.EndSubtask triggerKey
+                                        let result = if success then Succeeded output else CommandFailed output
 
-                            let result = if success then Succeeded output else CommandFailed output
+                                        if success then
+                                            ctx.CompleteWithSummary $"ran {nameStr}"
+                                            ctx.ClearErrors $"<%s{nameStr}>"
+                                            ctx.ReportStatus(Completed(DateTime.UtcNow))
+                                        else
+                                            ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error output ]
 
-                            if success then
-                                ctx.CompleteWithSummary $"ran {nameStr}"
-                                ctx.ClearErrors $"<%s{nameStr}>"
-                                ctx.ReportStatus(Completed(DateTime.UtcNow))
-                            else
-                                ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error output ]
-                                ctx.ReportStatus(PluginStatus.Failed($"%s{nameStr} failed", DateTime.UtcNow))
+                                            ctx.ReportStatus(
+                                                PluginStatus.Failed($"%s{nameStr} failed", DateTime.UtcNow)
+                                            )
 
-                            ctx.EmitCommandCompleted(
-                                { Name = nameStr
-                                  Outcome =
-                                    if success then
-                                        FsHotWatch.Events.CommandSucceeded output
-                                    else
-                                        FsHotWatch.Events.CommandFailed output }
-                            )
+                                        ctx.EmitCommandCompleted(
+                                            { Name = nameStr
+                                              Outcome =
+                                                if success then
+                                                    FsHotWatch.Events.CommandSucceeded output
+                                                else
+                                                    FsHotWatch.Events.CommandFailed output }
+                                        )
 
-                            return { LastResult = result }
-                        with ex ->
-                            ctx.EndSubtask triggerKey
-                            ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error ex.Message ]
+                                        return { LastResult = result }
+                                    with ex ->
+                                        ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error ex.Message ]
 
-                            ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+                                        ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
 
-                            ctx.EmitCommandCompleted(
-                                { Name = nameStr
-                                  Outcome = FsHotWatch.Events.CommandFailed ex.Message }
-                            )
+                                        ctx.EmitCommandCompleted(
+                                            { Name = nameStr
+                                              Outcome = FsHotWatch.Events.CommandFailed ex.Message }
+                                        )
 
-                            return { LastResult = CommandFailed ex.Message }
+                                        return { LastResult = CommandFailed ex.Message }
+                                })
                 | _ -> return state
             }
       Commands =
