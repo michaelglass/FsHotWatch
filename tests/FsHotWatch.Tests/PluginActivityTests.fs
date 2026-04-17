@@ -19,7 +19,7 @@ let ``EndSubtask removes the subtask`` () =
     let s = State()
     s.StartSubtask("p", "k1", "label 1")
     s.EndSubtask("p", "k1")
-    test <@ s.GetSubtasks("p") = [] @>
+    test <@ List.isEmpty (s.GetSubtasks("p")) @>
 
 [<Fact(Timeout = 5000)>]
 let ``Log appends in order to activity tail`` () =
@@ -95,8 +95,8 @@ let ``RecordTerminal auto-ends open subtasks and clears run state`` () =
     s.Log("p", "msg")
     let now = DateTime.UtcNow
     s.RecordTerminal("p", CompletedRun, now, now.AddMilliseconds(1.0))
-    test <@ s.GetSubtasks("p") = [] @>
-    test <@ s.GetActivityTail("p") = [] @>
+    test <@ List.isEmpty (s.GetSubtasks("p")) @>
+    test <@ List.isEmpty (s.GetActivityTail("p")) @>
 
 [<Fact(Timeout = 5000)>]
 let ``RecordTerminal captures Failed outcome`` () =
@@ -123,8 +123,8 @@ let ``ResetRun clears current subtasks, activity, summary override but keeps his
     s.Log("p", "midway")
     s.SetSummary("p", "override")
     s.ResetRun("p")
-    test <@ s.GetSubtasks("p") = [] @>
-    test <@ s.GetActivityTail("p") = [] @>
+    test <@ List.isEmpty (s.GetSubtasks("p")) @>
+    test <@ List.isEmpty (s.GetActivityTail("p")) @>
     test <@ (s.GetHistory("p")).Length = 1 @>
 
 [<Fact(Timeout = 5000)>]
@@ -157,4 +157,4 @@ let ``Thread-safe under concurrent StartSubtask EndSubtask calls`` () =
                ) |]
 
     Task.WaitAll(tasks)
-    test <@ s.GetSubtasks("p") = [] @>
+    test <@ List.isEmpty (s.GetSubtasks("p")) @>
