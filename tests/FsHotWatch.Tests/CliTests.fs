@@ -437,11 +437,17 @@ let private fakeConfig: DaemonConfiguration =
       FileCommands = []
       Exclude = [] }
 
+/// Structured plugin-status JSON in the shape expected by parsePluginStatuses
+/// (object per plugin, not a bare string). Using the bare-string shape made the
+/// pollAndRender loop hang because isAllTerminal on an empty parse is false.
+let private completedStatusJson =
+    """{"plugin": {"status": "Completed at 2026-01-01T00:00:00Z", "subtasks": [], "activityTail": [], "lastRun": null}}"""
+
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
       Scan = fun _ _ -> async { return "scan started" }
       ScanStatus = fun _ -> async { return "idle" }
-      GetStatus = fun _ -> async { return """{"plugin": "Completed at 2026-01-01T00:00:00Z"}""" }
+      GetStatus = fun _ -> async { return completedStatusJson }
       GetPluginStatus = fun _ _ -> async { return "not found" }
       RunCommand = fun _ _ _ -> async { return "unknown command" }
       GetDiagnostics = fun _ _ -> async { return """{"count": 0, "files": {}}""" }
@@ -817,7 +823,7 @@ let ``executeCommand Check waits for scan and returns errors`` () =
                 fun _ ->
                     async {
                         getStatusCalled <- true
-                        return """{"check": "Completed at 2026-01-01T00:00:00Z"}"""
+                        return completedStatusJson
                     }
             GetDiagnostics =
                 fun _ _ ->
