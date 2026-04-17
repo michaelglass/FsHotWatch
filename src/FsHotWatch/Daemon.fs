@@ -88,6 +88,54 @@ let private fingerprintFsprojFiles (repoRoot: string) =
     |> List.map (fun f -> f, File.GetLastWriteTimeUtc(f).Ticks)
     |> Set.ofList
 
+let private projInfoLogDir (repoRoot: string) =
+    Path.Combine(FsHwPaths.root repoRoot, "logs", "projinfo")
+
+let private isTruthyEnv (name: string) =
+    match Environment.GetEnvironmentVariable(name) with
+    | null
+    | "" -> false
+    | v ->
+        let v = v.Trim()
+
+        not (v.Equals("0", StringComparison.OrdinalIgnoreCase))
+        && not (v.Equals("false", StringComparison.OrdinalIgnoreCase))
+
+/// Dumps source files, OtherOptions, and referenced project outputs to
+/// `<logDir>/<ProjectName>.opts.txt`. Returns the `-r:` reference count computed
+/// during the single pass (so callers don't need to re-iterate OtherOptions).
+let private dumpProjectOptions (logDir: string) (fcsOptions: FSharpProjectOptions) : int =
+    let mutable refCount = 0
+
+    try
+        let name = Path.GetFileNameWithoutExtension(fcsOptions.ProjectFileName)
+        let file = Path.Combine(logDir, $"%s{name}.opts.txt")
+
+        let otherLines =
+            fcsOptions.OtherOptions
+            |> Array.map (fun o ->
+                if o.StartsWith("-r:") then
+                    refCount <- refCount + 1
+
+                $"  %s{o}")
+
+        let lines =
+            seq {
+                yield $"# Project: %s{fcsOptions.ProjectFileName}"
+                yield $"# SourceFiles ({fcsOptions.SourceFiles.Length}):"
+                yield! fcsOptions.SourceFiles |> Array.map (fun f -> $"  %s{f}")
+                yield $"# OtherOptions ({fcsOptions.OtherOptions.Length}):"
+                yield! otherLines
+                yield $"# ReferencedProjects ({fcsOptions.ReferencedProjects.Length}):"
+                yield! fcsOptions.ReferencedProjects |> Array.map (fun r -> $"  %s{r.OutputFile}")
+            }
+
+        File.WriteAllLines(file, lines)
+    with ex ->
+        Logging.debug "discover" $"Could not dump options for %s{fcsOptions.ProjectFileName}: %s{ex.Message}"
+
+    refCount
+
 /// Discover .fsproj files and register them with the graph and pipeline.
 /// Uses Ionide.ProjInfo for MSBuild design-time evaluation to get real
 /// assembly references, NuGet packages, and compiler flags.
@@ -114,11 +162,42 @@ let private discoverAndRegisterProjects
         graph.PrepareForRediscovery()
         pipeline.PrepareForRediscovery()
 
+        let logDir = projInfoLogDir repoRoot
+        Directory.CreateDirectory(logDir) |> ignore
+
+        let binlogDir =
+            if isTruthyEnv "FSHW_PROJINFO_BINLOG" then
+                let dir = Path.Combine(logDir, "binlogs")
+                Directory.CreateDirectory(dir) |> ignore
+                Some(DirectoryInfo(dir))
+            else
+                None
+
+        // Subscribe to per-project load notifications so failures (ProjectNotRestored,
+        // ReferencesNotLoaded, etc.) surface instead of being silently dropped from the
+        // LoadProjects return seq. Without this, a project that fails design-time eval
+        // just doesn't appear in `loaded` — callers never learn why references are missing.
+        use _sub =
+            loader.Notifications.Subscribe(fun state ->
+                match state with
+                | Types.WorkspaceProjectState.Failed(proj, reason) ->
+                    Logging.error "discover" $"LoadProject FAILED for %s{Path.GetFileName proj}: %A{reason}"
+                | Types.WorkspaceProjectState.Loading proj ->
+                    Logging.debug "discover" $"Loading %s{Path.GetFileName proj}"
+                | Types.WorkspaceProjectState.Loaded _ -> ())
+
         let sw = System.Diagnostics.Stopwatch.StartNew()
         Logging.info "discover" "Loading project options via MSBuild evaluation..."
 
         try
-            let loaded = loader.LoadProjects(fsprojFiles) |> Seq.toList
+            let loaded =
+                match binlogDir with
+                | Some dir ->
+                    Logging.info "discover" $"Binlog capture enabled: %s{dir.FullName}"
+
+                    loader.LoadProjects(fsprojFiles, [], BinaryLogGeneration.Within dir)
+                    |> Seq.toList
+                | None -> loader.LoadProjects(fsprojFiles) |> Seq.toList
 
             // Register projects in the graph using Ionide-derived data (not XML parse)
             // so source file lists match what FCS sees (handles globs, conditionals, generated files)
@@ -145,10 +224,11 @@ let private discoverAndRegisterProjects
                     try
                         let absProject = Path.GetFullPath(fcsOptions.ProjectFileName)
                         pipeline.RegisterProject(absProject, fcsOptions)
+                        let refCount = dumpProjectOptions logDir fcsOptions
 
                         Logging.info
                             "discover"
-                            $"Registered %s{Path.GetFileName fcsOptions.ProjectFileName} (%d{fcsOptions.SourceFiles.Length} files, %d{fcsOptions.OtherOptions.Length} opts)"
+                            $"Registered %s{Path.GetFileName fcsOptions.ProjectFileName} (%d{fcsOptions.SourceFiles.Length} files, %d{fcsOptions.OtherOptions.Length} opts, %d{refCount} refs)"
                     with ex ->
                         Logging.error
                             "discover"
