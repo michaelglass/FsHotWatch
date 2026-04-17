@@ -9,8 +9,8 @@
       },
       {
         "line": 83,
-        "branch": 75,
-        "reason": "reflection-based CliContext branches vary by platform; parse-only path adds untested branches on Linux",
+        "branch": 72,
+        "reason": "reflection-based CliContext branches vary by platform; parse-only path + knownNonAnalyzerPrefixes filter both add untested branches on Linux",
         "platform": "linux"
       }
     ],
