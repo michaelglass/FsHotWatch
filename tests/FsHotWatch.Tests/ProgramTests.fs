@@ -26,8 +26,13 @@ let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
       Scan = fun _ _ -> async { return "scan started" }
       ScanStatus = fun _ -> async { return "idle" }
-      GetStatus = fun _ -> async { return """{"plugin": "Completed at 2026-01-01T00:00:00Z"}""" }
-      GetPluginStatus = fun _ _ -> async { return "not found" }
+      GetStatus =
+        fun _ ->
+            async {
+                return
+                    """{"plugin": {"status": {"tag": "completed", "at": "2026-01-01T00:00:00Z"}, "subtasks": [], "activityTail": [], "lastRun": null}}"""
+            }
+      GetPluginStatus = fun _ _ -> async { return "{}" }
       RunCommand = fun _ _ _ -> async { return "unknown command" }
       GetDiagnostics = fun _ _ -> async { return """{"count": 0, "files": {}}""" }
       WaitForScan = fun _ _ -> async { return "idle" }

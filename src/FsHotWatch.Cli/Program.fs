@@ -416,7 +416,7 @@ let executeCommand
     | Status None ->
         withIpc (fun () ->
             let json = ipc.GetStatus pipeName |> Async.RunSynchronously
-            let parsed = IpcOutput.parsePluginStatuses json
+            let parsed = IpcParsing.parsePluginStatuses json
 
             let lines =
                 ProgressRenderer.renderAll ProgressRenderer.Verbose DateTime.UtcNow parsed
@@ -426,8 +426,14 @@ let executeCommand
     | Status(Some pluginName) ->
         withIpc (fun () ->
             let result = ipc.GetPluginStatus pipeName pluginName |> Async.RunSynchronously
-            let plain = IpcOutput.parseStatusMap (Map.ofList [ pluginName, result ])
-            eprintfn "%s" (IpcOutput.renderProgress plain)
+            let parsed = IpcParsing.parsePluginStatuses result
+
+            if Map.isEmpty parsed then
+                eprintfn "not found: %s" pluginName
+            else
+                let plain = IpcParsing.statusOnly parsed
+                eprintfn "%s" (IpcOutput.renderProgress plain)
+
             0)
     | Build flags when isRunOnce flags ->
         let buildConfig =
@@ -537,7 +543,7 @@ let executeCommand
         withDaemon (fun () ->
             withIpc (fun () ->
                 let errorsJson = ipc.GetDiagnostics pipeName "" |> Async.RunSynchronously
-                let resp = IpcOutput.parseDiagnosticsResponse errorsJson
+                let resp = IpcParsing.parseDiagnosticsResponse errorsJson
                 eprintfn "%s" (IpcOutput.formatDiagnosticsResponse resp)
                 IpcOutput.exitCodeFromResponse noWarnFail resp))
     | InvalidateCache filePath ->
