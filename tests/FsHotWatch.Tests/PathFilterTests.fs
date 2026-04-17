@@ -178,3 +178,39 @@ let ``IgnoreFilterCache returns cached result when files unchanged`` () =
         let filter2 = cache.Get(tmpDir)
         // Same object reference — cache hit, not reloaded
         test <@ obj.ReferenceEquals(filter1, filter2) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``IgnoreFilterCache is safe under concurrent Get`` () =
+    withTempDir "cache-concurrent" (fun tmpDir ->
+        File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.log\n")
+        let cache = IgnoreFilterCache()
+        let logPath = Path.Combine(tmpDir, "x.log")
+        let fsPath = Path.Combine(tmpDir, "y.fs")
+
+        let threadCount = 16
+        let iterations = 500
+        use ready = new Barrier(threadCount)
+        let errors = ResizeArray<exn>()
+        let errLock = obj ()
+
+        let work () =
+            try
+                ready.SignalAndWait()
+
+                for _ in 1..iterations do
+                    let f = cache.Get(tmpDir)
+
+                    if not (f logPath) || f fsPath then
+                        failwith "unexpected filter result"
+            with ex ->
+                lock errLock (fun () -> errors.Add(ex))
+
+        let threads = [| for _ in 1..threadCount -> Thread(ThreadStart(work)) |]
+
+        for t in threads do
+            t.Start()
+
+        for t in threads do
+            t.Join()
+
+        test <@ errors.Count = 0 @>)

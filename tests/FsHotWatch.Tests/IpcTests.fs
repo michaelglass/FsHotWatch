@@ -7,6 +7,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Ipc
+open FsHotWatch.Cli
 open FsHotWatch.PluginHost
 open FsHotWatch.PluginFramework
 open FsHotWatch.Events
@@ -129,7 +130,9 @@ let ``GetPluginStatus returns specific plugin's status`` () =
         let result =
             IpcClient.getPluginStatus pipeName "status-plugin" |> Async.RunSynchronously
 
-        test <@ result = "Idle" @>
+        let parsed = IpcParsing.parsePluginStatuses result
+        test <@ parsed.ContainsKey("status-plugin") @>
+        test <@ parsed.["status-plugin"].Status = Idle @>
     finally
         cts.Cancel()
 
@@ -153,7 +156,8 @@ let ``GetPluginStatus returns not found for unknown plugin`` () =
         let result =
             IpcClient.getPluginStatus pipeName "nonexistent" |> Async.RunSynchronously
 
-        test <@ result = "not found" @>
+        let parsed = IpcParsing.parsePluginStatuses result
+        test <@ Map.isEmpty parsed @>
     finally
         cts.Cancel()
 
@@ -283,14 +287,35 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
 
     try
         let result = IpcClient.getStatus pipeName |> Async.RunSynchronously
+        // Status field is a tagged JSON variant per plugin.
         test <@ result.Contains("idle-p") @>
-        test <@ result.Contains("Idle") @>
+        test <@ result.Contains("\"tag\":\"idle\"") @>
         test <@ result.Contains("running-p") @>
-        test <@ result.Contains("Running since") @>
+        test <@ result.Contains("\"tag\":\"running\"") @>
         test <@ result.Contains("completed-p") @>
-        test <@ result.Contains("Completed at") @>
+        test <@ result.Contains("\"tag\":\"completed\"") @>
         test <@ result.Contains("failed-p") @>
+        test <@ result.Contains("\"tag\":\"failed\"") @>
         test <@ result.Contains("something broke") @>
+
+        // Round-trip: consumer parser should recover the original DU values.
+        let parsed = FsHotWatch.Cli.IpcParsing.parsePluginStatuses result
+
+        match parsed.["idle-p"].Status with
+        | Idle -> ()
+        | other -> failwithf "expected Idle, got %A" other
+
+        match parsed.["running-p"].Status with
+        | Running _ -> ()
+        | other -> failwithf "expected Running, got %A" other
+
+        match parsed.["completed-p"].Status with
+        | Completed _ -> ()
+        | other -> failwithf "expected Completed, got %A" other
+
+        match parsed.["failed-p"].Status with
+        | Failed(msg, _) -> test <@ msg = "something broke" @>
+        | other -> failwithf "expected Failed, got %A" other
     finally
         cts.Cancel()
 
@@ -346,10 +371,21 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
     let target = DaemonRpcTarget(defaultRpcConfig host)
 
     let json = target.GetStatus()
-    test <@ json.Contains("Idle") @>
-    test <@ json.Contains("Running since") @>
-    test <@ json.Contains("Completed at") @>
+    test <@ json.Contains("\"tag\":\"idle\"") @>
+    test <@ json.Contains("\"tag\":\"running\"") @>
+    test <@ json.Contains("\"tag\":\"completed\"") @>
+    test <@ json.Contains("\"tag\":\"failed\"") @>
     test <@ json.Contains("oops") @>
+
+    let parsed = FsHotWatch.Cli.IpcParsing.parsePluginStatuses json
+
+    match parsed.["a"].Status with
+    | Idle -> ()
+    | other -> failwithf "expected Idle, got %A" other
+
+    match parsed.["d"].Status with
+    | Failed(msg, _) -> test <@ msg = "oops" @>
+    | other -> failwithf "expected Failed, got %A" other
 
 [<Fact(Timeout = 5000)>]
 let ``DaemonRpcTarget.RunCommand returns unknown command for missing command`` () =
@@ -439,9 +475,16 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
 
-    test <@ target.GetPluginStatus("idle-test") = "Idle" @>
-    test <@ (target.GetPluginStatus("failed-test")).Contains("bad") @>
-    test <@ target.GetPluginStatus("no-such") = "not found" @>
+    let getParsed name =
+        IpcParsing.parsePluginStatuses (target.GetPluginStatus(name))
+
+    test <@ (getParsed "idle-test").["idle-test"].Status = Idle @>
+
+    match (getParsed "failed-test").["failed-test"].Status with
+    | Failed(msg, _) -> test <@ msg = "bad" @>
+    | other -> failwithf "expected Failed, got %A" other
+
+    test <@ Map.isEmpty (getParsed "no-such") @>
 
 [<Fact(Timeout = 5000)>]
 let ``WaitForScan resolves immediately when generation already advanced`` () =
@@ -750,7 +793,13 @@ let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
     test <@ json.Contains("\"count\":0") @>
     test <@ json.Contains("\"statuses\"") @>
     test <@ json.Contains("test-prune") @>
-    test <@ json.Contains("Failed") @>
+    test <@ json.Contains("\"tag\":\"failed\"") @>
+
+    let resp = FsHotWatch.Cli.IpcParsing.parseDiagnosticsResponse json
+
+    match resp.Statuses.["test-prune"].Status with
+    | Failed(msg, _) -> test <@ msg.Contains("2 failed") @>
+    | other -> failwithf "expected Failed, got %A" other
 
 [<Fact(Timeout = 10000)>]
 let ``WaitForComplete times out when plugin stays Running`` () =

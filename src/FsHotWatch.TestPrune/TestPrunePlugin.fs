@@ -849,7 +849,7 @@ let create
                 | Some commitId ->
                     match event with
                     | Custom _ -> None
-                    | FileChecked _ -> Some commitId
+                    | FileChecked _ -> Some(ContentHash.create commitId)
                     | BuildCompleted _ ->
                         let symbolsHash =
                             changedSymbolsRef
@@ -858,7 +858,7 @@ let create
                             |> String.concat "|"
                             |> FsHotWatch.CheckCache.sha256Hex
 
-                        Some $"{commitId}:{symbolsHash}"
-                    | _ -> Some commitId)
+                        Some(ContentHash.create $"{commitId}:{symbolsHash}")
+                    | _ -> Some(ContentHash.create commitId))
         | None -> None
       Teardown = None }

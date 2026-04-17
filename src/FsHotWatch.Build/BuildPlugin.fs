@@ -12,19 +12,36 @@ open FsHotWatch.PluginFramework
 open FsHotWatch.StringHelpers
 
 type BuildOutcome =
-    | NotBuilt
     | BuildPassed of output: string
-    | BuildOutputFailed of output: string
+    | BuildOutputFailed of outputs: string list
 
 type BuildPhase =
-    | IdlePhase of Lifecycle<Idle, BuildOutcome> * pendingFiles: FileChangeKind list
-    | RunningPhase of Lifecycle<Running, BuildOutcome>
+    | IdlePhase of Lifecycle<Idle, BuildOutcome option> * pendingFiles: FileChangeKind list
+    | RunningPhase of Lifecycle<Running, BuildOutcome option>
 
 type BuildState =
     { Phase: BuildPhase
       SatisfiedDeps: Set<string> }
 
 type BuildMsg = BuildDone of BuildOutcome
+
+/// Pure decision logic: given a subprocess's success flag and combined output,
+/// determine the BuildOutcome and the list of ErrorEntry diagnostics to surface.
+/// On failure with no parsed MSBuild diagnostics, the raw output is wrapped as
+/// a single error entry so callers always have something to report.
+let decideBuildOutcome (success: bool) (output: string) : BuildOutcome * ErrorEntry list =
+    let parsed = BuildDiagnostics.parseMSBuildDiagnostics output
+
+    if success then
+        BuildPassed output, parsed
+    else
+        let entries =
+            if parsed.IsEmpty then
+                [ ErrorEntry.error output ]
+            else
+                parsed
+
+        BuildOutputFailed [ output ], entries
 
 let create
     (command: string)
@@ -57,7 +74,27 @@ let create
         |> Array.filter (fun line -> line.Contains(" -> ") && not (line.Contains("error")))
         |> Array.length
 
-    let startBuild (ctx: PluginCtx<BuildMsg>) (idle: Lifecycle<Idle, BuildOutcome>) =
+    let applyBuildOutcome (ctx: PluginCtx<BuildMsg>) (outcome: BuildOutcome) (entries: ErrorEntry list) =
+        match outcome with
+        | BuildPassed out ->
+            let n = countBuiltProjects out
+            let summary = if n > 0 then $"built {n} projects" else "build succeeded"
+            ctx.Log summary
+            ctx.CompleteWithSummary summary
+
+            if entries.IsEmpty then
+                ctx.ClearErrors "<build>"
+            else
+                ctx.ReportErrors "<build>" entries
+
+            ctx.EmitBuildCompleted(BuildSucceeded)
+        | BuildOutputFailed outputs ->
+            ctx.ReportErrors "<build>" entries
+            ctx.EmitBuildCompleted(BuildFailed outputs)
+
+        ctx.Post(BuildDone outcome)
+
+    let startBuild (ctx: PluginCtx<BuildMsg>) (idle: Lifecycle<Idle, BuildOutcome option>) =
         ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
         let running = Lifecycle.start idle
         ctx.Log $"Running: %s{buildCommand} %s{buildArgs}"
@@ -69,41 +106,20 @@ let create
             (async {
                 try
                     let (success, output) = runProcess buildCommand buildArgs ctx.RepoRoot env
-                    let parsed = BuildDiagnostics.parseMSBuildDiagnostics output
+                    let (outcome, entries) = decideBuildOutcome success output
 
-                    if success then
-                        let n = countBuiltProjects output
-
-                        let summary = if n > 0 then $"built {n} projects" else "build succeeded"
-
-                        ctx.Log summary
-                        ctx.CompleteWithSummary summary
-
-                        if parsed.IsEmpty then
-                            ctx.ClearErrors "<build>"
-                        else
-                            ctx.ReportErrors "<build>" parsed
-
-                        ctx.EmitBuildCompleted(BuildSucceeded)
-                        ctx.Post(BuildDone(BuildPassed output))
-                    else
+                    match outcome with
+                    | BuildOutputFailed _ ->
                         ctx.Log "Build FAILED"
                         error "build" "Build FAILED"
+                    | _ -> ()
 
-                        let entries =
-                            if parsed.IsEmpty then
-                                [ ErrorEntry.error output ]
-                            else
-                                parsed
-
-                        ctx.ReportErrors "<build>" entries
-                        ctx.EmitBuildCompleted(BuildFailed [ output ])
-                        ctx.Post(BuildDone(BuildOutputFailed output))
+                    applyBuildOutcome ctx outcome entries
                 with ex ->
                     ctx.ReportErrors "<build>" [ ErrorEntry.error ex.Message ]
 
                     ctx.EmitBuildCompleted(BuildFailed [ ex.Message ])
-                    ctx.Post(BuildDone(BuildOutputFailed ex.Message))
+                    ctx.Post(BuildDone(BuildOutputFailed [ ex.Message ]))
             })
         |> Async.Start
 
@@ -112,7 +128,7 @@ let create
 
     let startTemplateBuild
         (ctx: PluginCtx<BuildMsg>)
-        (idle: Lifecycle<Idle, BuildOutcome>)
+        (idle: Lifecycle<Idle, BuildOutcome option>)
         (template: string)
         (files: string list)
         =
@@ -165,41 +181,28 @@ let create
                                 error "build" $"Template build exception for %s{rootStr}: %s{ex.Message}"
                                 failures <- ex.Message :: failures
 
-                        let combinedOutput = outputs |> List.rev |> String.concat "\n"
+                        let failedOutputs = failures |> List.rev
 
-                        if failures.IsEmpty then
-                            let n = countBuiltProjects combinedOutput
-
-                            let summary = if n > 0 then $"built {n} projects" else "build succeeded"
-
-                            ctx.Log summary
-                            ctx.CompleteWithSummary summary
-                            let parsed = BuildDiagnostics.parseMSBuildDiagnostics combinedOutput
-
-                            if parsed.IsEmpty then
-                                ctx.ClearErrors "<build>"
+                        let (outcome, entries) =
+                            if failures.IsEmpty then
+                                let combinedOutput = outputs |> List.rev |> String.concat "\n"
+                                decideBuildOutcome true combinedOutput
                             else
-                                ctx.ReportErrors "<build>" parsed
+                                let failedText = failedOutputs |> String.concat "\n"
+                                let parsed = BuildDiagnostics.parseMSBuildDiagnostics failedText
 
-                            ctx.EmitBuildCompleted(BuildSucceeded)
-                            ctx.Post(BuildDone(BuildPassed combinedOutput))
-                        else
-                            let errors = failures |> List.rev
+                                let entries =
+                                    if parsed.IsEmpty then
+                                        failedOutputs |> List.map ErrorEntry.error
+                                    else
+                                        parsed
 
-                            let parsed = BuildDiagnostics.parseMSBuildDiagnostics (errors |> String.concat "\n")
+                                BuildOutputFailed failedOutputs, entries
 
-                            let entries =
-                                if parsed.IsEmpty then
-                                    errors |> List.map ErrorEntry.error
-                                else
-                                    parsed
-
-                            ctx.ReportErrors "<build>" entries
-                            ctx.EmitBuildCompleted(BuildFailed errors)
-                            ctx.Post(BuildDone(BuildOutputFailed(errors |> String.concat "\n")))
+                        applyBuildOutcome ctx outcome entries
                     with ex ->
                         error "build" $"Unexpected error: %s{ex.Message}"
-                        ctx.Post(BuildDone(BuildOutputFailed ex.Message))
+                        ctx.Post(BuildDone(BuildOutputFailed [ ex.Message ]))
                 })
             |> Async.Start
 
@@ -209,7 +212,7 @@ let create
     let handleSourceChanged
         (ctx: PluginCtx<BuildMsg>)
         (state: BuildState)
-        (idle: Lifecycle<Idle, BuildOutcome>)
+        (idle: Lifecycle<Idle, BuildOutcome option>)
         (files: string list)
         =
         let allTestFiles = not files.IsEmpty && files |> List.forall isTestFile
@@ -230,13 +233,17 @@ let create
                 { (startBuild ctx idle) with
                     SatisfiedDeps = state.SatisfiedDeps }
 
-    let handleProjectChanged (ctx: PluginCtx<BuildMsg>) (state: BuildState) (idle: Lifecycle<Idle, BuildOutcome>) =
+    let handleProjectChanged
+        (ctx: PluginCtx<BuildMsg>)
+        (state: BuildState)
+        (idle: Lifecycle<Idle, BuildOutcome option>)
+        =
         { (startBuild ctx idle) with
             SatisfiedDeps = state.SatisfiedDeps }
 
     { Name = PluginName.create "build"
       Init =
-        { Phase = IdlePhase(Lifecycle.create NotBuilt, [])
+        { Phase = IdlePhase(Lifecycle.create None, [])
           SatisfiedDeps = Set.empty }
       Update =
         fun ctx state event ->
@@ -295,14 +302,13 @@ let create
                     return handleSourceChanged ctx state idle files
                 | FileChanged(ProjectChanged _), IdlePhase(idle, _) -> return handleProjectChanged ctx state idle
                 | Custom(BuildDone outcome), RunningPhase running ->
-                    let idle = Lifecycle.complete outcome running
+                    let idle = Lifecycle.complete (Some outcome) running
 
                     match outcome with
                     | BuildPassed _ -> ctx.ReportStatus(Completed(DateTime.UtcNow))
-                    | BuildOutputFailed output ->
-                        let summary = truncateOutput 5 output
+                    | BuildOutputFailed outputs ->
+                        let summary = outputs |> String.concat "\n" |> truncateOutput 5
                         ctx.ReportStatus(PluginStatus.Failed($"Build failed: %s{summary}", DateTime.UtcNow))
-                    | NotBuilt -> ()
 
                     return
                         { state with
@@ -323,19 +329,19 @@ let create
                       | RunningPhase running -> Lifecycle.value running
 
                   match lastResult with
-                  | BuildPassed output ->
+                  | Some(BuildPassed output) ->
                       return
                           JsonSerializer.Serialize(
                               {| status = "passed"
                                  output = truncateOutput 200 output |}
                           )
-                  | BuildOutputFailed output ->
+                  | Some(BuildOutputFailed outputs) ->
                       return
                           JsonSerializer.Serialize(
                               {| status = "failed"
-                                 output = truncateOutput 200 output |}
+                                 output = outputs |> String.concat "\n" |> truncateOutput 200 |}
                           )
-                  | NotBuilt -> return JsonSerializer.Serialize({| status = "not run" |})
+                  | None -> return JsonSerializer.Serialize({| status = "not run" |})
               } ]
       Subscriptions =
         Set.ofList (

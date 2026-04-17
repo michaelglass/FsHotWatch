@@ -42,6 +42,7 @@
     <Compile Include="DaemonConfigTests.fs" />
     <Compile Include="InitConfigTests.fs" />
     <Compile Include="RunOnceOutputTests.fs" />
+    <Compile Include="IpcParsingTests.fs" />
     <Compile Include="IpcOutputTests.fs" />
     <Compile Include="ProgressRendererTests.fs" />
     <Compile Include="ActivityIntegrationTests.fs" />

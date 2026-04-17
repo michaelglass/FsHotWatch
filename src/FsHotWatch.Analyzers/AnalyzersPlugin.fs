@@ -253,10 +253,10 @@ let create
                     getId ()
                     |> Option.map (fun id ->
                         match result.CheckResults with
-                        | ParseOnly -> id + ":parse-only"
-                        | FullCheck _ -> id)
+                        | ParseOnly -> ContentHash.create (id + ":parse-only")
+                        | FullCheck _ -> ContentHash.create id)
                 | Custom _ -> None
-                | _ -> getId ())
+                | _ -> getId () |> Option.map ContentHash.create)
       Teardown =
         Some(fun () ->
             cts.Cancel()

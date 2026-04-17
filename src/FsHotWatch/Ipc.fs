@@ -21,12 +21,30 @@ open FsHotWatch.ErrorLedger
 
 let private severityToString = DiagnosticSeverity.toString
 
-let private formatStatus (status: PluginStatus) =
+/// Serialize PluginStatus as a tagged JSON variant so consumers can round-trip
+/// the discriminated union without string parsing.
+let private statusPayload (status: PluginStatus) : obj =
     match status with
-    | Idle -> "Idle"
-    | Running since -> $"Running since {since:O}"
-    | Completed at -> $"Completed at {at:O}"
-    | Failed(error, at) -> $"Failed at {at:O}: {error}"
+    | Idle -> {| tag = "idle" |} :> obj
+    | Running since ->
+        {| tag = "running"
+           since = since.ToString("O") |}
+        :> obj
+    | Completed at ->
+        {| tag = "completed"
+           at = at.ToString("O") |}
+        :> obj
+    | Failed(error, at) ->
+        {| tag = "failed"
+           error = error
+           at = at.ToString("O") |}
+        :> obj
+
+/// Serialize RunOutcome as a tagged JSON variant.
+let private outcomePayload (outcome: RunOutcome) : obj =
+    match outcome with
+    | CompletedRun -> {| tag = "completed" |} :> obj
+    | FailedRun e -> {| tag = "failed"; error = e |} :> obj
 
 let private pluginStatusPayload (host: PluginHost) (name: string) (status: PluginStatus) : obj =
     let snap = host.GetActivitySnapshot(name)
@@ -43,11 +61,6 @@ let private pluginStatusPayload (host: PluginHost) (name: string) (status: Plugi
         match snap.LastRun with
         | None -> null
         | Some r ->
-            let outcomeStr, errorStr =
-                match r.Outcome with
-                | CompletedRun -> "Completed", (null: obj)
-                | FailedRun e -> "Failed", (box e)
-
             let summary =
                 match r.Summary with
                 | Some s -> box s
@@ -55,13 +68,12 @@ let private pluginStatusPayload (host: PluginHost) (name: string) (status: Plugi
 
             {| startedAt = r.StartedAt.ToString("O")
                elapsedMs = int64 r.Elapsed.TotalMilliseconds
-               outcome = outcomeStr
+               outcome = outcomePayload r.Outcome
                summary = summary
-               activityTail = r.ActivityTail
-               error = errorStr |}
+               activityTail = r.ActivityTail |}
             :> obj
 
-    {| status = formatStatus status
+    {| status = statusPayload status
        subtasks = subtasks
        activityTail = snap.ActivityTail
        lastRun = lastRun |}
@@ -94,11 +106,15 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
 
         JsonSerializer.Serialize(entries)
 
-    /// Returns a single plugin's status or "not found".
+    /// Returns a single plugin's status as a single-entry tagged JSON map,
+    /// or an empty map JSON object when the plugin is not registered.
     member _.GetPluginStatus(pluginName: string) : string =
         match config.Host.GetStatus(pluginName) with
-        | Some status -> formatStatus status
-        | None -> "not found"
+        | Some status ->
+            let entry = pluginStatusPayload config.Host pluginName status
+            let map = Map.ofList [ pluginName, entry ]
+            JsonSerializer.Serialize(map)
+        | None -> "{}"
 
     /// Runs a registered command by name and returns the result or "unknown command".
     member _.RunCommand(name: string, argsJson: string) : Task<string> =
@@ -187,10 +203,7 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
             let running =
                 statuses
                 |> Map.toList
-                |> List.choose (fun (name, s) ->
-                    match s with
-                    | Events.Running _ -> Some name
-                    | _ -> None)
+                |> List.choose (fun (name, s) -> if Events.PluginStatus.isTerminal s then None else Some name)
 
             match running with
             | [] -> Logging.info "rpc" $"WaitForComplete() called — all plugins already terminal"
