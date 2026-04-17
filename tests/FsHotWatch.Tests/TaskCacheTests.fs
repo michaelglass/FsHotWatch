@@ -26,13 +26,13 @@ let private makeResult cacheKey =
       Status = Completed(at = fixedTime)
       EmittedEvents = [] }
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``TryGet returns None for unknown key`` () =
     let cache = InMemoryTaskCache()
     let result = cache.TryGet(ck "build" "Foo.fs", "hash1")
     test <@ result = None @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``Set then TryGet roundtrip`` () =
     let cache = InMemoryTaskCache()
     let expected = makeResult "hash1"
@@ -40,7 +40,7 @@ let ``Set then TryGet roundtrip`` () =
     let result = cache.TryGet(ck "build" "Foo.fs", "hash1")
     test <@ result = Some expected @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``TryGet returns None when cacheKey does not match`` () =
     let cache = InMemoryTaskCache()
     let entry = makeResult "hash1"
@@ -48,7 +48,7 @@ let ``TryGet returns None when cacheKey does not match`` () =
     let result = cache.TryGet(ck "build" "Foo.fs", "hash2")
     test <@ result = None @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``Clear removes all entries`` () =
     let cache = InMemoryTaskCache()
     cache.Set(ck "build" "Foo.fs", "h1", makeResult "h1")
@@ -57,7 +57,7 @@ let ``Clear removes all entries`` () =
     test <@ cache.TryGet(ck "build" "Foo.fs", "h1") = None @>
     test <@ cache.TryGet(ck "lint" "Bar.fs", "h2") = None @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``ClearPlugin removes only that plugin's entries`` () =
     let cache = InMemoryTaskCache()
     let lintResult = makeResult "h3"
@@ -71,7 +71,7 @@ let ``ClearPlugin removes only that plugin's entries`` () =
     test <@ cache.TryGet(ckPlugin "build", "h4") = None @>
     test <@ cache.TryGet(ck "lint" "Foo.fs", "h3") = Some lintResult @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``ClearFile removes entries matching the file`` () =
     let cache = InMemoryTaskCache()
     let barResult = makeResult "h3"
@@ -83,7 +83,7 @@ let ``ClearFile removes entries matching the file`` () =
     test <@ cache.TryGet(ck "lint" "Foo.fs", "h2") = None @>
     test <@ cache.TryGet(ck "build" "Bar.fs", "h3") = Some barResult @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``ClearPluginFile removes specific entry`` () =
     let cache = InMemoryTaskCache()
     let barResult = makeResult "h2"
@@ -96,35 +96,35 @@ let ``ClearPluginFile removes specific entry`` () =
     test <@ cache.TryGet(ck "build" "Bar.fs", "h2") = Some barResult @>
     test <@ cache.TryGet(ck "lint" "Foo.fs", "h3") = Some lintResult @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``defaultCacheKey returns commit_id for FileChecked`` () =
     let getCommitId () = Some "abc123"
     let event: PluginEvent<unit> = FileChecked(Unchecked.defaultof<FileCheckResult>)
     let result = defaultCacheKey getCommitId event
     test <@ result = Some "abc123" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``defaultCacheKey returns commit_id for FileChanged`` () =
     let getCommitId () = Some "abc123"
     let event: PluginEvent<unit> = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
     let result = defaultCacheKey getCommitId event
     test <@ result = Some "abc123" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``defaultCacheKey returns commit_id for BuildCompleted`` () =
     let getCommitId () = Some "abc123"
     let event: PluginEvent<unit> = BuildCompleted BuildSucceeded
     let result = defaultCacheKey getCommitId event
     test <@ result = Some "abc123" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``defaultCacheKey returns None when jj unavailable`` () =
     let getCommitId () = None
     let event: PluginEvent<unit> = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
     let result = defaultCacheKey getCommitId event
     test <@ result = None @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``defaultCacheKey returns None for Custom events`` () =
     let getCommitId () = Some "abc123"
     let event: PluginEvent<string> = Custom "hello"
@@ -145,7 +145,7 @@ let private dummyFileCheckResult file : FileCheckResult =
       ProjectOptions = Unchecked.defaultof<_>
       Version = 0L }
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``plugin skips Update on cache hit and replays errors`` () =
     let cache = InMemoryTaskCache()
 
@@ -204,7 +204,7 @@ let ``plugin skips Update on cache hit and replays errors`` () =
             |> List.sumBy (fun (_, entries) -> entries.Length) = 1
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``plugin stores result on cache miss then hits on second event`` () =
     let cache = InMemoryTaskCache()
     let mutable updateCallCount = 0
@@ -239,7 +239,7 @@ let ``plugin stores result on cache miss then hits on second event`` () =
     Thread.Sleep(200)
     test <@ updateCallCount = 1 @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``plugin runs Update when cache key changes`` () =
     let cache = InMemoryTaskCache()
     let mutable updateCallCount = 0
@@ -277,7 +277,7 @@ let ``plugin runs Update when cache key changes`` () =
 
 // --- FileTaskCache tests ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``FileTaskCache persists and retrieves across instances`` () =
     withTempDir "ftc-persist" (fun tmpDir ->
         let cache1 = FileTaskCache(tmpDir)
@@ -296,7 +296,7 @@ let ``FileTaskCache persists and retrieves across instances`` () =
         test <@ retrieved.IsSome @>
         test <@ retrieved.Value.Errors.Length = 1 @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``FileTaskCache clear removes all files`` () =
     withTempDir "ftc-clear" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -311,7 +311,7 @@ let ``FileTaskCache clear removes all files`` () =
         (cache :> ITaskCache).Clear()
         test <@ (cache :> ITaskCache).TryGet (ckPlugin "build") "abc" |> Option.isNone @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``FileTaskCache roundtrips all PluginStatus variants`` () =
     withTempDir "ftc-status" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -342,7 +342,7 @@ let ``FileTaskCache roundtrips all PluginStatus variants`` () =
         test <@ (c2.TryGet (ck "plugin" "2") "k").Value.Status = Completed(at = fixedTime) @>
         test <@ (c2.TryGet (ck "plugin" "3") "k").Value.Status = Failed("boom", at = fixedTime) @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``FileTaskCache roundtrips cached events`` () =
     withTempDir "ftc-events" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -366,7 +366,7 @@ let ``FileTaskCache roundtrips cached events`` () =
         test <@ r.IsSome @>
         test <@ r.Value.EmittedEvents.Length = 3 @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``FileTaskCache roundtrips error entries with detail`` () =
     withTempDir "ftc-detail" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -397,7 +397,7 @@ let ``FileTaskCache roundtrips error entries with detail`` () =
         test <@ e.Column = 7 @>
         test <@ e.Detail = Some "full detail" @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``FileTaskCache ClearPlugin removes only matching files`` () =
     withTempDir "ftc-clearplugin" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -408,7 +408,7 @@ let ``FileTaskCache ClearPlugin removes only matching files`` () =
         test <@ c.TryGet (ck "build" "Foo.fs") "h1" |> Option.isNone @>
         test <@ c.TryGet (ck "lint" "Foo.fs") "h2" |> Option.isSome @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``FileTaskCache ClearFile removes entries matching the file`` () =
     withTempDir "ftc-clearfile" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -421,7 +421,7 @@ let ``FileTaskCache ClearFile removes entries matching the file`` () =
         test <@ c.TryGet (ck "lint" "Foo.fs") "h2" |> Option.isNone @>
         test <@ c.TryGet (ck "build" "Bar.fs") "h3" |> Option.isSome @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``FileTaskCache ClearPluginFile removes specific entry`` () =
     withTempDir "ftc-clearpf" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)

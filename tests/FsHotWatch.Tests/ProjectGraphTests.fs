@@ -10,7 +10,7 @@ open FsHotWatch.ProjectGraph
 let fp path = AbsFilePath.create path
 let pp path = AbsProjectPath.create path
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``RegisterProject maps files to project`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/Lib.fs"; fp "/proj/Util.fs" ], [])
@@ -18,7 +18,7 @@ let ``RegisterProject maps files to project`` () =
     test <@ graph.GetProjectForFile(fp "/proj/Util.fs") = Some(pp "/proj/A.fsproj") @>
     test <@ graph.GetProjectForFile(fp "/proj/Other.fs") = None @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetSourceFiles returns registered files`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/Lib.fs"; fp "/proj/Util.fs" ], [])
@@ -26,13 +26,13 @@ let ``GetSourceFiles returns registered files`` () =
     test <@ files.Length = 2 @>
     test <@ files |> List.contains (fp "/proj/Lib.fs") @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetReferences returns project references`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/B.fsproj", [ fp "/proj/B.fs" ], [ pp "/proj/A.fsproj" ])
     test <@ graph.GetReferences(pp "/proj/B.fsproj") = [ pp "/proj/A.fsproj" ] @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetDependents returns reverse references`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs" ], [])
@@ -40,7 +40,7 @@ let ``GetDependents returns reverse references`` () =
     test <@ graph.GetDependents(pp "/proj/A.fsproj") = [ pp "/proj/B.fsproj" ] @>
     test <@ graph.GetDependents(pp "/proj/B.fsproj") |> List.isEmpty @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetTransitiveDependents walks the graph`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs" ], [])
@@ -49,7 +49,7 @@ let ``GetTransitiveDependents walks the graph`` () =
     let deps = graph.GetTransitiveDependents(pp "/proj/A.fsproj")
     test <@ deps = [ pp "/proj/A.fsproj"; pp "/proj/B.fsproj"; pp "/proj/C.fsproj" ] @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetAffectedProjects finds projects for changed files`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs" ], [])
@@ -58,7 +58,7 @@ let ``GetAffectedProjects finds projects for changed files`` () =
     test <@ affected |> List.contains (pp "/proj/A.fsproj") @>
     test <@ affected |> List.contains (pp "/proj/B.fsproj") @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetTopologicalOrder returns deps before dependents`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs" ], [])
@@ -71,7 +71,7 @@ let ``GetTopologicalOrder returns deps before dependents`` () =
     test <@ idxA < idxB @>
     test <@ idxA < idxC @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``RegisterFromFsproj parses real fsproj`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-test-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
@@ -101,13 +101,13 @@ let ``RegisterFromFsproj parses real fsproj`` () =
     finally
         Directory.Delete(tmpDir, true)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetAffectedProjects returns empty for unknown file`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs" ], [])
     test <@ graph.GetAffectedProjects([ fp "/proj/Unknown.fs" ]) |> List.isEmpty @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``PrepareForRediscovery clears fileToProject for removed files`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs"; fp "/proj/Old.fs" ], [])
@@ -116,7 +116,7 @@ let ``PrepareForRediscovery clears fileToProject for removed files`` () =
     test <@ graph.GetProjectForFile(fp "/proj/Old.fs") = None @>
     test <@ graph.GetProjectForFile(fp "/proj/A.fs") = Some(pp "/proj/A.fsproj") @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``PrepareForRediscovery clears deleted projects`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs" ], [])
@@ -127,7 +127,7 @@ let ``PrepareForRediscovery clears deleted projects`` () =
     test <@ graph.GetProjectForFile(fp "/proj/B.fs") = None @>
     test <@ graph.GetDependents(pp "/proj/A.fsproj") |> List.isEmpty @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``PrepareForRediscovery clears stale projectDependents`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs" ], [])
@@ -138,7 +138,7 @@ let ``PrepareForRediscovery clears stale projectDependents`` () =
     graph.RegisterProject(pp "/proj/B.fsproj", [ fp "/proj/B.fs" ], [])
     test <@ graph.GetDependents(pp "/proj/A.fsproj") |> List.isEmpty @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetParallelTiers groups independent projects in same tier`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs" ], [])
@@ -154,7 +154,7 @@ let ``GetParallelTiers groups independent projects in same tier`` () =
     test <@ tiers.[0] |> List.contains (pp "/proj/B.fsproj") @>
     test <@ tiers.[1] = [ pp "/proj/C.fsproj" ] @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetParallelTiers handles linear chain`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs" ], [])
@@ -168,7 +168,7 @@ let ``GetParallelTiers handles linear chain`` () =
 
 // --- Shared source files (linked items) ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetProjectsForFile returns all projects for shared file`` () =
     let graph = ProjectGraph()
     let shared = fp "/proj/Shared.fs"
@@ -179,13 +179,13 @@ let ``GetProjectsForFile returns all projects for shared file`` () =
     test <@ projects |> List.contains (pp "/proj/B.fsproj") @>
     test <@ projects.Length = 2 @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetProjectsForFile returns empty for unknown file`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs" ], [])
     test <@ graph.GetProjectsForFile(fp "/proj/Unknown.fs") |> List.isEmpty @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetProjectForFile still works for shared file`` () =
     let graph = ProjectGraph()
     let shared = fp "/proj/Shared.fs"
@@ -193,7 +193,7 @@ let ``GetProjectForFile still works for shared file`` () =
     graph.RegisterProject(pp "/proj/B.fsproj", [ shared ], [])
     test <@ graph.GetProjectForFile(shared).IsSome @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetAffectedProjects returns all projects for shared file`` () =
     let graph = ProjectGraph()
     let shared = fp "/proj/Shared.fs"
@@ -203,7 +203,7 @@ let ``GetAffectedProjects returns all projects for shared file`` () =
     test <@ affected |> List.contains (pp "/proj/A.fsproj") @>
     test <@ affected |> List.contains (pp "/proj/B.fsproj") @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetAllFiles does not duplicate shared files`` () =
     let graph = ProjectGraph()
     let shared = fp "/proj/Shared.fs"
@@ -216,7 +216,7 @@ let ``GetAllFiles does not duplicate shared files`` () =
 // --- Coverage for uncovered edge cases ---
 
 // Line 41: RegisterProject duplicate dependent (existing list already contains project)
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``RegisterProject does not duplicate dependent when registered twice`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A.fs" ], [])
@@ -227,7 +227,7 @@ let ``RegisterProject does not duplicate dependent when registered twice`` () =
     test <@ deps = [ pp "/proj/B.fsproj" ] @>
 
 // Line 61: RegisterFromFsproj with Compile element missing Include attribute
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``RegisterFromFsproj ignores Compile elements without Include attribute`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-noinclude-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
@@ -253,7 +253,7 @@ let ``RegisterFromFsproj ignores Compile elements without Include attribute`` ()
         Directory.Delete(tmpDir, true)
 
 // Line 72: RegisterFromFsproj with ProjectReference element missing Include attribute
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``RegisterFromFsproj ignores ProjectReference elements without Include attribute`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-noref-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
@@ -282,19 +282,19 @@ let ``RegisterFromFsproj ignores ProjectReference elements without Include attri
         Directory.Delete(tmpDir, true)
 
 // Line 88: GetSourceFiles for unregistered project returns empty list
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetSourceFiles returns empty for unregistered project`` () =
     let graph = ProjectGraph()
     test <@ graph.GetSourceFiles(pp "/proj/NoSuch.fsproj") |> List.isEmpty @>
 
 // Line 94: GetReferences for unregistered project returns empty list
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetReferences returns empty for unregistered project`` () =
     let graph = ProjectGraph()
     test <@ graph.GetReferences(pp "/proj/NoSuch.fsproj") |> List.isEmpty @>
 
 // Line 165: GetParallelTiers with circular dependency (blocked projects forced into final tier)
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetParallelTiers puts circular dependencies in final tier`` () =
     let graph = ProjectGraph()
     // Create a cycle: A -> B -> A (impossible in reality, but tests the fallback path)
@@ -306,18 +306,18 @@ let ``GetParallelTiers puts circular dependencies in final tier`` () =
     test <@ tiers.[0] |> List.length = 2 @>
 
 // GetParallelTiers with empty graph
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetParallelTiers returns empty for empty graph`` () =
     let graph = ProjectGraph()
     test <@ graph.GetParallelTiers() |> List.isEmpty @>
 
 // GetTopologicalOrder returns empty for empty graph
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetTopologicalOrder returns empty for empty graph`` () =
     let graph = ProjectGraph()
     test <@ graph.GetTopologicalOrder() |> List.isEmpty @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetAllFiles returns all registered file paths`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A1.fs"; fp "/proj/A2.fs" ], [])
@@ -328,7 +328,7 @@ let ``GetAllFiles returns all registered file paths`` () =
     test <@ files.Contains(fp "/proj/A2.fs") @>
     test <@ files.Contains(fp "/proj/B1.fs") @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetAllFiles returns empty after PrepareForRediscovery`` () =
     let graph = ProjectGraph()
     graph.RegisterProject(pp "/proj/A.fsproj", [ fp "/proj/A1.fs" ], [])

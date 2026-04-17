@@ -8,7 +8,7 @@ open FsHotWatch.PluginHost
 open FsHotWatch.FileCommand.FileCommandPlugin
 open FsHotWatch.Tests.TestHelpers
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``plugin has correct name`` () =
     let handler =
         create
@@ -21,7 +21,7 @@ let ``plugin has correct name`` () =
 
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "run-scripts" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``command runs when matching files change`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -55,7 +55,7 @@ let ``command runs when matching files change`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``command does not run for non-matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -86,7 +86,7 @@ let ``command does not run for non-matching files`` () =
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``command captures stdout output`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -115,7 +115,7 @@ let ``command captures stdout output`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("true") @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``command with environment variables`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -149,7 +149,7 @@ let ``command with environment variables`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``command runs on ProjectChanged with matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -183,7 +183,7 @@ let ``command runs on ProjectChanged with matching files`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``command ignores SolutionChanged`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -207,7 +207,7 @@ let ``command ignores SolutionChanged`` () =
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``command reports Failed status on command failure`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -237,7 +237,7 @@ let ``command reports Failed status on command failure`` () =
 
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``command reports Failed status on exception`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -273,7 +273,7 @@ let ``command reports Failed status on exception`` () =
 
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``status command returns not run when no files matched`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -298,7 +298,7 @@ let ``status command returns not run when no files matched`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("not run") @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``status command returns false when command failed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -320,7 +320,7 @@ let ``status command returns false when command failed`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("false") @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``emits CommandCompleted on success`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getCommand, recorder) = commandRecorder ()
@@ -351,7 +351,7 @@ let ``emits CommandCompleted on success`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``emits CommandCompleted on failure`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getCommand, recorder) = commandRecorder ()
@@ -382,7 +382,7 @@ let ``emits CommandCompleted on failure`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``runOnStart runs command on first FileChanged even without matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -410,7 +410,7 @@ let ``runOnStart runs command on first FileChanged even without matching files``
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``runOnStart only triggers once`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
