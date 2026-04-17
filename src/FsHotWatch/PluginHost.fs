@@ -174,6 +174,25 @@ type PluginHost
     /// Get all plugin statuses as an immutable map.
     member _.GetAllStatuses() : Map<string, PluginStatus> = lock statusLock (fun () -> statuses)
 
+    /// Start a subtask under an arbitrary (possibly synthetic) plugin name.
+    /// Used by in-host subsystems like the check pipeline that report activity
+    /// without being registered plugins.
+    member _.StartSubtask(pluginName: string, key: string, label: string) =
+        activity.StartSubtask(pluginName, key, label)
+
+    /// End a subtask under an arbitrary plugin name. No-op if not started.
+    member _.EndSubtask(pluginName: string, key: string) = activity.EndSubtask(pluginName, key)
+
+    /// Append an activity log line under an arbitrary plugin name.
+    /// Also routes to Logging.info so plain-text log consumers see the message.
+    member _.LogActivity(pluginName: string, message: string) =
+        activity.Log(pluginName, message)
+        Logging.info pluginName message
+
+    /// Override the auto-derived summary captured on the next terminal transition.
+    member _.SetSummary(pluginName: string, summary: string) =
+        activity.SetSummary(pluginName, summary)
+
     /// Get the currently running subtasks for a plugin.
     member _.GetSubtasks(pluginName: string) : Subtask list = activity.GetSubtasks(pluginName)
 

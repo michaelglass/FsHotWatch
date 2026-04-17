@@ -918,11 +918,21 @@ module Daemon =
             let host =
                 PluginHost(checker, repoRoot, reporters = [ fileReporter ], taskCache = taskCache)
 
+            // Forward check-pipeline activity under the synthetic plugin name "fcs"
+            // so subtasks, log tail, and summary surface in GetStatus output alongside
+            // real plugins.
+            let fcsReporter: CheckActivityReporter =
+                { StartSubtask = fun key label -> host.StartSubtask("fcs", key, label)
+                  EndSubtask = fun key -> host.EndSubtask("fcs", key)
+                  Log = fun msg -> host.LogActivity("fcs", msg)
+                  CompleteWithSummary = fun s -> host.SetSummary("fcs", s) }
+
             let pipeline =
                 match cacheBackend, cacheKeyProvider with
-                | Some b, Some kp -> CheckPipeline(checker, cacheBackend = b, cacheKeyProvider = kp)
-                | Some b, None -> CheckPipeline(checker, cacheBackend = b)
-                | _ -> CheckPipeline(checker)
+                | Some b, Some kp ->
+                    CheckPipeline(checker, cacheBackend = b, cacheKeyProvider = kp, activityReporter = fcsReporter)
+                | Some b, None -> CheckPipeline(checker, cacheBackend = b, activityReporter = fcsReporter)
+                | _ -> CheckPipeline(checker, activityReporter = fcsReporter)
 
             let graph = ProjectGraph()
             let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
