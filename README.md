@@ -43,6 +43,12 @@ fs-hot-watch start
 
 # From another terminal, check what's happening
 fs-hot-watch status
+
+# Run all checks; verbose by default (per-subtask progress + last-run recap)
+fs-hot-watch check
+
+# Prefer one line per plugin?
+fs-hot-watch check --compact   # or -q
 ```
 
 ## Packages
@@ -114,6 +120,17 @@ daemon.RegisterHandler(myPlugin)
 - `ctx.ReportErrors(file, entries)` — report diagnostics to the error ledger
 - `ctx.EmitBuildCompleted(result)` — emit events to other plugins
 - `ctx.Post(msg)` — send a custom message back to your own agent
+- `ctx.StartSubtask(key, label)` / `ctx.EndSubtask(key)` — surface named concurrent work
+  with live per-subtask elapsed in `fs-hot-watch check` output
+- `ctx.Log(msg)` — preferred logging path; appends to the activity tail shown under
+  your plugin in `check`, and also routes to `Logging.info`
+- `ctx.CompleteWithSummary(summary)` — override the auto-derived summary captured
+  in run history on the next terminal transition (e.g. "built 4 projects")
+
+Status transitions are fully observed: when a plugin moves to `Completed` or
+`Failed`, the host snapshots current subtasks + activity into a bounded run
+history (per plugin), visible under the `check` verbose output as
+`started / elapsed / summary` on the next run.
 
 ## Configuration
 
