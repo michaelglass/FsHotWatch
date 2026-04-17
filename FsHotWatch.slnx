@@ -10,4 +10,7 @@
   <Project Path="src/FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj" />
   <Project Path="tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj" />
   <Project Path="examples/ExampleAnalyzer/ExampleAnalyzer.fsproj" />
+  <!-- Restore-only: materializes FSharpLintAnalyzerShim NuGet package for fshw's
+       AnalyzersPlugin to load. Pointed at by .fs-hot-watch.json analyzers.paths. -->
+  <Project Path="tools/fsharplint-shim/fsharplint-shim.csproj" />
 </Solution>
