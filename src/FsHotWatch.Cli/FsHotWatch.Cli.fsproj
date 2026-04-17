@@ -16,7 +16,7 @@
         <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>
         <PackageTags>fsharp;cli;file-watcher;daemon;dotnet-tool</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
-        <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
+        <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188;NU1903</NoWarn>
         <IncludeSymbols>true</IncludeSymbols>
         <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     </PropertyGroup>
