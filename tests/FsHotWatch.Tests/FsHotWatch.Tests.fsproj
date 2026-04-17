@@ -23,6 +23,7 @@
     <Compile Include="PluginTests.fs" />
     <Compile Include="TaskCacheTests.fs" />
     <Compile Include="PluginFrameworkTests.fs" />
+    <Compile Include="PluginCtxHelpersTests.fs" />
     <Compile Include="PluginHostTests.fs" />
     <Compile Include="PluginActivityTests.fs" />
     <Compile Include="PluginHostActivityTests.fs" />
