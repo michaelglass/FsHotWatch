@@ -7,21 +7,21 @@ open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.PluginActivity
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``StartSubtask then GetSubtasks returns the subtask`` () =
     let s = State()
     s.StartSubtask("p", "k1", "label 1")
     let tasks = s.GetSubtasks("p")
     test <@ tasks |> List.exists (fun t -> t.Key = "k1" && t.Label = "label 1") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``EndSubtask removes the subtask`` () =
     let s = State()
     s.StartSubtask("p", "k1", "label 1")
     s.EndSubtask("p", "k1")
     test <@ s.GetSubtasks("p") = [] @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Log appends in order to activity tail`` () =
     let s = State()
     s.Log("p", "one")
@@ -29,7 +29,7 @@ let ``Log appends in order to activity tail`` () =
     s.Log("p", "three")
     test <@ s.GetActivityTail("p") = [ "one"; "two"; "three" ] @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Log ring buffer caps at 64 entries per plugin`` () =
     let s = State()
 
@@ -41,7 +41,7 @@ let ``Log ring buffer caps at 64 entries per plugin`` () =
     test <@ List.last tail = "line-100" @>
     test <@ List.head tail = "line-37" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``RecordTerminal captures subtasks and activity into history`` () =
     let s = State()
     s.StartSubtask("p", "k1", "label 1")
@@ -57,7 +57,7 @@ let ``RecordTerminal captures subtasks and activity into history`` () =
     test <@ r.Outcome = CompletedRun @>
     test <@ r.ActivityTail = [ "hello" ] @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``RecordTerminal with SetSummary uses override`` () =
     let s = State()
     s.Log("p", "last line")
@@ -67,7 +67,7 @@ let ``RecordTerminal with SetSummary uses override`` () =
     let r = List.head (s.GetHistory("p"))
     test <@ r.Summary = Some "explicit" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Derived summary is last log line when no explicit summary and no subtasks`` () =
     let s = State()
     s.Log("p", "first")
@@ -77,7 +77,7 @@ let ``Derived summary is last log line when no explicit summary and no subtasks`
     let r = List.head (s.GetHistory("p"))
     test <@ r.Summary = Some "second" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Derived summary is longest-lived subtask label when no log and no override`` () =
     let s = State()
     s.StartSubtask("p", "k-old", "oldest subtask")
@@ -88,7 +88,7 @@ let ``Derived summary is longest-lived subtask label when no log and no override
     let r = List.head (s.GetHistory("p"))
     test <@ r.Summary = Some "oldest subtask" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``RecordTerminal auto-ends open subtasks and clears run state`` () =
     let s = State()
     s.StartSubtask("p", "k1", "l1")
@@ -98,7 +98,7 @@ let ``RecordTerminal auto-ends open subtasks and clears run state`` () =
     test <@ s.GetSubtasks("p") = [] @>
     test <@ s.GetActivityTail("p") = [] @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``RecordTerminal captures Failed outcome`` () =
     let s = State()
     let now = DateTime.UtcNow
@@ -112,7 +112,7 @@ let ``RecordTerminal captures Failed outcome`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``ResetRun clears current subtasks, activity, summary override but keeps history`` () =
     let s = State()
     let now = DateTime.UtcNow
@@ -127,7 +127,7 @@ let ``ResetRun clears current subtasks, activity, summary override but keeps his
     test <@ s.GetActivityTail("p") = [] @>
     test <@ (s.GetHistory("p")).Length = 1 @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``2 MB global cap evicts oldest history entries across plugins`` () =
     let s = State()
     let big = String('x', 10_000)
@@ -143,7 +143,7 @@ let ``2 MB global cap evicts oldest history entries across plugins`` () =
 
     test <@ s.TotalByteSize <= 2 * 1024 * 1024 @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Thread-safe under concurrent StartSubtask EndSubtask calls`` () =
     let s = State()
 
