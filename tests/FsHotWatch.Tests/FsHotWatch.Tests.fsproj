@@ -14,7 +14,7 @@
 
   <ItemGroup>
     <Compile Include="TestHelpers.fs" />
-<Compile Include="LifecycleTests.fs" />
+    <Compile Include="LifecycleTests.fs" />
     <Compile Include="ErrorLedgerTests.fs" />
     <Compile Include="FileErrorReporterTests.fs" />
     <Compile Include="EventTests.fs" />
