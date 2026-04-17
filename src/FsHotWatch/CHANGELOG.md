@@ -4,6 +4,14 @@
 
 ### Added
 
+- Project-discovery diagnostics: `Ionide.ProjInfo.IWorkspaceLoader.Notifications` is now
+  subscribed during `discoverAndRegisterProjects` so per-project design-time failures
+  (e.g. `ProjectNotRestored`, `ReferencesNotLoaded`) are logged instead of silently dropped
+- Per-project FCS options dumped to `.fshw/logs/projinfo/<Project>.opts.txt` after every
+  discovery pass. Contains source files, `OtherOptions` (incl. `-r:` references), and
+  referenced project outputs. Registration log line now includes the `-r:` reference count
+- `FSHW_PROJINFO_BINLOG=1` env var enables MSBuild binary-log capture at
+  `.fshw/logs/projinfo/binlogs/<project>.binlog` for diffing design-time eval vs `dotnet build`
 - `PathFilter` module with shared path filtering utilities:
   - `isGeneratedPath` — checks if a path is inside obj/ or bin/ directories
   - `isExcludedPath` — gitignore-style glob matching via the `Ignore` package (replaces string-contains matching)
