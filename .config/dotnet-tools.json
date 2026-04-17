@@ -24,7 +24,7 @@
       "rollForward": false
     },
     "coverageratchet": {
-      "version": "0.12.0-alpha.2",
+      "version": "0.13.0-alpha.1",
       "commands": [
         "coverageratchet"
       ],
