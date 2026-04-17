@@ -101,8 +101,7 @@ let createFormatCheck (getCommitId: (unit -> string option) option) : PluginHand
                                 failed <- true
 
                     if not failed then
-                        ctx.CompleteWithSummary $"{newUnformatted.Count} unformatted files"
-                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                        PluginCtxHelpers.completeWith ctx $"{newUnformatted.Count} unformatted files"
 
                     return { Unformatted = newUnformatted }
                 | _ -> return state
