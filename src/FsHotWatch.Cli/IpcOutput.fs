@@ -273,7 +273,12 @@ let parseStatusJson (json: string) : Map<string, string> =
 
 /// Render a generic IPC result (status JSON or plain text).
 /// Dispatches on JSON shape: GetDiagnostics format (has "count"), error/status fields, status map, or plain text.
-let renderIpcResult (noWarnFail: bool) (result: string) : int =
+/// `renderStatuses` is injected so callers choose the progress renderer (compact/verbose).
+let renderIpcResult
+    (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
+    (noWarnFail: bool)
+    (result: string)
+    : int =
     let doc =
         try
             Some(JsonDocument.Parse(result))
@@ -330,7 +335,8 @@ let renderIpcResult (noWarnFail: bool) (result: string) : int =
 
                         let parsed = parsePluginStatuses result
                         let plain = statusOnly parsed
-                        let output = renderProgress plain
+                        let lines = renderStatuses parsed
+                        let output = String.concat "\n" lines
                         eprintfn "%s" output
 
                         let hasFailed =
@@ -344,7 +350,9 @@ let renderIpcResult (noWarnFail: bool) (result: string) : int =
 
 /// Poll daemon status, render live progress, then format final errors.
 /// Returns exit code (0 = no errors, 1 = errors).
+/// `renderStatuses` is injected so callers choose the progress renderer (compact/verbose).
 let pollAndRender
+    (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
     (noWarnFail: bool)
     (waitForScan: unit -> string)
     (getStatus: unit -> string)
@@ -372,10 +380,12 @@ let pollAndRender
                 for _ in 1..prevLineCount do
                     Console.Error.Write("\x1b[A\x1b[2K")
 
-            // Render current state
-            let progress = renderProgress plain
+            // Render current state; track total emitted line count so the next
+            // iteration erases the whole block regardless of per-plugin line height.
+            let lines = renderStatuses parsed
+            let progress = String.concat "\n" lines
             eprintfn "%s" progress
-            prevLineCount <- plain.Count
+            prevLineCount <- List.length lines
 
         allDone <- isAllTerminal plain
 
