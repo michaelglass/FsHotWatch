@@ -26,6 +26,24 @@ type BuildState =
 
 type BuildMsg = BuildDone of BuildOutcome
 
+/// Pure decision logic: given a subprocess's success flag and combined output,
+/// determine the BuildOutcome and the list of ErrorEntry diagnostics to surface.
+/// On failure with no parsed MSBuild diagnostics, the raw output is wrapped as
+/// a single error entry so callers always have something to report.
+let decideBuildOutcome (success: bool) (output: string) : BuildOutcome * ErrorEntry list =
+    let parsed = BuildDiagnostics.parseMSBuildDiagnostics output
+
+    if success then
+        BuildPassed output, parsed
+    else
+        let entries =
+            if parsed.IsEmpty then
+                [ ErrorEntry.error output ]
+            else
+                parsed
+
+        BuildOutputFailed output, entries
+
 let create
     (command: string)
     (args: string)
@@ -69,36 +87,31 @@ let create
             (async {
                 try
                     let (success, output) = runProcess buildCommand buildArgs ctx.RepoRoot env
-                    let parsed = BuildDiagnostics.parseMSBuildDiagnostics output
+                    let (outcome, entries) = decideBuildOutcome success output
 
-                    if success then
-                        let n = countBuiltProjects output
+                    match outcome with
+                    | BuildPassed out ->
+                        let n = countBuiltProjects out
 
                         let summary = if n > 0 then $"built {n} projects" else "build succeeded"
 
                         ctx.Log summary
                         ctx.CompleteWithSummary summary
 
-                        if parsed.IsEmpty then
+                        if entries.IsEmpty then
                             ctx.ClearErrors "<build>"
                         else
-                            ctx.ReportErrors "<build>" parsed
+                            ctx.ReportErrors "<build>" entries
 
                         ctx.EmitBuildCompleted(BuildSucceeded)
-                        ctx.Post(BuildDone(BuildPassed output))
-                    else
+                        ctx.Post(BuildDone outcome)
+                    | BuildOutputFailed out ->
                         ctx.Log "Build FAILED"
                         error "build" "Build FAILED"
-
-                        let entries =
-                            if parsed.IsEmpty then
-                                [ ErrorEntry.error output ]
-                            else
-                                parsed
-
                         ctx.ReportErrors "<build>" entries
-                        ctx.EmitBuildCompleted(BuildFailed [ output ])
-                        ctx.Post(BuildDone(BuildOutputFailed output))
+                        ctx.EmitBuildCompleted(BuildFailed [ out ])
+                        ctx.Post(BuildDone outcome)
+                    | NotBuilt -> failwith "unreachable: BuildDone never carries NotBuilt"
                 with ex ->
                     ctx.ReportErrors "<build>" [ ErrorEntry.error ex.Message ]
 
@@ -302,7 +315,7 @@ let create
                     | BuildOutputFailed output ->
                         let summary = truncateOutput 5 output
                         ctx.ReportStatus(PluginStatus.Failed($"Build failed: %s{summary}", DateTime.UtcNow))
-                    | NotBuilt -> ()
+                    | NotBuilt -> failwith "unreachable: BuildDone never carries NotBuilt"
 
                     return
                         { state with

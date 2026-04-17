@@ -38,13 +38,34 @@ let private runRecordBytes (r: RunRecord) =
 
 let private subtaskBytes (t: Subtask) = stringBytes t.Key + stringBytes t.Label
 
+/// State held while a plugin run is in progress. Only the `Recording` phase
+/// has these fields — once `RecordTerminal` commits the run to history, the
+/// phase flips back to `Idle` and this state is released.
+[<NoComparison; NoEquality>]
+type private RecordingState =
+    { Subtasks: Dictionary<string, Subtask>
+      ActivityLog: Queue<string>
+      mutable SummaryOverride: string option
+      mutable SummaryBytes: int }
+
+    static member Create() =
+        { Subtasks = Dictionary<string, Subtask>()
+          ActivityLog = Queue<string>()
+          SummaryOverride = None
+          SummaryBytes = 0 }
+
+/// Phase of a plugin's activity tracking. `Idle` carries no in-progress data,
+/// so calling `RecordTerminal` on an `Idle` plugin cannot accidentally splice
+/// stale subtasks/logs into a new history entry.
+[<NoComparison; NoEquality>]
+type private ActivityPhase =
+    | Idle
+    | Recording of RecordingState
+
 [<NoComparison; NoEquality>]
 type private PerPlugin =
     { Gate: obj
-      Subtasks: Dictionary<string, Subtask>
-      ActivityLog: Queue<string>
-      mutable SummaryOverride: string option
-      mutable SummaryBytes: int
+      mutable Phase: ActivityPhase
       History: Queue<RunRecord>
       mutable Bytes: int }
 
@@ -66,10 +87,7 @@ type State() =
             | _ ->
                 let p =
                     { Gate = obj ()
-                      Subtasks = Dictionary<string, Subtask>()
-                      ActivityLog = Queue<string>()
-                      SummaryOverride = None
-                      SummaryBytes = 0
+                      Phase = Idle
                       History = Queue<RunRecord>()
                       Bytes = 0 }
 
@@ -108,17 +126,28 @@ type State() =
         p.Bytes <- p.Bytes + n
         System.Threading.Interlocked.Add(&totalBytes, n) |> ignore
 
+    // Must be called while holding p.Gate. Transitions Idle -> Recording lazily.
+    let ensureRecording (p: PerPlugin) : RecordingState =
+        match p.Phase with
+        | Recording r -> r
+        | Idle ->
+            let r = RecordingState.Create()
+            p.Phase <- Recording r
+            r
+
     member _.StartSubtask(plugin: string, key: string, label: string) : unit =
         let p = getOrCreate plugin
 
         lock p.Gate (fun () ->
-            if not (p.Subtasks.ContainsKey key) then
+            let r = ensureRecording p
+
+            if not (r.Subtasks.ContainsKey key) then
                 let t =
                     { Key = key
                       Label = label
                       StartedAt = DateTime.UtcNow }
 
-                p.Subtasks.[key] <- t
+                r.Subtasks.[key] <- t
                 addBytes p (subtaskBytes t))
 
         if totalBytes > maxTotalBytes then
@@ -128,21 +157,25 @@ type State() =
         let p = getOrCreate plugin
 
         lock p.Gate (fun () ->
-            match p.Subtasks.TryGetValue key with
-            | true, t ->
-                p.Subtasks.Remove key |> ignore
-                addBytes p (-(subtaskBytes t))
-            | _ -> ())
+            match p.Phase with
+            | Recording r ->
+                match r.Subtasks.TryGetValue key with
+                | true, t ->
+                    r.Subtasks.Remove key |> ignore
+                    addBytes p (-(subtaskBytes t))
+                | _ -> ()
+            | Idle -> ())
 
     member _.Log(plugin: string, message: string) : unit =
         let p = getOrCreate plugin
 
         lock p.Gate (fun () ->
-            p.ActivityLog.Enqueue(message)
+            let r = ensureRecording p
+            r.ActivityLog.Enqueue(message)
             addBytes p (stringBytes message)
 
-            if p.ActivityLog.Count > maxTailPerPlugin then
-                let dropped = p.ActivityLog.Dequeue()
+            if r.ActivityLog.Count > maxTailPerPlugin then
+                let dropped = r.ActivityLog.Dequeue()
                 addBytes p (-(stringBytes dropped)))
 
         if totalBytes > maxTotalBytes then
@@ -152,10 +185,11 @@ type State() =
         let p = getOrCreate plugin
 
         lock p.Gate (fun () ->
-            addBytes p (-p.SummaryBytes)
-            p.SummaryOverride <- Some summary
-            p.SummaryBytes <- stringBytes summary
-            addBytes p p.SummaryBytes)
+            let r = ensureRecording p
+            addBytes p (-r.SummaryBytes)
+            r.SummaryOverride <- Some summary
+            r.SummaryBytes <- stringBytes summary
+            addBytes p r.SummaryBytes)
 
         if totalBytes > maxTotalBytes then
             enforceGlobalCap ()
@@ -164,18 +198,29 @@ type State() =
         let p = getOrCreate plugin
 
         lock p.Gate (fun () ->
-            let tail = p.ActivityLog |> List.ofSeq
+            let tail, derivedSummary, discarded =
+                match p.Phase with
+                | Recording r ->
+                    let tail = r.ActivityLog |> List.ofSeq
 
-            let derivedSummary =
-                match p.SummaryOverride with
-                | Some s -> Some s
-                | None ->
-                    match tail with
-                    | _ :: _ -> Some(List.last tail)
-                    | [] when p.Subtasks.Count > 0 ->
-                        let longest = p.Subtasks.Values |> Seq.minBy (fun t -> t.StartedAt)
-                        Some longest.Label
-                    | [] -> None
+                    let derived =
+                        match r.SummaryOverride with
+                        | Some s -> Some s
+                        | None ->
+                            match tail with
+                            | _ :: _ -> Some(List.last tail)
+                            | [] when r.Subtasks.Count > 0 ->
+                                let longest = r.Subtasks.Values |> Seq.minBy (fun t -> t.StartedAt)
+                                Some longest.Label
+                            | [] -> None
+
+                    let d =
+                        (r.Subtasks.Values |> Seq.sumBy subtaskBytes)
+                        + (r.ActivityLog |> Seq.sumBy stringBytes)
+                        + r.SummaryBytes
+
+                    tail, derived, d
+                | Idle -> [], None, 0
 
             let record =
                 { StartedAt = startedAt
@@ -184,17 +229,9 @@ type State() =
                   Summary = derivedSummary
                   ActivityTail = tail }
 
-            // Bytes held by subtasks + tail + summary override are all discarded.
-            let discarded =
-                (p.Subtasks.Values |> Seq.sumBy subtaskBytes)
-                + (p.ActivityLog |> Seq.sumBy stringBytes)
-                + p.SummaryBytes
-
+            // Bytes held by the prior Recording state are all discarded.
             addBytes p (-discarded)
-            p.Subtasks.Clear()
-            p.ActivityLog.Clear()
-            p.SummaryOverride <- None
-            p.SummaryBytes <- 0
+            p.Phase <- Idle
 
             p.History.Enqueue(record)
             addBytes p (runRecordBytes record)
@@ -210,16 +247,16 @@ type State() =
         let p = getOrCreate plugin
 
         lock p.Gate (fun () ->
-            let discarded =
-                (p.Subtasks.Values |> Seq.sumBy subtaskBytes)
-                + (p.ActivityLog |> Seq.sumBy stringBytes)
-                + p.SummaryBytes
+            match p.Phase with
+            | Recording r ->
+                let discarded =
+                    (r.Subtasks.Values |> Seq.sumBy subtaskBytes)
+                    + (r.ActivityLog |> Seq.sumBy stringBytes)
+                    + r.SummaryBytes
 
-            addBytes p (-discarded)
-            p.Subtasks.Clear()
-            p.ActivityLog.Clear()
-            p.SummaryOverride <- None
-            p.SummaryBytes <- 0)
+                addBytes p (-discarded)
+                p.Phase <- Idle
+            | Idle -> ())
 
     member _.GetSnapshot(plugin: string) : Snapshot =
         let exists, p = lock pluginsGate (fun () -> plugins.TryGetValue plugin)
@@ -230,14 +267,19 @@ type State() =
               LastRun = None }
         else
             lock p.Gate (fun () ->
+                let subtasks, tail =
+                    match p.Phase with
+                    | Recording r -> r.Subtasks.Values |> Seq.toList, r.ActivityLog |> List.ofSeq
+                    | Idle -> [], []
+
                 let lastRun =
                     if p.History.Count = 0 then
                         None
                     else
                         Some(p.History.ToArray().[p.History.Count - 1])
 
-                { Subtasks = p.Subtasks.Values |> Seq.toList
-                  ActivityTail = p.ActivityLog |> List.ofSeq
+                { Subtasks = subtasks
+                  ActivityTail = tail
                   LastRun = lastRun })
 
     member this.GetSubtasks(plugin: string) : Subtask list = this.GetSnapshot(plugin).Subtasks

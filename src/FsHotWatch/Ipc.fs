@@ -28,6 +28,31 @@ let private formatStatus (status: PluginStatus) =
     | Completed at -> $"Completed at {at:O}"
     | Failed(error, at) -> $"Failed at {at:O}: {error}"
 
+/// Serialize PluginStatus as a tagged JSON variant so consumers can round-trip
+/// the discriminated union without string parsing.
+let private statusPayload (status: PluginStatus) : obj =
+    match status with
+    | Idle -> {| tag = "idle" |} :> obj
+    | Running since ->
+        {| tag = "running"
+           since = since.ToString("O") |}
+        :> obj
+    | Completed at ->
+        {| tag = "completed"
+           at = at.ToString("O") |}
+        :> obj
+    | Failed(error, at) ->
+        {| tag = "failed"
+           error = error
+           at = at.ToString("O") |}
+        :> obj
+
+/// Serialize RunOutcome as a tagged JSON variant.
+let private outcomePayload (outcome: RunOutcome) : obj =
+    match outcome with
+    | CompletedRun -> {| tag = "completed" |} :> obj
+    | FailedRun e -> {| tag = "failed"; error = e |} :> obj
+
 let private pluginStatusPayload (host: PluginHost) (name: string) (status: PluginStatus) : obj =
     let snap = host.GetActivitySnapshot(name)
 
@@ -43,11 +68,6 @@ let private pluginStatusPayload (host: PluginHost) (name: string) (status: Plugi
         match snap.LastRun with
         | None -> null
         | Some r ->
-            let outcomeStr, errorStr =
-                match r.Outcome with
-                | CompletedRun -> "Completed", (null: obj)
-                | FailedRun e -> "Failed", (box e)
-
             let summary =
                 match r.Summary with
                 | Some s -> box s
@@ -55,13 +75,12 @@ let private pluginStatusPayload (host: PluginHost) (name: string) (status: Plugi
 
             {| startedAt = r.StartedAt.ToString("O")
                elapsedMs = int64 r.Elapsed.TotalMilliseconds
-               outcome = outcomeStr
+               outcome = outcomePayload r.Outcome
                summary = summary
-               activityTail = r.ActivityTail
-               error = errorStr |}
+               activityTail = r.ActivityTail |}
             :> obj
 
-    {| status = formatStatus status
+    {| status = statusPayload status
        subtasks = subtasks
        activityTail = snap.ActivityTail
        lastRun = lastRun |}
