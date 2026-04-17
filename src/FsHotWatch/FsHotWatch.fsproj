@@ -51,6 +51,7 @@
     <Compile Include="Events.fs" />
     <Compile Include="PathFilter.fs" />
     <Compile Include="ProcessHelper.fs" />
+    <Compile Include="FsHwPaths.fs" />
     <Compile Include="JjHelper.fs" />
     <Compile Include="CheckCache.fs" />
     <Compile Include="InMemoryCheckCache.fs" />
