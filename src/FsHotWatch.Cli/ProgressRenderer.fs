@@ -242,3 +242,21 @@ let renderAll (mode: RenderMode) (now: DateTime) (statuses: Map<string, ParsedPl
     statuses
     |> Map.toList
     |> List.collect (fun (name, parsed) -> renderPlugin mode now name parsed)
+
+/// Convert a run-once snapshot to a ParsedPluginStatus so the same renderer can display it.
+let snapshotToParsed (s: FsHotWatch.Cli.RunOnceOutput.PluginRunSnapshot) : ParsedPluginStatus =
+    { Status = s.Status
+      Subtasks = s.Subtasks
+      ActivityTail = s.ActivityTail
+      LastRun = s.LastRun }
+
+/// Render a run-once snapshot map as a multi-line string (joined with newlines).
+let renderSnapshots
+    (mode: RenderMode)
+    (now: DateTime)
+    (snapshots: Map<string, FsHotWatch.Cli.RunOnceOutput.PluginRunSnapshot>)
+    : string =
+    snapshots
+    |> Map.map (fun _ s -> snapshotToParsed s)
+    |> renderAll mode now
+    |> String.concat "\n"
