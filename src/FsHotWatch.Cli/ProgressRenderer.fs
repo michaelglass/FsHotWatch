@@ -3,6 +3,7 @@ module FsHotWatch.Cli.ProgressRenderer
 open System
 open CommandTree
 open FsHotWatch.Events
+open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcOutput
 
 /// Rendering mode for the progress block. Verbose is the default;
@@ -236,27 +237,9 @@ let renderPlugin (mode: RenderMode) (now: DateTime) (name: string) (parsed: Pars
     | Compact -> renderCompact now name parsed
     | Verbose -> renderVerbose now name parsed
 
-/// Render all plugin statuses in the given mode.
-/// Callers join the result with newlines and use the line count for cursor-up erase.
+/// Render all plugin statuses in the given mode. Callers join with newlines
+/// and use the line count for cursor-up erase.
 let renderAll (mode: RenderMode) (now: DateTime) (statuses: Map<string, ParsedPluginStatus>) : string list =
     statuses
     |> Map.toList
     |> List.collect (fun (name, parsed) -> renderPlugin mode now name parsed)
-
-/// Convert a run-once snapshot to a ParsedPluginStatus so the same renderer can display it.
-let snapshotToParsed (s: FsHotWatch.Cli.RunOnceOutput.PluginRunSnapshot) : ParsedPluginStatus =
-    { Status = s.Status
-      Subtasks = s.Subtasks
-      ActivityTail = s.ActivityTail
-      LastRun = s.LastRun }
-
-/// Render a run-once snapshot map as a multi-line string (joined with newlines).
-let renderSnapshots
-    (mode: RenderMode)
-    (now: DateTime)
-    (snapshots: Map<string, FsHotWatch.Cli.RunOnceOutput.PluginRunSnapshot>)
-    : string =
-    snapshots
-    |> Map.map (fun _ s -> snapshotToParsed s)
-    |> renderAll mode now
-    |> String.concat "\n"
