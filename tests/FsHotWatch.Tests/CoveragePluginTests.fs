@@ -10,7 +10,7 @@ open FsHotWatch.PluginHost
 open FsHotWatch.Coverage.CoveragePlugin
 open FsHotWatch.Tests.TestHelpers
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``coverage command returns empty initially`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -21,7 +21,7 @@ let ``coverage command returns empty initially`` () =
     test <@ result.IsSome @>
     test <@ result.Value = "{}" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``coverage plugin reads Cobertura XML`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-test-{Guid.NewGuid():N}")
     let subDir = Path.Combine(tmpDir, "TestProject")
@@ -82,7 +82,7 @@ let ``coverage plugin reads Cobertura XML`` () =
         with _ ->
             ()
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``coverage plugin fails when below threshold`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-thresh-{Guid.NewGuid():N}")
     let subDir = Path.Combine(tmpDir, "MyProject")
@@ -132,7 +132,7 @@ let ``coverage plugin fails when below threshold`` () =
         with _ ->
             ()
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``coverage plugin skips check when no test results`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -159,7 +159,7 @@ let ``coverage plugin skips check when no test results`` () =
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``coverage plugin reports Failed when coverage dir does not exist`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -189,7 +189,7 @@ let ``coverage plugin reports Failed when coverage dir does not exist`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``coverage plugin handles threshold file with missing branch property`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-nobranch-{Guid.NewGuid():N}")
     let subDir = Path.Combine(tmpDir, "Proj")
@@ -237,7 +237,7 @@ let ``coverage plugin handles threshold file with missing branch property`` () =
         with _ ->
             ()
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``coverage plugin handles threshold file with missing line property`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-noline-{Guid.NewGuid():N}")
     let subDir = Path.Combine(tmpDir, "Proj")
@@ -285,7 +285,7 @@ let ``coverage plugin handles threshold file with missing line property`` () =
         with _ ->
             ()
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``coverage plugin handles invalid thresholds JSON`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-badjson-{Guid.NewGuid():N}")
     let subDir = Path.Combine(tmpDir, "TestProject")
@@ -333,7 +333,7 @@ let ``coverage plugin handles invalid thresholds JSON`` () =
         with _ ->
             ()
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``coverage plugin handles non-existent thresholds file`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-nothresh-{Guid.NewGuid():N}")
     let subDir = Path.Combine(tmpDir, "TestProject")
@@ -378,7 +378,7 @@ let ``coverage plugin handles non-existent thresholds file`` () =
         with _ ->
             ()
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``coverage plugin handles XML with missing attributes`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-nullattr-{Guid.NewGuid():N}")
     let subDir = Path.Combine(tmpDir, "TestProject")
@@ -426,7 +426,7 @@ let ``coverage plugin handles XML with missing attributes`` () =
         with _ ->
             ()
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``coverage plugin reports error when afterCheck fails`` () =
     withTempDir "cov-aftercheck-fail" (fun tmpDir ->
         let subDir = Path.Combine(tmpDir, "TestProject")
@@ -465,7 +465,7 @@ let ``coverage plugin reports error when afterCheck fails`` () =
 
         test <@ host.HasFailingReasons(warningsAreFailures = true) @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``coverage plugin clears afterCheck error on success`` () =
     withTempDir "cov-aftercheck-pass" (fun tmpDir ->
         let subDir = Path.Combine(tmpDir, "TestProject")
@@ -501,7 +501,7 @@ let ``coverage plugin clears afterCheck error on success`` () =
 
         test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``coverage plugin handles invalid XML file`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-badxml-{Guid.NewGuid():N}")
     let subDir = Path.Combine(tmpDir, "TestProject")

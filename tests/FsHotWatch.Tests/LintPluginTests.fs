@@ -27,12 +27,12 @@ let private fakeFileCheckResult file =
       ProjectOptions = Unchecked.defaultof<_>
       Version = 0L }
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``plugin has correct name`` () =
     let handler = create None None None
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "lint" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``warnings command returns zeroes when no files checked`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -44,12 +44,12 @@ let ``warnings command returns zeroes when no files checked`` () =
     test <@ result.Value.Contains("\"files\": 0") @>
     test <@ result.Value.Contains("\"warnings\": 0") @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``LintPlugin with configPath sets up lint params`` () =
     let handler = create (Some "/tmp/nonexistent-config.json") None None
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "lint" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``lint error path sets Failed status on null check results`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -85,7 +85,7 @@ let ``lint error path sets Failed status on null check results`` () =
     | Running _ -> ()
     | other -> Assert.Fail($"Expected Failed or Running, got: %A{other}")
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``warnings command with args passes through`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -99,7 +99,7 @@ let ``warnings command with args passes through`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("\"files\": 0") @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``lint skips file with null ParseResults without crashing`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -132,7 +132,7 @@ let ``lint skips file with null ParseResults without crashing`` () =
     | Failed(msg, _) -> Assert.Fail($"Should not fail -- got: %s{msg}")
     | _ -> ()
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``lint runner returning Failure reports errors and sets Failed status`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -155,7 +155,7 @@ let ``lint runner returning Failure reports errors and sets Failed status`` () =
     let errors = host.GetErrorsByPlugin("lint")
     test <@ errors |> Map.isEmpty |> not @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``lint runner returning Success with warnings reports them to error ledger`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -198,7 +198,7 @@ let ``lint runner returning Success with warnings reports them to error ledger``
     test <@ entries.[0].Line = 10 @>
     test <@ entries.[0].Column = 4 @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``lint runner returning Success with no warnings clears errors`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -227,7 +227,7 @@ let ``lint runner returning Success with no warnings clears errors`` () =
     test <@ cmdResult.IsSome @>
     test <@ cmdResult.Value.Contains("\"warnings\": 0") @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``warnings command reflects warning count after lint with warnings`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
