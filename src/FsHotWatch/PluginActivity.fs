@@ -1,128 +1,169 @@
-/// Per-plugin concurrent subtasks, activity log ring buffer, and bounded run history.
 module FsHotWatch.PluginActivity
 
 open System
 open System.Collections.Generic
 open FsHotWatch.Events
 
+/// Synthetic plugin name used to surface check-pipeline activity in IPC status output.
+[<Literal>]
+let FcsPluginName = "fcs"
+
+/// Minimal activity sink — used by in-host subsystems (e.g. the check pipeline)
+/// that report activity without being registered plugins.
+[<NoComparison; NoEquality>]
+type IActivitySink =
+    abstract StartSubtask: key: string * label: string -> unit
+    abstract EndSubtask: key: string -> unit
+    abstract Log: message: string -> unit
+    abstract SetSummary: summary: string -> unit
+
 let private maxTailPerPlugin = 64
 let private maxHistoryPerPlugin = 16
 let private maxTotalBytes = 2 * 1024 * 1024
 
+let private stringBytes (s: string) = if isNull s then 0 else s.Length * 2
+
+let private runRecordBytes (r: RunRecord) =
+    let summaryBytes =
+        match r.Summary with
+        | Some s -> stringBytes s
+        | None -> 0
+
+    let errorBytes =
+        match r.Outcome with
+        | FailedRun e -> stringBytes e
+        | CompletedRun -> 0
+
+    summaryBytes + errorBytes + (r.ActivityTail |> List.sumBy stringBytes)
+
+let private subtaskBytes (t: Subtask) = stringBytes t.Key + stringBytes t.Label
+
 [<NoComparison; NoEquality>]
 type private PerPlugin =
-    { mutable Subtasks: Map<string, Subtask>
+    { Gate: obj
+      Subtasks: Dictionary<string, Subtask>
       ActivityLog: Queue<string>
       mutable SummaryOverride: string option
-      History: Queue<RunRecord> }
+      mutable SummaryBytes: int
+      History: Queue<RunRecord>
+      mutable Bytes: int }
 
-/// Bounded, thread-safe per-plugin activity state.
+/// Snapshot of a plugin's current activity state — taken under one lock.
+type Snapshot =
+    { Subtasks: Subtask list
+      ActivityTail: string list
+      LastRun: RunRecord option }
+
 type State() =
-    let gate = obj ()
+    let pluginsGate = obj ()
     let plugins = Dictionary<string, PerPlugin>()
+    let mutable totalBytes = 0
 
     let getOrCreate name =
-        match plugins.TryGetValue name with
-        | true, p -> p
-        | _ ->
-            let p =
-                { Subtasks = Map.empty
-                  ActivityLog = Queue<string>()
-                  SummaryOverride = None
-                  History = Queue<RunRecord>() }
+        lock pluginsGate (fun () ->
+            match plugins.TryGetValue name with
+            | true, p -> p
+            | _ ->
+                let p =
+                    { Gate = obj ()
+                      Subtasks = Dictionary<string, Subtask>()
+                      ActivityLog = Queue<string>()
+                      SummaryOverride = None
+                      SummaryBytes = 0
+                      History = Queue<RunRecord>()
+                      Bytes = 0 }
 
-            plugins.[name] <- p
-            p
-
-    let stringBytes (s: string) = if isNull s then 0 else s.Length * 2
-
-    let runRecordBytes (r: RunRecord) =
-        let summaryBytes =
-            match r.Summary with
-            | Some s -> stringBytes s
-            | None -> 0
-
-        let errorBytes =
-            match r.Outcome with
-            | FailedRun e -> stringBytes e
-            | CompletedRun -> 0
-
-        summaryBytes + errorBytes + (r.ActivityTail |> List.sumBy stringBytes)
-
-    let subtaskBytes (t: Subtask) = stringBytes t.Key + stringBytes t.Label
-
-    let totalBytes () =
-        let mutable total = 0
-
-        for KeyValue(_, p) in plugins do
-            for msg in p.ActivityLog do
-                total <- total + stringBytes msg
-
-            for r in p.History do
-                total <- total + runRecordBytes r
-
-            for KeyValue(_, t) in p.Subtasks do
-                total <- total + subtaskBytes t
-
-        total
-
-    let evictOldestHistory () =
-        // Find the plugin whose history head has the earliest StartedAt; pop it.
-        let mutable candidate: (string * DateTime) option = None
-
-        for KeyValue(name, p) in plugins do
-            if p.History.Count > 0 then
-                let h = p.History.Peek()
-
-                match candidate with
-                | None -> candidate <- Some(name, h.StartedAt)
-                | Some(_, t) when h.StartedAt < t -> candidate <- Some(name, h.StartedAt)
-                | _ -> ()
-
-        match candidate with
-        | Some(name, _) -> plugins.[name].History.Dequeue() |> ignore
-        | None -> ()
+                plugins.[name] <- p
+                p)
 
     let enforceGlobalCap () =
-        while totalBytes () > maxTotalBytes
-              && (plugins.Values |> Seq.exists (fun p -> p.History.Count > 0)) do
-            evictOldestHistory ()
+        // Called after additions. Evict oldest history entries across all plugins
+        // until under budget. Each plugin updates totalBytes + its own Bytes when it
+        // evicts, so we only need to find the global oldest each iteration.
+        while totalBytes > maxTotalBytes do
+            let mutable candidate: (PerPlugin * DateTime) option = None
+
+            lock pluginsGate (fun () ->
+                for KeyValue(_, p) in plugins do
+                    lock p.Gate (fun () ->
+                        if p.History.Count > 0 then
+                            let h = p.History.Peek()
+
+                            match candidate with
+                            | None -> candidate <- Some(p, h.StartedAt)
+                            | Some(_, t) when h.StartedAt < t -> candidate <- Some(p, h.StartedAt)
+                            | _ -> ()))
+
+            match candidate with
+            | Some(p, _) ->
+                lock p.Gate (fun () ->
+                    if p.History.Count > 0 then
+                        let evicted = p.History.Dequeue()
+                        let sz = runRecordBytes evicted
+                        p.Bytes <- p.Bytes - sz
+                        System.Threading.Interlocked.Add(&totalBytes, -sz) |> ignore)
+            | None -> ()
+
+    let addBytes (p: PerPlugin) (n: int) =
+        p.Bytes <- p.Bytes + n
+        System.Threading.Interlocked.Add(&totalBytes, n) |> ignore
 
     member _.StartSubtask(plugin: string, key: string, label: string) : unit =
-        lock gate (fun () ->
-            let p = getOrCreate plugin
+        let p = getOrCreate plugin
 
-            if not (Map.containsKey key p.Subtasks) then
+        lock p.Gate (fun () ->
+            if not (p.Subtasks.ContainsKey key) then
                 let t =
                     { Key = key
                       Label = label
                       StartedAt = DateTime.UtcNow }
 
-                p.Subtasks <- Map.add key t p.Subtasks)
+                p.Subtasks.[key] <- t
+                addBytes p (subtaskBytes t))
+
+        if totalBytes > maxTotalBytes then
+            enforceGlobalCap ()
 
     member _.EndSubtask(plugin: string, key: string) : unit =
-        lock gate (fun () ->
-            let p = getOrCreate plugin
-            p.Subtasks <- Map.remove key p.Subtasks)
+        let p = getOrCreate plugin
+
+        lock p.Gate (fun () ->
+            match p.Subtasks.TryGetValue key with
+            | true, t ->
+                p.Subtasks.Remove key |> ignore
+                addBytes p (-(subtaskBytes t))
+            | _ -> ())
 
     member _.Log(plugin: string, message: string) : unit =
-        lock gate (fun () ->
-            let p = getOrCreate plugin
+        let p = getOrCreate plugin
+
+        lock p.Gate (fun () ->
             p.ActivityLog.Enqueue(message)
+            addBytes p (stringBytes message)
 
-            while p.ActivityLog.Count > maxTailPerPlugin do
-                p.ActivityLog.Dequeue() |> ignore
+            if p.ActivityLog.Count > maxTailPerPlugin then
+                let dropped = p.ActivityLog.Dequeue()
+                addBytes p (-(stringBytes dropped)))
 
-            enforceGlobalCap ())
+        if totalBytes > maxTotalBytes then
+            enforceGlobalCap ()
 
     member _.SetSummary(plugin: string, summary: string) : unit =
-        lock gate (fun () ->
-            let p = getOrCreate plugin
-            p.SummaryOverride <- Some summary)
+        let p = getOrCreate plugin
+
+        lock p.Gate (fun () ->
+            addBytes p (-p.SummaryBytes)
+            p.SummaryOverride <- Some summary
+            p.SummaryBytes <- stringBytes summary
+            addBytes p p.SummaryBytes)
+
+        if totalBytes > maxTotalBytes then
+            enforceGlobalCap ()
 
     member _.RecordTerminal(plugin: string, outcome: RunOutcome, startedAt: DateTime, at: DateTime) : unit =
-        lock gate (fun () ->
-            let p = getOrCreate plugin
+        let p = getOrCreate plugin
+
+        lock p.Gate (fun () ->
             let tail = p.ActivityLog |> List.ofSeq
 
             let derivedSummary =
@@ -131,14 +172,10 @@ type State() =
                 | None ->
                     match tail with
                     | _ :: _ -> Some(List.last tail)
-                    | [] ->
-                        if Map.isEmpty p.Subtasks then
-                            None
-                        else
-                            let longest =
-                                p.Subtasks |> Map.toSeq |> Seq.map snd |> Seq.minBy (fun t -> t.StartedAt)
-
-                            Some longest.Label
+                    | [] when p.Subtasks.Count > 0 ->
+                        let longest = p.Subtasks.Values |> Seq.minBy (fun t -> t.StartedAt)
+                        Some longest.Label
+                    | [] -> None
 
             let record =
                 { StartedAt = startedAt
@@ -147,40 +184,72 @@ type State() =
                   Summary = derivedSummary
                   ActivityTail = tail }
 
-            p.History.Enqueue(record)
+            // Bytes held by subtasks + tail + summary override are all discarded.
+            let discarded =
+                (p.Subtasks.Values |> Seq.sumBy subtaskBytes)
+                + (p.ActivityLog |> Seq.sumBy stringBytes)
+                + p.SummaryBytes
 
-            while p.History.Count > maxHistoryPerPlugin do
-                p.History.Dequeue() |> ignore
-
-            // Reset run state
-            p.Subtasks <- Map.empty
+            addBytes p (-discarded)
+            p.Subtasks.Clear()
             p.ActivityLog.Clear()
             p.SummaryOverride <- None
-            enforceGlobalCap ())
+            p.SummaryBytes <- 0
+
+            p.History.Enqueue(record)
+            addBytes p (runRecordBytes record)
+
+            while p.History.Count > maxHistoryPerPlugin do
+                let evicted = p.History.Dequeue()
+                addBytes p (-(runRecordBytes evicted)))
+
+        if totalBytes > maxTotalBytes then
+            enforceGlobalCap ()
 
     member _.ResetRun(plugin: string) : unit =
-        lock gate (fun () ->
-            let p = getOrCreate plugin
-            p.Subtasks <- Map.empty
+        let p = getOrCreate plugin
+
+        lock p.Gate (fun () ->
+            let discarded =
+                (p.Subtasks.Values |> Seq.sumBy subtaskBytes)
+                + (p.ActivityLog |> Seq.sumBy stringBytes)
+                + p.SummaryBytes
+
+            addBytes p (-discarded)
+            p.Subtasks.Clear()
             p.ActivityLog.Clear()
-            p.SummaryOverride <- None)
+            p.SummaryOverride <- None
+            p.SummaryBytes <- 0)
 
-    member _.GetSubtasks(plugin: string) : Subtask list =
-        lock gate (fun () ->
-            match plugins.TryGetValue plugin with
-            | true, p -> p.Subtasks |> Map.toList |> List.map snd
-            | _ -> [])
+    member _.GetSnapshot(plugin: string) : Snapshot =
+        let exists, p = lock pluginsGate (fun () -> plugins.TryGetValue plugin)
 
-    member _.GetActivityTail(plugin: string) : string list =
-        lock gate (fun () ->
-            match plugins.TryGetValue plugin with
-            | true, p -> p.ActivityLog |> List.ofSeq
-            | _ -> [])
+        if not exists then
+            { Subtasks = []
+              ActivityTail = []
+              LastRun = None }
+        else
+            lock p.Gate (fun () ->
+                let lastRun =
+                    if p.History.Count = 0 then
+                        None
+                    else
+                        Some(p.History.ToArray().[p.History.Count - 1])
+
+                { Subtasks = p.Subtasks.Values |> Seq.toList
+                  ActivityTail = p.ActivityLog |> List.ofSeq
+                  LastRun = lastRun })
+
+    member this.GetSubtasks(plugin: string) : Subtask list = this.GetSnapshot(plugin).Subtasks
+
+    member this.GetActivityTail(plugin: string) : string list = this.GetSnapshot(plugin).ActivityTail
 
     member _.GetHistory(plugin: string) : RunRecord list =
-        lock gate (fun () ->
-            match plugins.TryGetValue plugin with
-            | true, p -> p.History |> List.ofSeq
-            | _ -> [])
+        let exists, p = lock pluginsGate (fun () -> plugins.TryGetValue plugin)
 
-    member _.TotalByteSize: int = lock gate (fun () -> totalBytes ())
+        if not exists then
+            []
+        else
+            lock p.Gate (fun () -> p.History |> List.ofSeq)
+
+    member _.TotalByteSize: int = totalBytes

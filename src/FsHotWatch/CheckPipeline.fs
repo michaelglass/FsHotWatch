@@ -17,21 +17,12 @@ let private cancelAndDispose (cts: CancellationTokenSource) =
     with :? ObjectDisposedException ->
         ()
 
-/// Optional activity callbacks the pipeline emits to surface progress
-/// under the synthetic "fcs" plugin name. All members are safe no-ops by default.
-[<NoComparison; NoEquality>]
-type CheckActivityReporter =
-    { StartSubtask: string -> string -> unit
-      EndSubtask: string -> unit
-      Log: string -> unit
-      CompleteWithSummary: string -> unit }
-
-module CheckActivityReporter =
-    let noop =
-        { StartSubtask = fun _ _ -> ()
-          EndSubtask = fun _ -> ()
-          Log = fun _ -> ()
-          CompleteWithSummary = fun _ -> () }
+let private noopSink =
+    { new PluginActivity.IActivitySink with
+        member _.StartSubtask(_, _) = ()
+        member _.EndSubtask _ = ()
+        member _.Log _ = ()
+        member _.SetSummary _ = () }
 
 /// Manages project options and performs incremental file checking with the warm FSharpChecker.
 type CheckPipeline
@@ -39,9 +30,9 @@ type CheckPipeline
         checker: FSharpChecker,
         ?cacheBackend: ICheckCacheBackend,
         ?cacheKeyProvider: ICacheKeyProvider,
-        ?activityReporter: CheckActivityReporter
+        ?activity: PluginActivity.IActivitySink
     ) =
-    let activity = defaultArg activityReporter CheckActivityReporter.noop
+    let activity = defaultArg activity noopSink
 
     let keyProvider =
         defaultArg cacheKeyProvider (TimestampCacheKeyProvider() :> ICacheKeyProvider)
@@ -220,7 +211,7 @@ type CheckPipeline
                         | Some backend, Some key -> backend.Set key result
                         | _ -> ()
 
-                        activity.Log $"checked {Path.GetFileName absPath}"
+                        activity.Log($"checked {Path.GetFileName absPath}")
                         return Some result
                     | FSharpCheckFileAnswer.Aborted ->
                         return
@@ -288,7 +279,7 @@ type CheckPipeline
             | false, _ -> return None
             | true, options ->
                 let projectKey = Path.GetFileName projectPath
-                activity.StartSubtask projectKey $"checking {projectKey}"
+                activity.StartSubtask(projectKey, $"checking {projectKey}")
                 let results = System.Collections.Generic.Dictionary<string, FileCheckResult>()
 
                 try
@@ -299,9 +290,9 @@ type CheckPipeline
                         | Some r -> results[sourceFile] <- r
                         | None -> ()
                 finally
-                    activity.EndSubtask projectKey
+                    activity.EndSubtask(projectKey)
 
-                activity.CompleteWithSummary $"checked {results.Count} files in {projectKey}"
+                activity.SetSummary($"checked {results.Count} files in {projectKey}")
 
                 return
                     Some

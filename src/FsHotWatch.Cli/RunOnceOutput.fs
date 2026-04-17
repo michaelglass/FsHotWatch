@@ -6,6 +6,13 @@ open CommandTree
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 
+/// Fully parsed per-plugin status including subtasks, activity tail, and last-run history.
+type ParsedPluginStatus =
+    { Status: PluginStatus
+      Subtasks: Subtask list
+      ActivityTail: string list
+      LastRun: RunRecord option }
+
 /// Format a single plugin result line with ANSI colors and timing.
 /// Example: "  ✓ Build                        3.2s"
 /// Example: "  ✗ Lint                         6.4s"
@@ -92,27 +99,26 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
         sb.ToString().TrimEnd('\n', '\r')
 
 /// Run a daemon's RunOnce with live progress display to stderr.
-/// Uses spinners when interactive, plain output otherwise.
-/// Returns the final statuses.
 let runOnceWithProgress (daemon: FsHotWatch.Daemon.Daemon) : Map<string, PluginStatus> =
     if UI.isInteractive then
         UI.withSpinnerQuiet "Running checks" (fun () -> daemon.RunOnce() |> Async.RunSynchronously)
     else
         daemon.RunOnce() |> Async.RunSynchronously
 
-/// Structured status projection for a single plugin, derived from PluginHost state post-run.
-type PluginRunSnapshot =
-    { Status: PluginStatus
-      Subtasks: Subtask list
-      ActivityTail: string list
-      LastRun: RunRecord option }
+/// Build a parsed-status map from the daemon's host, for use by the progress renderer.
+let snapshotHost (host: FsHotWatch.PluginHost.PluginHost) (statuses: Map<string, PluginStatus>) =
+    statuses
+    |> Map.map (fun name status ->
+        let snap = host.GetActivitySnapshot(name)
+
+        { Status = status
+          Subtasks = snap.Subtasks
+          ActivityTail = snap.ActivityTail
+          LastRun = snap.LastRun })
 
 /// Run a daemon in run-once mode and report results.
-/// pluginName = None queries all errors; Some name queries one plugin.
-/// `renderStatuses` is injected so callers choose the progress renderer (compact/verbose).
-/// Returns exit code (0 = clean, 1 = errors).
 let runOnceAndReport
-    (renderStatuses: Map<string, PluginRunSnapshot> -> string)
+    (renderSummary: Map<string, ParsedPluginStatus> -> string)
     (noWarnFail: bool)
     (createDaemon: string -> FsHotWatch.Daemon.Daemon)
     (repoRoot: string)
@@ -137,17 +143,8 @@ let runOnceAndReport
         |> List.filter (fun (_, e) -> ErrorEntry.isFailing (not noWarnFail) e)
         |> List.length
 
-    let snapshots =
-        statuses
-        |> Map.map (fun name status ->
-            let history = daemon.Host.GetHistory(name)
-
-            { Status = status
-              Subtasks = daemon.Host.GetSubtasks(name)
-              ActivityTail = daemon.Host.GetActivityTail(name)
-              LastRun = history |> List.tryHead })
-
-    let summary = renderStatuses snapshots
+    let parsed = snapshotHost daemon.Host statuses
+    let summary = renderSummary parsed
 
     if summary <> "" then
         eprintfn "%s" summary
