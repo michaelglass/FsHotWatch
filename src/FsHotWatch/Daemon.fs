@@ -911,13 +911,13 @@ module Daemon =
         let lifetime = new CancellationTokenSource()
 
         try
-            let errorDir = Path.Combine(repoRoot, ".fshw", "errors")
+            let errorDir = Path.Combine(FsHwPaths.root repoRoot, "errors")
 
             let fileReporter: IErrorReporter =
                 FsHotWatch.FileErrorReporter.FileErrorReporter(errorDir)
 
             fileReporter.ClearAll()
-            let taskCacheDir = Path.Combine(repoRoot, ".fshw", "cache", "tasks")
+            let taskCacheDir = Path.Combine(FsHwPaths.root repoRoot, "cache", "tasks")
             let taskCache = FsHotWatch.FileTaskCache.FileTaskCache(taskCacheDir)
 
             let host =
