@@ -5,7 +5,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.Cli.RunOnceOutput
-open FsHotWatch.Cli.IpcOutput
+open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Cli.ProgressRenderer
 
 /// Fixed "now" so elapsed calculations are deterministic across runs.

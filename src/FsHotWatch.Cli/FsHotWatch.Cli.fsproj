@@ -28,6 +28,7 @@
         <Compile Include="DaemonConfig.fs" />
         <Compile Include="InitConfig.fs" />
         <Compile Include="RunOnceOutput.fs" />
+        <Compile Include="IpcParsing.fs" />
         <Compile Include="IpcOutput.fs" />
         <Compile Include="ProgressRenderer.fs" />
         <Compile Include="Program.fs" />
