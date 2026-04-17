@@ -131,7 +131,6 @@ let create
                 match event with
                 | FileChecked result ->
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                    ctx.StartSubtask result.File $"analyzing {Path.GetFileName result.File}"
 
                     let checkResultsObj =
                         match result.CheckResults with
@@ -145,61 +144,67 @@ let create
                         do! semaphore.WaitAsync(cts.Token) |> Async.AwaitTask
 
                         try
-                            try
-                                let sourceText = result.Source |> SourceText.ofString
+                            return!
+                                PluginCtxHelpers.withSubtask
+                                    ctx
+                                    result.File
+                                    $"analyzing {Path.GetFileName result.File}"
+                                    (async {
+                                        try
+                                            let sourceText = result.Source |> SourceText.ofString
 
-                                let context =
-                                    createCliContext
-                                        (box result.File)
-                                        (box sourceText)
-                                        (box result.ParseResults)
-                                        checkResultsObj
-                                        (box result.ProjectOptions)
+                                            let context =
+                                                createCliContext
+                                                    (box result.File)
+                                                    (box sourceText)
+                                                    (box result.ParseResults)
+                                                    checkResultsObj
+                                                    (box result.ProjectOptions)
 
-                                let! messages =
-                                    try
-                                        client.RunAnalyzersSafely(context)
-                                    with ex ->
-                                        error
-                                            "analyzers"
-                                            $"RunAnalyzersSafely failed for %s{result.File}: %s{ex.ToString()}"
+                                            let! messages =
+                                                try
+                                                    client.RunAnalyzersSafely(context)
+                                                with ex ->
+                                                    error
+                                                        "analyzers"
+                                                        $"RunAnalyzersSafely failed for %s{result.File}: %s{ex.ToString()}"
 
-                                        reraise ()
+                                                    reraise ()
 
-                                let entries =
-                                    messages
-                                    |> List.collect (fun ar ->
-                                        match ar.Output with
-                                        | Ok msgs ->
-                                            msgs
-                                            |> List.map (fun m ->
-                                                { Message = m.Message
-                                                  Severity =
-                                                    match m.Severity with
-                                                    | Severity.Error -> DiagnosticSeverity.Error
-                                                    | Severity.Warning -> DiagnosticSeverity.Warning
-                                                    | Severity.Info -> DiagnosticSeverity.Info
-                                                    | Severity.Hint -> DiagnosticSeverity.Hint
-                                                  Line = m.Range.StartLine
-                                                  Column = m.Range.StartColumn
-                                                  Detail = None })
-                                        | Result.Error _ -> [])
+                                            let entries =
+                                                messages
+                                                |> List.collect (fun ar ->
+                                                    match ar.Output with
+                                                    | Ok msgs ->
+                                                        msgs
+                                                        |> List.map (fun m ->
+                                                            { Message = m.Message
+                                                              Severity =
+                                                                match m.Severity with
+                                                                | Severity.Error -> DiagnosticSeverity.Error
+                                                                | Severity.Warning -> DiagnosticSeverity.Warning
+                                                                | Severity.Info -> DiagnosticSeverity.Info
+                                                                | Severity.Hint -> DiagnosticSeverity.Hint
+                                                              Line = m.Range.StartLine
+                                                              Column = m.Range.StartColumn
+                                                              Detail = None })
+                                                    | Result.Error _ -> [])
 
-                                debug
-                                    "analyzers"
-                                    $"Analyzed %s{Path.GetFileName result.File}: %d{entries.Length} diagnostics"
+                                            debug
+                                                "analyzers"
+                                                $"Analyzed %s{Path.GetFileName result.File}: %d{entries.Length} diagnostics"
 
-                                if entries.IsEmpty then
-                                    ctx.ClearErrors result.File
-                                else
-                                    ctx.ReportErrors result.File entries
+                                            if entries.IsEmpty then
+                                                ctx.ClearErrors result.File
+                                            else
+                                                ctx.ReportErrors result.File entries
 
-                                ctx.Post(AnalysisComplete(result.File, entries))
-                            with ex ->
-                                ctx.Post(AnalysisFailed(result.File, ex.ToString()))
-                                error "analyzers" $"Error analyzing %s{result.File}: %s{ex.ToString()}"
+                                            ctx.Post(AnalysisComplete(result.File, entries))
+                                        with ex ->
+                                            ctx.Post(AnalysisFailed(result.File, ex.ToString()))
+                                            error "analyzers" $"Error analyzing %s{result.File}: %s{ex.ToString()}"
+                                    })
                         finally
-                            ctx.EndSubtask result.File
                             semaphore.Release() |> ignore
                     }
                     |> fun a -> Async.Start(a, cts.Token)
@@ -210,8 +215,7 @@ let create
 
                     let totalIssues = updated |> Map.toList |> List.sumBy (fun (_, e) -> e.Length)
 
-                    ctx.CompleteWithSummary $"analyzed {updated.Count} files, {totalIssues} issues"
-                    ctx.ReportStatus(Completed(DateTime.UtcNow))
+                    PluginCtxHelpers.completeWith ctx $"analyzed {updated.Count} files, {totalIssues} issues"
 
                     return
                         { state with
