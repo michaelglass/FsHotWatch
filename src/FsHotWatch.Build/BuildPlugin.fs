@@ -60,15 +60,16 @@ let create
     let startBuild (ctx: PluginCtx<BuildMsg>) (idle: Lifecycle<Idle, BuildOutcome>) =
         ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
         let running = Lifecycle.start idle
-        ctx.StartSubtask "build" $"dotnet build"
         ctx.Log $"Running: %s{buildCommand} %s{buildArgs}"
 
-        async {
-            try
+        PluginCtxHelpers.withSubtask
+            ctx
+            "build"
+            "dotnet build"
+            (async {
                 try
                     let (success, output) = runProcess buildCommand buildArgs ctx.RepoRoot env
                     let parsed = BuildDiagnostics.parseMSBuildDiagnostics output
-                    ctx.EndSubtask "build"
 
                     if success then
                         let n = countBuiltProjects output
@@ -99,16 +100,11 @@ let create
                         ctx.EmitBuildCompleted(BuildFailed [ output ])
                         ctx.Post(BuildDone(BuildOutputFailed output))
                 with ex ->
-                    ctx.EndSubtask "build"
                     ctx.ReportErrors "<build>" [ ErrorEntry.error ex.Message ]
 
                     ctx.EmitBuildCompleted(BuildFailed [ ex.Message ])
                     ctx.Post(BuildDone(BuildOutputFailed ex.Message))
-            with ex ->
-                ctx.EndSubtask "build"
-                error "build" $"Unexpected error: %s{ex.Message}"
-                ctx.Post(BuildDone(BuildOutputFailed ex.Message))
-        }
+            })
         |> Async.Start
 
         { Phase = RunningPhase running
@@ -140,70 +136,71 @@ let create
 
             ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
             let running = Lifecycle.start idle
-            ctx.StartSubtask "build" $"dotnet build ({roots.Length} roots)"
 
-            async {
-                try
-                    let mutable failures = []
-                    let mutable outputs = []
+            PluginCtxHelpers.withSubtask
+                ctx
+                "build"
+                $"dotnet build ({roots.Length} roots)"
+                (async {
+                    try
+                        let mutable failures = []
+                        let mutable outputs = []
 
-                    for root in roots do
-                        let rootStr = AbsProjectPath.value root
-                        let rendered = template.Replace("{project}", rootStr)
-                        let (cmd, cmdArgs) = splitCommand rendered
-                        ctx.Log $"Running template: %s{cmd} %s{cmdArgs}"
+                        for root in roots do
+                            let rootStr = AbsProjectPath.value root
+                            let rendered = template.Replace("{project}", rootStr)
+                            let (cmd, cmdArgs) = splitCommand rendered
+                            ctx.Log $"Running template: %s{cmd} %s{cmdArgs}"
 
-                        try
-                            let (success, output) = runProcess cmd cmdArgs ctx.RepoRoot env
-                            outputs <- output :: outputs
+                            try
+                                let (success, output) = runProcess cmd cmdArgs ctx.RepoRoot env
+                                outputs <- output :: outputs
 
-                            if not success then
-                                ctx.Log $"Template build FAILED for %s{rootStr}"
-                                error "build" $"Template build FAILED for %s{rootStr}"
-                                failures <- output :: failures
-                        with ex ->
-                            ctx.Log $"Template build exception for %s{rootStr}: %s{ex.Message}"
-                            error "build" $"Template build exception for %s{rootStr}: %s{ex.Message}"
-                            failures <- ex.Message :: failures
+                                if not success then
+                                    ctx.Log $"Template build FAILED for %s{rootStr}"
+                                    error "build" $"Template build FAILED for %s{rootStr}"
+                                    failures <- output :: failures
+                            with ex ->
+                                ctx.Log $"Template build exception for %s{rootStr}: %s{ex.Message}"
+                                error "build" $"Template build exception for %s{rootStr}: %s{ex.Message}"
+                                failures <- ex.Message :: failures
 
-                    ctx.EndSubtask "build"
-                    let combinedOutput = outputs |> List.rev |> String.concat "\n"
+                        let combinedOutput = outputs |> List.rev |> String.concat "\n"
 
-                    if failures.IsEmpty then
-                        let n = countBuiltProjects combinedOutput
+                        if failures.IsEmpty then
+                            let n = countBuiltProjects combinedOutput
 
-                        let summary = if n > 0 then $"built {n} projects" else "build succeeded"
+                            let summary = if n > 0 then $"built {n} projects" else "build succeeded"
 
-                        ctx.Log summary
-                        ctx.CompleteWithSummary summary
-                        let parsed = BuildDiagnostics.parseMSBuildDiagnostics combinedOutput
+                            ctx.Log summary
+                            ctx.CompleteWithSummary summary
+                            let parsed = BuildDiagnostics.parseMSBuildDiagnostics combinedOutput
 
-                        if parsed.IsEmpty then
-                            ctx.ClearErrors "<build>"
-                        else
-                            ctx.ReportErrors "<build>" parsed
-
-                        ctx.EmitBuildCompleted(BuildSucceeded)
-                        ctx.Post(BuildDone(BuildPassed combinedOutput))
-                    else
-                        let errors = failures |> List.rev
-
-                        let parsed = BuildDiagnostics.parseMSBuildDiagnostics (errors |> String.concat "\n")
-
-                        let entries =
                             if parsed.IsEmpty then
-                                errors |> List.map ErrorEntry.error
+                                ctx.ClearErrors "<build>"
                             else
-                                parsed
+                                ctx.ReportErrors "<build>" parsed
 
-                        ctx.ReportErrors "<build>" entries
-                        ctx.EmitBuildCompleted(BuildFailed errors)
-                        ctx.Post(BuildDone(BuildOutputFailed(errors |> String.concat "\n")))
-                with ex ->
-                    ctx.EndSubtask "build"
-                    error "build" $"Unexpected error: %s{ex.Message}"
-                    ctx.Post(BuildDone(BuildOutputFailed ex.Message))
-            }
+                            ctx.EmitBuildCompleted(BuildSucceeded)
+                            ctx.Post(BuildDone(BuildPassed combinedOutput))
+                        else
+                            let errors = failures |> List.rev
+
+                            let parsed = BuildDiagnostics.parseMSBuildDiagnostics (errors |> String.concat "\n")
+
+                            let entries =
+                                if parsed.IsEmpty then
+                                    errors |> List.map ErrorEntry.error
+                                else
+                                    parsed
+
+                            ctx.ReportErrors "<build>" entries
+                            ctx.EmitBuildCompleted(BuildFailed errors)
+                            ctx.Post(BuildDone(BuildOutputFailed(errors |> String.concat "\n")))
+                    with ex ->
+                        error "build" $"Unexpected error: %s{ex.Message}"
+                        ctx.Post(BuildDone(BuildOutputFailed ex.Message))
+                })
             |> Async.Start
 
             { Phase = RunningPhase running
