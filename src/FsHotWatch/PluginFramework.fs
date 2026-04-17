@@ -339,7 +339,6 @@ module PluginCtxHelpers =
         }
 
     /// Set the run summary and transition status to Completed at the current UTC time.
-    /// Sugar for `ctx.CompleteWithSummary s; ctx.ReportStatus (Completed DateTime.UtcNow)`.
     let completeWith (ctx: PluginCtx<'Msg>) (summary: string) : unit =
         ctx.CompleteWithSummary summary
         ctx.ReportStatus(Completed System.DateTime.UtcNow)
