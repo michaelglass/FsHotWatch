@@ -3,7 +3,6 @@
     <TargetFramework>net10.0</TargetFramework>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
     <PackageId>FsHotWatch.Coverage</PackageId>
     <Version>0.7.0-alpha.2</Version>
     <Authors>Michael Glass</Authors>
@@ -31,7 +30,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.201" PrivateAssets="All" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.202" PrivateAssets="All" />
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
   </ItemGroup>
 </Project>

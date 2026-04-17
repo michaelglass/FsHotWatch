@@ -1,7 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <NoWarn>$(NoWarn);NU1605;NU1607;NU1608;MSB3277;NETSDK1188</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="WildcardAnalyzer.fs" />
@@ -9,6 +8,6 @@
   <ItemGroup>
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
     <PackageReference Include="FSharp.Analyzers.SDK" Version="0.36.0" />
-    <PackageReference Include="FSharp.Compiler.Service" Version="43.12.201" />
+    <PackageReference Include="FSharp.Compiler.Service" Version="43.12.202" />
   </ItemGroup>
 </Project>
