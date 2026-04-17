@@ -126,7 +126,10 @@ type State() =
         p.Bytes <- p.Bytes + n
         System.Threading.Interlocked.Add(&totalBytes, n) |> ignore
 
-    // Must be called while holding p.Gate. Transitions Idle -> Recording lazily.
+    // Must be called while holding p.Gate. Log/SetSummary after RecordTerminal
+    // lazily start a fresh Recording so late-arriving output stays observable;
+    // that Recording won't be committed without a subsequent RecordTerminal or
+    // ResetRun — accepted tradeoff.
     let ensureRecording (p: PerPlugin) : RecordingState =
         match p.Phase with
         | Recording r -> r

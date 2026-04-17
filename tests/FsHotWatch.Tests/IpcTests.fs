@@ -7,6 +7,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Ipc
+open FsHotWatch.Cli
 open FsHotWatch.PluginHost
 open FsHotWatch.PluginFramework
 open FsHotWatch.Events
@@ -129,7 +130,9 @@ let ``GetPluginStatus returns specific plugin's status`` () =
         let result =
             IpcClient.getPluginStatus pipeName "status-plugin" |> Async.RunSynchronously
 
-        test <@ result = "Idle" @>
+        let parsed = IpcParsing.parsePluginStatuses result
+        test <@ parsed.ContainsKey("status-plugin") @>
+        test <@ parsed.["status-plugin"].Status = Idle @>
     finally
         cts.Cancel()
 
@@ -153,7 +156,8 @@ let ``GetPluginStatus returns not found for unknown plugin`` () =
         let result =
             IpcClient.getPluginStatus pipeName "nonexistent" |> Async.RunSynchronously
 
-        test <@ result = "not found" @>
+        let parsed = IpcParsing.parsePluginStatuses result
+        test <@ Map.isEmpty parsed @>
     finally
         cts.Cancel()
 
@@ -471,9 +475,16 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
 
     let target = DaemonRpcTarget(defaultRpcConfig host)
 
-    test <@ target.GetPluginStatus("idle-test") = "Idle" @>
-    test <@ (target.GetPluginStatus("failed-test")).Contains("bad") @>
-    test <@ target.GetPluginStatus("no-such") = "not found" @>
+    let getParsed name =
+        IpcParsing.parsePluginStatuses (target.GetPluginStatus(name))
+
+    test <@ (getParsed "idle-test").["idle-test"].Status = Idle @>
+
+    match (getParsed "failed-test").["failed-test"].Status with
+    | Failed(msg, _) -> test <@ msg = "bad" @>
+    | other -> failwithf "expected Failed, got %A" other
+
+    test <@ Map.isEmpty (getParsed "no-such") @>
 
 [<Fact(Timeout = 5000)>]
 let ``WaitForScan resolves immediately when generation already advanced`` () =

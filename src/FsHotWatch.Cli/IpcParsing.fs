@@ -33,41 +33,6 @@ let private tryParseUtcOr (fallback: DateTime) (s: string) : DateTime =
     | Some dt -> dt
     | None -> fallback
 
-/// Parse a legacy status string (e.g. "Running since <iso>") into PluginStatus.
-/// Kept for the GetPluginStatus single-plugin RPC, which returns a bare string.
-let parseStatus (s: string) : PluginStatus =
-    if s = "Idle" then
-        Idle
-    elif s.StartsWith("Running since ") then
-        match tryParseUtcOpt (s.Substring("Running since ".Length)) with
-        | Some dt -> Running dt
-        | None -> Idle
-    elif s.StartsWith("Completed at ") then
-        match tryParseUtcOpt (s.Substring("Completed at ".Length)) with
-        | Some dt -> Completed dt
-        | None -> Completed DateTime.UtcNow
-    elif s.StartsWith("Failed at ") then
-        let rest = s.Substring("Failed at ".Length)
-
-        match rest.IndexOf(": ") with
-        | -1 ->
-            match tryParseUtcOpt rest with
-            | Some dt -> Failed("", dt)
-            | None -> Failed(rest, DateTime.UtcNow)
-        | idx ->
-            let dtStr = rest.Substring(0, idx)
-            let msg = rest.Substring(idx + 2)
-
-            match tryParseUtcOpt dtStr with
-            | Some dt -> Failed(msg, dt)
-            | None -> Failed(msg, DateTime.UtcNow)
-    else
-        Idle
-
-/// Parse a map of legacy status strings into PluginStatus values.
-let parseStatusMap (statuses: Map<string, string>) : Map<string, PluginStatus> =
-    statuses |> Map.map (fun _ s -> parseStatus s)
-
 let private tryGetStringProp (el: JsonElement) (name: string) : string option =
     match el.TryGetProperty(name) with
     | true, v when v.ValueKind = JsonValueKind.String -> Some(v.GetString())
@@ -92,11 +57,9 @@ let parseTaggedStatus (el: JsonElement) : PluginStatus option =
             | None -> Some(Failed(err, DateTime.UtcNow))
         | _ -> None
 
-/// Parse the status field of a plugin-status payload, accepting either
-/// the new tagged-object shape or the legacy string shape.
+/// Parse the status field of a plugin-status payload.
 let parseStatusField (el: JsonElement) : PluginStatus =
     match el.ValueKind with
-    | JsonValueKind.String -> parseStatus (el.GetString())
     | JsonValueKind.Object ->
         match parseTaggedStatus el with
         | Some s -> s
@@ -115,25 +78,9 @@ let parseTaggedOutcome (el: JsonElement) : RunOutcome option =
             Some(FailedRun err)
         | _ -> None
 
-/// Parse a lastRun.outcome field, accepting the new tagged-object shape or
-/// the legacy ("Failed"/"Completed" string + separate error field) shape.
-let parseOutcomeField (outcomeEl: JsonElement) (legacyErrorEl: JsonElement voption) : RunOutcome =
-    match parseTaggedOutcome outcomeEl with
-    | Some o -> o
-    | None ->
-        let outcomeStr =
-            match outcomeEl.ValueKind with
-            | JsonValueKind.String -> outcomeEl.GetString()
-            | _ -> ""
-
-        let legacyError =
-            match legacyErrorEl with
-            | ValueSome e when e.ValueKind = JsonValueKind.String -> e.GetString()
-            | _ -> ""
-
-        match outcomeStr with
-        | "Failed" -> FailedRun legacyError
-        | _ -> CompletedRun
+/// Parse a lastRun.outcome field (tagged-object shape).
+let parseOutcomeField (outcomeEl: JsonElement) : RunOutcome =
+    parseTaggedOutcome outcomeEl |> Option.defaultValue CompletedRun
 
 /// Parse a single structured plugin-status JSON element.
 let parsePluginStatusElement (el: JsonElement) : ParsedPluginStatus =
@@ -164,19 +111,9 @@ let parsePluginStatusElement (el: JsonElement) : ParsedPluginStatus =
 
             let elapsedMs = r.GetProperty("elapsedMs").GetInt64()
 
-            let outcomeEl = r.GetProperty("outcome")
+            let outcome = parseOutcomeField (r.GetProperty("outcome"))
 
-            let legacyErrorEl =
-                match r.TryGetProperty("error") with
-                | true, e -> ValueSome e
-                | false, _ -> ValueNone
-
-            let outcome = parseOutcomeField outcomeEl legacyErrorEl
-
-            let summary =
-                match r.TryGetProperty("summary") with
-                | true, s when s.ValueKind <> JsonValueKind.Null -> Some(s.GetString())
-                | _ -> None
+            let summary = tryGetStringProp r "summary"
 
             let tail =
                 match r.TryGetProperty("activityTail") with
@@ -234,10 +171,7 @@ let parseDiagnosticsResponse (json: string) : DiagnosticsResponse =
                               Severity = DiagnosticSeverity.fromString (entry.GetProperty("severity").GetString())
                               Line = entry.GetProperty("line").GetInt32()
                               Column = entry.GetProperty("column").GetInt32()
-                              Detail =
-                                match entry.TryGetProperty("detail") with
-                                | true, d when d.ValueKind <> JsonValueKind.Null -> Some(d.GetString())
-                                | _ -> None } ]
+                              Detail = tryGetStringProp entry "detail" } ]
 
                   prop.Name, entries ]
             |> Map.ofList
@@ -256,16 +190,8 @@ let parseDiagnosticsResponse (json: string) : DiagnosticsResponse =
       Files = files
       Statuses = statuses }
 
-/// Check if all statuses are terminal (Completed, Failed, or Idle).
+/// Check if all statuses are quiescent (Completed, Failed, or Idle).
 /// Returns false for empty maps (no plugins registered yet).
-/// Idle is treated as terminal because this is only called after WaitForScan returns,
-/// at which point Idle means the plugin was not triggered by this scan cycle.
 let isAllTerminal (statuses: Map<string, PluginStatus>) : bool =
     not statuses.IsEmpty
-    && statuses
-       |> Map.forall (fun _ s ->
-           match s with
-           | Completed _
-           | Failed _
-           | Idle -> true
-           | _ -> false)
+    && statuses |> Map.forall (fun _ s -> PluginStatus.isQuiescent s)

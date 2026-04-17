@@ -8,7 +8,7 @@ open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 open FsHotWatch.Cli.RunOnceOutput
-open FsHotWatch.Cli.IpcOutput
+open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Cli.ProgressRenderer
 open FsHotWatch.Tests.TestHelpers
 
