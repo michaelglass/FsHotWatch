@@ -7,7 +7,7 @@ open FsHotWatch.Tests.TestHelpers
 
 let private entry msg sev line = { errorEntry msg sev with Line = line }
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Report adds errors and GetAll returns them grouped by file`` () =
     let ledger = ErrorLedger()
     ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
@@ -15,21 +15,21 @@ let ``Report adds errors and GetAll returns them grouped by file`` () =
     test <@ all.ContainsKey "/src/A.fs" @>
     test <@ all.["/src/A.fs"].Length = 1 @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Clear removes errors for plugin and file`` () =
     let ledger = ErrorLedger()
     ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
     ledger.Clear("lint", "/src/A.fs")
     test <@ not (ledger.HasFailingReasons(warningsAreFailures = true)) @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Report with empty list clears errors`` () =
     let ledger = ErrorLedger()
     ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
     ledger.Report("lint", "/src/A.fs", [])
     test <@ not (ledger.HasFailingReasons(warningsAreFailures = true)) @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``GetByPlugin filters to specific plugin`` () =
     let ledger = ErrorLedger()
     ledger.Report("lint", "/src/A.fs", [ entry "lint-warn" DiagnosticSeverity.Warning 1 ])
@@ -38,7 +38,7 @@ let ``GetByPlugin filters to specific plugin`` () =
     test <@ lintOnly.Count = 1 @>
     test <@ lintOnly.["/src/A.fs"].[0].Message = "lint-warn" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Multiple plugins for same file accumulate independently`` () =
     let ledger = ErrorLedger()
     ledger.Report("lint", "/src/A.fs", [ entry "lint" DiagnosticSeverity.Warning 1 ])
@@ -49,7 +49,7 @@ let ``Multiple plugins for same file accumulate independently`` () =
     let all2 = ledger.GetAll()
     test <@ all2.["/src/A.fs"].Length = 1 @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``ClearPlugin removes all errors for a plugin`` () =
     let ledger = ErrorLedger()
     ledger.Report("lint", "/src/A.fs", [ entry "a" DiagnosticSeverity.Warning 1 ])
@@ -59,7 +59,7 @@ let ``ClearPlugin removes all errors for a plugin`` () =
     test <@ ledger.GetAll() |> Map.values |> Seq.sumBy List.length = 1 @>
     test <@ ledger.GetByPlugin("lint").IsEmpty @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Count returns total across all plugins and files`` () =
     let ledger = ErrorLedger()
 
@@ -73,7 +73,7 @@ let ``Count returns total across all plugins and files`` () =
     ledger.Report("analyzers", "/src/A.fs", [ entry "c" DiagnosticSeverity.Error 3 ])
     test <@ ledger.GetAll() |> Map.values |> Seq.sumBy List.length = 3 @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Report ignores stale version`` () =
     let ledger = ErrorLedger()
 
@@ -99,7 +99,7 @@ let ``Report ignores stale version`` () =
     test <@ fileErrors.Length = 1 @>
     test <@ (snd fileErrors.[0]).Message = "new" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Clear ignores stale version`` () =
     let ledger = ErrorLedger()
 
@@ -115,7 +115,7 @@ let ``Clear ignores stale version`` () =
 
     test <@ ledger.HasFailingReasons(warningsAreFailures = true) @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Report without version always updates`` () =
     let ledger = ErrorLedger()
 
@@ -140,7 +140,7 @@ let ``Report without version always updates`` () =
     let fileErrors = errors |> Map.tryFind "/tmp/Lib.fs" |> Option.defaultValue []
     test <@ (snd fileErrors.[0]).Message = "second" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Report accepts newer version after initial versioned report`` () =
     let ledger = ErrorLedger()
 
@@ -167,7 +167,7 @@ let ``Report accepts newer version after initial versioned report`` () =
     test <@ fileErrors.Length = 1 @>
     test <@ (snd fileErrors.[0]).Message = "updated" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Report accepts equal version as update`` () =
     let ledger = ErrorLedger()
 
@@ -194,7 +194,7 @@ let ``Report accepts equal version as update`` () =
     test <@ fileErrors.Length = 1 @>
     test <@ (snd fileErrors.[0]).Message = "same-version-update" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Clear accepts newer version after initial versioned report`` () =
     let ledger = ErrorLedger()
 
@@ -210,7 +210,7 @@ let ``Clear accepts newer version after initial versioned report`` () =
     ledger.Clear("fcs", "/tmp/Lib.fs", version = 2L)
     test <@ not (ledger.HasFailingReasons(warningsAreFailures = true)) @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FailingReasons returns only errors when warningsAreFailures is false`` () =
     let ledger = ErrorLedger()
     ledger.Report("lint", "/src/A.fs", [ entry "warn" DiagnosticSeverity.Warning 1 ])
@@ -222,7 +222,7 @@ let ``FailingReasons returns only errors when warningsAreFailures is false`` () 
     test <@ failing.["/src/A.fs"].Length = 1 @>
     test <@ (snd failing.["/src/A.fs"].[0]).Message = "err" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FailingReasons returns errors and warnings when warningsAreFailures is true`` () =
     let ledger = ErrorLedger()
     ledger.Report("lint", "/src/A.fs", [ entry "warn" DiagnosticSeverity.Warning 1 ])
@@ -233,7 +233,7 @@ let ``FailingReasons returns errors and warnings when warningsAreFailures is tru
     test <@ failing.ContainsKey "/src/A.fs" @>
     test <@ failing.["/src/A.fs"].Length = 2 @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``HasFailingReasons returns false when only info and hint entries exist`` () =
     let ledger = ErrorLedger()
     ledger.Report("lint", "/src/A.fs", [ entry "info" DiagnosticSeverity.Info 1 ])
@@ -241,21 +241,21 @@ let ``HasFailingReasons returns false when only info and hint entries exist`` ()
     test <@ not (ledger.HasFailingReasons(warningsAreFailures = false)) @>
     test <@ not (ledger.HasFailingReasons(warningsAreFailures = true)) @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``HasFailingReasons with warningsAreFailures false ignores warnings`` () =
     let ledger = ErrorLedger()
     ledger.Report("lint", "/src/A.fs", [ entry "warn" DiagnosticSeverity.Warning 1 ])
     test <@ not (ledger.HasFailingReasons(warningsAreFailures = false)) @>
     test <@ ledger.HasFailingReasons(warningsAreFailures = true) @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FailingReasons returns empty map when no failing entries`` () =
     let ledger = ErrorLedger()
     ledger.Report("lint", "/src/A.fs", [ entry "info" DiagnosticSeverity.Info 1 ])
     let failing = ledger.FailingReasons(warningsAreFailures = true)
     test <@ failing.IsEmpty @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``ErrorLedger notifies reporters on Report`` () =
     let mutable reported: (string * string * ErrorEntry list) list = []
 
@@ -274,7 +274,7 @@ let ``ErrorLedger notifies reporters on Report`` () =
     test <@ reported.Length = 1 @>
     test <@ let (p, f, _) = reported.[0] in p = "lint" && f = "/src/A.fs" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``ErrorLedger notifies reporters on Clear`` () =
     let mutable cleared: (string * string) list = []
 
@@ -291,7 +291,7 @@ let ``ErrorLedger notifies reporters on Clear`` () =
     ledger.GetAll() |> ignore
     test <@ cleared.Length = 1 @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``ErrorLedger notifies reporters on ClearPlugin`` () =
     let mutable clearedPlugins: string list = []
 
@@ -311,7 +311,7 @@ let ``ErrorLedger notifies reporters on ClearPlugin`` () =
     ledger.GetAll() |> ignore
     test <@ clearedPlugins = [ "lint" ] @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``ErrorLedger does not notify reporters on stale version`` () =
     let mutable reportCount = 0
 

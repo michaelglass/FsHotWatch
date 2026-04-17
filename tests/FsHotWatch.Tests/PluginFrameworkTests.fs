@@ -38,7 +38,7 @@ let private registerWith
 /// Register with all defaults.
 let private registerDefault handler = registerWith handler None
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``registered plugin dispatches FileChanged`` () =
     let mutable registeredCmd: (string * CommandHandler) option = None
 
@@ -66,7 +66,7 @@ let ``registered plugin dispatches FileChanged`` () =
     let result = cmdHandler [||] |> Async.RunSynchronously
     test <@ result = "true" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``registered plugin skips unsubscribed events`` () =
     let mutable registeredCmd: (string * CommandHandler) option = None
 
@@ -108,7 +108,7 @@ let ``registered plugin skips unsubscribed events`` () =
     let result = cmdHandler [||] |> Async.RunSynchronously
     test <@ result = "1" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``commands query agent state`` () =
     async {
         let mutable registeredCmd: (string * CommandHandler) option = None
@@ -140,7 +140,7 @@ let ``commands query agent state`` () =
     }
     |> Async.RunSynchronously
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Custom messages work for self-posting`` () =
     async {
         let mutable customReceived = false
@@ -184,7 +184,7 @@ let ``Custom messages work for self-posting`` () =
     }
     |> Async.RunSynchronously
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``handler errors are recovered`` () =
     async {
         let mutable callCount = 0
@@ -227,7 +227,7 @@ let ``handler errors are recovered`` () =
     }
     |> Async.RunSynchronously
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``plugin subscribing to CommandCompleted receives event`` () =
     let mutable registeredCmd: (string * CommandHandler) option = None
 

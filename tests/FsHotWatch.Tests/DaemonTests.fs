@@ -17,7 +17,7 @@ open FsHotWatch.Tests.TestHelpers
 // When that issue is resolved, parseNowarnCodes and these tests can be removed.
 // ============================================================================
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``parseNowarnCodes extracts single nowarn code`` () =
     let source =
         """#nowarn "3536"
@@ -26,7 +26,7 @@ let x = 1"""
 
     test <@ parseNowarnCodes source = Set.ofList [ 3536 ] @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``parseNowarnCodes extracts multiple nowarn directives`` () =
     let source =
         """#nowarn "1182"
@@ -35,7 +35,7 @@ module Foo"""
 
     test <@ parseNowarnCodes source = Set.ofList [ 1182; 3536 ] @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``parseNowarnCodes returns empty set when no directives`` () =
     let source =
         """module Foo
@@ -43,7 +43,7 @@ let x = 1"""
 
     test <@ parseNowarnCodes source = Set.empty @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``parseNowarnCodes ignores non-numeric nowarn`` () =
     let source =
         """#nowarn "notanumber"
@@ -51,7 +51,7 @@ module Foo"""
 
     test <@ parseNowarnCodes source = Set.empty @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``parseNowarnCodes handles multiple codes on one line`` () =
     let source =
         """#nowarn "1182" "3536"
@@ -84,7 +84,7 @@ let private waitForDaemonReady (srcDir: string) (changeCount: unit -> int) =
             stable <- 0
 
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``daemon starts and stops without error`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -101,7 +101,7 @@ let ``daemon starts and stops without error`` () =
 
         test <@ task.IsCompleted @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``daemon suppresses watcher events for preprocessor-modified files`` () =
     withTempDir "daemon" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src")
@@ -150,7 +150,7 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
 
         cts.Cancel())
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``daemon dispatches file change events to plugins`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -199,7 +199,7 @@ let ``daemon dispatches file change events to plugins`` () =
 
         test <@ receivedChanges.Length >= 1 @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``daemon debounces rapid file changes into one batch`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -270,7 +270,7 @@ let ``daemon debounces rapid file changes into one batch`` () =
         let allFiles = sourceChanges |> List.collect id
         test <@ allFiles.Length >= 3 @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``daemon handles ProjectChanged events`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -329,7 +329,7 @@ let ``daemon handles ProjectChanged events`` () =
 
         test <@ projectChanges @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``daemon handles SolutionChanged events`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -388,7 +388,7 @@ let ``daemon handles SolutionChanged events`` () =
 
         test <@ solutionChanges @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``daemon Run completes when cancellation is immediate`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -404,7 +404,7 @@ let ``daemon Run completes when cancellation is immediate`` () =
 
         test <@ task.IsCompleted @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``Daemon.create creates a working daemon with real checker`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -422,7 +422,7 @@ let ``Daemon.create creates a working daemon with real checker`` () =
         test <@ task.IsCompleted @>
         test <@ daemon.RepoRoot = tmpDir @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``daemon RunWithIpc starts and stops cleanly`` () =
     withTempDir "daemon-ipc" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -440,7 +440,7 @@ let ``daemon RunWithIpc starts and stops cleanly`` () =
 
         test <@ task.IsCompleted @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``daemon RunWithIpc responds to IPC queries`` () =
     withTempDir "daemon-ipc" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -472,7 +472,7 @@ let ``daemon RunWithIpc responds to IPC queries`` () =
         with :? AggregateException ->
             ())
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``daemon RegisterProject stores options in pipeline`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -500,7 +500,7 @@ let ``daemon RegisterProject stores options in pipeline`` () =
 
 // --- FormatScanStatus tests ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FormatScanStatus returns idle for ScanIdle`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -508,7 +508,7 @@ let ``FormatScanStatus returns idle for ScanIdle`` () =
         daemon.SetScanState(ScanIdle)
         test <@ daemon.FormatScanStatus() = "idle" @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FormatScanStatus returns progress for Scanning`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -518,7 +518,7 @@ let ``FormatScanStatus returns progress for Scanning`` () =
         test <@ status.Contains("5/10") @>
         test <@ status.Contains("50%") @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FormatScanStatus returns complete for ScanComplete`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -528,7 +528,7 @@ let ``FormatScanStatus returns complete for ScanComplete`` () =
         test <@ status.Contains("70 files") @>
         test <@ status.Contains("15.5s") @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``RunOnce completes and returns plugin statuses`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
