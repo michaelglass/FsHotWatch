@@ -111,12 +111,36 @@ let create
         )
         :?> CliContext
 
-    // Load analyzers eagerly during create
+    // LoadAnalyzers reflects over every DLL in the directory; analyzer packages
+    // that ship bundled deps (e.g. FSharpLintAnalyzerShim) expose dozens of
+    // non-analyzer assemblies we'd otherwise load-and-inspect. Skip assemblies
+    // whose filename is a well-known-non-analyzer prefix.
+    let knownNonAnalyzerPrefixes =
+        [| "FSharp.Compiler.Service"
+           "FSharp.Compiler.Interactive"
+           "FSharp.Core"
+           "FSharp.Analyzers.SDK"
+           "FSharp.DependencyManager"
+           "FSharp.Control.Reactive"
+           "FSharpx."
+           "FParsec"
+           "Ionide."
+           "McMaster."
+           "Microsoft."
+           "System."
+           "Newtonsoft."
+           "SemanticVersioning" |]
+
+    let excludeKnownDeps =
+        ExcludeInclude.ExcludeFilter(fun assemblyName ->
+            knownNonAnalyzerPrefixes
+            |> Array.exists (fun p -> assemblyName.StartsWith(p, StringComparison.Ordinal)))
+
     let mutable loadedCount = 0
 
     for path in analyzerPaths do
         if Directory.Exists(path) then
-            let stats = client.LoadAnalyzers(path)
+            let stats = client.LoadAnalyzers(path, excludeInclude = excludeKnownDeps)
             loadedCount <- loadedCount + stats.Analyzers
 
     info "analyzers" $"Loaded %d{loadedCount} analyzers from %d{analyzerPaths.Length} paths"
