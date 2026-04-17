@@ -4,7 +4,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``FileChangeKind constructors work`` () =
     let source = SourceChanged [ "src/Lib.fs" ]
     let proj = ProjectChanged [ "src/Lib.fsproj" ]
@@ -31,7 +31,7 @@ let ``FileChangeKind constructors work`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``PluginStatus constructors work`` () =
     let idle = Idle
     let running = Running(since = System.DateTime.UtcNow)

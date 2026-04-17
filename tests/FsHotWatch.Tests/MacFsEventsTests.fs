@@ -13,34 +13,34 @@ open FsHotWatch.MacFsEvents
 
 module ``classifyEvent pure tests`` =
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``file created is FileChange`` () =
         let flags = EventFlags.ItemIsFile ||| EventFlags.ItemCreated
         test <@ classifyEvent flags = EventClassification.FileChange @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``file removed is FileChange`` () =
         let flags = EventFlags.ItemIsFile ||| EventFlags.ItemRemoved
         test <@ classifyEvent flags = EventClassification.FileChange @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``file renamed is FileChange`` () =
         let flags = EventFlags.ItemIsFile ||| EventFlags.ItemRenamed
         test <@ classifyEvent flags = EventClassification.FileChange @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``file modified is FileChange`` () =
         let flags = EventFlags.ItemIsFile ||| EventFlags.ItemModified
         test <@ classifyEvent flags = EventClassification.FileChange @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``file with multiple change flags is FileChange`` () =
         let flags =
             EventFlags.ItemIsFile ||| EventFlags.ItemCreated ||| EventFlags.ItemModified
 
         test <@ classifyEvent flags = EventClassification.FileChange @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``all four change types with ItemIsFile are FileChange`` () =
         let flags =
             EventFlags.ItemIsFile
@@ -51,49 +51,49 @@ module ``classifyEvent pure tests`` =
 
         test <@ classifyEvent flags = EventClassification.FileChange @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``MustScanSubDirs alone is CoalescedScan`` () =
         let flags = EventFlags.MustScanSubDirs
         test <@ classifyEvent flags = EventClassification.CoalescedScan @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``MustScanSubDirs with other non-file flags is CoalescedScan`` () =
         // Some extra bits set but not ItemIsFile + change
         let flags = EventFlags.MustScanSubDirs ||| 0x00000004u
         test <@ classifyEvent flags = EventClassification.CoalescedScan @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``directory created without ItemIsFile is Ignored`` () =
         let flags = EventFlags.ItemCreated
         test <@ classifyEvent flags = EventClassification.Ignored @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``directory modified without ItemIsFile is Ignored`` () =
         let flags = EventFlags.ItemModified
         test <@ classifyEvent flags = EventClassification.Ignored @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``ItemIsFile without change flags is Ignored`` () =
         let flags = EventFlags.ItemIsFile
         test <@ classifyEvent flags = EventClassification.Ignored @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``zero flags is Ignored`` () =
         test <@ classifyEvent 0u = EventClassification.Ignored @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``ItemIsFile with unrelated high bits but no change flags is Ignored`` () =
         let flags = EventFlags.ItemIsFile ||| 0x00100000u
         test <@ classifyEvent flags = EventClassification.Ignored @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``MustScanSubDirs takes priority when no file change flags present`` () =
         // MustScanSubDirs + ItemIsFile but no change type => CoalescedScan wins via ordering
         // Actually: ItemIsFile without change flags fails the first branch, falls to MustScanSubDirs
         let flags = EventFlags.MustScanSubDirs ||| EventFlags.ItemIsFile
         test <@ classifyEvent flags = EventClassification.CoalescedScan @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``file change takes priority over MustScanSubDirs when both present`` () =
         // If both ItemIsFile+change AND MustScanSubDirs are set, FileChange wins
         let flags =
@@ -103,53 +103,53 @@ module ``classifyEvent pure tests`` =
 
 module ``isFileChangeEvent pure tests`` =
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``returns true for file create`` () =
         let flags = EventFlags.ItemIsFile ||| EventFlags.ItemCreated
         test <@ isFileChangeEvent flags = true @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``returns true for file modify`` () =
         let flags = EventFlags.ItemIsFile ||| EventFlags.ItemModified
         test <@ isFileChangeEvent flags = true @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``returns false for directory create`` () =
         let flags = EventFlags.ItemCreated
         test <@ isFileChangeEvent flags = false @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``returns false for MustScanSubDirs`` () =
         let flags = EventFlags.MustScanSubDirs
         test <@ isFileChangeEvent flags = false @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``returns false for zero`` () = test <@ isFileChangeEvent 0u = false @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``returns false for ItemIsFile alone`` () =
         test <@ isFileChangeEvent EventFlags.ItemIsFile = false @>
 
 module ``isMustScanEvent pure tests`` =
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``returns true for MustScanSubDirs`` () =
         test <@ isMustScanEvent EventFlags.MustScanSubDirs = true @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``returns true for MustScanSubDirs with extra bits`` () =
         let flags = EventFlags.MustScanSubDirs ||| 0x00000080u
         test <@ isMustScanEvent flags = true @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``returns false for file change`` () =
         let flags = EventFlags.ItemIsFile ||| EventFlags.ItemModified
         test <@ isMustScanEvent flags = false @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``returns false for zero`` () = test <@ isMustScanEvent 0u = false @>
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     let ``returns false when file change and MustScanSubDirs both present`` () =
         // FileChange takes priority
         let flags =
@@ -171,7 +171,7 @@ type MacFsEventsCollection() =
 type MacFsEventsTests() =
     let isMacOS = RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     member _.``FsEventStream create and dispose without crash``() =
         if not isMacOS then
             Assert.Skip("macOS only")
@@ -180,7 +180,7 @@ type MacFsEventsTests() =
                 use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] ignore
                 test <@ _stream.IsRunning @>)
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     member _.``FsEventStream detects file creation``() =
         if not isMacOS then
             Assert.Skip("macOS only")
@@ -209,7 +209,7 @@ type MacFsEventsTests() =
                 let paths = lock lockObj (fun () -> detectedPaths)
                 test <@ paths |> List.exists (fun p -> p.EndsWith("Test.fs")) @>)
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     member _.``FsEventStream detects file modification``() =
         if not isMacOS then
             Assert.Skip("macOS only")
@@ -241,7 +241,7 @@ type MacFsEventsTests() =
 
                 test <@ lock lockObj (fun () -> detectedCount > countAfterProbe) @>)
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     member _.``FsEventStream detects file deletion``() =
         if not isMacOS then
             Assert.Skip("macOS only")
@@ -275,7 +275,7 @@ type MacFsEventsTests() =
                 let paths = lock lockObj (fun () -> detectedPaths)
                 test <@ paths |> List.exists (fun p -> p.EndsWith("Del.fs")) @>)
 
-    [<Fact>]
+    [<Fact(Timeout = 30000)>]
     member _.``FsEventStream watches multiple directories``() =
         if not isMacOS then
             Assert.Skip("macOS only")

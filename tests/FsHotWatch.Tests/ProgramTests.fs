@@ -40,7 +40,7 @@ let private fakeIpc () : IpcOps =
 
 // --- computeConfigHashWith tests ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``computeConfigHashWith returns 16-char hex string`` () =
     let fileOps =
         { defaultFileOps with
@@ -50,7 +50,7 @@ let ``computeConfigHashWith returns 16-char hex string`` () =
     test <@ result.Length = 16 @>
     test <@ result |> Seq.forall (fun c -> Char.IsAsciiHexDigitLower c || Char.IsDigit c) @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``computeConfigHashWith is deterministic`` () =
     let fileOps =
         { defaultFileOps with
@@ -60,7 +60,7 @@ let ``computeConfigHashWith is deterministic`` () =
     let h2 = computeConfigHashWith fileOps "/tmp/repo" "/tmp/exe"
     test <@ h1 = h2 @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``computeConfigHashWith changes when config content changes`` () =
     let mutable configContent = "v1"
 
@@ -75,7 +75,7 @@ let ``computeConfigHashWith changes when config content changes`` () =
     let h2 = computeConfigHashWith fileOps "/tmp/repo" "/tmp/exe"
     test <@ h1 <> h2 @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``computeConfigHashWith changes when exe mod time changes`` () =
     let mutable modTime = DateTime(2026, 1, 1)
 
@@ -90,7 +90,7 @@ let ``computeConfigHashWith changes when exe mod time changes`` () =
     let h2 = computeConfigHashWith fileOps "/tmp/repo" "/tmp/exe"
     test <@ h1 <> h2 @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``computeConfigHashWith with no files uses empty strings`` () =
     let fileOps =
         { defaultFileOps with
@@ -99,7 +99,7 @@ let ``computeConfigHashWith with no files uses empty strings`` () =
     let result = computeConfigHashWith fileOps "/tmp/repo" "/tmp/exe"
     test <@ result.Length = 16 @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``computeConfigHashWith with config but no exe`` () =
     let fileOps =
         { defaultFileOps with
@@ -111,7 +111,7 @@ let ``computeConfigHashWith with config but no exe`` () =
 
 // --- killStaleDaemonWith tests ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``killStaleDaemonWith does nothing when no pid file exists`` () =
     let mutable deleteCalled = false
 
@@ -127,7 +127,7 @@ let ``killStaleDaemonWith does nothing when no pid file exists`` () =
     killStaleDaemonWith fileOps processOps "/tmp/repo"
     test <@ not deleteCalled @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``killStaleDaemonWith reads pid and kills process`` () =
     let mutable killCalled = false
     let mutable deletedPath = ""
@@ -149,7 +149,7 @@ let ``killStaleDaemonWith reads pid and kills process`` () =
     test <@ killCalled @>
     test <@ deletedPath.EndsWith("daemon.pid") @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``killStaleDaemonWith handles process not found gracefully`` () =
     let mutable deletedPath = ""
 
@@ -167,7 +167,7 @@ let ``killStaleDaemonWith handles process not found gracefully`` () =
     killStaleDaemonWith fileOps processOps "/tmp/repo"
     test <@ deletedPath.EndsWith("daemon.pid") @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``killStaleDaemonWith handles invalid pid file gracefully`` () =
     let fileOps =
         { defaultFileOps with
@@ -184,7 +184,7 @@ let ``killStaleDaemonWith handles invalid pid file gracefully`` () =
 
 // --- startFreshDaemonWith tests ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``startFreshDaemonWith returns true when daemon starts immediately`` () =
     let mutable hashWritten = ""
     let mutable launchCalled = false
@@ -206,7 +206,7 @@ let ``startFreshDaemonWith returns true when daemon starts immediately`` () =
     test <@ launchCalled @>
     test <@ hashWritten = "abc123" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``startFreshDaemonWith returns false when daemon never starts`` () =
     let fileOps =
         { defaultFileOps with
@@ -223,7 +223,7 @@ let ``startFreshDaemonWith returns false when daemon never starts`` () =
 
     test <@ not result @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``startFreshDaemonWith passes extra args to LaunchDaemon`` () =
     let mutable receivedArgs = ""
 
@@ -244,12 +244,12 @@ let ``startFreshDaemonWith passes extra args to LaunchDaemon`` () =
 
 // --- Restart flow tests (via decideDaemonAction) ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``restart flow is triggered when stored config hash differs`` () =
     let action = decideDaemonAction true "old-hash" "new-hash"
     test <@ action = Restart @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``restart flow handles shutdown failure gracefully`` () =
     // decideDaemonAction returns Restart, shutdown exception is caught by ensureDaemon
     let action = decideDaemonAction true "old-hash" "new-hash"
@@ -271,7 +271,7 @@ let ``restart flow handles shutdown failure gracefully`` () =
 
 // --- killStaleDaemon ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``killStaleDaemonWith cleans up stale PID file`` () =
     withTempDir "prog-kill-stale" (fun tmpDir ->
         let stateDir = Path.Combine(tmpDir, ".fs-hot-watch")
@@ -282,7 +282,7 @@ let ``killStaleDaemonWith cleans up stale PID file`` () =
 
         test <@ not (File.Exists(Path.Combine(stateDir, "daemon.pid"))) @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``killStaleDaemonWith handles missing PID file gracefully`` () =
     withTempDir "prog-no-pid" (fun tmpDir ->
         // Should not throw when PID file doesn't exist
@@ -290,7 +290,7 @@ let ``killStaleDaemonWith handles missing PID file gracefully`` () =
 
 // --- startFreshDaemonWith ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``startFreshDaemonWith writes config hash file`` () =
     withTempDir "prog-hash-write" (fun tmpDir ->
         let ipc =
@@ -307,7 +307,7 @@ let ``startFreshDaemonWith writes config hash file`` () =
         let hash = File.ReadAllText(hashPath).Trim()
         test <@ hash = "abcd1234abcd1234" @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``startFreshDaemonWith creates log directory from logDirName param`` () =
     withTempDir "prog-log-dir" (fun tmpDir ->
         let ipc =
@@ -322,7 +322,7 @@ let ``startFreshDaemonWith creates log directory from logDirName param`` () =
         test <@ not (Directory.Exists(Path.Combine(tmpDir, "log"))) @>
         test <@ not (Directory.Exists(Path.Combine(tmpDir, "logs"))) @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``startFreshDaemonWith accepts absolute logDirName`` () =
     withTempDir "prog-log-abs" (fun tmpDir ->
         let absLogDir = Path.Combine(tmpDir, "nested", "absolute-logs")
@@ -337,7 +337,7 @@ let ``startFreshDaemonWith accepts absolute logDirName`` () =
 
         test <@ Directory.Exists absLogDir @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``startFreshDaemonWith passes extra args to launch`` () =
     withTempDir "prog-extra-args" (fun tmpDir ->
         let mutable receivedArgs = ""
@@ -354,7 +354,7 @@ let ``startFreshDaemonWith passes extra args to launch`` () =
 
 // --- Scan with Force flag ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``executeCommand Scan Force passes true to IPC scan`` () =
     let mutable forceValue = false
 
@@ -375,14 +375,14 @@ let ``executeCommand Scan Force passes true to IPC scan`` () =
 
 // --- Completions command ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``executeCommand Completions returns 0`` () =
     let result =
         executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" Completions "" false fakeConfig 30.0
 
     test <@ result = 0 @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``parse completions returns Completions`` () =
     match globalSpec.Parse [| "completions" |] with
     | Ok(_, cmd) -> test <@ cmd = Completions @>
@@ -390,7 +390,7 @@ let ``parse completions returns Completions`` () =
 
 // --- Init command ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``executeCommand Init creates config in empty dir`` () =
     withTempDir "prog-init" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
@@ -401,7 +401,7 @@ let ``executeCommand Init creates config in empty dir`` () =
         test <@ result = 0 @>
         test <@ File.Exists(Path.Combine(tmpDir, ".fs-hot-watch.json")) @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``executeCommand Init returns 1 when config already exists`` () =
     withTempDir "prog-init-dup" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
@@ -414,12 +414,12 @@ let ``executeCommand Init returns 1 when config already exists`` () =
 
 // --- applyGlobalFlags edge cases ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``applyGlobalFlags with unknown log level still builds extra args`` () =
     let (_, _, extraArgs) = applyGlobalFlags [ LogLevel "trace" ]
     test <@ extraArgs = "--log-level trace " @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``applyGlobalFlags preserves order of multiple flags`` () =
     let (noCache, noWarnFail, extraArgs) =
         applyGlobalFlags [ Verbose; LogLevel "debug"; GlobalFlag.NoCache; NoWarnFail ]
@@ -430,14 +430,14 @@ let ``applyGlobalFlags preserves order of multiple flags`` () =
 
 // --- decideDaemonAction additional edge cases ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``decideDaemonAction restarts when stored hash is empty but running`` () =
     let action = decideDaemonAction true "" "new-hash"
     test <@ action = Restart @>
 
 // --- config hash determinism ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``config hash is deterministic across multiple calls`` () =
     withTempDir "prog-hash-det" (fun tmpDir ->
         let fileOps =
@@ -448,7 +448,7 @@ let ``config hash is deterministic across multiple calls`` () =
         let hash2 = computeConfigHashWith fileOps tmpDir "/tmp/exe"
         test <@ hash1 = hash2 @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``config hash changes when config file is added`` () =
     withTempDir "prog-hash-change" (fun tmpDir ->
         let hash1 = computeConfigHashWith defaultFileOps tmpDir "/tmp/exe"
@@ -460,7 +460,7 @@ let ``config hash changes when config file is added`` () =
 
 // --- Reuse path ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``reuse path does not launch daemon when hash matches`` () =
     withTempDir "prog-reuse" (fun tmpDir ->
         let ipc =
@@ -497,16 +497,16 @@ let private assertFailsWhenDaemonDown (cmd: Command) =
 
         test <@ result = 1 @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``executeCommand Format returns 1 when daemon startup fails`` () = assertFailsWhenDaemonDown (Format [])
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``executeCommand FormatCheck returns 1 when daemon startup fails`` () =
     assertFailsWhenDaemonDown (FormatCheck [])
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``executeCommand Analyze returns 1 when daemon startup fails`` () = assertFailsWhenDaemonDown (Analyze [])
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``executeCommand InvalidateCache returns 1 when daemon startup fails`` () =
     assertFailsWhenDaemonDown (InvalidateCache "foo.fs")

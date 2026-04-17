@@ -7,7 +7,7 @@ open FsHotWatch.ErrorLedger
 open FsHotWatch.FileErrorReporter
 open FsHotWatch.Tests.TestHelpers
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``Report writes JSON file to error directory`` () =
     withTempDir "fer-report" (fun tmpDir ->
         let reporter = FileErrorReporter(tmpDir)
@@ -19,7 +19,7 @@ let ``Report writes JSON file to error directory`` () =
         let content = File.ReadAllText(expectedFile)
         test <@ content.Contains("Build FAILED") @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``Report with empty entries deletes file`` () =
     withTempDir "fer-empty" (fun tmpDir ->
         let reporter = FileErrorReporter(tmpDir)
@@ -29,7 +29,7 @@ let ``Report with empty entries deletes file`` () =
         let expectedFile = Path.Combine(tmpDir, "build--_build_.json")
         test <@ not (File.Exists(expectedFile)) @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``Clear deletes file`` () =
     withTempDir "fer-clear" (fun tmpDir ->
         let reporter = FileErrorReporter(tmpDir)
@@ -39,7 +39,7 @@ let ``Clear deletes file`` () =
         let expectedFile = Path.Combine(tmpDir, "lint---src-A.fs.json")
         test <@ not (File.Exists(expectedFile)) @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``ClearPlugin deletes all files for plugin`` () =
     withTempDir "fer-clearplugin" (fun tmpDir ->
         let reporter = FileErrorReporter(tmpDir)
@@ -52,7 +52,7 @@ let ``ClearPlugin deletes all files for plugin`` () =
         test <@ remaining.Length = 1 @>
         test <@ Path.GetFileName(remaining.[0]).StartsWith("fcs--") @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``ClearAll deletes all files`` () =
     withTempDir "fer-clearall" (fun tmpDir ->
         let reporter = FileErrorReporter(tmpDir)
@@ -63,7 +63,7 @@ let ``ClearAll deletes all files`` () =
         let remaining = Directory.GetFiles(tmpDir, "*.json")
         test <@ remaining.Length = 0 @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``sanitizeFileName replaces slashes and angle brackets`` () =
     withTempDir "fer-sanitize" (fun tmpDir ->
         let reporter = FileErrorReporter(tmpDir)

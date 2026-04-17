@@ -75,7 +75,7 @@ let private exampleAnalyzerPath =
 
         Path.Combine(dir, "bin/Debug/net10.0")
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``all plugins receive events when checking a file`` () =
     let repoRoot = findRepoRoot ()
 
@@ -171,7 +171,7 @@ let ``all plugins receive events when checking a file`` () =
     with _ ->
         ()
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let repoRoot = findRepoRoot ()
     let customAnalyzerPath = exampleAnalyzerPath.Value
@@ -285,7 +285,7 @@ let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> stri
             assertResult host tmpFile
         | None -> Assert.Fail("FCS failed to check file"))
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``lint plugin detects warnings on bad code`` () =
     let badCode =
         """module Temp
@@ -331,7 +331,7 @@ let x = 5
             // Graceful skip on FCS version mismatch
             Assert.True(true, $"Skipped due to FCS exception: {ex.Message}"))
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``format check plugin detects unformatted code`` () =
     // Badly formatted F# — extra spaces, wrong indentation
     let badlyFormatted = "module    Temp\nlet   x   =   5\nlet y=       10\n"
@@ -360,7 +360,7 @@ let ``format check plugin detects unformatted code`` () =
         | Completed _ -> ()
         | other -> Assert.Fail($"Unexpected format-check status: %A{other}"))
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``format check plugin passes on well-formatted code`` () =
     // Use Fantomas to produce a known-good formatted file
     let wellFormatted =
@@ -391,7 +391,7 @@ let ``format check plugin passes on well-formatted code`` () =
         | Completed _ -> ()
         | other -> Assert.Fail($"Unexpected format-check status: %A{other}"))
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``plugin status reflects running to completed lifecycle`` () =
     let content = "module Temp\n\nlet x = 5\n"
 
@@ -425,7 +425,7 @@ let ``plugin status reflects running to completed lifecycle`` () =
         | Completed _ -> () // Expected lifecycle: Idle -> Running -> Completed
         | other -> Assert.Fail($"Expected Completed, got: %A{other}"))
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``multiple file changes are debounced into one batch by SourceChanged`` () =
     // The SourceChanged event accepts a list of files — verify the plugin
     // processes all files from a single batched event.
@@ -480,7 +480,7 @@ let ``multiple file changes are debounced into one batch by SourceChanged`` () =
         with _ ->
             ()
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``PROFILE: startup phases timing`` () =
     let repoRoot = findRepoRoot ()
     let sw = Stopwatch()
@@ -591,7 +591,7 @@ let ``PROFILE: startup phases timing`` () =
 // FormatPreprocessor — success and failure
 // ===========================================================================
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``FormatPreprocessor succeeds on well-formatted file`` () =
     let wellFormatted =
         Fantomas.Core.CodeFormatter.FormatDocumentAsync(false, "module Temp\n\nlet x = 5\n")
@@ -602,7 +602,7 @@ let ``FormatPreprocessor succeeds on well-formatted file`` () =
         let modified = preprocessor.Process [ filePath ] "/tmp"
         test <@ modified |> List.isEmpty @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``FormatPreprocessor reformats badly formatted file`` () =
     let badCode = "module    Temp\nlet   x   =   5\nlet y=       10\n"
 
@@ -618,7 +618,7 @@ let ``FormatPreprocessor reformats badly formatted file`` () =
 // LintPlugin — success and failure
 // ===========================================================================
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``LintPlugin reports no warnings on clean code`` () =
     let repoRoot = findRepoRoot ()
 
@@ -665,7 +665,7 @@ let ``LintPlugin reports no warnings on clean code`` () =
         | other -> Assert.Fail($"Unexpected lint status: %A{other}")
     | None -> Assert.True(true, "Skipped: FCS could not check file")
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``LintPlugin reports warnings on code with issues`` () =
     let repoRoot = findRepoRoot ()
 
@@ -707,7 +707,7 @@ let x = 5
 // AnalyzersPlugin — success and failure
 // ===========================================================================
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``AnalyzersPlugin completes without crashing on checked file`` () =
     let repoRoot = findRepoRoot ()
 
@@ -745,7 +745,7 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
         | other -> Assert.Fail($"Unexpected status: %A{other}")
     | None -> Assert.True(true, "Skipped: FCS could not check file")
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``AnalyzersPlugin loads real analyzers from example project`` () =
     let repoRoot = findRepoRoot ()
     let analyzerPath = exampleAnalyzerPath.Value
@@ -784,7 +784,7 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
         | other -> Assert.Fail($"Unexpected status: %A{other}")
     | None -> Assert.True(true, "Skipped: FCS could not check file")
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``AnalyzersPlugin produces warning on wildcard DU match`` () =
     let source =
         "module Test\ntype Shape = Circle | Square\nlet f s = match s with | Circle -> 1 | _ -> 2\n"
@@ -802,7 +802,7 @@ let ``AnalyzersPlugin produces warning on wildcard DU match`` () =
         | PluginStatus.Failed(msg, _) -> Assert.Fail($"Analyzer should succeed but failed: {msg}")
         | other -> Assert.Fail($"Unexpected status: %A{other}"))
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``AnalyzersPlugin produces no warning on exhaustive DU match`` () =
     let source =
         "module Test\ntype Shape = Circle | Square\nlet f s = match s with | Circle -> 1 | Square -> 2\n"
@@ -826,7 +826,7 @@ let ``AnalyzersPlugin produces no warning on exhaustive DU match`` () =
 // BuildPlugin — success and failure
 // ===========================================================================
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``BuildPlugin succeeds with echo command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable receivedBuild: BuildResult option = None
@@ -871,7 +871,7 @@ let ``BuildPlugin succeeds with echo command`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``BuildPlugin fails with false command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable receivedBuild: BuildResult option = None
@@ -924,7 +924,7 @@ let ``BuildPlugin fails with false command`` () =
 // TestPrunePlugin — success and failure
 // ===========================================================================
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
     let dbPath =
         Path.Combine(Path.GetTempPath(), $"fshw-tp-inttest-{Guid.NewGuid():N}.db")
@@ -979,7 +979,7 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
         with _ ->
             ()
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``TestPrunePlugin with failing test reports failure`` () =
     let dbPath = Path.Combine(Path.GetTempPath(), $"fshw-tp-fail-{Guid.NewGuid():N}.db")
 
@@ -1037,7 +1037,7 @@ let ``TestPrunePlugin with failing test reports failure`` () =
 // CoveragePlugin — success and failure
 // ===========================================================================
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``CoveragePlugin succeeds when coverage above threshold`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-above-{Guid.NewGuid():N}")
     let subDir = Path.Combine(tmpDir, "TestProject")
@@ -1084,7 +1084,7 @@ let ``CoveragePlugin succeeds when coverage above threshold`` () =
         with _ ->
             ()
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``CoveragePlugin fails when coverage below threshold`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-below-{Guid.NewGuid():N}")
     let subDir = Path.Combine(tmpDir, "TestProject")
@@ -1131,7 +1131,7 @@ let ``CoveragePlugin fails when coverage below threshold`` () =
         with _ ->
             ()
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``CoveragePlugin reports no files found`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-empty-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
@@ -1173,7 +1173,7 @@ let ``CoveragePlugin reports no files found`` () =
 // FileCommandPlugin — success and failure
 // ===========================================================================
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``FileCommandPlugin runs command for matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1200,7 +1200,7 @@ let ``FileCommandPlugin runs command for matching files`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``FileCommandPlugin ignores non-matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1223,7 +1223,7 @@ let ``FileCommandPlugin ignores non-matching files`` () =
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``FileCommandPlugin reports failure on bad command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -1254,7 +1254,7 @@ let ``FileCommandPlugin reports failure on bad command`` () =
 // Full pipeline integration
 // ===========================================================================
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``Full pipeline: format → build → test → coverage`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-pipeline-{Guid.NewGuid():N}")
     let covDir = Path.Combine(tmpDir, "coverage")
@@ -1369,7 +1369,7 @@ let ``Full pipeline: format → build → test → coverage`` () =
 // Regression: concurrent build/test guards
 // ===========================================================================
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``BuildPlugin does not run concurrent builds`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable buildCount = 0
@@ -1429,7 +1429,7 @@ let ``BuildPlugin does not run concurrent builds`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``TestPrunePlugin does not run concurrent test suites`` () =
     let dbPath =
         Path.Combine(Path.GetTempPath(), $"fshw-tp-concurrent-{Guid.NewGuid():N}.db")
@@ -1505,7 +1505,7 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
         with _ ->
             ()
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``file cache enables fast cold-start check`` () =
     let repoRoot = findRepoRoot ()
     let cacheDir = Path.Combine(Path.GetTempPath(), $"fshw-cache-{Guid.NewGuid():N}")
@@ -1560,7 +1560,7 @@ let ``file cache enables fast cold-start check`` () =
         if Directory.Exists(cacheDir) then
             Directory.Delete(cacheDir, true)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``cached check returns None because partial FCS results are unusable by plugins`` () =
     let repoRoot = findRepoRoot ()
 

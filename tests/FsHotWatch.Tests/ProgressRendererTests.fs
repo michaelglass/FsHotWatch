@@ -38,7 +38,7 @@ let private failedRun (ago: TimeSpan) (elapsed: TimeSpan) (error: string) : RunR
 
 // ---------------- Compact mode ----------------
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``compact Completed shows check glyph elapsed and summary`` () =
     let parsed: ParsedPluginStatus =
         { Status = Completed(now - TimeSpan.FromSeconds(3.2))
@@ -54,7 +54,7 @@ let ``compact Completed shows check glyph elapsed and summary`` () =
     test <@ line.Contains "3.2s" @>
     test <@ line.Contains "built 4 projects" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``compact Running with subtasks lists them`` () =
     let parsed: ParsedPluginStatus =
         { Status = Running(now - TimeSpan.FromSeconds(72.0))
@@ -73,7 +73,7 @@ let ``compact Running with subtasks lists them`` () =
     test <@ line.Contains "3 running" @>
     test <@ line.Contains "A" && line.Contains "B" && line.Contains "C" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``compact Running with no subtasks shows last activity line`` () =
     let parsed: ParsedPluginStatus =
         { Status = Running(now - TimeSpan.FromSeconds(5.0))
@@ -86,7 +86,7 @@ let ``compact Running with no subtasks shows last activity line`` () =
     let line = lines.[0]
     test <@ line.Contains "linting FileA.fs" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``compact Failed shows truncated error first line`` () =
     let longErr = String.replicate 120 "x"
     let multiline = "first line of error\nsecond line\nthird line"
@@ -116,7 +116,7 @@ let ``compact Failed shows truncated error first line`` () =
     // The rendered line length (after stripping colors) should be bounded.
     test <@ linesLong.[0].Length < 200 @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``compact Idle with history shows last-run recap`` () =
     let parsed: ParsedPluginStatus =
         { Status = Idle
@@ -132,7 +132,7 @@ let ``compact Idle with history shows last-run recap`` () =
     test <@ line.Contains "4.1s" @>
     test <@ line.Contains "no issues" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``compact Idle with no history is single line name`` () =
     let parsed: ParsedPluginStatus =
         { Status = Idle
@@ -146,7 +146,7 @@ let ``compact Idle with no history is single line name`` () =
 
 // ---------------- Verbose mode ----------------
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``verbose Running emits header plus subtask tree plus recent`` () =
     let parsed: ParsedPluginStatus =
         { Status = Running(now - TimeSpan.FromSeconds(72.0))
@@ -171,7 +171,7 @@ let ``verbose Running emits header plus subtask tree plus recent`` () =
     test <@ joined.Contains "recent" @>
     test <@ joined.Contains "dotnet test FooTests" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``verbose Failed shows started, error detail, and recent`` () =
     let startedAt = now - TimeSpan.FromSeconds 6.4
     let err = "FileA.fs(12,4): FS0020: ...\nFileA.fs(33,1): FS0025: ..."
@@ -198,7 +198,7 @@ let ``verbose Failed shows started, error detail, and recent`` () =
     test <@ joined.Contains "recent" @>
     test <@ joined.Contains "linting FileA.fs" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``verbose Completed shows header started elapsed summary`` () =
     let startedAt = now - TimeSpan.FromSeconds 3.2
 
@@ -221,7 +221,7 @@ let ``verbose Completed shows header started elapsed summary`` () =
     test <@ joined.Contains "3.2s" @>
     test <@ joined.Contains "built 4 projects" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``verbose Completed with empty activity tail hides recent section`` () =
     let startedAt = now - TimeSpan.FromSeconds 1.0
 
@@ -243,7 +243,7 @@ let ``verbose Completed with empty activity tail hides recent section`` () =
 
 // ---------------- renderAll ----------------
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``renderAll concatenates per-plugin blocks`` () =
     let statuses =
         Map.ofList

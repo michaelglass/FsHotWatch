@@ -9,48 +9,48 @@ open FsHotWatch.Tests.TestHelpers
 
 // --- isGeneratedPath ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``isGeneratedPath returns true for obj directory`` () =
     test <@ isGeneratedPath "/src/obj/Debug/net10.0/AssemblyInfo.fs" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``isGeneratedPath returns true for bin directory`` () =
     test <@ isGeneratedPath "/src/bin/Release/net10.0/Thing.fs" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``isGeneratedPath returns false for normal source file`` () =
     test <@ not (isGeneratedPath "/src/MyProject/Program.fs") @>
 
 // --- isExcludedPath with gitignore-style globs ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``isExcludedPath matches glob pattern with wildcard`` () =
     test <@ isExcludedPath [ "vendor/" ] "/repo/vendor/sqlhydra/src/Lib.fs" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``isExcludedPath does not match unrelated path`` () =
     test <@ not (isExcludedPath [ "vendor/" ] "/repo/src/MyProject/Lib.fs") @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``isExcludedPath matches directory glob`` () =
     test <@ isExcludedPath [ "generated/" ] "/repo/src/generated/Types.fs" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``isExcludedPath matches file extension glob`` () =
     test <@ isExcludedPath [ "*.fsx" ] "/repo/build.fsx" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``isExcludedPath matches nested glob pattern`` () =
     test <@ isExcludedPath [ "**/temp/" ] "/repo/src/deep/temp/file.fs" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``isExcludedPath always excludes obj and bin`` () =
     test <@ isExcludedPath [] "/repo/src/obj/Debug/net10.0/Info.fs" @>
     test <@ isExcludedPath [] "/repo/src/bin/Release/net10.0/Thing.fs" @>
 
 // --- loadIgnoreFile ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``loadIgnoreFile returns matcher that respects gitignore patterns`` () =
     withTempDir "ignorefile" (fun tmpDir ->
         let ignoreFile = Path.Combine(tmpDir, ".testignore")
@@ -61,7 +61,7 @@ let ``loadIgnoreFile returns matcher that respects gitignore patterns`` () =
         test <@ isIgnored (Path.Combine(tmpDir, "vendor", "lib.fs")) @>
         test <@ not (isIgnored (Path.Combine(tmpDir, "src", "Program.fs"))) @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``loadIgnoreFile handles comments and blank lines`` () =
     withTempDir "ignorefile-comments" (fun tmpDir ->
         let ignoreFile = Path.Combine(tmpDir, ".testignore")
@@ -71,7 +71,7 @@ let ``loadIgnoreFile handles comments and blank lines`` () =
         test <@ isIgnored (Path.Combine(tmpDir, "Foo.generated.fs")) @>
         test <@ not (isIgnored (Path.Combine(tmpDir, "Foo.fs"))) @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``loadIgnoreFile returns false-for-all when file does not exist`` () =
     withTempDir "ignorefile-missing" (fun tmpDir ->
         let isIgnored = loadIgnoreFile tmpDir (Path.Combine(tmpDir, ".nonexistent"))
@@ -79,7 +79,7 @@ let ``loadIgnoreFile returns false-for-all when file does not exist`` () =
 
 // --- collectIgnoreRules ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``collectIgnoreRules combines gitignore and fantomasignore`` () =
     withTempDir "collect-rules" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.fsx\n")
@@ -90,7 +90,7 @@ let ``collectIgnoreRules combines gitignore and fantomasignore`` () =
         test <@ isIgnored (Path.Combine(tmpDir, "vendor", "lib.fs")) @>
         test <@ not (isIgnored (Path.Combine(tmpDir, "src", "Program.fs"))) @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``collectIgnoreRules works when only gitignore exists`` () =
     withTempDir "collect-gitonly" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.fsx\n")
@@ -99,7 +99,7 @@ let ``collectIgnoreRules works when only gitignore exists`` () =
         test <@ isIgnored (Path.Combine(tmpDir, "build.fsx")) @>
         test <@ not (isIgnored (Path.Combine(tmpDir, "src", "Program.fs"))) @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``collectIgnoreRules works when no ignore files exist`` () =
     withTempDir "collect-none" (fun tmpDir ->
         let isIgnored = collectIgnoreRules tmpDir
@@ -107,7 +107,7 @@ let ``collectIgnoreRules works when no ignore files exist`` () =
 
 // --- IgnoreFilterCache invalidation ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``IgnoreFilterCache reloads when gitignore is modified`` () =
     withTempDir "cache-reload-gitignore" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.log\n")
@@ -125,7 +125,7 @@ let ``IgnoreFilterCache reloads when gitignore is modified`` () =
         test <@ filter2 (Path.Combine(tmpDir, "build.fsx")) @>
         test <@ not (filter2 (Path.Combine(tmpDir, "debug.log"))) @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``IgnoreFilterCache reloads when fantomasignore is modified`` () =
     withTempDir "cache-reload-fantomas" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".fantomasignore"), "vendor/\n")
@@ -142,7 +142,7 @@ let ``IgnoreFilterCache reloads when fantomasignore is modified`` () =
         test <@ not (filter2 (Path.Combine(tmpDir, "vendor", "lib.fs"))) @>
         test <@ filter2 (Path.Combine(tmpDir, "generated", "Types.fs")) @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``IgnoreFilterCache reloads when ignore file is created`` () =
     withTempDir "cache-reload-created" (fun tmpDir ->
         let cache = IgnoreFilterCache()
@@ -154,7 +154,7 @@ let ``IgnoreFilterCache reloads when ignore file is created`` () =
         let filter2 = cache.Get(tmpDir)
         test <@ filter2 (Path.Combine(tmpDir, "vendor", "lib.fs")) @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``IgnoreFilterCache reloads when ignore file is deleted`` () =
     withTempDir "cache-reload-deleted" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "vendor/\n")
@@ -168,7 +168,7 @@ let ``IgnoreFilterCache reloads when ignore file is deleted`` () =
         let filter2 = cache.Get(tmpDir)
         test <@ not (filter2 (Path.Combine(tmpDir, "vendor", "lib.fs"))) @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``IgnoreFilterCache returns cached result when files unchanged`` () =
     withTempDir "cache-stable" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.log\n")
