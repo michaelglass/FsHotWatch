@@ -225,20 +225,22 @@ let private executeTests
 
                             Logging.info "test-prune" $"Running: %s{config.Command} %s{finalArgs}"
 
-                            let runProc =
+                            let logToCtx msg = ctx |> Option.iter (fun c -> c.Log msg)
+
+                            let runTest =
                                 async { return runProcess config.Command finalArgs repoRoot config.Environment }
 
                             let! (success, output) =
                                 match ctx with
                                 | Some c ->
-                                    PluginCtxHelpers.withSubtask c config.Project $"testing {config.Project}" runProc
-                                | None -> runProc
+                                    PluginCtxHelpers.withSubtask c config.Project $"testing {config.Project}" runTest
+                                | None -> runTest
 
                             if success then
-                                ctx |> Option.iter (fun c -> c.Log $"{config.Project}: passed")
+                                logToCtx $"{config.Project}: passed"
                                 Logging.info "test-prune" $"%s{config.Project}: PASSED"
                             else
-                                ctx |> Option.iter (fun c -> c.Log $"{config.Project}: failed")
+                                logToCtx $"{config.Project}: failed"
                                 Logging.error "test-prune" $"%s{config.Project}: FAILED"
 
                             if not success then
