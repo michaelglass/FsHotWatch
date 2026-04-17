@@ -28,24 +28,21 @@ let private formatStatus (status: PluginStatus) =
     | Completed at -> $"Completed at {at:O}"
     | Failed(error, at) -> $"Failed at {at:O}: {error}"
 
-/// Build a per-plugin structured status payload from host activity state.
 let private pluginStatusPayload (host: PluginHost) (name: string) (status: PluginStatus) : obj =
+    let snap = host.GetActivitySnapshot(name)
+
     let subtasks =
-        host.GetSubtasks(name)
+        snap.Subtasks
         |> List.map (fun t ->
             {| key = t.Key
                label = t.Label
                startedAt = t.StartedAt.ToString("O") |}
             :> obj)
 
-    let activityTail = host.GetActivityTail(name)
-
     let lastRun: obj =
-        match host.GetHistory(name) with
-        | [] -> null
-        | runs ->
-            let r = runs |> List.last
-
+        match snap.LastRun with
+        | None -> null
+        | Some r ->
             let outcomeStr, errorStr =
                 match r.Outcome with
                 | CompletedRun -> "Completed", (null: obj)
@@ -66,7 +63,7 @@ let private pluginStatusPayload (host: PluginHost) (name: string) (status: Plugi
 
     {| status = formatStatus status
        subtasks = subtasks
-       activityTail = activityTail
+       activityTail = snap.ActivityTail
        lastRun = lastRun |}
     :> obj
 

@@ -66,9 +66,14 @@ let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) 
             |> Array.toList
 
         if diagnostics.IsEmpty then
-            host.ClearErrors("fcs", checkResult.File, version = checkResult.Version)
+            host.ClearErrors(PluginActivity.FcsPluginName, checkResult.File, version = checkResult.Version)
         else
-            host.ReportErrors("fcs", checkResult.File, diagnostics, version = checkResult.Version)
+            host.ReportErrors(
+                PluginActivity.FcsPluginName,
+                checkResult.File,
+                diagnostics,
+                version = checkResult.Version
+            )
 
 /// Fingerprint fsproj files by path + last-write-time. Used by ScanAll to skip
 /// expensive MSBuild re-evaluation when no project files have changed.
@@ -171,7 +176,7 @@ let private rediscoverAndClearRemoved
         let removedFiles = Set.difference oldFiles newFiles
 
         for file in removedFiles do
-            host.ClearErrors("fcs", AbsFilePath.value file)
+            host.ClearErrors(PluginActivity.FcsPluginName, AbsFilePath.value file)
 
         if not removedFiles.IsEmpty then
             Logging.info logTag $"Cleared errors for %d{removedFiles.Count} removed files"
@@ -918,21 +923,13 @@ module Daemon =
             let host =
                 PluginHost(checker, repoRoot, reporters = [ fileReporter ], taskCache = taskCache)
 
-            // Forward check-pipeline activity under the synthetic plugin name "fcs"
-            // so subtasks, log tail, and summary surface in GetStatus output alongside
-            // real plugins.
-            let fcsReporter: CheckActivityReporter =
-                { StartSubtask = fun key label -> host.StartSubtask("fcs", key, label)
-                  EndSubtask = fun key -> host.EndSubtask("fcs", key)
-                  Log = fun msg -> host.LogActivity("fcs", msg)
-                  CompleteWithSummary = fun s -> host.SetSummary("fcs", s) }
+            let fcsSink = host.ActivitySinkFor(PluginActivity.FcsPluginName)
 
             let pipeline =
                 match cacheBackend, cacheKeyProvider with
-                | Some b, Some kp ->
-                    CheckPipeline(checker, cacheBackend = b, cacheKeyProvider = kp, activityReporter = fcsReporter)
-                | Some b, None -> CheckPipeline(checker, cacheBackend = b, activityReporter = fcsReporter)
-                | _ -> CheckPipeline(checker, activityReporter = fcsReporter)
+                | Some b, Some kp -> CheckPipeline(checker, cacheBackend = b, cacheKeyProvider = kp, activity = fcsSink)
+                | Some b, None -> CheckPipeline(checker, cacheBackend = b, activity = fcsSink)
+                | _ -> CheckPipeline(checker, activity = fcsSink)
 
             let graph = ProjectGraph()
             let toolsPath = Init.init (DirectoryInfo(repoRoot)) None
