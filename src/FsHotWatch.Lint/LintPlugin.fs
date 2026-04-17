@@ -63,55 +63,59 @@ let create
                 | FileChecked result ->
                     Logging.debug "lint" $"FileChecked received: %s{result.File}"
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                    ctx.StartSubtask result.File $"linting {System.IO.Path.GetFileName result.File}"
 
-                    if isNull (box result.ParseResults) then
-                        ctx.EndSubtask result.File
-                        Logging.warn "lint" $"Skipping %s{result.File} — no parse results"
-                        return state
-                    else
+                    return!
+                        PluginCtxHelpers.withSubtask
+                            ctx
+                            result.File
+                            $"linting {System.IO.Path.GetFileName result.File}"
+                            (async {
+                                if isNull (box result.ParseResults) then
+                                    Logging.warn "lint" $"Skipping %s{result.File} — no parse results"
+                                    return state
+                                else
+                                    match runLint result with
+                                    | Lint.LintResult.Success warnings ->
+                                        Logging.debug
+                                            "lint"
+                                            $"Linted %s{System.IO.Path.GetFileName result.File}: %d{warnings.Length} warnings"
 
-                        match runLint result with
-                        | Lint.LintResult.Success warnings ->
-                            ctx.EndSubtask result.File
+                                        let msgs = warnings |> List.map (fun w -> w.Details.Message)
 
-                            Logging.debug
-                                "lint"
-                                $"Linted %s{System.IO.Path.GetFileName result.File}: %d{warnings.Length} warnings"
+                                        let newWarnings = state.WarningsByFile |> Map.add result.File msgs
 
-                            let msgs = warnings |> List.map (fun w -> w.Details.Message)
+                                        if warnings.IsEmpty then
+                                            ctx.ClearErrors result.File
+                                        else
+                                            let entries =
+                                                warnings
+                                                |> List.map (fun w ->
+                                                    { Message = w.Details.Message
+                                                      Severity = DiagnosticSeverity.Warning
+                                                      Line = w.Details.Range.StartLine
+                                                      Column = w.Details.Range.StartColumn
+                                                      Detail = None })
 
-                            let newWarnings = state.WarningsByFile |> Map.add result.File msgs
+                                            ctx.ReportErrors result.File entries
 
-                            if warnings.IsEmpty then
-                                ctx.ClearErrors result.File
-                            else
-                                let entries =
-                                    warnings
-                                    |> List.map (fun w ->
-                                        { Message = w.Details.Message
-                                          Severity = DiagnosticSeverity.Warning
-                                          Line = w.Details.Range.StartLine
-                                          Column = w.Details.Range.StartColumn
-                                          Detail = None })
+                                        let newState = { WarningsByFile = newWarnings }
 
-                                ctx.ReportErrors result.File entries
+                                        let totalIssues =
+                                            newWarnings |> Map.toList |> List.sumBy (fun (_, w) -> w.Length)
 
-                            let newState = { WarningsByFile = newWarnings }
+                                        PluginCtxHelpers.completeWith
+                                            ctx
+                                            $"linted {newWarnings.Count} files, {totalIssues} issues"
 
-                            let totalIssues = newWarnings |> Map.toList |> List.sumBy (fun (_, w) -> w.Length)
+                                        return newState
+                                    | Lint.LintResult.Failure failure ->
+                                        let msg = $"Lint failed for %s{result.File}: %A{failure}"
 
-                            ctx.CompleteWithSummary $"linted {newWarnings.Count} files, {totalIssues} issues"
-                            ctx.ReportStatus(Completed(DateTime.UtcNow))
-                            return newState
-                        | Lint.LintResult.Failure failure ->
-                            ctx.EndSubtask result.File
-                            let msg = $"Lint failed for %s{result.File}: %A{failure}"
+                                        ctx.ReportErrors result.File [ ErrorEntry.error msg ]
 
-                            ctx.ReportErrors result.File [ ErrorEntry.error msg ]
-
-                            ctx.ReportStatus(PluginStatus.Failed(msg, DateTime.UtcNow))
-                            return state
+                                        ctx.ReportStatus(PluginStatus.Failed(msg, DateTime.UtcNow))
+                                        return state
+                            })
                 | _ -> return state
             }
       Commands =
