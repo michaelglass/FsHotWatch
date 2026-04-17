@@ -4,6 +4,7 @@ open System
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
+open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcOutput
 open FsHotWatch.Cli.ProgressRenderer
 

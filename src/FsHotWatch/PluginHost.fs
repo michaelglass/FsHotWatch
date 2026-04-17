@@ -174,32 +174,35 @@ type PluginHost
     /// Get all plugin statuses as an immutable map.
     member _.GetAllStatuses() : Map<string, PluginStatus> = lock statusLock (fun () -> statuses)
 
-    /// Start a subtask under an arbitrary (possibly synthetic) plugin name.
-    /// Used by in-host subsystems like the check pipeline that report activity
-    /// without being registered plugins.
     member _.StartSubtask(pluginName: string, key: string, label: string) =
         activity.StartSubtask(pluginName, key, label)
 
-    /// End a subtask under an arbitrary plugin name. No-op if not started.
     member _.EndSubtask(pluginName: string, key: string) = activity.EndSubtask(pluginName, key)
 
-    /// Append an activity log line under an arbitrary plugin name.
-    /// Also routes to Logging.info so plain-text log consumers see the message.
+    /// Append an activity log line and route to Logging.info.
     member _.LogActivity(pluginName: string, message: string) =
         activity.Log(pluginName, message)
         Logging.info pluginName message
 
-    /// Override the auto-derived summary captured on the next terminal transition.
     member _.SetSummary(pluginName: string, summary: string) =
         activity.SetSummary(pluginName, summary)
 
-    /// Get the currently running subtasks for a plugin.
+    member _.GetActivitySnapshot(pluginName: string) : PluginActivity.Snapshot = activity.GetSnapshot(pluginName)
+
+    /// Build an IActivitySink bound to a plugin name. Used by the check pipeline.
+    member this.ActivitySinkFor(pluginName: string) : PluginActivity.IActivitySink =
+        { new PluginActivity.IActivitySink with
+            member _.StartSubtask(key, label) =
+                this.StartSubtask(pluginName, key, label)
+
+            member _.EndSubtask(key) = this.EndSubtask(pluginName, key)
+            member _.Log(msg) = this.LogActivity(pluginName, msg)
+            member _.SetSummary(s) = this.SetSummary(pluginName, s) }
+
     member _.GetSubtasks(pluginName: string) : Subtask list = activity.GetSubtasks(pluginName)
 
-    /// Get the activity tail for a plugin's current run.
     member _.GetActivityTail(pluginName: string) : string list = activity.GetActivityTail(pluginName)
 
-    /// Get run history for a plugin.
     member _.GetHistory(pluginName: string) : RunRecord list = activity.GetHistory(pluginName)
 
     /// Get all errors grouped by file path.
