@@ -322,3 +322,24 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
     { Name = handler.Name
       Dispatch = dispatch
       Teardown = handler.Teardown }
+
+/// Ergonomic helpers over PluginCtx that every plugin tends to want.
+module PluginCtxHelpers =
+
+    /// Wrap `work` with matched StartSubtask / EndSubtask calls. `EndSubtask`
+    /// fires even if `work` throws, via try/finally.
+    let withSubtask (ctx: PluginCtx<'Msg>) (key: string) (label: string) (work: Async<'a>) : Async<'a> =
+        async {
+            ctx.StartSubtask key label
+
+            try
+                return! work
+            finally
+                ctx.EndSubtask key
+        }
+
+    /// Set the run summary and transition status to Completed at the current UTC time.
+    /// Sugar for `ctx.CompleteWithSummary s; ctx.ReportStatus (Completed DateTime.UtcNow)`.
+    let completeWith (ctx: PluginCtx<'Msg>) (summary: string) : unit =
+        ctx.CompleteWithSummary summary
+        ctx.ReportStatus(Completed System.DateTime.UtcNow)
