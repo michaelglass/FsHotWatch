@@ -147,9 +147,7 @@ let create
                                             let allPass = results |> List.forall (fun r -> r.MeetsThreshold)
 
                                             let belowCount =
-                                                results
-                                                |> List.filter (fun r -> not r.MeetsThreshold)
-                                                |> List.length
+                                                results |> List.filter (fun r -> not r.MeetsThreshold) |> List.length
 
                                             ctx.CompleteWithSummary $"{belowCount} files below threshold"
 
