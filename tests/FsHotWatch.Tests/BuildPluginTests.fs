@@ -11,20 +11,20 @@ open FsHotWatch.Build
 open FsHotWatch.ProjectGraph
 open FsHotWatch.Tests.TestHelpers
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``create accepts graph and test project names`` () =
     let graph = FsHotWatch.ProjectGraph.ProjectGraph()
     let handler = BuildPlugin.create "echo" "build" [] graph [] None [] None
     test <@ handler.Name = PluginName.create "build" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``plugin has correct name`` () =
     let handler =
         BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None
 
     test <@ handler.Name = PluginName.create "build" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build-status command returns not run initially`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -37,7 +37,7 @@ let ``build-status command returns not run initially`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("not run") @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build plugin emits BuildCompleted on successful build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -65,7 +65,7 @@ let ``build plugin emits BuildCompleted on successful build`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build-status command returns passed true after successful build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -83,7 +83,7 @@ let ``build-status command returns passed true after successful build`` () =
     let doc = JsonDocument.Parse(result.Value)
     Assert.Equal("passed", doc.RootElement.GetProperty("status").GetString())
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build-status command returns failed after failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -99,7 +99,7 @@ let ``build-status command returns failed after failed build`` () =
     let doc = JsonDocument.Parse(result.Value)
     Assert.Equal("failed", doc.RootElement.GetProperty("status").GetString())
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build plugin reports Failed status on failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -120,7 +120,7 @@ let ``build plugin reports Failed status on failed build`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build plugin emits BuildFailed on failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -142,7 +142,7 @@ let ``build plugin emits BuildFailed on failed build`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build plugin reports errors on failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -155,7 +155,7 @@ let ``build plugin reports errors on failed build`` () =
 
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build plugin handles exception from runProcess`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -180,7 +180,7 @@ let ``build plugin handles exception from runProcess`` () =
 
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build plugin ignores SolutionChanged events`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -198,7 +198,7 @@ let ``build plugin ignores SolutionChanged events`` () =
 
     test <@ getBuild () = None @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build plugin triggers on ProjectChanged`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -216,7 +216,7 @@ let ``build plugin triggers on ProjectChanged`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build is skipped when only test files change`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -241,7 +241,7 @@ let ``build is skipped when only test files change`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build uses template for affected project`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -267,7 +267,7 @@ let ``build uses template for affected project`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build falls back to original command when no template`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -292,7 +292,7 @@ let ``build falls back to original command when no template`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build falls back when file not in graph`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -312,7 +312,7 @@ let ``build falls back when file not in graph`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``ProjectChanged always uses fallback command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -334,7 +334,7 @@ let ``ProjectChanged always uses fallback command`` () =
 
 // --- dependsOn tests ---
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build with dependsOn buffers FileChanged until dependency satisfied`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -362,7 +362,7 @@ let ``build with dependsOn buffers FileChanged until dependency satisfied`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build with dependsOn proceeds immediately when deps already satisfied`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -386,7 +386,7 @@ let ``build with dependsOn proceeds immediately when deps already satisfied`` ()
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build with dependsOn reports Failed when dependency fails`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -414,7 +414,7 @@ let ``build with dependsOn reports Failed when dependency fails`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build with empty dependsOn works normally`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -431,7 +431,7 @@ let ``build with empty dependsOn works normally`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``build with multiple dependsOn waits for all`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()

@@ -4,7 +4,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.Logging
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``default log level is Info`` () =
     let original = logLevel
 
@@ -14,7 +14,7 @@ let ``default log level is Info`` () =
     finally
         setLogLevel original
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``setting verbose sets level to Debug`` () =
     let original = logLevel
 
@@ -25,7 +25,7 @@ let ``setting verbose sets level to Debug`` () =
     finally
         setLogLevel original
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``isEnabled returns true for levels at or above current`` () =
     let original = logLevel
 
@@ -38,7 +38,7 @@ let ``isEnabled returns true for levels at or above current`` () =
     finally
         setLogLevel original
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``log function respects level`` () =
     let original = logLevel
     let sb = System.Text.StringBuilder()

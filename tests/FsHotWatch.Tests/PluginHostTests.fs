@@ -16,7 +16,7 @@ open FsHotWatch.Tests.TestHelpers
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``plugin receives file change events`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let mutable fileChanges: FileChangeKind list = []
@@ -43,7 +43,7 @@ let ``plugin receives file change events`` () =
     waitUntil (fun () -> fileChanges.Length >= 1) 5000
     test <@ fileChanges.Length = 1 @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``plugin registers command`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -60,13 +60,13 @@ let ``plugin registers command`` () =
     let result = host.RunCommand("greet", [||]) |> Async.RunSynchronously
     test <@ result = Some "hello" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``RunCommand returns None for unknown command`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let result = host.RunCommand("bogus", [||]) |> Async.RunSynchronously
     test <@ result = None @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``plugin reports status`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -101,7 +101,7 @@ let ``plugin reports status`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetAllStatuses returns all plugin statuses`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -121,7 +121,7 @@ let ``GetAllStatuses returns all plugin statuses`` () =
     test <@ all |> Map.containsKey "a" @>
     test <@ all |> Map.containsKey "b" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``EmitBuildCompleted reaches plugins`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let mutable receivedBuild: BuildResult option = None
@@ -148,7 +148,7 @@ let ``EmitBuildCompleted reaches plugins`` () =
     waitUntil (fun () -> receivedBuild.IsSome) 5000
     test <@ receivedBuild = Some BuildSucceeded @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``EmitBuildCompleted with failure reaches plugins`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let mutable receivedBuild: BuildResult option = None
@@ -182,7 +182,7 @@ let ``EmitBuildCompleted with failure reaches plugins`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``preprocessor runs before events are dispatched`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let mutable preprocessorCalled = false
@@ -201,7 +201,7 @@ let ``preprocessor runs before events are dispatched`` () =
     let _ = host.RunPreprocessors([ "src/Lib.fs" ])
     test <@ preprocessorCalled @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``preprocessor modified files are returned`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -217,7 +217,7 @@ let ``preprocessor modified files are returned`` () =
     let modified = host.RunPreprocessors([ "src/Lib.fs" ])
     test <@ modified = [ "src/Formatted.fs"; "src/Other.fs" ] @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``preprocessor status is tracked`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -247,7 +247,7 @@ let ``preprocessor status is tracked`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``multiple plugins receive the same event`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let mutable received1 = false
@@ -282,7 +282,7 @@ let ``multiple plugins receive the same event`` () =
     test <@ received2 @>
     test <@ received3 @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``plugin can report and query errors via host`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -325,7 +325,7 @@ let ``plugin can report and query errors via host`` () =
     let errors = host.GetErrors()
     test <@ errors.ContainsKey "/src/A.fs" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``plugin ClearErrors removes errors from ledger`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -364,7 +364,7 @@ let ``plugin ClearErrors removes errors from ledger`` () =
     waitUntil (fun () -> not (host.HasFailingReasons(warningsAreFailures = true))) 5000
     test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``GetErrorsByPlugin returns only that plugin's errors`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -400,7 +400,7 @@ let ``GetErrorsByPlugin returns only that plugin's errors`` () =
     test <@ aErrors.Count = 1 @>
     test <@ aErrors.ContainsKey "/src/A.fs" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``EmitFileChecked dispatches to framework plugin handlers`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -441,7 +441,7 @@ let ``EmitFileChecked dispatches to framework plugin handlers`` () =
     test <@ ref1.Value @>
     test <@ ref2.Value @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``preprocessor exception sets Failed status`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -469,7 +469,7 @@ let ``preprocessor exception sets Failed status`` () =
             | _ -> false
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``ReportErrors with version passes through to ledger`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -507,7 +507,7 @@ let ``ReportErrors with version passes through to ledger`` () =
     let fileErrors = errors.["/src/A.fs"]
     test <@ (snd fileErrors.[0]).Message = "v2 error" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``ClearErrors with version passes through to ledger`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -530,7 +530,7 @@ let ``ClearErrors with version passes through to ledger`` () =
     host.ClearErrors("fcs", "/src/A.fs", version = 3L)
     test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``OnStatusChanged event fires when plugin reports status`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let mutable statusEvents: (string * PluginStatus) list = []
@@ -583,7 +583,7 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
                    | _ -> false)
         @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls GetAllStatuses`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -622,7 +622,7 @@ let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls
     let completed = waitTask.Wait(TimeSpan.FromSeconds(8.0))
     test <@ completed @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``HasFailingReasons distinguishes warnings from errors`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 

@@ -10,7 +10,7 @@ open FsHotWatch.PluginHost
 open FsHotWatch.Fantomas.FormatCheckPlugin
 open FsHotWatch.Tests.TestHelpers
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``format check skips files matched by fantomasignore`` () =
     withTempDir "fmt-fantomasignore" (fun tmpDir ->
         // Create .fantomasignore that excludes vendor/
@@ -40,7 +40,7 @@ let ``format check skips files matched by fantomasignore`` () =
         test <@ result.IsSome @>
         test <@ result.Value.Contains("\"count\": 0") @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``format check skips files matched by gitignore`` () =
     withTempDir "fmt-gitignore" (fun tmpDir ->
         // Create .gitignore that excludes generated files
@@ -68,7 +68,7 @@ let ``format check skips files matched by gitignore`` () =
         test <@ result.IsSome @>
         test <@ result.Value.Contains("\"count\": 0") @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``format check still checks files not in any ignore file`` () =
     withTempDir "fmt-no-ignore" (fun tmpDir ->
         // Create .gitignore that excludes something else
@@ -96,7 +96,7 @@ let ``format check still checks files not in any ignore file`` () =
         test <@ result.IsSome @>
         test <@ result.Value.Contains("\"count\": 1") @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``FormatPreprocessor skips files matched by fantomasignore`` () =
     withTempDir "preproc-fantomasignore" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".fantomasignore"), "vendor/\n")
@@ -114,7 +114,7 @@ let ``FormatPreprocessor skips files matched by fantomasignore`` () =
         let contents = File.ReadAllText(file)
         test <@ contents = "module Bad\nlet   x=1\n" @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``FormatPreprocessor skips files matched by gitignore`` () =
     withTempDir "preproc-gitignore" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.generated.fs\n")
@@ -126,7 +126,7 @@ let ``FormatPreprocessor skips files matched by gitignore`` () =
         let modified = preprocessor.Process [ file ] tmpDir
         test <@ modified.IsEmpty @>)
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``FormatPreprocessor formats files not in any ignore file`` () =
     withTempDir "preproc-no-ignore" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.log\n")
