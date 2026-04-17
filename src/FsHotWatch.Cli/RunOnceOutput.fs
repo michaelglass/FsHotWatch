@@ -100,10 +100,19 @@ let runOnceWithProgress (daemon: FsHotWatch.Daemon.Daemon) : Map<string, PluginS
     else
         daemon.RunOnce() |> Async.RunSynchronously
 
+/// Structured status projection for a single plugin, derived from PluginHost state post-run.
+type PluginRunSnapshot =
+    { Status: PluginStatus
+      Subtasks: Subtask list
+      ActivityTail: string list
+      LastRun: RunRecord option }
+
 /// Run a daemon in run-once mode and report results.
 /// pluginName = None queries all errors; Some name queries one plugin.
+/// `renderStatuses` is injected so callers choose the progress renderer (compact/verbose).
 /// Returns exit code (0 = clean, 1 = errors).
 let runOnceAndReport
+    (renderStatuses: Map<string, PluginRunSnapshot> -> string)
     (noWarnFail: bool)
     (createDaemon: string -> FsHotWatch.Daemon.Daemon)
     (repoRoot: string)
@@ -128,7 +137,17 @@ let runOnceAndReport
         |> List.filter (fun (_, e) -> ErrorEntry.isFailing (not noWarnFail) e)
         |> List.length
 
-    let summary = formatSummary statuses
+    let snapshots =
+        statuses
+        |> Map.map (fun name status ->
+            let history = daemon.Host.GetHistory(name)
+
+            { Status = status
+              Subtasks = daemon.Host.GetSubtasks(name)
+              ActivityTail = daemon.Host.GetActivityTail(name)
+              LastRun = history |> List.tryHead })
+
+    let summary = renderStatuses snapshots
 
     if summary <> "" then
         eprintfn "%s" summary
