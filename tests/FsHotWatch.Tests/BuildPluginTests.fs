@@ -39,14 +39,14 @@ let ``decideBuildOutcome failure with parsed errors yields BuildOutputFailed and
         "/src/Foo.fs(12,5): error FS0001: This expression was expected to have type int"
 
     let (outcome, entries) = decideBuildOutcome false output
-    test <@ outcome = BuildOutputFailed output @>
+    test <@ outcome = BuildOutputFailed [ output ] @>
     test <@ entries.Length = 1 @>
     test <@ entries.[0].Severity = DiagnosticSeverity.Error @>
 
 [<Fact(Timeout = 5000)>]
 let ``decideBuildOutcome failure with empty output yields single synthetic error`` () =
     let (outcome, entries) = decideBuildOutcome false ""
-    test <@ outcome = BuildOutputFailed "" @>
+    test <@ outcome = BuildOutputFailed [ "" ] @>
     test <@ entries.Length = 1 @>
     test <@ entries.[0].Severity = DiagnosticSeverity.Error @>
     test <@ entries.[0].Message = "" @>
@@ -55,7 +55,7 @@ let ``decideBuildOutcome failure with empty output yields single synthetic error
 let ``decideBuildOutcome failure with unparseable output falls back to raw-text error`` () =
     let output = "Segmentation fault\nrandom stderr blob\nnot an MSBuild line"
     let (outcome, entries) = decideBuildOutcome false output
-    test <@ outcome = BuildOutputFailed output @>
+    test <@ outcome = BuildOutputFailed [ output ] @>
     test <@ entries.Length = 1 @>
     test <@ entries.[0].Message = output @>
     test <@ entries.[0].Severity = DiagnosticSeverity.Error @>
@@ -66,7 +66,7 @@ let ``decideBuildOutcome failure with mixed stderr and MSBuild lines prefers par
         "Startup trace noise\n/src/Foo.fs(12,5): error FS0001: Bad type\nrandom stderr\n/src/Bar.fs(3,1): warning FS0040: Less generic"
 
     let (outcome, entries) = decideBuildOutcome false output
-    test <@ outcome = BuildOutputFailed output @>
+    test <@ outcome = BuildOutputFailed [ output ] @>
     test <@ entries.Length = 2 @>
     test <@ entries |> List.exists (fun e -> e.Severity = DiagnosticSeverity.Error) @>
     test <@ entries |> List.exists (fun e -> e.Severity = DiagnosticSeverity.Warning) @>

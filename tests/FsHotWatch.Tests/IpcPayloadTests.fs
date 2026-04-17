@@ -9,7 +9,7 @@ open FsHotWatch.Ipc
 open FsHotWatch.PluginHost
 open FsHotWatch.PluginFramework
 open FsHotWatch.Cli.RunOnceOutput
-open FsHotWatch.Cli.IpcOutput
+open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Tests.TestHelpers
 
 let private nullChecker =
