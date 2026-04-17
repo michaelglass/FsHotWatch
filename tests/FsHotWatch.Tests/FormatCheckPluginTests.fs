@@ -37,12 +37,15 @@ let ``format check handles non-source change events without crashing`` () =
     host.EmitFileChanged(ProjectChanged [ "/tmp/Test.fsproj" ])
     host.EmitFileChanged(SolutionChanged "test.sln")
 
+    // 9s (just under the Fact timeout of 10s) so we fail as Fact-timeout
+    // rather than a silently-expired poll, and so we give slow Linux CI
+    // runners enough headroom for the plugin's async transition.
     waitUntil
         (fun () ->
             match host.GetStatus("format-check") with
             | Some(Completed _) -> true
             | _ -> false)
-        5000
+        9000
 
     // The plugin still sets Completed status (empty unformatted set)
     let status = host.GetStatus("format-check")
