@@ -4,7 +4,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.PluginFramework
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``plugin has a name`` () =
     let handler =
         { Name = PluginName.create "fake"

@@ -16,12 +16,12 @@ let private fakeResult file : FileCheckResult =
       ProjectOptions = Unchecked.defaultof<_>
       Version = 0L }
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``plugin has correct name`` () =
     let handler = create [] None
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "analyzers" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``diagnostics command returns zeroes when no files checked`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -34,7 +34,7 @@ let ``diagnostics command returns zeroes when no files checked`` () =
     test <@ result.Value.Contains("\"files\":0") @>
     test <@ result.Value.Contains("\"diagnostics\":0") @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``analyzer error path does not crash`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -65,7 +65,7 @@ let ``analyzer error path does not crash`` () =
     | Idle -> ()
     | other -> Assert.Fail($"Expected Idle, Completed, or Running, got: %A{other}")
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``analyzer with non-existent path skips loading`` () =
     // Exercise the Directory.Exists false branch
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -78,7 +78,7 @@ let ``analyzer with non-existent path skips loading`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("\"analyzers\":0") @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``analyzer with mix of valid and invalid paths`` () =
     // Create a real empty dir that exists, paired with one that does not
     let emptyDir =
@@ -106,12 +106,12 @@ let ``analyzer with mix of valid and invalid paths`` () =
         with _ ->
             ()
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``concurrent analyzer runs are bounded`` () =
     let handler = create [] None
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "analyzers" @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``cache key includes parse-only suffix for ParseOnly results`` () =
     let commitId = "abc123"
     let handler = create [] (Some(fun () -> Some commitId))
@@ -138,7 +138,7 @@ let ``cache key includes parse-only suffix for ParseOnly results`` () =
     test <@ fullCheckKey.IsSome @>
     test <@ parseOnlyKey <> fullCheckKey @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -170,14 +170,14 @@ let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
 
     test <@ hasAnalyzerCrash @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``empty analyzer paths still creates working handler`` () =
     let handler = create [] None
     test <@ handler.Init.LoadedCount = 0 @>
     test <@ handler.Init.DiagnosticsByFile = Map.empty @>
     test <@ handler.Subscriptions.Contains(FsHotWatch.PluginFramework.SubscribeFileChecked) @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``AnalysisFailed custom message sets status to Completed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -195,12 +195,12 @@ let ``AnalysisFailed custom message sets status to Completed`` () =
 
     test <@ hasAnalyzerCrash @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``cache key is None when getCommitId is None`` () =
     let handler = create [] None
     test <@ handler.CacheKey.IsNone @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``cache key returns None when getCommitId returns None`` () =
     let handler = create [] (Some(fun () -> None))
     let cacheKeyFn = handler.CacheKey.Value
@@ -208,7 +208,7 @@ let ``cache key returns None when getCommitId returns None`` () =
     let key = cacheKeyFn (FileChecked(fakeResult "/tmp/Fake.fs"))
     test <@ key.IsNone @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``cache key for Custom event returns None`` () =
     let commitId = "commit-xyz"
     let handler = create [] (Some(fun () -> Some commitId))
@@ -217,7 +217,7 @@ let ``cache key for Custom event returns None`` () =
     let customKey = cacheKeyFn (Custom(AnalysisComplete("/tmp/Fake.fs", [])))
     test <@ customKey.IsNone @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``cache key for non-FileChecked non-Custom event returns getCommitId`` () =
     let commitId = "commit-abc"
     let handler = create [] (Some(fun () -> Some commitId))
@@ -226,7 +226,7 @@ let ``cache key for non-FileChecked non-Custom event returns getCommitId`` () =
     let buildKey = cacheKeyFn (BuildCompleted BuildSucceeded)
     test <@ buildKey = Some commitId @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``multiple concurrent FileChecked events are bounded by semaphore`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -246,7 +246,7 @@ let ``multiple concurrent FileChecked events are bounded by semaphore`` () =
     let errors = host.GetErrorsByPlugin("analyzers")
     test <@ errors.Count > 0 @>
 
-[<Fact>]
+[<Fact(Timeout = 30000)>]
 let ``teardown cancels CTS and disposes resources`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
