@@ -58,15 +58,11 @@ let private pickMode (flags: RunFlag list) : ProgressRenderer.RenderMode =
     else
         ProgressRenderer.Verbose
 
-let private renderStatusesWithMode
-    (mode: ProgressRenderer.RenderMode)
-    : Map<string, IpcOutput.ParsedPluginStatus> -> string list =
-    fun statuses -> ProgressRenderer.renderAll mode System.DateTime.UtcNow statuses
+let private renderLines mode statuses =
+    ProgressRenderer.renderAll mode System.DateTime.UtcNow statuses
 
-let private renderSnapshotsWithMode
-    (mode: ProgressRenderer.RenderMode)
-    : Map<string, RunOnceOutput.PluginRunSnapshot> -> string =
-    fun snaps -> ProgressRenderer.renderSnapshots mode System.DateTime.UtcNow snaps
+let private renderBlock mode statuses =
+    renderLines mode statuses |> String.concat "\n"
 
 /// Compute the launch command for re-starting the daemon.
 /// Returns (exe, argPrefix) where argPrefix is prepended to "start" when launching.
@@ -199,7 +195,7 @@ let private ensureAndQueryErrors
         1
     else
         IpcOutput.pollAndRender
-            (renderStatusesWithMode mode)
+            (renderLines mode)
             noWarnFail
             (fun () -> ipc.WaitForScan pipeName -1L |> Async.RunSynchronously)
             (fun () -> ipc.GetStatus pipeName |> Async.RunSynchronously)
@@ -431,13 +427,7 @@ let executeCommand
 
         let mode = pickMode flags
 
-        RunOnceOutput.runOnceAndReport
-            (renderSnapshotsWithMode mode)
-            noWarnFail
-            createDaemon
-            repoRoot
-            buildConfig
-            (Some "build")
+        RunOnceOutput.runOnceAndReport (renderBlock mode) noWarnFail createDaemon repoRoot buildConfig (Some "build")
     | Build flags ->
         let mode = pickMode flags
 
@@ -449,7 +439,7 @@ let executeCommand
                     eprintfn "  Building..."
                     ipc.TriggerBuild pipeName |> Async.RunSynchronously
 
-            IpcOutput.renderIpcResult (renderStatusesWithMode mode) noWarnFail result)
+            IpcOutput.renderIpcResult (renderLines mode) noWarnFail result)
     | Test flags when isRunOnce flags ->
         let testConfig =
             { stripConfig config with
@@ -459,7 +449,7 @@ let executeCommand
         let mode = pickMode flags
 
         RunOnceOutput.runOnceAndReport
-            (renderSnapshotsWithMode mode)
+            (renderBlock mode)
             noWarnFail
             createDaemon
             repoRoot
@@ -477,7 +467,7 @@ let executeCommand
                     eprintfn "  Running tests..."
                     ipc.RunCommand pipeName "run-tests" "{}" |> Async.RunSynchronously
 
-            IpcOutput.renderIpcResult (renderStatusesWithMode mode) noWarnFail result)
+            IpcOutput.renderIpcResult (renderLines mode) noWarnFail result)
     | Format flags when isRunOnce flags ->
         let formatConfig =
             { stripConfig config with
@@ -485,13 +475,7 @@ let executeCommand
 
         let mode = pickMode flags
 
-        RunOnceOutput.runOnceAndReport
-            (renderSnapshotsWithMode mode)
-            noWarnFail
-            createDaemon
-            repoRoot
-            formatConfig
-            (Some "format")
+        RunOnceOutput.runOnceAndReport (renderBlock mode) noWarnFail createDaemon repoRoot formatConfig (Some "format")
     | Format flags ->
         let mode = pickMode flags
 
@@ -503,18 +487,12 @@ let executeCommand
                     eprintfn "  Formatting..."
                     ipc.FormatAll pipeName |> Async.RunSynchronously
 
-            IpcOutput.renderIpcResult (renderStatusesWithMode mode) noWarnFail result)
+            IpcOutput.renderIpcResult (renderLines mode) noWarnFail result)
     | Lint flags when isRunOnce flags ->
         let lintConfig = { stripConfig config with Lint = true }
         let mode = pickMode flags
 
-        RunOnceOutput.runOnceAndReport
-            (renderSnapshotsWithMode mode)
-            noWarnFail
-            createDaemon
-            repoRoot
-            lintConfig
-            (Some "lint")
+        RunOnceOutput.runOnceAndReport (renderBlock mode) noWarnFail createDaemon repoRoot lintConfig (Some "lint")
     | Lint flags -> queryPluginWith (pickMode flags) "lint"
     | Analyze flags when isRunOnce flags ->
         let analyzeConfig =
@@ -524,7 +502,7 @@ let executeCommand
         let mode = pickMode flags
 
         RunOnceOutput.runOnceAndReport
-            (renderSnapshotsWithMode mode)
+            (renderBlock mode)
             noWarnFail
             createDaemon
             repoRoot
@@ -539,7 +517,7 @@ let executeCommand
         let mode = pickMode flags
 
         RunOnceOutput.runOnceAndReport
-            (renderSnapshotsWithMode mode)
+            (renderBlock mode)
             noWarnFail
             createDaemon
             repoRoot
@@ -557,7 +535,7 @@ let executeCommand
         withDaemon (fun () ->
             withIpc (fun () ->
                 let result = ipc.InvalidateCache pipeName filePath |> Async.RunSynchronously
-                IpcOutput.renderIpcResult (renderStatusesWithMode ProgressRenderer.Verbose) noWarnFail result))
+                IpcOutput.renderIpcResult (renderLines ProgressRenderer.Verbose) noWarnFail result))
     | Init ->
         let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
         let projects = InitConfig.discoverProjects repoRoot None
@@ -577,7 +555,7 @@ let executeCommand
             1
     | Check flags when isRunOnce flags ->
         let mode = pickMode flags
-        RunOnceOutput.runOnceAndReport (renderSnapshotsWithMode mode) noWarnFail createDaemon repoRoot config None
+        RunOnceOutput.runOnceAndReport (renderBlock mode) noWarnFail createDaemon repoRoot config None
     | Check flags -> queryPluginWith (pickMode flags) ""
     | Completions ->
         FishCompletions.writeToFile commandTree cliName
@@ -589,7 +567,7 @@ let executeCommand
 let executePluginCommand (ipc: IpcOps) (pipeName: string) (cmd: string) (argsStr: string) : int =
     withIpc (fun () ->
         let result = ipc.RunCommand pipeName cmd argsStr |> Async.RunSynchronously
-        IpcOutput.renderIpcResult (renderStatusesWithMode ProgressRenderer.Verbose) false result)
+        IpcOutput.renderIpcResult (renderLines ProgressRenderer.Verbose) false result)
 
 /// Apply parsed global flags: configure logging and return (noCache, noWarnFail, daemonExtraArgs).
 let applyGlobalFlags (globals: GlobalFlag list) : bool * bool * string =
