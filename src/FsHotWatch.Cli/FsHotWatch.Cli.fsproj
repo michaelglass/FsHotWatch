@@ -16,7 +16,6 @@
         <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>
         <PackageTags>fsharp;cli;file-watcher;daemon;dotnet-tool</PackageTags>
         <PackageReadmeFile>README.md</PackageReadmeFile>
-        <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188;NU1903</NoWarn>
         <IncludeSymbols>true</IncludeSymbols>
         <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     </PropertyGroup>
@@ -46,7 +45,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.201" PrivateAssets="All" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.202" PrivateAssets="All" />
         <PackageReference Include="CommandTree" Version="0.4.0" />
         <PackageReference Include="TestPrune.Falco" Version="1.0.2" />
         <PackageReference Update="FSharp.Core" Version="10.1.*" />
