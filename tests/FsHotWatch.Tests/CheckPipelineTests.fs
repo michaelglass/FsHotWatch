@@ -57,13 +57,13 @@ type private InMemoryCache() =
             this.ClearCalls.Value <- this.ClearCalls.Value + 1
             store.Clear()
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``CheckFile returns None when no project registered for the file`` () =
     let pipeline = CheckPipeline(nullChecker)
     let result = pipeline.CheckFile("/tmp/nonexistent/Lib.fs") |> Async.RunSynchronously
     test <@ result = None @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``RegisterProject makes CheckFile find the project for its source files`` () =
     let tmpDir =
         Path.Combine(Path.GetTempPath(), $"fshw-pipeline-{System.Guid.NewGuid():N}")
@@ -97,7 +97,7 @@ let ``RegisterProject makes CheckFile find the project for its source files`` ()
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``CheckFile returns None for unregistered file even when other projects exist`` () =
     let pipeline = CheckPipeline(nullChecker)
 
@@ -119,7 +119,7 @@ let ``CheckFile returns None for unregistered file even when other projects exis
     let result = pipeline.CheckFile("/tmp/NotRegistered.fs") |> Async.RunSynchronously
     test <@ result = None @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``CheckProject returns None for unregistered project`` () =
     let pipeline = CheckPipeline(nullChecker)
 
@@ -128,7 +128,7 @@ let ``CheckProject returns None for unregistered project`` () =
 
     test <@ result = None @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``CheckProject returns results for all registered source files`` () =
     let tmpDir =
         Path.Combine(Path.GetTempPath(), $"fshw-checkproj-{System.Guid.NewGuid():N}")
@@ -163,7 +163,7 @@ let ``CheckProject returns results for all registered source files`` () =
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``PrepareForRediscovery clears stale file options`` () =
     let pipeline = CheckPipeline(nullChecker)
 
@@ -201,7 +201,7 @@ let ``PrepareForRediscovery clears stale file options`` () =
     test <@ pipeline.GetAllRegisteredFiles() |> List.contains "/tmp/FileB.fs" |> not @>
     test <@ pipeline.GetRegisteredProjects() |> List.contains "/tmp/MyProject.fsproj" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``RegisterProject excludes obj and bin files from registration`` () =
     let pipeline = CheckPipeline(nullChecker)
 
@@ -221,7 +221,7 @@ let ``RegisterProject excludes obj and bin files from registration`` () =
     test <@ registered |> List.contains "/tmp/src/Another.fs" @>
     test <@ registered |> List.length = 2 @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``CheckFile returns None when token is cancelled`` () =
     let pipeline = CheckPipeline(nullChecker)
     let cts = new CancellationTokenSource()
@@ -232,7 +232,7 @@ let ``CheckFile returns None when token is cancelled`` () =
 
     test <@ result = None @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``CancelPreviousCheck cancels previous token for same file`` () =
     let pipeline = CheckPipeline(nullChecker)
     let first = pipeline.CancelPreviousCheck("/tmp/Test.fs")
@@ -241,7 +241,7 @@ let ``CancelPreviousCheck cancels previous token for same file`` () =
     let _second = pipeline.CancelPreviousCheck("/tmp/Test.fs")
     test <@ first.IsCancellationRequested @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``PrepareForRediscovery cancels all file tokens`` () =
     let pipeline = CheckPipeline(nullChecker)
     let cts1 = pipeline.CancelPreviousCheck("/tmp/A.fs")
@@ -252,7 +252,7 @@ let ``PrepareForRediscovery cancels all file tokens`` () =
     test <@ cts1.IsCancellationRequested @>
     test <@ cts2.IsCancellationRequested @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``CancelPreviousCheck links to caller token`` () =
     let pipeline = CheckPipeline(nullChecker)
     let callerCts = new CancellationTokenSource()
@@ -261,7 +261,7 @@ let ``CancelPreviousCheck links to caller token`` () =
     callerCts.Cancel()
     test <@ fileCts.IsCancellationRequested @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``CheckFile assigns increasing version numbers`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-version-{Guid.NewGuid():N}")
 
@@ -292,7 +292,7 @@ let ``CheckFile assigns increasing version numbers`` () =
 
 // --- InvalidateFile coverage (lines 44-54) ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``InvalidateFile with cache backend calls Invalidate for registered file`` () =
     let cache = InMemoryCache()
     let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
@@ -302,14 +302,14 @@ let ``InvalidateFile with cache backend calls Invalidate for registered file`` (
     pipeline.InvalidateFile("/tmp/Inv.fs")
     test <@ cache.InvalidateCalls.Count = 1 @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``InvalidateFile with cache backend does nothing for unregistered file`` () =
     let cache = InMemoryCache()
     let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
     pipeline.InvalidateFile("/tmp/Unknown.fs")
     test <@ cache.InvalidateCalls.Count = 0 @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``InvalidateFile without cache backend does not throw`` () =
     let pipeline = CheckPipeline(nullChecker)
     // No cache backend — should be a no-op without error
@@ -317,7 +317,7 @@ let ``InvalidateFile without cache backend does not throw`` () =
 
 // --- cancelAndDispose already-disposed CTS (lines 17-18) ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``CancelPreviousCheck tolerates already-disposed CTS`` () =
     let pipeline = CheckPipeline(nullChecker)
     let cts = pipeline.CancelPreviousCheck("/tmp/Disposable.fs")
@@ -329,7 +329,7 @@ let ``CancelPreviousCheck tolerates already-disposed CTS`` () =
 
 // --- PrepareForRediscovery clears cache backend ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``PrepareForRediscovery clears cache backend`` () =
     let cache = InMemoryCache()
     let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
@@ -341,7 +341,7 @@ let ``PrepareForRediscovery clears cache backend`` () =
 
 // --- CheckProject with missing project (line 186) ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``CheckProject returns None for missing project`` () =
     let pipeline = CheckPipeline(nullChecker)
     // Register a different project so the dictionary isn't empty
@@ -352,7 +352,7 @@ let ``CheckProject returns None for missing project`` () =
 
 // --- Cancellation during CheckFile (lines 174-176) ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``CheckFile returns None when cancelled before FCS call`` () =
     let pipeline = CheckPipeline(nullChecker)
 
@@ -369,7 +369,7 @@ let ``CheckFile returns None when cancelled before FCS call`` () =
 
 // --- Cancellation during FCS check (fileToken must propagate into CheckFileCore) ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``CancelPreviousCheck during in-flight FCS check cancels the check`` () =
     FsHotWatch.Tests.TestHelpers.withTempDir "cancel-mid-fcs" (fun tmpDir ->
         // Use a fresh cold checker so FCS must load references from scratch (takes >50ms)
