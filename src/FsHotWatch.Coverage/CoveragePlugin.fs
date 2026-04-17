@@ -93,98 +93,113 @@ let create
                         return state
                     else
                         ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                        ctx.StartSubtask "checking thresholds" "checking thresholds"
 
-                        try
-                            let thresholds = loadThresholds thresholdsFile
+                        return!
+                            PluginCtxHelpers.withSubtask
+                                ctx
+                                "checking thresholds"
+                                "checking thresholds"
+                                (async {
+                                    try
+                                        let thresholds = loadThresholds thresholdsFile
 
-                            let coverageFiles =
-                                if Directory.Exists(coverageDir) then
-                                    Directory.GetFiles(coverageDir, "*.xml", SearchOption.AllDirectories)
-                                    |> Array.filter (fun f ->
-                                        f.EndsWith("cobertura.xml", StringComparison.OrdinalIgnoreCase))
-                                    |> Array.toList
-                                else
-                                    []
+                                        let coverageFiles =
+                                            if Directory.Exists(coverageDir) then
+                                                Directory.GetFiles(coverageDir, "*.xml", SearchOption.AllDirectories)
+                                                |> Array.filter (fun f ->
+                                                    f.EndsWith("cobertura.xml", StringComparison.OrdinalIgnoreCase))
+                                                |> Array.toList
+                                            else
+                                                []
 
-                            let results =
-                                coverageFiles
-                                |> List.choose (fun xmlPath ->
-                                    match parseCoberturaXml xmlPath with
-                                    | Some(lineRate, branchRate) ->
-                                        let projectName = Path.GetDirectoryName(xmlPath) |> Path.GetFileName
+                                        let results =
+                                            coverageFiles
+                                            |> List.choose (fun xmlPath ->
+                                                match parseCoberturaXml xmlPath with
+                                                | Some(lineRate, branchRate) ->
+                                                    let projectName =
+                                                        Path.GetDirectoryName(xmlPath) |> Path.GetFileName
 
-                                        let meetsThreshold =
-                                            match thresholds |> Map.tryFind projectName with
-                                            | Some threshold ->
-                                                lineRate >= threshold.Line && branchRate >= threshold.Branch
-                                            | None -> true
+                                                    let meetsThreshold =
+                                                        match thresholds |> Map.tryFind projectName with
+                                                        | Some threshold ->
+                                                            lineRate >= threshold.Line
+                                                            && branchRate >= threshold.Branch
+                                                        | None -> true
 
-                                        Some
-                                            { Project = projectName
-                                              LineRate = lineRate
-                                              BranchRate = branchRate
-                                              MeetsThreshold = meetsThreshold }
-                                    | None -> None)
+                                                    Some
+                                                        { Project = projectName
+                                                          LineRate = lineRate
+                                                          BranchRate = branchRate
+                                                          MeetsThreshold = meetsThreshold }
+                                                | None -> None)
 
-                            ctx.EndSubtask "checking thresholds"
+                                        if coverageFiles.IsEmpty then
+                                            ctx.ReportStatus(
+                                                PluginStatus.Failed(
+                                                    $"No coverage files found in %s{coverageDir}",
+                                                    DateTime.UtcNow
+                                                )
+                                            )
 
-                            if coverageFiles.IsEmpty then
-                                ctx.ReportStatus(
-                                    PluginStatus.Failed($"No coverage files found in %s{coverageDir}", DateTime.UtcNow)
-                                )
+                                            return { Results = results }
+                                        else
+                                            let allPass = results |> List.forall (fun r -> r.MeetsThreshold)
 
-                                return { Results = results }
-                            else
-                                let allPass = results |> List.forall (fun r -> r.MeetsThreshold)
+                                            let belowCount =
+                                                results
+                                                |> List.filter (fun r -> not r.MeetsThreshold)
+                                                |> List.length
 
-                                let belowCount =
-                                    results |> List.filter (fun r -> not r.MeetsThreshold) |> List.length
+                                            ctx.CompleteWithSummary $"{belowCount} files below threshold"
 
-                                ctx.CompleteWithSummary $"{belowCount} files below threshold"
+                                            let afterCheckOk, afterCheckOutput =
+                                                match afterCheck with
+                                                | Some hook ->
+                                                    let (success, output) = hook ()
 
-                                let afterCheckOk, afterCheckOutput =
-                                    match afterCheck with
-                                    | Some hook ->
-                                        let (success, output) = hook ()
+                                                    if not success then
+                                                        Logging.error "coverage" $"afterCheck failed:\n%s{output}"
 
-                                        if not success then
-                                            Logging.error "coverage" $"afterCheck failed:\n%s{output}"
+                                                    success, Some output
+                                                | None -> true, None
 
-                                        success, Some output
-                                    | None -> true, None
+                                            if allPass && afterCheckOk then
+                                                ctx.ClearErrors "<coverage>"
+                                                ctx.ReportStatus(Completed(DateTime.UtcNow))
+                                            else
+                                                let thresholdEntries =
+                                                    results
+                                                    |> List.filter (fun r -> not r.MeetsThreshold)
+                                                    |> List.map (fun r ->
+                                                        ErrorEntry.error
+                                                            $"%s{r.Project}: line=%.1f{r.LineRate}%% branch=%.1f{r.BranchRate}%%")
 
-                                if allPass && afterCheckOk then
-                                    ctx.ClearErrors "<coverage>"
-                                    ctx.ReportStatus(Completed(DateTime.UtcNow))
-                                else
-                                    let thresholdEntries =
-                                        results
-                                        |> List.filter (fun r -> not r.MeetsThreshold)
-                                        |> List.map (fun r ->
-                                            ErrorEntry.error
-                                                $"%s{r.Project}: line=%.1f{r.LineRate}%% branch=%.1f{r.BranchRate}%%")
+                                                let afterCheckEntries =
+                                                    match afterCheckOk, afterCheckOutput with
+                                                    | false, Some output ->
+                                                        [ ErrorEntry.error $"afterCheck failed: %s{output}" ]
+                                                    | _ -> []
 
-                                    let afterCheckEntries =
-                                        match afterCheckOk, afterCheckOutput with
-                                        | false, Some output -> [ ErrorEntry.error $"afterCheck failed: %s{output}" ]
-                                        | _ -> []
+                                                let entries = thresholdEntries @ afterCheckEntries
 
-                                    let entries = thresholdEntries @ afterCheckEntries
+                                                ctx.ReportErrors "<coverage>" entries
 
-                                    ctx.ReportErrors "<coverage>" entries
+                                                let failures =
+                                                    entries |> List.map (fun e -> e.Message) |> String.concat "; "
 
-                                    let failures = entries |> List.map (fun e -> e.Message) |> String.concat "; "
+                                                ctx.ReportStatus(
+                                                    PluginStatus.Failed(
+                                                        $"Coverage below threshold: %s{failures}",
+                                                        DateTime.UtcNow
+                                                    )
+                                                )
 
-                                    ctx.ReportStatus(
-                                        PluginStatus.Failed($"Coverage below threshold: %s{failures}", DateTime.UtcNow)
-                                    )
-
-                                return { Results = results }
-                        with ex ->
-                            ctx.EndSubtask "checking thresholds"
-                            ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
-                            return state
+                                            return { Results = results }
+                                    with ex ->
+                                        ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+                                        return state
+                                })
                 | _ -> return state
             }
       Commands =
