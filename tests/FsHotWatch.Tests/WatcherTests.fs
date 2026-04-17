@@ -11,95 +11,95 @@ open FsHotWatch.Tests.TestHelpers
 
 // === Unit tests for isRelevantFile ===
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``isRelevantFile accepts .fs files`` () =
     test <@ isRelevantFile "/repo/src/Lib.fs" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``isRelevantFile accepts .fsx files`` () =
     test <@ isRelevantFile "/repo/src/Script.fsx" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``isRelevantFile accepts .fsproj files`` () =
     test <@ isRelevantFile "/repo/src/App.fsproj" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``isRelevantFile accepts .sln files`` () =
     test <@ isRelevantFile "/repo/App.sln" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``isRelevantFile accepts .slnx files`` () =
     test <@ isRelevantFile "/repo/App.slnx" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``isRelevantFile accepts .props files`` () =
     test <@ isRelevantFile "/repo/Directory.Build.props" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``isRelevantFile rejects files in obj directory`` () =
     test <@ not (isRelevantFile "/repo/src/obj/Debug/Generated.fs") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``isRelevantFile rejects files in bin directory`` () =
     test <@ not (isRelevantFile "/repo/src/bin/Debug/App.fs") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``isRelevantFile rejects .cs files`` () =
     test <@ not (isRelevantFile "/repo/src/Program.cs") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``isRelevantFile rejects .txt files`` () =
     test <@ not (isRelevantFile "/repo/src/notes.txt") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``isRelevantFile rejects unrelated extensions`` () =
     test <@ not (isRelevantFile "/repo/src/readme.md") @>
     test <@ not (isRelevantFile "/repo/src/data.json") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``isRelevantFile normalizes backslash paths for obj exclusion`` () =
     test <@ not (isRelevantFile @"C:\repo\src\obj\Debug\Generated.fs") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``isRelevantFile normalizes backslash paths for bin exclusion`` () =
     test <@ not (isRelevantFile @"C:\repo\src\bin\Release\App.fs") @>
 
 // === Unit tests for classifyChange ===
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``classifyChange maps .fs to SourceChanged`` () =
     test <@ classifyChange "/repo/src/Lib.fs" = SourceChanged [ "/repo/src/Lib.fs" ] @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``classifyChange maps .fsx to SourceChanged`` () =
     test <@ classifyChange "/repo/src/Script.fsx" = SourceChanged [ "/repo/src/Script.fsx" ] @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``classifyChange maps .fsproj to ProjectChanged`` () =
     test <@ classifyChange "/repo/src/App.fsproj" = ProjectChanged [ "/repo/src/App.fsproj" ] @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``classifyChange maps .props to ProjectChanged`` () =
     test <@ classifyChange "/repo/Directory.Build.props" = ProjectChanged [ "/repo/Directory.Build.props" ] @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``classifyChange maps .sln to SolutionChanged`` () =
     test <@ classifyChange "/repo/App.sln" = SolutionChanged "/repo/App.sln" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``classifyChange maps .slnx to SolutionChanged`` () =
     test <@ classifyChange "/repo/App.slnx" = SolutionChanged "/repo/App.slnx" @>
 
 // === Unit tests for hasContentChanged ===
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``hasContentChanged returns true for file that does not exist`` () =
     let fakePath =
         Path.Combine(Path.GetTempPath(), $"fshotwatch-nonexistent-{Guid.NewGuid():N}.fs")
 
     test <@ hasContentChanged fakePath = true @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``hasContentChanged returns true on first check of existing file`` () =
     let tmpFile =
         Path.Combine(Path.GetTempPath(), $"fshotwatch-first-{Guid.NewGuid():N}.fs")
@@ -110,7 +110,7 @@ let ``hasContentChanged returns true on first check of existing file`` () =
     finally
         File.Delete(tmpFile)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``hasContentChanged returns false when content is unchanged`` () =
     let tmpFile =
         Path.Combine(Path.GetTempPath(), $"fshotwatch-same-{Guid.NewGuid():N}.fs")
@@ -122,7 +122,7 @@ let ``hasContentChanged returns false when content is unchanged`` () =
     finally
         File.Delete(tmpFile)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``hasContentChanged returns true when content changes`` () =
     let tmpFile =
         Path.Combine(Path.GetTempPath(), $"fshotwatch-changed-{Guid.NewGuid():N}.fs")
@@ -135,7 +135,7 @@ let ``hasContentChanged returns true when content changes`` () =
     finally
         File.Delete(tmpFile)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``hasContentChanged returns true and removes from cache when file is deleted`` () =
     let tmpFile =
         Path.Combine(Path.GetTempPath(), $"fshotwatch-deleted-{Guid.NewGuid():N}.fs")
@@ -146,7 +146,7 @@ let ``hasContentChanged returns true and removes from cache when file is deleted
     // Now file doesn't exist - should return true and remove from cache
     test <@ hasContentChanged tmpFile = true @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``hasContentChanged returns true on IOException`` () =
     // Use a path that will cause IOException (directory, not a file)
     let tmpDir =
@@ -164,7 +164,7 @@ let ``hasContentChanged returns true on IOException`` () =
 
 // === FileWatcher.create non-macOS code path ===
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FileWatcher.create with isMacOS=false watches src and tests dirs`` () =
     withTempDir "watcher-fsw" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src")
@@ -180,7 +180,7 @@ let ``FileWatcher.create with isMacOS=false watches src and tests dirs`` () =
         probeUntilEvent srcDir (fun () -> changes.Length >= 1) 10000
         test <@ changes.Length >= 1 @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FileWatcher.create with isMacOS=false when neither src nor tests exist`` () =
     withTempDir "watcher-nosrc" (fun tmpDir ->
         let mutable changes: FileChangeKind list = []
@@ -191,7 +191,7 @@ let ``FileWatcher.create with isMacOS=false when neither src nor tests exist`` (
 
 // === Integration test: verify FileWatcher.create produces a working watcher (default OS path) ===
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``watcher detects file changes in src directory`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshotwatch-test-{Guid.NewGuid():N}")
     let srcDir = Path.Combine(tmpDir, "src")

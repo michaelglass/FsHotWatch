@@ -25,12 +25,12 @@ let private waitForPluginIdle (host: PluginHost) (pluginName: string) (timeoutSe
 let private waitForPluginTerminal (host: PluginHost) (pluginName: string) (timeoutSecs: float) =
     waitForTerminalStatus host pluginName (int (timeoutSecs * 1000.0))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``plugin has correct name`` () =
     let handler = create ":memory:" "/tmp" None None None None None None
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "test-prune" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``affected-tests command returns not-analyzed when no files checked`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -41,7 +41,7 @@ let ``affected-tests command returns not-analyzed when no files checked`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("not analyzed") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``changed-files command returns empty list when no files checked`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -52,7 +52,7 @@ let ``changed-files command returns empty list when no files checked`` () =
     test <@ result.IsSome @>
     test <@ result.Value = "[]" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``test-prune error path sets Failed status on null check results`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -90,7 +90,7 @@ let ``test-prune error path sets Failed status on null check results`` () =
     | Running _ -> ()
     | other -> Assert.Fail($"Expected Failed or Running, got: %A{other}")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``changed-files tracks files after emit with valid relative path`` () =
     withTempDir "tp-test" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
@@ -120,7 +120,7 @@ let ``changed-files tracks files after emit with valid relative path`` () =
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``duplicate file checks do not duplicate in changed-files list`` () =
     withTempDir "tp-dup" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
@@ -150,7 +150,7 @@ let ``duplicate file checks do not duplicate in changed-files list`` () =
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``test-results command returns not run initially`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -161,7 +161,7 @@ let ``test-results command returns not run initially`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("not run") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``plugin with testConfigs subscribes to OnBuildCompleted`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -182,7 +182,7 @@ let ``plugin with testConfigs subscribes to OnBuildCompleted`` () =
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``extension contributes affected test classes during test run`` () =
     withTempDir "tp-ext" (fun tmpDir ->
         let mutable extensionCalled = false
@@ -223,7 +223,7 @@ let ``extension contributes affected test classes during test run`` () =
 
         test <@ extensionCalled @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``extension error is caught and does not crash plugin`` () =
     withTempDir "tp-ext-err" (fun tmpDir ->
         let failingExtension =
@@ -255,7 +255,7 @@ let ``extension error is caught and does not crash plugin`` () =
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``database read-before-write preserves previous symbols for diffing`` () =
     // RebuildForProject must happen AFTER GetSymbolsInFile to get previous state for diffing.
     withTempDir "tp-db" (fun tmpDir ->
@@ -315,7 +315,7 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
         let noChangedNames = changedSymbolNames noChanges
         test <@ noChangedNames.IsEmpty @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FileChecked does not report Completed when testConfigs are provided (error path)`` () =
     withTempDir "tp-no-complete" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
@@ -372,7 +372,7 @@ let ``FileChecked does not report Completed when testConfigs are provided (error
             )
         | _ -> ())
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FileChecked reports terminal status when no testConfigs (analysis-only mode, error path)`` () =
     withTempDir "tp-complete-no-configs" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
@@ -410,7 +410,7 @@ let ``FileChecked reports terminal status when no testConfigs (analysis-only mod
         | Failed _ -> () // Both are acceptable terminal states for analysis-only mode
         | other -> Assert.Fail($"Expected Completed or Failed in analysis-only mode, got: %A{other}"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``plugin reports Running status on FileChecked after tests complete`` () =
     withTempDir "tp-reset" (fun tmpDir ->
         let configs =
@@ -465,7 +465,7 @@ let ``plugin reports Running status on FileChecked after tests complete`` () =
             Assert.Fail("Expected status to change after new FileChecked, not remain as test-run Completed")
         | _ -> ())
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``run-tests command runs all projects and returns results`` () =
     withTempDir "tp-run" (fun tmpDir ->
         let configs =
@@ -489,7 +489,7 @@ let ``run-tests command runs all projects and returns results`` () =
         Assert.Equal("passed", projects.[0].GetProperty("status").GetString())
         Assert.True(doc.RootElement.TryGetProperty("elapsed") |> fst))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``run-tests with project filter runs only named project`` () =
     withTempDir "tp-run-proj" (fun tmpDir ->
         let configs =
@@ -520,7 +520,7 @@ let ``run-tests with project filter runs only named project`` () =
         test <@ result.Value.Contains("Alpha") @>
         test <@ not (result.Value.Contains("Beta")) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``run-tests with only-failed reruns failed projects`` () =
     withTempDir "tp-run-failed" (fun tmpDir ->
         let configs =
@@ -557,7 +557,7 @@ let ``run-tests with only-failed reruns failed projects`` () =
         test <@ result.Value.Contains("Fails") @>
         test <@ not (result.Value.Contains("Passes")) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``run-tests not registered when no testConfigs`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let handler = create ":memory:" "/tmp" None None None None None None
@@ -566,13 +566,13 @@ let ``run-tests not registered when no testConfigs`` () =
     let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
     test <@ result.IsNone @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``dispose is callable`` () =
     // Framework-managed plugins don't need explicit dispose, but verify create doesn't throw
     let _handler = create ":memory:" "/tmp" None None None None None None
     ()
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``parseFailedTests extracts class and method from xUnit MTP output`` () =
     let output =
         "failed FsHotWatch.Tests.PluginHostTests.plugin receives file change events (1ms)\nfailed FsHotWatch.Tests.BuildPluginTests.build fires on source change (0ms)\nTest run summary: Failed!\n  total: 10\n  failed: 2"
@@ -594,14 +594,14 @@ let ``parseFailedTests extracts class and method from xUnit MTP output`` () =
             |> List.exists (fun (cls, meth, _) -> cls = "BuildPluginTests" && meth = "build fires on source change")
         @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``parseFailedTests handles output with no failures`` () =
     let parsed: (string * string * string) list =
         parseFailedTests "Test run summary: Passed!\n  total: 10\n  succeeded: 10"
 
     test <@ parsed.Length = 0 @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``test failures are reported to error ledger`` () =
     withTempDir "tp-ledger" (fun tmpDir ->
         // Use "false" command which always fails, producing test failure output
@@ -623,7 +623,7 @@ let ``test failures are reported to error ledger`` () =
 
         test <@ host.HasFailingReasons(warningsAreFailures = true) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``test errors are cleared when all tests pass`` () =
     withTempDir "tp-ledger-clear" (fun tmpDir ->
         // First run fails, second run passes
@@ -672,7 +672,7 @@ let private testSource moduleName =
 type FactAttribute() =
     inherit System.Attribute()
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let myTest () = ()
 """
 
@@ -685,7 +685,7 @@ type FactAttribute() =
 
 let compute x = x + 1
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let computeTest () =
     let _ = compute 1
     ()
@@ -725,7 +725,7 @@ let private emitFileAndWait
             10000
     }
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FileChecked reports Completed when testConfigs provided (analysis done, awaiting build)`` () =
     withTempDir "tp-no-complete-real" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
@@ -764,7 +764,7 @@ let ``FileChecked reports Completed when testConfigs provided (analysis done, aw
         | Completed _ -> ()
         | other -> Assert.Fail($"Expected Completed after FileChecked analysis, got: %A{other}"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FileChecked reports Completed when no testConfigs (success path)`` () =
     withTempDir "tp-complete-real" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
@@ -901,7 +901,7 @@ type FactAttribute() =
 
 let compute x = x + 2
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let computeTest () =
     let _ = compute 1
     ()
@@ -970,19 +970,19 @@ open Lib
 
 type FactAttribute() = inherit System.Attribute()
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let testValidateTrue () =
     let cfg = { Value = "hello"; Count = 5 }
     let result = validate cfg
     assert result
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let testValidateFalse () =
     let cfg = { Value = ""; Count = 0 }
     let result = validate cfg
     assert (not result)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let testOtherStuff () =
     // This test doesn't use Config, so shouldn't be affected
     let x = 1 + 1
@@ -1093,7 +1093,7 @@ let validate (cfg: Config) = cfg.Value.Length > 0
         test <@ capturedArgs.Contains("--filter-class") @>
         test <@ capturedArgs.Contains("Tests") @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and tests finish`` () =
     withTempDir "tp-hang" (fun tmpDir ->
         let configs =
@@ -1151,7 +1151,7 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
 
         test <@ completed @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FileChecked does not query DB for affected tests`` () =
     // Bug 2: FileChecked should accumulate changed symbols, not query the DB.
     // The query should happen after flush in BuildCompleted.
@@ -1220,7 +1220,7 @@ let ``FileChecked does not query DB for affected tests`` () =
         test <@ result.IsSome @>
         test <@ not (result.Value.Contains("myTest")) @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``BuildCompleted queries affected tests after flush`` () =
     // Bug 2: After flush, QueryAffectedTests should run against fresh DB data.
     withTempDir "tp-query-after-flush" (fun tmpDir ->
@@ -1247,7 +1247,7 @@ let ``BuildCompleted queries affected tests after flush`` () =
         let result = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
         test <@ result.IsSome @>)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``skip tests when 0 affected classes and not cold start`` () =
     // Bug 1: After first run, 0 affected classes should skip (not run all).
     withTempDir "tp-skip" (fun tmpDir ->
@@ -1279,7 +1279,7 @@ let ``skip tests when 0 affected classes and not cold start`` () =
         waitForPluginTerminal host "test-prune" 5.0
         test <@ runCount = 1 @>) // still 1, not 2
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``comment-only change does not add file to ChangedFiles but AST change does`` () =
     // Regression test: before the fix, newChangedFiles was computed unconditionally
     // before changedNames, so any file emit (even comment-only) would add the file
@@ -1363,7 +1363,7 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
 
 // --- buildFilterArgs unit tests ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``buildFilterArgs returns None when no classes for project`` () =
     let config =
         { Project = "TestProj"
@@ -1377,7 +1377,7 @@ let ``buildFilterArgs returns None when no classes for project`` () =
     let result = buildFilterArgs config Map.empty
     test <@ result = None @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``buildFilterArgs returns None when no FilterTemplate configured`` () =
     let config =
         { Project = "TestProj"
@@ -1392,7 +1392,7 @@ let ``buildFilterArgs returns None when no FilterTemplate configured`` () =
     let result = buildFilterArgs config classesByProject
     test <@ result = None @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``buildFilterArgs applies template with ClassJoin`` () =
     let config =
         { Project = "TestProj"
@@ -1407,7 +1407,7 @@ let ``buildFilterArgs applies template with ClassJoin`` () =
     let result = buildFilterArgs config classesByProject
     test <@ result = Some "-- --filter-class ClassA|ClassB" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``buildFilterArgs applies template with default space join`` () =
     let config =
         { Project = "TestProj"
@@ -1422,7 +1422,7 @@ let ``buildFilterArgs applies template with default space join`` () =
     let result = buildFilterArgs config classesByProject
     test <@ result = Some "-- --filter-class ClassA ClassB" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``buildFilterArgs ignores classes from other projects`` () =
     let config =
         { Project = "TestProjA"

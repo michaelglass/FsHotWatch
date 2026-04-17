@@ -7,32 +7,32 @@ open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Cli.RunOnceOutput
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``formatStepResult shows checkmark for completed`` () =
     let result = formatStepResult "build" (Completed DateTime.UtcNow)
     test <@ result.Contains("\u2713") @>
     test <@ result.Contains("build") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``formatStepResult shows X for failed`` () =
     let result = formatStepResult "build" (Failed("compile error", DateTime.UtcNow))
     test <@ result.Contains("\u2717") @>
     test <@ result.Contains("build") @>
     test <@ result.Contains("compile error") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``formatStepResult shows ellipsis for running`` () =
     let result = formatStepResult "lint" (Running(DateTime.UtcNow.AddSeconds(-5.0)))
     test <@ result.Contains("\u2026") @>
     test <@ result.Contains("lint") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``formatStepResult shows dash for idle`` () =
     let result = formatStepResult "format" Idle
     test <@ result.Contains("\u2014") @>
     test <@ result.Contains("format") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``formatSummary shows all plugins`` () =
     let statuses =
         Map.ofList [ "lint", Completed(DateTime.UtcNow); "build", Completed(DateTime.UtcNow) ]
@@ -42,7 +42,7 @@ let ``formatSummary shows all plugins`` () =
     test <@ result.Contains("lint") @>
     test <@ result.Contains("build") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``formatSummary shows X for failed plugins`` () =
     let statuses = Map.ofList [ "build", Failed("compile error", DateTime.UtcNow) ]
 
@@ -50,19 +50,19 @@ let ``formatSummary shows X for failed plugins`` () =
     test <@ result.Contains("\u2717") @>
     test <@ result.Contains("build") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``formatSummary shows failure message`` () =
     let statuses = Map.ofList [ "build", Failed("compile error", DateTime.UtcNow) ]
 
     let result = formatSummary statuses
     test <@ result.Contains("compile error") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``formatSummary empty map returns empty string`` () =
     let result = formatSummary Map.empty
     test <@ result = "" @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``formatErrors groups by file with plugin prefix`` () =
     let errors =
         Map.ofList
@@ -87,7 +87,7 @@ let ``formatErrors groups by file with plugin prefix`` () =
     test <@ result.Contains("L17") @>
     test <@ result.Contains("L42") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``formatErrors shows severity labels for error and warning`` () =
     let errors =
         Map.ofList
@@ -111,7 +111,7 @@ let ``formatErrors shows severity labels for error and warning`` () =
     test <@ result.Contains("warning") @>
     test <@ result.Contains("bad name") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``formatErrors shows count summary`` () =
     let errors =
         Map.ofList
@@ -133,12 +133,12 @@ let ``formatErrors shows count summary`` () =
     let result = formatErrors errors
     test <@ result.Contains("1 error(s), 1 warning(s) in 2 file(s)") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``formatErrors with no errors shows clean message`` () =
     let result = formatErrors Map.empty
     test <@ result.Contains("No errors") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``formatErrors hides info-severity entries from output`` () =
     let errors =
         Map.ofList
@@ -154,7 +154,7 @@ let ``formatErrors hides info-severity entries from output`` () =
     test <@ not (result.Contains("XML comment")) @>
     test <@ result.Contains("No errors") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``formatErrors hides hint-severity entries from output`` () =
     let errors =
         Map.ofList
@@ -170,7 +170,7 @@ let ``formatErrors hides hint-severity entries from output`` () =
     test <@ not (result.Contains("some hint")) @>
     test <@ result.Contains("No errors") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``formatErrors shows warnings but hides info in same file`` () =
     let errors =
         Map.ofList
@@ -193,7 +193,7 @@ let ``formatErrors shows warnings but hides info in same file`` () =
     test <@ not (result.Contains("XML comment")) @>
     test <@ result.Contains("1 warning(s) in 1 file(s)") @>
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``formatErrors excludes files with only info entries from file count`` () =
     let errors =
         Map.ofList

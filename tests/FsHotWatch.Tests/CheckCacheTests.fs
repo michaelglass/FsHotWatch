@@ -10,7 +10,7 @@ open FsHotWatch.FileCheckCache
 open FsHotWatch.JjHelper
 open FsHotWatch.Tests.TestHelpers
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``CacheKey produces consistent hash for same inputs`` () =
     let key1 =
         { FileHash = ContentHash.create "abc123"
@@ -25,7 +25,7 @@ let ``CacheKey produces consistent hash for same inputs`` () =
 
     Assert.Equal(hash1, hash2)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``CacheKey produces different hash for different FileHash`` () =
     let key1 =
         { FileHash = ContentHash.create "abc123"
@@ -40,7 +40,7 @@ let ``CacheKey produces different hash for different FileHash`` () =
 
     Assert.NotEqual<string>(hash1, hash2)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``CacheKey produces different hash for different ProjectOptionsHash`` () =
     let key1 =
         { FileHash = ContentHash.create "abc123"
@@ -55,7 +55,7 @@ let ``CacheKey produces different hash for different ProjectOptionsHash`` () =
 
     Assert.NotEqual<string>(hash1, hash2)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``hash format is lowercase hex with no dashes`` () =
     let key =
         { FileHash = ContentHash.create "abc123"
@@ -66,7 +66,7 @@ let ``hash format is lowercase hex with no dashes`` () =
     Assert.Matches("^[a-f0-9]+$", hash)
     Assert.DoesNotContain("-", hash)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``TimestampCacheKeyProvider returns consistent hash for same file`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
     let tempFile = Path.GetTempFileName()
@@ -79,7 +79,7 @@ let ``TimestampCacheKeyProvider returns consistent hash for same file`` () =
     finally
         File.Delete(tempFile)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``TimestampCacheKeyProvider returns different hash after file modification`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
     let tempFile = Path.GetTempFileName()
@@ -97,7 +97,7 @@ let ``TimestampCacheKeyProvider returns different hash after file modification``
     finally
         File.Delete(tempFile)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``TimestampCacheKeyProvider returns lowercase hex hash`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
     let hash = provider.GetFileHash("/nonexistent/test.fs")
@@ -106,7 +106,7 @@ let ``TimestampCacheKeyProvider returns lowercase hex hash`` () =
     Assert.DoesNotContain("-", hash)
     Assert.True(hash.Length = 64)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``makeCacheKey produces different keys for different files`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
     let tempFile1 = Path.GetTempFileName()
@@ -143,7 +143,7 @@ let private makeKey (fileHash: string) : CacheKey =
     { FileHash = ContentHash.create fileHash
       ProjectOptionsHash = ContentHash.create "proj" }
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``InMemoryCheckCache stores and retrieves results`` () =
     let cache = InMemoryCheckCache(10) :> ICheckCacheBackend
     let key = makeKey "file1"
@@ -155,14 +155,14 @@ let ``InMemoryCheckCache stores and retrieves results`` () =
     | Some r -> Assert.Equal("test.fs", r.File)
     | None -> Assert.Fail("Expected Some but got None")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``InMemoryCheckCache returns None for missing key`` () =
     let cache = InMemoryCheckCache(10) :> ICheckCacheBackend
     let key = makeKey "nonexistent"
 
     Assert.True(cache.TryGet(key).IsNone)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``InMemoryCheckCache evicts LRU on overflow`` () =
     let cache = InMemoryCheckCache(2) :> ICheckCacheBackend
     let key1 = makeKey "a"
@@ -178,7 +178,7 @@ let ``InMemoryCheckCache evicts LRU on overflow`` () =
     Assert.True(cache.TryGet(key2).IsSome)
     Assert.True(cache.TryGet(key3).IsSome)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``InMemoryCheckCache LRU access refreshes entry`` () =
     let cache = InMemoryCheckCache(2) :> ICheckCacheBackend
     let key1 = makeKey "a"
@@ -196,7 +196,7 @@ let ``InMemoryCheckCache LRU access refreshes entry`` () =
     Assert.True(cache.TryGet(key2).IsNone)
     Assert.True(cache.TryGet(key3).IsSome)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``InMemoryCheckCache invalidates entry`` () =
     let cache = InMemoryCheckCache(10) :> ICheckCacheBackend
     let key = makeKey "file1"
@@ -206,7 +206,7 @@ let ``InMemoryCheckCache invalidates entry`` () =
 
     Assert.True(cache.TryGet(key).IsNone)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``InMemoryCheckCache updates existing key with new value`` () =
     let cache = InMemoryCheckCache(10) :> ICheckCacheBackend
     let key = makeKey "file1"
@@ -218,7 +218,7 @@ let ``InMemoryCheckCache updates existing key with new value`` () =
     | Some r -> Assert.Equal(2L, r.Version)
     | None -> Assert.Fail("Expected Some but got None")
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``InMemoryCheckCache clear removes all entries`` () =
     let cache = InMemoryCheckCache(10) :> ICheckCacheBackend
     let key1 = makeKey "a"
@@ -237,7 +237,7 @@ let ``InMemoryCheckCache clear removes all entries`` () =
 
 // --- FileCheckCache tests ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FileCheckCache stores and retrieves results`` () =
     let tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
     Directory.CreateDirectory(tempDir) |> ignore
@@ -257,7 +257,7 @@ let ``FileCheckCache stores and retrieves results`` () =
     finally
         Directory.Delete(tempDir, true)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FileCheckCache returns None for missing key`` () =
     let tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
     Directory.CreateDirectory(tempDir) |> ignore
@@ -269,7 +269,7 @@ let ``FileCheckCache returns None for missing key`` () =
     finally
         Directory.Delete(tempDir, true)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FileCheckCache persists across instances`` () =
     let tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
     Directory.CreateDirectory(tempDir) |> ignore
@@ -290,7 +290,7 @@ let ``FileCheckCache persists across instances`` () =
     finally
         Directory.Delete(tempDir, true)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FileCheckCache invalidates entry`` () =
     let tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
     Directory.CreateDirectory(tempDir) |> ignore
@@ -304,7 +304,7 @@ let ``FileCheckCache invalidates entry`` () =
     finally
         Directory.Delete(tempDir, true)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``FileCheckCache clear removes all entries`` () =
     let tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
     Directory.CreateDirectory(tempDir) |> ignore
@@ -326,7 +326,7 @@ let private withStoredCommitId (tempDir: string) (commitId: string) =
     Directory.CreateDirectory(fshwDir) |> ignore
     File.WriteAllText(Path.Combine(fshwDir, "last-commit.id"), commitId)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``JjScanGuard returns SkipAll when commit_id matches stored`` () =
     withTempDir "jj-guard" (fun tempDir ->
         withStoredCommitId tempDir "abc123def456"
@@ -338,7 +338,7 @@ let ``JjScanGuard returns SkipAll when commit_id matches stored`` () =
         | SkipAll -> ()
         | other -> Assert.Fail($"Expected SkipAll but got %A{other}"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``JjScanGuard returns CheckSubset when commit_id differs`` () =
     withTempDir "jj-guard" (fun tempDir ->
         withStoredCommitId tempDir "old_commit_id"
@@ -351,7 +351,7 @@ let ``JjScanGuard returns CheckSubset when commit_id differs`` () =
         | CheckSubset files -> Assert.Equal<Set<string>>(changedFiles, files)
         | other -> Assert.Fail($"Expected CheckSubset but got %A{other}"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``JjScanGuard returns CheckAll when no stored commit_id`` () =
     withTempDir "jj-guard" (fun tempDir ->
         let guard =
@@ -361,7 +361,7 @@ let ``JjScanGuard returns CheckAll when no stored commit_id`` () =
         | CheckAll -> ()
         | other -> Assert.Fail($"Expected CheckAll but got %A{other}"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``JjScanGuard returns CheckAll when jj unavailable`` () =
     withTempDir "jj-guard" (fun tempDir ->
         let guard =
@@ -371,7 +371,7 @@ let ``JjScanGuard returns CheckAll when jj unavailable`` () =
         | CheckAll -> ()
         | other -> Assert.Fail($"Expected CheckAll but got %A{other}"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``JjScanGuard CommitScanSuccess writes commit_id to disk`` () =
     withTempDir "jj-guard" (fun tempDir ->
         let guard =
@@ -385,7 +385,7 @@ let ``JjScanGuard CommitScanSuccess writes commit_id to disk`` () =
 
         Assert.Equal("written_commit_id", storedId))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``JjScanGuard second scan returns SkipAll after CommitScanSuccess`` () =
     withTempDir "jj-guard" (fun tempDir ->
         let commitId = "stable_commit_id"
@@ -405,7 +405,7 @@ let ``JjScanGuard second scan returns SkipAll after CommitScanSuccess`` () =
 
 // --- JjCacheKeyProvider tests ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``JjCacheKeyProvider delegates to TimestampCacheKeyProvider`` () =
     let tempFile = Path.GetTempFileName()
     File.WriteAllText(tempFile, "jj cache key test")
@@ -421,7 +421,7 @@ let ``JjCacheKeyProvider delegates to TimestampCacheKeyProvider`` () =
     finally
         File.Delete(tempFile)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``JjCacheKeyProvider returns consistent hash for same file`` () =
     let tempFile = Path.GetTempFileName()
     File.WriteAllText(tempFile, "consistency test")
@@ -434,7 +434,7 @@ let ``JjCacheKeyProvider returns consistent hash for same file`` () =
     finally
         File.Delete(tempFile)
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``JjCacheKeyProvider handles nonexistent file`` () =
     let provider = JjCacheKeyProvider("/fake/repo") :> ICacheKeyProvider
     let hash = provider.GetFileHash("/nonexistent/file.fs")
@@ -445,7 +445,7 @@ let ``JjCacheKeyProvider handles nonexistent file`` () =
 
 // --- JjScanGuard additional coverage ---
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``JjScanGuard CommitScanSuccess is no-op when commit_id is None`` () =
     withTempDir "jj-guard-noop" (fun tempDir ->
         let guard =
@@ -458,7 +458,7 @@ let ``JjScanGuard CommitScanSuccess is no-op when commit_id is None`` () =
         let fshwDir = Path.Combine(tempDir, ".fshw")
         Assert.False(Directory.Exists(fshwDir)))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``JjScanGuard CommitScanSuccess creates .fshw directory if missing`` () =
     withTempDir "jj-guard-mkdir" (fun tempDir ->
         let guard =
@@ -472,7 +472,7 @@ let ``JjScanGuard CommitScanSuccess creates .fshw directory if missing`` () =
         let storedId = File.ReadAllText(Path.Combine(fshwDir, "last-commit.id")).Trim()
         Assert.Equal("create_dir_test", storedId))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``JjScanGuard readStoredCommitId returns None for empty file`` () =
     withTempDir "jj-guard-empty" (fun tempDir ->
         let fshwDir = Path.Combine(tempDir, ".fshw")
@@ -487,7 +487,7 @@ let ``JjScanGuard readStoredCommitId returns None for empty file`` () =
         | CheckAll -> ()
         | other -> Assert.Fail($"Expected CheckAll but got %A{other}"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``JjScanGuard BeginScan passes stored commit_id to getDiff`` () =
     withTempDir "jj-guard-diff-arg" (fun tempDir ->
         withStoredCommitId tempDir "stored_abc123"
@@ -506,7 +506,7 @@ let ``JjScanGuard BeginScan passes stored commit_id to getDiff`` () =
         guard.BeginScan() |> ignore
         Assert.Equal("stored_abc123", capturedFromId))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``JjScanGuard truncId shows first 8 chars for long ids`` () =
     // This tests the truncId helper indirectly via the CheckSubset path
     // which logs the commit_id. The test verifies it doesn't crash on long ids.
@@ -524,7 +524,7 @@ let ``JjScanGuard truncId shows first 8 chars for long ids`` () =
         | CheckSubset files -> Assert.Contains("/repo/file.fs", files)
         | other -> Assert.Fail($"Expected CheckSubset but got %A{other}"))
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 5000)>]
 let ``JjScanGuard truncId handles short ids`` () =
     withTempDir "jj-guard-short" (fun tempDir ->
         withStoredCommitId tempDir "abc"
