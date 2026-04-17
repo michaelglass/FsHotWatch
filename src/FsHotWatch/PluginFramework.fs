@@ -81,7 +81,7 @@ type PluginHandler<'State, 'Msg> =
         Subscriptions: PluginSubscriptions
         /// Optional cache key function. When provided, the framework checks the task cache
         /// before calling Update. Returns Some(key) for cacheable events, None to skip cache.
-        CacheKey: (PluginEvent<'Msg> -> string option) option
+        CacheKey: (PluginEvent<'Msg> -> ContentHash option) option
         /// Optional teardown function called when the plugin host is disposed.
         Teardown: (unit -> unit) option
     }

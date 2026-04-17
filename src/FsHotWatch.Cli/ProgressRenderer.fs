@@ -4,7 +4,7 @@ open System
 open CommandTree
 open FsHotWatch.Events
 open FsHotWatch.Cli.RunOnceOutput
-open FsHotWatch.Cli.IpcOutput
+open FsHotWatch.Cli.IpcParsing
 
 /// Rendering mode for the progress block. Verbose is the default;
 /// Compact collapses each plugin to a single line.
