@@ -144,6 +144,51 @@ let ``2 MB global cap evicts oldest history entries across plugins`` () =
     test <@ s.TotalByteSize <= 2 * 1024 * 1024 @>
 
 [<Fact(Timeout = 5000)>]
+let ``RecordTerminal twice does not leak state from first run into second`` () =
+    let s = State()
+    s.StartSubtask("p", "k", "in-flight")
+    s.Log("p", "first-run line")
+    let t1 = DateTime.UtcNow
+    s.RecordTerminal("p", CompletedRun, t1, t1.AddMilliseconds(1.0))
+    // Second RecordTerminal with no new activity — phase is Idle, so the
+    // second record must be clean (no stale subtasks / log / summary).
+    let t2 = t1.AddMilliseconds(10.0)
+    s.RecordTerminal("p", CompletedRun, t2, t2.AddMilliseconds(1.0))
+    let hist = s.GetHistory("p")
+    test <@ hist.Length = 2 @>
+    test <@ (List.item 0 hist).ActivityTail = [ "first-run line" ] @>
+    test <@ (List.item 1 hist).ActivityTail = [] @>
+    test <@ (List.item 1 hist).Summary = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``ResetRun on idle plugin is a no-op and does not touch history`` () =
+    let s = State()
+    let t1 = DateTime.UtcNow
+    s.Log("p", "line")
+    s.RecordTerminal("p", CompletedRun, t1, t1.AddMilliseconds(1.0))
+    // Plugin is now Idle. ResetRun must not throw nor alter history.
+    s.ResetRun("p")
+    s.ResetRun("p")
+    test <@ s.GetSubtasks("p") = [] @>
+    test <@ s.GetActivityTail("p") = [] @>
+    test <@ (s.GetHistory("p")).Length = 1 @>
+
+[<Fact(Timeout = 5000)>]
+let ``Activity after RecordTerminal starts a fresh recording`` () =
+    let s = State()
+    s.Log("p", "first")
+    let t1 = DateTime.UtcNow
+    s.RecordTerminal("p", CompletedRun, t1, t1.AddMilliseconds(1.0))
+    // New activity must not revive the prior run's tail.
+    s.Log("p", "second")
+    test <@ s.GetActivityTail("p") = [ "second" ] @>
+    let t2 = t1.AddMilliseconds(10.0)
+    s.RecordTerminal("p", CompletedRun, t2, t2.AddMilliseconds(1.0))
+    let hist = s.GetHistory("p")
+    test <@ (List.item 0 hist).ActivityTail = [ "first" ] @>
+    test <@ (List.item 1 hist).ActivityTail = [ "second" ] @>
+
+[<Fact(Timeout = 5000)>]
 let ``Thread-safe under concurrent StartSubtask EndSubtask calls`` () =
     let s = State()
 

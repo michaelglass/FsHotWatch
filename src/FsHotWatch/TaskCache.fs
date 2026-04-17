@@ -22,7 +22,7 @@ type CachedEvent =
 type TaskCacheResult =
     {
         /// Content-based key used to validate cache freshness.
-        CacheKey: string
+        CacheKey: ContentHash
         /// Errors produced by the plugin, keyed by file path.
         Errors: (string * FsHotWatch.ErrorLedger.ErrorEntry list) list
         /// Final status of the plugin after processing.
@@ -35,9 +35,9 @@ type TaskCacheResult =
 type ITaskCache =
     /// Try to retrieve a cached result. Returns Some only when the compositeKey
     /// matches AND the stored result's CacheKey matches the provided cacheKey.
-    abstract TryGet: compositeKey: CompositeKey -> cacheKey: string -> TaskCacheResult option
+    abstract TryGet: compositeKey: CompositeKey -> cacheKey: ContentHash -> TaskCacheResult option
     /// Store a result under the given compositeKey.
-    abstract Set: compositeKey: CompositeKey -> cacheKey: string -> result: TaskCacheResult -> unit
+    abstract Set: compositeKey: CompositeKey -> cacheKey: ContentHash -> result: TaskCacheResult -> unit
     /// Remove all cached entries.
     abstract Clear: unit -> unit
     /// Remove entries for a specific plugin.
@@ -50,14 +50,15 @@ type ITaskCache =
 /// In-memory implementation using ConcurrentDictionary.
 /// Keyed by (compositeKey, cacheKey) so multiple versions coexist.
 type InMemoryTaskCache() =
-    let cache = ConcurrentDictionary<struct (CompositeKey * string), TaskCacheResult>()
+    let cache =
+        ConcurrentDictionary<struct (CompositeKey * ContentHash), TaskCacheResult>()
 
-    let tryGet (compositeKey: CompositeKey) (cacheKey: string) =
+    let tryGet (compositeKey: CompositeKey) (cacheKey: ContentHash) =
         match cache.TryGetValue(struct (compositeKey, cacheKey)) with
         | true, result -> Some result
         | _ -> None
 
-    let set (compositeKey: CompositeKey) (cacheKey: string) (result: TaskCacheResult) =
+    let set (compositeKey: CompositeKey) (cacheKey: ContentHash) (result: TaskCacheResult) =
         cache.[struct (compositeKey, cacheKey)] <- result
 
     let clear () = cache.Clear()
@@ -84,10 +85,10 @@ type InMemoryTaskCache() =
                 cache.TryRemove(key) |> ignore
 
     /// Try to retrieve a cached result.
-    member _.TryGet(compositeKey: CompositeKey, cacheKey: string) = tryGet compositeKey cacheKey
+    member _.TryGet(compositeKey: CompositeKey, cacheKey: ContentHash) = tryGet compositeKey cacheKey
 
     /// Store a result under the given compositeKey.
-    member _.Set(compositeKey: CompositeKey, cacheKey: string, result: TaskCacheResult) =
+    member _.Set(compositeKey: CompositeKey, cacheKey: ContentHash, result: TaskCacheResult) =
         set compositeKey cacheKey result
 
     /// Remove all cached entries.
@@ -111,10 +112,10 @@ type InMemoryTaskCache() =
         member _.ClearPluginFile plugin file = clearPluginFile plugin file
 
 /// Default cache key: jj commit_id for framework events, None for Custom events (uncacheable).
-let defaultCacheKey (getCommitId: unit -> string option) (event: PluginEvent<'Msg>) : string option =
+let defaultCacheKey (getCommitId: unit -> string option) (event: PluginEvent<'Msg>) : ContentHash option =
     match event with
     | Custom _ -> None
-    | _ -> getCommitId ()
+    | _ -> getCommitId () |> Option.map ContentHash.create
 
 /// Build an optional CacheKey from an optional getCommitId function.
 /// Convenience for plugins that use the default cache key.

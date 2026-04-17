@@ -1,6 +1,7 @@
 module FsHotWatch.PathFilter
 
 open System.IO
+open System.Threading
 open Ignore
 
 let private normalize (path: string) = path.Replace('\\', '/')
@@ -64,6 +65,10 @@ type private CacheEntry =
 /// Cache for collectIgnoreRules, keyed by repo root.
 /// Automatically reloads when .gitignore or .fantomasignore change on disk.
 type IgnoreFilterCache() =
+    // Reads/writes go through Volatile to prevent torn reads of the option
+    // reference when multiple threads call Get concurrently. Two concurrent
+    // misses may both rebuild (idempotent, last write wins); that's cheaper
+    // than a lock and acceptable for this path.
     let mutable cached: CacheEntry option = None
 
     member _.Get(repoRoot: string) =
@@ -72,7 +77,7 @@ type IgnoreFilterCache() =
         let gitTs = getFileTimestamp gitignorePath
         let fantTs = getFileTimestamp fantomasignorePath
 
-        match cached with
+        match Volatile.Read(&cached) with
         | Some entry when
             entry.RepoRoot = repoRoot
             && entry.GitignoreTimestamp = gitTs
@@ -82,11 +87,13 @@ type IgnoreFilterCache() =
         | _ ->
             let filter = collectIgnoreRules repoRoot
 
-            cached <-
+            Volatile.Write(
+                &cached,
                 Some
                     { RepoRoot = repoRoot
                       Filter = filter
                       GitignoreTimestamp = gitTs
                       FantomasignoreTimestamp = fantTs }
+            )
 
             filter
