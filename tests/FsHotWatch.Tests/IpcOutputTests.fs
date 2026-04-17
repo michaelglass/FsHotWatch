@@ -333,3 +333,31 @@ let ``exitCodeFromResponse ignores info-severity entries`` () =
           Statuses = Map.empty }
 
     test <@ exitCodeFromResponse false resp = 0 @>
+
+// --- Regression: parsePluginStatuses format drift ---
+//
+// pollAndRender's isAllTerminal returns false on an empty statuses map, which
+// loops forever at 200ms intervals. If parsePluginStatuses rejects the GetStatus
+// JSON shape (e.g. fakeIpc returning `{"plugin": "Completed at ..."}` with a
+// bare-string value instead of the real `{"plugin": {"status": "..."}}` object
+// shape), the parse yields an empty map and pollAndRender hangs. This hung the
+// full test suite and `mise run check` for 40+ minutes before being caught.
+
+[<Fact>]
+let ``parsePluginStatuses rejects bare-string values and returns empty`` () =
+    // The old broken fakeIpc shape — documents why that shape must never appear
+    // in test fixtures: empty parse -> isAllTerminal false -> pollAndRender hang.
+    let json = """{"plugin": "Completed at 2026-01-01T00:00:00Z"}"""
+    let parsed = parsePluginStatuses json
+    test <@ Map.isEmpty parsed @>
+    test <@ not (isAllTerminal (statusOnly parsed)) @>
+
+[<Fact>]
+let ``parsePluginStatuses accepts object-valued entries with status field`` () =
+    // The real GetStatus JSON shape. Object-per-plugin with a status string.
+    let json =
+        """{"plugin": {"status": "Completed at 2026-01-01T00:00:00Z", "subtasks": [], "activityTail": [], "lastRun": null}}"""
+
+    let parsed = parsePluginStatuses json
+    test <@ Map.containsKey "plugin" parsed @>
+    test <@ isAllTerminal (statusOnly parsed) @>
