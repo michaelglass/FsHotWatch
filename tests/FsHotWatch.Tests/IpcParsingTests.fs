@@ -63,7 +63,7 @@ let ``parseTaggedStatus returns None for non-object`` () =
     let el = parseEl "\"idle\""
     test <@ parseTaggedStatus el = None @>
 
-// --- parseStatusField accepts both shapes ---
+// --- parseStatusField ---
 
 [<Fact(Timeout = 5000)>]
 let ``parseStatusField accepts tagged object`` () =
@@ -72,11 +72,6 @@ let ``parseStatusField accepts tagged object`` () =
     match parseStatusField el with
     | Completed _ -> ()
     | other -> failwithf "expected Completed, got %A" other
-
-[<Fact(Timeout = 5000)>]
-let ``parseStatusField accepts legacy string`` () =
-    let el = parseEl "\"Idle\""
-    test <@ parseStatusField el = Idle @>
 
 [<Fact(Timeout = 5000)>]
 let ``parseStatusField falls back to Idle on malformed object`` () =
@@ -100,26 +95,17 @@ let ``parseTaggedOutcome returns None for non-object`` () =
     let el = parseEl "\"Completed\""
     test <@ parseTaggedOutcome el = None @>
 
-// --- parseOutcomeField: new and legacy ---
+// --- parseOutcomeField ---
 
 [<Fact(Timeout = 5000)>]
-let ``parseOutcomeField new tagged failed`` () =
+let ``parseOutcomeField tagged failed`` () =
     let outcomeEl = parseEl """{"tag":"failed","error":"oops"}"""
-    let result = parseOutcomeField outcomeEl ValueNone
-    test <@ result = FailedRun "oops" @>
+    test <@ parseOutcomeField outcomeEl = FailedRun "oops" @>
 
 [<Fact(Timeout = 5000)>]
-let ``parseOutcomeField legacy string failed uses separate error field`` () =
-    let outcomeEl = parseEl "\"Failed\""
-    let errorEl = parseEl "\"legacy error\""
-    let result = parseOutcomeField outcomeEl (ValueSome errorEl)
-    test <@ result = FailedRun "legacy error" @>
-
-[<Fact(Timeout = 5000)>]
-let ``parseOutcomeField legacy string completed ignores error`` () =
-    let outcomeEl = parseEl "\"Completed\""
-    let result = parseOutcomeField outcomeEl ValueNone
-    test <@ result = CompletedRun @>
+let ``parseOutcomeField tagged completed`` () =
+    let outcomeEl = parseEl """{"tag":"completed"}"""
+    test <@ parseOutcomeField outcomeEl = CompletedRun @>
 
 // --- parsePluginStatuses end-to-end with new wire format ---
 
@@ -147,49 +133,6 @@ let ``parsePluginStatuses parses tagged lastRun outcome`` () =
     match run.Outcome with
     | FailedRun err -> test <@ err = "multi\nline" @>
     | other -> failwithf "expected FailedRun, got %A" other
-
-[<Fact(Timeout = 5000)>]
-let ``parsePluginStatuses backward-compat: legacy string status still parses`` () =
-    let json =
-        """{"build":{"status":"Completed at 2026-04-05T12:00:00.0000000Z","subtasks":[],"activityTail":[],"lastRun":null}}"""
-
-    let parsed = parsePluginStatuses json
-
-    match parsed.["build"].Status with
-    | Completed _ -> ()
-    | other -> failwithf "expected Completed, got %A" other
-
-[<Fact(Timeout = 5000)>]
-let ``parsePluginStatuses backward-compat: legacy lastRun outcome string still parses`` () =
-    let json =
-        """{"worker":{"status":{"tag":"idle"},"subtasks":[],"activityTail":[],"lastRun":{"startedAt":"2026-04-05T12:00:00.0000000Z","elapsedMs":1,"outcome":"Failed","summary":null,"activityTail":[],"error":"legacy"}}}"""
-
-    let parsed = parsePluginStatuses json
-
-    match parsed.["worker"].LastRun.Value.Outcome with
-    | FailedRun err -> test <@ err = "legacy" @>
-    | other -> failwithf "expected FailedRun, got %A" other
-
-// --- parseStatus (legacy bare-string API) regression ---
-
-[<Fact(Timeout = 5000)>]
-let ``parseStatus parses Idle string`` () = test <@ parseStatus "Idle" = Idle @>
-
-[<Fact(Timeout = 5000)>]
-let ``parseStatus parses Running string`` () =
-    match parseStatus "Running since 2026-04-05T12:00:00.0000000Z" with
-    | Running _ -> ()
-    | other -> failwithf "expected Running, got %A" other
-
-[<Fact(Timeout = 5000)>]
-let ``parseStatus parses Failed with error string`` () =
-    match parseStatus "Failed at 2026-04-05T12:00:00.0000000Z: boom" with
-    | Failed(msg, _) -> test <@ msg = "boom" @>
-    | other -> failwithf "expected Failed, got %A" other
-
-[<Fact(Timeout = 5000)>]
-let ``parseStatus falls back to Idle on unknown garbage`` () =
-    test <@ parseStatus "who knows" = Idle @>
 
 // --- parseDiagnosticsResponse ---
 
