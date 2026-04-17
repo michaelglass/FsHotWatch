@@ -19,7 +19,8 @@ let private fakeConfig: DaemonConfiguration =
       Tests = None
       Coverage = None
       FileCommands = []
-      Exclude = [] }
+      Exclude = []
+      LogDir = "logs" }
 
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
@@ -198,7 +199,9 @@ let ``startFreshDaemonWith returns true when daemon starts immediately`` () =
             IsRunning = fun _ -> true
             LaunchDaemon = fun _ _ _ -> launchCalled <- true }
 
-    let result = startFreshDaemonWith fileOps ipc "/tmp/repo" "pipe" "abc123" "" 5.0
+    let result =
+        startFreshDaemonWith fileOps ipc "/tmp/repo" "pipe" "abc123" "" "logs" 5.0
+
     test <@ result @>
     test <@ launchCalled @>
     test <@ hashWritten = "abc123" @>
@@ -215,7 +218,9 @@ let ``startFreshDaemonWith returns false when daemon never starts`` () =
             IsRunning = fun _ -> false
             LaunchDaemon = fun _ _ _ -> () }
 
-    let result = startFreshDaemonWith fileOps ipc "/tmp/repo" "pipe" "abc123" "" 0.0
+    let result =
+        startFreshDaemonWith fileOps ipc "/tmp/repo" "pipe" "abc123" "" "logs" 0.0
+
     test <@ not result @>
 
 [<Fact>]
@@ -232,7 +237,7 @@ let ``startFreshDaemonWith passes extra args to LaunchDaemon`` () =
             IsRunning = fun _ -> true
             LaunchDaemon = fun _ args _ -> receivedArgs <- args }
 
-    startFreshDaemonWith fileOps ipc "/tmp/repo" "pipe" "hash" "--verbose " 5.0
+    startFreshDaemonWith fileOps ipc "/tmp/repo" "pipe" "hash" "--verbose " "logs" 5.0
     |> ignore
 
     test <@ receivedArgs = "--verbose " @>
@@ -258,7 +263,9 @@ let ``restart flow handles shutdown failure gracefully`` () =
                 IsRunning = fun _ -> true
                 LaunchDaemon = fun _ _ _ -> launchCalled <- true }
 
-        let result = startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "hash" "" 5.0
+        let result =
+            startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "hash" "" "logs" 5.0
+
         test <@ result @>
         test <@ launchCalled @>)
 
@@ -292,7 +299,7 @@ let ``startFreshDaemonWith writes config hash file`` () =
                 LaunchDaemon = fun _ _ _ -> () }
 
         let result =
-            startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "abcd1234abcd1234" "" 5.0
+            startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "abcd1234abcd1234" "" "logs" 5.0
 
         test <@ result @>
         let hashPath = Path.Combine(tmpDir, ".fs-hot-watch", "config.hash")
@@ -301,16 +308,34 @@ let ``startFreshDaemonWith writes config hash file`` () =
         test <@ hash = "abcd1234abcd1234" @>)
 
 [<Fact>]
-let ``startFreshDaemonWith creates log directory`` () =
+let ``startFreshDaemonWith creates log directory from logDirName param`` () =
     withTempDir "prog-log-dir" (fun tmpDir ->
         let ipc =
             { fakeIpc () with
                 IsRunning = fun _ -> true
                 LaunchDaemon = fun _ _ _ -> () }
 
-        startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "hash" "" 5.0 |> ignore
+        startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "hash" "" "custom-logs" 5.0
+        |> ignore
 
-        test <@ Directory.Exists(Path.Combine(tmpDir, "log")) @>)
+        test <@ Directory.Exists(Path.Combine(tmpDir, "custom-logs")) @>
+        test <@ not (Directory.Exists(Path.Combine(tmpDir, "log"))) @>
+        test <@ not (Directory.Exists(Path.Combine(tmpDir, "logs"))) @>)
+
+[<Fact>]
+let ``startFreshDaemonWith accepts absolute logDirName`` () =
+    withTempDir "prog-log-abs" (fun tmpDir ->
+        let absLogDir = Path.Combine(tmpDir, "nested", "absolute-logs")
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> true
+                LaunchDaemon = fun _ _ _ -> () }
+
+        startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "hash" "" absLogDir 5.0
+        |> ignore
+
+        test <@ Directory.Exists absLogDir @>)
 
 [<Fact>]
 let ``startFreshDaemonWith passes extra args to launch`` () =
@@ -322,7 +347,7 @@ let ``startFreshDaemonWith passes extra args to launch`` () =
                 IsRunning = fun _ -> true
                 LaunchDaemon = fun _ args _ -> receivedArgs <- args }
 
-        startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "hash" "--verbose --no-cache " 5.0
+        startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "hash" "--verbose --no-cache " "logs" 5.0
         |> ignore
 
         test <@ receivedArgs = "--verbose --no-cache " @>)

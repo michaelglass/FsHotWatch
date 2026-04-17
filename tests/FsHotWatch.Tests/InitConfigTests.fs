@@ -139,7 +139,8 @@ let ``serializeConfig produces valid JSON with build and tests`` () =
               Tests = None
               Coverage = None
               FileCommands = []
-              Exclude = [] }
+              Exclude = []
+              LogDir = "logs" }
 
     test <@ parsed.Build.IsSome @>
     test <@ parsed.Format = Auto @>
@@ -157,7 +158,8 @@ let ``serializeConfig with no build omits build section`` () =
           Tests = None
           Coverage = None
           FileCommands = []
-          Exclude = [] }
+          Exclude = []
+          LogDir = "logs" }
 
 
     let json = serializeConfig config
@@ -174,7 +176,8 @@ let ``serializeConfig with empty build list omits build section`` () =
           Tests = None
           Coverage = None
           FileCommands = []
-          Exclude = [] }
+          Exclude = []
+          LogDir = "logs" }
 
 
     let json = serializeConfig config
@@ -200,7 +203,8 @@ let ``serializeConfig with multiple builds writes array`` () =
           Tests = None
           Coverage = None
           FileCommands = []
-          Exclude = [] }
+          Exclude = []
+          LogDir = "logs" }
 
 
     let json = serializeConfig config
@@ -218,7 +222,8 @@ let ``serializeConfig format Off writes false`` () =
           Tests = None
           Coverage = None
           FileCommands = []
-          Exclude = [] }
+          Exclude = []
+          LogDir = "logs" }
 
 
     let json = serializeConfig config
@@ -234,7 +239,8 @@ let ``serializeConfig format Off writes false`` () =
               Tests = None
               Coverage = None
               FileCommands = []
-              Exclude = [] }
+              Exclude = []
+              LogDir = "logs" }
 
     test <@ parsed.Format = Off @>
 
@@ -249,7 +255,8 @@ let ``serializeConfig format Check writes check string`` () =
           Tests = None
           Coverage = None
           FileCommands = []
-          Exclude = [] }
+          Exclude = []
+          LogDir = "logs" }
 
 
     let json = serializeConfig config
@@ -265,7 +272,8 @@ let ``serializeConfig format Check writes check string`` () =
               Tests = None
               Coverage = None
               FileCommands = []
-              Exclude = [] }
+              Exclude = []
+              LogDir = "logs" }
 
     test <@ parsed.Format = Check @>
 
@@ -280,7 +288,8 @@ let ``serializeConfig cache InMemoryOnly writes memory`` () =
           Tests = None
           Coverage = None
           FileCommands = []
-          Exclude = [] }
+          Exclude = []
+          LogDir = "logs" }
 
 
     let json = serializeConfig config
@@ -297,7 +306,8 @@ let ``serializeConfig cache NoCache writes false`` () =
           Tests = None
           Coverage = None
           FileCommands = []
-          Exclude = [] }
+          Exclude = []
+          LogDir = "logs" }
 
 
     let json = serializeConfig config
@@ -313,7 +323,8 @@ let ``serializeConfig cache NoCache writes false`` () =
               Tests = None
               Coverage = None
               FileCommands = []
-              Exclude = [] }
+              Exclude = []
+              LogDir = "logs" }
 
     test <@ parsed.Cache = NoCache @>
 
@@ -328,7 +339,8 @@ let ``serializeConfig with no tests omits tests section`` () =
           Tests = None
           Coverage = None
           FileCommands = []
-          Exclude = [] }
+          Exclude = []
+          LogDir = "logs" }
 
 
     let json = serializeConfig config
@@ -349,7 +361,8 @@ let ``serializeConfig with empty test projects omits tests section`` () =
                    Projects = [] |}
           Coverage = None
           FileCommands = []
-          Exclude = [] }
+          Exclude = []
+          LogDir = "logs" }
 
 
     let json = serializeConfig config
@@ -370,7 +383,8 @@ let ``serializeConfig with coverage includes directory`` () =
                    Directory = "./cov"
                    ThresholdsFile = None |}
           FileCommands = []
-          Exclude = [] }
+          Exclude = []
+          LogDir = "logs" }
 
 
     let json = serializeConfig config
@@ -392,7 +406,8 @@ let ``serializeConfig with coverage thresholdsFile and afterCheck`` () =
                    Directory = "./cov"
                    ThresholdsFile = Some "thresholds.json" |}
           FileCommands = []
-          Exclude = [] }
+          Exclude = []
+          LogDir = "logs" }
 
 
     let json = serializeConfig config
@@ -410,7 +425,8 @@ let ``serializeConfig with no coverage omits section`` () =
           Tests = None
           Coverage = None
           FileCommands = []
-          Exclude = [] }
+          Exclude = []
+          LogDir = "logs" }
 
 
     let json = serializeConfig config
@@ -439,7 +455,8 @@ let ``serializeConfig test project without filterTemplate omits it`` () =
                         Coverage = true } ] |}
           Coverage = None
           FileCommands = []
-          Exclude = [] }
+          Exclude = []
+          LogDir = "logs" }
 
 
     let json = serializeConfig config
