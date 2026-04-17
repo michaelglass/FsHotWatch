@@ -17,7 +17,6 @@ jobs:
     with:
       solution: FsHotWatch.slnx
       fantomas-paths: 'src/ tests/'
-      # Host FSharpLint in-process via FSharpLintAnalyzerShim + fshw's
-      # AnalyzersPlugin. Reuses the warm FSharpChecker instead of spinning
-      # up a fresh compiler per project — ~9x faster than `dotnet fsharplint`.
+      # Host FSharpLint via AnalyzersPlugin to reuse the warm FSharpChecker
+      # instead of spawning a fresh compiler per project.
       lint-cmd: 'dotnet run --project src/FsHotWatch.Cli --no-build -- analyze --run-once'
