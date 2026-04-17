@@ -244,6 +244,16 @@ let private executeTests
                                 Logging.error "test-prune" $"%s{config.Project}: FAILED"
 
                             if not success then
+                                try
+                                    let logDir = Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-runs")
+                                    Directory.CreateDirectory(logDir) |> ignore
+                                    let timestamp = DateTime.UtcNow.ToString("yyyyMMddTHHmmssfffZ")
+                                    let logPath = Path.Combine(logDir, $"%s{config.Project}-%s{timestamp}.log")
+                                    File.WriteAllText(logPath, output)
+                                    Logging.info "test-prune" $"%s{config.Project}: full output saved to %s{logPath}"
+                                with ex ->
+                                    Logging.error "test-prune" $"Failed to persist test output: %s{ex.Message}"
+
                                 let lines = output.Split('\n')
 
                                 let failedTests = lines |> Array.filter (fun l -> l.StartsWith("failed "))

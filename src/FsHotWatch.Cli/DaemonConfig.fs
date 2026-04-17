@@ -27,7 +27,7 @@ let createCacheComponents
     (repoRoot: string)
     (config: CacheBackendConfig)
     : (ICheckCacheBackend option * ICacheKeyProvider option) =
-    let cacheDir = Path.Combine(repoRoot, ".fshw", "cache")
+    let cacheDir = Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "cache")
 
     match config with
     | NoCache -> (None, None)
@@ -522,7 +522,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
     // TestPrune plugin
     match config.Tests with
     | Some t ->
-        let dbPath = Path.Combine(repoRoot, ".fshw", "test-impact.db")
+        let dbPath = Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-impact.db")
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)) |> ignore
 
         let testConfigs =

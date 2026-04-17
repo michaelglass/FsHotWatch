@@ -52,7 +52,9 @@ type JjScanDecision =
 /// Reads/writes last-commit.id from .fshw/ directory.
 /// Call BeginScan() at start of each scan cycle, CommitScanSuccess() at end.
 type JjScanGuard(repoRoot: string, ?getCommitId: unit -> string option, ?getDiff: string -> Set<string>) =
-    let commitIdPath = Path.Combine(repoRoot, ".fshw", "last-commit.id")
+    let commitIdPath =
+        Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "last-commit.id")
+
     let getCommitId = defaultArg getCommitId (fun () -> getWorkingCopyCommitId repoRoot)
     let getDiff = defaultArg getDiff (getChangedFiles repoRoot)
 
