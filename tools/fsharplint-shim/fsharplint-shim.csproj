@@ -1,20 +1,21 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.Build.NoTargets/3.7.0">
   <!--
     Restore-only project: pulls FSharpLintAnalyzerShim + its bundled deps into
     bin/Release/net10.0/ so fshw's AnalyzersPlugin can load them via a directory
-    path. Not compiled code; the IncludeBuildOutput=false + empty <Compile/>
-    keeps it a pure restore target.
+    path. Microsoft.Build.NoTargets skips Csc entirely so we don't generate an
+    empty fsharplint-shim.dll on every build.
   -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
-    <IncludeBuildOutput>false</IncludeBuildOutput>
-    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
-    <NoWarn>$(NoWarn);NU1605;NU1902;NU1903</NoWarn>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <!-- NU1605 (version downgrade) is expected: the shim pins FCS 43.12.202
+         while FSharp.Analyzers.SDK 0.36.0 transitively asks for 43.10.101. -->
+    <NoWarn>$(NoWarn);NU1605</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="FSharpLintAnalyzerShim" Version="0.2.0-alpha.2" />
+    <PackageReference Include="FSharpLintAnalyzerShim" Version="0.3.0-alpha.1" />
   </ItemGroup>
 </Project>
