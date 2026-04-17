@@ -429,3 +429,107 @@ let ``CancelPreviousCheck during in-flight FCS check cancels the check`` () =
 // - "file cache enables fast cold-start check" verifies FileCheckCache hits return None
 // - "cached check returns None because partial FCS results are unusable by plugins"
 // - These use real FCS with unique project options for proper isolation
+
+// --- tryGetCachedFullCheck pure-logic tests (no disk, no FCS) ---
+
+let private dummyKey suffix =
+    { FileHash = ContentHash.create $"file-%s{suffix}"
+      ProjectOptionsHash = ContentHash.create $"opts-%s{suffix}" }
+
+let private fullCheckResult path options =
+    { File = path
+      Source = "module M"
+      ParseResults = Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpParseFileResults>
+      CheckResults = FullCheck Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults>
+      ProjectOptions = options
+      Version = 1L }
+
+let private parseOnlyResult path options =
+    { File = path
+      Source = "module M"
+      ParseResults = Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpParseFileResults>
+      CheckResults = ParseOnly
+      ProjectOptions = options
+      Version = 1L }
+
+[<Fact(Timeout = 5000)>]
+let ``tryGetCachedFullCheck returns None when backend is None`` () =
+    let result = tryGetCachedFullCheck None (Some(dummyKey "a"))
+    test <@ result = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``tryGetCachedFullCheck returns None when key is None`` () =
+    let cache = InMemoryCache() :> ICheckCacheBackend
+    let result = tryGetCachedFullCheck (Some cache) None
+    test <@ result = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``tryGetCachedFullCheck returns None on cache miss`` () =
+    let cache = InMemoryCache() :> ICheckCacheBackend
+    let result = tryGetCachedFullCheck (Some cache) (Some(dummyKey "miss"))
+    test <@ result = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``tryGetCachedFullCheck returns Some on FullCheck hit`` () =
+    let cache = InMemoryCache() :> ICheckCacheBackend
+    let key = dummyKey "hit"
+    let opts = dummyOptions "/tmp/Hit.fsproj" [ "/tmp/Hit.fs" ]
+    cache.Set key (fullCheckResult "/tmp/Hit.fs" opts)
+    let result = tryGetCachedFullCheck (Some cache) (Some key)
+    test <@ result.IsSome @>
+    test <@ result.Value.File = "/tmp/Hit.fs" @>
+
+[<Fact(Timeout = 5000)>]
+let ``tryGetCachedFullCheck returns None when cached entry is ParseOnly`` () =
+    // ParseOnly entries are treated as misses so the file is re-checked.
+    let cache = InMemoryCache() :> ICheckCacheBackend
+    let key = dummyKey "parseonly"
+    let opts = dummyOptions "/tmp/PO.fsproj" [ "/tmp/PO.fs" ]
+    cache.Set key (parseOnlyResult "/tmp/PO.fs" opts)
+    let result = tryGetCachedFullCheck (Some cache) (Some key)
+    test <@ result = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``CheckFile short-circuits via cache hit without invoking FCS`` () =
+    // Pre-populate the cache with a FullCheck entry. CheckFile should return it
+    // without ever calling the (null) checker — proving cache lookup happens
+    // before FCS dispatch and disk read.
+    let cache = InMemoryCache()
+    let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
+
+    let opts = dummyOptions "/tmp/Hot.fsproj" [ "/tmp/Hot.fs" ]
+    pipeline.RegisterProject("/tmp/Hot.fsproj", opts)
+
+    // Compute the same key the pipeline would use, then seed the cache.
+    let key =
+        makeCacheKey (TimestampCacheKeyProvider() :> ICacheKeyProvider) "/tmp/Hot.fs" opts
+
+    let seeded = fullCheckResult "/tmp/Hot.fs" opts
+    (cache :> ICheckCacheBackend).Set key seeded
+
+    let result = pipeline.CheckFile("/tmp/Hot.fs") |> Async.RunSynchronously
+    test <@ result.IsSome @>
+    test <@ result.Value.File = "/tmp/Hot.fs" @>
+
+[<Fact(Timeout = 5000)>]
+let ``InvalidateFile removes cached entry so next CheckFile would re-check`` () =
+    let cache = InMemoryCache()
+    let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
+
+    let opts = dummyOptions "/tmp/Inv2.fsproj" [ "/tmp/Inv2.fs" ]
+    pipeline.RegisterProject("/tmp/Inv2.fsproj", opts)
+
+    let key =
+        makeCacheKey (TimestampCacheKeyProvider() :> ICacheKeyProvider) "/tmp/Inv2.fs" opts
+
+    (cache :> ICheckCacheBackend).Set key (fullCheckResult "/tmp/Inv2.fs" opts)
+
+    test
+        <@
+            tryGetCachedFullCheck (Some(cache :> ICheckCacheBackend)) (Some key)
+            |> Option.isSome
+        @>
+
+    pipeline.InvalidateFile("/tmp/Inv2.fs")
+    test <@ tryGetCachedFullCheck (Some(cache :> ICheckCacheBackend)) (Some key) = None @>
+    test <@ cache.InvalidateCalls.Count = 1 @>

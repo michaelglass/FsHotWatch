@@ -4,12 +4,72 @@ open System
 open System.Text.Json
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
 open FsHotWatch.Build
+open FsHotWatch.Build.BuildPlugin
 open FsHotWatch.ProjectGraph
 open FsHotWatch.Tests.TestHelpers
+
+// --- decideBuildOutcome: pure parse/decide logic ---
+
+[<Fact(Timeout = 5000)>]
+let ``decideBuildOutcome success with clean output yields BuildPassed and no entries`` () =
+    let output = "Build succeeded.\n    0 Warning(s)\n    0 Error(s)"
+    let (outcome, entries) = decideBuildOutcome true output
+    test <@ outcome = BuildPassed output @>
+    test <@ entries.IsEmpty @>
+
+[<Fact(Timeout = 5000)>]
+let ``decideBuildOutcome success with warnings yields BuildPassed and parsed warnings`` () =
+    let output =
+        "/src/Bar.fs(3,1): warning FS0040: This construct causes code to be less generic"
+
+    let (outcome, entries) = decideBuildOutcome true output
+    test <@ outcome = BuildPassed output @>
+    test <@ entries.Length = 1 @>
+    test <@ entries.[0].Severity = DiagnosticSeverity.Warning @>
+    test <@ entries.[0].Line = 3 @>
+
+[<Fact(Timeout = 5000)>]
+let ``decideBuildOutcome failure with parsed errors yields BuildOutputFailed and parsed entries`` () =
+    let output =
+        "/src/Foo.fs(12,5): error FS0001: This expression was expected to have type int"
+
+    let (outcome, entries) = decideBuildOutcome false output
+    test <@ outcome = BuildOutputFailed output @>
+    test <@ entries.Length = 1 @>
+    test <@ entries.[0].Severity = DiagnosticSeverity.Error @>
+
+[<Fact(Timeout = 5000)>]
+let ``decideBuildOutcome failure with empty output yields single synthetic error`` () =
+    let (outcome, entries) = decideBuildOutcome false ""
+    test <@ outcome = BuildOutputFailed "" @>
+    test <@ entries.Length = 1 @>
+    test <@ entries.[0].Severity = DiagnosticSeverity.Error @>
+    test <@ entries.[0].Message = "" @>
+
+[<Fact(Timeout = 5000)>]
+let ``decideBuildOutcome failure with unparseable output falls back to raw-text error`` () =
+    let output = "Segmentation fault\nrandom stderr blob\nnot an MSBuild line"
+    let (outcome, entries) = decideBuildOutcome false output
+    test <@ outcome = BuildOutputFailed output @>
+    test <@ entries.Length = 1 @>
+    test <@ entries.[0].Message = output @>
+    test <@ entries.[0].Severity = DiagnosticSeverity.Error @>
+
+[<Fact(Timeout = 5000)>]
+let ``decideBuildOutcome failure with mixed stderr and MSBuild lines prefers parsed entries`` () =
+    let output =
+        "Startup trace noise\n/src/Foo.fs(12,5): error FS0001: Bad type\nrandom stderr\n/src/Bar.fs(3,1): warning FS0040: Less generic"
+
+    let (outcome, entries) = decideBuildOutcome false output
+    test <@ outcome = BuildOutputFailed output @>
+    test <@ entries.Length = 2 @>
+    test <@ entries |> List.exists (fun e -> e.Severity = DiagnosticSeverity.Error) @>
+    test <@ entries |> List.exists (fun e -> e.Severity = DiagnosticSeverity.Warning) @>
 
 [<Fact(Timeout = 5000)>]
 let ``create accepts graph and test project names`` () =
