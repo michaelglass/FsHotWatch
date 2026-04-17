@@ -3,10 +3,5 @@
     <!-- Disable SourceLink when no .git directory exists (jj without colocated git) -->
     <EnableSourceLink Condition="!Exists('$(MSBuildThisFileDirectory).git')">false</EnableSourceLink>
     <EnableSourceControlManagerQueries Condition="!Exists('$(MSBuildThisFileDirectory).git')">false</EnableSourceControlManagerQueries>
-
-    <!-- Lockfile-backed restore: floats in Directory.Packages.props are pinned in packages.lock.json.
-         CI enforces the lock; local dev can update via dotnet restore with the force-evaluate flag. -->
-    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
-    <RestoreLockedMode Condition="'$(CI)' == 'true'">true</RestoreLockedMode>
   </PropertyGroup>
 </Project>

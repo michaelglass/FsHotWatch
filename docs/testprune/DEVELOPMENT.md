@@ -53,8 +53,6 @@ mise run release-alpha  # Tag an alpha pre-release
 - Tests use xUnit v3 with Microsoft Testing Platform v2
 - Package versions managed centrally in `Directory.Packages.props` (CPM) with
   floats enabled and transitive pinning on
-- Restore uses lockfiles (`packages.lock.json` per project); CI runs in
-  locked mode — update locks locally with `dotnet restore --force-evaluate`
 - NU1605 suppressed across projects (FSharp.Core version mismatch with SDK)
 
 ## Shared Tooling
