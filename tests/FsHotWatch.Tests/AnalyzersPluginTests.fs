@@ -224,7 +224,7 @@ let ``cache key for non-FileChecked non-Custom event returns getCommitId`` () =
     let cacheKeyFn = handler.CacheKey.Value
 
     let buildKey = cacheKeyFn (BuildCompleted BuildSucceeded)
-    test <@ buildKey = Some commitId @>
+    test <@ buildKey = Some(ContentHash.create commitId) @>
 
 [<Fact(Timeout = 5000)>]
 let ``multiple concurrent FileChecked events are bounded by semaphore`` () =
