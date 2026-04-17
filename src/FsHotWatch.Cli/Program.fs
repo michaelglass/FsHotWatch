@@ -271,10 +271,17 @@ let startFreshDaemonWith
     (pipeName: string)
     (currentHash: string)
     (extraArgs: string)
+    (logDirName: string)
     (startupTimeoutSeconds: float)
     : bool =
     let stateDir = Path.Combine(repoRoot, ".fs-hot-watch")
-    let logDir = Path.Combine(repoRoot, "log")
+
+    let logDir =
+        if Path.IsPathRooted(logDirName) then
+            logDirName
+        else
+            Path.Combine(repoRoot, logDirName)
+
     fileOps.CreateDirectory logDir
     let logFile = Path.Combine(logDir, "daemon.log")
     eprintfn "Starting daemon... (log: %s)" logFile
@@ -296,15 +303,17 @@ let private startFreshDaemon
     (pipeName: string)
     (currentHash: string)
     (extraArgs: string)
+    (logDirName: string)
     (startupTimeoutSeconds: float)
     : bool =
-    startFreshDaemonWith defaultFileOps ipc repoRoot pipeName currentHash extraArgs startupTimeoutSeconds
+    startFreshDaemonWith defaultFileOps ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
 
 let private ensureDaemon
     (ipc: IpcOps)
     (repoRoot: string)
     (pipeName: string)
     (extraArgs: string)
+    (logDirName: string)
     (startupTimeoutSeconds: float)
     : bool =
     let stateDir = Path.Combine(repoRoot, ".fs-hot-watch")
@@ -330,10 +339,10 @@ let private ensureDaemon
             eprintfn "  Shutdown request failed: %s" ex.Message
 
         killStaleDaemon repoRoot
-        startFreshDaemon ipc repoRoot pipeName currentHash extraArgs startupTimeoutSeconds
+        startFreshDaemon ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
     | StartFresh ->
         killStaleDaemon repoRoot
-        startFreshDaemon ipc repoRoot pipeName currentHash extraArgs startupTimeoutSeconds
+        startFreshDaemon ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
 
 /// Execute a parsed command with injectable dependencies.
 let executeCommand
@@ -348,7 +357,7 @@ let executeCommand
     (startupTimeoutSeconds: float)
     : int =
     let ensureDaemonFn () =
-        ensureDaemon ipc repoRoot pipeName daemonExtraArgs startupTimeoutSeconds
+        ensureDaemon ipc repoRoot pipeName daemonExtraArgs config.LogDir startupTimeoutSeconds
 
     let queryPluginWith (mode: ProgressRenderer.RenderMode) (filter: string) : int =
         ensureAndQueryErrors mode noWarnFail ensureDaemonFn ipc pipeName filter

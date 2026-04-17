@@ -435,7 +435,8 @@ let private fakeConfig: DaemonConfiguration =
       Tests = None
       Coverage = None
       FileCommands = []
-      Exclude = [] }
+      Exclude = []
+      LogDir = "logs" }
 
 /// Structured plugin-status JSON in the shape expected by parsePluginStatuses
 /// (object per plugin, not a bare string). Using the bare-string shape made the
