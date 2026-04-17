@@ -81,29 +81,33 @@ type FormatMode =
 
 /// Parsed daemon configuration from .fs-hot-watch.json.
 type DaemonConfiguration =
-    { Build:
-        {| Command: string
-           Args: string
-           BuildTemplate: string option
-           DependsOn: string list |} list option
-      Format: FormatMode
-      Lint: bool
-      Cache: CacheBackendConfig
-      Analyzers: {| Paths: string list |} option
-      Tests:
-          {| BeforeRun: string option
-             Extensions: TestExtensionConfig list
-             Projects: TestProjectConfig list |} option
-      Coverage:
-          {| AfterCheck: string option
-             Directory: string
-             ThresholdsFile: string option |} option
-      FileCommands:
-          {| Pattern: string
-             Command: string
-             Args: string
-             RunOnStart: bool |} list
-      Exclude: string list }
+    {
+        Build:
+            {| Command: string
+               Args: string
+               BuildTemplate: string option
+               DependsOn: string list |} list option
+        Format: FormatMode
+        Lint: bool
+        Cache: CacheBackendConfig
+        Analyzers: {| Paths: string list |} option
+        Tests:
+            {| BeforeRun: string option
+               Extensions: TestExtensionConfig list
+               Projects: TestProjectConfig list |} option
+        Coverage:
+            {| AfterCheck: string option
+               Directory: string
+               ThresholdsFile: string option |} option
+        FileCommands:
+            {| Pattern: string
+               Command: string
+               Args: string
+               RunOnStart: bool |} list
+        Exclude: string list
+        /// Directory (relative to repoRoot or absolute) for daemon.log. Defaults to "logs".
+        LogDir: string
+    }
 
 let private defaultConfigFor (repoRoot: string) =
     { Build =
@@ -119,7 +123,8 @@ let private defaultConfigFor (repoRoot: string) =
       Tests = None
       Coverage = None
       FileCommands = []
-      Exclude = [] }
+      Exclude = []
+      LogDir = "logs" }
 
 /// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
 let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfiguration =
@@ -374,6 +379,11 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             arr.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList
         | _ -> defaults.Exclude
 
+    let logDir =
+        match root.TryGetProperty("logDir") with
+        | true, v when v.ValueKind = JsonValueKind.String -> v.GetString()
+        | _ -> defaults.LogDir
+
     { Build = build
       Format = format
       Lint = lint
@@ -382,7 +392,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       Tests = tests
       Coverage = coverage
       FileCommands = fileCommands
-      Exclude = exclude }
+      Exclude = exclude
+      LogDir = logDir }
 
 /// Strip a config down to a minimal base for run-once subcommands.
 /// Disables all plugins except format preprocessor. Caller overrides specific fields.

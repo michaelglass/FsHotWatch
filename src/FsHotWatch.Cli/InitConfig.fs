@@ -89,7 +89,8 @@ let generateConfig (projectPaths: string list) (hasJj: bool) : DaemonConfigurati
                    Projects = testProjects |}
       Coverage = None
       FileCommands = []
-      Exclude = [] }
+      Exclude = []
+      LogDir = "logs" }
 
 /// Serialize a DaemonConfiguration to a pretty-printed JSON string.
 let serializeConfig (config: DaemonConfiguration) : string =

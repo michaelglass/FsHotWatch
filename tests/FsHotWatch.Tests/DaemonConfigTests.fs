@@ -24,7 +24,8 @@ let private defaults: DaemonConfiguration =
       Tests = None
       Coverage = None
       FileCommands = []
-      Exclude = [] }
+      Exclude = []
+      LogDir = "logs" }
 
 // --- parseConfig: empty JSON ---
 
@@ -49,6 +50,19 @@ let ``parseConfig with empty JSON returns defaults`` () =
     test <@ config.Coverage = None @>
     test <@ config.FileCommands |> List.isEmpty @>
     test <@ config.Exclude |> List.isEmpty @>
+    test <@ config.LogDir = "logs" @>
+
+// --- parseConfig: logDir ---
+
+[<Fact>]
+let ``parseConfig logDir custom value overrides default`` () =
+    let config = parseConfig """{"logDir": "var/log"}""" defaults
+    test <@ config.LogDir = "var/log" @>
+
+[<Fact>]
+let ``parseConfig logDir absolute path is preserved`` () =
+    let config = parseConfig """{"logDir": "/var/log/fshw"}""" defaults
+    test <@ config.LogDir = "/var/log/fshw" @>
 
 // --- parseConfig: exclude ---
 
