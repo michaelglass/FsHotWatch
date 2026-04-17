@@ -493,6 +493,15 @@ let ``daemon RegisterProject stores options in pipeline`` () =
             )
             |> Async.RunSynchronously
 
+        // GetProjectOptionsFromScript on a .fs (non-script) file doesn't reliably
+        // include the source in SourceFiles on all platforms. Force-include absSource
+        // so RegisterProject's lookup table is guaranteed to contain it — otherwise
+        // the final CheckFile(absSource) hits a "no project options" miss and returns
+        // None, which manifested as a Linux-only flake.
+        let options =
+            { options with
+                SourceFiles = Array.append options.SourceFiles [| absSource |] |> Array.distinct }
+
         daemon.RegisterProject("/tmp/Test.fsproj", options)
 
         let result = daemon.Pipeline.CheckFile(absSource) |> Async.RunSynchronously
