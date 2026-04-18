@@ -1,6 +1,6 @@
 # Changelog — FsHotWatch (core)
 
-## Unreleased
+## 0.8.0-alpha.3 (2026-04-18)
 
 ### Added
 
