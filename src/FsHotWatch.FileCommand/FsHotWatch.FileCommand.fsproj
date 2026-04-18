@@ -4,7 +4,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <PackageId>FsHotWatch.FileCommand</PackageId>
-    <Version>0.7.0-alpha.2</Version>
+    <Version>0.7.0-alpha.3</Version>
     <Authors>Michael Glass</Authors>
     <Description>FsHotWatch plugin that runs commands when specific files change</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
