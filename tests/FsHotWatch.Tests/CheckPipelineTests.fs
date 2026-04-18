@@ -10,23 +10,14 @@ open FSharp.Compiler.Text
 open FsHotWatch.CheckPipeline
 open FsHotWatch.CheckCache
 open FsHotWatch.Events
+open FsHotWatch.Tests.TestHelpers
 
 /// A null checker suffices for tests that only exercise state management
 /// (RegisterProject / lookup) without performing actual compilation.
 let private nullChecker = Unchecked.defaultof<FSharpChecker>
 
 let private dummyOptions projectName sourceFiles =
-    { ProjectFileName = projectName
-      ProjectId = None
-      SourceFiles = sourceFiles |> Array.ofList
-      OtherOptions = [||]
-      ReferencedProjects = [||]
-      IsIncompleteTypeCheckEnvironment = false
-      UseScriptResolutionRules = false
-      LoadTime = System.DateTime.UtcNow
-      UnresolvedReferences = None
-      OriginalLoadReferences = []
-      Stamp = None }
+    makeProjectOptions projectName sourceFiles []
 
 /// In-memory cache backend for testing
 type private InMemoryCache() =
@@ -101,19 +92,7 @@ let ``RegisterProject makes CheckFile find the project for its source files`` ()
 let ``CheckFile returns None for unregistered file even when other projects exist`` () =
     let pipeline = CheckPipeline(nullChecker)
 
-    let options =
-        { ProjectFileName = "/tmp/Other.fsproj"
-          ProjectId = None
-          SourceFiles = [| "/tmp/Other.fs" |]
-          OtherOptions = [||]
-          ReferencedProjects = [||]
-          IsIncompleteTypeCheckEnvironment = false
-          UseScriptResolutionRules = false
-          LoadTime = System.DateTime.UtcNow
-          UnresolvedReferences = None
-          OriginalLoadReferences = []
-          Stamp = None }
-
+    let options = dummyOptions "/tmp/Other.fsproj" [ "/tmp/Other.fs" ]
     pipeline.RegisterProject("/tmp/Other.fsproj", options)
 
     let result = pipeline.CheckFile("/tmp/NotRegistered.fs") |> Async.RunSynchronously
@@ -168,17 +147,7 @@ let ``PrepareForRediscovery clears stale file options`` () =
     let pipeline = CheckPipeline(nullChecker)
 
     let options =
-        { ProjectFileName = "/tmp/MyProject.fsproj"
-          ProjectId = None
-          SourceFiles = [| "/tmp/FileA.fs"; "/tmp/FileB.fs" |]
-          OtherOptions = [||]
-          ReferencedProjects = [||]
-          IsIncompleteTypeCheckEnvironment = false
-          UseScriptResolutionRules = false
-          LoadTime = System.DateTime.UtcNow
-          UnresolvedReferences = None
-          OriginalLoadReferences = []
-          Stamp = None }
+        dummyOptions "/tmp/MyProject.fsproj" [ "/tmp/FileA.fs"; "/tmp/FileB.fs" ]
 
     pipeline.RegisterProject("/tmp/MyProject.fsproj", options)
 
