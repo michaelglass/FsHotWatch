@@ -1,8 +1,8 @@
 # Changelog — FsHotWatch.Cli
 
-Note: as of the Unreleased cycle, CLI versions and releases together with the core package under the `core-v` tag (no separate `cli-v` tag prefix).
+Note: CLI versions release together with the core package under the `core-v` tag (no separate `cli-v` tag prefix).
 
-## Unreleased
+## 0.8.0-alpha.3 (2026-04-18)
 
 ### Added
 

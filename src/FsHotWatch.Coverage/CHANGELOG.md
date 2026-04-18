@@ -1,6 +1,6 @@
 # Changelog — FsHotWatch.Coverage
 
-## Unreleased
+## 0.7.0-alpha.3 (2026-04-18)
 
 ### Changed
 
