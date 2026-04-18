@@ -116,6 +116,21 @@ let errorEntry msg (sev: FsHotWatch.ErrorLedger.DiagnosticSeverity) : FsHotWatch
 
 /// Create a temp directory with the given prefix, run the body, then clean up.
 /// Returns the result of the body function.
+/// Construct an FSharpProjectOptions with sensible defaults for tests that
+/// only care about ProjectFileName / SourceFiles / OtherOptions.
+let makeProjectOptions (projectFile: string) (sourceFiles: string list) (otherOptions: string list) =
+    { ProjectFileName = projectFile
+      ProjectId = None
+      SourceFiles = Array.ofList sourceFiles
+      OtherOptions = Array.ofList otherOptions
+      ReferencedProjects = [||]
+      IsIncompleteTypeCheckEnvironment = false
+      UseScriptResolutionRules = false
+      LoadTime = DateTime.UtcNow
+      UnresolvedReferences = None
+      OriginalLoadReferences = []
+      Stamp = None }
+
 let withTempDir (prefix: string) (body: string -> 'a) =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-{prefix}-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
