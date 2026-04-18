@@ -171,7 +171,7 @@ let ``all plugins receive events when checking a file`` () =
     with _ ->
         ()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 30000)>]
 let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let repoRoot = findRepoRoot ()
     let customAnalyzerPath = exampleAnalyzerPath.Value
@@ -207,12 +207,15 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
 
     let result = pipeline.CheckFile(sourceFile) |> Async.RunSynchronously
 
+    // Subscribe to the plugin's status before emitting so the transition to
+    // terminal state can't race past us on slow CI (G-Research analyzer warm-up).
+    let completion = beginAwaitTerminal host "analyzers"
+
     match result with
     | Some checkResult -> host.EmitFileChecked(checkResult)
     | None -> failwith "Failed to check file"
 
-    // The analyzers plugin now runs async via the framework agent — wait for terminal status
-    waitForTerminalStatus host "analyzers" 10000
+    completion.Wait(TimeSpan.FromSeconds 25.0) |> ignore
 
     // The analyzers plugin should have completed (or failed gracefully)
     let status = host.GetStatus("analyzers")
