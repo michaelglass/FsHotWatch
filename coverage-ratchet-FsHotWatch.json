@@ -203,11 +203,20 @@
       "branch": 67,
       "reason": "loosened: legacy-parser removal shifted coverage percentages"
     },
-    "JjHelper.fs": {
-      "line": 63,
-      "branch": 50,
-      "reason": "loosened automatically"
-    },
+    "JjHelper.fs": [
+      {
+        "line": 63,
+        "branch": 50,
+        "reason": "loosened automatically",
+        "platform": "macos"
+      },
+      {
+        "line": 54,
+        "branch": 40,
+        "reason": "Linux tests exercise fewer JjHelper branches than macOS even with jj installed — daemon scan is not hit during unit tests",
+        "platform": "linux"
+      }
+    ],
     "LintPlugin.fs": [
       {
         "line": 97,
