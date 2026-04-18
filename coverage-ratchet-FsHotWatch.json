@@ -2,15 +2,15 @@
   "overrides": {
     "AnalyzersPlugin.fs": [
       {
-        "line": 90,
-        "branch": 87,
+        "line": 91,
+        "branch": 84,
         "reason": "reflection-based CliContext branches vary by platform",
         "platform": "macos"
       },
       {
         "line": 83,
         "branch": 72,
-        "reason": "reflection-based CliContext branches vary by platform; parse-only path + knownNonAnalyzerPrefixes filter both add untested branches on Linux",
+        "reason": "reflection-based CliContext branches vary by platform; parse-only path \u002B knownNonAnalyzerPrefixes filter both add untested branches on Linux",
         "platform": "linux"
       }
     ],
@@ -62,8 +62,8 @@
     ],
     "Daemon.fs": [
       {
-        "line": 78,
-        "branch": 54,
+        "line": 83,
+        "branch": 56,
         "platform": "macos"
       },
       {
@@ -198,9 +198,14 @@
         "platform": "linux"
       }
     ],
+    "IpcParsing.fs": {
+      "line": 87,
+      "branch": 67,
+      "reason": "loosened: legacy-parser removal shifted coverage percentages"
+    },
     "JjHelper.fs": {
-      "line": 54,
-      "branch": 40,
+      "line": 63,
+      "branch": 50,
       "reason": "loosened automatically"
     },
     "LintPlugin.fs": [
@@ -245,6 +250,20 @@
         "platform": "linux"
       }
     ],
+    "PluginActivity.fs": [
+      {
+        "line": 92,
+        "branch": 65,
+        "reason": "loosened: new Recording phase state paths",
+        "platform": "macos"
+      },
+      {
+        "line": 86,
+        "branch": 65,
+        "reason": "lower line coverage on Linux CI",
+        "platform": "linux"
+      }
+    ],
     "PluginFramework.fs": [
       {
         "line": 100,
@@ -277,17 +296,17 @@
       "line": 93,
       "branch": 50
     },
-    "PluginActivity.fs": [
+    "Program.fs": [
       {
-        "line": 92,
-        "branch": 65,
-        "reason": "loosened: new Recording phase state paths",
+        "line": 76,
+        "branch": 40,
+        "reason": "CLI entry point",
         "platform": "macos"
       },
       {
-        "line": 86,
-        "branch": 65,
-        "reason": "lower line coverage on Linux CI",
+        "line": 62,
+        "branch": 35,
+        "reason": "CLI entry point, different coverage on Linux CI",
         "platform": "linux"
       }
     ],
@@ -302,25 +321,6 @@
         "line": 82,
         "branch": 50,
         "reason": "lower coverage on Linux CI",
-        "platform": "linux"
-      }
-    ],
-    "IpcParsing.fs": {
-      "line": 87,
-      "branch": 67,
-      "reason": "loosened: legacy-parser removal shifted coverage percentages"
-    },
-    "Program.fs": [
-      {
-        "line": 76,
-        "branch": 40,
-        "reason": "CLI entry point",
-        "platform": "macos"
-      },
-      {
-        "line": 62,
-        "branch": 35,
-        "reason": "CLI entry point, different coverage on Linux CI",
         "platform": "linux"
       }
     ],

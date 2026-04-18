@@ -88,10 +88,13 @@ let private fingerprintFsprojFiles (repoRoot: string) =
     |> List.map (fun f -> f, File.GetLastWriteTimeUtc(f).Ticks)
     |> Set.ofList
 
-let private projInfoLogDir (repoRoot: string) =
+[<Literal>]
+let internal projInfoBinlogEnvVar = "FSHW_PROJINFO_BINLOG"
+
+let internal projInfoLogDir (repoRoot: string) =
     Path.Combine(FsHwPaths.root repoRoot, "logs", "projinfo")
 
-let private isTruthyEnv (name: string) =
+let internal isTruthyEnv (name: string) =
     match Environment.GetEnvironmentVariable(name) with
     | null
     | "" -> false
@@ -101,40 +104,30 @@ let private isTruthyEnv (name: string) =
         not (v.Equals("0", StringComparison.OrdinalIgnoreCase))
         && not (v.Equals("false", StringComparison.OrdinalIgnoreCase))
 
-/// Dumps source files, OtherOptions, and referenced project outputs to
-/// `<logDir>/<ProjectName>.opts.txt`. Returns the `-r:` reference count computed
-/// during the single pass (so callers don't need to re-iterate OtherOptions).
-let private dumpProjectOptions (logDir: string) (fcsOptions: FSharpProjectOptions) : int =
-    let mutable refCount = 0
+let internal countReferences (otherOptions: string[]) =
+    otherOptions |> Array.sumBy (fun o -> if o.StartsWith("-r:") then 1 else 0)
 
+/// Dumps source files, OtherOptions, and referenced project outputs to
+/// `<logDir>/<ProjectName>.opts.txt` for diffing vs `dotnet build`.
+let internal dumpProjectOptions (logDir: string) (fcsOptions: FSharpProjectOptions) : unit =
     try
         let name = Path.GetFileNameWithoutExtension(fcsOptions.ProjectFileName)
         let file = Path.Combine(logDir, $"%s{name}.opts.txt")
-
-        let otherLines =
-            fcsOptions.OtherOptions
-            |> Array.map (fun o ->
-                if o.StartsWith("-r:") then
-                    refCount <- refCount + 1
-
-                $"  %s{o}")
 
         let lines =
             seq {
                 yield $"# Project: %s{fcsOptions.ProjectFileName}"
                 yield $"# SourceFiles ({fcsOptions.SourceFiles.Length}):"
-                yield! fcsOptions.SourceFiles |> Array.map (fun f -> $"  %s{f}")
+                yield! fcsOptions.SourceFiles |> Seq.map (fun f -> $"  %s{f}")
                 yield $"# OtherOptions ({fcsOptions.OtherOptions.Length}):"
-                yield! otherLines
+                yield! fcsOptions.OtherOptions |> Seq.map (fun o -> $"  %s{o}")
                 yield $"# ReferencedProjects ({fcsOptions.ReferencedProjects.Length}):"
-                yield! fcsOptions.ReferencedProjects |> Array.map (fun r -> $"  %s{r.OutputFile}")
+                yield! fcsOptions.ReferencedProjects |> Seq.map (fun r -> $"  %s{r.OutputFile}")
             }
 
         File.WriteAllLines(file, lines)
     with ex ->
         Logging.debug "discover" $"Could not dump options for %s{fcsOptions.ProjectFileName}: %s{ex.Message}"
-
-    refCount
 
 /// Discover .fsproj files and register them with the graph and pipeline.
 /// Uses Ionide.ProjInfo for MSBuild design-time evaluation to get real
@@ -166,7 +159,7 @@ let private discoverAndRegisterProjects
         Directory.CreateDirectory(logDir) |> ignore
 
         let binlogDir =
-            if isTruthyEnv "FSHW_PROJINFO_BINLOG" then
+            if isTruthyEnv projInfoBinlogEnvVar then
                 let dir = Path.Combine(logDir, "binlogs")
                 Directory.CreateDirectory(dir) |> ignore
                 Some(DirectoryInfo(dir))
@@ -224,7 +217,8 @@ let private discoverAndRegisterProjects
                     try
                         let absProject = Path.GetFullPath(fcsOptions.ProjectFileName)
                         pipeline.RegisterProject(absProject, fcsOptions)
-                        let refCount = dumpProjectOptions logDir fcsOptions
+                        dumpProjectOptions logDir fcsOptions
+                        let refCount = countReferences fcsOptions.OtherOptions
 
                         Logging.info
                             "discover"

@@ -556,3 +556,97 @@ let ``RunOnce completes and returns plugin statuses`` () =
 
         let statuses = Async.RunSynchronously(daemon.RunOnce(), timeout = 30000)
         test <@ statuses.ContainsKey("runonce-test") @>)
+
+// ============================================================================
+// isTruthyEnv tests
+// ============================================================================
+
+let private withEnv (name: string) (value: string option) (body: unit -> unit) =
+    let prior = Environment.GetEnvironmentVariable(name)
+
+    try
+        Environment.SetEnvironmentVariable(name, Option.toObj value)
+        body ()
+    finally
+        Environment.SetEnvironmentVariable(name, prior)
+
+[<Fact(Timeout = 1000)>]
+let ``isTruthyEnv returns false when unset`` () =
+    let var = "FSHW_TEST_TRUTHY_" + string (Guid.NewGuid())
+    test <@ isTruthyEnv var = false @>
+
+[<Fact(Timeout = 1000)>]
+let ``isTruthyEnv returns false for empty string`` () =
+    let var = "FSHW_TEST_TRUTHY_" + string (Guid.NewGuid())
+    withEnv var (Some "") (fun () -> test <@ isTruthyEnv var = false @>)
+
+[<Fact(Timeout = 1000)>]
+let ``isTruthyEnv returns false for 0`` () =
+    let var = "FSHW_TEST_TRUTHY_" + string (Guid.NewGuid())
+    withEnv var (Some "0") (fun () -> test <@ isTruthyEnv var = false @>)
+
+[<Fact(Timeout = 1000)>]
+let ``isTruthyEnv returns false for false case-insensitive`` () =
+    let var = "FSHW_TEST_TRUTHY_" + string (Guid.NewGuid())
+    withEnv var (Some "FaLsE") (fun () -> test <@ isTruthyEnv var = false @>)
+
+[<Fact(Timeout = 1000)>]
+let ``isTruthyEnv returns true for 1`` () =
+    let var = "FSHW_TEST_TRUTHY_" + string (Guid.NewGuid())
+    withEnv var (Some "1") (fun () -> test <@ isTruthyEnv var = true @>)
+
+[<Fact(Timeout = 1000)>]
+let ``isTruthyEnv trims whitespace`` () =
+    let var = "FSHW_TEST_TRUTHY_" + string (Guid.NewGuid())
+    withEnv var (Some "  true  ") (fun () -> test <@ isTruthyEnv var = true @>)
+
+// ============================================================================
+// countReferences tests
+// ============================================================================
+
+[<Fact(Timeout = 1000)>]
+let ``countReferences counts -r: prefixes`` () =
+    let opts = [| "-r:/a.dll"; "--nowarn:42"; "-r:/b.dll"; "-r:/c.dll" |]
+    test <@ countReferences opts = 3 @>
+
+[<Fact(Timeout = 1000)>]
+let ``countReferences returns 0 when no references`` () =
+    test <@ countReferences [| "--nowarn:42" |] = 0 @>
+    test <@ countReferences [||] = 0 @>
+
+// ============================================================================
+// dumpProjectOptions tests
+// ============================================================================
+
+[<Fact(Timeout = 1000)>]
+let ``dumpProjectOptions writes options file`` () =
+    withTempDir "dump-opts" (fun tmp ->
+        let opts =
+            makeProjectOptions
+                "/tmp/Foo.fsproj"
+                [ "/tmp/A.fs"; "/tmp/B.fs" ]
+                [ "-r:/nuget/A.dll"; "--nowarn:42"; "-r:/nuget/B.dll" ]
+
+        dumpProjectOptions tmp opts
+        let written = File.ReadAllText(Path.Combine(tmp, "Foo.opts.txt"))
+        test <@ written.Contains "# Project: /tmp/Foo.fsproj" @>
+        test <@ written.Contains "/tmp/A.fs" @>
+        test <@ written.Contains "-r:/nuget/A.dll" @>
+        test <@ written.Contains "--nowarn:42" @>)
+
+[<Fact(Timeout = 1000)>]
+let ``dumpProjectOptions handles empty options`` () =
+    withTempDir "dump-opts" (fun tmp ->
+        let opts = makeProjectOptions "/tmp/Empty.fsproj" [] []
+        dumpProjectOptions tmp opts
+        test <@ File.Exists(Path.Combine(tmp, "Empty.opts.txt")) @>)
+
+[<Fact(Timeout = 1000)>]
+let ``dumpProjectOptions swallows IO errors`` () =
+    // logDir does not exist and is not a directory — WriteAllLines will fail.
+    let bogusDir =
+        Path.Combine(Path.GetTempPath(), "does-not-exist-" + string (Guid.NewGuid()), "nope")
+
+    let opts = makeProjectOptions "/tmp/X.fsproj" [] [ "-r:/a.dll" ]
+    // Should not throw — errors are logged at debug level.
+    dumpProjectOptions bogusDir opts
