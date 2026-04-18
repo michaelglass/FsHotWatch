@@ -49,6 +49,50 @@ let waitForTerminalStatus (host: FsHotWatch.PluginHost.PluginHost) (pluginName: 
             | _ -> false)
         timeoutMs
 
+/// Subscribe to `OnStatusChanged` BEFORE querying current status, returning a
+/// `Task<PluginStatus>` that completes the first time `pred` matches a status
+/// for `pluginName`. Use this when a test needs to observe a plugin's terminal
+/// state deterministically (no polling, no xUnit `Fact(Timeout)` race).
+///
+/// Usage pattern — subscribe, then trigger the work, then await:
+///   let completion = TestHelpers.beginAwaitStatus host "plugin" (function Completed _ -> true | _ -> false)
+///   host.EmitBuildCompleted(BuildSucceeded)
+///   let status = completion.Wait(TimeSpan.FromSeconds 15.0)
+let beginAwaitStatus
+    (host: FsHotWatch.PluginHost.PluginHost)
+    (pluginName: string)
+    (pred: FsHotWatch.Events.PluginStatus -> bool)
+    : System.Threading.Tasks.Task<FsHotWatch.Events.PluginStatus> =
+    let tcs =
+        System.Threading.Tasks.TaskCompletionSource<FsHotWatch.Events.PluginStatus>()
+
+    let handler =
+        Handler<string * FsHotWatch.Events.PluginStatus>(fun _ (n, s) ->
+            if n = pluginName && pred s then
+                tcs.TrySetResult(s) |> ignore)
+
+    host.OnStatusChanged.AddHandler(handler)
+    // Fast path: the plugin may already be at the desired status when we subscribe.
+    // Subscribe-then-check ordering is required — check-then-subscribe races.
+    match host.GetStatus(pluginName) with
+    | Some s when pred s -> tcs.TrySetResult(s) |> ignore
+    | _ -> ()
+    // Unsubscribe once completed so handlers don't accumulate across tests.
+    tcs.Task.ContinueWith(
+        System.Action<System.Threading.Tasks.Task<FsHotWatch.Events.PluginStatus>>(fun _ ->
+            host.OnStatusChanged.RemoveHandler(handler))
+    )
+    |> ignore
+
+    tcs.Task
+
+/// Convenience: await a terminal status (Completed or Failed).
+let beginAwaitTerminal (host: FsHotWatch.PluginHost.PluginHost) (pluginName: string) =
+    beginAwaitStatus host pluginName (function
+        | FsHotWatch.Events.Completed _
+        | FsHotWatch.Events.Failed _ -> true
+        | _ -> false)
+
 /// Poll until the plugin status is no longer Running, with a timeout.
 let waitForSettled (host: FsHotWatch.PluginHost.PluginHost) (pluginName: string) (timeoutMs: int) =
     waitUntil
