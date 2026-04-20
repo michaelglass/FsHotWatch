@@ -559,24 +559,32 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                         $"--coverage --coverage-output-format cobertura --coverage-output \"%s{outputPath}\"")
             | None -> None
 
-        // Extensions (e.g. Falco route mapping)
+        // Extensions (e.g. Falco route mapping) — need a RouteStore view onto the
+        // shared test-impact DB. The plugin opens the same dbPath internally; SQLite
+        // handles multiple connections on the same file.
         let extensions =
-            t.Extensions
-            |> List.choose (fun ext ->
-                match ext.Kind with
-                | Falco ->
-                    Logging.info "config" $"Creating FalcoRouteExtension for %s{ext.Project} (%s{ext.TestDir})"
+            match t.Extensions with
+            | [] -> None
+            | exts ->
+                let extDb = TestPrune.Database.Database.create dbPath
+                let routeStore = TestPrune.Ports.toRouteStore extDb
 
-                    Some(
-                        TestPrune.Falco.FalcoRouteExtension(ext.Project, ext.TestDir)
-                        :> TestPrune.Extensions.ITestPruneExtension
-                    )
-                | Unknown other ->
-                    Logging.warn "config" $"Unknown test extension type: %s{other}"
-                    None)
-            |> function
-                | [] -> None
-                | xs -> Some xs
+                exts
+                |> List.choose (fun ext ->
+                    match ext.Kind with
+                    | Falco ->
+                        Logging.info "config" $"Creating FalcoRouteExtension for %s{ext.Project} (%s{ext.TestDir})"
+
+                        Some(
+                            TestPrune.Falco.FalcoRouteExtension(ext.Project, ext.TestDir, routeStore)
+                            :> TestPrune.Extensions.ITestPruneExtension
+                        )
+                    | Unknown other ->
+                        Logging.warn "config" $"Unknown test extension type: %s{other}"
+                        None)
+                |> function
+                    | [] -> None
+                    | xs -> Some xs
 
         Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"
 
