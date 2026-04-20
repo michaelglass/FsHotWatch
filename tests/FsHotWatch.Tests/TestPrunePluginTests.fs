@@ -805,7 +805,6 @@ let ``FileChecked reports Completed when no testConfigs (success path)`` () =
 let ``after scan and build, test methods are in the sqlite database`` () =
     withTempDir "tp-tm-db" (fun tmpDir ->
         // Canonicalize path to avoid symlink divergence (e.g., /var/folders vs /private/var/folders).
-        let tmpDir = Path.GetFullPath(tmpDir)
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let testsFile = Path.Combine(tmpDir, "Tests.fsx")
 
@@ -859,55 +858,24 @@ let beta () = ()
 
         // Cross-connection WAL visibility has a brief race after the plugin's
         // commit: fresh connections can momentarily observe an empty DB even
-        // though the plugin saw its own writes. Poll with a short deadline.
-        let deadline = DateTime.UtcNow.AddSeconds 5.0
+        // though the plugin saw its own writes.
         let mutable testMethods: TestMethodInfo list = []
 
-        while testMethods.Length < 2 && DateTime.UtcNow < deadline do
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
-            let freshDb = Database.create dbPath
-            testMethods <- freshDb.GetTestMethodsInFile "Tests.fsx"
-
-            if testMethods.Length < 2 then
-                System.Threading.Thread.Sleep 50
+        waitUntil
+            (fun () ->
+                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+                let freshDb = Database.create dbPath
+                testMethods <- freshDb.GetTestMethodsInFile "Tests.fsx"
+                testMethods.Length >= 2)
+            5000
 
         test <@ testMethods.Length = 2 @>
         test <@ testMethods |> List.exists (fun t -> t.TestMethod = "alpha") @>
         test <@ testMethods |> List.exists (fun t -> t.TestMethod = "beta") @>)
 
-// Timing race under Fact(Timeout) is fixed by TestHelpers.beginAwaitTerminal.
-// With the deterministic signal the test still fails: after changing `compute`'s
-// body, QueryAffectedTests returns 0 affected tests even though the dependency
-// edge computeTest -> compute should be present. Separate bug in the symbol-diff
-// or dependency-tracking path, orthogonal to timing.
-/// Subscribe for the NEXT Completed transition, ignoring the plugin's current state.
-/// Returns a Task that completes when a new Completed status arrives after this call.
-let private beginAwaitNextCompleted (host: FsHotWatch.PluginHost.PluginHost) (pluginName: string) =
-    let tcs =
-        System.Threading.Tasks.TaskCompletionSource<FsHotWatch.Events.PluginStatus>()
-
-    let handler =
-        Handler<string * FsHotWatch.Events.PluginStatus>(fun _ (n, s) ->
-            if n = pluginName then
-                match s with
-                | Completed _
-                | Failed _ -> tcs.TrySetResult(s) |> ignore
-                | _ -> ())
-
-    host.OnStatusChanged.AddHandler(handler)
-
-    tcs.Task.ContinueWith(
-        System.Action<System.Threading.Tasks.Task<FsHotWatch.Events.PluginStatus>>(fun _ ->
-            host.OnStatusChanged.RemoveHandler(handler))
-    )
-    |> ignore
-
-    tcs.Task
-
 [<Fact(Timeout = 10000)>]
 let ``after a symbol change, affected-tests identifies the dependent test`` () =
     withTempDir "tp-sym" (fun tmpDir ->
-        let tmpDir = Path.GetFullPath(tmpDir)
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let libFile = Path.Combine(tmpDir, "Lib.fsx")
         let testsFile = Path.Combine(tmpDir, "Tests.fsx")
@@ -996,7 +964,7 @@ let computeTest () =
         // so we know the flush-and-run cycle has finished (including TestsFinished
         // resetting ChangedSymbols). beginAwaitTerminal races here because plugin
         // is already at Completed from the prior FileChecked.
-        let firstBuild = beginAwaitNextCompleted host "test-prune"
+        let firstBuild = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         firstBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
@@ -1015,18 +983,16 @@ let compute (x: int) = x + 2
         | None -> failwith "lib CheckFile 2 failed"
 
         // Poll affected-tests; after FileChecked processing, computeTest should appear.
-        let deadline = DateTime.UtcNow.AddSeconds(10.0)
         let mutable affectedTests = ""
 
-        while not (affectedTests.Contains("computeTest")) && DateTime.UtcNow < deadline do
-            let r = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
+        waitUntil
+            (fun () ->
+                match host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously with
+                | Some v -> affectedTests <- v
+                | None -> ()
 
-            match r with
-            | Some v -> affectedTests <- v
-            | None -> ()
-
-            if not (affectedTests.Contains("computeTest")) then
-                System.Threading.Thread.Sleep(50)
+                affectedTests.Contains("computeTest"))
+            5000
 
         test <@ affectedTests.Contains("computeTest") @>)
 
@@ -1156,7 +1122,7 @@ let testOtherStuff () =
         waitForPluginIdle host "test-prune" 10.0
 
         // Emit build completion to flush analysis to database
-        let firstBuild = beginAwaitNextCompleted host "test-prune"
+        let firstBuild = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         firstBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
@@ -1178,24 +1144,22 @@ let validate (cfg: Config) = cfg.Value.Length > 0
         | None -> failwith "lib CheckFile 2 failed"
 
         // Framework dispatches async — poll until affected-tests shows the expected results
-        let deadline3 = DateTime.UtcNow.AddSeconds(10.0)
         let mutable affectedTests = ""
 
-        while not (affectedTests.Contains("testValidateTrue")) && DateTime.UtcNow < deadline3 do
-            let result = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
+        waitUntil
+            (fun () ->
+                match host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously with
+                | Some v -> affectedTests <- v
+                | None -> ()
 
-            match result with
-            | Some v -> affectedTests <- v
-            | None -> ()
-
-            if not (affectedTests.Contains("testValidateTrue")) then
-                System.Threading.Thread.Sleep(50)
+                affectedTests.Contains("testValidateTrue"))
+            10000
 
         test <@ affectedTests.Contains("testValidateTrue") @>
         test <@ affectedTests.Contains("testValidateFalse") @>
         test <@ not (affectedTests.Contains("testOtherStuff")) @>
 
-        let secondBuild = beginAwaitNextCompleted host "test-prune"
+        let secondBuild = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         secondBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
