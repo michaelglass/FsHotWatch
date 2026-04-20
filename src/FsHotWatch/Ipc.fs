@@ -90,7 +90,7 @@ type DaemonRpcConfig =
       TriggerBuild: unit -> Async<unit>
       FormatAll: unit -> Async<string>
       WaitForScanGeneration: int64 -> Task<unit>
-      WaitForAllTerminal: unit -> Task<unit>
+      WaitForAllTerminal: TimeSpan -> Task<unit>
       InvalidateAndRecheck: string -> Async<string> }
 
 /// RPC target object exposed to clients via StreamJsonRpc.
@@ -196,7 +196,8 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
         }
 
     /// Wait for all plugins to reach a terminal state with 1s stability confirmation.
-    member this.WaitForComplete() : Task<string> =
+    /// timeoutMs <= 0 means no client-imposed timeout.
+    member this.WaitForComplete(timeoutMs: int) : Task<string> =
         task {
             let statuses = config.Host.GetAllStatuses()
 
@@ -206,12 +207,18 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
                 |> List.choose (fun (name, s) -> if Events.PluginStatus.isTerminal s then None else Some name)
 
             match running with
-            | [] -> Logging.info "rpc" $"WaitForComplete() called — all plugins already terminal"
+            | [] -> Logging.info "rpc" $"WaitForComplete(%d{timeoutMs}ms) called — all plugins already terminal"
             | plugins ->
                 let joined = plugins |> String.concat ", "
-                Logging.info "rpc" $"WaitForComplete() called — waiting for: %s{joined}"
+                Logging.info "rpc" $"WaitForComplete(%d{timeoutMs}ms) called — waiting for: %s{joined}"
 
-            do! config.WaitForAllTerminal()
+            let timeout =
+                if timeoutMs <= 0 then
+                    TimeSpan.MaxValue
+                else
+                    TimeSpan.FromMilliseconds(float timeoutMs)
+
+            do! config.WaitForAllTerminal(timeout)
             Logging.info "rpc" "WaitForComplete() resolved"
             return this.GetStatus()
         }
@@ -220,7 +227,7 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
     member this.TriggerBuild() : Task<string> =
         task {
             do! config.TriggerBuild() |> Async.StartAsTask
-            let! _ = this.WaitForComplete()
+            let! _ = this.WaitForComplete(0)
             return this.GetStatus()
         }
 
@@ -365,7 +372,9 @@ module IpcClient =
         invoke pipeName "WaitForScan" [| afterGeneration |]
 
     /// Wait for all plugins to reach a terminal state, then return full status.
-    let waitForComplete (pipeName: string) : Async<string> = invoke pipeName "WaitForComplete" [||]
+    /// timeoutMs <= 0 means no client-imposed timeout.
+    let waitForComplete (pipeName: string) (timeoutMs: int) : Async<string> =
+        invoke pipeName "WaitForComplete" [| timeoutMs |]
 
     /// Trigger a build and wait for it to complete.
     let triggerBuild (pipeName: string) : Async<string> = invoke pipeName "TriggerBuild" [||]

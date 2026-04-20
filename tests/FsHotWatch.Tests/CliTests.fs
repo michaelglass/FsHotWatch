@@ -130,6 +130,38 @@ let ``parse errors --wait --timeout combines both flags`` () =
         test <@ flags |> List.contains (Timeout 45) @>
     | other -> failwith $"Expected Ok(Errors [Wait; Timeout 45]), got %A{other}"
 
+// --- WaitMode.fromFlags (pure normalization) ---
+
+[<Fact(Timeout = 5000)>]
+let ``WaitMode.fromFlags empty is NoWait`` () =
+    test <@ WaitMode.fromFlags [] = Ok WaitMode.NoWait @>
+
+[<Fact(Timeout = 5000)>]
+let ``WaitMode.fromFlags Wait uses default timeout`` () =
+    test <@ WaitMode.fromFlags [ Wait ] = Ok(WaitMode.WaitFor WaitMode.defaultTimeout) @>
+
+[<Fact(Timeout = 5000)>]
+let ``WaitMode.fromFlags Wait with Timeout uses supplied seconds`` () =
+    test <@ WaitMode.fromFlags [ Wait; Timeout 30 ] = Ok(WaitMode.WaitFor(TimeSpan.FromSeconds 30.0)) @>
+
+[<Fact(Timeout = 5000)>]
+let ``WaitMode.fromFlags Timeout without Wait is rejected`` () =
+    match WaitMode.fromFlags [ Timeout 30 ] with
+    | Error msg -> test <@ msg.Contains("--wait") @>
+    | Ok _ -> failwith "expected Error"
+
+[<Fact(Timeout = 5000)>]
+let ``WaitMode.fromFlags rejects zero timeout`` () =
+    match WaitMode.fromFlags [ Wait; Timeout 0 ] with
+    | Error msg -> test <@ msg.Contains("positive") @>
+    | Ok _ -> failwith "expected Error"
+
+[<Fact(Timeout = 5000)>]
+let ``WaitMode.fromFlags rejects negative timeout`` () =
+    match WaitMode.fromFlags [ Wait; Timeout -5 ] with
+    | Error msg -> test <@ msg.Contains("positive") @>
+    | Ok _ -> failwith "expected Error"
+
 [<Fact(Timeout = 5000)>]
 let ``parse invalidate-cache returns InvalidateCache`` () =
     test <@ CommandTree.parse tree [| "invalidate-cache"; "some/file.fs" |] = Ok(InvalidateCache "some/file.fs") @>
@@ -474,7 +506,7 @@ let private fakeIpc () : IpcOps =
       RunCommand = fun _ _ _ -> async { return "unknown command" }
       GetDiagnostics = fun _ _ -> async { return """{"count": 0, "files": {}}""" }
       WaitForScan = fun _ _ -> async { return "idle" }
-      WaitForComplete = fun _ -> async { return "{}" }
+      WaitForComplete = fun _ _ -> async { return "{}" }
       TriggerBuild = fun _ -> async { return "{}" }
       FormatAll = fun _ -> async { return "formatted 0 files" }
       InvalidateCache = fun _ _ -> async { return "{\"status\": \"rechecked\"}" }
@@ -689,7 +721,7 @@ let ``executeCommand Errors --wait blocks on WaitForComplete before reading diag
     let ipc =
         { fakeIpc () with
             WaitForComplete =
-                fun _ ->
+                fun _ _ ->
                     async {
                         waitCalled <- true
                         return "{}"
@@ -717,7 +749,7 @@ let ``executeCommand Errors without --wait does not call WaitForComplete`` () =
     let ipc =
         { fakeIpc () with
             WaitForComplete =
-                fun _ ->
+                fun _ _ ->
                     async {
                         waitCalled <- true
                         return "{}"
@@ -730,16 +762,13 @@ let ``executeCommand Errors without --wait does not call WaitForComplete`` () =
     test <@ not waitCalled @>
 
 [<Fact(Timeout = 5000)>]
-let ``executeCommand Errors --wait with timeout returns exit code 2 when WaitForComplete hangs`` () =
+let ``executeCommand Errors --wait returns exit code 2 when WaitForComplete times out`` () =
+    // The daemon raises TimeoutException when its internal deadline fires; we simulate that
+    // directly here rather than blocking past a client-side timeout.
     let ipc =
         { fakeIpc () with
             WaitForComplete =
-                fun _ ->
-                    async {
-                        // Block past the timeout to simulate plugins that never complete.
-                        do! Async.Sleep(5000)
-                        return "{}"
-                    }
+                fun _ _ -> async { return raise (TimeoutException("WaitForComplete timed out — still running: plug")) }
             GetDiagnostics = fun _ _ -> async { return """{"count": 0}""" } }
 
     let result =
@@ -760,7 +789,7 @@ let ``executeCommand Errors --wait with timeout returns exit code 2 when WaitFor
 let ``executeCommand Errors --wait returns exit code 1 when diagnostics report errors`` () =
     let ipc =
         { fakeIpc () with
-            WaitForComplete = fun _ -> async { return "{}" }
+            WaitForComplete = fun _ _ -> async { return "{}" }
             GetDiagnostics =
                 fun _ _ ->
                     async {
@@ -772,6 +801,30 @@ let ``executeCommand Errors --wait returns exit code 1 when diagnostics report e
         executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Errors [ Wait ]) "" false fakeConfig 30.0
 
     test <@ result = 1 @>
+
+[<Fact(Timeout = 5000)>]
+let ``executeCommand Errors with invalid flag combination exits 2 without touching daemon`` () =
+    let mutable launched = false
+
+    let ipc =
+        { fakeIpc () with
+            LaunchDaemon = fun _ _ _ -> launched <- true
+            IsRunning = fun _ -> false }
+
+    let result =
+        executeCommand
+            (fun _ -> Unchecked.defaultof<_>)
+            ipc
+            "/tmp"
+            "pipe"
+            (Errors [ Timeout 30 ])
+            ""
+            false
+            fakeConfig
+            30.0
+
+    test <@ result = 2 @>
+    test <@ not launched @>
 
 [<Fact(Timeout = 5000)>]
 let ``executeCommand Build with status passed returns exit code 0`` () =
