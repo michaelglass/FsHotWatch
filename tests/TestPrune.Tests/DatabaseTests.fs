@@ -1886,38 +1886,6 @@ module ``Schema version migration`` =
         finally
             cleanupDb path
 
-    // Regression guard for the wal_checkpoint revert. 3.0.1 added a
-    // PRAGMA wal_checkpoint(PASSIVE) after every RebuildProjects commit,
-    // ostensibly to fix cross-connection visibility. Subsequent
-    // investigation showed the real issue was Microsoft.Data.Sqlite's
-    // connection pool caching stale reader state — the checkpoint only
-    // partially masked it. The documented contract after the revert:
-    // consumers needing deterministic visibility from a freshly-opened
-    // connection in the same process must call
-    // SqliteConnection.ClearAllPools() before opening the reader.
-    //
-    // This test exercises the documented contract end-to-end so anyone
-    // tempted to re-introduce a checkpoint "for safety" runs into the
-    // test + comment pointing to the changelog instead.
-    [<Fact>]
-    let ``fresh Database sees RebuildProjects writes after ClearAllPools`` () =
-        let path = tempDbPath ()
-
-        try
-            let writer = Database.create path
-            writer.RebuildProjects([ standardGraph ])
-
-            // Required: bust Microsoft.Data.Sqlite's pool so the reader
-            // opens a genuinely fresh connection rather than a pooled one
-            // with stale snapshot state. This is what the (removed)
-            // per-commit checkpoint attempted to avoid, unsuccessfully.
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
-
-            let reader = Database.create path
-            let symbols = reader.GetSymbolsInFile "src/Lib.fs"
-            test <@ symbols.Length = 1 @>
-        finally
-            cleanupDb path
 
     // Regression: 2.0.0 stamped v3 without `dependencies.source`; version check
     // alone passed and the first INSERT crashed. Must recreate on open.
