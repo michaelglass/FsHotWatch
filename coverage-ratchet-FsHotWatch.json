@@ -63,7 +63,7 @@
     "Daemon.fs": [
       {
         "line": 83,
-        "branch": 56,
+        "branch": 57,
         "platform": "macos"
       },
       {
@@ -173,7 +173,7 @@
     "Ipc.fs": [
       {
         "line": 86,
-        "branch": 64,
+        "branch": 65,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -213,7 +213,7 @@
       {
         "line": 54,
         "branch": 40,
-        "reason": "Linux tests exercise fewer JjHelper branches than macOS even with jj installed — daemon scan is not hit during unit tests",
+        "reason": "Linux tests exercise fewer JjHelper branches than macOS even with jj installed \u2014 daemon scan is not hit during unit tests",
         "platform": "linux"
       }
     ],
@@ -307,8 +307,8 @@
     },
     "Program.fs": [
       {
-        "line": 76,
-        "branch": 40,
+        "line": 83,
+        "branch": 46,
         "reason": "CLI entry point",
         "platform": "macos"
       },
