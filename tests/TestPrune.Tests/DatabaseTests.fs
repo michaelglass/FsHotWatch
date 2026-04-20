@@ -1886,6 +1886,65 @@ module ``Schema version migration`` =
         finally
             cleanupDb path
 
+    // Regression: a DB created before versioning was added reads
+    // `user_version = 0`. The previous check bypassed recreation when version = 0
+    // (a special case for fresh empty files) and let the stale schema survive:
+    // CREATE TABLE IF NOT EXISTS is a no-op on existing tables so new columns
+    // were never added, then the DB got stamped with the current SchemaVersion
+    // anyway — the next INSERT blew up with "no column named …" and the
+    // FsHotWatch.TestPrune plugin hung in Running forever. Now we recreate
+    // whenever the stored version doesn't match, unless the file is genuinely
+    // empty (no user tables yet).
+    [<Fact>]
+    let ``recreates database with user_version=0 and legacy tables`` () =
+        let path = tempDbPath ()
+
+        try
+            do
+                use conn = openRawConnection path
+
+                use cmd = conn.CreateCommand()
+
+                cmd.CommandText <-
+                    """
+                    CREATE TABLE symbols (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        full_name TEXT NOT NULL UNIQUE,
+                        kind TEXT NOT NULL,
+                        source_file TEXT NOT NULL,
+                        line_start INTEGER NOT NULL,
+                        line_end INTEGER NOT NULL,
+                        indexed_at TEXT NOT NULL
+                    );
+                    CREATE TABLE dependencies (
+                        from_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+                        to_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+                        dep_kind TEXT NOT NULL,
+                        PRIMARY KEY (from_symbol_id, to_symbol_id, dep_kind)
+                    );
+                    CREATE TABLE test_methods (
+                        symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
+                        test_project TEXT NOT NULL,
+                        test_class TEXT NOT NULL,
+                        test_method TEXT NOT NULL
+                    );
+                    -- deliberately NOT stamping user_version — simulates a pre-versioning DB.
+                    """
+
+                cmd.ExecuteNonQuery() |> ignore
+
+            // Sanity: the fixture really is unstamped + missing current columns.
+            test <@ getUserVersion path = 0 @>
+
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+
+            let symbols = db.GetSymbolsInFile "src/Lib.fs"
+            test <@ symbols.Length = 1 @>
+            test <@ getUserVersion path = 4 @>
+        finally
+            cleanupDb path
+
     // Regression: 2.0.0 stamped v3 without `dependencies.source`; version check
     // alone passed and the first INSERT crashed. Must recreate on open.
     [<Fact>]

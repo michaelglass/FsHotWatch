@@ -176,7 +176,24 @@ let private deleteDbFiles (dbPath: string) =
         if File.Exists(p) then
             File.Delete(p)
 
-/// Open a connection, deleting and recreating the database if the schema version is incompatible.
+/// Does the DB already contain user data? If it does, a `user_version = 0`
+/// reading is not a fresh-DB signal — it's a pre-versioning stale DB from an
+/// older TestPrune.Core and its schema almost certainly doesn't match the
+/// current one (CREATE TABLE IF NOT EXISTS won't add new columns to existing
+/// tables, so leaving it in place would survive open and crash on the next
+/// INSERT with "no column named …").
+let private hasUserTables (conn: SqliteConnection) =
+    use cmd = conn.CreateCommand()
+
+    cmd.CommandText <-
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
+
+    cmd.ExecuteScalar() :?> int64 > 0L
+
+/// Open a connection, deleting and recreating the database if the schema
+/// version is incompatible. A `user_version = 0` reading against a DB that
+/// already contains user tables is treated as an incompatible (pre-versioning)
+/// schema and triggers recreation.
 let private openCheckedConnection (dbPath: string) =
     if File.Exists(dbPath) then
         let conn = openConnection dbPath
@@ -184,7 +201,12 @@ let private openCheckedConnection (dbPath: string) =
         cmd.CommandText <- "PRAGMA user_version;"
         let version = cmd.ExecuteScalar() :?> int64 |> int
 
-        if version <> 0 && version <> SchemaVersion then
+        let isIncompatible =
+            if version = SchemaVersion then false
+            elif version = 0 then hasUserTables conn
+            else true
+
+        if isIncompatible then
             eprintfn $"Schema version mismatch (found v%d{version}, expected v%d{SchemaVersion}). Recreating database."
 
             SqliteConnection.ClearPool(conn)

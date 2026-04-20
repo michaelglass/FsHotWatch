@@ -1,6 +1,15 @@
 # Changelog — TestPrune.Core
 
 ## [Unreleased]
+- fix: `openCheckedConnection` now recreates the DB when `user_version = 0`
+  *and* the file already contains user tables. The previous `version <> 0 &&
+  version <> SchemaVersion` guard treated `0` as a fresh-DB signal, which let
+  any pre-versioning DB survive open with its legacy schema intact (CREATE
+  TABLE IF NOT EXISTS is a no-op on existing tables). The constructor would
+  then stamp the current `SchemaVersion`, and the very next INSERT crashed
+  with `"no column named …"` — the plugin-host-level symptom was a permanent
+  hang. Regression test `recreates database with user_version=0 and legacy
+  tables` covers the fixture.
 - fix: bump `SchemaVersion` 3 → 4. The 3.0.0 release introduced
   `dependencies.source`, `symbol_attributes`, and `symbols.is_extern` under
   the same v3 stamp that 2.0.0 used, so any DB written by 2.0.0 survived
