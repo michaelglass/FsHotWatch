@@ -1,6 +1,26 @@
 # Changelog — TestPrune.Core
 
 ## [Unreleased]
+- **BREAKING** — `SymbolSink.RebuildProjects` signature changed from
+  `AnalysisResult list -> (string * string) list -> (string * string) list -> unit` to
+  `AnalysisResult list -> CacheKeys -> unit`, where `CacheKeys = { FileKeys; ProjectKeys }`.
+  Prevents accidentally swapping file keys and project keys at call sites (both were
+  `(string * string) list`). Use `CacheKeys.Empty` when neither is relevant.
+- fix: `RebuildProjects` now preserves incoming dependency edges when a file is re-indexed
+  incrementally. The old code did `DELETE FROM symbols WHERE source_file IN (...)` which,
+  combined with `ON DELETE CASCADE` on `dependencies.to_symbol_id`, destroyed every edge
+  from other (non-re-indexed) files pointing into the re-indexed file's symbols — causing
+  `QueryAffectedTests` to return 0 even when dependent tests clearly existed. Now uses
+  UPSERT (`INSERT … ON CONFLICT(full_name) DO UPDATE SET …`) to preserve row ids for
+  surviving symbols. Orphan cleanup is timestamp-driven: every symbol touched this pass
+  gets `indexed_at = now`; a single `DELETE … WHERE source_file IN (…) AND indexed_at < @now`
+  sweeps away symbols that genuinely disappeared from source. Extern inserts use a
+  conditional UPSERT (`ON CONFLICT DO UPDATE SET indexed_at = excluded.indexed_at WHERE
+  symbols.is_extern = 1`) so they bump their own timestamps without overwriting real
+  symbols. Includes regression test `re-indexing library file preserves incoming edges
+  from non-re-indexed tests`.
+- refactor: add `DiffParser.isFsproj` helper; remove duplicated `.fsproj` extension checks
+  across `DiffParser`, `ImpactAnalysis`, and `Orchestration`.
 - feat: auto-recreate database when schema version is incompatible with current build
 - feat: add SharedState dependency kind for cross-test coupling via shared resources
 - feat: revise ITestPruneExtension to inject edges into dependency graph

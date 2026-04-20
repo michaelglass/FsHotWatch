@@ -61,6 +61,6 @@ module ``SymbolSink from Database`` =
                   Attributes = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
-            sink.RebuildProjects [ graph ] [] []
+            sink.RebuildProjects [ graph ] CacheKeys.Empty
             let symbols = store.GetSymbolsInFile "src/Lib.fs"
             test <@ symbols.Length = 1 @>)

@@ -1326,6 +1326,73 @@ module ``Cross-project extern symbol dependencies`` =
             let affected = db.QueryAffectedTests [ "Lib.MyType" ]
             test <@ affected.Length = 1 @>)
 
+    // Regression: re-indexing a library file without re-indexing dependents used to
+    // cascade-delete the test→library edge via `DELETE FROM symbols WHERE source_file IN (...)`
+    // combined with `ON DELETE CASCADE` on `dependencies.to_symbol_id`. QueryAffectedTests
+    // would then return zero even though the changed library symbol had dependent tests.
+    // Fixed by UPSERT (preserve row id on conflict) + targeted orphan cleanup.
+    [<Fact>]
+    let ``re-indexing library file preserves incoming edges from non-re-indexed tests`` () =
+        withDb (fun db ->
+            // First pass: index both library and tests together with the full dep edge.
+            let lib =
+                { Symbols =
+                    [ { FullName = "Lib.MyType"
+                        Kind = Type
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = "v1"
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            let tests =
+                { Symbols =
+                    [ { FullName = "Tests.myTest"
+                        Kind = Function
+                        SourceFile = "tests/Tests.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = "t1"
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.myTest"
+                        ToSymbol = "Lib.MyType"
+                        Kind = UsesType
+                        Source = "core" } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.myTest"
+                        TestProject = "TestProject"
+                        TestClass = "Tests"
+                        TestMethod = "myTest" } ]
+                  Attributes = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ lib; tests ])
+
+            // Sanity: the edge resolves before re-indexing.
+            let beforeAffected = db.QueryAffectedTests [ "Lib.MyType" ]
+            test <@ beforeAffected.Length = 1 @>
+
+            // Now re-index ONLY the library file (content changed). This is the
+            // incremental path: the test file is not re-analyzed.
+            let libV2 =
+                { lib with
+                    Symbols =
+                        [ { lib.Symbols[0] with
+                              ContentHash = "v2"
+                              LineEnd = 11 } ] }
+
+            db.RebuildProjects([ libV2 ])
+
+            // The test's incoming edge to Lib.MyType must still resolve.
+            let afterAffected = db.QueryAffectedTests [ "Lib.MyType" ]
+            test <@ afterAffected.Length = 1 @>
+            test <@ afterAffected[0].TestMethod = "myTest" @>)
+
 module ``Unknown enum deduplication`` =
 
     [<Fact>]

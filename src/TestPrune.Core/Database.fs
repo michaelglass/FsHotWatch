@@ -215,6 +215,11 @@ type Database(dbPath: string) =
     /// When called with a subset of projects, dependency edges to symbols in other projects will
     /// only resolve if those symbols already exist in the database from a prior call.
     /// Optional fileKeys/projectKeys are written in the same transaction for atomicity.
+    ///
+    /// Symbol row ids are preserved across re-indexing (UPSERT on full_name), so incoming
+    /// dependency edges from files NOT being re-analyzed survive. This is essential for
+    /// cross-file impact analysis: changing Lib.fs must not cascade-delete edges from
+    /// Tests.fs → Lib.fs symbols, or QueryAffectedTests would miss the dependent tests.
     member _.RebuildProjects
         (results: AnalysisResult list, ?fileKeys: (string * string) list, ?projectKeys: (string * string) list)
         =
@@ -229,33 +234,34 @@ type Database(dbPath: string) =
         use txn = conn.BeginTransaction()
 
         try
-            // Batch delete using parameterized IN-clause
+            // Clear outgoing metadata for re-indexed files. Leaves incoming edges from
+            // non-re-indexed files untouched — those point INTO these files' symbols, whose
+            // row ids are preserved by the UPSERT below. Outgoing edges/test_methods/attributes
+            // may have changed in the new analysis, so they're re-inserted further down.
             if not sourceFiles.IsEmpty then
-                let paramNames = sourceFiles |> List.mapi (fun i _ -> $"@f%d{i}")
-                let placeholders = String.Join(", ", paramNames)
+                let placeholders = buildPlaceholders sourceFiles
 
-                use delCmd = conn.CreateCommand()
-                delCmd.Transaction <- txn
+                for (table, col) in
+                    [ ("dependencies", "from_symbol_id")
+                      ("test_methods", "symbol_id")
+                      ("symbol_attributes", "symbol_id") ] do
+                    use delCmd = conn.CreateCommand()
+                    delCmd.Transaction <- txn
 
-                // ON DELETE CASCADE on dependencies and test_methods handles child rows
-                delCmd.CommandText <- $"DELETE FROM symbols WHERE source_file IN (%s{placeholders})"
+                    delCmd.CommandText <-
+                        $"DELETE FROM %s{table} WHERE %s{col} IN (SELECT id FROM symbols WHERE source_file IN (%s{placeholders}))"
 
-                sourceFiles
-                |> List.iteri (fun i file -> delCmd.Parameters.AddWithValue($"@f%d{i}", file) |> ignore)
-
-                delCmd.ExecuteNonQuery() |> ignore
+                    bindPlaceholders delCmd sourceFiles
+                    delCmd.ExecuteNonQuery() |> ignore
 
             let now = DateTime.UtcNow.ToString("o")
 
-            let makeSymbolCmd conflictClause =
+            // UPSERT preserves row id on conflict so incoming foreign-key references remain valid.
+            // Extern variant uses INSERT OR IGNORE so it can't overwrite a real symbol already in the DB.
+            let makeSymbolCmd (sql: string) =
                 let cmd = conn.CreateCommand()
                 cmd.Transaction <- txn
-
-                cmd.CommandText <-
-                    $"""
-                    INSERT OR %s{conflictClause} INTO symbols (full_name, kind, source_file, line_start, line_end, content_hash, is_extern, indexed_at)
-                    VALUES (@fullName, @kind, @sourceFile, @lineStart, @lineEnd, @contentHash, @isExtern, @indexedAt)
-                    """
+                cmd.CommandText <- sql
 
                 cmd.Parameters.Add("@fullName", SqliteType.Text) |> ignore
                 cmd.Parameters.Add("@kind", SqliteType.Text) |> ignore
@@ -267,10 +273,33 @@ type Database(dbPath: string) =
                 cmd.Parameters.Add("@indexedAt", SqliteType.Text) |> ignore
                 cmd
 
-            // Real symbols use REPLACE to update on re-index; extern symbols use
-            // IGNORE so they don't overwrite real symbols already in the DB.
-            use insCmd = makeSymbolCmd "REPLACE"
-            use externCmd = makeSymbolCmd "IGNORE"
+            use insCmd =
+                makeSymbolCmd
+                    """
+                    INSERT INTO symbols (full_name, kind, source_file, line_start, line_end, content_hash, is_extern, indexed_at)
+                    VALUES (@fullName, @kind, @sourceFile, @lineStart, @lineEnd, @contentHash, @isExtern, @indexedAt)
+                    ON CONFLICT(full_name) DO UPDATE SET
+                        kind = excluded.kind,
+                        source_file = excluded.source_file,
+                        line_start = excluded.line_start,
+                        line_end = excluded.line_end,
+                        content_hash = excluded.content_hash,
+                        is_extern = excluded.is_extern,
+                        indexed_at = excluded.indexed_at
+                    """
+
+            // Extern: bump indexed_at only if the existing row is also extern, so the
+            // orphan sweep below doesn't treat it as stale (callers may remap an extern's
+            // SourceFile to a real file). Never overwrites a real symbol.
+            use externCmd =
+                makeSymbolCmd
+                    """
+                    INSERT INTO symbols (full_name, kind, source_file, line_start, line_end, content_hash, is_extern, indexed_at)
+                    VALUES (@fullName, @kind, @sourceFile, @lineStart, @lineEnd, @contentHash, @isExtern, @indexedAt)
+                    ON CONFLICT(full_name) DO UPDATE SET
+                        indexed_at = excluded.indexed_at
+                    WHERE symbols.is_extern = 1
+                    """
 
             let setSymbolParams (cmd: SqliteCommand) (sym: SymbolInfo) =
                 cmd.Parameters["@fullName"].Value <- sym.FullName
@@ -287,6 +316,23 @@ type Database(dbPath: string) =
                     let cmd = if sym.IsExtern then externCmd else insCmd
                     setSymbolParams cmd sym
                     cmd.ExecuteNonQuery() |> ignore
+
+            // Orphan cleanup: every symbol touched by this pass had its indexed_at bumped
+            // to `now` (via UPSERT for real symbols, conditional UPSERT for externs). Any
+            // symbol in the re-indexed files still carrying an older timestamp wasn't in
+            // the new analysis — delete it. CASCADE removes its edges, which is correct.
+            if not sourceFiles.IsEmpty then
+                let placeholders = buildPlaceholders sourceFiles
+
+                use delOrphan = conn.CreateCommand()
+                delOrphan.Transaction <- txn
+
+                delOrphan.CommandText <-
+                    $"DELETE FROM symbols WHERE source_file IN (%s{placeholders}) AND indexed_at < @now"
+
+                bindPlaceholders delOrphan sourceFiles
+                delOrphan.Parameters.AddWithValue("@now", now) |> ignore
+                delOrphan.ExecuteNonQuery() |> ignore
 
             // Dependencies are inserted after all symbols so cross-project edges resolve
             use depCmd = conn.CreateCommand()

@@ -106,15 +106,22 @@ let createChecker () =
         useTransparentCompiler = true
     )
 
+/// Outcome of walking a project's files. `AllFilesCached` means every file hit the
+/// file-level cache and nothing needs writing back; `Analyzed` means at least one
+/// file was re-analyzed and `Result` must be persisted. The count is part of the
+/// `Analyzed` case so "analyzed > 0" and "have a Result" cannot disagree.
+type AnalysisOutcome =
+    | AllFilesCached
+    | Analyzed of Result: AnalysisResult * Count: int
+
 type IndexedData =
-    { Analysis: AnalysisResult option
+    { Outcome: AnalysisOutcome
       FileKeys: (string * string) list
       ProjectKey: string * string
       SymbolCount: int
       DepCount: int
       TestCount: int
       SkippedFiles: int
-      AnalyzedFiles: int
       TotalFiles: int }
 
 type ProjectOutcome =
@@ -291,14 +298,17 @@ let indexProject
               ProjectPath = fsprojPath
               Outcome =
                 Indexed
-                    { Analysis = if analyzedFiles > 0 then Some combined else None
+                    { Outcome =
+                        if analyzedFiles > 0 then
+                            Analyzed(combined, analyzedFiles)
+                        else
+                            AllFilesCached
                       FileKeys = localFileKeys |> List.rev
                       ProjectKey = (projName, hash)
                       SymbolCount = combined.Symbols.Length
                       DepCount = combined.Dependencies.Length
                       TestCount = combined.TestMethods.Length
                       SkippedFiles = localSkippedFiles
-                      AnalyzedFiles = analyzedFiles
                       TotalFiles = fileCount }
               Events = allEvents }
     with ex ->
@@ -390,9 +400,9 @@ let runIndexWith
                     match r.Outcome with
                     | Indexed d ->
                         let results =
-                            match d.Analysis with
-                            | Some a -> a :: results
-                            | None -> results
+                            match d.Outcome with
+                            | Analyzed(a, _) -> a :: results
+                            | AllFilesCached -> results
 
                         (results,
                          d.FileKeys @ fileKeys,
@@ -409,7 +419,10 @@ let runIndexWith
         let allResults = allResults |> List.rev
 
         if not allResults.IsEmpty then
-            sink.RebuildProjects allResults allFileKeys allProjectKeys
+            sink.RebuildProjects
+                allResults
+                { FileKeys = allFileKeys
+                  ProjectKeys = allProjectKeys }
 
         eprintfn $"Indexed %d{totalSymbols} symbols, %d{totalDeps} dependencies, %d{totalTests} test methods"
 
@@ -471,7 +484,7 @@ let analyzeChanges
                 changedFiles
                 |> List.filter (fun f ->
                     f.EndsWith(".fs", StringComparison.OrdinalIgnoreCase)
-                    && not (f.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase)))
+                    && not (DiffParser.isFsproj f))
                 |> List.choose (fun relPath ->
                     let fullPath = Path.Combine(repoRoot, relPath)
 

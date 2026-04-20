@@ -11,6 +11,9 @@ let private isCodeFile (path: string) =
     codeExtensions
     |> Set.exists (fun ext -> path.EndsWith(ext, System.StringComparison.OrdinalIgnoreCase))
 
+let isFsproj (path: string) =
+    path.EndsWith(".fsproj", System.StringComparison.OrdinalIgnoreCase)
+
 /// Parse unified diff text (from jj diff --git or git diff) to extract changed file paths.
 /// Only returns F# code files (.fs, .fsx, .fsproj).
 let parseChangedFiles (diffText: string) : string list =
@@ -21,6 +24,4 @@ let parseChangedFiles (diffText: string) : string list =
     |> Seq.toList
 
 /// Returns true if any .fsproj file changed (triggers conservative fallback).
-let hasFsprojChanges (changedFiles: string list) : bool =
-    changedFiles
-    |> List.exists (fun f -> f.EndsWith(".fsproj", System.StringComparison.OrdinalIgnoreCase))
+let hasFsprojChanges (changedFiles: string list) : bool = changedFiles |> List.exists isFsproj

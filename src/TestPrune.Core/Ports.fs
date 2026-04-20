@@ -19,9 +19,17 @@ type SymbolStore =
       GetAttributesForSymbol: string -> (string * string) list
       GetAllAttributes: unit -> Map<string, (string * string) list> }
 
+/// Cache keys written atomically with an analysis result. FileKeys map source file
+/// paths to content hashes; ProjectKeys map project file paths to their hashes.
+type CacheKeys =
+    { FileKeys: (string * string) list
+      ProjectKeys: (string * string) list }
+
+    static member Empty = { FileKeys = []; ProjectKeys = [] }
+
 /// Port for writing symbol data to storage.
 type SymbolSink =
-    { RebuildProjects: AnalysisResult list -> (string * string) list -> (string * string) list -> unit }
+    { RebuildProjects: AnalysisResult list -> CacheKeys -> unit }
 
 /// Create a SymbolStore from a Database instance.
 let toSymbolStore (db: Database) : SymbolStore =
@@ -51,4 +59,4 @@ let toRouteStore (db: Database) : RouteStore =
 
 let toSymbolSink (db: Database) : SymbolSink =
     { RebuildProjects =
-        fun results fileKeys projectKeys -> db.RebuildProjects(results, fileKeys = fileKeys, projectKeys = projectKeys) }
+        fun results keys -> db.RebuildProjects(results, fileKeys = keys.FileKeys, projectKeys = keys.ProjectKeys) }

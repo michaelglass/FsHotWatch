@@ -9,6 +9,34 @@ type TestSelection =
     | RunSubset of TestMethodInfo list
     | RunAll of reason: SelectionReason
 
+/// Per-file outcome of comparing the current file's symbols to what's in the store.
+/// `NotIndexedButHasSymbols` forces RunAll: we have no baseline, so we can't prove
+/// what's affected. `NoBaseline` (both sides empty) and `Diffed []` are both benign
+/// and produce no events or changes.
+type private FileDiff =
+    | NotIndexedButHasSymbols of file: string
+    | NoBaseline
+    | Diffed of changes: SymbolChange list * events: AnalysisEvent list
+
+let private diffFile
+    (getStoredSymbols: string -> SymbolInfo list)
+    (currentSymbolsByFile: Map<string, SymbolInfo list>)
+    (file: string)
+    : FileDiff =
+    let storedSymbols = getStoredSymbols file
+
+    let currentSymbols =
+        currentSymbolsByFile |> Map.tryFind file |> Option.defaultValue []
+
+    if storedSymbols.IsEmpty then
+        if currentSymbols.IsEmpty then
+            NoBaseline
+        else
+            NotIndexedButHasSymbols file
+    else
+        let changes, events = detectChanges currentSymbols storedSymbols
+        Diffed(changes, events)
+
 /// Given changed files, determine which tests to run.
 let selectTests
     (getStoredSymbols: string -> SymbolInfo list)
@@ -19,47 +47,35 @@ let selectTests
     if changedFiles.IsEmpty then
         RunSubset [], []
     elif DiffParser.hasFsprojChanges changedFiles then
-        let fsprojFile =
-            changedFiles
-            |> List.find (fun f -> f.EndsWith(".fsproj", System.StringComparison.OrdinalIgnoreCase))
-
-        RunAll(FsprojChanged fsprojFile), []
+        RunAll(FsprojChanged(changedFiles |> List.find DiffParser.isFsproj)), []
     else
-        let fsFiles =
+        let diffs =
             changedFiles
-            |> List.filter (fun f -> not (f.EndsWith(".fsproj", System.StringComparison.OrdinalIgnoreCase)))
+            |> List.filter (DiffParser.isFsproj >> not)
+            |> List.map (diffFile getStoredSymbols currentSymbolsByFile)
 
-        let (newFile, allChanges, symbolEvents) =
-            fsFiles
-            |> List.fold
-                (fun (newFile, changes, events) file ->
-                    let storedSymbols = getStoredSymbols file
+        let firstNewFile =
+            diffs
+            |> List.tryPick (function
+                | NotIndexedButHasSymbols f -> Some f
+                | _ -> None)
 
-                    if storedSymbols.IsEmpty then
-                        let currentSymbols =
-                            currentSymbolsByFile |> Map.tryFind file |> Option.defaultValue []
+        let allChanges =
+            diffs
+            |> List.collect (function
+                | Diffed(c, _) -> c
+                | _ -> [])
 
-                        if not currentSymbols.IsEmpty then
-                            (Some file, changes, events)
-                        else
-                            (newFile, changes, events)
-                    else
-                        let currentSymbols =
-                            currentSymbolsByFile |> Map.tryFind file |> Option.defaultValue []
+        let symbolEvents =
+            diffs
+            |> List.collect (function
+                | Diffed(_, e) -> e
+                | _ -> [])
 
-                        let fileChanges, changeEvents = detectChanges currentSymbols storedSymbols
-
-                        (newFile, fileChanges :: changes, changeEvents :: events))
-                (None, [], [])
-
-        let allChanges = allChanges |> List.rev |> List.collect id
-        let symbolEvents = symbolEvents |> List.rev |> List.collect id
-
-        match newFile with
+        match firstNewFile with
         | Some file -> RunAll(NewFileNotIndexed file), symbolEvents
         | None ->
-            let allChangedNames = changedSymbolNames allChanges
-            let affectedTests = queryAffectedTests allChangedNames
+            let affectedTests = queryAffectedTests (changedSymbolNames allChanges)
 
             let selectionReason =
                 match allChanges with
