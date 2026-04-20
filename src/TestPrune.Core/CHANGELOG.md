@@ -9,8 +9,15 @@
   hosts (FsHotWatch, etc.) deadlocked because the plugin never reached
   terminal status. Bumping forces auto-recreate of any stamped-v3 DB on
   open.
-- fix: checkpoint the WAL after `RebuildProjects` commits so fresh connections
-  in the same process don't momentarily observe an empty DB.
+- revert: removed the `PRAGMA wal_checkpoint(PASSIVE)` added after
+  `RebuildProjects` commits. It was introduced to mask a cross-connection
+  visibility issue observed in integration tests, but the actual culprit
+  was Microsoft.Data.Sqlite's connection pool caching stale reader state,
+  which the checkpoint only partially papers over. Consumers that need
+  deterministic visibility across in-process connections should call
+  `SqliteConnection.ClearAllPools()` (or open a fresh
+  `SqliteConnectionStringBuilder.Pooling = false` connection) before
+  reading. Removes a per-commit round-trip and a misleading comment.
 - **BREAKING** — `SymbolSink.RebuildProjects` signature changed from
   `AnalysisResult list -> (string * string) list -> (string * string) list -> unit` to
   `AnalysisResult list -> CacheKeys -> unit`, where `CacheKeys = { FileKeys; ProjectKeys }`.
