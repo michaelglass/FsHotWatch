@@ -76,7 +76,7 @@
     "DaemonConfig.fs": [
       {
         "line": 69,
-        "branch": 57,
+        "branch": 56,
         "reason": "loosened automatically",
         "platform": "macos"
       },
