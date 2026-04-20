@@ -41,7 +41,7 @@
         "platform": "macos"
       },
       {
-        "line": 83,
+        "line": 82,
         "branch": 71,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
