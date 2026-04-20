@@ -34,7 +34,7 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       TriggerBuild = fun () -> async { return () }
       FormatAll = fun () -> async { return "formatted 0 files" }
       WaitForScanGeneration = fun _ -> Task.FromResult(())
-      WaitForAllTerminal = fun () -> Task.FromResult(())
+      WaitForAllTerminal = fun _ -> Task.FromResult(())
       InvalidateAndRecheck = fun _ -> async { return "{\"status\": \"rechecked\"}" } }
 
 [<Fact(Timeout = 5000)>]
@@ -552,10 +552,10 @@ let ``WaitForComplete resolves when all plugins terminal`` () =
 
     let config =
         { defaultRpcConfig host with
-            WaitForAllTerminal = fun () -> tcs.Task }
+            WaitForAllTerminal = fun _ -> tcs.Task }
 
     let target = DaemonRpcTarget(config)
-    let waitTask = target.WaitForComplete()
+    let waitTask = target.WaitForComplete(0)
 
     test <@ not waitTask.IsCompleted @>
 
@@ -836,12 +836,12 @@ let ``WaitForComplete times out when plugin stays Running`` () =
 
     let config =
         { defaultRpcConfig host with
-            WaitForAllTerminal = waitForAllTerminal host (System.TimeSpan.FromMilliseconds(200.0)) }
+            WaitForAllTerminal = fun timeout -> waitForAllTerminal host timeout () }
 
     let target = DaemonRpcTarget(config)
 
     let ex =
-        Assert.ThrowsAsync<System.TimeoutException>(fun () -> target.WaitForComplete() :> Task)
+        Assert.ThrowsAsync<System.TimeoutException>(fun () -> target.WaitForComplete(200) :> Task)
         |> Async.AwaitTask
         |> Async.RunSynchronously
 

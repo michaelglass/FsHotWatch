@@ -20,6 +20,33 @@ type ErrorsFlag =
     | [<CmdFlag(Short = "w"); Cmd("Block until every plugin reaches a terminal state")>] Wait
     | [<CmdFlag(Name = "timeout"); Cmd("Timeout in seconds for --wait (default 600)")>] Timeout of int
 
+/// Normalized wait policy parsed from ErrorsFlag list. Prevents the impossible
+/// states allowed by the raw flag list (e.g. --timeout without --wait, negative timeout).
+[<RequireQualifiedAccess>]
+type WaitMode =
+    | NoWait
+    | WaitFor of TimeSpan
+
+module WaitMode =
+    let defaultTimeout = TimeSpan.FromSeconds(600.0)
+
+    /// Parse raw flags to a normalized WaitMode. Returns an error message on invalid combinations.
+    let fromFlags (flags: ErrorsFlag list) : Result<WaitMode, string> =
+        let wait = flags |> List.contains Wait
+
+        let timeout =
+            flags
+            |> List.tryPick (function
+                | Timeout s -> Some s
+                | _ -> None)
+
+        match wait, timeout with
+        | false, Some _ -> Error "--timeout requires --wait"
+        | false, None -> Ok WaitMode.NoWait
+        | true, None -> Ok(WaitMode.WaitFor defaultTimeout)
+        | true, Some s when s <= 0 -> Error "--timeout must be a positive number of seconds"
+        | true, Some s -> Ok(WaitMode.WaitFor(TimeSpan.FromSeconds(float s)))
+
 type Command =
     | [<Cmd("Start the daemon")>] Start
     | [<Cmd("Stop the daemon")>] Stop
@@ -140,7 +167,7 @@ type IpcOps =
       RunCommand: string -> string -> string -> Async<string>
       GetDiagnostics: string -> string -> Async<string>
       WaitForScan: string -> int64 -> Async<string>
-      WaitForComplete: string -> Async<string>
+      WaitForComplete: string -> int -> Async<string>
       TriggerBuild: string -> Async<string>
       FormatAll: string -> Async<string>
       InvalidateCache: string -> string -> Async<string>
@@ -376,6 +403,8 @@ let executeCommand
         else
             action ()
 
+    let withDaemonAndIpc (action: unit -> int) : int = withDaemon (fun () -> withIpc action)
+
     match command with
     | Start ->
         eprintfn $"Starting FsHotWatch daemon for %s{repoRoot}"
@@ -544,46 +573,37 @@ let executeCommand
             (Some "format-check")
     | FormatCheck flags -> queryPluginWith (pickMode flags) "format-check"
     | Errors flags ->
-        let wait = flags |> List.contains Wait
-
-        let timeoutSeconds =
-            flags
-            |> List.tryPick (function
-                | Timeout s -> Some s
-                | _ -> None)
-            |> Option.defaultValue 600
-
-        withDaemon (fun () ->
-            withIpc (fun () ->
-                let waitedOk =
-                    if wait then
+        match WaitMode.fromFlags flags with
+        | Error msg ->
+            eprintfn "fs-hot-watch errors: %s" msg
+            2
+        | Ok waitMode ->
+            withDaemonAndIpc (fun () ->
+                let waitResult =
+                    match waitMode with
+                    | WaitMode.NoWait -> Ok()
+                    | WaitMode.WaitFor timeout ->
                         try
-                            let waitTask =
-                                ipc.WaitForComplete pipeName |> Async.StartAsTask :> System.Threading.Tasks.Task
+                            let timeoutMs = int timeout.TotalMilliseconds
+                            ipc.WaitForComplete pipeName timeoutMs |> Async.RunSynchronously |> ignore
+                            Ok()
+                        with
+                        | :? TimeoutException as ex -> Error ex.Message
+                        | ex -> Error ex.Message
 
-                            if waitTask.Wait(TimeSpan.FromSeconds(float timeoutSeconds)) then
-                                true
-                            else
-                                eprintfn "fs-hot-watch errors --wait: timed out after %ds" timeoutSeconds
-                                false
-                        with ex ->
-                            eprintfn "fs-hot-watch errors --wait: %s" ex.Message
-                            false
-                    else
-                        true
-
-                if not waitedOk then
+                match waitResult with
+                | Error msg ->
+                    eprintfn "fs-hot-watch errors --wait: %s" msg
                     2
-                else
+                | Ok() ->
                     let errorsJson = ipc.GetDiagnostics pipeName "" |> Async.RunSynchronously
                     let resp = IpcParsing.parseDiagnosticsResponse errorsJson
                     eprintfn "%s" (IpcOutput.formatDiagnosticsResponse resp)
-                    IpcOutput.exitCodeFromResponse noWarnFail resp))
+                    IpcOutput.exitCodeFromResponse noWarnFail resp)
     | InvalidateCache filePath ->
-        withDaemon (fun () ->
-            withIpc (fun () ->
-                let result = ipc.InvalidateCache pipeName filePath |> Async.RunSynchronously
-                IpcOutput.renderIpcResult (renderLines ProgressRenderer.Verbose) noWarnFail result))
+        withDaemonAndIpc (fun () ->
+            let result = ipc.InvalidateCache pipeName filePath |> Async.RunSynchronously
+            IpcOutput.renderIpcResult (renderLines ProgressRenderer.Verbose) noWarnFail result)
     | Init ->
         let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
         let projects = InitConfig.discoverProjects repoRoot None
