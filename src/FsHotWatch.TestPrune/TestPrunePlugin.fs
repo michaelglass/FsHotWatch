@@ -341,56 +341,6 @@ let private flushPendingAnalysis (db: Database) (state: TestPruneState) =
         PendingAnalysis = newPending
         SymbolSnapshot = newSnapshot }
 
-/// Flush pending analysis to DB and query affected tests from changed symbols.
-/// Extensions (if any) contribute additional dependency edges via AnalyzeEdges, which
-/// are written to the DB before QueryAffectedTests so they participate in impact traversal.
-let private flushAndQueryAffected
-    (db: Database)
-    (repoRoot: string)
-    (extensions: ITestPruneExtension list option)
-    (state: TestPruneState)
-    =
-    let flushedState = flushPendingAnalysis db state
-
-    match extensions with
-    | Some exts when not exts.IsEmpty ->
-        let store = TestPrune.Ports.toSymbolStore db
-
-        let extensionDeps =
-            exts
-            |> List.collect (fun ext ->
-                try
-                    ext.AnalyzeEdges store flushedState.ChangedFiles repoRoot
-                with ex ->
-                    Logging.error "test-prune" $"Extension '%s{ext.Name}' failed: %s{ex.Message}"
-                    [])
-
-        if not extensionDeps.IsEmpty then
-            let edgeResult =
-                { Symbols = []
-                  Dependencies = extensionDeps
-                  TestMethods = []
-                  Attributes = []
-                  Diagnostics = AnalysisDiagnostics.Zero }
-
-            db.RebuildProjects([ edgeResult ])
-    | _ -> ()
-
-    let symbols = flushedState.ChangedSymbols |> List.distinct
-
-    let affectedTests =
-        if symbols.IsEmpty then
-            []
-        else
-            let affected = db.QueryAffectedTests(symbols)
-
-            Logging.info "test-prune" $"QueryAffectedTests(%A{symbols}): %d{affected.Length} affected tests"
-
-            affected
-
-    { flushedState with
-        AffectedTests = Analyzed affectedTests }
-
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 let create
     (dbPath: string)
@@ -403,6 +353,51 @@ let create
     (getCommitId: (unit -> string option) option)
     =
     let db = Database.create dbPath
+
+    // Flush pending analysis to DB and query affected tests from changed symbols.
+    // Extensions (if any) contribute dependency edges via AnalyzeEdges, written
+    // to the DB before QueryAffectedTests so they participate in impact traversal.
+    let flushAndQueryAffected (state: TestPruneState) =
+        let flushedState = flushPendingAnalysis db state
+
+        match extensions with
+        | Some exts when not exts.IsEmpty ->
+            let store = TestPrune.Ports.toSymbolStore db
+
+            let extensionDeps =
+                exts
+                |> List.collect (fun ext ->
+                    try
+                        ext.AnalyzeEdges store flushedState.ChangedFiles repoRoot
+                    with ex ->
+                        Logging.error "test-prune" $"Extension '%s{ext.Name}' failed: %s{ex.Message}"
+                        [])
+
+            if not extensionDeps.IsEmpty then
+                let edgeResult =
+                    { Symbols = []
+                      Dependencies = extensionDeps
+                      TestMethods = []
+                      Attributes = []
+                      Diagnostics = AnalysisDiagnostics.Zero }
+
+                db.RebuildProjects([ edgeResult ])
+        | _ -> ()
+
+        let symbols = flushedState.ChangedSymbols |> List.distinct
+
+        let affectedTests =
+            if symbols.IsEmpty then
+                []
+            else
+                let affected = db.QueryAffectedTests(symbols)
+
+                Logging.info "test-prune" $"QueryAffectedTests(%A{symbols}): %d{affected.Length} affected tests"
+
+                affected
+
+        { flushedState with
+            AffectedTests = Analyzed affectedTests }
 
     // Mutable snapshot of ChangedSymbols for the cache key function.
     // Updated from the Update handler so the cache intercept (which runs
@@ -708,16 +703,22 @@ let create
 
                             // Query affected tests against currently-persisted DB state so
                             // `affected-tests` reflects the latest change without waiting for
-                            // BuildCompleted. PendingAnalysis for this file will flush on the
-                            // next BuildCompleted; until then, edges from prior flushes are
-                            // still valid for impact traversal (UPSERT preserves row ids).
+                            // BuildCompleted. Skip when this FileChecked contributed no new
+                            // changed symbols — the prior AffectedTests is still current,
+                            // and hitting SQLite on every unchanged save is wasteful under
+                            // rapid-save storms.
                             let queriedAffected =
-                                let distinct = newChangedSymbols |> List.distinct
-
-                                if distinct.IsEmpty then
-                                    []
+                                if changedNames.IsEmpty then
+                                    match state.AffectedTests with
+                                    | Analyzed t -> t
+                                    | NotYetAnalyzed -> []
                                 else
-                                    db.QueryAffectedTests(distinct)
+                                    let distinct = newChangedSymbols |> List.distinct
+
+                                    if distinct.IsEmpty then
+                                        []
+                                    else
+                                        db.QueryAffectedTests(distinct)
 
                             let newState =
                                 { state with
@@ -771,7 +772,7 @@ let create
 
                             ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
 
-                            let stateWithAffected = flushAndQueryAffected db repoRoot extensions state
+                            let stateWithAffected = flushAndQueryAffected state
 
                             let running = Lifecycle.start idle
 
@@ -805,9 +806,6 @@ let create
                         // Flush any new pending analysis
                         let rerunState =
                             flushAndQueryAffected
-                                db
-                                repoRoot
-                                extensions
                                 { state with
                                     TestPhase = TestsRunning(running, NoRerun) }
 
