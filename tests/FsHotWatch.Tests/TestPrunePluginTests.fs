@@ -207,7 +207,7 @@ let ``extension is invoked via AnalyzeEdges during test run`` () =
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
         let handler =
-            create ":memory:" tmpDir (Some configs) (Some [ fakeExtension ]) None None None None
+            create ":memory:" tmpDir (Some configs) (Some(fun _db -> [ fakeExtension ])) None None None None
 
         host.RegisterHandler(handler)
 
@@ -242,7 +242,7 @@ let ``extension error is caught and does not crash plugin`` () =
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
         let handler =
-            create ":memory:" tmpDir (Some configs) (Some [ failingExtension ]) None None None None
+            create ":memory:" tmpDir (Some configs) (Some(fun _db -> [ failingExtension ])) None None None None
 
         host.RegisterHandler(handler)
 
@@ -907,7 +907,7 @@ let computeTest () =
         // testConfigs is required for the plugin to subscribe to BuildCompleted
         // (without it, flushAndQueryAffected is never triggered). Command is a no-op.
         let testConfigs =
-            [ { Project = "Lib.fsx"
+            [ { Project = "Lib"
                 Command = "echo"
                 Args = "ok"
                 Group = "default"
@@ -1018,11 +1018,10 @@ let ``cross-file type change only runs affected test classes`` () =
         with ex ->
             failwith $"Failed to create test wrapper script: {ex.Message}"
 
-        // Project name must match what the plugin tags TestMethods with. For .fsx
-        // scripts, FCS synthesizes a .fsproj filename like "Lib.fsx.fsproj", so
-        // Path.GetFileNameWithoutExtension produces "Lib.fsx".
+        // Project name matches the registered project file's basename (stripping
+        // .fsx if present), so "Lib.fsx" and a real "Lib.fsproj" both tag as "Lib".
         let testConfigs =
-            [ { Project = "Lib.fsx"
+            [ { Project = "Lib"
                 Command = "bash"
                 Args = bashPath
                 Group = "default"

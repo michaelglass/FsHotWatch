@@ -342,17 +342,22 @@ let private flushPendingAnalysis (db: Database) (state: TestPruneState) =
         SymbolSnapshot = newSnapshot }
 
 /// Create a TestPrune plugin handler using the declarative plugin framework.
+/// `buildExtensions` receives the plugin's own `Database` so extensions that
+/// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
+/// queries against — structurally prevents the caller from wiring an extension
+/// to a different DB than the plugin's.
 let create
     (dbPath: string)
     (repoRoot: string)
     (testConfigs: TestConfig list option)
-    (extensions: ITestPruneExtension list option)
+    (buildExtensions: (Database -> ITestPruneExtension list) option)
     (beforeRun: (unit -> unit) option)
     (afterRun: (TestResults -> unit) option)
     (coverageArgs: (string -> string) option)
     (getCommitId: (unit -> string option) option)
     =
     let db = Database.create dbPath
+    let extensions = buildExtensions |> Option.map (fun f -> f db)
 
     // Flush pending analysis to DB and query affected tests from changed symbols.
     // Extensions (if any) contribute dependency edges via AnalyzeEdges, written
@@ -630,8 +635,18 @@ let create
                     try
                         let relPath = Path.GetRelativePath(repoRoot, result.File).Replace('\\', '/')
 
+                        // Canonical project identity. For real .fsproj files, FCS
+                        // gives "MyProject.fsproj" → "MyProject". For .fsx scripts
+                        // FCS synthesizes "Lib.fsx.fsproj" → "Lib.fsx" after one
+                        // strip; drop the trailing ".fsx" so config that specifies
+                        // `"Lib"` matches both cases.
                         let projectName =
-                            result.ProjectOptions.ProjectFileName |> Path.GetFileNameWithoutExtension
+                            let raw = result.ProjectOptions.ProjectFileName |> Path.GetFileNameWithoutExtension
+
+                            if raw.EndsWith(".fsx") then
+                                raw.Substring(0, raw.Length - 4)
+                            else
+                                raw
 
                         let! analysisResult =
                             analyzeSource ctx.Checker result.File result.Source result.ProjectOptions projectName
