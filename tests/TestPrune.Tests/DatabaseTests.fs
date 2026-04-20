@@ -1886,6 +1886,56 @@ module ``Schema version migration`` =
         finally
             cleanupDb path
 
+    // Regression: 2.0.0 stamped v3 without `dependencies.source`; version check
+    // alone passed and the first INSERT crashed. Must recreate on open.
+    [<Fact>]
+    let ``recreates database stamped v3 with pre-3.0.0 schema missing source column`` () =
+        let path = tempDbPath ()
+
+        try
+            do
+                use conn = openRawConnection path
+
+                use cmd = conn.CreateCommand()
+
+                cmd.CommandText <-
+                    """
+                    CREATE TABLE symbols (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        full_name TEXT NOT NULL UNIQUE,
+                        kind TEXT NOT NULL,
+                        source_file TEXT NOT NULL,
+                        line_start INTEGER NOT NULL,
+                        line_end INTEGER NOT NULL,
+                        content_hash TEXT NOT NULL DEFAULT '',
+                        is_extern INTEGER NOT NULL DEFAULT 0,
+                        indexed_at TEXT NOT NULL
+                    );
+                    CREATE TABLE dependencies (
+                        from_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+                        to_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+                        dep_kind TEXT NOT NULL,
+                        PRIMARY KEY (from_symbol_id, to_symbol_id, dep_kind)
+                    );
+                    CREATE TABLE test_methods (
+                        symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
+                        test_project TEXT NOT NULL,
+                        test_class TEXT NOT NULL,
+                        test_method TEXT NOT NULL
+                    );
+                    PRAGMA user_version = 3;
+                    """
+
+                cmd.ExecuteNonQuery() |> ignore
+
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+
+            let symbols = db.GetSymbolsInFile "src/Lib.fs"
+            test <@ symbols.Length = 1 @>
+        finally
+            cleanupDb path
+
 module ``Dependency source attribution`` =
 
     [<Fact>]

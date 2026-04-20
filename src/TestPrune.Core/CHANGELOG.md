@@ -1,6 +1,14 @@
 # Changelog — TestPrune.Core
 
 ## [Unreleased]
+- fix: bump `SchemaVersion` 3 → 4. The 3.0.0 release introduced
+  `dependencies.source`, `symbol_attributes`, and `symbols.is_extern` under
+  the same v3 stamp that 2.0.0 used, so any DB written by 2.0.0 survived
+  `openCheckedConnection` (version matched) and then crashed on the first
+  INSERT with `"table dependencies has no column named source"`. Plugin
+  hosts (FsHotWatch, etc.) deadlocked because the plugin never reached
+  terminal status. Bumping forces auto-recreate of any stamped-v3 DB on
+  open.
 - fix: checkpoint the WAL after `RebuildProjects` commits so fresh connections
   in the same process don't momentarily observe an empty DB.
 - **BREAKING** — `SymbolSink.RebuildProjects` signature changed from

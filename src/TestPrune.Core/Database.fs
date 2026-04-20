@@ -156,8 +156,16 @@ let private openConnection (dbPath: string) =
 
 /// Increment this whenever the schema changes in a backwards-incompatible way.
 /// A mismatch causes the database file to be deleted and recreated.
+///
+/// v1..v2 — pre-extern cross-project schema
+/// v3     — added ExternRef + extern symbols (2.0.0)
+/// v4     — added `dependencies.source`, `symbol_attributes`, and `is_extern`
+///          column on symbols (3.0.0). Must bump so DBs written by 2.0.0 get
+///          recreated; a 2.0.0 DB stamped v3 but missing these columns would
+///          otherwise survive open and blow up on first INSERT with
+///          "table dependencies has no column named source".
 [<Literal>]
-let private SchemaVersion = 3
+let private SchemaVersion = 4
 
 let private deleteDbFiles (dbPath: string) =
     File.Delete(dbPath)
