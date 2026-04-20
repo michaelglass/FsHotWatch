@@ -6,7 +6,7 @@
 
     <!-- Package metadata -->
     <PackageId>FsHotWatch.Lint</PackageId>
-    <Version>0.7.0-alpha.4</Version>
+    <Version>0.7.0-alpha.5</Version>
     <Authors>Michael Glass</Authors>
     <Description>FsHotWatch plugin for FSharpLint integration</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
