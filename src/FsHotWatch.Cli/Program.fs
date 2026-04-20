@@ -16,6 +16,10 @@ type RunFlag =
 
 type ScanFlag = | [<Cmd("Force rescan even if no changes detected")>] Force
 
+type ErrorsFlag =
+    | [<CmdFlag(Short = "w"); Cmd("Block until every plugin reaches a terminal state")>] Wait
+    | [<CmdFlag(Name = "timeout"); Cmd("Timeout in seconds for --wait (default 600)")>] Timeout of int
+
 type Command =
     | [<Cmd("Start the daemon")>] Start
     | [<Cmd("Stop the daemon")>] Stop
@@ -27,7 +31,7 @@ type Command =
     | [<Cmd("Check formatting", Name = "format-check")>] FormatCheck of RunFlag list
     | [<Cmd("Run analyzers")>] Analyze of RunFlag list
     | [<Cmd("Show current status")>] Status of plugin: string option
-    | [<Cmd("Show accumulated errors")>] Errors
+    | [<Cmd("Show accumulated errors")>] Errors of ErrorsFlag list
     | [<Cmd("Scan for file changes")>] Scan of ScanFlag list
     | [<Cmd("Invalidate cache for a file"); CmdFileCompletion>] InvalidateCache of filePath: string
     | [<Cmd("Generate initial config")>] Init
@@ -539,13 +543,42 @@ let executeCommand
             formatCheckConfig
             (Some "format-check")
     | FormatCheck flags -> queryPluginWith (pickMode flags) "format-check"
-    | Errors ->
+    | Errors flags ->
+        let wait = flags |> List.contains Wait
+
+        let timeoutSeconds =
+            flags
+            |> List.tryPick (function
+                | Timeout s -> Some s
+                | _ -> None)
+            |> Option.defaultValue 600
+
         withDaemon (fun () ->
             withIpc (fun () ->
-                let errorsJson = ipc.GetDiagnostics pipeName "" |> Async.RunSynchronously
-                let resp = IpcParsing.parseDiagnosticsResponse errorsJson
-                eprintfn "%s" (IpcOutput.formatDiagnosticsResponse resp)
-                IpcOutput.exitCodeFromResponse noWarnFail resp))
+                let waitedOk =
+                    if wait then
+                        try
+                            let waitTask =
+                                ipc.WaitForComplete pipeName |> Async.StartAsTask :> System.Threading.Tasks.Task
+
+                            if waitTask.Wait(TimeSpan.FromSeconds(float timeoutSeconds)) then
+                                true
+                            else
+                                eprintfn "fs-hot-watch errors --wait: timed out after %ds" timeoutSeconds
+                                false
+                        with ex ->
+                            eprintfn "fs-hot-watch errors --wait: %s" ex.Message
+                            false
+                    else
+                        true
+
+                if not waitedOk then
+                    2
+                else
+                    let errorsJson = ipc.GetDiagnostics pipeName "" |> Async.RunSynchronously
+                    let resp = IpcParsing.parseDiagnosticsResponse errorsJson
+                    eprintfn "%s" (IpcOutput.formatDiagnosticsResponse resp)
+                    IpcOutput.exitCodeFromResponse noWarnFail resp))
     | InvalidateCache filePath ->
         withDaemon (fun () ->
             withIpc (fun () ->

@@ -112,7 +112,23 @@ let ``parse scan --force returns Scan with Force`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``parse errors returns Errors`` () =
-    test <@ CommandTree.parse tree [| "errors" |] = Ok Errors @>
+    test <@ CommandTree.parse tree [| "errors" |] = Ok(Errors []) @>
+
+[<Fact(Timeout = 5000)>]
+let ``parse errors --wait returns Errors with Wait flag`` () =
+    test <@ CommandTree.parse tree [| "errors"; "--wait" |] = Ok(Errors [ Wait ]) @>
+
+[<Fact(Timeout = 5000)>]
+let ``parse errors --timeout returns Errors with Timeout flag`` () =
+    test <@ CommandTree.parse tree [| "errors"; "--timeout"; "30" |] = Ok(Errors [ Timeout 30 ]) @>
+
+[<Fact(Timeout = 5000)>]
+let ``parse errors --wait --timeout combines both flags`` () =
+    match CommandTree.parse tree [| "errors"; "--wait"; "--timeout"; "45" |] with
+    | Ok(Errors flags) ->
+        test <@ flags |> List.contains Wait @>
+        test <@ flags |> List.contains (Timeout 45) @>
+    | other -> failwith $"Expected Ok(Errors [Wait; Timeout 45]), got %A{other}"
 
 [<Fact(Timeout = 5000)>]
 let ``parse invalidate-cache returns InvalidateCache`` () =
@@ -633,7 +649,7 @@ let ``executeCommand Errors with count 0 returns exit code 0`` () =
             GetDiagnostics = fun _ _ -> async { return """{"count": 0}""" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig 30.0
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Errors []) "" false fakeConfig 30.0
 
     test <@ result = 0 @>
 
@@ -649,7 +665,7 @@ let ``executeCommand Errors with count 5 returns exit code 1`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig 30.0
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Errors []) "" false fakeConfig 30.0
 
     test <@ result = 1 @>
 
@@ -660,7 +676,100 @@ let ``executeCommand Errors with IPC failure returns exit code 1`` () =
             GetDiagnostics = fun _ _ -> async { return failwith "connection refused" } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig 30.0
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Errors []) "" false fakeConfig 30.0
+
+    test <@ result = 1 @>
+
+[<Fact(Timeout = 5000)>]
+let ``executeCommand Errors --wait blocks on WaitForComplete before reading diagnostics`` () =
+    let mutable waitCalled = false
+    let mutable waitFinishedBeforeDiagnostics = false
+    let mutable diagnosticsCalled = false
+
+    let ipc =
+        { fakeIpc () with
+            WaitForComplete =
+                fun _ ->
+                    async {
+                        waitCalled <- true
+                        return "{}"
+                    }
+            GetDiagnostics =
+                fun _ _ ->
+                    async {
+                        diagnosticsCalled <- true
+                        waitFinishedBeforeDiagnostics <- waitCalled
+                        return """{"count": 0}"""
+                    } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Errors [ Wait ]) "" false fakeConfig 30.0
+
+    test <@ result = 0 @>
+    test <@ waitCalled @>
+    test <@ diagnosticsCalled @>
+    test <@ waitFinishedBeforeDiagnostics @>
+
+[<Fact(Timeout = 5000)>]
+let ``executeCommand Errors without --wait does not call WaitForComplete`` () =
+    let mutable waitCalled = false
+
+    let ipc =
+        { fakeIpc () with
+            WaitForComplete =
+                fun _ ->
+                    async {
+                        waitCalled <- true
+                        return "{}"
+                    } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Errors []) "" false fakeConfig 30.0
+
+    test <@ result = 0 @>
+    test <@ not waitCalled @>
+
+[<Fact(Timeout = 5000)>]
+let ``executeCommand Errors --wait with timeout returns exit code 2 when WaitForComplete hangs`` () =
+    let ipc =
+        { fakeIpc () with
+            WaitForComplete =
+                fun _ ->
+                    async {
+                        // Block past the timeout to simulate plugins that never complete.
+                        do! Async.Sleep(5000)
+                        return "{}"
+                    }
+            GetDiagnostics = fun _ _ -> async { return """{"count": 0}""" } }
+
+    let result =
+        executeCommand
+            (fun _ -> Unchecked.defaultof<_>)
+            ipc
+            "/tmp"
+            "pipe"
+            (Errors [ Wait; Timeout 1 ])
+            ""
+            false
+            fakeConfig
+            30.0
+
+    test <@ result = 2 @>
+
+[<Fact(Timeout = 5000)>]
+let ``executeCommand Errors --wait returns exit code 1 when diagnostics report errors`` () =
+    let ipc =
+        { fakeIpc () with
+            WaitForComplete = fun _ -> async { return "{}" }
+            GetDiagnostics =
+                fun _ _ ->
+                    async {
+                        return
+                            """{"count": 1, "files": {"src/Foo.fs": [{"plugin":"check","message":"err","severity":"error","line":1,"column":1}]}, "statuses": {}}"""
+                    } }
+
+    let result =
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Errors [ Wait ]) "" false fakeConfig 30.0
 
     test <@ result = 1 @>
 
@@ -808,7 +917,7 @@ let ``executeCommand Errors calls getErrors`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Errors "" false fakeConfig 30.0
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Errors []) "" false fakeConfig 30.0
 
     test <@ result = 0 @>
     test <@ called @>
@@ -908,7 +1017,7 @@ let ``executeCommand Lint returns 1 when daemon startup fails`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``executeCommand Errors returns 1 when daemon startup fails`` () =
-    test <@ withStartupFailure Errors = 1 @>
+    test <@ withStartupFailure (Errors []) = 1 @>
 
 // --- computeLaunchCommand tests ---
 
