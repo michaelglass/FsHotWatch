@@ -58,9 +58,10 @@ let waitForTerminalStatus (host: FsHotWatch.PluginHost.PluginHost) (pluginName: 
 ///   let completion = TestHelpers.beginAwaitStatus host "plugin" (function Completed _ -> true | _ -> false)
 ///   host.EmitBuildCompleted(BuildSucceeded)
 ///   let status = completion.Wait(TimeSpan.FromSeconds 15.0)
-let beginAwaitStatus
+let beginAwaitStatusWith
     (host: FsHotWatch.PluginHost.PluginHost)
     (pluginName: string)
+    (matchCurrent: bool)
     (pred: FsHotWatch.Events.PluginStatus -> bool)
     : System.Threading.Tasks.Task<FsHotWatch.Events.PluginStatus> =
     let tcs =
@@ -74,9 +75,12 @@ let beginAwaitStatus
     host.OnStatusChanged.AddHandler(handler)
     // Fast path: the plugin may already be at the desired status when we subscribe.
     // Subscribe-then-check ordering is required — check-then-subscribe races.
-    match host.GetStatus(pluginName) with
-    | Some s when pred s -> tcs.TrySetResult(s) |> ignore
-    | _ -> ()
+    // Callers that need to observe the *next* transition (e.g. after an emit
+    // that'll cycle Running→Completed) pass matchCurrent=false.
+    if matchCurrent then
+        match host.GetStatus(pluginName) with
+        | Some s when pred s -> tcs.TrySetResult(s) |> ignore
+        | _ -> ()
     // Unsubscribe once completed so handlers don't accumulate across tests.
     tcs.Task.ContinueWith(
         System.Action<System.Threading.Tasks.Task<FsHotWatch.Events.PluginStatus>>(fun _ ->
@@ -86,12 +90,24 @@ let beginAwaitStatus
 
     tcs.Task
 
+let beginAwaitStatus host pluginName pred =
+    beginAwaitStatusWith host pluginName true pred
+
 /// Convenience: await a terminal status (Completed or Failed).
+let private isTerminalStatus =
+    function
+    | FsHotWatch.Events.Completed _
+    | FsHotWatch.Events.Failed _ -> true
+    | _ -> false
+
 let beginAwaitTerminal (host: FsHotWatch.PluginHost.PluginHost) (pluginName: string) =
-    beginAwaitStatus host pluginName (function
-        | FsHotWatch.Events.Completed _
-        | FsHotWatch.Events.Failed _ -> true
-        | _ -> false)
+    beginAwaitStatus host pluginName isTerminalStatus
+
+/// Await the *next* terminal transition, ignoring current status. Use after
+/// emitting an event that'll cycle the plugin through Running→Completed when
+/// it's already at Completed from an earlier event.
+let beginAwaitNextTerminal (host: FsHotWatch.PluginHost.PluginHost) (pluginName: string) =
+    beginAwaitStatusWith host pluginName false isTerminalStatus
 
 /// Poll until the plugin status is no longer Running, with a timeout.
 let waitForSettled (host: FsHotWatch.PluginHost.PluginHost) (pluginName: string) (timeoutMs: int) =
@@ -176,7 +192,12 @@ let makeProjectOptions (projectFile: string) (sourceFiles: string list) (otherOp
       Stamp = None }
 
 let withTempDir (prefix: string) (body: string -> 'a) =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-{prefix}-{Guid.NewGuid():N}")
+    // Canonicalize so /var/folders/... and /private/var/folders/... don't diverge
+    // across test+plugin views of the same path (macOS temp dir is a symlink).
+    let tmpDir =
+        Path.Combine(Path.GetTempPath(), $"fshw-{prefix}-{Guid.NewGuid():N}")
+        |> Path.GetFullPath
+
     Directory.CreateDirectory(tmpDir) |> ignore
 
     try
