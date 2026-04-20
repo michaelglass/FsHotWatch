@@ -1,6 +1,8 @@
 # Changelog — TestPrune.Core
 
 ## [Unreleased]
+- fix: checkpoint the WAL after `RebuildProjects` commits so fresh connections
+  in the same process don't momentarily observe an empty DB.
 - **BREAKING** — `SymbolSink.RebuildProjects` signature changed from
   `AnalysisResult list -> (string * string) list -> (string * string) list -> unit` to
   `AnalysisResult list -> CacheKeys -> unit`, where `CacheKeys = { FileKeys; ProjectKeys }`.

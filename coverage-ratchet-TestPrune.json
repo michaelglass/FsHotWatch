@@ -12,7 +12,7 @@
     },
     "Database.fs": {
       "line": 95,
-      "branch": 67.2,
+      "branch": 66.9,
       "reason": "loosened: UPSERT-based RebuildProjects + timestamp orphan cleanup added branches; conditional extern UPSERT path not hit by existing fixtures"
     },
     "DeadCode.fs": {

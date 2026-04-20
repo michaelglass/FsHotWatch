@@ -438,6 +438,14 @@ type Database(dbPath: string) =
             | _ -> ()
 
             txn.Commit()
+
+            // Checkpoint the WAL so committed writes are merged into the main DB
+            // file and reliably visible to other connections. Without this, fresh
+            // connections on the same process can momentarily observe an empty DB
+            // even after commit (SQLite's WAL+SHM read-snapshot timing).
+            use checkpointCmd = conn.CreateCommand()
+            checkpointCmd.CommandText <- "PRAGMA wal_checkpoint(PASSIVE);"
+            checkpointCmd.ExecuteNonQuery() |> ignore
         with ex ->
             txn.Rollback()
             raise ex
