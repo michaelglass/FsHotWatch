@@ -24,7 +24,7 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       TriggerBuild = fun () -> async { return () }
       FormatAll = fun () -> async { return "" }
       WaitForScanGeneration = fun _ -> Task.FromResult(())
-      WaitForAllTerminal = fun () -> Task.FromResult(())
+      WaitForAllTerminal = fun _ -> Task.FromResult(())
       InvalidateAndRecheck = fun _ -> async { return "" } }
 
 let private completedHandler (name: string) (action: PluginCtx<unit> -> Async<unit>) =

@@ -1,5 +1,11 @@
 # Changelog — FsHotWatch (core)
 
+## Unreleased
+
+### Changed
+
+- **BREAKING (IPC)**: `WaitForComplete` RPC now accepts a `timeoutMs: int` argument; `<= 0` means no client-imposed timeout. `DaemonRpcConfig.WaitForAllTerminal` signature changed from `unit -> Task<unit>` to `TimeSpan -> Task<unit>` so clients can pass their own deadline. The daemon's previous hard-coded 30-minute cap no longer applies when the client supplies a timeout.
+
 ## 0.8.0-alpha.3 (2026-04-18)
 
 ### Added

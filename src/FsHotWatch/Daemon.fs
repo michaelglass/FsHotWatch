@@ -788,7 +788,7 @@ type Daemon
                       FormatAll = formatAll
                       WaitForScanGeneration =
                         fun afterGen -> scanSignal.WaitForGeneration(afterGen, this.GetScanGeneration())
-                      WaitForAllTerminal = waitForAllTerminal host (System.TimeSpan.FromMinutes(30.0))
+                      WaitForAllTerminal = fun timeout -> waitForAllTerminal host timeout ()
                       InvalidateAndRecheck = fun filePath -> this.InvalidateAndRecheck(filePath) }
 
                 let ipcTask = Async.StartAsTask(IpcServer.start pipeName rpcConfig cts)
