@@ -554,7 +554,14 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
 /// Wait for all plugins to reach a terminal state with 1-second stability confirmation.
 /// Times out with TimeoutException after the specified timeout.
 let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) () : Task<unit> =
-    let deadline = System.DateTime.UtcNow + timeout
+    // TimeSpan.MaxValue signals "no timeout"; adding it to UtcNow overflows, so skip
+    // deadline computation entirely in that case and rely on the MaxValue guard in loop.
+    let deadline =
+        if timeout = System.TimeSpan.MaxValue then
+            System.DateTime.MaxValue
+        else
+            System.DateTime.UtcNow + timeout
+
     let mutable lastLogTime = System.DateTime.UtcNow
 
     let getRunningPlugins () =
