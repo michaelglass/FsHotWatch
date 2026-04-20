@@ -1,5 +1,27 @@
 # Changelog — FsHotWatch.TestPrune
 
+## Unreleased
+
+### Changed
+
+- **BREAKING**: Bump `TestPrune.Core` 2.0.0 → 3.0.0. Adopts the revised
+  `ITestPruneExtension` interface: extensions now implement `AnalyzeEdges`
+  (returning `Dependency list` to inject into the graph) rather than
+  `FindAffectedTests`. Extension-contributed edges are written to the DB
+  via `RebuildProjects` before `QueryAffectedTests` so impact traversal
+  unifies AST-based and extension-based dependencies in a single pass.
+- `AnalysisResult` construction now passes `Attributes` through from the
+  analyzer (new field in `TestPrune.Core` schema v3).
+
+### Fixed
+
+- `affected-tests` command now updates on every `FileChecked` event
+  rather than waiting for the next `BuildCompleted`. Each file check
+  re-queries `QueryAffectedTests` against the currently-persisted DB
+  state so consumers can observe impact changes incrementally. Fix
+  depends on `TestPrune.Core 3.0.0`'s UPSERT row-id preservation and
+  post-commit WAL checkpoint.
+
 ## 0.5.0-alpha.1 (2026-04-12)
 
 ### Changed

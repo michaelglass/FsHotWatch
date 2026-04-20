@@ -183,7 +183,7 @@ let ``plugin with testConfigs subscribes to OnBuildCompleted`` () =
     test <@ status.Value = Idle @>
 
 [<Fact(Timeout = 5000)>]
-let ``extension contributes affected test classes during test run`` () =
+let ``extension is invoked via AnalyzeEdges during test run`` () =
     withTempDir "tp-ext" (fun tmpDir ->
         let mutable extensionCalled = false
 
@@ -191,11 +191,9 @@ let ``extension contributes affected test classes during test run`` () =
             { new ITestPruneExtension with
                 member _.Name = "fake-extension"
 
-                member _.FindAffectedTests _db _changedFiles _repoRoot =
+                member _.AnalyzeEdges _symbolStore _changedFiles _repoRoot =
                     extensionCalled <- true
-
-                    [ { AffectedTest.TestProject = "TestProj"
-                        TestClass = "ExtensionClass" } ] }
+                    [] }
 
         let configs =
             [ { Project = "TestProject"
@@ -230,7 +228,7 @@ let ``extension error is caught and does not crash plugin`` () =
             { new ITestPruneExtension with
                 member _.Name = "failing-extension"
 
-                member _.FindAffectedTests _db _changedFiles _repoRoot = failwith "extension broke" }
+                member _.AnalyzeEdges _symbolStore _changedFiles _repoRoot = failwith "extension broke" }
 
         let configs =
             [ { Project = "TestProject"
@@ -283,7 +281,8 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
                 [ symbol1 ],
                 [ { FromSymbol = "Tests.myTest"
                     ToSymbol = "MyModule.foo"
-                    Kind = DependencyKind.Calls } ],
+                    Kind = DependencyKind.Calls
+                    Source = "core" } ],
                 [ testMethod1 ]
             )
 
@@ -802,23 +801,241 @@ let ``FileChecked reports Completed when no testConfigs (success path)`` () =
 // plugin's just-flushed rows — cross-connection SQLite WAL visibility bug,
 // orthogonal to timing. Re-enable once the plugin exposes test-methods via a
 // command (preferred) or the DB write is committed with explicit sync.
-[<Fact(Skip = "Separate plugin bug: fresh DB connection can't see plugin's flushed rows")>]
-let ``after scan and build, test methods are in the sqlite database`` () = ()
+[<Fact(Timeout = 30000)>]
+let ``after scan and build, test methods are in the sqlite database`` () =
+    withTempDir "tp-tm-db" (fun tmpDir ->
+        // Canonicalize path to avoid symlink divergence (e.g., /var/folders vs /private/var/folders).
+        let tmpDir = Path.GetFullPath(tmpDir)
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let testsFile = Path.Combine(tmpDir, "Tests.fsx")
+
+        let testsSource =
+            """module Tests
+
+type FactAttribute() = inherit System.Attribute()
+
+[<Fact>]
+let alpha () = ()
+
+[<Fact>]
+let beta () = ()
+"""
+
+        File.WriteAllText(testsFile, testsSource)
+
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+        let host = PluginHost.create checker tmpDir
+
+        let testConfigs =
+            [ { Project = "MyTests"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
+
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None None
+        host.RegisterHandler(handler)
+
+        let projOptions =
+            getScriptOptions checker testsFile testsSource |> Async.RunSynchronously
+
+        pipeline.RegisterProject(testsFile, projOptions)
+
+        let result = pipeline.CheckFile(testsFile) |> Async.RunSynchronously
+
+        match result with
+        | Some r -> host.EmitFileChecked(r)
+        | None -> failwith "CheckFile returned None"
+
+        waitForPluginIdle host "test-prune" 10.0
+
+        // Flush pending analysis to DB by firing BuildSucceeded.
+        let firstBuild = beginAwaitTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        firstBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
+        // Cross-connection WAL visibility has a brief race after the plugin's
+        // commit: fresh connections can momentarily observe an empty DB even
+        // though the plugin saw its own writes. Poll with a short deadline.
+        let deadline = DateTime.UtcNow.AddSeconds 5.0
+        let mutable testMethods: TestMethodInfo list = []
+
+        while testMethods.Length < 2 && DateTime.UtcNow < deadline do
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+            let freshDb = Database.create dbPath
+            testMethods <- freshDb.GetTestMethodsInFile "Tests.fsx"
+
+            if testMethods.Length < 2 then
+                System.Threading.Thread.Sleep 50
+
+        test <@ testMethods.Length = 2 @>
+        test <@ testMethods |> List.exists (fun t -> t.TestMethod = "alpha") @>
+        test <@ testMethods |> List.exists (fun t -> t.TestMethod = "beta") @>)
 
 // Timing race under Fact(Timeout) is fixed by TestHelpers.beginAwaitTerminal.
 // With the deterministic signal the test still fails: after changing `compute`'s
 // body, QueryAffectedTests returns 0 affected tests even though the dependency
 // edge computeTest -> compute should be present. Separate bug in the symbol-diff
 // or dependency-tracking path, orthogonal to timing.
-[<Fact(Skip = "Separate plugin bug: dependency edge not detected for affected-tests")>]
-let ``after a symbol change, affected-tests identifies the dependent test`` () = ()
+/// Subscribe for the NEXT Completed transition, ignoring the plugin's current state.
+/// Returns a Task that completes when a new Completed status arrives after this call.
+let private beginAwaitNextCompleted (host: FsHotWatch.PluginHost.PluginHost) (pluginName: string) =
+    let tcs =
+        System.Threading.Tasks.TaskCompletionSource<FsHotWatch.Events.PluginStatus>()
+
+    let handler =
+        Handler<string * FsHotWatch.Events.PluginStatus>(fun _ (n, s) ->
+            if n = pluginName then
+                match s with
+                | Completed _
+                | Failed _ -> tcs.TrySetResult(s) |> ignore
+                | _ -> ())
+
+    host.OnStatusChanged.AddHandler(handler)
+
+    tcs.Task.ContinueWith(
+        System.Action<System.Threading.Tasks.Task<FsHotWatch.Events.PluginStatus>>(fun _ ->
+            host.OnStatusChanged.RemoveHandler(handler))
+    )
+    |> ignore
+
+    tcs.Task
+
+[<Fact(Timeout = 30000)>]
+let ``after a symbol change, affected-tests identifies the dependent test`` () =
+    withTempDir "tp-sym" (fun tmpDir ->
+        let tmpDir = Path.GetFullPath(tmpDir)
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let libFile = Path.Combine(tmpDir, "Lib.fsx")
+        let testsFile = Path.Combine(tmpDir, "Tests.fsx")
+
+        let libSource1 =
+            """module Lib
+let compute (x: int) = x + 1
+"""
+
+        let testsSource =
+            """module Tests
+open Lib
+
+type FactAttribute() = inherit System.Attribute()
+
+[<Fact>]
+let computeTest () =
+    let result = compute 1
+    assert (result = 2)
+"""
+
+        File.WriteAllText(libFile, libSource1)
+        File.WriteAllText(testsFile, testsSource)
+
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+        let host = PluginHost.create checker tmpDir
+
+        // testConfigs is required for the plugin to subscribe to BuildCompleted
+        // (without it, flushAndQueryAffected is never triggered). Command is a no-op.
+        let testConfigs =
+            [ { Project = "Lib.fsx"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
+
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None None
+        host.RegisterHandler(handler)
+
+        let libOptions =
+            getScriptOptions checker libFile libSource1 |> Async.RunSynchronously
+
+        let projOptions =
+            { libOptions with
+                SourceFiles = [| libFile; testsFile |] }
+
+        pipeline.RegisterProject(libFile, projOptions)
+
+        // Initial index: both files analysed, edges written to DB.
+        let libResult = pipeline.CheckFile(libFile) |> Async.RunSynchronously
+
+        match libResult with
+        | Some r -> host.EmitFileChecked(r)
+        | None -> failwith "lib CheckFile failed"
+
+        waitUntil
+            (fun () ->
+                let r = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
+
+                match r with
+                | Some json -> json.Contains("Lib.fsx")
+                | None -> false)
+            5000
+
+        let testsResult = pipeline.CheckFile(testsFile) |> Async.RunSynchronously
+
+        match testsResult with
+        | Some r -> host.EmitFileChecked(r)
+        | None -> failwith "tests CheckFile failed"
+
+        waitUntil
+            (fun () ->
+                let r = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
+
+                match r with
+                | Some json -> json.Contains("Tests.fsx")
+                | None -> false)
+            5000
+
+        waitForPluginIdle host "test-prune" 10.0
+
+        // Subscribe BEFORE emit and wait for the *next* Completed after BuildCompleted,
+        // so we know the flush-and-run cycle has finished (including TestsFinished
+        // resetting ChangedSymbols). beginAwaitTerminal races here because plugin
+        // is already at Completed from the prior FileChecked.
+        let firstBuild = beginAwaitNextCompleted host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        firstBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
+        // Modify compute's body — content hash changes but signature does not.
+        let libSource2 =
+            """module Lib
+let compute (x: int) = x + 2
+"""
+
+        File.WriteAllText(libFile, libSource2)
+
+        let libResult2 = pipeline.CheckFile(libFile) |> Async.RunSynchronously
+
+        match libResult2 with
+        | Some r -> host.EmitFileChecked(r)
+        | None -> failwith "lib CheckFile 2 failed"
+
+        // Poll affected-tests; after FileChecked processing, computeTest should appear.
+        let deadline = DateTime.UtcNow.AddSeconds(10.0)
+        let mutable affectedTests = ""
+
+        while not (affectedTests.Contains("computeTest")) && DateTime.UtcNow < deadline do
+            let r = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
+
+            match r with
+            | Some v -> affectedTests <- v
+            | None -> ()
+
+            if not (affectedTests.Contains("computeTest")) then
+                System.Threading.Thread.Sleep(50)
+
+        test <@ affectedTests.Contains("computeTest") @>)
 
 // Deterministic status signal (TestHelpers.beginAwaitTerminal) replaces the
 // former polling race. With that fix, the test still fails at the same place
 // as ``after a symbol change`` — affected-tests returns "[]" after a type
 // change that should flag dependent tests. Same root cause: dependency edges
 // not produced by the current symbol-diff path.
-[<Fact(Skip = "Separate plugin bug: dependency edge not detected for affected-tests")>]
+[<Fact(Timeout = 60000)>]
 let ``cross-file type change only runs affected test classes`` () =
     // End-to-end test: change Lib.fsx type -> affected-tests identifies dependent tests -> only those classes run
     withTempDir "tp-e2e" (fun tmpDir ->
@@ -835,8 +1052,11 @@ let ``cross-file type change only runs affected test classes`` () =
         with ex ->
             failwith $"Failed to create test wrapper script: {ex.Message}"
 
+        // Project name must match what the plugin tags TestMethods with. For .fsx
+        // scripts, FCS synthesizes a .fsproj filename like "Lib.fsx.fsproj", so
+        // Path.GetFileNameWithoutExtension produces "Lib.fsx".
         let testConfigs =
-            [ { Project = "MyTests"
+            [ { Project = "Lib.fsx"
                 Command = "bash"
                 Args = bashPath
                 Group = "default"
@@ -866,19 +1086,19 @@ open Lib
 
 type FactAttribute() = inherit System.Attribute()
 
-[<Fact(Timeout = 5000)>]
+[<Fact>]
 let testValidateTrue () =
     let cfg = { Value = "hello"; Count = 5 }
     let result = validate cfg
     assert result
 
-[<Fact(Timeout = 5000)>]
+[<Fact>]
 let testValidateFalse () =
     let cfg = { Value = ""; Count = 0 }
     let result = validate cfg
     assert (not result)
 
-[<Fact(Timeout = 5000)>]
+[<Fact>]
 let testOtherStuff () =
     // This test doesn't use Config, so shouldn't be affected
     let x = 1 + 1
@@ -936,7 +1156,7 @@ let testOtherStuff () =
         waitForPluginIdle host "test-prune" 10.0
 
         // Emit build completion to flush analysis to database
-        let firstBuild = beginAwaitTerminal host "test-prune"
+        let firstBuild = beginAwaitNextCompleted host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         firstBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
@@ -975,7 +1195,7 @@ let validate (cfg: Config) = cfg.Value.Length > 0
         test <@ affectedTests.Contains("testValidateFalse") @>
         test <@ not (affectedTests.Contains("testOtherStuff")) @>
 
-        let secondBuild = beginAwaitTerminal host "test-prune"
+        let secondBuild = beginAwaitNextCompleted host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         secondBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
@@ -1078,7 +1298,8 @@ let ``FileChecked does not query DB for affected tests`` () =
                 [ symbol ],
                 [ { FromSymbol = "Tests.myTest"
                     ToSymbol = "Lib.foo"
-                    Kind = DependencyKind.Calls } ],
+                    Kind = DependencyKind.Calls
+                    Source = "core" } ],
                 [ testMethod ]
             )
 
