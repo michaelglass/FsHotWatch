@@ -623,6 +623,38 @@ let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls
     test <@ completed @>
 
 [<Fact(Timeout = 10000)>]
+let ``waitForAllTerminal with TimeSpan.MaxValue does not overflow deadline arithmetic`` () =
+    // Regression: DateTime.UtcNow + TimeSpan.MaxValue throws; MaxValue must be treated
+    // as "no deadline" so the RPC path that passes it through (WaitForComplete with
+    // timeoutMs <= 0) doesn't crash on a live daemon.
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let handler =
+        { Name = PluginName.create "instant-terminal"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ -> ctx.ReportStatus(Completed(DateTime.UtcNow))
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+
+    let waitTask = waitForAllTerminal host TimeSpan.MaxValue ()
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    let completed = waitTask.Wait(TimeSpan.FromSeconds(5.0))
+    test <@ completed @>
+
+[<Fact(Timeout = 10000)>]
 let ``HasFailingReasons distinguishes warnings from errors`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
