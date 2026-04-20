@@ -2,6 +2,12 @@
 
 Note: CLI versions release together with the core package under the `core-v` tag (no separate `cli-v` tag prefix).
 
+## Unreleased
+
+### Added
+
+- `errors --wait [--timeout <seconds>]` — block until every tracked plugin reaches a terminal state before printing diagnostics. Exit codes: `0` clean, `1` failures, `2` timeout. Default timeout 600s. Closes the testing-loop gap where agents previously polled `status` to wait for the daemon to settle.
+
 ## 0.8.0-alpha.3 (2026-04-18)
 
 ### Added
