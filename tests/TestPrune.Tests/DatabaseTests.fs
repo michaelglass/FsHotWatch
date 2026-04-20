@@ -1886,7 +1886,6 @@ module ``Schema version migration`` =
         finally
             cleanupDb path
 
-
     // Regression: 2.0.0 stamped v3 without `dependencies.source`; version check
     // alone passed and the first INSERT crashed. Must recreate on open.
     [<Fact>]
