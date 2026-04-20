@@ -559,37 +559,36 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                         $"--coverage --coverage-output-format cobertura --coverage-output \"%s{outputPath}\"")
             | None -> None
 
-        // Extensions (e.g. Falco route mapping) — need a RouteStore view onto the
-        // shared test-impact DB. The plugin opens the same dbPath internally; SQLite
-        // handles multiple connections on the same file.
-        let extensions =
+        // Extension factories — invoked by the plugin with its own DB, so the
+        // RouteStore/SymbolStore an extension captures is guaranteed to be the
+        // same DB the plugin queries against.
+        let buildExtensions =
             match t.Extensions with
             | [] -> None
             | exts ->
-                let extDb = TestPrune.Database.Database.create dbPath
-                let routeStore = TestPrune.Ports.toRouteStore extDb
+                Some(fun (db: TestPrune.Database.Database) ->
+                    let routeStore = TestPrune.Ports.toRouteStore db
 
-                exts
-                |> List.choose (fun ext ->
-                    match ext.Kind with
-                    | Falco ->
-                        Logging.info "config" $"Creating FalcoRouteExtension for %s{ext.Project} (%s{ext.TestDir})"
+                    exts
+                    |> List.choose (fun ext ->
+                        match ext.Kind with
+                        | Falco ->
+                            Logging.info
+                                "config"
+                                $"Creating FalcoRouteExtension for %s{ext.Project} (%s{ext.TestDir})"
 
-                        Some(
-                            TestPrune.Falco.FalcoRouteExtension(ext.Project, ext.TestDir, routeStore)
-                            :> TestPrune.Extensions.ITestPruneExtension
-                        )
-                    | Unknown other ->
-                        Logging.warn "config" $"Unknown test extension type: %s{other}"
-                        None)
-                |> function
-                    | [] -> None
-                    | xs -> Some xs
+                            Some(
+                                TestPrune.Falco.FalcoRouteExtension(ext.Project, ext.TestDir, routeStore)
+                                :> TestPrune.Extensions.ITestPruneExtension
+                            )
+                        | Unknown other ->
+                            Logging.warn "config" $"Unknown test extension type: %s{other}"
+                            None))
 
         Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"
 
         let handler =
-            create dbPath repoRoot (Some testConfigs) extensions beforeRun None coverageArgs getCommitId
+            create dbPath repoRoot (Some testConfigs) buildExtensions beforeRun None coverageArgs getCommitId
 
         daemon.RegisterHandler(handler)
     | None -> ()
