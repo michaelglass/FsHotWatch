@@ -801,7 +801,7 @@ let ``FileChecked reports Completed when no testConfigs (success path)`` () =
 // plugin's just-flushed rows — cross-connection SQLite WAL visibility bug,
 // orthogonal to timing. Re-enable once the plugin exposes test-methods via a
 // command (preferred) or the DB write is committed with explicit sync.
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``after scan and build, test methods are in the sqlite database`` () =
     withTempDir "tp-tm-db" (fun tmpDir ->
         // Canonicalize path to avoid symlink divergence (e.g., /var/folders vs /private/var/folders).
@@ -904,7 +904,7 @@ let private beginAwaitNextCompleted (host: FsHotWatch.PluginHost.PluginHost) (pl
 
     tcs.Task
 
-[<Fact(Timeout = 30000)>]
+[<Fact(Timeout = 10000)>]
 let ``after a symbol change, affected-tests identifies the dependent test`` () =
     withTempDir "tp-sym" (fun tmpDir ->
         let tmpDir = Path.GetFullPath(tmpDir)
@@ -1035,7 +1035,7 @@ let compute (x: int) = x + 2
 // as ``after a symbol change`` — affected-tests returns "[]" after a type
 // change that should flag dependent tests. Same root cause: dependency edges
 // not produced by the current symbol-diff path.
-[<Fact(Timeout = 60000)>]
+[<Fact(Timeout = 10000)>]
 let ``cross-file type change only runs affected test classes`` () =
     // End-to-end test: change Lib.fsx type -> affected-tests identifies dependent tests -> only those classes run
     withTempDir "tp-e2e" (fun tmpDir ->
