@@ -11,6 +11,12 @@ All notable changes to FsHotWatch packages are documented here.
 - `excludePatterns` parameter on `Daemon.create` / `Daemon.createWith` for excluding project trees from discovery
 - `CheckPipeline.RegisterProject` filters out generated files in obj/ and bin/
 - `IgnoreFilterCache` — caches .gitignore/.fantomasignore rules, auto-reloads on file changes
+- `TaskCache.saltedCacheKey` / `optionalSaltedCacheKey` — cache-key builders that fold a per-event salt into the commit-based key, for plugins whose cache validity depends on state beyond the commit
+
+### FsHotWatch.Coverage
+
+#### Fixed
+- Cache key now includes a content hash of the thresholds file, so editing `coverage-ratchet.json` under the same commit invalidates the cached plugin status instead of silently replaying a stale result
 
 #### Changed
 - `performScan` takes `BatchContext` instead of 12 individual parameters

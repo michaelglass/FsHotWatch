@@ -890,24 +890,15 @@ let create
             @ (if hasTestConfigs then [ SubscribeBuildCompleted ] else [])
         )
       CacheKey =
-        match getCommitId with
-        | Some fn ->
-            Some(fun event ->
-                match fn () with
-                | None -> None
-                | Some commitId ->
-                    match event with
-                    | Custom _ -> None
-                    | FileChecked _ -> Some(ContentHash.create commitId)
-                    | BuildCompleted _ ->
-                        let symbolsHash =
-                            changedSymbolsRef
-                            |> List.distinct
-                            |> List.sort
-                            |> String.concat "|"
-                            |> FsHotWatch.CheckCache.sha256Hex
-
-                        Some(ContentHash.create $"{commitId}:{symbolsHash}")
-                    | _ -> Some(ContentHash.create commitId))
-        | None -> None
+        FsHotWatch.TaskCache.optionalSaltedCacheKey
+            (fun event ->
+                match event with
+                | BuildCompleted _ ->
+                    changedSymbolsRef
+                    |> List.distinct
+                    |> List.sort
+                    |> String.concat "|"
+                    |> FsHotWatch.CheckCache.sha256Hex
+                | _ -> "")
+            getCommitId
       Teardown = None }

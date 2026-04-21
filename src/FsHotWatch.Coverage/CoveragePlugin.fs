@@ -74,6 +74,19 @@ let private parseCoberturaXml (path: string) : (float * float) option =
         Logging.warn "coverage" $"Failed to parse Cobertura XML %s{path}: %s{ex.Message}"
         None
 
+/// Hash the thresholds file content (empty string if missing/unreadable) so that
+/// editing `coverage-ratchet.json` (e.g. via `coverageratchet loosen`) invalidates
+/// the cached plugin result under the same commit.
+let private thresholdsFileHash (path: string) : string =
+    if not (File.Exists path) then
+        ""
+    else
+        try
+            FsHotWatch.CheckCache.sha256Hex (File.ReadAllText path)
+        with ex ->
+            Logging.warn "coverage" $"Failed to hash thresholds file %s{path}: %s{ex.Message}"
+            ""
+
 /// Creates a framework plugin handler that checks coverage thresholds after tests complete.
 let create
     (coverageDir: string)
@@ -213,5 +226,8 @@ let create
                   return $"{{%s{entries}}}"
               } ]
       Subscriptions = Set.ofList [ SubscribeTestCompleted ]
-      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId
+      CacheKey =
+        FsHotWatch.TaskCache.optionalSaltedCacheKey
+            (fun _ -> thresholdsFile |> Option.map thresholdsFileHash |> Option.defaultValue "")
+            getCommitId
       Teardown = None }
