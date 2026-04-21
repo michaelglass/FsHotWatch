@@ -387,6 +387,102 @@ let ``executeCommand Completions returns 0`` () =
 
     test <@ result = 0 @>
 
+// --- Start command singleton guarantee ---
+
+[<Fact(Timeout = 5000)>]
+let ``executeCommand Start refuses to spawn a duplicate when daemon already running`` () =
+    withTempDir "prog-start-dup" (fun tmpDir ->
+        let mutable createDaemonCalled = false
+
+        let createDaemon _ =
+            createDaemonCalled <- true
+            Unchecked.defaultof<_>
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> true }
+
+        let result =
+            executeCommand createDaemon ipc tmpDir "pipe-singleton" Start "" false fakeConfig 5.0
+
+        test <@ result = 0 @>
+        test <@ not createDaemonCalled @>)
+
+[<Fact(Timeout = 5000)>]
+let ``executeCommand Start — second concurrent invocation is idempotent`` () =
+    // Regression: two back-to-back Start calls (simulating two users / two
+    // mise-check invocations) must not both proceed to createDaemon.
+    withTempDir "prog-start-concurrent" (fun tmpDir ->
+        // First call: pipe is free, daemon would start (but we short-circuit by
+        // flipping IsRunning to true as soon as the first attempt proceeds).
+        let mutable running = false
+        let mutable createDaemonCalls = 0
+
+        let createDaemon _ =
+            createDaemonCalls <- createDaemonCalls + 1
+            running <- true
+            Unchecked.defaultof<_>
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> running }
+
+        // Second invocation should see `running = true` and short-circuit.
+        running <- true
+
+        let result =
+            executeCommand createDaemon ipc tmpDir "pipe-concurrent" Start "" false fakeConfig 5.0
+
+        test <@ result = 0 @>
+        test <@ createDaemonCalls = 0 @>)
+
+[<Fact(Timeout = 5000)>]
+let ``executeCommand Stop iterates Shutdown until pipe goes quiet`` () =
+    // Regression: if multiple daemons share a pipe, a single Shutdown only
+    // stops one. Stop must loop until no daemon responds.
+    withTempDir "prog-stop-multi" (fun tmpDir ->
+        let mutable remainingDaemons = 3
+        let mutable shutdownCalls = 0
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> remainingDaemons > 0
+                Shutdown =
+                    fun _ ->
+                        async {
+                            shutdownCalls <- shutdownCalls + 1
+                            remainingDaemons <- remainingDaemons - 1
+                            return "shutting down"
+                        } }
+
+        let result =
+            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe-multi" Stop "" false fakeConfig 5.0
+
+        test <@ result = 0 @>
+        test <@ shutdownCalls = 3 @>
+        test <@ remainingDaemons = 0 @>)
+
+[<Fact(Timeout = 5000)>]
+let ``executeCommand Stop reports when no daemon is running`` () =
+    withTempDir "prog-stop-none" (fun tmpDir ->
+        let mutable shutdownCalls = 0
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> false
+                Shutdown =
+                    fun _ ->
+                        async {
+                            shutdownCalls <- shutdownCalls + 1
+                            return "shutting down"
+                        } }
+
+        let result =
+            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe-none" Stop "" false fakeConfig 5.0
+
+        test <@ result = 0 @>
+        test <@ shutdownCalls = 0 @>)
+
 [<Fact(Timeout = 5000)>]
 let ``parse completions returns Completions`` () =
     match globalSpec.Parse [| "completions" |] with
