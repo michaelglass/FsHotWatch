@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- `TaskCache.saltedCacheKey` / `TaskCache.optionalSaltedCacheKey` — cache-key
+  builders that fold a per-event salt into the commit-based key. Plugins whose
+  cache validity depends on state beyond the commit (e.g. a config file whose
+  edits don't change the commit) can salt with a hash of that state. Empty salt
+  produces the pre-existing key format, so on-disk cache compatibility is
+  preserved.
+
 ### Changed
 
 - **BREAKING (IPC)**: `WaitForComplete` RPC now accepts a `timeoutMs: int` argument; `<= 0` means no client-imposed timeout. `DaemonRpcConfig.WaitForAllTerminal` signature changed from `unit -> Task<unit>` to `TimeSpan -> Task<unit>` so clients can pass their own deadline. The daemon's previous hard-coded 30-minute cap no longer applies when the client supplies a timeout.

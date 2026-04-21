@@ -1,5 +1,16 @@
 # Changelog — FsHotWatch.Coverage
 
+## Unreleased
+
+### Fixed
+
+- Cache key now includes a content hash of the thresholds file. Previously the
+  key was commit-id-only, so editing `coverage-ratchet.json` (e.g. via
+  `coverageratchet loosen`) under the same commit would silently replay the
+  stale cached plugin status instead of re-evaluating coverage.
+
+---
+
 ## 0.7.0-alpha.3 (2026-04-18)
 
 ### Changed
