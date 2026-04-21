@@ -9,6 +9,7 @@
   <Project Path="src/FsHotWatch.Coverage/FsHotWatch.Coverage.fsproj" />
   <Project Path="src/FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj" />
   <Project Path="tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj" />
+  <Project Path="tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj" />
   <Project Path="examples/ExampleAnalyzer/ExampleAnalyzer.fsproj" />
   <Project Path="tools/fsharplint-shim/fsharplint-shim.csproj" />
 </Solution>

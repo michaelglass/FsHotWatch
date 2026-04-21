@@ -53,14 +53,19 @@ run = "rm -rf .fshw/cache/"
 # === Direct tasks (CI, docs, packaging) ===
 
 [tasks.test-direct]
-description = "Run tests directly with coverage (for CI)"
+description = "Run tests directly with coverage (for CI). Excludes IntegrationTests whose SDK-reflection paths fire nondeterministically and make the coverage ratchet flaky."
 run = """
-dotnet test \
+dotnet test --project tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj \
   --coverage \
   --coverage-output-format cobertura \
   --coverage-output "$PWD/coverage/coverage.cobertura.xml" \
   --coverage-settings "$PWD/coverage.settings"
 """
+depends = ["restore"]
+
+[tasks.test-integration]
+description = "Run integration tests (FCS / analyzers / lint / format / build end-to-end). No coverage."
+run = "dotnet test --project tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj"
 depends = ["restore"]
 
 [tasks.format-check]
