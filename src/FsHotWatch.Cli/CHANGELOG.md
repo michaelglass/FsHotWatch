@@ -8,6 +8,11 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 - `errors --wait [--timeout <seconds>]` — block until every tracked plugin reaches a terminal state before printing diagnostics. Timeout is enforced server-side by the daemon's `waitForAllTerminal` loop, so timeout messages include the list of plugins still running. Exit codes: `0` clean, `1` failures, `2` timeout or invalid flag combination (e.g. `--timeout` without `--wait`). Default timeout 600s.
 
+### Fixed
+
+- `start` is now a singleton per repo: if a daemon is already responding on the pipe, the command prints `Daemon already running at pipe <name> (pid <n>)` and exits `0` instead of spawning a duplicate. Previously repeated `start` invocations accumulated concurrent daemons that raced on the same pipe and served stale results.
+- `stop` iterates `Shutdown` until the pipe goes quiet so it cleanly takes down historically-accumulated duplicate daemons, reporting the count stopped (or `No daemon running` if none).
+
 ## 0.8.0-alpha.3 (2026-04-18)
 
 ### Added
