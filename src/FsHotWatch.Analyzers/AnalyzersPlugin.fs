@@ -19,6 +19,71 @@ type AnalyzersState =
     { DiagnosticsByFile: Map<string, ErrorEntry list>
       LoadedCount: int }
 
+/// Assembly-name prefixes we always skip when loading analyzers. Analyzer
+/// packages (e.g. FSharpLintAnalyzerShim) ship bundled BCL/FCS deps that aren't
+/// analyzers; reflecting over them wastes startup and risks version mismatches.
+let internal knownNonAnalyzerPrefixes =
+    [| "FSharp.Compiler.Service"
+       "FSharp.Compiler.Interactive"
+       "FSharp.Core"
+       "FSharp.Analyzers.SDK"
+       "FSharp.DependencyManager"
+       "FSharp.Control.Reactive"
+       "FSharpx."
+       "FParsec"
+       "Ionide."
+       "McMaster."
+       "Microsoft."
+       "System."
+       "Newtonsoft."
+       "SemanticVersioning" |]
+
+/// True if `assemblyName` starts with any of the given non-analyzer prefixes.
+/// Pure function extracted from the ExcludeFilter closure so both branches
+/// (matched / not matched) can be unit-tested deterministically instead of
+/// depending on which analyzer assemblies happen to ship with the SDK.
+let internal isKnownNonAnalyzerPrefix (prefixes: string array) (assemblyName: string) : bool =
+    prefixes
+    |> Array.exists (fun p -> assemblyName.StartsWith(p, StringComparison.Ordinal))
+
+/// Build the `AnalyzerProjectOptions` instance the SDK's CliContext expects.
+/// The SDK's constructor shape is reflected at startup (`apoCtor`); extracted
+/// so we can unit-test the `None` fallback and the `Invoke`-throws recovery
+/// path without depending on which SDK version is loaded in-process.
+///
+/// `projectOptions` must be non-null — reflecting its type happens outside the
+/// try/with so null-deref propagates to the analyzer wrapper's crash handler
+/// instead of being silently swallowed (matches pre-refactor contract).
+let internal buildAnalyzerProjectOptions
+    (apoCtor: System.Reflection.ConstructorInfo option)
+    (projectOptions: obj)
+    : obj =
+    let poType = projectOptions.GetType()
+
+    match apoCtor with
+    | None -> null
+    | Some c ->
+        let getField name =
+            poType.GetProperty(name).GetValue(projectOptions)
+
+        try
+            let sourceFiles = getField "SourceFiles" :?> string array |> Array.toList
+            let otherOptions = getField "OtherOptions" :?> string array |> Array.toList
+            let projectFileName = getField "ProjectFileName" :?> string
+
+            c.Invoke(
+                [| box 0 // tag for BackgroundCompilerOptions
+                   box projectFileName
+                   box None // projectId
+                   box sourceFiles
+                   box ([]: string list) // referencedProjectsPath
+                   box DateTime.UtcNow
+                   box otherOptions |]
+            )
+        with ex ->
+            warn "analyzers" $"AnalyzerProjectOptions ctor failed: %s{ex.Message}"
+            null
+
 /// Creates a framework plugin handler that hosts F# analyzers in-process
 /// using the warm checker's results.
 /// Uses reflection to construct CliContext, bypassing the FCS 43.10 vs 43.12
@@ -72,32 +137,7 @@ let create
         (projectOptions: obj)
         : CliContext =
         let (ctor, _, emptyIgnoreRanges, apoCtor) = cachedReflection.Value
-        let poType = projectOptions.GetType()
-
-        let getField name =
-            poType.GetProperty(name).GetValue(projectOptions)
-
-        let analyzerProjectOptions =
-            match apoCtor with
-            | Some c ->
-                try
-                    let sourceFiles = getField "SourceFiles" :?> string array |> Array.toList
-                    let otherOptions = getField "OtherOptions" :?> string array |> Array.toList
-                    let projectFileName = getField "ProjectFileName" :?> string
-
-                    c.Invoke(
-                        [| box 0 // tag for BackgroundCompilerOptions
-                           box projectFileName
-                           box None // projectId
-                           box sourceFiles
-                           box ([]: string list) // referencedProjectsPath
-                           box DateTime.UtcNow
-                           box otherOptions |]
-                    )
-                with ex ->
-                    warn "analyzers" $"AnalyzerProjectOptions ctor failed: %s{ex.Message}"
-                    null
-            | None -> null
+        let analyzerProjectOptions = buildAnalyzerProjectOptions apoCtor projectOptions
 
         ctor.Invoke(
             [| fileName
@@ -115,26 +155,8 @@ let create
     // that ship bundled deps (e.g. FSharpLintAnalyzerShim) expose dozens of
     // non-analyzer assemblies we'd otherwise load-and-inspect. Skip assemblies
     // whose filename is a well-known-non-analyzer prefix.
-    let knownNonAnalyzerPrefixes =
-        [| "FSharp.Compiler.Service"
-           "FSharp.Compiler.Interactive"
-           "FSharp.Core"
-           "FSharp.Analyzers.SDK"
-           "FSharp.DependencyManager"
-           "FSharp.Control.Reactive"
-           "FSharpx."
-           "FParsec"
-           "Ionide."
-           "McMaster."
-           "Microsoft."
-           "System."
-           "Newtonsoft."
-           "SemanticVersioning" |]
-
     let excludeKnownDeps =
-        ExcludeInclude.ExcludeFilter(fun assemblyName ->
-            knownNonAnalyzerPrefixes
-            |> Array.exists (fun p -> assemblyName.StartsWith(p, StringComparison.Ordinal)))
+        ExcludeInclude.ExcludeFilter(isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes)
 
     let mutable loadedCount = 0
 
