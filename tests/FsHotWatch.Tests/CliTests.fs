@@ -627,9 +627,15 @@ let ``executeCommand Start with fake daemon throws on null daemon`` () =
             createCalled <- true
             fakeDaemon
 
+        // Start's singleton guard short-circuits when IsRunning returns true, so
+        // we set it false to exercise the actual startup path.
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> false }
+
         let threw =
             try
-                executeCommand createDaemon (fakeIpc ()) tmpDir "pipe" Start "" false fakeConfig 30.0
+                executeCommand createDaemon ipc tmpDir "pipe" Start "" false fakeConfig 30.0
                 |> ignore
 
                 false

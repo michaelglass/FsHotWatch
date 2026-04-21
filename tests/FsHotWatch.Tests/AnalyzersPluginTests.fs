@@ -1,5 +1,7 @@
 module FsHotWatch.Tests.AnalyzersPluginTests
 
+open System
+open System.Reflection
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
@@ -259,3 +261,60 @@ let ``teardown cancels CTS and disposes resources`` () =
         host.EmitFileChecked(fakeResult "/tmp/teardown/Fake.fs")
     with _ ->
         ()
+
+// ---------------------------------------------------------------------------
+// Pure-function unit tests for reflection helpers.
+// These deterministically cover branches that the live-FCS integration tests
+// hit nondeterministically depending on which SDK version is loaded.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 1000)>]
+let ``isKnownNonAnalyzerPrefix returns true when name has matching prefix`` () =
+    test <@ isKnownNonAnalyzerPrefix [| "System."; "Microsoft." |] "System.Text.Json" @>
+
+[<Fact(Timeout = 1000)>]
+let ``isKnownNonAnalyzerPrefix returns false when no prefix matches`` () =
+    test <@ not (isKnownNonAnalyzerPrefix [| "System."; "Microsoft." |] "ExampleAnalyzer") @>
+
+[<Fact(Timeout = 1000)>]
+let ``isKnownNonAnalyzerPrefix is case-sensitive`` () =
+    // StringComparison.Ordinal — "system." does not match "System."
+    test <@ not (isKnownNonAnalyzerPrefix [| "System." |] "system.text.json") @>
+
+[<Fact(Timeout = 1000)>]
+let ``isKnownNonAnalyzerPrefix with empty prefix array returns false`` () =
+    test <@ not (isKnownNonAnalyzerPrefix [||] "System.Something") @>
+
+[<Fact(Timeout = 1000)>]
+let ``default knownNonAnalyzerPrefixes excludes common BCL assemblies`` () =
+    test <@ isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes "System.Collections" @>
+    test <@ isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes "Microsoft.Extensions.Logging" @>
+    test <@ isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes "FSharp.Core" @>
+
+[<Fact(Timeout = 1000)>]
+let ``default knownNonAnalyzerPrefixes does not match real analyzer packages`` () =
+    test <@ not (isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes "ExampleAnalyzer") @>
+    test <@ not (isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes "FSharpLint.Core") @>
+
+[<Fact(Timeout = 1000)>]
+let ``buildAnalyzerProjectOptions returns null when apoCtor is None`` () =
+    // Matches the code path hit when the loaded SDK's AnalyzerProjectOptions
+    // parameter type exposes no public constructors.
+    let result = buildAnalyzerProjectOptions None (box 42)
+    test <@ isNull result @>
+
+type private FakeProjectOptions() =
+    member val SourceFiles: string array = [| "Foo.fs" |] with get, set
+    member val OtherOptions: string array = [||] with get, set
+    member val ProjectFileName: string = "Fake.fsproj" with get, set
+
+type private FailingCtorTarget(_v: int) = class end
+
+[<Fact(Timeout = 1000)>]
+let ``buildAnalyzerProjectOptions returns null when ctor invocation throws`` () =
+    // A constructor whose signature doesn't match the 7-arg shape we invoke
+    // with will throw at Invoke time; the helper must swallow the exception
+    // and return null rather than crash the plugin.
+    let ctor = typeof<FailingCtorTarget>.GetConstructors().[0]
+    let result = buildAnalyzerProjectOptions (Some ctor) (FakeProjectOptions() :> obj)
+    test <@ isNull result @>

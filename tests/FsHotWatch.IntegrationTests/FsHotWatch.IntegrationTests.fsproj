@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    <!-- End-to-end FCS / analyzer / lint / format / build tests. Excluded
+         from the coverage metric (no Microsoft.Testing.Extensions.CodeCoverage
+         package): these tests hit real compiler reflection paths that fire
+         nondeterministically across SDK versions, so letting them contribute
+         to coverage makes the ratchet flaky. They still run — just not as part
+         of the `test-direct` coverage report. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../FsHotWatch.Tests/TestHelpers.fs" Link="TestHelpers.fs" />
+    <Compile Include="IntegrationTests.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch/FsHotWatch.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.Analyzers/FsHotWatch.Analyzers.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.Lint/FsHotWatch.Lint.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.Build/FsHotWatch.Build.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.Coverage/FsHotWatch.Coverage.fsproj" />
+    <ProjectReference Include="../../src/FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Update="FSharp.Core" Version="10.1.*" />
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="xunit.v3.mtp-v2" Version="3.2.2" />
+    <PackageReference Include="Unquote" Version="7.0.1" />
+  </ItemGroup>
+</Project>
