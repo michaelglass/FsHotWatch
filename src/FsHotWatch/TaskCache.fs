@@ -111,13 +111,32 @@ type InMemoryTaskCache() =
         member _.ClearFile file = clearFile file
         member _.ClearPluginFile plugin file = clearPluginFile plugin file
 
-/// Default cache key: jj commit_id for framework events, None for Custom events (uncacheable).
-let defaultCacheKey (getCommitId: unit -> string option) (event: PluginEvent<'Msg>) : ContentHash option =
+/// Cache key: jj commit_id, salted per-event by `getSalt`. None for Custom events (uncacheable).
+/// Plugins whose cache validity depends on extra state beyond the commit (e.g. a config file
+/// whose edits don't change the commit) should salt the key with a hash of that state.
+let saltedCacheKey
+    (getSalt: PluginEvent<'Msg> -> string)
+    (getCommitId: unit -> string option)
+    (event: PluginEvent<'Msg>)
+    : ContentHash option =
     match event with
     | Custom _ -> None
-    | _ -> getCommitId () |> Option.map ContentHash.create
+    | _ ->
+        getCommitId ()
+        |> Option.map (fun commit ->
+            match getSalt event with
+            | "" -> ContentHash.create commit
+            | salt -> ContentHash.create $"%s{commit}:%s{salt}")
+
+/// Default cache key: jj commit_id for framework events, None for Custom events (uncacheable).
+let defaultCacheKey (getCommitId: unit -> string option) (event: PluginEvent<'Msg>) : ContentHash option =
+    saltedCacheKey (fun _ -> "") getCommitId event
 
 /// Build an optional CacheKey from an optional getCommitId function.
 /// Convenience for plugins that use the default cache key.
 let optionalCacheKey (getCommitId: (unit -> string option) option) =
     getCommitId |> Option.map defaultCacheKey
+
+/// Build an optional salted CacheKey from an optional getCommitId function.
+let optionalSaltedCacheKey (getSalt: PluginEvent<'Msg> -> string) (getCommitId: (unit -> string option) option) =
+    getCommitId |> Option.map (saltedCacheKey getSalt)
