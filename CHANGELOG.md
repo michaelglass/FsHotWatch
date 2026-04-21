@@ -27,6 +27,10 @@ All notable changes to FsHotWatch packages are documented here.
 #### Added
 - `exclude` config field in `.fs-hot-watch.json` — gitignore-style glob patterns to exclude project trees
 
+#### Fixed
+- `start` refuses to spawn a duplicate when a daemon is already responding on the pipe; prints "Daemon already running at pipe <name> (pid <n>)" and exits 0
+- `stop` iterates Shutdown until the pipe goes quiet, so it cleanly takes down historically-accumulated duplicate daemons
+
 ### FsHotWatch.Fantomas
 
 #### Added
