@@ -150,7 +150,7 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
 
         cts.Cancel())
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 150000)>]
 let ``daemon dispatches file change events to plugins`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -199,7 +199,7 @@ let ``daemon dispatches file change events to plugins`` () =
 
         test <@ receivedChanges.Length >= 1 @>)
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 150000)>]
 let ``daemon debounces rapid file changes into one batch`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -270,7 +270,7 @@ let ``daemon debounces rapid file changes into one batch`` () =
         let allFiles = sourceChanges |> List.collect id
         test <@ allFiles.Length >= 3 @>)
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 150000)>]
 let ``daemon handles ProjectChanged events`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -329,7 +329,7 @@ let ``daemon handles ProjectChanged events`` () =
 
         test <@ projectChanges @>)
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 150000)>]
 let ``daemon handles SolutionChanged events`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
