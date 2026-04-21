@@ -4,6 +4,7 @@ open System
 open System.IO
 open Xunit
 open Swensen.Unquote
+open FsHotWatch
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
@@ -500,6 +501,80 @@ let ``coverage plugin clears afterCheck error on success`` () =
             @>
 
         test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>)
+
+[<Fact(Timeout = 10000)>]
+let ``coverage plugin re-evaluates when thresholds file changes under the same commit`` () =
+    // Regression: the plugin's cache key was commit-id-only, so `loosen` edits to the
+    // thresholds file under the same commit were silently ignored (plugin replayed a
+    // stale Failed status from cache). Include thresholds file content in the key.
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-threshcache-{Guid.NewGuid():N}")
+    let subDir = Path.Combine(tmpDir, "MyProject")
+    Directory.CreateDirectory(subDir) |> ignore
+
+    let xmlPath = Path.Combine(subDir, "cobertura.xml")
+
+    File.WriteAllText(xmlPath, """<?xml version="1.0" ?><coverage line-rate="0.85" branch-rate="0.70" />""")
+
+    let thresholdsPath = Path.Combine(tmpDir, "thresholds.json")
+    // Strict thresholds — will fail (line 85 < 90).
+    File.WriteAllText(thresholdsPath, """{"MyProject": {"line": 90.0, "branch": 50.0}}""")
+
+    try
+        let taskCache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+
+        let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = taskCache)
+
+        let getCommitId = Some(fun () -> Some "fake-commit-abc123")
+        let handler = create tmpDir (Some thresholdsPath) None getCommitId
+        host.RegisterHandler(handler)
+
+        let testResults =
+            { Results = Map.ofList [ "MyProject", TestsPassed "ok" ]
+              Elapsed = TimeSpan.FromSeconds(1.0) }
+
+        host.EmitTestCompleted(testResults)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Failed _) -> true
+                | _ -> false)
+            5000
+
+        let failedStatus = host.GetStatus("coverage")
+
+        test
+            <@
+                match failedStatus with
+                | Some(Failed _) -> true
+                | _ -> false
+            @>
+
+        // Loosen thresholds (commit id stays the same — same day, same working copy).
+        File.WriteAllText(thresholdsPath, """{"MyProject": {"line": 80.0, "branch": 50.0}}""")
+
+        host.EmitTestCompleted(testResults)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
+
+        let finalStatus = host.GetStatus("coverage")
+
+        test
+            <@
+                match finalStatus with
+                | Some(Completed _) -> true
+                | _ -> false
+            @>
+    finally
+        try
+            Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
 
 [<Fact(Timeout = 10000)>]
 let ``coverage plugin handles invalid XML file`` () =
