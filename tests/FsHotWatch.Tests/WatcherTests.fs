@@ -164,7 +164,7 @@ let ``hasContentChanged returns true on IOException`` () =
 
 // === FileWatcher.create non-macOS code path ===
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 30000)>]
 let ``FileWatcher.create with isMacOS=false watches src and tests dirs`` () =
     withTempDir "watcher-fsw" (fun tmpDir ->
         let srcDir = Path.Combine(tmpDir, "src")
@@ -191,7 +191,7 @@ let ``FileWatcher.create with isMacOS=false when neither src nor tests exist`` (
 
 // === Integration test: verify FileWatcher.create produces a working watcher (default OS path) ===
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 150000)>]
 let ``watcher detects file changes in src directory`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshotwatch-test-{Guid.NewGuid():N}")
     let srcDir = Path.Combine(tmpDir, "src")

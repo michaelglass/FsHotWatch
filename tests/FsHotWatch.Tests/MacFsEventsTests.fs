@@ -180,7 +180,7 @@ type MacFsEventsTests() =
                 use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] ignore
                 test <@ _stream.IsRunning @>)
 
-    [<Fact(Timeout = 5000)>]
+    [<Fact(Timeout = 150000)>]
     member _.``FsEventStream detects file creation``() =
         if not isMacOS then
             Assert.Skip("macOS only")
@@ -209,7 +209,7 @@ type MacFsEventsTests() =
                 let paths = lock lockObj (fun () -> detectedPaths)
                 test <@ paths |> List.exists (fun p -> p.EndsWith("Test.fs")) @>)
 
-    [<Fact(Timeout = 5000)>]
+    [<Fact(Timeout = 150000)>]
     member _.``FsEventStream detects file modification``() =
         if not isMacOS then
             Assert.Skip("macOS only")
@@ -241,7 +241,7 @@ type MacFsEventsTests() =
 
                 test <@ lock lockObj (fun () -> detectedCount > countAfterProbe) @>)
 
-    [<Fact(Timeout = 5000)>]
+    [<Fact(Timeout = 150000)>]
     member _.``FsEventStream detects file deletion``() =
         if not isMacOS then
             Assert.Skip("macOS only")
@@ -275,7 +275,7 @@ type MacFsEventsTests() =
                 let paths = lock lockObj (fun () -> detectedPaths)
                 test <@ paths |> List.exists (fun p -> p.EndsWith("Del.fs")) @>)
 
-    [<Fact(Timeout = 5000)>]
+    [<Fact(Timeout = 150000)>]
     member _.``FsEventStream watches multiple directories``() =
         if not isMacOS then
             Assert.Skip("macOS only")

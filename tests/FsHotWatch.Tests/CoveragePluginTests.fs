@@ -503,6 +503,52 @@ let ``coverage plugin clears afterCheck error on success`` () =
         test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>)
 
 [<Fact(Timeout = 10000)>]
+let ``coverage plugin tolerates missing thresholds file in cache key`` () =
+    let tmpDir =
+        Path.Combine(Path.GetTempPath(), $"cov-missingthresh-{Guid.NewGuid():N}")
+
+    let subDir = Path.Combine(tmpDir, "MyProject")
+    Directory.CreateDirectory(subDir) |> ignore
+
+    let xmlPath = Path.Combine(subDir, "cobertura.xml")
+
+    File.WriteAllText(xmlPath, """<?xml version="1.0" ?><coverage line-rate="0.85" branch-rate="0.70" />""")
+
+    let missingThresholds = Path.Combine(tmpDir, "does-not-exist.json")
+
+    try
+        let taskCache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+        let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = taskCache)
+        let getCommitId = Some(fun () -> Some "fake-commit")
+        let handler = create tmpDir (Some missingThresholds) None getCommitId
+        host.RegisterHandler(handler)
+
+        let testResults =
+            { Results = Map.ofList [ "MyProject", TestsPassed "ok" ]
+              Elapsed = TimeSpan.FromSeconds(1.0) }
+
+        host.EmitTestCompleted(testResults)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            5000
+
+        test
+            <@
+                match host.GetStatus("coverage") with
+                | Some(Completed _) -> true
+                | _ -> false
+            @>
+    finally
+        try
+            Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 10000)>]
 let ``coverage plugin re-evaluates when thresholds file changes under the same commit`` () =
     // Regression: the plugin's cache key was commit-id-only, so `loosen` edits to the
     // thresholds file under the same commit were silently ignored (plugin replayed a
