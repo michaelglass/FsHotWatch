@@ -407,37 +407,68 @@ let executeCommand
 
     match command with
     | Start ->
-        eprintfn $"Starting FsHotWatch daemon for %s{repoRoot}"
-        eprintfn $"Pipe: %s{pipeName}"
-        // Write our own PID so killStaleDaemon can find the actual daemon process,
-        // not the nohup wrapper that launched us.
         let stateDir = Path.Combine(repoRoot, ".fs-hot-watch")
-        Directory.CreateDirectory(stateDir) |> ignore
+        let pidFile = Path.Combine(stateDir, "daemon.pid")
 
-        File.WriteAllText(
-            Path.Combine(stateDir, "daemon.pid"),
-            string (System.Diagnostics.Process.GetCurrentProcess().Id)
-        )
+        // Guard: refuse to spawn a duplicate daemon. Without this, repeated `start`
+        // invocations accumulate concurrent daemons that race on the same pipe and
+        // serve stale results.
+        if ipc.IsRunning pipeName then
+            let pidInfo =
+                if File.Exists pidFile then
+                    $" (pid %s{File.ReadAllText(pidFile).Trim()})"
+                else
+                    ""
 
-        let daemon = createDaemon repoRoot
-        registerPlugins daemon repoRoot config
-        let cts = new CancellationTokenSource()
+            eprintfn $"Daemon already running at pipe %s{pipeName}%s{pidInfo}"
+            0
+        else
+            eprintfn $"Starting FsHotWatch daemon for %s{repoRoot}"
+            eprintfn $"Pipe: %s{pipeName}"
+            // Write our own PID so killStaleDaemon can find the actual daemon process,
+            // not the nohup wrapper that launched us.
+            Directory.CreateDirectory(stateDir) |> ignore
+            File.WriteAllText(pidFile, string (System.Diagnostics.Process.GetCurrentProcess().Id))
 
-        Console.CancelKeyPress.Add(fun e ->
-            e.Cancel <- true
-            cts.Cancel())
+            let daemon = createDaemon repoRoot
+            registerPlugins daemon repoRoot config
+            let cts = new CancellationTokenSource()
 
-        try
-            Async.RunSynchronously(daemon.RunWithIpc(pipeName, cts))
-        with :? OperationCanceledException ->
-            ()
+            Console.CancelKeyPress.Add(fun e ->
+                e.Cancel <- true
+                cts.Cancel())
 
-        eprintfn "Daemon stopped."
-        0
+            try
+                Async.RunSynchronously(daemon.RunWithIpc(pipeName, cts))
+            with :? OperationCanceledException ->
+                ()
+
+            eprintfn "Daemon stopped."
+            0
     | Stop ->
         withIpc (fun () ->
-            ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
-            UI.success "Daemon stopped"
+            // Multiple daemons may be listening on the same pipe (historically the
+            // start command spawned duplicates); iterate Shutdown until the pipe
+            // goes quiet so we don't leave orphans behind.
+            let maxAttempts = 10
+            let mutable stopped = 0
+            let mutable attempts = 0
+
+            while attempts < maxAttempts && ipc.IsRunning pipeName do
+                try
+                    ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
+                    stopped <- stopped + 1
+                with _ ->
+                    ()
+
+                attempts <- attempts + 1
+                Thread.Sleep(100)
+
+            match stopped with
+            | 0 -> UI.info "No daemon running"
+            | 1 -> UI.success "Daemon stopped"
+            | n -> UI.success $"{n} daemons stopped"
+
             0)
     | Scan flags ->
         let force = flags |> List.contains Force
