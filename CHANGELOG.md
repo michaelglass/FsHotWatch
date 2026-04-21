@@ -31,6 +31,12 @@ All notable changes to FsHotWatch packages are documented here.
 - `start` refuses to spawn a duplicate when a daemon is already responding on the pipe; prints "Daemon already running at pipe <name> (pid <n>)" and exits 0
 - `stop` iterates Shutdown until the pipe goes quiet, so it cleanly takes down historically-accumulated duplicate daemons
 
+### Tests / CI
+
+#### Changed
+- Split end-to-end FCS / analyzer / lint / format / build tests into a new `tests/FsHotWatch.IntegrationTests` project. These tests hit SDK-reflection paths that fire nondeterministically across runs, so letting them contribute to coverage made the ratchet flaky. They still run via `mise run test-integration`; the main `test-direct` coverage now only aggregates `FsHotWatch.Tests`.
+- `AnalyzersPlugin` grew two extracted helpers — `isKnownNonAnalyzerPrefix` and `buildAnalyzerProjectOptions` — with deterministic unit tests covering all branches the live-SDK integration tests used to hit flakily.
+
 ### FsHotWatch.Fantomas
 
 #### Added

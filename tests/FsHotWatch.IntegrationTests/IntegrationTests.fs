@@ -728,41 +728,41 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
     analyzerCheckGate.Wait()
 
     try
-    let repoRoot = findRepoRoot ()
+        let repoRoot = findRepoRoot ()
 
-    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
-    let host = PluginHost.create checker repoRoot
-    let analyzers = AnalyzersPlugin.create [] None
-    host.RegisterHandler(analyzers)
+        let host = PluginHost.create checker repoRoot
+        let analyzers = AnalyzersPlugin.create [] None
+        host.RegisterHandler(analyzers)
 
-    let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
-    let source = File.ReadAllText(sourceFile)
-    let sourceText = SourceText.ofString source
+        let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
+        let source = File.ReadAllText(sourceFile)
+        let sourceText = SourceText.ofString source
 
-    let projOptions =
-        checker.GetProjectOptionsFromScript(sourceFile, sourceText, assumeDotNetFramework = false)
-        |> Async.RunSynchronously
-        |> fst
+        let projOptions =
+            checker.GetProjectOptionsFromScript(sourceFile, sourceText, assumeDotNetFramework = false)
+            |> Async.RunSynchronously
+            |> fst
 
-    let pipeline = CheckPipeline(checker)
-    pipeline.RegisterProject("FsHotWatch", projOptions)
-    let result = pipeline.CheckFile(sourceFile) |> Async.RunSynchronously
+        let pipeline = CheckPipeline(checker)
+        pipeline.RegisterProject("FsHotWatch", projOptions)
+        let result = pipeline.CheckFile(sourceFile) |> Async.RunSynchronously
 
-    match result with
-    | Some checkResult ->
-        host.EmitFileChecked(checkResult)
+        match result with
+        | Some checkResult ->
+            host.EmitFileChecked(checkResult)
 
-        waitForTerminalStatus host "analyzers" 10000
+            waitForTerminalStatus host "analyzers" 10000
 
-        let status = host.GetStatus("analyzers")
-        test <@ status.IsSome @>
+            let status = host.GetStatus("analyzers")
+            test <@ status.IsSome @>
 
-        match status.Value with
-        | Completed _ -> () // Empty analyzer paths, should complete with no diagnostics
-        | PluginStatus.Failed(msg, _) -> Assert.True(true, $"Analyzers failed gracefully: {msg}")
-        | other -> Assert.Fail($"Unexpected status: %A{other}")
-    | None -> Assert.True(true, "Skipped: FCS could not check file")
+            match status.Value with
+            | Completed _ -> () // Empty analyzer paths, should complete with no diagnostics
+            | PluginStatus.Failed(msg, _) -> Assert.True(true, $"Analyzers failed gracefully: {msg}")
+            | other -> Assert.Fail($"Unexpected status: %A{other}")
+        | None -> Assert.True(true, "Skipped: FCS could not check file")
     finally
         analyzerCheckGate.Release() |> ignore
 
@@ -771,42 +771,42 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
     analyzerCheckGate.Wait()
 
     try
-    let repoRoot = findRepoRoot ()
-    let analyzerPath = exampleAnalyzerPath.Value
+        let repoRoot = findRepoRoot ()
+        let analyzerPath = exampleAnalyzerPath.Value
 
-    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
-    let host = PluginHost.create checker repoRoot
-    let analyzers = AnalyzersPlugin.create [ analyzerPath ] None
-    host.RegisterHandler(analyzers)
+        let host = PluginHost.create checker repoRoot
+        let analyzers = AnalyzersPlugin.create [ analyzerPath ] None
+        host.RegisterHandler(analyzers)
 
-    let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
-    let source = File.ReadAllText(sourceFile)
-    let sourceText = SourceText.ofString source
+        let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
+        let source = File.ReadAllText(sourceFile)
+        let sourceText = SourceText.ofString source
 
-    let projOptions =
-        checker.GetProjectOptionsFromScript(sourceFile, sourceText, assumeDotNetFramework = false)
-        |> Async.RunSynchronously
-        |> fst
+        let projOptions =
+            checker.GetProjectOptionsFromScript(sourceFile, sourceText, assumeDotNetFramework = false)
+            |> Async.RunSynchronously
+            |> fst
 
-    let pipeline = CheckPipeline(checker)
-    pipeline.RegisterProject("FsHotWatch", projOptions)
-    let result = pipeline.CheckFile(sourceFile) |> Async.RunSynchronously
+        let pipeline = CheckPipeline(checker)
+        pipeline.RegisterProject("FsHotWatch", projOptions)
+        let result = pipeline.CheckFile(sourceFile) |> Async.RunSynchronously
 
-    match result with
-    | Some checkResult ->
-        host.EmitFileChecked(checkResult)
+        match result with
+        | Some checkResult ->
+            host.EmitFileChecked(checkResult)
 
-        waitForTerminalStatus host "analyzers" 10000
+            waitForTerminalStatus host "analyzers" 10000
 
-        let status = host.GetStatus("analyzers")
-        test <@ status.IsSome @>
+            let status = host.GetStatus("analyzers")
+            test <@ status.IsSome @>
 
-        match status.Value with
-        | Completed _ -> ()
-        | PluginStatus.Failed(msg, _) -> Assert.True(true, $"Analyzers failed gracefully: {msg}")
-        | other -> Assert.Fail($"Unexpected status: %A{other}")
-    | None -> Assert.True(true, "Skipped: FCS could not check file")
+            match status.Value with
+            | Completed _ -> ()
+            | PluginStatus.Failed(msg, _) -> Assert.True(true, $"Analyzers failed gracefully: {msg}")
+            | other -> Assert.Fail($"Unexpected status: %A{other}")
+        | None -> Assert.True(true, "Skipped: FCS could not check file")
     finally
         analyzerCheckGate.Release() |> ignore
 

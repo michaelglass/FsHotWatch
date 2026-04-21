@@ -2,9 +2,9 @@
   "overrides": {
     "AnalyzersPlugin.fs": [
       {
-        "line": 91,
-        "branch": 78,
-        "reason": "reflection-based CliContext \u002B SDK apoCtor branches fire nondeterministically across runs (30-32/38)",
+        "line": 92,
+        "branch": 75,
+        "reason": "end-to-end FCS analyzer paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor",
         "platform": "macos"
       },
       {
@@ -36,8 +36,8 @@
     "CheckPipeline.fs": [
       {
         "line": 91,
-        "branch": 75,
-        "reason": "loosened: new CheckFileWithOptions/GetProjectOptions and multi-project paths",
+        "branch": 74,
+        "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor",
         "platform": "macos"
       },
       {
@@ -309,7 +309,7 @@
     "Program.fs": [
       {
         "line": 83,
-        "branch": 46,
+        "branch": 47,
         "reason": "CLI entry point",
         "platform": "macos"
       },
