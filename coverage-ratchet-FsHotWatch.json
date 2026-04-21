@@ -3,8 +3,8 @@
     "AnalyzersPlugin.fs": [
       {
         "line": 91,
-        "branch": 84,
-        "reason": "reflection-based CliContext branches vary by platform",
+        "branch": 78,
+        "reason": "reflection-based CliContext \u002B SDK apoCtor branches fire nondeterministically across runs (30-32/38)",
         "platform": "macos"
       },
       {
@@ -250,7 +250,7 @@
       {
         "line": 95,
         "branch": 63,
-        "reason": "exception-handling branches for missing .gitignore/.fantomasignore files",
+        "reason": "exception-handling branches \u002B IgnoreFilterCache reload paths that fire inconsistently across runs",
         "platform": "macos"
       },
       {

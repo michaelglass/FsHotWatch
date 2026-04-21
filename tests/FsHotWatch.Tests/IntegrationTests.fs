@@ -5,6 +5,7 @@ open System.Diagnostics
 open System.IO
 open System.Reflection
 open System.Text.Json
+open System.Threading
 open Xunit
 open Swensen.Unquote
 open FSharp.Compiler.CodeAnalysis
@@ -268,25 +269,37 @@ let private checkTempFile (checker: FSharpChecker) (filePath: string) =
 // ---------------------------------------------------------------------------
 // Helper: run an analyzer test — build analyzer, check a temp file, assert on result
 // ---------------------------------------------------------------------------
+
+// Process-wide gate: AnalyzersPlugin tests share an FSharpChecker and contend on
+// analyzer-DLL loading. Running >1 in parallel (or against a busy CPU from the
+// rest of the suite) triggers >10s waits in `waitForTerminalStatus`. Serialize
+// them so each gets a clean FCS slice.
+let private analyzerCheckGate = new SemaphoreSlim(1, 1)
+
 let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> string -> unit) =
-    let repoRoot = findRepoRoot ()
-    let analyzerPath = exampleAnalyzerPath.Value
+    analyzerCheckGate.Wait()
 
-    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+    try
+        let repoRoot = findRepoRoot ()
+        let analyzerPath = exampleAnalyzerPath.Value
 
-    let host = PluginHost.create checker repoRoot
-    let analyzers = AnalyzersPlugin.create [ analyzerPath ] None
-    host.RegisterHandler(analyzers)
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
-    withTempFsFile source (fun _dir tmpFile ->
-        let result = checkTempFile checker tmpFile
+        let host = PluginHost.create checker repoRoot
+        let analyzers = AnalyzersPlugin.create [ analyzerPath ] None
+        host.RegisterHandler(analyzers)
 
-        match result with
-        | Some checkResult ->
-            host.EmitFileChecked(checkResult)
-            waitForTerminalStatus host "analyzers" 10000
-            assertResult host tmpFile
-        | None -> Assert.Fail("FCS failed to check file"))
+        withTempFsFile source (fun _dir tmpFile ->
+            let result = checkTempFile checker tmpFile
+
+            match result with
+            | Some checkResult ->
+                host.EmitFileChecked(checkResult)
+                waitForTerminalStatus host "analyzers" 10000
+                assertResult host tmpFile
+            | None -> Assert.Fail("FCS failed to check file"))
+    finally
+        analyzerCheckGate.Release() |> ignore
 
 [<Fact(Timeout = 5000)>]
 let ``lint plugin detects warnings on bad code`` () =
@@ -710,8 +723,11 @@ let x = 5
 // AnalyzersPlugin — success and failure
 // ===========================================================================
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 30000)>]
 let ``AnalyzersPlugin completes without crashing on checked file`` () =
+    analyzerCheckGate.Wait()
+
+    try
     let repoRoot = findRepoRoot ()
 
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
@@ -747,9 +763,14 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
         | PluginStatus.Failed(msg, _) -> Assert.True(true, $"Analyzers failed gracefully: {msg}")
         | other -> Assert.Fail($"Unexpected status: %A{other}")
     | None -> Assert.True(true, "Skipped: FCS could not check file")
+    finally
+        analyzerCheckGate.Release() |> ignore
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 30000)>]
 let ``AnalyzersPlugin loads real analyzers from example project`` () =
+    analyzerCheckGate.Wait()
+
+    try
     let repoRoot = findRepoRoot ()
     let analyzerPath = exampleAnalyzerPath.Value
 
@@ -786,8 +807,10 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
         | PluginStatus.Failed(msg, _) -> Assert.True(true, $"Analyzers failed gracefully: {msg}")
         | other -> Assert.Fail($"Unexpected status: %A{other}")
     | None -> Assert.True(true, "Skipped: FCS could not check file")
+    finally
+        analyzerCheckGate.Release() |> ignore
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 30000)>]
 let ``AnalyzersPlugin produces warning on wildcard DU match`` () =
     let source =
         "module Test\ntype Shape = Circle | Square\nlet f s = match s with | Circle -> 1 | _ -> 2\n"
@@ -805,7 +828,7 @@ let ``AnalyzersPlugin produces warning on wildcard DU match`` () =
         | PluginStatus.Failed(msg, _) -> Assert.Fail($"Analyzer should succeed but failed: {msg}")
         | other -> Assert.Fail($"Unexpected status: %A{other}"))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 30000)>]
 let ``AnalyzersPlugin produces no warning on exhaustive DU match`` () =
     let source =
         "module Test\ntype Shape = Circle | Square\nlet f s = match s with | Circle -> 1 | Square -> 2\n"
