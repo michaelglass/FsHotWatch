@@ -133,6 +133,75 @@ let ``defaultCacheKey returns None for Custom events`` () =
     let result = defaultCacheKey getCommitId event
     test <@ result = None @>
 
+[<Fact(Timeout = 5000)>]
+let ``ITaskCache interface methods dispatch to implementation`` () =
+    let cache = InMemoryTaskCache() :> ITaskCache
+    let entry = makeResult "h1"
+    cache.Set (ck "build" "Foo.fs") (hash "h1") entry
+    cache.Set (ck "build" "Bar.fs") (hash "h2") (makeResult "h2")
+    cache.Set (ck "lint" "Foo.fs") (hash "h3") (makeResult "h3")
+
+    test <@ cache.TryGet (ck "build" "Foo.fs") (hash "h1") = Some entry @>
+
+    cache.ClearPluginFile "build" "Foo.fs"
+    test <@ cache.TryGet (ck "build" "Foo.fs") (hash "h1") = None @>
+
+    cache.ClearFile "Bar.fs"
+    test <@ cache.TryGet (ck "build" "Bar.fs") (hash "h2") = None @>
+
+    cache.ClearPlugin "lint"
+    test <@ cache.TryGet (ck "lint" "Foo.fs") (hash "h3") = None @>
+
+    cache.Set (ck "a" "F.fs") (hash "k") (makeResult "k")
+    cache.Clear()
+    test <@ cache.TryGet (ck "a" "F.fs") (hash "k") = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``saltedCacheKey appends non-empty salt to commit`` () =
+    let getCommitId () = Some "abc123"
+    let event: PluginEvent<unit> = BuildCompleted BuildSucceeded
+    let result = saltedCacheKey (fun _ -> "salty") getCommitId event
+    test <@ result = Some(hash "abc123:salty") @>
+
+[<Fact(Timeout = 5000)>]
+let ``saltedCacheKey omits separator for empty salt`` () =
+    let getCommitId () = Some "abc123"
+    let event: PluginEvent<unit> = FileChecked(Unchecked.defaultof<FileCheckResult>)
+    let result = saltedCacheKey (fun _ -> "") getCommitId event
+    test <@ result = Some(hash "abc123") @>
+
+[<Fact(Timeout = 5000)>]
+let ``saltedCacheKey returns None for Custom events regardless of salt`` () =
+    let getCommitId () = Some "abc123"
+    let event: PluginEvent<string> = Custom "hello"
+    let result = saltedCacheKey (fun _ -> "salty") getCommitId event
+    test <@ result = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``saltedCacheKey returns None when commit unavailable`` () =
+    let getCommitId () = None
+    let event: PluginEvent<unit> = FileChecked(Unchecked.defaultof<FileCheckResult>)
+    let result = saltedCacheKey (fun _ -> "salty") getCommitId event
+    test <@ result = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``optionalSaltedCacheKey returns None when getCommitId is None`` () =
+    let result: (PluginEvent<unit> -> ContentHash option) option =
+        optionalSaltedCacheKey (fun _ -> "x") None
+
+    test <@ Option.isNone result @>
+
+[<Fact(Timeout = 5000)>]
+let ``optionalSaltedCacheKey wraps getSalt when getCommitId is Some`` () =
+    let getCommitId = Some(fun () -> Some "abc123")
+
+    let keyFn =
+        optionalSaltedCacheKey (fun _ -> "salty") getCommitId
+        |> Option.defaultWith (fun () -> failwith "expected Some")
+
+    let event: PluginEvent<unit> = BuildCompleted BuildSucceeded
+    test <@ keyFn event = Some(hash "abc123:salty") @>
+
 // --- Integration tests: cache intercept in registerHandler ---
 
 /// A null checker is fine for tests that don't perform actual compilation.
