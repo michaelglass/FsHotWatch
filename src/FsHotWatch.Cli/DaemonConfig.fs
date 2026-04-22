@@ -334,13 +334,10 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                         Some FsHotWatch.FileCommand.FileCommandPlugin.AnyTest
                     | true, v when v.ValueKind = JsonValueKind.False -> None
                     | true, v when v.ValueKind = JsonValueKind.Array ->
-                        let projects =
-                            v.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Set.ofSeq
+                        let projects = v.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Set.ofSeq
 
                         if projects.IsEmpty then
-                            Logging.warn
-                                "config"
-                                "fileCommands entry has empty afterTests list; treating as absent"
+                            Logging.warn "config" "fileCommands entry has empty afterTests list; treating as absent"
 
                             None
                         else
