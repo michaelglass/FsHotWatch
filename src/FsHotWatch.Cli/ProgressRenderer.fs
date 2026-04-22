@@ -276,18 +276,19 @@ module private Agent =
 
     /// Terminal state for a plugin as seen by an agent consumer. `None` from
     /// `stateToken` means "omit this plugin from output" (idle with no history).
+    [<RequireQualifiedAccess>]
     type State =
-        | SOk
-        | SFail
-        | SWarn
-        | SRunning
+        | Ok
+        | Fail
+        | Warn
+        | Running
 
     let private tokenOf =
         function
-        | SOk -> "ok"
-        | SFail -> "fail"
-        | SWarn -> "warn"
-        | SRunning -> "running"
+        | State.Ok -> "ok"
+        | State.Fail -> "fail"
+        | State.Warn -> "warn"
+        | State.Running -> "running"
 
     /// Escape a summary for `summary="..."`: collapse newlines to spaces,
     /// escape embedded double quotes, truncate to 80 chars.
@@ -303,19 +304,22 @@ module private Agent =
     let stateToken (warningsAreFailures: bool) (parsed: ParsedPluginStatus) : State option =
         let okOrDiag () =
             if DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics then
-                if parsed.Diagnostics.Errors > 0 then SFail else SWarn
+                if parsed.Diagnostics.Errors > 0 then
+                    State.Fail
+                else
+                    State.Warn
             else
-                SOk
+                State.Ok
 
         match parsed.Status with
-        | Running _ -> Some SRunning
-        | Failed _ -> Some SFail
+        | Running _ -> Some State.Running
+        | Failed _ -> Some State.Fail
         | Completed _ -> Some(okOrDiag ())
         | Idle ->
             parsed.LastRun
             |> Option.map (fun r ->
                 match r.Outcome with
-                | FailedRun _ -> SFail
+                | FailedRun _ -> State.Fail
                 | CompletedRun -> okOrDiag ())
 
     /// Extract a summary string for non-ok states. None when there's nothing to show.
@@ -341,10 +345,10 @@ module private Agent =
 
     let private formatLineWith (state: State) (name: string) (parsed: ParsedPluginStatus) : string =
         match state with
-        | SOk
-        | SRunning -> $"%s{name}: %s{tokenOf state}"
-        | SFail
-        | SWarn ->
+        | State.Ok
+        | State.Running -> $"%s{name}: %s{tokenOf state}"
+        | State.Fail
+        | State.Warn ->
             match summaryFor parsed |> Option.map escapeSummary with
             | Some s when s <> "" -> $"%s{name}: %s{tokenOf state} summary=\"%s{s}\""
             | _ -> $"%s{name}: %s{tokenOf state}"
@@ -354,46 +358,44 @@ module private Agent =
         stateToken warningsAreFailures parsed
         |> Option.map (fun s -> formatLineWith s name parsed)
 
-    /// Compute the `next:` line from pre-resolved plugin state tokens.
-    let nextStep (warningsAreFailures: bool) (tokens: (string * State option) list) : string =
-        let tokenMap = tokens |> Map.ofList
+    /// Compute the `next:` line from a plugin-name → resolved-state map.
+    /// Callers pass the same map used for per-plugin line rendering.
+    let nextStep (warningsAreFailures: bool) (stateByName: Map<string, State>) (activeStates: Set<State>) : string =
+        let isFail name =
+            Map.tryFind name stateByName = Some State.Fail
 
-        let isState state name =
-            Map.tryFind name tokenMap
-            |> Option.bind id
-            |> Option.exists (fun s -> s = state)
-
-        let anyState state =
-            tokens |> List.exists (fun (_, t) -> t = Some state)
-
-        if anyState SRunning then
+        if Set.contains State.Running activeStates then
             "next: fs-hot-watch --agent errors --wait"
-        elif isState SFail "build" then
+        elif isFail "build" then
             "next: fs-hot-watch --agent build"
-        elif isState SFail "test" then
+        elif isFail "test" then
             "next: fs-hot-watch --agent test"
         else
             let priority = [ "lint"; "analyze"; "format-check"; "coverage" ]
 
-            match priority |> List.tryFind (isState SFail) with
+            match priority |> List.tryFind isFail with
             | Some p -> $"next: fs-hot-watch --agent %s{p}"
-            | None when anyState SWarn && warningsAreFailures -> "next: fs-hot-watch --agent errors"
+            | None when Set.contains State.Warn activeStates && warningsAreFailures ->
+                "next: fs-hot-watch --agent errors"
             | None -> "next: done"
 
     /// Render full Agent-mode output: banner, per-plugin lines, next-step line.
     /// Computes each plugin's state once and reuses it for both the
     /// per-plugin line and the next-step priority scan.
     let render (warningsAreFailures: bool) (statuses: (string * ParsedPluginStatus) list) : string list =
-        let resolved =
-            statuses |> List.map (fun (n, p) -> n, stateToken warningsAreFailures p, p)
+        let folder (lines, stateByName, activeStates) (name, parsed) =
+            match stateToken warningsAreFailures parsed with
+            | None -> lines, stateByName, activeStates
+            | Some s -> formatLineWith s name parsed :: lines, Map.add name s stateByName, Set.add s activeStates
 
-        let pluginLines =
-            resolved
-            |> List.choose (fun (n, tok, p) -> tok |> Option.map (fun s -> formatLineWith s n p))
+        let revLines, stateByName, activeStates =
+            statuses |> List.fold folder ([], Map.empty, Set.empty)
 
-        let tokens = resolved |> List.map (fun (n, tok, _) -> n, tok)
+        let pluginLines = List.rev revLines
 
-        [ banner ] @ pluginLines @ [ nextStep warningsAreFailures tokens ]
+        [ banner ]
+        @ pluginLines
+        @ [ nextStep warningsAreFailures stateByName activeStates ]
 
 /// Render a single plugin's status block. Returns one or more lines.
 /// `warningsAreFailures` controls whether ledger warnings count as "completed-with-issues".

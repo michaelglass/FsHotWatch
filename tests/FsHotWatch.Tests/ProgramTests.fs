@@ -557,17 +557,16 @@ let ``executeCommand Init returns 1 when config already exists`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``applyGlobalFlags with unknown log level still builds extra args`` () =
-    let (_, _, _, extraArgs) = applyGlobalFlags [ LogLevel "trace" ]
-    test <@ extraArgs = "--log-level trace " @>
+    test <@ (applyGlobalFlags [ LogLevel "trace" ]).DaemonExtraArgs = "--log-level trace " @>
 
 [<Fact(Timeout = 5000)>]
 let ``applyGlobalFlags preserves order of multiple flags`` () =
-    let (noCache, noWarnFail, _, extraArgs) =
+    let opts =
         applyGlobalFlags [ Verbose; LogLevel "debug"; GlobalFlag.NoCache; NoWarnFail ]
 
-    test <@ noCache @>
-    test <@ noWarnFail @>
-    test <@ extraArgs = "--verbose --log-level debug --no-cache " @>
+    test <@ opts.NoCache @>
+    test <@ opts.NoWarnFail @>
+    test <@ opts.DaemonExtraArgs = "--verbose --log-level debug --no-cache " @>
 
 // --- decideDaemonAction additional edge cases ---
 

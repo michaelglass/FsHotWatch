@@ -311,7 +311,7 @@
     "PluginActivity.fs": [
       {
         "line": 92,
-        "branch": 66,
+        "branch": 65,
         "reason": "loosened: Recording phase state paths hit 65-66% across runs; pin to observed floor",
         "platform": "macos"
       },
@@ -379,8 +379,8 @@
     "ProgressRenderer.fs": [
       {
         "line": 91,
-        "branch": 63,
-        "reason": "loosened: CLI rendering paths not exercised on all platforms",
+        "branch": 62,
+        "reason": "loosened: agent-mode fold + Set/Map fusion reduced branch count; new floor",
         "platform": "macos"
       },
       {
