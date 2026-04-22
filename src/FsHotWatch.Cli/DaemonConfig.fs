@@ -100,10 +100,11 @@ type DaemonConfiguration =
                Directory: string
                ThresholdsFile: string option |} option
         FileCommands:
-            {| Pattern: string
+            {| Name: string option
+               Pattern: string option
+               AfterTests: FsHotWatch.FileCommand.FileCommandPlugin.TestFilter option
                Command: string
-               Args: string
-               RunOnStart: bool |} list
+               Args: string |} list
         Exclude: string list
         /// Directory (relative to repoRoot or absolute) for daemon.log. Defaults to "logs".
         LogDir: string
@@ -346,10 +347,34 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | true, arr ->
             arr.EnumerateArray()
             |> Seq.map (fun fc ->
+                let name =
+                    match fc.TryGetProperty("name") with
+                    | true, v when v.ValueKind = JsonValueKind.String -> Some(v.GetString())
+                    | _ -> None
+
                 let pattern =
                     match fc.TryGetProperty("pattern") with
-                    | true, v -> v.GetString()
-                    | _ -> "*.fsx"
+                    | true, v when v.ValueKind = JsonValueKind.String -> Some(v.GetString())
+                    | _ -> None
+
+                let afterTests =
+                    match fc.TryGetProperty("afterTests") with
+                    | true, v when v.ValueKind = JsonValueKind.True ->
+                        Some FsHotWatch.FileCommand.FileCommandPlugin.AnyTest
+                    | true, v when v.ValueKind = JsonValueKind.False -> None
+                    | true, v when v.ValueKind = JsonValueKind.Array ->
+                        let projects =
+                            v.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Set.ofSeq
+
+                        if projects.IsEmpty then
+                            Logging.warn
+                                "config"
+                                "fileCommands entry has empty afterTests list; treating as absent"
+
+                            None
+                        else
+                            Some(FsHotWatch.FileCommand.FileCommandPlugin.TestProjects projects)
+                    | _ -> None
 
                 let command =
                     match fc.TryGetProperty("command") with
@@ -361,15 +386,17 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     | true, v -> v.GetString()
                     | _ -> ""
 
-                let runOnStart =
-                    match fc.TryGetProperty("runOnStart") with
-                    | true, v when v.ValueKind = JsonValueKind.True -> true
-                    | _ -> false
+                if pattern.IsNone && afterTests.IsNone then
+                    failwith "fileCommands entry must specify `pattern` or `afterTests`"
 
-                {| Pattern = pattern
+                if afterTests.IsSome && name.IsNone then
+                    failwith "fileCommands entries with `afterTests` require an explicit `name`"
+
+                {| Name = name
+                   Pattern = pattern
+                   AfterTests = afterTests
                    Command = command
-                   Args = args
-                   RunOnStart = runOnStart |})
+                   Args = args |})
             |> Seq.toList
         | _ -> []
 
@@ -608,19 +635,27 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
 
     // File commands
     for fc in config.FileCommands do
-        Logging.info "config" $"Registering FileCommandPlugin: %s{fc.Pattern} → %s{fc.Command} %s{fc.Args}"
-        let suffix = fc.Pattern.TrimStart('*')
-
-        let fileFilter (path: string) =
-            path.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
+        let pluginName =
+            match fc.Name with
+            | Some n -> n
+            | None ->
+                match fc.Pattern with
+                | Some p -> $"file-cmd-%s{p}"
+                | None -> failwith "unreachable: validation rejects name=None && pattern=None"
 
         let trigger: FsHotWatch.FileCommand.FileCommandPlugin.CommandTrigger =
-            { FilePattern = Some fileFilter
-              AfterTests = None }
+            { FilePattern =
+                fc.Pattern
+                |> Option.map (fun p ->
+                    let suffix = p.TrimStart('*')
+                    fun (path: string) -> path.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+              AfterTests = fc.AfterTests }
+
+        Logging.info "config" $"Registering FileCommandPlugin: %s{pluginName} → %s{fc.Command} %s{fc.Args}"
 
         daemon.RegisterHandler(
             FsHotWatch.FileCommand.FileCommandPlugin.create
-                (FsHotWatch.PluginFramework.PluginName.create $"file-cmd-%s{fc.Pattern}")
+                (FsHotWatch.PluginFramework.PluginName.create pluginName)
                 trigger
                 fc.Command
                 fc.Args
