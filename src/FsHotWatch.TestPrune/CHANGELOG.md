@@ -15,6 +15,17 @@
 
 ### Fixed
 
+- **Stuck-state bug**: the synchronous `flushAndQueryAffected` call sites in
+  `BuildCompleted` and `TestsFinished (RerunQueued)` ran outside the async
+  try/with and had no net, so a DB hiccup would leave the plugin permanently
+  pinned in `Running` with no work dispatched. Both branches now wrap the
+  flush in a try/with that reports `PluginStatus.Failed`, transitions back
+  to `TestsIdle`, and leaves the plugin responsive to the next event.
+- **Schema-drift self-heal**: when a flush fails with SQLite "no such column"
+  / "no column named" (stale cache DB from a previous `TestPrune.Core` schema
+  version), the plugin deletes the offending DB file and logs a warning. The
+  next run rebuilds from scratch — the cache is derivative and safe to
+  regenerate. The caller no longer has to know which file to `rm`.
 - `affected-tests` command now updates on every `FileChecked` event
   rather than waiting for the next `BuildCompleted`. Each file check
   re-queries `QueryAffectedTests` against the currently-persisted DB
