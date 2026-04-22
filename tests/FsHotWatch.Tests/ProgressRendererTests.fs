@@ -312,3 +312,292 @@ let ``renderAll concatenates per-plugin blocks`` () =
     let joined = String.concat "\n" lines
     test <@ joined.Contains "Build" @>
     test <@ joined.Contains "Lint" @>
+
+// ---------------- Agent mode ----------------
+
+module private AgentFixtures =
+    let okStatus (summary: string option) : ParsedPluginStatus =
+        { Status = Completed(now - TimeSpan.FromSeconds 1.0)
+          Subtasks = []
+          ActivityTail = []
+          LastRun = Some(completedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) summary)
+          Diagnostics = DiagnosticCounts.empty }
+
+    let failStatus (err: string) : ParsedPluginStatus =
+        { Status = Failed(err, now - TimeSpan.FromSeconds 1.0)
+          Subtasks = []
+          ActivityTail = []
+          LastRun = Some(failedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) err)
+          Diagnostics = DiagnosticCounts.empty }
+
+    let runningStatus () : ParsedPluginStatus =
+        { Status = Running(now - TimeSpan.FromSeconds 2.0)
+          Subtasks = []
+          ActivityTail = []
+          LastRun = None
+          Diagnostics = DiagnosticCounts.empty }
+
+    let warnStatus () : ParsedPluginStatus =
+        { Status = Completed(now - TimeSpan.FromSeconds 1.0)
+          Subtasks = []
+          ActivityTail = []
+          LastRun = Some(completedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) None)
+          Diagnostics = { Errors = 0; Warnings = 3 } }
+
+    let idleNoHistory () : ParsedPluginStatus =
+        { Status = Idle
+          Subtasks = []
+          ActivityTail = []
+          LastRun = None
+          Diagnostics = DiagnosticCounts.empty }
+
+    let idleCompleted (summary: string option) : ParsedPluginStatus =
+        { Status = Idle
+          Subtasks = []
+          ActivityTail = []
+          LastRun = Some(completedRun (TimeSpan.FromSeconds 10.0) (TimeSpan.FromSeconds 2.0) summary)
+          Diagnostics = DiagnosticCounts.empty }
+
+    let idleFailed (err: string) : ParsedPluginStatus =
+        { Status = Idle
+          Subtasks = []
+          ActivityTail = []
+          LastRun = Some(failedRun (TimeSpan.FromSeconds 10.0) (TimeSpan.FromSeconds 2.0) err)
+          Diagnostics = DiagnosticCounts.empty }
+
+    /// Render a single plugin in agent mode, return list (may be empty for omitted).
+    let agentLine name parsed = renderPlugin Agent true now name parsed
+
+    let agentAll (statuses: (string * ParsedPluginStatus) list) =
+        renderAll Agent true now (Map.ofList statuses)
+
+    let agentAllLax (statuses: (string * ParsedPluginStatus) list) =
+        renderAll Agent false now (Map.ofList statuses)
+
+open AgentFixtures
+
+[<Fact(Timeout = 5000)>]
+let ``agent renderAll emits banner as first line`` () =
+    let lines = agentAll [ "build", okStatus None ]
+    test <@ lines.Length >= 1 @>
+    test <@ lines.[0].StartsWith "# fs-hot-watch agent mode" @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent banner lists expected commands`` () =
+    let lines = agentAll [ "build", okStatus None ]
+    let banner = lines.[0]
+
+    [ "check"
+      "build"
+      "test"
+      "lint"
+      "analyze"
+      "format"
+      "format-check"
+      "errors"
+      "status" ]
+    |> List.iter (fun cmd -> test <@ banner.Contains cmd @>)
+
+[<Fact(Timeout = 5000)>]
+let ``agent renderAll omits Idle plugins with no LastRun`` () =
+    let lines = agentAll [ "build", okStatus None; "coverage", idleNoHistory () ]
+
+    let joined = String.concat "\n" lines
+    test <@ joined.Contains "build:" @>
+    test <@ not (joined.Contains "coverage") @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent renderPlugin for Idle with no LastRun returns empty list`` () =
+    test <@ List.isEmpty (agentLine "coverage" (idleNoHistory ())) @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent Idle-with-completed-LastRun renders as ok`` () =
+    let lines = agentLine "analyze" (idleCompleted (Some "clean"))
+    test <@ lines = [ "analyze: ok" ] @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent Idle-with-failed-LastRun renders as fail with summary`` () =
+    let lines = agentLine "test" (idleFailed "2 failed in FsHotWatch.Tests")
+    test <@ lines.Length = 1 @>
+    test <@ lines.[0] = "test: fail summary=\"2 failed in FsHotWatch.Tests\"" @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent ok line is plain "<name>: ok" with no summary`` () =
+    let lines = agentLine "build" (okStatus (Some "built 4 projects"))
+    test <@ lines = [ "build: ok" ] @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent fail line includes summary`` () =
+    let lines = agentLine "test" (failStatus "2 failed in FsHotWatch.Tests")
+    test <@ lines.Length = 1 @>
+    let line = lines.[0]
+    test <@ line.StartsWith "test: fail summary=\"" @>
+    test <@ line.Contains "2 failed in FsHotWatch.Tests" @>
+    test <@ line.EndsWith "\"" @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent warn state fires when warnings present and warningsAreFailures=true`` () =
+    let lines = agentLine "lint" (warnStatus ())
+    test <@ lines.Length = 1 @>
+    test <@ lines.[0].StartsWith "lint: warn" @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent warn demotes to ok when warningsAreFailures=false`` () =
+    let lines = renderPlugin Agent false now "lint" (warnStatus ())
+    test <@ lines = [ "lint: ok" ] @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent Running line has no summary`` () =
+    let lines = agentLine "build" (runningStatus ())
+    test <@ lines = [ "build: running" ] @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent fail summary uses first non-empty line`` () =
+    let err = "first line of error\nsecond line\nthird line"
+    let lines = agentLine "lint" (failStatus err)
+    test <@ lines.[0].Contains "first line of error" @>
+    // Newlines collapsed to spaces — "second line" may still appear but
+    // as part of a single-quoted summary. Ensure the line is not multi-line.
+    test <@ not (lines.[0].Contains "\n") @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent fail summary truncated to roughly 80 chars`` () =
+    let long = String.replicate 200 "x"
+    let lines = agentLine "lint" (failStatus long)
+    // Extract the summary between the quotes.
+    let line = lines.[0]
+    let m = System.Text.RegularExpressions.Regex.Match(line, "summary=\"([^\"]*)\"")
+    test <@ m.Success @>
+    let summary = m.Groups.[1].Value
+    test <@ summary.Length <= 80 @>
+    test <@ summary.EndsWith "..." @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent fail summary escapes embedded double quotes`` () =
+    let err = "he said \"boom\" then exited"
+    let lines = agentLine "test" (failStatus err)
+    let line = lines.[0]
+    test <@ line.Contains "\\\"boom\\\"" @>
+    // Must remain a single well-formed summary="..." pair (exactly 2 unescaped quotes).
+    let unescapedQuotes =
+        // Count quotes not preceded by backslash.
+        System.Text.RegularExpressions.Regex.Matches(line, "(?<!\\\\)\"").Count
+
+    test <@ unescapedQuotes = 2 @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent emits no ANSI escapes`` () =
+    let statuses =
+        [ "build", okStatus (Some "ok")
+          "test", failStatus "boom"
+          "lint", warnStatus ()
+          "analyze", runningStatus () ]
+
+    let lines = agentAll statuses
+    let joined = String.concat "\n" lines
+    // No ESC char anywhere.
+    test <@ not (joined.Contains "\x1b") @>
+    test <@ stripAnsi joined = joined @>
+
+// ----- next-step rules -----
+
+[<Fact(Timeout = 5000)>]
+let ``agent next is errors --wait when any plugin is running`` () =
+    let statuses = [ "build", failStatus "compile error"; "test", runningStatus () ]
+
+    let lines = agentAll statuses
+    test <@ List.last lines = "next: fs-hot-watch --agent errors --wait" @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent next is build when build failed even if others also failed`` () =
+    let statuses =
+        [ "build", failStatus "compile error"
+          "test", failStatus "2 failed"
+          "lint", failStatus "warnings" ]
+
+    let lines = agentAll statuses
+    test <@ List.last lines = "next: fs-hot-watch --agent build" @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent next is test when build ok but test failed`` () =
+    let statuses =
+        [ "build", okStatus None
+          "test", failStatus "boom"
+          "lint", failStatus "warnings" ]
+
+    let lines = agentAll statuses
+    test <@ List.last lines = "next: fs-hot-watch --agent test" @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent next picks lint before analyze when both fail`` () =
+    let statuses =
+        [ "analyze", failStatus "bad"
+          "lint", failStatus "warn"
+          "coverage", failStatus "low" ]
+
+    let lines = agentAll statuses
+    test <@ List.last lines = "next: fs-hot-watch --agent lint" @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent next picks analyze before format-check and coverage`` () =
+    let statuses =
+        [ "coverage", failStatus "low"
+          "format-check", failStatus "unformatted"
+          "analyze", failStatus "bad" ]
+
+    let lines = agentAll statuses
+    test <@ List.last lines = "next: fs-hot-watch --agent analyze" @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent next picks format-check before coverage`` () =
+    let statuses =
+        [ "coverage", failStatus "low"; "format-check", failStatus "unformatted" ]
+
+    let lines = agentAll statuses
+    test <@ List.last lines = "next: fs-hot-watch --agent format-check" @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent next is errors when only warnings and warningsAreFailures=true`` () =
+    let statuses = [ "build", okStatus None; "lint", warnStatus () ]
+
+    let lines = agentAll statuses
+    test <@ List.last lines = "next: fs-hot-watch --agent errors" @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent next is done when warnings present but warningsAreFailures=false`` () =
+    let statuses = [ "build", okStatus None; "lint", warnStatus () ]
+
+    let lines = agentAllLax statuses
+    test <@ List.last lines = "next: done" @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent next is done when all clean`` () =
+    let statuses =
+        [ "build", okStatus None
+          "test", okStatus None
+          "lint", okStatus None
+          "analyze", okStatus None ]
+
+    let lines = agentAll statuses
+    test <@ List.last lines = "next: done" @>
+
+// ----- regex roundtrip -----
+
+[<Fact(Timeout = 5000)>]
+let ``agent output lines match the parseable grammar`` () =
+    let statuses =
+        [ "build", okStatus (Some "built 4 projects")
+          "test", failStatus "he said \"boom\"\nthen exited"
+          "lint", warnStatus ()
+          "analyze", runningStatus ()
+          "coverage", idleCompleted (Some "covered") ]
+
+    let lines = agentAll statuses
+
+    let pattern =
+        "^(?:# .*|[a-z-]+: (ok|fail|warn|running)(?: summary=\"(?:[^\"\\\\]|\\\\.)*\")?|next: .+)$"
+
+    let rx = System.Text.RegularExpressions.Regex(pattern)
+
+    for line in lines do
+        test <@ rx.IsMatch line @>
