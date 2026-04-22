@@ -410,6 +410,78 @@ let ``emits CommandCompleted on failure`` () =
         @>
 
 [<Fact(Timeout = 5000)>]
+let ``afterTests TestProjects fires when a listed project has results`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let trigger =
+        { FilePattern = None
+          AfterTests = Some(TestProjects(Set.ofList [ "Intelligence.Tests.Unit" ])) }
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-listed") trigger "echo" "ran" None
+
+    host.RegisterHandler(handler)
+
+    let results: FsHotWatch.Events.TestResults =
+        { Results =
+            Map.ofList
+                [ "Intelligence.Tests.Unit", FsHotWatch.Events.TestsPassed ""
+                  "Other", FsHotWatch.Events.TestsPassed "" ]
+          Elapsed = System.TimeSpan.Zero }
+
+    host.EmitTestCompleted(results)
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("afterTests-listed") with
+            | Some(Completed _) -> true
+            | _ -> false)
+        5000
+
+    let status = host.GetStatus("afterTests-listed")
+    test <@ status.IsSome @>
+
+    test
+        <@
+            match status.Value with
+            | Completed _ -> true
+            | _ -> false
+        @>
+
+[<Fact(Timeout = 10000)>]
+let ``afterTests TestProjects does not fire when no listed project matches`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let trigger =
+        { FilePattern = None
+          AfterTests = Some(TestProjects(Set.ofList [ "Intelligence.Tests.Unit" ])) }
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-miss") trigger "echo" "ran" None
+
+    host.RegisterHandler(handler)
+
+    let results: FsHotWatch.Events.TestResults =
+        { Results = Map.ofList [ "Intelligence.Tests.Integration", FsHotWatch.Events.TestsPassed "" ]
+          Elapsed = System.TimeSpan.Zero }
+
+    host.EmitTestCompleted(results)
+
+    // Command must NOT run — poll briefly for Completed/Failed; will time out at Idle (expected)
+    waitUntil
+        (fun () ->
+            match host.GetStatus("afterTests-miss") with
+            | Some(Completed _)
+            | Some(Failed _) -> true
+            | _ -> false)
+        1000
+    |> ignore
+
+    let status = host.GetStatus("afterTests-miss")
+    test <@ status.IsSome @>
+    test <@ status.Value = Idle @>
+
+[<Fact(Timeout = 5000)>]
 let ``afterTests AnyTest fires on TestCompleted regardless of projects`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
