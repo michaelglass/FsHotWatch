@@ -11,7 +11,7 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ### Changed
 - `fileCommands` entries accept `name` (string) and `afterTests` (`true` or string list) fields. An entry must set at least one of `pattern` / `afterTests`; entries with `afterTests` must have an explicit `name`.
-- Coverage XMLs are always emitted under `<repoRoot>/coverage/<project>/` (per-project opt-out via `tests.projects[].coverage = false` unchanged). The former top-level `coverage.directory` setting is gone.
+- Coverage output directory is now configured via `tests.coverageDir` (default `"coverage"`). Previously lived on the removed top-level `coverage.directory`. Per-project opt-out via `tests.projects[].coverage = false` unchanged.
 
 - chore: bump upstream tool versions
 
