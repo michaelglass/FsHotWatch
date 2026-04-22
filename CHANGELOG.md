@@ -16,9 +16,15 @@ All notable changes to FsHotWatch packages are documented here.
 
 #### Changed
 - **BREAKING:** `FileCommandPlugin.create` takes a `CommandTrigger` record instead of positional `fileFilter` + `runOnStart` args.
+- `afterTests` list-form fires iff **every** listed project appears in `TestResults.Results`. Paired with TestPrune's progressive cumulative emission (below), the command fires exactly once per batch and is unblocked by slow non-listed groups.
 
 #### Removed
 - `runOnStart` config/API field.
+
+### FsHotWatch.TestPrune
+
+#### Changed
+- **BREAKING:** `TestCompleted` emits progressively once per group with a cumulative prefix-chain of all projects completed so far, rather than once at batch end. Fixes downstream plugins being blocked by the slowest group.
 
 ### FsHotWatch.Cli
 
