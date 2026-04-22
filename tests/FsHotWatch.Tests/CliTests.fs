@@ -589,18 +589,18 @@ let ``executeCommand Scan calls scan IPC`` () =
     test <@ called @>
 
 [<Fact(Timeout = 5000)>]
-let ``executeCommand Status with plugin name calls getPluginStatus`` () =
+let ``executeCommand Status with plugin name queries GetDiagnostics for that plugin`` () =
     let mutable calledWith = ""
 
     let ipc =
         { fakeIpc () with
-            GetPluginStatus =
+            GetDiagnostics =
                 fun _ name ->
                     async {
                         calledWith <- name
 
                         return
-                            """{"lint": {"status": {"tag": "running", "since": "2026-01-01T00:00:00Z"}, "subtasks": [], "activityTail": [], "lastRun": null}}"""
+                            """{"count": 0, "files": {}, "statuses": {"lint": {"status": {"tag": "running", "since": "2026-01-01T00:00:00Z"}, "subtasks": [], "activityTail": [], "lastRun": null, "diagnostics": {"errors": 0, "warnings": 0}}}}"""
                     } }
 
     let result =
@@ -650,7 +650,7 @@ let ``executeCommand Start with fake daemon throws on null daemon`` () =
 let ``executeCommand returns 1 when IPC fails`` () =
     let ipc =
         { fakeIpc () with
-            GetStatus = fun _ -> async { return failwith "connection refused" } }
+            GetDiagnostics = fun _ _ -> async { return failwith "connection refused" } }
 
     let result =
         executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Status None) "" false fakeConfig 30.0

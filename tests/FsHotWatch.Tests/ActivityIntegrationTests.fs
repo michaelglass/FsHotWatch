@@ -4,6 +4,7 @@ open System
 open System.Threading
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 open FsHotWatch.PluginHost
@@ -109,7 +110,7 @@ let ``verbose renderer over final payload shows completion line with summary`` (
     waitUntil (fun () -> host.GetHistory("fake") |> List.isEmpty |> not) 10000
 
     let parsed = parsedFor host "fake"
-    let lines = renderPlugin Verbose DateTime.UtcNow "fake" parsed
+    let lines = renderPlugin Verbose true DateTime.UtcNow "fake" parsed
     let joined = String.concat "\n" lines
     test <@ joined.Contains "fake" @>
     test <@ joined.Contains "did 3 things" @>
@@ -155,7 +156,7 @@ let ``renderer during running phase shows 3 subtasks in verbose mode`` () =
     // Wait until subtasks appear.
     waitUntil (fun () -> host.GetSubtasks("slow") |> List.length = 3) 5000
     let parsed = parsedFor host "slow"
-    let lines = renderPlugin Verbose DateTime.UtcNow "slow" parsed
+    let lines = renderPlugin Verbose true DateTime.UtcNow "slow" parsed
     captured.Value <- lines
     gate.Set()
     waitUntil (fun () -> host.GetHistory("slow") |> List.isEmpty |> not) 10000

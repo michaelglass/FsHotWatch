@@ -66,6 +66,35 @@ module ErrorEntry =
           Column = 0
           Detail = Some detail }
 
+/// Per-plugin tally of ledger entries by severity — a lightweight projection of the ledger
+/// used by the status renderer to decide the "completed-with-issues" glyph without pulling
+/// the full entry list across the IPC wire.
+type DiagnosticCounts = { Errors: int; Warnings: int }
+
+module DiagnosticCounts =
+    let empty = { Errors = 0; Warnings = 0 }
+
+    let private bumpOne (d: DiagnosticCounts) (entry: ErrorEntry) =
+        match entry.Severity with
+        | Error -> { d with Errors = d.Errors + 1 }
+        | Warning -> { d with Warnings = d.Warnings + 1 }
+        | _ -> d
+
+    /// Fold a sequence of ledger entries into counts.
+    let ofEntries (entries: seq<ErrorEntry>) : DiagnosticCounts = entries |> Seq.fold bumpOne empty
+
+    /// True if these counts should be treated as a failure under the current policy.
+    let isFailing (warningsAreFailures: bool) (d: DiagnosticCounts) =
+        d.Errors > 0 || (warningsAreFailures && d.Warnings > 0)
+
+    /// Human-readable summary, omitting zero components. Empty string when both zero.
+    let summary (d: DiagnosticCounts) =
+        match d.Errors, d.Warnings with
+        | 0, 0 -> ""
+        | e, 0 -> $"%d{e} error(s)"
+        | 0, w -> $"%d{w} warning(s)"
+        | e, w -> $"%d{e} error(s), %d{w} warning(s)"
+
 type private LedgerState =
     { Errors: Map<struct (string * string), ErrorEntry list>
       Versions: Map<struct (string * string), int64> }
@@ -77,6 +106,7 @@ type private LedgerMsg =
     | ClearPlugin of plugin: string
     | GetAll of AsyncReplyChannel<Map<string, (string * ErrorEntry) list>>
     | GetByPlugin of plugin: string * AsyncReplyChannel<Map<string, ErrorEntry list>>
+    | GetCountsByPlugin of AsyncReplyChannel<Map<string, DiagnosticCounts>>
     | FailingReasons of warningsAreFailures: bool * AsyncReplyChannel<Map<string, (string * ErrorEntry) list>>
     | HasFailingReasons of warningsAreFailures: bool * AsyncReplyChannel<bool>
 
@@ -188,6 +218,30 @@ type ErrorLedger(?reporters: IErrorReporter list) =
                                 rc.Reply(result)
                                 state
 
+                            | GetCountsByPlugin rc ->
+                                let result =
+                                    state.Errors
+                                    |> Map.fold
+                                        (fun acc (struct (plugin, _)) entries ->
+                                            let prev =
+                                                Map.tryFind plugin acc |> Option.defaultValue DiagnosticCounts.empty
+
+                                            let next =
+                                                entries
+                                                |> List.fold
+                                                    (fun (d: DiagnosticCounts) e ->
+                                                        match e.Severity with
+                                                        | Error -> { d with Errors = d.Errors + 1 }
+                                                        | Warning -> { d with Warnings = d.Warnings + 1 }
+                                                        | _ -> d)
+                                                    prev
+
+                                            Map.add plugin next acc)
+                                        Map.empty
+
+                                rc.Reply(result)
+                                state
+
                             | FailingReasons(warningsAreFailures, rc) ->
                                 let result =
                                     state.Errors
@@ -241,6 +295,11 @@ type ErrorLedger(?reporters: IErrorReporter list) =
     /// Get errors for a specific plugin only.
     member _.GetByPlugin(pluginName: string) : Map<string, ErrorEntry list> =
         agent.PostAndReply(fun rc -> GetByPlugin(pluginName, rc))
+
+    /// Get per-plugin error/warning counts in a single agent roundtrip.
+    /// Plugins with no ledger entries are absent from the map.
+    member _.GetCountsByPlugin() : Map<string, DiagnosticCounts> =
+        agent.PostAndReply(fun rc -> GetCountsByPlugin rc)
 
     /// Get all failing entries grouped by file path, filtered by severity.
     /// When warningsAreFailures is true, both Error and Warning entries are included.
