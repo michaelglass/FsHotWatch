@@ -6,49 +6,12 @@ open CommandTree
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 
-/// Per-plugin ledger counts — how many Error/Warning entries this plugin
-/// has contributed to the error ledger since its last clear.
-type DiagnosticCounts = { Errors: int; Warnings: int }
-
-module DiagnosticCounts =
-    let empty = { Errors = 0; Warnings = 0 }
-
-/// Fully parsed per-plugin status including subtasks, activity tail,
-/// last-run history, and ledger diagnostic counts.
 type ParsedPluginStatus =
     { Status: PluginStatus
       Subtasks: Subtask list
       ActivityTail: string list
       LastRun: RunRecord option
       Diagnostics: DiagnosticCounts }
-
-/// Format a single plugin result line with ANSI colors and timing.
-/// Example: "  ✓ Build                        3.2s"
-/// Example: "  ✗ Lint                         6.4s"
-let formatStepResult (name: string) (status: PluginStatus) : string =
-    let paddedName = name.PadRight(24)
-
-    match status with
-    | Completed _ -> $"  %s{Color.green}\u2713%s{Color.reset} %s{paddedName}"
-    | Failed(error, _) ->
-        $"  %s{Color.red}\u2717%s{Color.reset} %s{paddedName} %s{Color.dim}\u2014 %s{error}%s{Color.reset}"
-    | Running since ->
-        let elapsed = DateTime.UtcNow - since
-        let timingStr = UI.timing elapsed
-        $"  %s{Color.yellow}\u2026%s{Color.reset} %s{paddedName} %s{timingStr}"
-    | Idle -> $"  %s{Color.dim}\u2014 %s{paddedName}%s{Color.reset}"
-
-/// Format the plugin summary section with colored status and timing.
-let formatSummary (statuses: Map<string, PluginStatus>) : string =
-    if statuses.IsEmpty then
-        ""
-    else
-        let sb = StringBuilder()
-
-        for KeyValue(name, status) in statuses do
-            sb.AppendLine(formatStepResult name status) |> ignore
-
-        sb.ToString().TrimEnd('\n', '\r')
 
 /// Format the errors section with colored severity labels.
 /// Groups errors by file with colored severity.
@@ -98,11 +61,13 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
         let fileCount = actionable.Count
 
         let summary =
-            match errorCount, warnCount with
-            | 0, 0 -> "No errors"
-            | e, 0 -> $"%d{e} error(s)"
-            | 0, w -> $"%d{w} warning(s)"
-            | e, w -> $"%d{e} error(s), %d{w} warning(s)"
+            match
+                DiagnosticCounts.summary
+                    { Errors = errorCount
+                      Warnings = warnCount }
+            with
+            | "" -> "No errors"
+            | s -> s
 
         sb.Append($"%s{summary} in %d{fileCount} file(s)") |> ignore
         sb.ToString().TrimEnd('\n', '\r')
@@ -116,27 +81,17 @@ let runOnceWithProgress (daemon: FsHotWatch.Daemon.Daemon) : Map<string, PluginS
 
 /// Build a parsed-status map from the daemon's host, for use by the progress renderer.
 let snapshotHost (host: FsHotWatch.PluginHost.PluginHost) (statuses: Map<string, PluginStatus>) =
+    let counts = host.GetDiagnosticCountsByPlugin()
+
     statuses
     |> Map.map (fun name status ->
         let snap = host.GetActivitySnapshot(name)
-
-        let counts =
-            host.GetErrorsByPlugin(name)
-            |> Map.toList
-            |> List.collect snd
-            |> List.fold
-                (fun acc entry ->
-                    match entry.Severity with
-                    | DiagnosticSeverity.Error -> { acc with Errors = acc.Errors + 1 }
-                    | DiagnosticSeverity.Warning -> { acc with Warnings = acc.Warnings + 1 }
-                    | _ -> acc)
-                DiagnosticCounts.empty
 
         { Status = status
           Subtasks = snap.Subtasks
           ActivityTail = snap.ActivityTail
           LastRun = snap.LastRun
-          Diagnostics = counts })
+          Diagnostics = Map.tryFind name counts |> Option.defaultValue DiagnosticCounts.empty })
 
 /// Run a daemon in run-once mode and report results.
 let runOnceAndReport
