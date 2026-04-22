@@ -226,35 +226,30 @@ let ``globalSpec parse with global flags after command`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``applyGlobalFlags with NoCache returns noCache true`` () =
-    let (noCache, _, _, _) = applyGlobalFlags [ NoCache ]
-    test <@ noCache @>
+    test <@ (applyGlobalFlags [ NoCache ]).NoCache @>
 
 [<Fact(Timeout = 5000)>]
 let ``applyGlobalFlags with empty list returns noCache false`` () =
-    let (noCache, noWarnFail, _, extraArgs) = applyGlobalFlags []
-    test <@ not noCache @>
-    test <@ not noWarnFail @>
-    test <@ extraArgs = "" @>
+    let opts = applyGlobalFlags []
+    test <@ not opts.NoCache @>
+    test <@ not opts.NoWarnFail @>
+    test <@ opts.DaemonExtraArgs = "" @>
 
 [<Fact(Timeout = 5000)>]
 let ``applyGlobalFlags builds daemon extra args`` () =
-    let (_, _, _, extraArgs) = applyGlobalFlags [ Verbose; NoCache ]
-    test <@ extraArgs = "--verbose --no-cache " @>
+    test <@ (applyGlobalFlags [ Verbose; NoCache ]).DaemonExtraArgs = "--verbose --no-cache " @>
 
 [<Fact(Timeout = 5000)>]
 let ``applyGlobalFlags with LogLevel builds extra args`` () =
-    let (_, _, _, extraArgs) = applyGlobalFlags [ LogLevel "debug" ]
-    test <@ extraArgs = "--log-level debug " @>
+    test <@ (applyGlobalFlags [ LogLevel "debug" ]).DaemonExtraArgs = "--log-level debug " @>
 
 [<Fact(Timeout = 5000)>]
 let ``applyGlobalFlags with NoWarnFail returns noWarnFail true`` () =
-    let (_, noWarnFail, _, _) = applyGlobalFlags [ NoWarnFail ]
-    test <@ noWarnFail @>
+    test <@ (applyGlobalFlags [ NoWarnFail ]).NoWarnFail @>
 
 [<Fact(Timeout = 5000)>]
 let ``applyGlobalFlags NoWarnFail does not add to daemon extra args`` () =
-    let (_, _, _, extraArgs) = applyGlobalFlags [ NoWarnFail ]
-    test <@ extraArgs = "" @>
+    test <@ (applyGlobalFlags [ NoWarnFail ]).DaemonExtraArgs = "" @>
 
 // --- findRepoRoot tests ---
 
@@ -1081,36 +1076,6 @@ let ``executeCommand InvalidateCache calls invalidateCache with file path`` () =
 
     test <@ result = 0 @>
     test <@ calledWithPath = "some/file.fs" @>
-
-[<Fact(Timeout = 5000)>]
-let ``executeCommand InvalidateCache honors agent mode`` () =
-    let ipc =
-        { fakeIpc () with
-            InvalidateCache = fun _ _ -> async { return """{"status": "rechecked"}""" } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (InvalidateCache "some/file.fs")
-            ""
-            false
-            true
-            fakeConfig
-            30.0
-
-    test <@ result = 0 @>
-
-[<Fact(Timeout = 5000)>]
-let ``executePluginCommand in agent mode returns 0`` () =
-    let ipc =
-        { fakeIpc () with
-            RunCommand = fun _ _ _ -> async { return "done" } }
-
-    let result = executePluginCommand ipc "pipe" true "warnings" ""
-    test <@ result = 0 @>
 
 // --- Regression tests for bug fixes ---
 
