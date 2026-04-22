@@ -94,7 +94,8 @@ type DaemonConfiguration =
         Tests:
             {| BeforeRun: string option
                Extensions: TestExtensionConfig list
-               Projects: TestProjectConfig list |} option
+               Projects: TestProjectConfig list
+               CoverageDir: string |} option
         FileCommands:
             {| Name: string option
                Pattern: string option
@@ -304,13 +305,19 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     |> Seq.toList
                 | _ -> []
 
+            let coverageDir =
+                match v.TryGetProperty("coverageDir") with
+                | true, cd when cd.ValueKind = JsonValueKind.String -> cd.GetString()
+                | _ -> "coverage"
+
             if projects.IsEmpty then
                 None
             else
                 Some
                     {| BeforeRun = beforeRun
                        Extensions = extensions
-                       Projects = projects |}
+                       Projects = projects
+                       CoverageDir = coverageDir |}
         | _ -> None
 
     let fileCommands =
@@ -538,15 +545,17 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             |> List.map (fun p -> p.Project)
             |> Set.ofList
 
-        // Coverage XML is emitted under <repoRoot>/coverage/<project>/ so external
-        // coverage tools (e.g. coverageratchet, invoked via fileCommands afterTests)
-        // can read it. Per-project opt-out is honored via `coverageExcludedProjects`.
+        // Coverage XML is emitted under <repoRoot>/<tests.coverageDir>/<project>/
+        // so external coverage tools (e.g. coverageratchet invoked via a
+        // fileCommands afterTests entry) can read it. The output directory is
+        // configurable via `tests.coverageDir` (default `"coverage"`).
+        // Per-project opt-out is honored via `coverageExcludedProjects`.
         let coverageArgs =
             Some(fun (project: string) ->
                 if coverageExcludedProjects.Contains(project) then
                     ""
                 else
-                    let outputDir = Path.Combine(repoRoot, "coverage", project)
+                    let outputDir = Path.Combine(repoRoot, t.CoverageDir, project)
                     Directory.CreateDirectory(outputDir) |> ignore
                     let outputPath = Path.GetFullPath(Path.Combine(outputDir, "coverage.cobertura.xml"))
 
