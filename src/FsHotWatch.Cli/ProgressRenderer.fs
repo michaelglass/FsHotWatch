@@ -12,6 +12,7 @@ open FsHotWatch.Cli.IpcParsing
 type RenderMode =
     | Compact
     | Verbose
+    | Agent
 
 /// Status glyphs (already wrapped in ANSI colors) and the em-dash used as an inline
 /// text separator. Kept in one place so the visual language stays consistent.
@@ -30,21 +31,19 @@ let private padName (name: string) = name.PadRight(24)
 /// daemon's timestamps).
 let private clock (t: DateTime) = t.ToString("HH:mm:ss")
 
+let private truncateTo80 (s: string) : string =
+    if s.Length <= 80 then s else s.Substring(0, 77) + "..."
+
 /// Truncate a potentially multi-line error to its first non-empty line, then
 /// shorten to roughly 80 printable characters.
 let private summariseError (error: string) : string =
     if String.IsNullOrEmpty error then
         ""
     else
-        let firstLine =
-            error.Split([| '\r'; '\n' |], StringSplitOptions.RemoveEmptyEntries)
-            |> Array.tryHead
-            |> Option.defaultValue ""
-
-        if firstLine.Length <= 80 then
-            firstLine
-        else
-            firstLine.Substring(0, 77) + "..."
+        error.Split([| '\r'; '\n' |], StringSplitOptions.RemoveEmptyEntries)
+        |> Array.tryHead
+        |> Option.defaultValue ""
+        |> truncateTo80
 
 let private runSummary (lastRun: RunRecord) : string =
     match lastRun.Outcome, lastRun.Summary with
@@ -267,6 +266,135 @@ let private renderVerbose
 
     header :: body
 
+// ----- Agent -----
+
+/// Agent-mode rendering. Line-oriented, ANSI-free, parseable output with a
+/// trailing `next:` hint.
+module private Agent =
+    let banner =
+        "# fs-hot-watch agent mode | cmds: check build test lint analyze format format-check errors status"
+
+    /// Terminal state for a plugin as seen by an agent consumer. `None` from
+    /// `stateToken` means "omit this plugin from output" (idle with no history).
+    type State =
+        | SOk
+        | SFail
+        | SWarn
+        | SRunning
+
+    let private tokenOf =
+        function
+        | SOk -> "ok"
+        | SFail -> "fail"
+        | SWarn -> "warn"
+        | SRunning -> "running"
+
+    /// Escape a summary for `summary="..."`: collapse newlines to spaces,
+    /// escape embedded double quotes, truncate to 80 chars.
+    let escapeSummary (s: string) : string =
+        if String.IsNullOrEmpty s then
+            ""
+        else
+            s.Replace('\r', ' ').Replace('\n', ' ').Replace("\"", "\\\"").Trim()
+            |> truncateTo80
+
+    /// Determine the state for a plugin. Returns None when the plugin
+    /// should be omitted (Idle with no lastRun).
+    let stateToken (warningsAreFailures: bool) (parsed: ParsedPluginStatus) : State option =
+        let okOrDiag () =
+            if DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics then
+                if parsed.Diagnostics.Errors > 0 then SFail else SWarn
+            else
+                SOk
+
+        match parsed.Status with
+        | Running _ -> Some SRunning
+        | Failed _ -> Some SFail
+        | Completed _ -> Some(okOrDiag ())
+        | Idle ->
+            parsed.LastRun
+            |> Option.map (fun r ->
+                match r.Outcome with
+                | FailedRun _ -> SFail
+                | CompletedRun -> okOrDiag ())
+
+    /// Extract a summary string for non-ok states. None when there's nothing to show.
+    let private summaryFor (parsed: ParsedPluginStatus) : string option =
+        let nonEmpty s =
+            if System.String.IsNullOrEmpty s then None else Some s
+
+        let fromLastRun () =
+            parsed.LastRun |> Option.map runSummary |> Option.bind nonEmpty
+
+        match parsed.Status with
+        | Failed(err, _) ->
+            parsed.LastRun
+            |> Option.bind (fun r -> r.Summary)
+            |> Option.bind nonEmpty
+            |> Option.orElseWith (fun () -> nonEmpty err)
+        | Running _ -> fromLastRun ()
+        | Completed _
+        | Idle ->
+            DiagnosticCounts.summary parsed.Diagnostics
+            |> nonEmpty
+            |> Option.orElseWith fromLastRun
+
+    let private formatLineWith (state: State) (name: string) (parsed: ParsedPluginStatus) : string =
+        match state with
+        | SOk
+        | SRunning -> $"%s{name}: %s{tokenOf state}"
+        | SFail
+        | SWarn ->
+            match summaryFor parsed |> Option.map escapeSummary with
+            | Some s when s <> "" -> $"%s{name}: %s{tokenOf state} summary=\"%s{s}\""
+            | _ -> $"%s{name}: %s{tokenOf state}"
+
+    /// Format one plugin line. None when the plugin should be omitted.
+    let formatLine (warningsAreFailures: bool) (name: string) (parsed: ParsedPluginStatus) : string option =
+        stateToken warningsAreFailures parsed
+        |> Option.map (fun s -> formatLineWith s name parsed)
+
+    /// Compute the `next:` line from pre-resolved plugin state tokens.
+    let nextStep (warningsAreFailures: bool) (tokens: (string * State option) list) : string =
+        let tokenMap = tokens |> Map.ofList
+
+        let isState state name =
+            Map.tryFind name tokenMap
+            |> Option.bind id
+            |> Option.exists (fun s -> s = state)
+
+        let anyState state =
+            tokens |> List.exists (fun (_, t) -> t = Some state)
+
+        if anyState SRunning then
+            "next: fs-hot-watch --agent errors --wait"
+        elif isState SFail "build" then
+            "next: fs-hot-watch --agent build"
+        elif isState SFail "test" then
+            "next: fs-hot-watch --agent test"
+        else
+            let priority = [ "lint"; "analyze"; "format-check"; "coverage" ]
+
+            match priority |> List.tryFind (isState SFail) with
+            | Some p -> $"next: fs-hot-watch --agent %s{p}"
+            | None when anyState SWarn && warningsAreFailures -> "next: fs-hot-watch --agent errors"
+            | None -> "next: done"
+
+    /// Render full Agent-mode output: banner, per-plugin lines, next-step line.
+    /// Computes each plugin's state once and reuses it for both the
+    /// per-plugin line and the next-step priority scan.
+    let render (warningsAreFailures: bool) (statuses: (string * ParsedPluginStatus) list) : string list =
+        let resolved =
+            statuses |> List.map (fun (n, p) -> n, stateToken warningsAreFailures p, p)
+
+        let pluginLines =
+            resolved
+            |> List.choose (fun (n, tok, p) -> tok |> Option.map (fun s -> formatLineWith s n p))
+
+        let tokens = resolved |> List.map (fun (n, tok, _) -> n, tok)
+
+        [ banner ] @ pluginLines @ [ nextStep warningsAreFailures tokens ]
+
 /// Render a single plugin's status block. Returns one or more lines.
 /// `warningsAreFailures` controls whether ledger warnings count as "completed-with-issues".
 let renderPlugin
@@ -279,6 +407,10 @@ let renderPlugin
     match mode with
     | Compact -> renderCompact warningsAreFailures now name parsed
     | Verbose -> renderVerbose warningsAreFailures now name parsed
+    | Agent ->
+        match Agent.formatLine warningsAreFailures name parsed with
+        | Some line -> [ line ]
+        | None -> []
 
 /// Render all plugin statuses in the given mode. Callers join with newlines
 /// and use the line count for cursor-up erase.
@@ -288,6 +420,10 @@ let renderAll
     (now: DateTime)
     (statuses: Map<string, ParsedPluginStatus>)
     : string list =
-    statuses
-    |> Map.toList
-    |> List.collect (fun (name, parsed) -> renderPlugin mode warningsAreFailures now name parsed)
+    match mode with
+    | Agent -> Agent.render warningsAreFailures (Map.toList statuses)
+    | Compact
+    | Verbose ->
+        statuses
+        |> Map.toList
+        |> List.collect (fun (name, parsed) -> renderPlugin mode warningsAreFailures now name parsed)
