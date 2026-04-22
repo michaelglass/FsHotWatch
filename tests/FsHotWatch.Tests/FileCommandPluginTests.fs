@@ -8,15 +8,18 @@ open FsHotWatch.PluginHost
 open FsHotWatch.FileCommand.FileCommandPlugin
 open FsHotWatch.Tests.TestHelpers
 
+let private fileTrigger (filter: string -> bool) : CommandTrigger =
+    { FilePattern = Some filter
+      AfterTests = None }
+
 [<Fact(Timeout = 5000)>]
 let ``plugin has correct name`` () =
     let handler =
         create
             (FsHotWatch.PluginFramework.PluginName.create "run-scripts")
-            (fun f -> f.EndsWith(".fsx"))
+            (fileTrigger (fun f -> f.EndsWith(".fsx")))
             "echo"
             "hello"
-            false
             None
 
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "run-scripts" @>
@@ -28,10 +31,9 @@ let ``command runs when matching files change`` () =
     let handler =
         create
             (FsHotWatch.PluginFramework.PluginName.create "run-scripts")
-            (fun f -> f.EndsWith(".fsx"))
+            (fileTrigger (fun f -> f.EndsWith(".fsx")))
             "echo"
             "hello"
-            false
             None
 
     host.RegisterHandler(handler)
@@ -62,10 +64,9 @@ let ``command does not run for non-matching files`` () =
     let handler =
         create
             (FsHotWatch.PluginFramework.PluginName.create "run-scripts")
-            (fun f -> f.EndsWith(".fsx"))
+            (fileTrigger (fun f -> f.EndsWith(".fsx")))
             "echo"
             "hello"
-            false
             None
 
     host.RegisterHandler(handler)
@@ -93,10 +94,9 @@ let ``command captures stdout output`` () =
     let handler =
         create
             (FsHotWatch.PluginFramework.PluginName.create "echo-test")
-            (fun _ -> true)
+            (fileTrigger (fun _ -> true))
             "echo"
             "captured-output"
-            false
             None
 
     host.RegisterHandler(handler)
@@ -122,10 +122,9 @@ let ``command with environment variables`` () =
     let handler =
         create
             (FsHotWatch.PluginFramework.PluginName.create "env-test")
-            (fun _ -> true)
+            (fileTrigger (fun _ -> true))
             "echo"
             "env-test-output"
-            false
             None
 
     host.RegisterHandler(handler)
@@ -156,10 +155,9 @@ let ``command runs on ProjectChanged with matching files`` () =
     let handler =
         create
             (FsHotWatch.PluginFramework.PluginName.create "proj-watcher")
-            (fun f -> f.EndsWith(".fsproj"))
+            (fileTrigger (fun f -> f.EndsWith(".fsproj")))
             "echo"
             "project changed"
-            false
             None
 
     host.RegisterHandler(handler)
@@ -188,7 +186,12 @@ let ``command ignores SolutionChanged`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "sln-watcher") (fun _ -> true) "echo" "hello" false None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "sln-watcher")
+            (fileTrigger (fun _ -> true))
+            "echo"
+            "hello"
+            None
 
     host.RegisterHandler(handler)
 
@@ -212,7 +215,12 @@ let ``command reports Failed status on command failure`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "fail-cmd") (fun _ -> true) "false" "" false None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "fail-cmd")
+            (fileTrigger (fun _ -> true))
+            "false"
+            ""
+            None
 
     host.RegisterHandler(handler)
 
@@ -244,10 +252,9 @@ let ``command reports Failed status on exception`` () =
     let handler =
         create
             (FsHotWatch.PluginFramework.PluginName.create "bad-cmd")
-            (fun _ -> true)
+            (fileTrigger (fun _ -> true))
             "this-command-does-not-exist-xyz"
             ""
-            false
             None
 
     host.RegisterHandler(handler)
@@ -278,7 +285,12 @@ let ``status command returns not run when no files matched`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "no-match") (fun _ -> false) "echo" "hello" false None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "no-match")
+            (fileTrigger (fun _ -> false))
+            "echo"
+            "hello"
+            None
 
     host.RegisterHandler(handler)
 
@@ -303,7 +315,12 @@ let ``status command returns false when command failed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "fail-status") (fun _ -> true) "false" "" false None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "fail-status")
+            (fileTrigger (fun _ -> true))
+            "false"
+            ""
+            None
 
     host.RegisterHandler(handler)
 
@@ -327,7 +344,12 @@ let ``emits CommandCompleted on success`` () =
     host.RegisterHandler(recorder)
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "echo-cmd") (fun _ -> true) "echo" "hello" false None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "echo-cmd")
+            (fileTrigger (fun _ -> true))
+            "echo"
+            "hello"
+            None
 
     host.RegisterHandler(handler)
 
@@ -358,7 +380,12 @@ let ``emits CommandCompleted on failure`` () =
     host.RegisterHandler(recorder)
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "fail-cmd-emit") (fun _ -> true) "false" "" false None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "fail-cmd-emit")
+            (fileTrigger (fun _ -> true))
+            "false"
+            ""
+            None
 
     host.RegisterHandler(handler)
 
@@ -379,34 +406,6 @@ let ``emits CommandCompleted on failure`` () =
         <@
             match cmd.Value.Outcome with
             | FsHotWatch.Events.CommandFailed _ -> true
-            | _ -> false
-        @>
-
-[<Fact(Timeout = 5000)>]
-let ``runOnStart runs command on first FileChanged even without matching files`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "setup-cmd") (fun _ -> false) "echo" "setup" true None
-
-    host.RegisterHandler(handler)
-
-    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-
-    waitUntil
-        (fun () ->
-            match host.GetStatus("setup-cmd") with
-            | Some(Completed _) -> true
-            | _ -> false)
-        5000
-
-    let status = host.GetStatus("setup-cmd")
-    test <@ status.IsSome @>
-
-    test
-        <@
-            match status.Value with
-            | Completed _ -> true
             | _ -> false
         @>
 
@@ -446,46 +445,3 @@ let ``afterTests AnyTest fires on TestCompleted regardless of projects`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 5000)>]
-let ``runOnStart only triggers once`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "setup-once") (fun _ -> false) "echo" "setup" true None
-
-    host.RegisterHandler(handler)
-
-    // First event — runs despite no matching files
-    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-
-    waitUntil
-        (fun () ->
-            match host.GetStatus("setup-once") with
-            | Some(Completed _) -> true
-            | _ -> false)
-        5000
-
-    let result1 = host.RunCommand("setup-once-status", [||]) |> Async.RunSynchronously
-
-    test <@ result1.IsSome @>
-    test <@ result1.Value.Contains("true") @>
-
-    // Second event — no matching files and already ran once, should not re-run
-    // Reset status observation by sending another event
-    host.EmitFileChanged(SourceChanged [ "src/Other.fs" ])
-
-    // Wait briefly — command should NOT run again
-    waitUntil
-        (fun () ->
-            match host.GetStatus("setup-once") with
-            | Some(Completed _)
-            | Some(Failed _) -> true
-            | _ -> false)
-        1000
-    |> ignore
-
-    // Status should still show the original successful run
-    let result2 = host.RunCommand("setup-once-status", [||]) |> Async.RunSynchronously
-
-    test <@ result2.IsSome @>
-    test <@ result2.Value.Contains("true") @>
