@@ -2,23 +2,22 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.8 (2026-04-22)
+
 ### Changed
 
-- **BREAKING**: Bump `TestPrune.Core` 2.0.0 → 3.0.0. Adopts the revised
+- **BREAKING**: Bump `TestPrune.Core` 2.0.0 → 3.0.2. Adopts the revised
   `ITestPruneExtension` interface: extensions now implement `AnalyzeEdges`
   (returning `Dependency list` to inject into the graph) rather than
   `FindAffectedTests`. Extension-contributed edges are written to the DB
   via `RebuildProjects` before `QueryAffectedTests` so impact traversal
   unifies AST-based and extension-based dependencies in a single pass.
+  3.0.2 also closes the pre-versioning stale-DB hole (`openCheckedConnection`
+  now recreates any DB where `user_version` reads 0 *and* user tables
+  already exist), so combined with the plugin-side stuck-state fix below
+  the schema-drift hang is prevented at both layers.
 - `AnalysisResult` construction now passes `Attributes` through from the
   analyzer (new field in `TestPrune.Core` schema v3).
-
-### Changed
-
-- Bump `TestPrune.Core` 3.0.1 → 3.0.2. 3.0.2 closes the pre-versioning stale-DB
-  hole by having `openCheckedConnection` recreate any DB where `user_version`
-  reads 0 *and* user tables already exist. Combined with the plugin-side
-  stuck-state fix below, the schema-drift hang is now prevented at both layers.
 
 ### Fixed
 

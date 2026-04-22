@@ -4,7 +4,16 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
-### FsHotWatch
+### FsHotWatch.Fantomas
+
+#### Added
+- Format preprocessor and format-check plugin respect `.gitignore` and `.fantomasignore`
+
+---
+
+## 2026-04-22 (`core-v0.8.0-alpha.8` · `testprune-v0.7.0-alpha.8` · `analyzers-v0.7.0-alpha.7` · `coverage-v0.7.0-alpha.7`)
+
+### FsHotWatch 0.8.0-alpha.8
 
 #### Added
 - `PathFilter` module — shared path filtering with gitignore-style glob matching (via `Ignore` 0.2.1 package)
@@ -13,43 +22,48 @@ All notable changes to FsHotWatch packages are documented here.
 - `IgnoreFilterCache` — caches .gitignore/.fantomasignore rules, auto-reloads on file changes
 - `TaskCache.saltedCacheKey` / `optionalSaltedCacheKey` — cache-key builders that fold a per-event salt into the commit-based key, for plugins whose cache validity depends on state beyond the commit
 
-#### Fixed
-- `PluginFramework.registerHandler` now auto-reports `Failed(ex.Message, now)` when a handler's `Update` throws. Previously an uncaught throw after `ReportStatus(Running)` left the plugin stuck displaying `Running` indefinitely. Structural: no plugin author can forget it; impossible for a throw to leave the observed status non-terminal.
-
-### FsHotWatch.Coverage
-
-#### Fixed
-- Cache key now carries a tristate salt derived from the thresholds file (absent / unreadable / content SHA-256), so editing `coverage-ratchet.json` under the same commit invalidates the cached plugin status, and a transient IO error on the thresholds file no longer presents as "file absent" to the cache
-
 #### Changed
 - `performScan` takes `BatchContext` instead of 12 individual parameters
 - Path filtering consolidated through `PathFilter` module (Watcher, CheckPipeline, Daemon)
+- **BREAKING (IPC)**: `WaitForComplete` RPC now accepts a `timeoutMs: int` argument; `<= 0` means no client-imposed timeout. `DaemonRpcConfig.WaitForAllTerminal` signature changed from `unit -> Task<unit>` to `TimeSpan -> Task<unit>`.
 
-### FsHotWatch.Cli
+#### Fixed
+- `PluginFramework.registerHandler` now auto-reports `Failed(ex.Message, now)` when a handler's `Update` throws. Previously an uncaught throw after `ReportStatus(Running)` left the plugin stuck displaying `Running` indefinitely. Structural: no plugin author can forget it; impossible for a throw to leave the observed status non-terminal.
+
+### FsHotWatch.Cli 0.8.0-alpha.8
 
 #### Added
 - `exclude` config field in `.fs-hot-watch.json` — gitignore-style glob patterns to exclude project trees
+- `errors --wait [--timeout <seconds>]` — block until every tracked plugin reaches a terminal state before printing diagnostics
 
 #### Fixed
 - `start` is a singleton per repo, enforced by an OS exclusive lock on `.fs-hot-watch/daemon.lock` held for the daemon's lifetime; concurrent invocations cannot both proceed. Second invocation exits 0 with "Daemon already running at pipe <name> (pid <n>)".
 - `stop` drains until the pipe is observed quiet for two consecutive probes (30 s overall timeout), cleanly taking down any number of historically-accumulated duplicate daemons and no longer misreporting "No daemon running" during pipe tear-down.
 
-### Tests / CI
+### FsHotWatch.TestPrune 0.7.0-alpha.8
 
 #### Changed
-- Split end-to-end FCS / analyzer / lint / format / build tests into a new `tests/FsHotWatch.IntegrationTests` project. These tests hit SDK-reflection paths that fire nondeterministically across runs, so letting them contribute to coverage made the ratchet flaky. They still run via `mise run test-integration`; the main `test-direct` coverage now only aggregates `FsHotWatch.Tests`.
-- `AnalyzersPlugin` grew two extracted helpers — `isKnownNonAnalyzerPrefix` and `buildAnalyzerProjectOptions` — with deterministic unit tests covering all branches the live-SDK integration tests used to hit flakily.
-
-### FsHotWatch.TestPrune
+- **BREAKING**: Bump `TestPrune.Core` 2.0.0 → 3.0.2. Adopts the revised `ITestPruneExtension` interface: extensions now implement `AnalyzeEdges` (returning `Dependency list` to inject into the graph) rather than `FindAffectedTests`. 3.0.2 also closes the pre-versioning stale-DB hole — `openCheckedConnection` recreates any DB where `user_version = 0` with existing user tables — so the schema-drift hang is prevented at both the Core and plugin layers.
+- `AnalysisResult` construction now passes `Attributes` through from the analyzer (new field in `TestPrune.Core` schema v3).
 
 #### Fixed
 - **Stuck-state bug**: `flushAndQueryAffected` call sites in `BuildCompleted` and `TestsFinished (RerunQueued)` were unguarded; a DB hiccup pinned the plugin in `Running` forever. Both now report `Failed` and transition back to `TestsIdle` on exception.
 - **Schema-drift self-heal**: SQLite "no such column" errors on a stale cache DB now trigger automatic deletion of the DB file with a warning, so the caller no longer has to know which file to remove.
+- `affected-tests` command now updates on every `FileChecked` event rather than waiting for the next `BuildCompleted`.
 
-### FsHotWatch.Fantomas
+### FsHotWatch.Analyzers 0.7.0-alpha.7
 
-#### Added
-- Format preprocessor and format-check plugin respect `.gitignore` and `.fantomasignore`
+#### Changed
+- Extracted `isKnownNonAnalyzerPrefix` and `buildAnalyzerProjectOptions` from `createCliContext` (internal) to enable deterministic unit tests for branches that live-SDK integration tests used to hit nondeterministically.
+
+### FsHotWatch.Coverage 0.7.0-alpha.7
+
+#### Fixed
+- Cache key now carries a tristate salt derived from the thresholds file (absent / unreadable / content SHA-256), so editing `coverage-ratchet.json` under the same commit invalidates the cached plugin status, and a transient IO error on the thresholds file no longer presents as "file absent" to the cache.
+
+### Tests / CI (this cycle)
+
+- Split end-to-end FCS / analyzer / lint / format / build tests into a new `tests/FsHotWatch.IntegrationTests` project, excluded from the coverage aggregate to stabilize the ratchet.
 
 ---
 

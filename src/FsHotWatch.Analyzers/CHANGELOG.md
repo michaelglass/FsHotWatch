@@ -1,5 +1,24 @@
 # Changelog — FsHotWatch.Analyzers
 
+## Unreleased
+
+## 0.7.0-alpha.7 (2026-04-22)
+
+### Changed
+
+- Extracted two pure helpers from `createCliContext` to enable deterministic
+  unit tests for branches that the live-SDK integration tests used to hit
+  nondeterministically:
+  - `isKnownNonAnalyzerPrefix` — filter for the analyzer DLL exclusion
+    list, lifted out of the `ExcludeFilter` closure.
+  - `buildAnalyzerProjectOptions` — SDK-reflection that builds the
+    `AnalyzerProjectOptions` instance, testable with `None` / throwing-ctor
+    fixtures instead of requiring a real loaded SDK.
+- `InternalsVisibleTo FsHotWatch.Tests` added so the unit tests can reach
+  these helpers without bloating the package's public API.
+
+---
+
 ## 0.5.0-alpha.1 (2026-04-12)
 
 ### Changed
