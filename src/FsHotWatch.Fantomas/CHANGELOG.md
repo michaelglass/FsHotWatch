@@ -1,5 +1,9 @@
 # Changelog — FsHotWatch.Fantomas
 
+## Unreleased
+
+- chore: bump upstream tool versions
+
 ## 0.7.0-alpha.3 (2026-04-18)
 
 ### Added
