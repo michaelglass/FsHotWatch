@@ -25,7 +25,8 @@ let private parsedFor (host: PluginHost) (name: string) : ParsedPluginStatus =
     { Status = status
       Subtasks = host.GetSubtasks(name)
       ActivityTail = host.GetActivityTail(name)
-      LastRun = lastRun }
+      LastRun = lastRun
+      Diagnostics = DiagnosticCounts.empty }
 
 /// A fake plugin that on FileChanged starts 3 subtasks, logs 2 messages,
 /// ends the subtasks one by one, and records an explicit summary.
