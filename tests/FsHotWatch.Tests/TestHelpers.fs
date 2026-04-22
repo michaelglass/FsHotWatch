@@ -166,11 +166,37 @@ let commandRecorder () =
 
     ((fun () -> receivedCommand), handler)
 
+/// Create a plugin that counts CommandCompleted events for a given plugin name.
+/// Returns (getCount, handler) — getCount() is the current total.
+let commandCounter (pluginName: string) =
+    let count = ref 0
+
+    let handler: FsHotWatch.PluginFramework.PluginHandler<unit, obj> =
+        { Name = FsHotWatch.PluginFramework.PluginName.create $"counter-for-{pluginName}"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | FsHotWatch.Events.CommandCompleted result when result.Name = pluginName ->
+                        System.Threading.Interlocked.Increment(count) |> ignore
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeCommandCompleted ]
+          CacheKey = None
+          Teardown = None }
+
+    ((fun () -> count.Value), handler)
+
 /// Create a plugin that records TestCompleted events in order.
 /// Returns (getEvents, handler) — getEvents returns a snapshot of all received
 /// TestResults in FIFO order.
 let testCompletedRecorder () =
-    let received = System.Collections.Concurrent.ConcurrentQueue<FsHotWatch.Events.TestResults>()
+    let received =
+        System.Collections.Concurrent.ConcurrentQueue<FsHotWatch.Events.TestResults>()
 
     let handler: FsHotWatch.PluginFramework.PluginHandler<unit, obj> =
         { Name = FsHotWatch.PluginFramework.PluginName.create "test-completed-recorder"
