@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.8 (2026-04-22)
+
 ### Added
 
 - `TaskCache.saltedCacheKey` / `TaskCache.optionalSaltedCacheKey` — cache-key
