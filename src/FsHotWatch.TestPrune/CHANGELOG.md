@@ -13,6 +13,13 @@
 - `AnalysisResult` construction now passes `Attributes` through from the
   analyzer (new field in `TestPrune.Core` schema v3).
 
+### Changed
+
+- Bump `TestPrune.Core` 3.0.1 → 3.0.2. 3.0.2 closes the pre-versioning stale-DB
+  hole by having `openCheckedConnection` recreate any DB where `user_version`
+  reads 0 *and* user tables already exist. Combined with the plugin-side
+  stuck-state fix below, the schema-drift hang is now prevented at both layers.
+
 ### Fixed
 
 - **Stuck-state bug**: the synchronous `flushAndQueryAffected` call sites in
