@@ -258,3 +258,86 @@ let ``plugin subscribing to CommandCompleted receives event`` () =
     let (_, cmdHandler) = registeredCmd.Value
     let result = cmdHandler [||] |> Async.RunSynchronously
     test <@ result = "true" @>
+
+// --- Framework invariant: handler throws -> plugin status reaches terminal Failed ---
+
+[<Fact(Timeout = 5000)>]
+let ``handler that throws after ReportStatus(Running) still transitions status to Failed`` () =
+    // Regression: before the fix, a handler that reported Running and then threw
+    // (e.g. TestPrune flushing a schema-drifted DB) would leave the plugin
+    // indefinitely displaying Running with no work dispatched — the classic
+    // stuck-state hang. The framework now catches the throw and forces Failed.
+    let reportedStatuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
+    let mutable registeredCmd: CommandHandler option = None
+
+    let handler: PluginHandler<unit, unit> =
+        { Name = PluginName.create "throwing-handler"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        ctx.ReportStatus(Running(System.DateTime.UtcNow))
+                        failwith "simulated DB schema drift"
+                        return state
+                    | _ -> return state
+                }
+          Commands = [ "noop", fun _state _args -> async { return "ok" } ]
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
+
+    let reg =
+        registerHandler
+            { Checker = checker
+              RepoRoot = "/tmp/repo"
+              ReportStatus = fun _ status -> reportedStatuses.Enqueue(status)
+              ReportErrors = fun _ _ _ -> ()
+              ClearErrors = fun _ _ -> ()
+              ClearPlugin = fun _ -> ()
+              EmitBuildCompleted = fun _ -> ()
+              EmitTestCompleted = fun _ -> ()
+              EmitCommandCompleted = fun _ -> ()
+              RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd
+              TaskCache = None
+              StartSubtask = fun _ _ _ -> ()
+              EndSubtask = fun _ _ -> ()
+              Log = fun _ _ -> ()
+              SetSummary = fun _ _ -> () }
+            handler
+
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
+
+    // Drain the agent: the command queues behind the failing FileChanged, so
+    // awaiting it guarantees both statuses have been recorded by the time we read.
+    registeredCmd.Value [||] |> Async.RunSynchronously |> ignore
+
+    let statuses = reportedStatuses.ToArray() |> List.ofArray
+    // Must have seen Running first, then Failed — never just Running.
+    test
+        <@
+            statuses
+            |> List.exists (function
+                | Running _ -> true
+                | _ -> false)
+        @>
+
+    test
+        <@
+            statuses
+            |> List.exists (function
+                | Failed(msg, _) -> msg.Contains("simulated DB schema drift")
+                | _ -> false)
+        @>
+
+    // Critically: the last observed status must be terminal (not Running).
+    let lastStatus = statuses |> List.last
+
+    test
+        <@
+            match lastStatus with
+            | Failed _ -> true
+            | Completed _ -> true
+            | _ -> false
+        @>

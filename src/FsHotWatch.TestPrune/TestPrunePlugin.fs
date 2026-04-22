@@ -812,11 +812,11 @@ let create
                         | TestsIdle idle ->
                             Logging.info "test-prune" $"BuildSucceeded received, running tests"
 
-                            ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
-
-                            // If the DB flush/query throws (e.g. schema drift on a stale cache),
-                            // stay in TestsIdle and report Failed so the plugin doesn't hang in
-                            // Running with no work dispatched.
+                            // Flush/query before announcing Running so the reported status never
+                            // lies (the old order would flash Running even on schema-drifted DBs).
+                            // The framework catches uncaught throws and forces Failed as a
+                            // defense-in-depth net; we still trap locally here so we can run
+                            // the schema-drift self-heal and preserve the TestsIdle transition.
                             match
                                 (try
                                     Ok(flushAndQueryAffected state)
@@ -829,6 +829,7 @@ let create
                                 ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                                 return state
                             | Ok stateWithAffected ->
+                                ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
                                 let running = Lifecycle.start idle
 
                                 let newState =
