@@ -28,8 +28,6 @@ module TestPrunePlugin = FsHotWatch.TestPrune.TestPrunePlugin
 module AnalyzersPlugin = FsHotWatch.Analyzers.AnalyzersPlugin
 open FsHotWatch.Build
 
-module CoveragePlugin = FsHotWatch.Coverage.CoveragePlugin
-
 open FsHotWatch.FileCommand.FileCommandPlugin
 open FsHotWatch.CheckCache
 open FsHotWatch.Tests.TestHelpers
@@ -1056,9 +1054,11 @@ let ``TestPrunePlugin with failing test reports failure`` () =
             ()
 
 // ===========================================================================
-// CoveragePlugin — success and failure
+// CoveragePlugin tests removed (plugin deleted; coverage now flows through
+// fileCommands afterTests triggers invoking an external coverage tool).
 // ===========================================================================
 
+(*
 [<Fact(Timeout = 5000)>]
 let ``CoveragePlugin succeeds when coverage above threshold`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-above-{Guid.NewGuid():N}")
@@ -1194,16 +1194,22 @@ let ``CoveragePlugin reports no files found`` () =
         with _ ->
             ()
 
+*)
+
 // ===========================================================================
 // FileCommandPlugin — success and failure
 // ===========================================================================
+
+let private fileTrigger (filter: string -> bool) : FsHotWatch.FileCommand.FileCommandPlugin.CommandTrigger =
+    { FilePattern = Some filter
+      AfterTests = None }
 
 [<Fact(Timeout = 5000)>]
 let ``FileCommandPlugin runs command for matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (PluginName.create "fsx-runner") (fun f -> f.EndsWith(".fsx")) "echo" "hello" false None
+        create (PluginName.create "fsx-runner") (fileTrigger (fun f -> f.EndsWith(".fsx"))) "echo" "hello" None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "scripts/build.fsx" ])
@@ -1230,7 +1236,7 @@ let ``FileCommandPlugin ignores non-matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (PluginName.create "fsx-runner") (fun f -> f.EndsWith(".fsx")) "echo" "hello" false None
+        create (PluginName.create "fsx-runner") (fileTrigger (fun f -> f.EndsWith(".fsx"))) "echo" "hello" None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -1253,7 +1259,7 @@ let ``FileCommandPlugin reports failure on bad command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (PluginName.create "fsx-runner") (fun f -> f.EndsWith(".fsx")) "false" "" false None
+        create (PluginName.create "fsx-runner") (fileTrigger (fun f -> f.EndsWith(".fsx"))) "false" "" None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "scripts/build.fsx" ])
@@ -1280,15 +1286,9 @@ let ``FileCommandPlugin reports failure on bad command`` () =
 // ===========================================================================
 
 [<Fact(Timeout = 5000)>]
-let ``Full pipeline: format → build → test → coverage`` () =
+let ``Full pipeline: format → build → test`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-pipeline-{Guid.NewGuid():N}")
-    let covDir = Path.Combine(tmpDir, "coverage")
-    let covSubDir = Path.Combine(covDir, "PipelineTests")
-    Directory.CreateDirectory(covSubDir) |> ignore
-
-    let xmlPath = Path.Combine(covSubDir, "cobertura.xml")
-
-    File.WriteAllText(xmlPath, """<?xml version="1.0" ?><coverage line-rate="0.95" branch-rate="0.85" />""")
+    Directory.CreateDirectory(tmpDir) |> ignore
 
     let dbPath = Path.Combine(tmpDir, "test-prune.db")
 
@@ -1319,10 +1319,6 @@ let ``Full pipeline: format → build → test → coverage`` () =
             TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None
 
         host.RegisterHandler(testPruneHandler)
-
-        // Register CoveragePlugin
-        let coverageHandler = CoveragePlugin.create covDir None None None
-        host.RegisterHandler(coverageHandler)
 
         // Create a temp .fs file and run preprocessors on it
         let fsFile = Path.Combine(tmpDir, "Temp.fs")
@@ -1357,19 +1353,6 @@ let ``Full pipeline: format → build → test → coverage`` () =
         test
             <@
                 match testStatus.Value with
-                | Completed _ -> true
-                | _ -> false
-            @>
-
-        // Coverage is triggered by TestCompleted — wait for it too
-        waitForTerminalStatus host "coverage" 10000
-
-        let covStatus = host.GetStatus("coverage")
-        test <@ covStatus.IsSome @>
-
-        test
-            <@
-                match covStatus.Value with
                 | Completed _ -> true
                 | _ -> false
             @>
