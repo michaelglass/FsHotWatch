@@ -486,7 +486,6 @@ let private fakeConfig: DaemonConfiguration =
       Cache = FsHotWatch.Cli.DaemonConfig.NoCache
       Analyzers = None
       Tests = None
-      Coverage = None
       FileCommands = []
       Exclude = []
       LogDir = "logs" }
