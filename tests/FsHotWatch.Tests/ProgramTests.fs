@@ -413,22 +413,17 @@ let ``executeCommand Start — second concurrent invocation is idempotent`` () =
     // Regression: two back-to-back Start calls (simulating two users / two
     // mise-check invocations) must not both proceed to createDaemon.
     withTempDir "prog-start-concurrent" (fun tmpDir ->
-        // First call: pipe is free, daemon would start (but we short-circuit by
-        // flipping IsRunning to true as soon as the first attempt proceeds).
-        let mutable running = false
+        // Models the race: first invocation has finished claiming the pipe (so
+        // IsRunning is true by the time the second invocation runs its guard).
         let mutable createDaemonCalls = 0
 
         let createDaemon _ =
             createDaemonCalls <- createDaemonCalls + 1
-            running <- true
             Unchecked.defaultof<_>
 
         let ipc =
             { fakeIpc () with
-                IsRunning = fun _ -> running }
-
-        // Second invocation should see `running = true` and short-circuit.
-        running <- true
+                IsRunning = fun _ -> true }
 
         let result =
             executeCommand createDaemon ipc tmpDir "pipe-concurrent" Start "" false fakeConfig 5.0
