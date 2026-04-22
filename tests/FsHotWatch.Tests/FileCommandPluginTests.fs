@@ -411,6 +411,42 @@ let ``runOnStart runs command on first FileChanged even without matching files``
         @>
 
 [<Fact(Timeout = 5000)>]
+let ``afterTests AnyTest fires on TestCompleted regardless of projects`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let trigger =
+        { FilePattern = None
+          AfterTests = Some AnyTest }
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-any") trigger "echo" "ran" None
+
+    host.RegisterHandler(handler)
+
+    let results: FsHotWatch.Events.TestResults =
+        { Results = Map.ofList [ "AnyProject", FsHotWatch.Events.TestsPassed "" ]
+          Elapsed = System.TimeSpan.Zero }
+
+    host.EmitTestCompleted(results)
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("afterTests-any") with
+            | Some(Completed _) -> true
+            | _ -> false)
+        5000
+
+    let status = host.GetStatus("afterTests-any")
+    test <@ status.IsSome @>
+
+    test
+        <@
+            match status.Value with
+            | Completed _ -> true
+            | _ -> false
+        @>
+
+[<Fact(Timeout = 5000)>]
 let ``runOnStart only triggers once`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
