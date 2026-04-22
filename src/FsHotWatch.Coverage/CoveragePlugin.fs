@@ -74,18 +74,33 @@ let private parseCoberturaXml (path: string) : (float * float) option =
         Logging.warn "coverage" $"Failed to parse Cobertura XML %s{path}: %s{ex.Message}"
         None
 
-/// Hash the thresholds file content (empty string if missing/unreadable) so that
-/// editing `coverage-ratchet.json` (e.g. via `coverageratchet loosen`) invalidates
-/// the cached plugin result under the same commit.
-let private thresholdsFileHash (path: string) : string =
+/// State of the thresholds file used as a cache-key salt. Kept as a union so
+/// that "file absent" and "file present but unreadable" can't silently collapse
+/// to the same key — a transient IO hiccup used to look identical to a truly
+/// missing thresholds file and risk replaying the wrong cached result.
+type private ThresholdsState =
+    | ThresholdsAbsent
+    | ThresholdsUnreadable of path: string * reason: string
+    | ThresholdsHash of sha256Hex: string
+
+let private readThresholdsState (path: string) : ThresholdsState =
     if not (File.Exists path) then
-        ""
+        ThresholdsAbsent
     else
         try
-            FsHotWatch.CheckCache.sha256Hex (File.ReadAllText path)
+            ThresholdsHash(FsHotWatch.CheckCache.sha256Hex (File.ReadAllText path))
         with ex ->
             Logging.warn "coverage" $"Failed to hash thresholds file %s{path}: %s{ex.Message}"
-            ""
+            ThresholdsUnreadable(path, ex.GetType().Name)
+
+let private thresholdsSalt (thresholdsFile: string option) : string =
+    match thresholdsFile with
+    | None -> ""
+    | Some path ->
+        match readThresholdsState path with
+        | ThresholdsAbsent -> "absent"
+        | ThresholdsUnreadable(_, reason) -> $"err:%s{reason}"
+        | ThresholdsHash hex -> hex
 
 /// Creates a framework plugin handler that checks coverage thresholds after tests complete.
 let create
@@ -227,7 +242,5 @@ let create
               } ]
       Subscriptions = Set.ofList [ SubscribeTestCompleted ]
       CacheKey =
-        FsHotWatch.TaskCache.optionalSaltedCacheKey
-            (fun _ -> thresholdsFile |> Option.map thresholdsFileHash |> Option.defaultValue "")
-            getCommitId
+        FsHotWatch.TaskCache.optionalSaltedCacheKey (fun _ -> thresholdsSalt thresholdsFile) getCommitId
       Teardown = None }
