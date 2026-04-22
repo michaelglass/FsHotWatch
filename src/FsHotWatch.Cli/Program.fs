@@ -69,6 +69,7 @@ type GlobalFlag =
     | [<CmdFlag(Name = "log-level")>] LogLevel of string
     | [<CmdFlag(Name = "no-cache")>] NoCache
     | [<CmdFlag(Name = "no-warn-fail")>] NoWarnFail
+    | [<CmdFlag(Short = "a"); Cmd("Agent-friendly parseable output with next-step hint")>] Agent
 
 let globalSpec =
     CommandReflection.fromUnionWithGlobalsAndEnv<Command, GlobalFlag>
@@ -83,11 +84,12 @@ let private isRunOnce = List.contains RunOnce
 
 let private isCompact = List.contains Compact
 
-let private pickMode (flags: RunFlag list) : ProgressRenderer.RenderMode =
-    if isCompact flags then
-        ProgressRenderer.Compact
-    else
-        ProgressRenderer.Verbose
+/// Pick a render mode. `agentMode` is the --agent/-a global flag; when true it
+/// wins over the per-command --compact/-q flag.
+let private pickModeWith (agentMode: bool) (flags: RunFlag list) : ProgressRenderer.RenderMode =
+    if agentMode then ProgressRenderer.Agent
+    elif isCompact flags then ProgressRenderer.Compact
+    else ProgressRenderer.Verbose
 
 let private renderLines mode warningsAreFailures statuses =
     ProgressRenderer.renderAll mode warningsAreFailures System.DateTime.UtcNow statuses
@@ -226,6 +228,7 @@ let private ensureAndQueryErrors
         1
     else
         IpcOutput.pollAndRender
+            mode
             (renderLines mode (not noWarnFail))
             noWarnFail
             (fun () -> ipc.WaitForScan pipeName -1L |> Async.RunSynchronously)
@@ -384,9 +387,12 @@ let executeCommand
     (command: Command)
     (daemonExtraArgs: string)
     (noWarnFail: bool)
+    (agentMode: bool)
     (config: DaemonConfiguration)
     (startupTimeoutSeconds: float)
     : int =
+    let pickMode flags = pickModeWith agentMode flags
+
     let ensureDaemonFn () =
         ensureDaemon ipc repoRoot pipeName daemonExtraArgs config.LogDir startupTimeoutSeconds
 
@@ -495,6 +501,8 @@ let executeCommand
             UI.success $"Scan: %s{result}"
             0)
     | Status pluginName ->
+        let mode = pickMode []
+
         withIpc (fun () ->
             let filter = pluginName |> Option.defaultValue ""
             let json = ipc.GetDiagnostics pipeName filter |> Async.RunSynchronously
@@ -515,7 +523,7 @@ let executeCommand
                 1
             | _ ->
                 let output =
-                    IpcOutput.formatDiagnosticsResponse (renderLines ProgressRenderer.Verbose (not noWarnFail)) scoped
+                    IpcOutput.formatDiagnosticsResponse mode (renderLines mode (not noWarnFail)) scoped
 
                 eprintfn "%s" output
                 IpcOutput.exitCodeFromResponse noWarnFail scoped)
@@ -544,7 +552,7 @@ let executeCommand
                     eprintfn "  Building..."
                     ipc.TriggerBuild pipeName |> Async.RunSynchronously
 
-            IpcOutput.renderIpcResult (renderLines mode (not noWarnFail)) noWarnFail result)
+            IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
     | Test flags when isRunOnce flags ->
         let testConfig =
             { stripConfig config with
@@ -572,7 +580,7 @@ let executeCommand
                     eprintfn "  Running tests..."
                     ipc.RunCommand pipeName "run-tests" "{}" |> Async.RunSynchronously
 
-            IpcOutput.renderIpcResult (renderLines mode (not noWarnFail)) noWarnFail result)
+            IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
     | Format flags when isRunOnce flags ->
         let formatConfig =
             { stripConfig config with
@@ -598,7 +606,7 @@ let executeCommand
                     eprintfn "  Formatting..."
                     ipc.FormatAll pipeName |> Async.RunSynchronously
 
-            IpcOutput.renderIpcResult (renderLines mode (not noWarnFail)) noWarnFail result)
+            IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
     | Lint flags when isRunOnce flags ->
         let lintConfig = { stripConfig config with Lint = true }
         let mode = pickMode flags
@@ -642,6 +650,8 @@ let executeCommand
             (Some "format-check")
     | FormatCheck flags -> queryPluginWith (pickMode flags) "format-check"
     | Errors flags ->
+        let mode = pickMode []
+
         match WaitMode.fromFlags flags with
         | Error msg ->
             eprintfn "fs-hot-watch errors: %s" msg
@@ -668,17 +678,14 @@ let executeCommand
                     let errorsJson = ipc.GetDiagnostics pipeName "" |> Async.RunSynchronously
                     let resp = IpcParsing.parseDiagnosticsResponse errorsJson
 
-                    eprintfn
-                        "%s"
-                        (IpcOutput.formatDiagnosticsResponse
-                            (renderLines ProgressRenderer.Verbose (not noWarnFail))
-                            resp)
+                    eprintfn "%s" (IpcOutput.formatDiagnosticsResponse mode (renderLines mode (not noWarnFail)) resp)
 
                     IpcOutput.exitCodeFromResponse noWarnFail resp)
     | InvalidateCache filePath ->
         withDaemonAndIpc (fun () ->
+            let mode = pickMode []
             let result = ipc.InvalidateCache pipeName filePath |> Async.RunSynchronously
-            IpcOutput.renderIpcResult (renderLines ProgressRenderer.Verbose (not noWarnFail)) noWarnFail result)
+            IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
     | Init ->
         let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
         let projects = InitConfig.discoverProjects repoRoot None
@@ -707,21 +714,22 @@ let executeCommand
         0
 
 /// Execute an unknown command as a plugin command via IPC.
-let executePluginCommand (ipc: IpcOps) (pipeName: string) (cmd: string) (argsStr: string) : int =
+let executePluginCommand (ipc: IpcOps) (pipeName: string) (agentMode: bool) (cmd: string) (argsStr: string) : int =
     withIpc (fun () ->
+        let mode = pickModeWith agentMode []
         let result = ipc.RunCommand pipeName cmd argsStr |> Async.RunSynchronously
-        IpcOutput.renderIpcResult (renderLines ProgressRenderer.Verbose true) false result)
+        IpcOutput.renderIpcResult mode (renderLines mode true) false result)
 
-/// Apply parsed global flags: configure logging and return (noCache, noWarnFail, daemonExtraArgs).
-let applyGlobalFlags (globals: GlobalFlag list) : bool * bool * string =
-    let (noCache, noWarnFail, parts) =
+/// Apply parsed global flags: configure logging and return (noCache, noWarnFail, agentMode, daemonExtraArgs).
+let applyGlobalFlags (globals: GlobalFlag list) : bool * bool * bool * string =
+    let (noCache, noWarnFail, agentMode, parts) =
         globals
         |> List.fold
-            (fun (nc, nwf, acc) flag ->
+            (fun (nc, nwf, ag, acc) flag ->
                 match flag with
                 | Verbose ->
                     FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
-                    (nc, nwf, "--verbose" :: acc)
+                    (nc, nwf, ag, "--verbose" :: acc)
                 | LogLevel level ->
                     match level with
                     | "error" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
@@ -732,17 +740,19 @@ let applyGlobalFlags (globals: GlobalFlag list) : bool * bool * string =
                         eprintfn "Unknown log level: %s (using info)" other
                         FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Info
 
-                    (nc, nwf, $"--log-level %s{level}" :: acc)
-                | NoCache -> (true, nwf, "--no-cache" :: acc)
-                | NoWarnFail -> (nc, true, acc))
-            (false, false, [])
+                    (nc, nwf, ag, $"--log-level %s{level}" :: acc)
+                | NoCache -> (true, nwf, ag, "--no-cache" :: acc)
+                | NoWarnFail -> (nc, true, ag, acc)
+                // --agent is client-side only; don't forward to the daemon in extra args.
+                | Agent -> (nc, nwf, true, acc))
+            (false, false, false, [])
 
     let extraArgs =
         match parts with
         | [] -> ""
         | _ -> (parts |> List.rev |> String.concat " ") + " "
 
-    (noCache, noWarnFail, extraArgs)
+    (noCache, noWarnFail, agentMode, extraArgs)
 
 [<EntryPoint>]
 let main args =
@@ -766,7 +776,7 @@ let main args =
 
         match globalSpec.Parse args with
         | Ok(globals, command) ->
-            let (noCache, noWarnFail, daemonExtraArgs) = applyGlobalFlags globals
+            let (noCache, noWarnFail, agentMode, daemonExtraArgs) = applyGlobalFlags globals
             let config = loadConfig repoRoot
             let cacheConfig = if noCache then DaemonConfig.NoCache else config.Cache
             let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
@@ -774,7 +784,17 @@ let main args =
             let createDaemon (root: string) =
                 Daemon.create root backend keyProvider None config.Exclude
 
-            executeCommand createDaemon defaultIpcOps repoRoot pipeName command daemonExtraArgs noWarnFail config 30.0
+            executeCommand
+                createDaemon
+                defaultIpcOps
+                repoRoot
+                pipeName
+                command
+                daemonExtraArgs
+                noWarnFail
+                agentMode
+                config
+                30.0
         | Error(HelpRequested path) ->
             printfn "%s" (CommandTree.helpForPath commandTree path cliName)
             0
@@ -791,7 +811,8 @@ let main args =
                 |> List.skip 1
                 |> String.concat " "
 
-            executePluginCommand defaultIpcOps pipeName input argsStr
+            let agentMode = argList |> List.exists (fun a -> a = "--agent" || a = "-a")
+            executePluginCommand defaultIpcOps pipeName agentMode input argsStr
         | Error(InvalidArguments(cmd, msg)) ->
             eprintfn "Invalid arguments for '%s': %s" cmd msg
             1

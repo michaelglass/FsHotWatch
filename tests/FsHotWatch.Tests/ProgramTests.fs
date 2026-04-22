@@ -4,6 +4,7 @@ open System
 open System.IO
 open Xunit
 open Swensen.Unquote
+open CommandTree
 open FsHotWatch.Cli.Program
 open FsHotWatch.Cli.DaemonConfig
 open FsHotWatch.Tests.TestHelpers
@@ -373,7 +374,17 @@ let ``executeCommand Scan Force passes true to IPC scan`` () =
                     } }
 
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" (Scan [ Force ]) "" false fakeConfig 30.0
+        executeCommand
+            (fun _ -> Unchecked.defaultof<_>)
+            ipc
+            "/tmp"
+            "pipe"
+            (Scan [ Force ])
+            ""
+            false
+            false
+            fakeConfig
+            30.0
 
     test <@ result = 0 @>
     test <@ forceValue @>
@@ -383,7 +394,17 @@ let ``executeCommand Scan Force passes true to IPC scan`` () =
 [<Fact(Timeout = 5000)>]
 let ``executeCommand Completions returns 0`` () =
     let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) "/tmp" "pipe" Completions "" false fakeConfig 30.0
+        executeCommand
+            (fun _ -> Unchecked.defaultof<_>)
+            (fakeIpc ())
+            "/tmp"
+            "pipe"
+            Completions
+            ""
+            false
+            false
+            fakeConfig
+            30.0
 
     test <@ result = 0 @>
 
@@ -411,7 +432,7 @@ let ``executeCommand Start refuses to spawn a duplicate when lock is held`` () =
             Unchecked.defaultof<_>
 
         let result =
-            executeCommand createDaemon (fakeIpc ()) tmpDir "pipe-singleton" Start "" false fakeConfig 5.0
+            executeCommand createDaemon (fakeIpc ()) tmpDir "pipe-singleton" Start "" false false fakeConfig 5.0
 
         test <@ result = 0 @>
         test <@ not createDaemonCalled @>)
@@ -430,7 +451,7 @@ let ``executeCommand Start — second concurrent invocation cannot claim the loc
             Unchecked.defaultof<_>
 
         let result =
-            executeCommand createDaemon (fakeIpc ()) tmpDir "pipe-concurrent" Start "" false fakeConfig 5.0
+            executeCommand createDaemon (fakeIpc ()) tmpDir "pipe-concurrent" Start "" false false fakeConfig 5.0
 
         test <@ result = 0 @>
         test <@ createDaemonCalls = 0 @>)
@@ -455,7 +476,7 @@ let ``executeCommand Stop iterates Shutdown until pipe goes quiet`` () =
                         } }
 
         let result =
-            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe-multi" Stop "" false fakeConfig 5.0
+            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe-multi" Stop "" false false fakeConfig 5.0
 
         test <@ result = 0 @>
         test <@ shutdownCalls = 3 @>
@@ -477,7 +498,7 @@ let ``executeCommand Stop reports when no daemon is running`` () =
                         } }
 
         let result =
-            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe-none" Stop "" false fakeConfig 5.0
+            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe-none" Stop "" false false fakeConfig 5.0
 
         test <@ result = 0 @>
         test <@ shutdownCalls = 0 @>)
@@ -496,7 +517,17 @@ let ``executeCommand Init creates config in empty dir`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
 
         let result =
-            executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) tmpDir "pipe" Init "" false fakeConfig 30.0
+            executeCommand
+                (fun _ -> Unchecked.defaultof<_>)
+                (fakeIpc ())
+                tmpDir
+                "pipe"
+                Init
+                ""
+                false
+                false
+                fakeConfig
+                30.0
 
         test <@ result = 0 @>
         test <@ File.Exists(Path.Combine(tmpDir, ".fs-hot-watch.json")) @>)
@@ -508,7 +539,17 @@ let ``executeCommand Init returns 1 when config already exists`` () =
         File.WriteAllText(Path.Combine(tmpDir, ".fs-hot-watch.json"), "{}")
 
         let result =
-            executeCommand (fun _ -> Unchecked.defaultof<_>) (fakeIpc ()) tmpDir "pipe" Init "" false fakeConfig 30.0
+            executeCommand
+                (fun _ -> Unchecked.defaultof<_>)
+                (fakeIpc ())
+                tmpDir
+                "pipe"
+                Init
+                ""
+                false
+                false
+                fakeConfig
+                30.0
 
         test <@ result = 1 @>)
 
@@ -516,12 +557,12 @@ let ``executeCommand Init returns 1 when config already exists`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``applyGlobalFlags with unknown log level still builds extra args`` () =
-    let (_, _, extraArgs) = applyGlobalFlags [ LogLevel "trace" ]
+    let (_, _, _, extraArgs) = applyGlobalFlags [ LogLevel "trace" ]
     test <@ extraArgs = "--log-level trace " @>
 
 [<Fact(Timeout = 5000)>]
 let ``applyGlobalFlags preserves order of multiple flags`` () =
-    let (noCache, noWarnFail, extraArgs) =
+    let (noCache, noWarnFail, _, extraArgs) =
         applyGlobalFlags [ Verbose; LogLevel "debug"; GlobalFlag.NoCache; NoWarnFail ]
 
     test <@ noCache @>
@@ -568,7 +609,7 @@ let ``reuse path does not launch daemon when hash matches`` () =
                 IsRunning = fun _ -> true
                 LaunchDaemon = fun _ _ _ -> () }
 
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" (Scan []) "" false fakeConfig 5.0
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" (Scan []) "" false false fakeConfig 5.0
         |> ignore
 
         let mutable launchCalled = false
@@ -579,7 +620,7 @@ let ``reuse path does not launch daemon when hash matches`` () =
                 LaunchDaemon = fun _ _ _ -> launchCalled <- true }
 
         let result =
-            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc2 tmpDir "pipe" (Scan []) "" false fakeConfig 5.0
+            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc2 tmpDir "pipe" (Scan []) "" false false fakeConfig 5.0
 
         test <@ result = 0 @>
         test <@ not launchCalled @>)
@@ -593,7 +634,7 @@ let private assertFailsWhenDaemonDown (cmd: Command) =
                 IsRunning = fun _ -> false }
 
         let result =
-            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" cmd "" false fakeConfig 0.0
+            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" cmd "" false false fakeConfig 0.0
 
         test <@ result = 1 @>)
 
@@ -610,3 +651,25 @@ let ``executeCommand Analyze returns 1 when daemon startup fails`` () = assertFa
 [<Fact(Timeout = 5000)>]
 let ``executeCommand InvalidateCache returns 1 when daemon startup fails`` () =
     assertFailsWhenDaemonDown (InvalidateCache "foo.fs")
+
+/// The agent-mode banner advertises a curated set of subcommands. If any name
+/// drifts from the real command tree (typo, rename, removed subcommand) this
+/// test fails — catching drift that the hardcoded banner string would otherwise hide.
+[<Fact>]
+let ``agent banner command names all exist as subcommands`` () =
+    let bannerLine =
+        FsHotWatch.Cli.ProgressRenderer.renderAll FsHotWatch.Cli.ProgressRenderer.Agent false DateTime.UtcNow Map.empty
+        |> List.head
+
+    let advertised =
+        bannerLine.Substring(bannerLine.IndexOf("cmds:") + 5).Trim().Split(' ')
+        |> Array.toList
+
+    let childNames =
+        match commandTree with
+        | Group g -> g.Children |> List.map CommandTree.name |> Set.ofList
+        | Leaf _ -> Set.empty
+
+    let missing = advertised |> List.filter (fun n -> not (Set.contains n childNames))
+
+    test <@ List.isEmpty missing @>

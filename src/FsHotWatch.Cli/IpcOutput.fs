@@ -8,35 +8,76 @@ open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Cli.IpcParsing
 
-/// Format the full errors response with colored status lines and error details.
-/// `renderStatuses` produces the per-plugin progress block (glyph-aware compact/verbose
-/// renderer provided by the caller).
+/// Format one diagnostic entry as a plain agent-mode line:
+///   `<plugin>:<file>:<line>:<col>: <severity> <message>`
+/// No ANSI, no indentation. Message is single-line (collapses newlines).
+let private agentDiagnosticLine (file: string) (d: DiagnosticEntry) : string =
+    let severity =
+        match d.Severity with
+        | Error -> "error"
+        | Warning -> "warning"
+        | Info -> "info"
+        | Hint -> "hint"
+
+    let msg = d.Message.Replace('\r', ' ').Replace('\n', ' ').Trim()
+
+    $"%s{d.Plugin}:%s{file}:%d{d.Line}:%d{d.Column}: %s{severity} %s{msg}"
+
+/// Format the full errors response.
+///
+/// In Verbose/Compact modes: per-plugin progress block followed by the colored
+/// by-file error block (via `RunOnceOutput.formatErrors`).
+///
+/// In Agent mode: banner + per-plugin lines from `renderStatuses` (which ends
+/// with `next: ...`) are split so plain diagnostic lines slot in *before* the
+/// trailing `next:` hint. Agents can read the output line by line without
+/// stripping ANSI.
 let formatDiagnosticsResponse
+    (mode: ProgressRenderer.RenderMode)
     (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
     (resp: DiagnosticsResponse)
     : string =
-    let sb = System.Text.StringBuilder()
+    match mode with
+    | ProgressRenderer.Agent ->
+        // renderStatuses for Agent produces [banner; plugin lines...; next: ...].
+        // Insert diag lines between plugin lines and the next: footer.
+        let lines = renderStatuses resp.Statuses
 
-    let summary = renderStatuses resp.Statuses |> String.concat "\n"
+        let header, footer =
+            match List.rev lines with
+            | last :: rest when last.StartsWith("next:") -> List.rev rest, [ last ]
+            | _ -> lines, []
 
-    if summary <> "" then
-        sb.AppendLine(summary) |> ignore
-        sb.AppendLine() |> ignore
+        let diagLines =
+            [ for KeyValue(file, entries) in resp.Files do
+                  for d in entries do
+                      agentDiagnosticLine file d ]
 
-    let errorMap =
-        resp.Files
-        |> Map.map (fun _ entries ->
-            entries
-            |> List.map (fun d ->
-                d.Plugin,
-                { Message = d.Message
-                  Severity = d.Severity
-                  Line = d.Line
-                  Column = d.Column
-                  Detail = d.Detail }))
+        header @ diagLines @ footer |> String.concat "\n"
+    | ProgressRenderer.Compact
+    | ProgressRenderer.Verbose ->
+        let sb = System.Text.StringBuilder()
 
-    sb.Append(RunOnceOutput.formatErrors errorMap) |> ignore
-    sb.ToString().TrimEnd('\n', '\r')
+        let summary = renderStatuses resp.Statuses |> String.concat "\n"
+
+        if summary <> "" then
+            sb.AppendLine(summary) |> ignore
+            sb.AppendLine() |> ignore
+
+        let errorMap =
+            resp.Files
+            |> Map.map (fun _ entries ->
+                entries
+                |> List.map (fun d ->
+                    d.Plugin,
+                    { Message = d.Message
+                      Severity = d.Severity
+                      Line = d.Line
+                      Column = d.Column
+                      Detail = d.Detail }))
+
+        sb.Append(RunOnceOutput.formatErrors errorMap) |> ignore
+        sb.ToString().TrimEnd('\n', '\r')
 
 /// Determine exit code from a DiagnosticsResponse.
 /// Returns non-zero if any plugin is Failed, or if the ledger has failing entries.
@@ -63,6 +104,7 @@ let exitCodeFromResponse (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
 
 /// Render a generic IPC result (status JSON or plain text).
 let renderIpcResult
+    (mode: ProgressRenderer.RenderMode)
     (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
     (noWarnFail: bool)
     (result: string)
@@ -84,7 +126,7 @@ let renderIpcResult
         match root.TryGetProperty("count") with
         | true, _ ->
             let resp = parseDiagnosticsResponse result
-            let output = formatDiagnosticsResponse renderStatuses resp
+            let output = formatDiagnosticsResponse mode renderStatuses resp
             eprintfn "%s" output
             exitCodeFromResponse noWarnFail resp
         | false, _ ->
@@ -140,6 +182,7 @@ let renderIpcResult
 /// Returns exit code (0 = no errors, 1 = errors).
 /// `renderStatuses` is injected so callers choose the progress renderer (compact/verbose).
 let pollAndRender
+    (mode: ProgressRenderer.RenderMode)
     (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
     (noWarnFail: bool)
     (waitForScan: unit -> string)
@@ -185,6 +228,6 @@ let pollAndRender
 
     let errorsJson = getErrors ()
     let resp = parseDiagnosticsResponse errorsJson
-    let output = formatDiagnosticsResponse renderStatuses resp
+    let output = formatDiagnosticsResponse mode renderStatuses resp
     eprintfn "%s" output
     exitCodeFromResponse noWarnFail resp

@@ -29,8 +29,8 @@
         <Compile Include="InitConfig.fs" />
         <Compile Include="RunOnceOutput.fs" />
         <Compile Include="IpcParsing.fs" />
-        <Compile Include="IpcOutput.fs" />
         <Compile Include="ProgressRenderer.fs" />
+        <Compile Include="IpcOutput.fs" />
         <Compile Include="Program.fs" />
     </ItemGroup>
 
