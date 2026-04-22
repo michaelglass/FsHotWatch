@@ -84,7 +84,7 @@ let ``coverage plugin reads Cobertura XML`` () =
             ()
 
 [<Fact(Timeout = 5000)>]
-let ``coverage plugin fails when below threshold`` () =
+let ``coverage plugin reports ledger entries when below threshold`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-thresh-{Guid.NewGuid():N}")
     let subDir = Path.Combine(tmpDir, "MyProject")
     Directory.CreateDirectory(subDir) |> ignore
@@ -112,7 +112,7 @@ let ``coverage plugin fails when below threshold`` () =
         waitUntil
             (fun () ->
                 match host.GetStatus("coverage") with
-                | Some(Failed _) -> true
+                | Some(Completed _) -> not (host.GetErrorsByPlugin("coverage").IsEmpty)
                 | _ -> false)
             5000
 
@@ -122,7 +122,7 @@ let ``coverage plugin fails when below threshold`` () =
         test
             <@
                 match status.Value with
-                | Failed _ -> true
+                | Completed _ -> true
                 | _ -> false
             @>
 
@@ -451,7 +451,7 @@ let ``coverage plugin reports error when afterCheck fails`` () =
         waitUntil
             (fun () ->
                 match host.GetStatus("coverage") with
-                | Some(Failed _) -> true
+                | Some(Completed _) -> not (host.GetErrorsByPlugin("coverage").IsEmpty)
                 | _ -> false)
             5000
 
@@ -460,10 +460,13 @@ let ``coverage plugin reports error when afterCheck fails`` () =
         test
             <@
                 match status.Value with
-                | Failed(msg, _) -> msg.Contains("afterCheck failed")
+                | Completed _ -> true
                 | _ -> false
             @>
 
+        let ledger = host.GetErrorsByPlugin("coverage") |> Map.toList |> List.collect snd
+
+        test <@ ledger |> List.exists (fun e -> e.Message.Contains("afterCheck failed")) @>
         test <@ host.HasFailingReasons(warningsAreFailures = true) @>)
 
 [<Fact(Timeout = 5000)>]
@@ -583,18 +586,11 @@ let ``coverage plugin re-evaluates when thresholds file changes under the same c
         waitUntil
             (fun () ->
                 match host.GetStatus("coverage") with
-                | Some(Failed _) -> true
+                | Some(Completed _) -> not (host.GetErrorsByPlugin("coverage").IsEmpty)
                 | _ -> false)
             5000
 
-        let failedStatus = host.GetStatus("coverage")
-
-        test
-            <@
-                match failedStatus with
-                | Some(Failed _) -> true
-                | _ -> false
-            @>
+        test <@ not (host.GetErrorsByPlugin("coverage").IsEmpty) @>
 
         // Loosen thresholds (commit id stays the same — same day, same working copy).
         File.WriteAllText(thresholdsPath, """{"MyProject": {"line": 80.0, "branch": 50.0}}""")
@@ -604,18 +600,11 @@ let ``coverage plugin re-evaluates when thresholds file changes under the same c
         waitUntil
             (fun () ->
                 match host.GetStatus("coverage") with
-                | Some(Completed _) -> true
+                | Some(Completed _) -> host.GetErrorsByPlugin("coverage").IsEmpty
                 | _ -> false)
             5000
 
-        let finalStatus = host.GetStatus("coverage")
-
-        test
-            <@
-                match finalStatus with
-                | Some(Completed _) -> true
-                | _ -> false
-            @>
+        test <@ host.GetErrorsByPlugin("coverage").IsEmpty @>
     finally
         try
             Directory.Delete(tmpDir, true)
