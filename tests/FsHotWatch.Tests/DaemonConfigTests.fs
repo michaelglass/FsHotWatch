@@ -380,8 +380,7 @@ let ``parseConfig fileCommands with entries`` () =
 let ``parseConfig fileCommands entry without pattern or afterTests is rejected`` () =
     let json = """{"fileCommands": [{}]}"""
 
-    let ex =
-        Assert.ThrowsAny<exn>(fun () -> parseConfig json defaults |> ignore)
+    let ex = Assert.ThrowsAny<exn>(fun () -> parseConfig json defaults |> ignore)
 
     test <@ ex.Message.Contains("pattern") && ex.Message.Contains("afterTests") @>
 
@@ -395,8 +394,7 @@ let ``parseConfig fileCommands afterTests true parses to AnyTest`` () =
     test <@ config.FileCommands.[0].Name = Some "cov" @>
     test <@ config.FileCommands.[0].Pattern = None @>
 
-    test
-        <@ config.FileCommands.[0].AfterTests = Some FsHotWatch.FileCommand.FileCommandPlugin.AnyTest @>
+    test <@ config.FileCommands.[0].AfterTests = Some FsHotWatch.FileCommand.FileCommandPlugin.AnyTest @>
 
 [<Fact(Timeout = 5000)>]
 let ``parseConfig fileCommands afterTests list parses to TestProjects`` () =
@@ -418,8 +416,7 @@ let ``parseConfig fileCommands afterTests without name is rejected`` () =
     let json =
         """{"fileCommands": [{"afterTests": true, "command": "echo", "args": "ran"}]}"""
 
-    let ex =
-        Assert.ThrowsAny<exn>(fun () -> parseConfig json defaults |> ignore)
+    let ex = Assert.ThrowsAny<exn>(fun () -> parseConfig json defaults |> ignore)
 
     test <@ ex.Message.Contains("name") @>
 

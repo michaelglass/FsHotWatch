@@ -55,20 +55,6 @@
         "platform": "linux"
       }
     ],
-    "CoveragePlugin.fs": [
-      {
-        "line": 97,
-        "branch": 95,
-        "reason": "defensive try/with and ThresholdsUnreadable arm in readThresholdsState not covered (hard to force portable IO failure)",
-        "platform": "macos"
-      },
-      {
-        "line": 95,
-        "branch": 92,
-        "reason": "lower line coverage on Linux CI",
-        "platform": "linux"
-      }
-    ],
     "Daemon.fs": [
       {
         "line": 83,
