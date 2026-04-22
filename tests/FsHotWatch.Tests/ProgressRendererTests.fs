@@ -3,6 +3,7 @@ module FsHotWatch.Tests.ProgressRendererTests
 open System
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcParsing
@@ -47,13 +48,47 @@ let ``compact Completed shows check glyph elapsed and summary`` () =
           LastRun = Some(completedRun (TimeSpan.FromSeconds 3.2) (TimeSpan.FromSeconds 3.2) (Some "built 4 projects"))
           Diagnostics = DiagnosticCounts.empty }
 
-    let lines = renderPlugin Compact now "Build" parsed |> stripMany
+    let lines = renderPlugin Compact true now "Build" parsed |> stripMany
     test <@ lines.Length = 1 @>
     let line = lines.[0]
     test <@ line.Contains "Build" @>
     test <@ line.Contains "\u2713" @> // ✓
     test <@ line.Contains "3.2s" @>
     test <@ line.Contains "built 4 projects" @>
+
+[<Fact(Timeout = 5000)>]
+let ``compact Completed with ledger errors shows warn glyph and count`` () =
+    let parsed: ParsedPluginStatus =
+        { Status = Completed(now - TimeSpan.FromSeconds(3.2))
+          Subtasks = []
+          ActivityTail = []
+          LastRun = Some(completedRun (TimeSpan.FromSeconds 3.2) (TimeSpan.FromSeconds 3.2) None)
+          Diagnostics = { Errors = 2; Warnings = 0 } }
+
+    let lines = renderPlugin Compact true now "Lint" parsed |> stripMany
+    test <@ lines.Length = 1 @>
+    let line = lines.[0]
+    test <@ line.Contains "⚠" @> // ⚠
+    test <@ not (line.Contains "✓") @> // not ✓
+    test <@ line.Contains "2 error(s)" @>
+
+[<Fact(Timeout = 5000)>]
+let ``compact Completed with only warnings respects warningsAreFailures flag`` () =
+    let parsed: ParsedPluginStatus =
+        { Status = Completed(now - TimeSpan.FromSeconds(1.0))
+          Subtasks = []
+          ActivityTail = []
+          LastRun = Some(completedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) None)
+          Diagnostics = { Errors = 0; Warnings = 3 } }
+
+    // warningsAreFailures = true -> ⚠
+    let strict = renderPlugin Compact true now "Lint" parsed |> stripMany
+    test <@ strict.[0].Contains "⚠" @>
+
+    // warningsAreFailures = false -> ✓ (warnings don't count)
+    let lax = renderPlugin Compact false now "Lint" parsed |> stripMany
+    test <@ lax.[0].Contains "✓" @>
+    test <@ not (lax.[0].Contains "⚠") @>
 
 [<Fact(Timeout = 5000)>]
 let ``compact Running with subtasks lists them`` () =
@@ -67,7 +102,7 @@ let ``compact Running with subtasks lists them`` () =
           LastRun = None
           Diagnostics = DiagnosticCounts.empty }
 
-    let lines = renderPlugin Compact now "TestPrune" parsed |> stripMany
+    let lines = renderPlugin Compact true now "TestPrune" parsed |> stripMany
     test <@ lines.Length = 1 @>
     let line = lines.[0]
     test <@ line.Contains "\u2026" @> // ⋯ / …
@@ -84,7 +119,7 @@ let ``compact Running with no subtasks shows last activity line`` () =
           LastRun = None
           Diagnostics = DiagnosticCounts.empty }
 
-    let lines = renderPlugin Compact now "Lint" parsed |> stripMany
+    let lines = renderPlugin Compact true now "Lint" parsed |> stripMany
     test <@ lines.Length = 1 @>
     let line = lines.[0]
     test <@ line.Contains "linting FileA.fs" @>
@@ -101,7 +136,7 @@ let ``compact Failed shows truncated error first line`` () =
           LastRun = Some(failedRun (TimeSpan.FromSeconds 6.4) (TimeSpan.FromSeconds 6.4) multiline)
           Diagnostics = DiagnosticCounts.empty }
 
-    let lines = renderPlugin Compact now "Lint" parsed |> stripMany
+    let lines = renderPlugin Compact true now "Lint" parsed |> stripMany
     test <@ lines.Length = 1 @>
     let line = lines.[0]
     test <@ line.Contains "\u2717" @> // ✗
@@ -116,7 +151,7 @@ let ``compact Failed shows truncated error first line`` () =
           LastRun = Some(failedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) longErr)
           Diagnostics = DiagnosticCounts.empty }
 
-    let linesLong = renderPlugin Compact now "Lint" parsedLong |> stripMany
+    let linesLong = renderPlugin Compact true now "Lint" parsedLong |> stripMany
     test <@ linesLong.Length = 1 @>
     // The rendered line length (after stripping colors) should be bounded.
     test <@ linesLong.[0].Length < 200 @>
@@ -130,7 +165,7 @@ let ``compact Idle with history shows last-run recap`` () =
           LastRun = Some(completedRun (TimeSpan.FromSeconds 30.0) (TimeSpan.FromSeconds 4.1) (Some "no issues"))
           Diagnostics = DiagnosticCounts.empty }
 
-    let lines = renderPlugin Compact now "Analyzers" parsed |> stripMany
+    let lines = renderPlugin Compact true now "Analyzers" parsed |> stripMany
     test <@ lines.Length = 1 @>
     let line = lines.[0]
     test <@ line.Contains "Analyzers" @>
@@ -147,7 +182,7 @@ let ``compact Idle with no history is single line name`` () =
           LastRun = None
           Diagnostics = DiagnosticCounts.empty }
 
-    let lines = renderPlugin Compact now "Coverage" parsed |> stripMany
+    let lines = renderPlugin Compact true now "Coverage" parsed |> stripMany
     test <@ lines.Length = 1 @>
     test <@ lines.[0].Contains "Coverage" @>
 
@@ -165,7 +200,7 @@ let ``verbose Running emits header plus subtask tree plus recent`` () =
           LastRun = None
           Diagnostics = DiagnosticCounts.empty }
 
-    let lines = renderPlugin Verbose now "TestPrune" parsed |> stripMany
+    let lines = renderPlugin Verbose true now "TestPrune" parsed |> stripMany
     // Expected shape: header + 3 subtasks + "recent:" + 2 activity lines = 7 lines minimum.
     test <@ lines.Length >= 7 @>
     test <@ lines.[0].Contains "TestPrune" @>
@@ -197,7 +232,7 @@ let ``verbose Failed shows started, error detail, and recent`` () =
                   ActivityTail = [ "loading rules"; "linting FileA.fs" ] }
           Diagnostics = DiagnosticCounts.empty }
 
-    let lines = renderPlugin Verbose now "Lint" parsed |> stripMany
+    let lines = renderPlugin Verbose true now "Lint" parsed |> stripMany
     let joined = String.concat "\n" lines
     test <@ joined.Contains "Lint" @>
     test <@ joined.Contains "started" @>
@@ -224,7 +259,7 @@ let ``verbose Completed shows header started elapsed summary`` () =
                   ActivityTail = [ "dotnet build sln" ] }
           Diagnostics = DiagnosticCounts.empty }
 
-    let lines = renderPlugin Verbose now "Build" parsed |> stripMany
+    let lines = renderPlugin Verbose true now "Build" parsed |> stripMany
     let joined = String.concat "\n" lines
     test <@ joined.Contains "Build" @>
     test <@ joined.Contains "started" @>
@@ -248,7 +283,7 @@ let ``verbose Completed with empty activity tail hides recent section`` () =
                   ActivityTail = [] }
           Diagnostics = DiagnosticCounts.empty }
 
-    let lines = renderPlugin Verbose now "Build" parsed |> stripMany
+    let lines = renderPlugin Verbose true now "Build" parsed |> stripMany
     let joined = String.concat "\n" lines
     test <@ not (joined.Contains "recent") @>
 
@@ -271,7 +306,7 @@ let ``renderAll concatenates per-plugin blocks`` () =
                 LastRun = None
                 Diagnostics = DiagnosticCounts.empty } ]
 
-    let lines = renderAll Compact now statuses |> stripMany
+    let lines = renderAll Compact true now statuses |> stripMany
     // Compact is exactly one line per plugin.
     test <@ lines.Length = 2 @>
     let joined = String.concat "\n" lines

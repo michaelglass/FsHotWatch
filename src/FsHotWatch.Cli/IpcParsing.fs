@@ -16,7 +16,6 @@ type DiagnosticEntry =
       Detail: string option }
 
 type ParsedPluginStatus = RunOnceOutput.ParsedPluginStatus
-type DiagnosticCounts = RunOnceOutput.DiagnosticCounts
 
 /// Parsed GetDiagnostics response.
 type DiagnosticsResponse =
@@ -140,7 +139,7 @@ let parsePluginStatusElement (el: JsonElement) : ParsedPluginStatus =
 
             { Errors = readInt "errors"
               Warnings = readInt "warnings" }
-        | _ -> RunOnceOutput.DiagnosticCounts.empty
+        | _ -> DiagnosticCounts.empty
 
     { Status = status
       Subtasks = subtasks
