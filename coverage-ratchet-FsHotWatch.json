@@ -364,8 +364,8 @@
     ],
     "Program.fs": [
       {
-        "line": 79,
-        "branch": 51,
+        "line": 81,
+        "branch": 53,
         "reason": "CLI entry point; agent-mode wiring added uncovered branches",
         "platform": "macos"
       },
@@ -380,7 +380,7 @@
       {
         "line": 91,
         "branch": 62,
-        "reason": "loosened: agent-mode fold + Set/Map fusion reduced branch count; new floor",
+        "reason": "loosened: agent-mode fold \u002B Set/Map fusion reduced branch count; new floor",
         "platform": "macos"
       },
       {
