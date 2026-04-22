@@ -276,10 +276,16 @@ let private checkTempFile (checker: FSharpChecker) (filePath: string) =
 // them so each gets a clean FCS slice.
 let private analyzerCheckGate = new SemaphoreSlim(1, 1)
 
-let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> string -> unit) =
+let private withAnalyzerGate (body: unit -> unit) =
     analyzerCheckGate.Wait()
 
     try
+        body ()
+    finally
+        analyzerCheckGate.Release() |> ignore
+
+let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> string -> unit) =
+    withAnalyzerGate (fun () ->
         let repoRoot = findRepoRoot ()
         let analyzerPath = exampleAnalyzerPath.Value
 
@@ -297,9 +303,7 @@ let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> stri
                 host.EmitFileChecked(checkResult)
                 waitForTerminalStatus host "analyzers" 10000
                 assertResult host tmpFile
-            | None -> Assert.Fail("FCS failed to check file"))
-    finally
-        analyzerCheckGate.Release() |> ignore
+            | None -> Assert.Fail("FCS failed to check file")))
 
 [<Fact(Timeout = 5000)>]
 let ``lint plugin detects warnings on bad code`` () =
@@ -725,9 +729,7 @@ let x = 5
 
 [<Fact(Timeout = 30000)>]
 let ``AnalyzersPlugin completes without crashing on checked file`` () =
-    analyzerCheckGate.Wait()
-
-    try
+    withAnalyzerGate (fun () ->
         let repoRoot = findRepoRoot ()
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
@@ -762,15 +764,11 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
             | Completed _ -> () // Empty analyzer paths, should complete with no diagnostics
             | PluginStatus.Failed(msg, _) -> Assert.True(true, $"Analyzers failed gracefully: {msg}")
             | other -> Assert.Fail($"Unexpected status: %A{other}")
-        | None -> Assert.True(true, "Skipped: FCS could not check file")
-    finally
-        analyzerCheckGate.Release() |> ignore
+        | None -> Assert.True(true, "Skipped: FCS could not check file"))
 
 [<Fact(Timeout = 30000)>]
 let ``AnalyzersPlugin loads real analyzers from example project`` () =
-    analyzerCheckGate.Wait()
-
-    try
+    withAnalyzerGate (fun () ->
         let repoRoot = findRepoRoot ()
         let analyzerPath = exampleAnalyzerPath.Value
 
@@ -806,9 +804,7 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
             | Completed _ -> ()
             | PluginStatus.Failed(msg, _) -> Assert.True(true, $"Analyzers failed gracefully: {msg}")
             | other -> Assert.Fail($"Unexpected status: %A{other}")
-        | None -> Assert.True(true, "Skipped: FCS could not check file")
-    finally
-        analyzerCheckGate.Release() |> ignore
+        | None -> Assert.True(true, "Skipped: FCS could not check file"))
 
 [<Fact(Timeout = 30000)>]
 let ``AnalyzersPlugin produces warning on wildcard DU match`` () =
