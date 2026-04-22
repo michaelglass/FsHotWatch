@@ -1891,11 +1891,7 @@ module ``Schema version migration`` =
     /// carry post-v2 additions like `content_hash`, `is_extern`).
     /// `stampedVersion` optionally writes `user_version`; omit to leave the
     /// DB unstamped, modelling a pre-versioning install.
-    let private seedLegacySchema
-        (path: string)
-        (extraSymbolsColumns: string list)
-        (stampedVersion: int option)
-        =
+    let private seedLegacySchema (path: string) (extraSymbolsColumns: string list) (stampedVersion: int option) =
         let symbolsExtras =
             extraSymbolsColumns
             |> List.map (fun c -> $"                        {c},\n")

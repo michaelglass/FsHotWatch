@@ -179,8 +179,7 @@ let private deleteDbFiles (dbPath: string) =
 let private hasUserTables (conn: SqliteConnection) =
     use cmd = conn.CreateCommand()
 
-    cmd.CommandText <-
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
+    cmd.CommandText <- "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
 
     cmd.ExecuteScalar() :?> int64 > 0L
 
