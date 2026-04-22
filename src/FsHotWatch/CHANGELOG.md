@@ -15,6 +15,10 @@
 
 - **BREAKING (IPC)**: `WaitForComplete` RPC now accepts a `timeoutMs: int` argument; `<= 0` means no client-imposed timeout. `DaemonRpcConfig.WaitForAllTerminal` signature changed from `unit -> Task<unit>` to `TimeSpan -> Task<unit>` so clients can pass their own deadline. The daemon's previous hard-coded 30-minute cap no longer applies when the client supplies a timeout.
 
+### Fixed
+
+- `PluginFramework.registerHandler`: when a handler's `Update` throws, the framework now auto-reports `PluginStatus.Failed(ex.Message, now)` in addition to logging. Previously an uncaught handler throw left the plugin in whatever transient status it had reported beforehand (classic case: TestPrune reports `Running`, hits a schema-drifted DB, never transitions further → UI shows "running" forever). This is a structural fix: no plugin author can forget to do it, and no plugin can leave an observable status non-terminal due to an exception inside its handler.
+
 ## 0.8.0-alpha.3 (2026-04-18)
 
 ### Added

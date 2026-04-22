@@ -2,6 +2,7 @@
 /// the framework manages agents, error recovery, and event dispatch.
 module FsHotWatch.PluginFramework
 
+open System
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Logging
@@ -197,12 +198,19 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                             | None -> false
                         | _ -> false
 
+                    /// Invariant: a handler that throws out of `Update` must never leave the
+                    /// plugin stuck in whatever transient status it reported before the throw
+                    /// (classic case: plugin reports Running, hits a DB error, never reports
+                    /// terminal status, UI shows "running" forever). We surface the exception
+                    /// as PluginStatus.Failed *after* catching so the observable status always
+                    /// reaches a terminal state, regardless of what the handler did beforehand.
                     let safeUpdate pluginCtx state event =
                         async {
                             try
                                 return! handler.Update pluginCtx state event
                             with ex ->
                                 error (PluginName.value handler.Name) $"Plugin handler failed: %s{ex.ToString()}"
+                                services.ReportStatus handler.Name (Failed(ex.Message, DateTime.UtcNow))
                                 return state
                         }
 
