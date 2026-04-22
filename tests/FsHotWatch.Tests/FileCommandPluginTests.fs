@@ -215,12 +215,7 @@ let ``command reports Failed status on command failure`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create
-            (FsHotWatch.PluginFramework.PluginName.create "fail-cmd")
-            (fileTrigger (fun _ -> true))
-            "false"
-            ""
-            None
+        create (FsHotWatch.PluginFramework.PluginName.create "fail-cmd") (fileTrigger (fun _ -> true)) "false" "" None
 
     host.RegisterHandler(handler)
 
@@ -516,4 +511,3 @@ let ``afterTests AnyTest fires on TestCompleted regardless of projects`` () =
             | Completed _ -> true
             | _ -> false
         @>
-
