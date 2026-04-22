@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.7 (2026-04-22)
+
 ### Fixed
 
 - Cache key now includes a tristate salt derived from the thresholds file
