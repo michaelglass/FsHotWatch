@@ -6,6 +6,7 @@ open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcParsing
+open FsHotWatch.Cli
 open FsHotWatch.Cli.IpcOutput
 
 [<Fact(Timeout = 5000)>]
@@ -46,7 +47,7 @@ let ``formatDiagnosticsResponse with no errors shows clean message`` () =
         """{"count":0,"files":{},"statuses":{"build":{"status":{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"},"subtasks":[],"activityTail":[],"lastRun":null}}}"""
 
     let result = parseDiagnosticsResponse json
-    let output = formatDiagnosticsResponse (fun _ -> []) result
+    let output = formatDiagnosticsResponse ProgressRenderer.Verbose (fun _ -> []) result
     test <@ output.Contains("No errors") @>
 
 [<Fact(Timeout = 5000)>]
@@ -55,7 +56,7 @@ let ``formatDiagnosticsResponse with errors shows file and message`` () =
         """{"count":1,"files":{"src/Foo.fs":[{"plugin":"lint","message":"bad name","severity":"warning","line":17,"column":0,"detail":null}]},"statuses":{"lint":{"status":{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"},"subtasks":[],"activityTail":[],"lastRun":null}}}"""
 
     let result = parseDiagnosticsResponse json
-    let output = formatDiagnosticsResponse (fun _ -> []) result
+    let output = formatDiagnosticsResponse ProgressRenderer.Verbose (fun _ -> []) result
     test <@ output.Contains("src/Foo.fs") @>
     test <@ output.Contains("[lint]") @>
     test <@ output.Contains("L17") @>
@@ -67,7 +68,7 @@ let ``formatDiagnosticsResponse with errors shows count summary`` () =
         """{"count":2,"files":{"src/A.fs":[{"plugin":"lint","message":"x","severity":"warning","line":1,"column":0,"detail":null}],"src/B.fs":[{"plugin":"build","message":"y","severity":"error","line":2,"column":0,"detail":null}]},"statuses":{}}"""
 
     let result = parseDiagnosticsResponse json
-    let output = formatDiagnosticsResponse (fun _ -> []) result
+    let output = formatDiagnosticsResponse ProgressRenderer.Verbose (fun _ -> []) result
     test <@ output.Contains("1 error(s), 1 warning(s) in 2 file(s)") @>
 
 [<Fact(Timeout = 5000)>]
@@ -169,7 +170,7 @@ let ``exitCodeFromResponse without noWarnFail fails on warnings`` () =
 [<Fact(Timeout = 5000)>]
 let ``renderIpcResult with GetDiagnostics format count 0 returns 0`` () =
     let result =
-        renderIpcResult (fun _ -> []) false """{"count":0,"files":{},"statuses":{}}"""
+        renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"count":0,"files":{},"statuses":{}}"""
 
     test <@ result = 0 @>
 
@@ -177,6 +178,7 @@ let ``renderIpcResult with GetDiagnostics format count 0 returns 0`` () =
 let ``renderIpcResult with GetDiagnostics format count > 0 returns 1`` () =
     let result =
         renderIpcResult
+            ProgressRenderer.Verbose
             (fun _ -> [])
             false
             """{"count":1,"files":{"src/Foo.fs":[{"plugin":"lint","message":"bad","severity":"warning","line":1,"column":0,"detail":null}]},"statuses":{}}"""
@@ -185,24 +187,30 @@ let ``renderIpcResult with GetDiagnostics format count > 0 returns 1`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``renderIpcResult with status passed returns 0`` () =
-    let result = renderIpcResult (fun _ -> []) false """{"status":"passed"}"""
+    let result =
+        renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"status":"passed"}"""
+
     test <@ result = 0 @>
 
 [<Fact(Timeout = 5000)>]
 let ``renderIpcResult with status failed returns 1`` () =
-    let result = renderIpcResult (fun _ -> []) false """{"status":"failed"}"""
+    let result =
+        renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"status":"failed"}"""
+
     test <@ result = 1 @>
 
 [<Fact(Timeout = 5000)>]
 let ``renderIpcResult with error field returns 1`` () =
     let result =
-        renderIpcResult (fun _ -> []) false """{"error":"something went wrong"}"""
+        renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"error":"something went wrong"}"""
 
     test <@ result = 1 @>
 
 [<Fact(Timeout = 5000)>]
 let ``renderIpcResult with plain text returns 0`` () =
-    let result = renderIpcResult (fun _ -> []) false "build completed successfully"
+    let result =
+        renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false "build completed successfully"
+
     test <@ result = 0 @>
 
 [<Fact(Timeout = 5000)>]
@@ -210,7 +218,7 @@ let ``renderIpcResult with test results JSON containing arrays does not crash`` 
     let json =
         """{"elapsed":"1.5s","projects":[{"project":"TestProject","status":"passed","output":"ok"}]}"""
 
-    let result = renderIpcResult (fun _ -> []) false json
+    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
     test <@ result = 0 @>
 
 [<Fact(Timeout = 5000)>]
@@ -218,7 +226,7 @@ let ``renderIpcResult with test results JSON with failed project returns 1`` () 
     let json =
         """{"elapsed":"2.0s","projects":[{"project":"FailProject","status":"failed","output":"FAIL: test1"}]}"""
 
-    let result = renderIpcResult (fun _ -> []) false json
+    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
     test <@ result = 1 @>
 
 [<Fact(Timeout = 5000)>]
@@ -227,7 +235,7 @@ let ``formatDiagnosticsResponse hides info-severity entries`` () =
         """{"count":1,"files":{"src/Foo.fs":[{"plugin":"fcs","message":"XML comment is not placed on a valid language element.","severity":"info","line":3,"column":0,"detail":null}]},"statuses":{}}"""
 
     let result = parseDiagnosticsResponse json
-    let output = formatDiagnosticsResponse (fun _ -> []) result
+    let output = formatDiagnosticsResponse ProgressRenderer.Verbose (fun _ -> []) result
     test <@ not (output.Contains("XML comment")) @>
     test <@ output.Contains("No errors") @>
 
@@ -237,7 +245,7 @@ let ``formatDiagnosticsResponse shows warnings but hides info in same file`` () 
         """{"count":2,"files":{"src/Foo.fs":[{"plugin":"fcs","message":"XML comment","severity":"info","line":3,"column":0,"detail":null},{"plugin":"format-check","message":"File is not formatted","severity":"warning","line":1,"column":0,"detail":null}]},"statuses":{}}"""
 
     let result = parseDiagnosticsResponse json
-    let output = formatDiagnosticsResponse (fun _ -> []) result
+    let output = formatDiagnosticsResponse ProgressRenderer.Verbose (fun _ -> []) result
     test <@ output.Contains("File is not formatted") @>
     test <@ not (output.Contains("XML comment")) @>
     test <@ output.Contains("1 warning(s) in 1 file(s)") @>
@@ -248,7 +256,7 @@ let ``formatDiagnosticsResponse excludes info-only files from count`` () =
         """{"count":2,"files":{"src/A.fs":[{"plugin":"fcs","message":"XML comment","severity":"info","line":3,"column":0,"detail":null}],"src/B.fs":[{"plugin":"lint","message":"bad","severity":"warning","line":1,"column":0,"detail":null}]},"statuses":{}}"""
 
     let result = parseDiagnosticsResponse json
-    let output = formatDiagnosticsResponse (fun _ -> []) result
+    let output = formatDiagnosticsResponse ProgressRenderer.Verbose (fun _ -> []) result
     test <@ output.Contains("1 warning(s) in 1 file(s)") @>
 
 [<Fact(Timeout = 5000)>]
