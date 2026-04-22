@@ -44,7 +44,8 @@ let ``compact Completed shows check glyph elapsed and summary`` () =
         { Status = Completed(now - TimeSpan.FromSeconds(3.2))
           Subtasks = []
           ActivityTail = []
-          LastRun = Some(completedRun (TimeSpan.FromSeconds 3.2) (TimeSpan.FromSeconds 3.2) (Some "built 4 projects")) }
+          LastRun = Some(completedRun (TimeSpan.FromSeconds 3.2) (TimeSpan.FromSeconds 3.2) (Some "built 4 projects"))
+          Diagnostics = DiagnosticCounts.empty }
 
     let lines = renderPlugin Compact now "Build" parsed |> stripMany
     test <@ lines.Length = 1 @>
@@ -63,7 +64,8 @@ let ``compact Running with subtasks lists them`` () =
               makeSubtask "B" "running B" 8.0
               makeSubtask "C" "running C" 2.0 ]
           ActivityTail = [ "queued 3" ]
-          LastRun = None }
+          LastRun = None
+          Diagnostics = DiagnosticCounts.empty }
 
     let lines = renderPlugin Compact now "TestPrune" parsed |> stripMany
     test <@ lines.Length = 1 @>
@@ -79,7 +81,8 @@ let ``compact Running with no subtasks shows last activity line`` () =
         { Status = Running(now - TimeSpan.FromSeconds(5.0))
           Subtasks = []
           ActivityTail = [ "loading rules"; "linting FileA.fs" ]
-          LastRun = None }
+          LastRun = None
+          Diagnostics = DiagnosticCounts.empty }
 
     let lines = renderPlugin Compact now "Lint" parsed |> stripMany
     test <@ lines.Length = 1 @>
@@ -95,7 +98,8 @@ let ``compact Failed shows truncated error first line`` () =
         { Status = Failed(multiline, now - TimeSpan.FromSeconds 6.4)
           Subtasks = []
           ActivityTail = []
-          LastRun = Some(failedRun (TimeSpan.FromSeconds 6.4) (TimeSpan.FromSeconds 6.4) multiline) }
+          LastRun = Some(failedRun (TimeSpan.FromSeconds 6.4) (TimeSpan.FromSeconds 6.4) multiline)
+          Diagnostics = DiagnosticCounts.empty }
 
     let lines = renderPlugin Compact now "Lint" parsed |> stripMany
     test <@ lines.Length = 1 @>
@@ -109,7 +113,8 @@ let ``compact Failed shows truncated error first line`` () =
         { Status = Failed(longErr, now - TimeSpan.FromSeconds 1.0)
           Subtasks = []
           ActivityTail = []
-          LastRun = Some(failedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) longErr) }
+          LastRun = Some(failedRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) longErr)
+          Diagnostics = DiagnosticCounts.empty }
 
     let linesLong = renderPlugin Compact now "Lint" parsedLong |> stripMany
     test <@ linesLong.Length = 1 @>
@@ -122,7 +127,8 @@ let ``compact Idle with history shows last-run recap`` () =
         { Status = Idle
           Subtasks = []
           ActivityTail = []
-          LastRun = Some(completedRun (TimeSpan.FromSeconds 30.0) (TimeSpan.FromSeconds 4.1) (Some "no issues")) }
+          LastRun = Some(completedRun (TimeSpan.FromSeconds 30.0) (TimeSpan.FromSeconds 4.1) (Some "no issues"))
+          Diagnostics = DiagnosticCounts.empty }
 
     let lines = renderPlugin Compact now "Analyzers" parsed |> stripMany
     test <@ lines.Length = 1 @>
@@ -138,7 +144,8 @@ let ``compact Idle with no history is single line name`` () =
         { Status = Idle
           Subtasks = []
           ActivityTail = []
-          LastRun = None }
+          LastRun = None
+          Diagnostics = DiagnosticCounts.empty }
 
     let lines = renderPlugin Compact now "Coverage" parsed |> stripMany
     test <@ lines.Length = 1 @>
@@ -155,7 +162,8 @@ let ``verbose Running emits header plus subtask tree plus recent`` () =
               makeSubtask "BarTests" "compiling" 62.0
               makeSubtask "BazTests" "queued" 22.0 ]
           ActivityTail = [ "queued 3 projects"; "dotnet test FooTests" ]
-          LastRun = None }
+          LastRun = None
+          Diagnostics = DiagnosticCounts.empty }
 
     let lines = renderPlugin Verbose now "TestPrune" parsed |> stripMany
     // Expected shape: header + 3 subtasks + "recent:" + 2 activity lines = 7 lines minimum.
@@ -186,7 +194,8 @@ let ``verbose Failed shows started, error detail, and recent`` () =
                   Elapsed = TimeSpan.FromSeconds 6.4
                   Outcome = FailedRun err
                   Summary = None
-                  ActivityTail = [ "loading rules"; "linting FileA.fs" ] } }
+                  ActivityTail = [ "loading rules"; "linting FileA.fs" ] }
+          Diagnostics = DiagnosticCounts.empty }
 
     let lines = renderPlugin Verbose now "Lint" parsed |> stripMany
     let joined = String.concat "\n" lines
@@ -212,7 +221,8 @@ let ``verbose Completed shows header started elapsed summary`` () =
                   Elapsed = TimeSpan.FromSeconds 3.2
                   Outcome = CompletedRun
                   Summary = Some "built 4 projects"
-                  ActivityTail = [ "dotnet build sln" ] } }
+                  ActivityTail = [ "dotnet build sln" ] }
+          Diagnostics = DiagnosticCounts.empty }
 
     let lines = renderPlugin Verbose now "Build" parsed |> stripMany
     let joined = String.concat "\n" lines
@@ -235,7 +245,8 @@ let ``verbose Completed with empty activity tail hides recent section`` () =
                   Elapsed = TimeSpan.FromSeconds 1.0
                   Outcome = CompletedRun
                   Summary = Some "ok"
-                  ActivityTail = [] } }
+                  ActivityTail = [] }
+          Diagnostics = DiagnosticCounts.empty }
 
     let lines = renderPlugin Verbose now "Build" parsed |> stripMany
     let joined = String.concat "\n" lines
@@ -251,12 +262,14 @@ let ``renderAll concatenates per-plugin blocks`` () =
               { Status = Completed now
                 Subtasks = []
                 ActivityTail = []
-                LastRun = Some(completedRun (TimeSpan.FromSeconds 3.0) (TimeSpan.FromSeconds 3.0) (Some "ok")) }
+                LastRun = Some(completedRun (TimeSpan.FromSeconds 3.0) (TimeSpan.FromSeconds 3.0) (Some "ok"))
+                Diagnostics = DiagnosticCounts.empty }
               "Lint",
               { Status = Idle
                 Subtasks = []
                 ActivityTail = []
-                LastRun = None } ]
+                LastRun = None
+                Diagnostics = DiagnosticCounts.empty } ]
 
     let lines = renderAll Compact now statuses |> stripMany
     // Compact is exactly one line per plugin.
