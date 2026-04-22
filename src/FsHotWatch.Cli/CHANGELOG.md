@@ -4,6 +4,8 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+## 0.8.0-alpha.8 (2026-04-22)
+
 ### Added
 
 - `errors --wait [--timeout <seconds>]` — block until every tracked plugin reaches a terminal state before printing diagnostics. Timeout is enforced server-side by the daemon's `waitForAllTerminal` loop, so timeout messages include the list of plugins still running. Exit codes: `0` clean, `1` failures, `2` timeout or invalid flag combination (e.g. `--timeout` without `--wait`). Default timeout 600s.
