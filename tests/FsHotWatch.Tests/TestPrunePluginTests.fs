@@ -1518,3 +1518,64 @@ let ``buildFilterArgs ignores classes from other projects`` () =
 
     let result = buildFilterArgs config classesByProject
     test <@ result = Some "-- --filter-class ClassA" @>
+
+// --- Schema-drift recovery ---
+
+[<Fact(Timeout = 2000)>]
+let ``looksLikeSchemaDrift matches SQLite "no such column" wording`` () =
+    let ex = exn "SQLite Error 1: 'no such column: foo'."
+    test <@ looksLikeSchemaDrift ex @>
+
+[<Fact(Timeout = 2000)>]
+let ``looksLikeSchemaDrift matches "no column named" wording`` () =
+    let ex = exn "table projects has no column named source"
+    test <@ looksLikeSchemaDrift ex @>
+
+[<Fact(Timeout = 2000)>]
+let ``looksLikeSchemaDrift matches regardless of case`` () =
+    let ex = exn "NO SUCH COLUMN: X"
+    test <@ looksLikeSchemaDrift ex @>
+
+[<Fact(Timeout = 2000)>]
+let ``looksLikeSchemaDrift rejects unrelated errors`` () =
+    test <@ not (looksLikeSchemaDrift (exn "connection refused")) @>
+    test <@ not (looksLikeSchemaDrift (exn "database is locked")) @>
+    test <@ not (looksLikeSchemaDrift (exn "")) @>
+
+[<Fact(Timeout = 2000)>]
+let ``tryRepairSchemaDrift deletes the DB when the error looks like schema drift`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-repair-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+    let dbPath = Path.Combine(tmpDir, "testprune.db")
+    File.WriteAllText(dbPath, "stale-cache-contents")
+
+    try
+        tryRepairSchemaDrift dbPath (exn "SQLite Error 1: 'no such column: source'")
+
+        test <@ not (File.Exists dbPath) @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
+
+[<Fact(Timeout = 2000)>]
+let ``tryRepairSchemaDrift leaves the DB alone for unrelated errors`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-repair-noop-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+    let dbPath = Path.Combine(tmpDir, "testprune.db")
+    File.WriteAllText(dbPath, "healthy-cache")
+
+    try
+        tryRepairSchemaDrift dbPath (exn "database is locked")
+
+        test <@ File.Exists dbPath @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
+
+[<Fact(Timeout = 2000)>]
+let ``tryRepairSchemaDrift is a no-op when the DB file is already gone`` () =
+    let missingPath =
+        Path.Combine(Path.GetTempPath(), $"tp-missing-{Guid.NewGuid():N}.db")
+    // Should not throw even though the file does not exist.
+    tryRepairSchemaDrift missingPath (exn "no such column: source")
+    test <@ not (File.Exists missingPath) @>
