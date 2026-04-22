@@ -73,10 +73,25 @@ let private pluginStatusPayload (host: PluginHost) (name: string) (status: Plugi
                activityTail = r.ActivityTail |}
             :> obj
 
+    let ledgerEntries = host.GetErrorsByPlugin(name) |> Map.toList |> List.collect snd
+
+    let errorCount, warningCount =
+        ledgerEntries
+        |> List.fold
+            (fun (e, w) entry ->
+                match entry.Severity with
+                | DiagnosticSeverity.Error -> (e + 1, w)
+                | DiagnosticSeverity.Warning -> (e, w + 1)
+                | _ -> (e, w))
+            (0, 0)
+
     {| status = statusPayload status
        subtasks = subtasks
        activityTail = snap.ActivityTail
-       lastRun = lastRun |}
+       lastRun = lastRun
+       diagnostics =
+        {| errors = errorCount
+           warnings = warningCount |} |}
     :> obj
 
 /// Configuration record for DaemonRpcTarget.
