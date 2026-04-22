@@ -476,6 +476,77 @@ let ``afterTests TestProjects does not fire when no listed project matches`` () 
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
 
+// Regression: end-to-end from parseConfig(.fs-hot-watch.json) → daemon registration
+// path → TestCompleted dispatch. The earlier unit tests built the CommandTrigger
+// inline and hit the plugin the same way the daemon's RegisterHandler path does,
+// but a bug in the config→trigger glue (e.g. parser yielding AfterTests = None
+// for a valid JSON list) would not be caught without going through parseConfig.
+[<Fact(Timeout = 5000)>]
+let ``parseConfig + registration + TestCompleted fires coverage-ratchet-style plugin`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let json =
+        """{"fileCommands": [{"name": "cov-r", "afterTests": ["ProjA"], "command": "echo", "args": "ok"}]}"""
+
+    let defaults: FsHotWatch.Cli.DaemonConfig.DaemonConfiguration =
+        { Build = None
+          Format = FsHotWatch.Cli.DaemonConfig.Off
+          Lint = false
+          Cache = FsHotWatch.Cli.DaemonConfig.NoCache
+          Analyzers = None
+          Tests = None
+          FileCommands = []
+          Exclude = []
+          LogDir = "logs" }
+
+    let config = FsHotWatch.Cli.DaemonConfig.parseConfig json defaults
+    test <@ config.FileCommands.Length = 1 @>
+    let fc = config.FileCommands.[0]
+    test <@ fc.Name = Some "cov-r" @>
+    test <@ fc.AfterTests.IsSome @>
+
+    // Mirror exactly what DaemonConfig.registerPlugins does for each fileCommand.
+    let trigger: CommandTrigger =
+        { FilePattern =
+            fc.Pattern
+            |> Option.map (fun p ->
+                let suffix = p.TrimStart('*')
+                fun (path: string) -> path.EndsWith(suffix, System.StringComparison.OrdinalIgnoreCase))
+          AfterTests = fc.AfterTests }
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "cov-r") trigger fc.Command fc.Args None
+
+    // The plugin must subscribe to TestCompleted — if this assertion fails,
+    // dispatch will never route events to Update.
+    test
+        <@ handler.Subscriptions |> Set.contains FsHotWatch.PluginFramework.SubscribeTestCompleted @>
+
+    host.RegisterHandler(handler)
+
+    let results: FsHotWatch.Events.TestResults =
+        { Results = Map.ofList [ "ProjA", FsHotWatch.Events.TestsPassed "" ]
+          Elapsed = System.TimeSpan.Zero }
+
+    host.EmitTestCompleted(results)
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("cov-r") with
+            | Some(Completed _) -> true
+            | _ -> false)
+        5000
+
+    let status = host.GetStatus("cov-r")
+    test <@ status.IsSome @>
+
+    test
+        <@
+            match status.Value with
+            | Completed _ -> true
+            | _ -> false
+        @>
+
 [<Fact(Timeout = 5000)>]
 let ``afterTests AnyTest fires on TestCompleted regardless of projects`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
