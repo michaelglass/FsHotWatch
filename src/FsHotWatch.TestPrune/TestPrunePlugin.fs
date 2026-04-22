@@ -341,6 +341,31 @@ let private flushPendingAnalysis (db: Database) (state: TestPruneState) =
         PendingAnalysis = newPending
         SymbolSnapshot = newSnapshot }
 
+/// Detect schema-drift errors (stale cache DB lacking a column the current
+/// `TestPrune.Core` requires). These surface as SQLite "no such column" /
+/// "no column named" messages. Deliberately pure / internal so the caller
+/// can unit-test both branches without needing a corrupt DB on disk.
+let internal looksLikeSchemaDrift (ex: exn) =
+    let msg = ex.Message.ToLowerInvariant()
+    msg.Contains("no such column") || msg.Contains("no column named")
+
+/// If `ex` looks like schema drift, delete the cache DB at `dbPath` so the
+/// next run rebuilds from scratch. The cache is derivative and safe to
+/// regenerate; requiring a user to know which file to delete was the trap
+/// this routine exists to close.
+let internal tryRepairSchemaDrift (dbPath: string) (ex: exn) =
+    if looksLikeSchemaDrift ex && File.Exists dbPath then
+        try
+            File.Delete dbPath
+
+            Logging.warn
+                "test-prune"
+                $"Deleted stale cache DB %s{dbPath} after schema-drift error: %s{ex.Message}. Next run will rebuild from scratch."
+        with deleteEx ->
+            Logging.error
+                "test-prune"
+                $"Could not delete stale cache DB %s{dbPath}: %s{deleteEx.Message}. Delete it manually and restart the daemon."
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -358,6 +383,8 @@ let create
     =
     let db = Database.create dbPath
     let extensions = buildExtensions |> Option.map (fun f -> f db)
+
+    let tryRepairSchemaDrift ex = tryRepairSchemaDrift dbPath ex
 
     // Flush pending analysis to DB and query affected tests from changed symbols.
     // Extensions (if any) contribute dependency edges via AnalyzeEdges, written
@@ -787,30 +814,43 @@ let create
 
                             ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
 
-                            let stateWithAffected = flushAndQueryAffected state
+                            // If the DB flush/query throws (e.g. schema drift on a stale cache),
+                            // stay in TestsIdle and report Failed so the plugin doesn't hang in
+                            // Running with no work dispatched.
+                            match
+                                (try
+                                    Ok(flushAndQueryAffected state)
+                                 with ex ->
+                                     Error ex)
+                            with
+                            | Error ex ->
+                                Logging.error "test-prune" $"flushAndQueryAffected failed: %s{ex.Message}"
+                                tryRepairSchemaDrift ex
+                                ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+                                return state
+                            | Ok stateWithAffected ->
+                                let running = Lifecycle.start idle
 
-                            let running = Lifecycle.start idle
+                                let newState =
+                                    { stateWithAffected with
+                                        TestPhase = TestsRunning(running, NoRerun) }
 
-                            let newState =
-                                { stateWithAffected with
-                                    TestPhase = TestsRunning(running, NoRerun) }
+                                // Dispatch tests to thread pool
+                                let hasCachedResults = (Lifecycle.value idle).IsSome
 
-                            // Dispatch tests to thread pool
-                            let hasCachedResults = (Lifecycle.value idle).IsSome
+                                match testConfigs with
+                                | Some configs when not configs.IsEmpty ->
+                                    async { do! runTestsWithImpact ctx configs newState hasCachedResults }
+                                    |> Async.Start
 
-                            match testConfigs with
-                            | Some configs when not configs.IsEmpty ->
-                                async { do! runTestsWithImpact ctx configs newState hasCachedResults }
-                                |> Async.Start
+                                    return newState
+                                | _ ->
+                                    // No test configs — flush only, transition back to idle
+                                    let idleAgain = Lifecycle.complete None running
 
-                                return newState
-                            | _ ->
-                                // No test configs — flush only, transition back to idle
-                                let idleAgain = Lifecycle.complete None running
-
-                                return
-                                    { newState with
-                                        TestPhase = TestsIdle idleAgain }
+                                    return
+                                        { newState with
+                                            TestPhase = TestsIdle idleAgain }
                     | BuildFailed _ -> return state
 
                 | Custom(TestsFinished testResults) ->
@@ -818,18 +858,38 @@ let create
                     | TestsRunning(running, RerunQueued) ->
                         Logging.info "test-prune" "Re-running tests (queued during previous run)"
 
-                        // Flush any new pending analysis
-                        let rerunState =
-                            flushAndQueryAffected
+                        // Flush any new pending analysis. If the DB errors out here the rerun
+                        // never happens, so we must bail to TestsIdle (capturing the just-
+                        // completed testResults) instead of leaving the phase stuck in Running.
+                        match
+                            (try
+                                Ok(
+                                    flushAndQueryAffected
+                                        { state with
+                                            TestPhase = TestsRunning(running, NoRerun) }
+                                )
+                             with ex ->
+                                 Error ex)
+                        with
+                        | Error ex ->
+                            Logging.error "test-prune" $"flushAndQueryAffected (rerun) failed: %s{ex.Message}"
+                            tryRepairSchemaDrift ex
+                            ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+                            let completed = Lifecycle.complete (Some testResults) running
+
+                            return
                                 { state with
-                                    TestPhase = TestsRunning(running, NoRerun) }
+                                    TestPhase = TestsIdle completed
+                                    ChangedFiles = []
+                                    ChangedSymbols = []
+                                    AffectedTests = Analyzed [] }
+                        | Ok rerunState ->
+                            match testConfigs with
+                            | Some configs when not configs.IsEmpty ->
+                                async { do! runTestsWithImpact ctx configs rerunState true } |> Async.Start
+                            | _ -> ()
 
-                        match testConfigs with
-                        | Some configs when not configs.IsEmpty ->
-                            async { do! runTestsWithImpact ctx configs rerunState true } |> Async.Start
-                        | _ -> ()
-
-                        return rerunState
+                            return rerunState
                     | TestsRunning(running, NoRerun) ->
                         let completed = Lifecycle.complete (Some testResults) running
                         changedSymbolsRef <- []
