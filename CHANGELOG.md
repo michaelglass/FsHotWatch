@@ -37,6 +37,12 @@ All notable changes to FsHotWatch packages are documented here.
 - Split end-to-end FCS / analyzer / lint / format / build tests into a new `tests/FsHotWatch.IntegrationTests` project. These tests hit SDK-reflection paths that fire nondeterministically across runs, so letting them contribute to coverage made the ratchet flaky. They still run via `mise run test-integration`; the main `test-direct` coverage now only aggregates `FsHotWatch.Tests`.
 - `AnalyzersPlugin` grew two extracted helpers — `isKnownNonAnalyzerPrefix` and `buildAnalyzerProjectOptions` — with deterministic unit tests covering all branches the live-SDK integration tests used to hit flakily.
 
+### FsHotWatch.TestPrune
+
+#### Fixed
+- **Stuck-state bug**: `flushAndQueryAffected` call sites in `BuildCompleted` and `TestsFinished (RerunQueued)` were unguarded; a DB hiccup pinned the plugin in `Running` forever. Both now report `Failed` and transition back to `TestsIdle` on exception.
+- **Schema-drift self-heal**: SQLite "no such column" errors on a stale cache DB now trigger automatic deletion of the DB file with a warning, so the caller no longer has to know which file to remove.
+
 ### FsHotWatch.Fantomas
 
 #### Added
