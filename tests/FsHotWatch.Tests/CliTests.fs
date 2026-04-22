@@ -515,14 +515,17 @@ let private fakeIpc () : IpcOps =
 
 [<Fact(Timeout = 5000)>]
 let ``executeCommand Stop calls shutdown`` () =
+    let mutable running = true
     let mutable called = false
 
     let ipc =
         { fakeIpc () with
+            IsRunning = fun _ -> running
             Shutdown =
                 fun _ ->
                     async {
                         called <- true
+                        running <- false
                         return "shutting down"
                     } }
 

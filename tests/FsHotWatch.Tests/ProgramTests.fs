@@ -389,44 +389,48 @@ let ``executeCommand Completions returns 0`` () =
 
 // --- Start command singleton guarantee ---
 
+/// Simulate a running daemon by pre-holding an exclusive lock on
+/// `.fs-hot-watch/daemon.lock` within `tmpDir`, the same handle `Start`
+/// uses to enforce singleton. Returns a disposable that releases the lock.
+let private holdDaemonLock (tmpDir: string) (pid: int) : IDisposable =
+    let stateDir = Path.Combine(tmpDir, ".fs-hot-watch")
+    Directory.CreateDirectory(stateDir) |> ignore
+    File.WriteAllText(Path.Combine(stateDir, "daemon.pid"), string pid)
+    let lockPath = Path.Combine(stateDir, "daemon.lock")
+
+    new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None) :> IDisposable
+
 [<Fact(Timeout = 5000)>]
-let ``executeCommand Start refuses to spawn a duplicate when daemon already running`` () =
+let ``executeCommand Start refuses to spawn a duplicate when lock is held`` () =
     withTempDir "prog-start-dup" (fun tmpDir ->
+        use _held = holdDaemonLock tmpDir 99999
         let mutable createDaemonCalled = false
 
         let createDaemon _ =
             createDaemonCalled <- true
             Unchecked.defaultof<_>
 
-        let ipc =
-            { fakeIpc () with
-                IsRunning = fun _ -> true }
-
         let result =
-            executeCommand createDaemon ipc tmpDir "pipe-singleton" Start "" false fakeConfig 5.0
+            executeCommand createDaemon (fakeIpc ()) tmpDir "pipe-singleton" Start "" false fakeConfig 5.0
 
         test <@ result = 0 @>
         test <@ not createDaemonCalled @>)
 
 [<Fact(Timeout = 5000)>]
-let ``executeCommand Start — second concurrent invocation is idempotent`` () =
-    // Regression: two back-to-back Start calls (simulating two users / two
-    // mise-check invocations) must not both proceed to createDaemon.
+let ``executeCommand Start — second concurrent invocation cannot claim the lock`` () =
+    // Regression: two back-to-back Start calls must not both proceed to
+    // createDaemon. The file lock is OS-enforced, so concurrent holders are
+    // impossible regardless of probe-timing races.
     withTempDir "prog-start-concurrent" (fun tmpDir ->
-        // Models the race: first invocation has finished claiming the pipe (so
-        // IsRunning is true by the time the second invocation runs its guard).
+        use _held = holdDaemonLock tmpDir 12345
         let mutable createDaemonCalls = 0
 
         let createDaemon _ =
             createDaemonCalls <- createDaemonCalls + 1
             Unchecked.defaultof<_>
 
-        let ipc =
-            { fakeIpc () with
-                IsRunning = fun _ -> true }
-
         let result =
-            executeCommand createDaemon ipc tmpDir "pipe-concurrent" Start "" false fakeConfig 5.0
+            executeCommand createDaemon (fakeIpc ()) tmpDir "pipe-concurrent" Start "" false fakeConfig 5.0
 
         test <@ result = 0 @>
         test <@ createDaemonCalls = 0 @>)
