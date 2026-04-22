@@ -614,12 +614,15 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         let fileFilter (path: string) =
             path.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
 
+        let trigger: FsHotWatch.FileCommand.FileCommandPlugin.CommandTrigger =
+            { FilePattern = Some fileFilter
+              AfterTests = None }
+
         daemon.RegisterHandler(
             FsHotWatch.FileCommand.FileCommandPlugin.create
                 (FsHotWatch.PluginFramework.PluginName.create $"file-cmd-%s{fc.Pattern}")
-                fileFilter
+                trigger
                 fc.Command
                 fc.Args
-                fc.RunOnStart
                 getCommitId
         )
