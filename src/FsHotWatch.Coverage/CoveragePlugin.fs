@@ -241,6 +241,5 @@ let create
                   return $"{{%s{entries}}}"
               } ]
       Subscriptions = Set.ofList [ SubscribeTestCompleted ]
-      CacheKey =
-        FsHotWatch.TaskCache.optionalSaltedCacheKey (fun _ -> thresholdsSalt thresholdsFile) getCommitId
+      CacheKey = FsHotWatch.TaskCache.optionalSaltedCacheKey (fun _ -> thresholdsSalt thresholdsFile) getCommitId
       Teardown = None }
