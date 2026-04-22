@@ -95,10 +95,6 @@ type DaemonConfiguration =
             {| BeforeRun: string option
                Extensions: TestExtensionConfig list
                Projects: TestProjectConfig list |} option
-        Coverage:
-            {| AfterCheck: string option
-               Directory: string
-               ThresholdsFile: string option |} option
         FileCommands:
             {| Name: string option
                Pattern: string option
@@ -122,7 +118,6 @@ let private defaultConfigFor (repoRoot: string) =
       Cache = detectDefaultCacheBackend repoRoot
       Analyzers = None
       Tests = None
-      Coverage = None
       FileCommands = []
       Exclude = []
       LogDir = "logs" }
@@ -318,30 +313,6 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                        Projects = projects |}
         | _ -> None
 
-    let coverage =
-        match root.TryGetProperty("coverage") with
-        | true, v ->
-            let dir =
-                match v.TryGetProperty("directory") with
-                | true, d -> d.GetString()
-                | _ -> "./coverage"
-
-            let thresholds =
-                match v.TryGetProperty("thresholdsFile") with
-                | true, t -> Some(t.GetString())
-                | _ -> None
-
-            let afterCheck =
-                match v.TryGetProperty("afterCheck") with
-                | true, a -> Some(a.GetString())
-                | _ -> None
-
-            Some
-                {| AfterCheck = afterCheck
-                   Directory = dir
-                   ThresholdsFile = thresholds |}
-        | _ -> None
-
     let fileCommands =
         match root.TryGetProperty("fileCommands") with
         | true, arr ->
@@ -417,7 +388,6 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       Cache = cache
       Analyzers = analyzers
       Tests = tests
-      Coverage = coverage
       FileCommands = fileCommands
       Exclude = exclude
       LogDir = logDir }
@@ -430,7 +400,6 @@ let stripConfig (config: DaemonConfiguration) : DaemonConfiguration =
         Lint = false
         Analyzers = None
         Tests = None
-        Coverage = None
         FileCommands = [] }
 
 /// Load config from .fs-hot-watch.json in repoRoot. Returns defaults if no file exists.
@@ -572,19 +541,19 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             |> List.map (fun p -> p.Project)
             |> Set.ofList
 
+        // Coverage XML is emitted under <repoRoot>/coverage/<project>/ so external
+        // coverage tools (e.g. coverageratchet, invoked via fileCommands afterTests)
+        // can read it. Per-project opt-out is honored via `coverageExcludedProjects`.
         let coverageArgs =
-            match config.Coverage with
-            | Some cov ->
-                Some(fun (project: string) ->
-                    if coverageExcludedProjects.Contains(project) then
-                        ""
-                    else
-                        let outputDir = Path.Combine(cov.Directory, project)
-                        Directory.CreateDirectory(outputDir) |> ignore
-                        let outputPath = Path.GetFullPath(Path.Combine(outputDir, "coverage.cobertura.xml"))
+            Some(fun (project: string) ->
+                if coverageExcludedProjects.Contains(project) then
+                    ""
+                else
+                    let outputDir = Path.Combine(repoRoot, "coverage", project)
+                    Directory.CreateDirectory(outputDir) |> ignore
+                    let outputPath = Path.GetFullPath(Path.Combine(outputDir, "coverage.cobertura.xml"))
 
-                        $"--coverage --coverage-output-format cobertura --coverage-output \"%s{outputPath}\"")
-            | None -> None
+                    $"--coverage --coverage-output-format cobertura --coverage-output \"%s{outputPath}\"")
 
         // Extension factories — invoked by the plugin with its own DB, so the
         // RouteStore/SymbolStore an extension captures is guaranteed to be the
@@ -618,19 +587,6 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             create dbPath repoRoot (Some testConfigs) buildExtensions beforeRun None coverageArgs getCommitId
 
         daemon.RegisterHandler(handler)
-    | None -> ()
-
-    // Coverage plugin (after tests)
-    match config.Coverage with
-    | Some cov ->
-        Logging.info "config" $"Registering CoveragePlugin: %s{cov.Directory}"
-
-        let afterCheck =
-            cov.AfterCheck |> Option.map (makeShellHookWithResult "afterCheck" repoRoot)
-
-        daemon.RegisterHandler(
-            FsHotWatch.Coverage.CoveragePlugin.create cov.Directory cov.ThresholdsFile afterCheck getCommitId
-        )
     | None -> ()
 
     // File commands

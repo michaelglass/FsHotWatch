@@ -151,7 +151,6 @@ dotnet pack src/FsHotWatch.Analyzers/FsHotWatch.Analyzers.fsproj -c Release -o a
 dotnet pack src/FsHotWatch.Lint/FsHotWatch.Lint.fsproj -c Release -o artifacts
 dotnet pack src/FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj -c Release -o artifacts
 dotnet pack src/FsHotWatch.Build/FsHotWatch.Build.fsproj -c Release -o artifacts
-dotnet pack src/FsHotWatch.Coverage/FsHotWatch.Coverage.fsproj -c Release -o artifacts
 dotnet pack src/FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj -c Release -o artifacts
 """
 depends = ["restore"]
