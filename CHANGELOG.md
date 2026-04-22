@@ -27,7 +27,7 @@ All notable changes to FsHotWatch packages are documented here.
 
 #### Changed
 - `fileCommands` entries accept `name` and `afterTests`; validation requires at least one of `pattern` / `afterTests` and an explicit `name` when `afterTests` is set.
-- Coverage XML output path fixed to `<repoRoot>/coverage/<project>/coverage.cobertura.xml`.
+- Coverage output directory moves from the removed `coverage.directory` to `tests.coverageDir` (default `"coverage"`). Files are emitted at `<repoRoot>/<tests.coverageDir>/<project>/coverage.cobertura.xml`.
 
 ### FsHotWatch.Fantomas
 
