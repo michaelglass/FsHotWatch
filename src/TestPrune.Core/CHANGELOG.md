@@ -1,6 +1,7 @@
 # Changelog — TestPrune.Core
 
 ## [Unreleased]
+- chore: roll 3.0.2 bullets into versioned section; seed Unreleased for next cycle
 
 ## [3.0.2]
 - fix: `openCheckedConnection` now recreates the DB when `user_version = 0`
