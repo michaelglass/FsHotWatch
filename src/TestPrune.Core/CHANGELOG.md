@@ -1,6 +1,8 @@
 # Changelog — TestPrune.Core
 
 ## [Unreleased]
+
+## [3.0.2]
 - fix: `openCheckedConnection` now recreates the DB when `user_version = 0`
   *and* the file already contains user tables. The previous `version <> 0 &&
   version <> SchemaVersion` guard treated `0` as a fresh-DB signal, which let
@@ -10,14 +12,6 @@
   with `"no column named …"` — the plugin-host-level symptom was a permanent
   hang. Regression test `recreates database with user_version=0 and legacy
   tables` covers the fixture.
-- fix: bump `SchemaVersion` 3 → 4. The 3.0.0 release introduced
-  `dependencies.source`, `symbol_attributes`, and `symbols.is_extern` under
-  the same v3 stamp that 2.0.0 used, so any DB written by 2.0.0 survived
-  `openCheckedConnection` (version matched) and then crashed on the first
-  INSERT with `"table dependencies has no column named source"`. Plugin
-  hosts (FsHotWatch, etc.) deadlocked because the plugin never reached
-  terminal status. Bumping forces auto-recreate of any stamped-v3 DB on
-  open.
 - revert: removed the `PRAGMA wal_checkpoint(PASSIVE)` added after
   `RebuildProjects` commits. It was introduced to mask a cross-connection
   visibility issue observed in integration tests, but the actual culprit
@@ -27,11 +21,20 @@
   `SqliteConnection.ClearAllPools()` (or open a fresh
   `SqliteConnectionStringBuilder.Pooling = false` connection) before
   reading. Removes a per-commit round-trip and a misleading comment.
-- **BREAKING** — `SymbolSink.RebuildProjects` signature changed from
-  `AnalysisResult list -> (string * string) list -> (string * string) list -> unit` to
-  `AnalysisResult list -> CacheKeys -> unit`, where `CacheKeys = { FileKeys; ProjectKeys }`.
-  Prevents accidentally swapping file keys and project keys at call sites (both were
-  `(string * string) list`). Use `CacheKeys.Empty` when neither is relevant.
+
+<!--
+  The bullets below document changes that shipped in 3.0.0/3.0.1 but were
+  never rolled out of [Unreleased] at the time. Left here for triage — they
+  should be moved to the correct versioned section, not to 3.0.2.
+-->
+- fix: bump `SchemaVersion` 3 → 4. The 3.0.0 release introduced
+  `dependencies.source`, `symbol_attributes`, and `symbols.is_extern` under
+  the same v3 stamp that 2.0.0 used, so any DB written by 2.0.0 survived
+  `openCheckedConnection` (version matched) and then crashed on the first
+  INSERT with `"table dependencies has no column named source"`. Plugin
+  hosts (FsHotWatch, etc.) deadlocked because the plugin never reached
+  terminal status. Bumping forces auto-recreate of any stamped-v3 DB on
+  open.
 - fix: `RebuildProjects` now preserves incoming dependency edges when a file is re-indexed
   incrementally. The old code did `DELETE FROM symbols WHERE source_file IN (...)` which,
   combined with `ON DELETE CASCADE` on `dependencies.to_symbol_id`, destroyed every edge
