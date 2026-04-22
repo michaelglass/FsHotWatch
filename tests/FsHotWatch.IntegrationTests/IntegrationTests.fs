@@ -1107,7 +1107,7 @@ let ``CoveragePlugin succeeds when coverage above threshold`` () =
             ()
 
 [<Fact(Timeout = 5000)>]
-let ``CoveragePlugin fails when coverage below threshold`` () =
+let ``CoveragePlugin reports ledger entries when coverage below threshold`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"cov-below-{Guid.NewGuid():N}")
     let subDir = Path.Combine(tmpDir, "TestProject")
     Directory.CreateDirectory(subDir) |> ignore
@@ -1134,7 +1134,7 @@ let ``CoveragePlugin fails when coverage below threshold`` () =
         waitUntil
             (fun () ->
                 match host.GetStatus("coverage") with
-                | Some(PluginStatus.Failed _) -> true
+                | Some(PluginStatus.Completed _) -> not (host.GetErrorsByPlugin("coverage").IsEmpty)
                 | _ -> false)
             5000
 
@@ -1144,9 +1144,12 @@ let ``CoveragePlugin fails when coverage below threshold`` () =
         test
             <@
                 match status.Value with
-                | PluginStatus.Failed _ -> true
+                | PluginStatus.Completed _ -> true
                 | _ -> false
             @>
+
+        let ledger = host.GetErrorsByPlugin("coverage")
+        test <@ not ledger.IsEmpty @>
     finally
         try
             Directory.Delete(tmpDir, true)
