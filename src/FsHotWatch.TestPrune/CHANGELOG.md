@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+- **BREAKING:** `TestCompleted` now fires progressively — once per test group as that group completes, each carrying a cumulative snapshot of every project finished across ALL groups so far. The final emission is equivalent to the old batch-end emission, so consumers treating the `Results` map as authoritative see no behavioral change. Consumers that counted `TestCompleted` events (rather than inspecting the map) will now receive one event per group instead of one per batch.
+- Motivation: before this change, a single slow or hanging group (e.g. integration tests) forever-blocked every `TestCompleted`-triggered downstream (coverage ratcheting, `fileCommands afterTests`, etc.) even though the groups the downstream actually depended on had completed long ago.
+
 - chore: bump upstream tool versions
 
 ## 0.7.0-alpha.8 (2026-04-22)
