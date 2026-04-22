@@ -720,39 +720,56 @@ let executePluginCommand (ipc: IpcOps) (pipeName: string) (agentMode: bool) (cmd
         let result = ipc.RunCommand pipeName cmd argsStr |> Async.RunSynchronously
         IpcOutput.renderIpcResult mode (renderLines mode true) false result)
 
-/// Apply parsed global flags: configure logging and return (noCache, noWarnFail, agentMode, daemonExtraArgs).
-let applyGlobalFlags (globals: GlobalFlag list) : bool * bool * bool * string =
-    let (noCache, noWarnFail, agentMode, parts) =
+type GlobalOptions =
+    { NoCache: bool
+      NoWarnFail: bool
+      AgentMode: bool
+      DaemonExtraArgs: string }
+
+let private emptyGlobalOptions =
+    { NoCache = false
+      NoWarnFail = false
+      AgentMode = false
+      DaemonExtraArgs = "" }
+
+/// Apply parsed global flags: configure logging and return the resolved options.
+let applyGlobalFlags (globals: GlobalFlag list) : GlobalOptions =
+    let folder (opts: GlobalOptions, parts) flag =
+        match flag with
+        | Verbose ->
+            FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
+            opts, "--verbose" :: parts
+        | LogLevel level ->
+            match level with
+            | "error" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
+            | "warning" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Warning
+            | "info" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Info
+            | "debug" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
+            | other ->
+                eprintfn "Unknown log level: %s (using info)" other
+                FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Info
+
+            opts, $"--log-level %s{level}" :: parts
+        | NoCache -> { opts with NoCache = true }, "--no-cache" :: parts
+        | NoWarnFail -> { opts with NoWarnFail = true }, parts
+        // --agent is client-side only; don't forward to the daemon.
+        | Agent -> { opts with AgentMode = true }, parts
+
+    let opts, parts =
         globals
         |> List.fold
-            (fun (nc, nwf, ag, acc) flag ->
-                match flag with
-                | Verbose ->
-                    FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
-                    (nc, nwf, ag, "--verbose" :: acc)
-                | LogLevel level ->
-                    match level with
-                    | "error" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
-                    | "warning" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Warning
-                    | "info" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Info
-                    | "debug" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
-                    | other ->
-                        eprintfn "Unknown log level: %s (using info)" other
-                        FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Info
-
-                    (nc, nwf, ag, $"--log-level %s{level}" :: acc)
-                | NoCache -> (true, nwf, ag, "--no-cache" :: acc)
-                | NoWarnFail -> (nc, true, ag, acc)
-                // --agent is client-side only; don't forward to the daemon in extra args.
-                | Agent -> (nc, nwf, true, acc))
-            (false, false, false, [])
+            folder
+            ({ emptyGlobalOptions with
+                DaemonExtraArgs = "" },
+             [])
 
     let extraArgs =
         match parts with
         | [] -> ""
         | _ -> (parts |> List.rev |> String.concat " ") + " "
 
-    (noCache, noWarnFail, agentMode, extraArgs)
+    { opts with
+        DaemonExtraArgs = extraArgs }
 
 [<EntryPoint>]
 let main args =
@@ -776,9 +793,9 @@ let main args =
 
         match globalSpec.Parse args with
         | Ok(globals, command) ->
-            let (noCache, noWarnFail, agentMode, daemonExtraArgs) = applyGlobalFlags globals
+            let opts = applyGlobalFlags globals
             let config = loadConfig repoRoot
-            let cacheConfig = if noCache then DaemonConfig.NoCache else config.Cache
+            let cacheConfig = if opts.NoCache then DaemonConfig.NoCache else config.Cache
             let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
 
             let createDaemon (root: string) =
@@ -790,9 +807,9 @@ let main args =
                 repoRoot
                 pipeName
                 command
-                daemonExtraArgs
-                noWarnFail
-                agentMode
+                opts.DaemonExtraArgs
+                opts.NoWarnFail
+                opts.AgentMode
                 config
                 30.0
         | Error(HelpRequested path) ->
