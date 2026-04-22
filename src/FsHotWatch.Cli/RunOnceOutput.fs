@@ -6,12 +6,21 @@ open CommandTree
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 
-/// Fully parsed per-plugin status including subtasks, activity tail, and last-run history.
+/// Per-plugin ledger counts — how many Error/Warning entries this plugin
+/// has contributed to the error ledger since its last clear.
+type DiagnosticCounts = { Errors: int; Warnings: int }
+
+module DiagnosticCounts =
+    let empty = { Errors = 0; Warnings = 0 }
+
+/// Fully parsed per-plugin status including subtasks, activity tail,
+/// last-run history, and ledger diagnostic counts.
 type ParsedPluginStatus =
     { Status: PluginStatus
       Subtasks: Subtask list
       ActivityTail: string list
-      LastRun: RunRecord option }
+      LastRun: RunRecord option
+      Diagnostics: DiagnosticCounts }
 
 /// Format a single plugin result line with ANSI colors and timing.
 /// Example: "  ✓ Build                        3.2s"
@@ -111,10 +120,23 @@ let snapshotHost (host: FsHotWatch.PluginHost.PluginHost) (statuses: Map<string,
     |> Map.map (fun name status ->
         let snap = host.GetActivitySnapshot(name)
 
+        let counts =
+            host.GetErrorsByPlugin(name)
+            |> Map.toList
+            |> List.collect snd
+            |> List.fold
+                (fun acc entry ->
+                    match entry.Severity with
+                    | DiagnosticSeverity.Error -> { acc with Errors = acc.Errors + 1 }
+                    | DiagnosticSeverity.Warning -> { acc with Warnings = acc.Warnings + 1 }
+                    | _ -> acc)
+                DiagnosticCounts.empty
+
         { Status = status
           Subtasks = snap.Subtasks
           ActivityTail = snap.ActivityTail
-          LastRun = snap.LastRun })
+          LastRun = snap.LastRun
+          Diagnostics = counts })
 
 /// Run a daemon in run-once mode and report results.
 let runOnceAndReport
