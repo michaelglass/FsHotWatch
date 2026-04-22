@@ -13,6 +13,9 @@ All notable changes to FsHotWatch packages are documented here.
 - `IgnoreFilterCache` — caches .gitignore/.fantomasignore rules, auto-reloads on file changes
 - `TaskCache.saltedCacheKey` / `optionalSaltedCacheKey` — cache-key builders that fold a per-event salt into the commit-based key, for plugins whose cache validity depends on state beyond the commit
 
+#### Fixed
+- `PluginFramework.registerHandler` now auto-reports `Failed(ex.Message, now)` when a handler's `Update` throws. Previously an uncaught throw after `ReportStatus(Running)` left the plugin stuck displaying `Running` indefinitely. Structural: no plugin author can forget it; impossible for a throw to leave the observed status non-terminal.
+
 ### FsHotWatch.Coverage
 
 #### Fixed
