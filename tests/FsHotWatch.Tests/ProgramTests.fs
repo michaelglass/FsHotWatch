@@ -380,9 +380,7 @@ let ``executeCommand Scan Force passes true to IPC scan`` () =
             "/tmp"
             "pipe"
             (Scan [ Force ])
-            ""
-            false
-            false
+            defaultGlobalOptions
             fakeConfig
             30.0
 
@@ -400,9 +398,7 @@ let ``executeCommand Completions returns 0`` () =
             "/tmp"
             "pipe"
             Completions
-            ""
-            false
-            false
+            defaultGlobalOptions
             fakeConfig
             30.0
 
@@ -432,7 +428,7 @@ let ``executeCommand Start refuses to spawn a duplicate when lock is held`` () =
             Unchecked.defaultof<_>
 
         let result =
-            executeCommand createDaemon (fakeIpc ()) tmpDir "pipe-singleton" Start "" false false fakeConfig 5.0
+            executeCommand createDaemon (fakeIpc ()) tmpDir "pipe-singleton" Start defaultGlobalOptions fakeConfig 5.0
 
         test <@ result = 0 @>
         test <@ not createDaemonCalled @>)
@@ -451,7 +447,7 @@ let ``executeCommand Start — second concurrent invocation cannot claim the loc
             Unchecked.defaultof<_>
 
         let result =
-            executeCommand createDaemon (fakeIpc ()) tmpDir "pipe-concurrent" Start "" false false fakeConfig 5.0
+            executeCommand createDaemon (fakeIpc ()) tmpDir "pipe-concurrent" Start defaultGlobalOptions fakeConfig 5.0
 
         test <@ result = 0 @>
         test <@ createDaemonCalls = 0 @>)
@@ -476,7 +472,15 @@ let ``executeCommand Stop iterates Shutdown until pipe goes quiet`` () =
                         } }
 
         let result =
-            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe-multi" Stop "" false false fakeConfig 5.0
+            executeCommand
+                (fun _ -> Unchecked.defaultof<_>)
+                ipc
+                tmpDir
+                "pipe-multi"
+                Stop
+                defaultGlobalOptions
+                fakeConfig
+                5.0
 
         test <@ result = 0 @>
         test <@ shutdownCalls = 3 @>
@@ -498,7 +502,15 @@ let ``executeCommand Stop reports when no daemon is running`` () =
                         } }
 
         let result =
-            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe-none" Stop "" false false fakeConfig 5.0
+            executeCommand
+                (fun _ -> Unchecked.defaultof<_>)
+                ipc
+                tmpDir
+                "pipe-none"
+                Stop
+                defaultGlobalOptions
+                fakeConfig
+                5.0
 
         test <@ result = 0 @>
         test <@ shutdownCalls = 0 @>)
@@ -523,9 +535,7 @@ let ``executeCommand Init creates config in empty dir`` () =
                 tmpDir
                 "pipe"
                 Init
-                ""
-                false
-                false
+                defaultGlobalOptions
                 fakeConfig
                 30.0
 
@@ -545,9 +555,7 @@ let ``executeCommand Init returns 1 when config already exists`` () =
                 tmpDir
                 "pipe"
                 Init
-                ""
-                false
-                false
+                defaultGlobalOptions
                 fakeConfig
                 30.0
 
@@ -608,7 +616,15 @@ let ``reuse path does not launch daemon when hash matches`` () =
                 IsRunning = fun _ -> true
                 LaunchDaemon = fun _ _ _ -> () }
 
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" (Scan []) "" false false fakeConfig 5.0
+        executeCommand
+            (fun _ -> Unchecked.defaultof<_>)
+            ipc
+            tmpDir
+            "pipe"
+            (Scan [])
+            defaultGlobalOptions
+            fakeConfig
+            5.0
         |> ignore
 
         let mutable launchCalled = false
@@ -619,7 +635,15 @@ let ``reuse path does not launch daemon when hash matches`` () =
                 LaunchDaemon = fun _ _ _ -> launchCalled <- true }
 
         let result =
-            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc2 tmpDir "pipe" (Scan []) "" false false fakeConfig 5.0
+            executeCommand
+                (fun _ -> Unchecked.defaultof<_>)
+                ipc2
+                tmpDir
+                "pipe"
+                (Scan [])
+                defaultGlobalOptions
+                fakeConfig
+                5.0
 
         test <@ result = 0 @>
         test <@ not launchCalled @>)
@@ -633,7 +657,7 @@ let private assertFailsWhenDaemonDown (cmd: Command) =
                 IsRunning = fun _ -> false }
 
         let result =
-            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" cmd "" false false fakeConfig 0.0
+            executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" cmd defaultGlobalOptions fakeConfig 0.0
 
         test <@ result = 1 @>)
 
