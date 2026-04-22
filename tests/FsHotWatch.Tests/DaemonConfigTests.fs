@@ -22,7 +22,6 @@ let private defaults: DaemonConfiguration =
       Cache = FileBackend
       Analyzers = None
       Tests = None
-      Coverage = None
       FileCommands = []
       Exclude = []
       LogDir = "logs" }
@@ -47,7 +46,6 @@ let ``parseConfig with empty JSON returns defaults`` () =
     test <@ config.Cache = FileBackend @>
     test <@ config.Analyzers = None @>
     test <@ config.Tests = None @>
-    test <@ config.Coverage = None @>
     test <@ config.FileCommands |> List.isEmpty @>
     test <@ config.Exclude |> List.isEmpty @>
     test <@ config.LogDir = "logs" @>
@@ -352,50 +350,9 @@ let ``parseConfig tests project with no project key defaults to unknown`` () =
     test <@ p.Project = "unknown" @>
 
 // --- parseConfig: coverage ---
-
-[<Fact(Timeout = 5000)>]
-let ``parseConfig coverage with directory`` () =
-    let config = parseConfig """{"coverage": {"directory": "./cov"}}""" defaults
-
-    test
-        <@
-            config.Coverage = Some
-                {| AfterCheck = None
-                   Directory = "./cov"
-                   ThresholdsFile = None |}
-        @>
-
-[<Fact(Timeout = 5000)>]
-let ``parseConfig coverage with directory and thresholdsFile`` () =
-    let json =
-        """{"coverage": {"directory": "./cov", "thresholdsFile": "thresholds.json"}}"""
-
-    let config = parseConfig json defaults
-
-    test
-        <@
-            config.Coverage = Some
-                {| AfterCheck = None
-                   Directory = "./cov"
-                   ThresholdsFile = Some "thresholds.json" |}
-        @>
-
-[<Fact(Timeout = 5000)>]
-let ``parseConfig coverage with empty object uses default directory`` () =
-    let config = parseConfig """{"coverage": {}}""" defaults
-
-    test
-        <@
-            config.Coverage = Some
-                {| AfterCheck = None
-                   Directory = "./coverage"
-                   ThresholdsFile = None |}
-        @>
-
-[<Fact(Timeout = 5000)>]
-let ``parseConfig no coverage returns None`` () =
-    let config = parseConfig """{}""" defaults
-    test <@ config.Coverage = None @>
+// Coverage config block was removed — coverage XMLs are now emitted under
+// <repoRoot>/coverage/<project>/ unconditionally, and ratcheting is driven
+// by fileCommands afterTests invoking an external tool.
 
 // --- parseConfig: fileCommands ---
 
@@ -503,7 +460,6 @@ let ``parseConfig with full configuration`` () =
             "beforeRun": "make build",
             "projects": [{"project": "Tests.fsproj"}]
         },
-        "coverage": {"directory": "./cov"},
         "fileCommands": [{"pattern": "*.sql", "command": "psql", "args": "-f"}]
     }"""
 
@@ -523,7 +479,6 @@ let ``parseConfig with full configuration`` () =
     test <@ config.Cache = JjFileBackend @>
     test <@ config.Analyzers = Some {| Paths = [ "/analyzers" ] |} @>
     test <@ config.Tests.IsSome @>
-    test <@ config.Coverage.IsSome @>
     test <@ config.FileCommands.Length = 1 @>
 
 // --- detectDefaultCacheBackend ---
@@ -592,37 +547,7 @@ let ``loadConfig with no config file returns expected defaults`` () =
         test <@ config.Cache = FileBackend @>
         test <@ config.Analyzers = None @>
         test <@ config.Tests = None @>
-        test <@ config.Coverage = None @>
         test <@ config.FileCommands |> List.isEmpty @>)
-
-// --- parseConfig: coverage afterCheck ---
-
-[<Fact(Timeout = 5000)>]
-let ``parseConfig coverage with afterCheck`` () =
-    let json =
-        """{"coverage": {"directory": "./cov", "afterCheck": "dotnet run -- ratchet"}}"""
-
-    let config = parseConfig json defaults
-
-    test
-        <@
-            config.Coverage = Some
-                {| AfterCheck = Some "dotnet run -- ratchet"
-                   Directory = "./cov"
-                   ThresholdsFile = None |}
-        @>
-
-[<Fact(Timeout = 5000)>]
-let ``parseConfig coverage without afterCheck defaults to None`` () =
-    let config = parseConfig """{"coverage": {"directory": "./cov"}}""" defaults
-
-    test
-        <@
-            config.Coverage = Some
-                {| AfterCheck = None
-                   Directory = "./cov"
-                   ThresholdsFile = None |}
-        @>
 
 // --- parseConfig: per-project coverage exclusion ---
 
