@@ -16,6 +16,7 @@ type DiagnosticEntry =
       Detail: string option }
 
 type ParsedPluginStatus = RunOnceOutput.ParsedPluginStatus
+type DiagnosticCounts = RunOnceOutput.DiagnosticCounts
 
 /// Parsed GetDiagnostics response.
 type DiagnosticsResponse =
@@ -129,10 +130,23 @@ let parsePluginStatusElement (el: JsonElement) : ParsedPluginStatus =
                   ActivityTail = tail }
         | _ -> None
 
+    let diagnostics: DiagnosticCounts =
+        match el.TryGetProperty("diagnostics") with
+        | true, d when d.ValueKind = JsonValueKind.Object ->
+            let readInt (name: string) =
+                match d.TryGetProperty(name) with
+                | true, v when v.ValueKind = JsonValueKind.Number -> v.GetInt32()
+                | _ -> 0
+
+            { Errors = readInt "errors"
+              Warnings = readInt "warnings" }
+        | _ -> RunOnceOutput.DiagnosticCounts.empty
+
     { Status = status
       Subtasks = subtasks
       ActivityTail = activityTail
-      LastRun = lastRun }
+      LastRun = lastRun
+      Diagnostics = diagnostics }
 
 /// Parse the top-level JSON object returned by GetStatus into structured per-plugin status.
 let parsePluginStatuses (json: string) : Map<string, ParsedPluginStatus> =
