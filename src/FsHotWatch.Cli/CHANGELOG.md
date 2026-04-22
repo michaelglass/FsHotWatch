@@ -10,8 +10,8 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ### Fixed
 
-- `start` is now a singleton per repo: if a daemon is already responding on the pipe, the command prints `Daemon already running at pipe <name> (pid <n>)` and exits `0` instead of spawning a duplicate. Previously repeated `start` invocations accumulated concurrent daemons that raced on the same pipe and served stale results.
-- `stop` iterates `Shutdown` until the pipe goes quiet so it cleanly takes down historically-accumulated duplicate daemons, reporting the count stopped (or `No daemon running` if none).
+- `start` is now a singleton per repo, enforced by an OS-level exclusive file lock on `.fs-hot-watch/daemon.lock` held for the daemon's lifetime. Two concurrent `start` invocations cannot both acquire the lock, so duplication is impossible rather than just unlikely. The second invocation exits `0` with `Daemon already running at pipe <name> (pid <n>)`. Previously, repeated `start` invocations could race past the probe-based guard and accumulate concurrent daemons serving stale results.
+- `stop` drains running daemons until `IsRunning` returns `false` on two consecutive probes (bounded by a 30 s overall timeout), reporting the count stopped (or `No daemon running` if none). The fixed 10-attempt cap used previously could leave orphans when more duplicates had accumulated, and the fixed single-probe termination could misreport "No daemon running" while the OS was still tearing down the last pipe endpoint.
 
 ## 0.8.0-alpha.3 (2026-04-18)
 

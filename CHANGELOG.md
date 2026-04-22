@@ -16,7 +16,7 @@ All notable changes to FsHotWatch packages are documented here.
 ### FsHotWatch.Coverage
 
 #### Fixed
-- Cache key now includes a content hash of the thresholds file, so editing `coverage-ratchet.json` under the same commit invalidates the cached plugin status instead of silently replaying a stale result
+- Cache key now carries a tristate salt derived from the thresholds file (absent / unreadable / content SHA-256), so editing `coverage-ratchet.json` under the same commit invalidates the cached plugin status, and a transient IO error on the thresholds file no longer presents as "file absent" to the cache
 
 #### Changed
 - `performScan` takes `BatchContext` instead of 12 individual parameters
@@ -28,8 +28,8 @@ All notable changes to FsHotWatch packages are documented here.
 - `exclude` config field in `.fs-hot-watch.json` — gitignore-style glob patterns to exclude project trees
 
 #### Fixed
-- `start` refuses to spawn a duplicate when a daemon is already responding on the pipe; prints "Daemon already running at pipe <name> (pid <n>)" and exits 0
-- `stop` iterates Shutdown until the pipe goes quiet, so it cleanly takes down historically-accumulated duplicate daemons
+- `start` is a singleton per repo, enforced by an OS exclusive lock on `.fs-hot-watch/daemon.lock` held for the daemon's lifetime; concurrent invocations cannot both proceed. Second invocation exits 0 with "Daemon already running at pipe <name> (pid <n>)".
+- `stop` drains until the pipe is observed quiet for two consecutive probes (30 s overall timeout), cleanly taking down any number of historically-accumulated duplicate daemons and no longer misreporting "No daemon running" during pipe tear-down.
 
 ### Tests / CI
 

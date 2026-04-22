@@ -4,10 +4,13 @@
 
 ### Fixed
 
-- Cache key now includes a content hash of the thresholds file. Previously the
-  key was commit-id-only, so editing `coverage-ratchet.json` (e.g. via
-  `coverageratchet loosen`) under the same commit would silently replay the
-  stale cached plugin status instead of re-evaluating coverage.
+- Cache key now includes a tristate salt derived from the thresholds file
+  (`absent` / `err:<exception-kind>` / content SHA-256). Previously the key was
+  commit-id-only, so editing `coverage-ratchet.json` (e.g. via
+  `coverageratchet loosen`) under the same commit silently replayed the stale
+  cached plugin status. Splitting unreadable-file errors from absent-file cases
+  also means a transient IO hiccup no longer produces the same cache key as "no
+  thresholds file at all".
 
 ---
 
