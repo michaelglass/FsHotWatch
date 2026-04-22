@@ -210,16 +210,7 @@ let create
                                                 let entries = thresholdEntries @ afterCheckEntries
 
                                                 ctx.ReportErrors "<coverage>" entries
-
-                                                let failures =
-                                                    entries |> List.map (fun e -> e.Message) |> String.concat "; "
-
-                                                ctx.ReportStatus(
-                                                    PluginStatus.Failed(
-                                                        $"Coverage below threshold: %s{failures}",
-                                                        DateTime.UtcNow
-                                                    )
-                                                )
+                                                ctx.ReportStatus(Completed(DateTime.UtcNow))
 
                                             return { Results = results }
                                     with ex ->
