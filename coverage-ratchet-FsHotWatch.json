@@ -263,7 +263,7 @@
     "PluginActivity.fs": [
       {
         "line": 92,
-        "branch": 65,
+        "branch": 66,
         "reason": "loosened: new Recording phase state paths",
         "platform": "macos"
       },
