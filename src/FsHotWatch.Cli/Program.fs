@@ -378,6 +378,19 @@ let private ensureDaemon
         killStaleDaemon repoRoot
         startFreshDaemon ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
 
+/// Options assembled from parsed global flags.
+type GlobalOptions =
+    { NoCache: bool
+      NoWarnFail: bool
+      AgentMode: bool
+      DaemonExtraArgs: string }
+
+let defaultGlobalOptions =
+    { NoCache = false
+      NoWarnFail = false
+      AgentMode = false
+      DaemonExtraArgs = "" }
+
 /// Execute a parsed command with injectable dependencies.
 let executeCommand
     (createDaemon: string -> Daemon)
@@ -385,16 +398,15 @@ let executeCommand
     (repoRoot: string)
     (pipeName: string)
     (command: Command)
-    (daemonExtraArgs: string)
-    (noWarnFail: bool)
-    (agentMode: bool)
+    (opts: GlobalOptions)
     (config: DaemonConfiguration)
     (startupTimeoutSeconds: float)
     : int =
-    let pickMode flags = pickModeWith agentMode flags
+    let pickMode flags = pickModeWith opts.AgentMode flags
+    let noWarnFail = opts.NoWarnFail
 
     let ensureDaemonFn () =
-        ensureDaemon ipc repoRoot pipeName daemonExtraArgs config.LogDir startupTimeoutSeconds
+        ensureDaemon ipc repoRoot pipeName opts.DaemonExtraArgs config.LogDir startupTimeoutSeconds
 
     let queryPluginWith (mode: ProgressRenderer.RenderMode) (filter: string) : int =
         ensureAndQueryErrors mode noWarnFail ensureDaemonFn ipc pipeName filter
@@ -720,18 +732,6 @@ let executePluginCommand (ipc: IpcOps) (pipeName: string) (agentMode: bool) (cmd
         let result = ipc.RunCommand pipeName cmd argsStr |> Async.RunSynchronously
         IpcOutput.renderIpcResult mode (renderLines mode true) false result)
 
-type GlobalOptions =
-    { NoCache: bool
-      NoWarnFail: bool
-      AgentMode: bool
-      DaemonExtraArgs: string }
-
-let private emptyGlobalOptions =
-    { NoCache = false
-      NoWarnFail = false
-      AgentMode = false
-      DaemonExtraArgs = "" }
-
 /// Apply parsed global flags: configure logging and return the resolved options.
 let applyGlobalFlags (globals: GlobalFlag list) : GlobalOptions =
     let folder (opts: GlobalOptions, parts) flag =
@@ -755,13 +755,7 @@ let applyGlobalFlags (globals: GlobalFlag list) : GlobalOptions =
         // --agent is client-side only; don't forward to the daemon.
         | Agent -> { opts with AgentMode = true }, parts
 
-    let opts, parts =
-        globals
-        |> List.fold
-            folder
-            ({ emptyGlobalOptions with
-                DaemonExtraArgs = "" },
-             [])
+    let opts, parts = globals |> List.fold folder (defaultGlobalOptions, [])
 
     let extraArgs =
         match parts with
@@ -801,17 +795,7 @@ let main args =
             let createDaemon (root: string) =
                 Daemon.create root backend keyProvider None config.Exclude
 
-            executeCommand
-                createDaemon
-                defaultIpcOps
-                repoRoot
-                pipeName
-                command
-                opts.DaemonExtraArgs
-                opts.NoWarnFail
-                opts.AgentMode
-                config
-                30.0
+            executeCommand createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
         | Error(HelpRequested path) ->
             printfn "%s" (CommandTree.helpForPath commandTree path cliName)
             0
