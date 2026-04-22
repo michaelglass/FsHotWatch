@@ -411,21 +411,60 @@ let ``parseConfig fileCommands with entries`` () =
 
     let config = parseConfig json defaults
     test <@ config.FileCommands.Length = 2 @>
-    test <@ config.FileCommands.[0].Pattern = "*.fsx" @>
+    test <@ config.FileCommands.[0].Pattern = Some "*.fsx" @>
+    test <@ config.FileCommands.[0].AfterTests = None @>
     test <@ config.FileCommands.[0].Command = "dotnet" @>
     test <@ config.FileCommands.[0].Args = "fsi" @>
-    test <@ config.FileCommands.[1].Pattern = "*.sql" @>
+    test <@ config.FileCommands.[1].Pattern = Some "*.sql" @>
     test <@ config.FileCommands.[1].Command = "psql" @>
     test <@ config.FileCommands.[1].Args = "-f" @>
 
 [<Fact(Timeout = 5000)>]
-let ``parseConfig fileCommands with empty entry uses defaults`` () =
+let ``parseConfig fileCommands entry without pattern or afterTests is rejected`` () =
     let json = """{"fileCommands": [{}]}"""
+
+    let ex =
+        Assert.ThrowsAny<exn>(fun () -> parseConfig json defaults |> ignore)
+
+    test <@ ex.Message.Contains("pattern") && ex.Message.Contains("afterTests") @>
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig fileCommands afterTests true parses to AnyTest`` () =
+    let json =
+        """{"fileCommands": [{"name": "cov", "afterTests": true, "command": "echo", "args": "ran"}]}"""
+
     let config = parseConfig json defaults
     test <@ config.FileCommands.Length = 1 @>
-    test <@ config.FileCommands.[0].Pattern = "*.fsx" @>
-    test <@ config.FileCommands.[0].Command = "echo" @>
-    test <@ config.FileCommands.[0].Args = "" @>
+    test <@ config.FileCommands.[0].Name = Some "cov" @>
+    test <@ config.FileCommands.[0].Pattern = None @>
+
+    test
+        <@ config.FileCommands.[0].AfterTests = Some FsHotWatch.FileCommand.FileCommandPlugin.AnyTest @>
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig fileCommands afterTests list parses to TestProjects`` () =
+    let json =
+        """{"fileCommands": [{"name": "cov", "afterTests": ["A", "B"], "command": "echo", "args": "ran"}]}"""
+
+    let config = parseConfig json defaults
+    test <@ config.FileCommands.Length = 1 @>
+
+    test
+        <@
+            config.FileCommands.[0].AfterTests = Some(
+                FsHotWatch.FileCommand.FileCommandPlugin.TestProjects(Set.ofList [ "A"; "B" ])
+            )
+        @>
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig fileCommands afterTests without name is rejected`` () =
+    let json =
+        """{"fileCommands": [{"afterTests": true, "command": "echo", "args": "ran"}]}"""
+
+    let ex =
+        Assert.ThrowsAny<exn>(fun () -> parseConfig json defaults |> ignore)
+
+    test <@ ex.Message.Contains("name") @>
 
 [<Fact(Timeout = 5000)>]
 let ``parseConfig fileCommands empty array`` () =
@@ -690,26 +729,6 @@ let ``parseConfig tests without extensions defaults to empty`` () =
 
     let config = parseConfig json defaults
     test <@ config.Tests.Value.Extensions |> List.isEmpty @>
-
-// --- parseConfig: fileCommands runOnStart ---
-
-[<Fact(Timeout = 5000)>]
-let ``parseConfig fileCommands with runOnStart true`` () =
-    let json =
-        """{"fileCommands": [{"pattern": "*.lock", "command": "npm", "args": "install", "runOnStart": true}]}"""
-
-    let config = parseConfig json defaults
-    test <@ config.FileCommands.Length = 1 @>
-    test <@ config.FileCommands.[0].RunOnStart = true @>
-
-[<Fact(Timeout = 5000)>]
-let ``parseConfig fileCommands without runOnStart defaults to false`` () =
-    let json =
-        """{"fileCommands": [{"pattern": "*.fsx", "command": "dotnet", "args": "fsi"}]}"""
-
-    let config = parseConfig json defaults
-    test <@ config.FileCommands.Length = 1 @>
-    test <@ config.FileCommands.[0].RunOnStart = false @>
 
 [<Fact(Timeout = 5000)>]
 let ``loadConfig with jj repo defaults to JjFileBackend`` () =
