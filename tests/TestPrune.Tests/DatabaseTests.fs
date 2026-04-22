@@ -1886,54 +1886,66 @@ module ``Schema version migration`` =
         finally
             cleanupDb path
 
-    // Regression: a DB created before versioning was added reads
-    // `user_version = 0`. The previous check bypassed recreation when version = 0
-    // (a special case for fresh empty files) and let the stale schema survive:
-    // CREATE TABLE IF NOT EXISTS is a no-op on existing tables so new columns
-    // were never added, then the DB got stamped with the current SchemaVersion
-    // anyway — the next INSERT blew up with "no column named …" and the
-    // FsHotWatch.TestPrune plugin hung in Running forever. Now we recreate
-    // whenever the stored version doesn't match, unless the file is genuinely
-    // empty (no user tables yet).
+    /// Seeds a legacy-schema DB at `path` with the three-table skeleton.
+    /// `extraSymbolsColumns` appends columns to `symbols` (for fixtures that
+    /// carry post-v2 additions like `content_hash`, `is_extern`).
+    /// `stampedVersion` optionally writes `user_version`; omit to leave the
+    /// DB unstamped, modelling a pre-versioning install.
+    let private seedLegacySchema
+        (path: string)
+        (extraSymbolsColumns: string list)
+        (stampedVersion: int option)
+        =
+        let symbolsExtras =
+            extraSymbolsColumns
+            |> List.map (fun c -> $"                        {c},\n")
+            |> String.concat ""
+
+        let stamp =
+            match stampedVersion with
+            | Some v -> $"PRAGMA user_version = %d{v};"
+            | None -> ""
+
+        use conn = openRawConnection path
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            $"""
+            CREATE TABLE symbols (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                full_name TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                line_start INTEGER NOT NULL,
+                line_end INTEGER NOT NULL,
+%s{symbolsExtras}                indexed_at TEXT NOT NULL
+            );
+            CREATE TABLE dependencies (
+                from_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+                to_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+                dep_kind TEXT NOT NULL,
+                PRIMARY KEY (from_symbol_id, to_symbol_id, dep_kind)
+            );
+            CREATE TABLE test_methods (
+                symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
+                test_project TEXT NOT NULL,
+                test_class TEXT NOT NULL,
+                test_method TEXT NOT NULL
+            );
+            %s{stamp}
+            """
+
+        cmd.ExecuteNonQuery() |> ignore
+
+    // Regression: a pre-versioning DB reads `user_version = 0`. The old check
+    // treated that as a fresh-DB signal and left the stale schema intact; see
+    // `hasUserTables` in Database.fs.
     [<Fact>]
     let ``recreates database with user_version=0 and legacy tables`` () =
         let path = tempDbPath ()
 
         try
-            do
-                use conn = openRawConnection path
-
-                use cmd = conn.CreateCommand()
-
-                cmd.CommandText <-
-                    """
-                    CREATE TABLE symbols (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        full_name TEXT NOT NULL UNIQUE,
-                        kind TEXT NOT NULL,
-                        source_file TEXT NOT NULL,
-                        line_start INTEGER NOT NULL,
-                        line_end INTEGER NOT NULL,
-                        indexed_at TEXT NOT NULL
-                    );
-                    CREATE TABLE dependencies (
-                        from_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
-                        to_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
-                        dep_kind TEXT NOT NULL,
-                        PRIMARY KEY (from_symbol_id, to_symbol_id, dep_kind)
-                    );
-                    CREATE TABLE test_methods (
-                        symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
-                        test_project TEXT NOT NULL,
-                        test_class TEXT NOT NULL,
-                        test_method TEXT NOT NULL
-                    );
-                    -- deliberately NOT stamping user_version — simulates a pre-versioning DB.
-                    """
-
-                cmd.ExecuteNonQuery() |> ignore
-
-            // Sanity: the fixture really is unstamped + missing current columns.
+            seedLegacySchema path [] None
             test <@ getUserVersion path = 0 @>
 
             let db = Database.create path
@@ -1952,40 +1964,11 @@ module ``Schema version migration`` =
         let path = tempDbPath ()
 
         try
-            do
-                use conn = openRawConnection path
-
-                use cmd = conn.CreateCommand()
-
-                cmd.CommandText <-
-                    """
-                    CREATE TABLE symbols (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        full_name TEXT NOT NULL UNIQUE,
-                        kind TEXT NOT NULL,
-                        source_file TEXT NOT NULL,
-                        line_start INTEGER NOT NULL,
-                        line_end INTEGER NOT NULL,
-                        content_hash TEXT NOT NULL DEFAULT '',
-                        is_extern INTEGER NOT NULL DEFAULT 0,
-                        indexed_at TEXT NOT NULL
-                    );
-                    CREATE TABLE dependencies (
-                        from_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
-                        to_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
-                        dep_kind TEXT NOT NULL,
-                        PRIMARY KEY (from_symbol_id, to_symbol_id, dep_kind)
-                    );
-                    CREATE TABLE test_methods (
-                        symbol_id INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
-                        test_project TEXT NOT NULL,
-                        test_class TEXT NOT NULL,
-                        test_method TEXT NOT NULL
-                    );
-                    PRAGMA user_version = 3;
-                    """
-
-                cmd.ExecuteNonQuery() |> ignore
+            seedLegacySchema
+                path
+                [ "content_hash TEXT NOT NULL DEFAULT ''"
+                  "is_extern INTEGER NOT NULL DEFAULT 0" ]
+                (Some 3)
 
             let db = Database.create path
             db.RebuildProjects([ standardGraph ])
