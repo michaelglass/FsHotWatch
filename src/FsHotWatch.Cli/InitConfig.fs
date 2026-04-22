@@ -86,7 +86,8 @@ let generateConfig (projectPaths: string list) (hasJj: bool) : DaemonConfigurati
             Some
                 {| BeforeRun = None
                    Extensions = []
-                   Projects = testProjects |}
+                   Projects = testProjects
+                   CoverageDir = "coverage" |}
       FileCommands = []
       Exclude = []
       LogDir = "logs" }
