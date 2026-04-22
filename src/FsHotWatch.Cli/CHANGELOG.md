@@ -4,6 +4,8 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+- chore: bump upstream tool versions
+
 ## 0.8.0-alpha.8 (2026-04-22)
 
 ### Added
