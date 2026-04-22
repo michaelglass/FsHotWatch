@@ -46,7 +46,7 @@ let ``formatDiagnosticsResponse with no errors shows clean message`` () =
         """{"count":0,"files":{},"statuses":{"build":{"status":{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"},"subtasks":[],"activityTail":[],"lastRun":null}}}"""
 
     let result = parseDiagnosticsResponse json
-    let output = formatDiagnosticsResponse result
+    let output = formatDiagnosticsResponse (fun _ -> []) result
     test <@ output.Contains("No errors") @>
 
 [<Fact(Timeout = 5000)>]
@@ -55,7 +55,7 @@ let ``formatDiagnosticsResponse with errors shows file and message`` () =
         """{"count":1,"files":{"src/Foo.fs":[{"plugin":"lint","message":"bad name","severity":"warning","line":17,"column":0,"detail":null}]},"statuses":{"lint":{"status":{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"},"subtasks":[],"activityTail":[],"lastRun":null}}}"""
 
     let result = parseDiagnosticsResponse json
-    let output = formatDiagnosticsResponse result
+    let output = formatDiagnosticsResponse (fun _ -> []) result
     test <@ output.Contains("src/Foo.fs") @>
     test <@ output.Contains("[lint]") @>
     test <@ output.Contains("L17") @>
@@ -67,22 +67,8 @@ let ``formatDiagnosticsResponse with errors shows count summary`` () =
         """{"count":2,"files":{"src/A.fs":[{"plugin":"lint","message":"x","severity":"warning","line":1,"column":0,"detail":null}],"src/B.fs":[{"plugin":"build","message":"y","severity":"error","line":2,"column":0,"detail":null}]},"statuses":{}}"""
 
     let result = parseDiagnosticsResponse json
-    let output = formatDiagnosticsResponse result
+    let output = formatDiagnosticsResponse (fun _ -> []) result
     test <@ output.Contains("1 error(s), 1 warning(s) in 2 file(s)") @>
-
-[<Fact(Timeout = 5000)>]
-let ``formatStepResult shows checkmark for completed`` () =
-    let line = formatStepResult "build" (Completed(System.DateTime.UtcNow))
-    test <@ line.Contains("\u2713") @>
-    test <@ line.Contains("build") @>
-
-[<Fact(Timeout = 5000)>]
-let ``formatStepResult shows X for failed`` () =
-    let line =
-        formatStepResult "build" (Failed("compile error", System.DateTime.UtcNow))
-
-    test <@ line.Contains("\u2717") @>
-    test <@ line.Contains("compile error") @>
 
 [<Fact(Timeout = 5000)>]
 let ``isAllTerminal returns false for empty map`` () =
@@ -178,19 +164,6 @@ let ``exitCodeFromResponse without noWarnFail fails on warnings`` () =
 
     test <@ exitCodeFromResponse false resp = 1 @>
 
-[<Fact(Timeout = 5000)>]
-let ``renderProgress shows all plugins`` () =
-    let statuses =
-        Map.ofList
-            [ "build", Completed System.DateTime.UtcNow
-              "lint", Running(System.DateTime.UtcNow.AddSeconds(-3.0)) ]
-
-    let output = renderProgress statuses
-    test <@ output.Contains("build") @>
-    test <@ output.Contains("lint") @>
-    test <@ output.Contains("\u2713") @>
-    test <@ output.Contains("\u2026") @>
-
 // --- renderIpcResult tests ---
 
 [<Fact(Timeout = 5000)>]
@@ -254,7 +227,7 @@ let ``formatDiagnosticsResponse hides info-severity entries`` () =
         """{"count":1,"files":{"src/Foo.fs":[{"plugin":"fcs","message":"XML comment is not placed on a valid language element.","severity":"info","line":3,"column":0,"detail":null}]},"statuses":{}}"""
 
     let result = parseDiagnosticsResponse json
-    let output = formatDiagnosticsResponse result
+    let output = formatDiagnosticsResponse (fun _ -> []) result
     test <@ not (output.Contains("XML comment")) @>
     test <@ output.Contains("No errors") @>
 
@@ -264,7 +237,7 @@ let ``formatDiagnosticsResponse shows warnings but hides info in same file`` () 
         """{"count":2,"files":{"src/Foo.fs":[{"plugin":"fcs","message":"XML comment","severity":"info","line":3,"column":0,"detail":null},{"plugin":"format-check","message":"File is not formatted","severity":"warning","line":1,"column":0,"detail":null}]},"statuses":{}}"""
 
     let result = parseDiagnosticsResponse json
-    let output = formatDiagnosticsResponse result
+    let output = formatDiagnosticsResponse (fun _ -> []) result
     test <@ output.Contains("File is not formatted") @>
     test <@ not (output.Contains("XML comment")) @>
     test <@ output.Contains("1 warning(s) in 1 file(s)") @>
@@ -275,7 +248,7 @@ let ``formatDiagnosticsResponse excludes info-only files from count`` () =
         """{"count":2,"files":{"src/A.fs":[{"plugin":"fcs","message":"XML comment","severity":"info","line":3,"column":0,"detail":null}],"src/B.fs":[{"plugin":"lint","message":"bad","severity":"warning","line":1,"column":0,"detail":null}]},"statuses":{}}"""
 
     let result = parseDiagnosticsResponse json
-    let output = formatDiagnosticsResponse result
+    let output = formatDiagnosticsResponse (fun _ -> []) result
     test <@ output.Contains("1 warning(s) in 1 file(s)") @>
 
 [<Fact(Timeout = 5000)>]
