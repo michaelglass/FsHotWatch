@@ -351,8 +351,22 @@ let ``parseConfig tests project with no project key defaults to unknown`` () =
 
 // --- parseConfig: coverage ---
 // Coverage config block was removed — coverage XMLs are now emitted under
-// <repoRoot>/coverage/<project>/ unconditionally, and ratcheting is driven
-// by fileCommands afterTests invoking an external tool.
+// <repoRoot>/<tests.coverageDir>/<project>/ (default "coverage"), and
+// ratcheting is driven by fileCommands afterTests invoking an external tool.
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig tests without coverageDir defaults to coverage`` () =
+    let json = """{"tests": {"projects": [{"project": "T"}]}}"""
+    let config = parseConfig json defaults
+    test <@ config.Tests.Value.CoverageDir = "coverage" @>
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig tests with explicit coverageDir`` () =
+    let json =
+        """{"tests": {"coverageDir": "artifacts/cov", "projects": [{"project": "T"}]}}"""
+
+    let config = parseConfig json defaults
+    test <@ config.Tests.Value.CoverageDir = "artifacts/cov" @>
 
 // --- parseConfig: fileCommands ---
 
