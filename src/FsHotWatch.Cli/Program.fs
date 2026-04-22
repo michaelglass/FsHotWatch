@@ -409,11 +409,21 @@ let executeCommand
     | Start ->
         let stateDir = Path.Combine(repoRoot, ".fs-hot-watch")
         let pidFile = Path.Combine(stateDir, "daemon.pid")
+        let lockFile = Path.Combine(stateDir, "daemon.lock")
+        Directory.CreateDirectory(stateDir) |> ignore
 
-        // Guard: refuse to spawn a duplicate daemon. Without this, repeated `start`
-        // invocations accumulate concurrent daemons that race on the same pipe and
-        // serve stale results.
-        if ipc.IsRunning pipeName then
+        // OS-enforced singleton: hold an exclusive lock on daemon.lock for the
+        // daemon's lifetime. Two concurrent `start` invocations cannot both
+        // acquire it; the second exits cleanly. Replaces the earlier probe-based
+        // guard which had a TOCTOU window between IsRunning check and pipe claim.
+        let acquired =
+            try
+                Some(new FileStream(lockFile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
+            with :? IOException ->
+                None
+
+        match acquired with
+        | None ->
             let pidInfo =
                 if File.Exists pidFile then
                     $" (pid %s{File.ReadAllText(pidFile).Trim()})"
@@ -422,12 +432,12 @@ let executeCommand
 
             eprintfn $"Daemon already running at pipe %s{pipeName}%s{pidInfo}"
             0
-        else
+        | Some lockStream ->
+            use _lock = lockStream
             eprintfn $"Starting FsHotWatch daemon for %s{repoRoot}"
             eprintfn $"Pipe: %s{pipeName}"
             // Write our own PID so killStaleDaemon can find the actual daemon process,
             // not the nohup wrapper that launched us.
-            Directory.CreateDirectory(stateDir) |> ignore
             File.WriteAllText(pidFile, string (System.Diagnostics.Process.GetCurrentProcess().Id))
 
             let daemon = createDaemon repoRoot
@@ -449,19 +459,26 @@ let executeCommand
         withIpc (fun () ->
             // Multiple daemons may be listening on the same pipe (historically the
             // start command spawned duplicates); iterate Shutdown until the pipe
-            // goes quiet so we don't leave orphans behind.
-            let maxAttempts = 10
+            // has been quiet for two consecutive probes so we don't leave orphans
+            // behind and don't misreport "No daemon running" while the OS is still
+            // tearing down the last pipe endpoint.
+            let overallTimeout = TimeSpan.FromSeconds(30.0)
+            let sw = System.Diagnostics.Stopwatch.StartNew()
             let mutable stopped = 0
-            let mutable attempts = 0
+            let mutable consecutiveQuiet = 0
 
-            while attempts < maxAttempts && ipc.IsRunning pipeName do
-                try
-                    ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
-                    stopped <- stopped + 1
-                with _ ->
-                    ()
+            while consecutiveQuiet < 2 && sw.Elapsed < overallTimeout do
+                if ipc.IsRunning pipeName then
+                    consecutiveQuiet <- 0
 
-                attempts <- attempts + 1
+                    try
+                        ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
+                        stopped <- stopped + 1
+                    with _ ->
+                        ()
+                else
+                    consecutiveQuiet <- consecutiveQuiet + 1
+
                 Thread.Sleep(100)
 
             match stopped with
