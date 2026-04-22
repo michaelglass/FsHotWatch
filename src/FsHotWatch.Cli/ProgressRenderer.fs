@@ -2,6 +2,7 @@ module FsHotWatch.Cli.ProgressRenderer
 
 open System
 open CommandTree
+open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcParsing
@@ -11,6 +12,17 @@ open FsHotWatch.Cli.IpcParsing
 type RenderMode =
     | Compact
     | Verbose
+
+/// Status glyphs (already wrapped in ANSI colors) and the em-dash used as an inline
+/// text separator. Kept in one place so the visual language stays consistent.
+module private Glyph =
+    let check = $"%s{Color.green}✓%s{Color.reset}"
+    let warn = $"%s{Color.red}⚠%s{Color.reset}"
+    let cross = $"%s{Color.red}✗%s{Color.reset}"
+    let ellipsis = $"%s{Color.yellow}…%s{Color.reset}"
+    let idle = $"%s{Color.dim}—%s{Color.reset}"
+    /// Em-dash used as an inline separator in prose (e.g. "  ✓ build — summary").
+    let sep = "—"
 
 let private padName (name: string) = name.PadRight(24)
 
@@ -47,7 +59,12 @@ let private latestActivity (tail: string list) =
 
 // ----- Compact -----
 
-let private renderCompact (now: DateTime) (name: string) (parsed: ParsedPluginStatus) : string list =
+let private renderCompact
+    (warningsAreFailures: bool)
+    (now: DateTime)
+    (name: string)
+    (parsed: ParsedPluginStatus)
+    : string list =
     let padded = padName name
 
     let line =
@@ -58,16 +75,24 @@ let private renderCompact (now: DateTime) (name: string) (parsed: ParsedPluginSt
                 | Some r -> r.Elapsed
                 | None -> TimeSpan.Zero
 
+            let withIssues = DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics
+
             let summary =
-                match parsed.LastRun with
-                | Some r ->
-                    match runSummary r with
-                    | "" -> ""
-                    | s -> $" %s{Color.dim}\u2014 %s{s}%s{Color.reset}"
-                | None -> ""
+                if withIssues then
+                    $" %s{Color.dim}{Glyph.sep} %s{DiagnosticCounts.summary parsed.Diagnostics}%s{Color.reset}"
+                else
+                    match parsed.LastRun with
+                    | Some r ->
+                        match runSummary r with
+                        | "" -> ""
+                        | s -> $" %s{Color.dim}{Glyph.sep} %s{s}%s{Color.reset}"
+                    | None -> ""
 
             let timingStr = UI.timing elapsed
-            $"  %s{Color.green}\u2713%s{Color.reset} %s{padded} %s{timingStr}%s{summary}"
+
+            let glyph = if withIssues then Glyph.warn else Glyph.check
+
+            $"  %s{glyph} %s{padded} %s{timingStr}%s{summary}"
         | Failed(err, _) ->
             let short = summariseError err
 
@@ -77,7 +102,7 @@ let private renderCompact (now: DateTime) (name: string) (parsed: ParsedPluginSt
                 | None -> TimeSpan.Zero
 
             let timingStr = UI.timing elapsed
-            $"  %s{Color.red}\u2717%s{Color.reset} %s{padded} %s{timingStr} %s{Color.dim}\u2014 %s{short}%s{Color.reset}"
+            $"  %s{Glyph.cross} %s{padded} %s{timingStr} %s{Color.dim}{Glyph.sep} %s{short}%s{Color.reset}"
         | Running since ->
             let elapsed = now - since
             let timingStr = UI.timing elapsed
@@ -90,13 +115,13 @@ let private renderCompact (now: DateTime) (name: string) (parsed: ParsedPluginSt
                     if la = "" then
                         ""
                     else
-                        $" %s{Color.dim}\u2014 %s{la}%s{Color.reset}"
+                        $" %s{Color.dim}{Glyph.sep} %s{la}%s{Color.reset}"
                 | xs ->
                     let n = List.length xs
                     let names = xs |> List.map (fun s -> s.Key) |> String.concat ", "
-                    $" %s{Color.dim}\u2014 %d{n} running: %s{names}%s{Color.reset}"
+                    $" %s{Color.dim}{Glyph.sep} %d{n} running: %s{names}%s{Color.reset}"
 
-            $"  %s{Color.yellow}\u2026%s{Color.reset} %s{padded} %s{timingStr}%s{detail}"
+            $"  %s{Glyph.ellipsis} %s{padded} %s{timingStr}%s{detail}"
         | Idle ->
             match parsed.LastRun with
             | Some r ->
@@ -106,25 +131,31 @@ let private renderCompact (now: DateTime) (name: string) (parsed: ParsedPluginSt
                 let summary =
                     match runSummary r with
                     | "" -> ""
-                    | s -> $" \u2014 %s{s}"
+                    | s -> $" {Glyph.sep} %s{s}"
 
-                $"  %s{Color.dim}\u2014 %s{padded} last: %s{timingStr} (%s{t})%s{summary}%s{Color.reset}"
-            | None -> $"  %s{Color.dim}\u2014 %s{padded}%s{Color.reset}"
+                $"  %s{Color.dim}{Glyph.sep} %s{padded} last: %s{timingStr} (%s{t})%s{summary}%s{Color.reset}"
+            | None -> $"  %s{Color.dim}{Glyph.sep} %s{padded}%s{Color.reset}"
 
     [ line ]
 
 // ----- Verbose -----
 
-let private glyphForStatus status =
-    match status with
-    | Completed _ -> $"%s{Color.green}\u2713%s{Color.reset}"
-    | Failed _ -> $"%s{Color.red}\u2717%s{Color.reset}"
-    | Running _ -> $"%s{Color.yellow}\u2026%s{Color.reset}"
-    | Idle -> $"%s{Color.dim}\u2014%s{Color.reset}"
+let private glyphForParsed (warningsAreFailures: bool) (parsed: ParsedPluginStatus) =
+    match parsed.Status with
+    | Completed _ when DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics -> Glyph.warn
+    | Completed _ -> Glyph.check
+    | Failed _ -> Glyph.cross
+    | Running _ -> Glyph.ellipsis
+    | Idle -> Glyph.idle
 
-let private verboseHeader (now: DateTime) (name: string) (parsed: ParsedPluginStatus) : string =
+let private verboseHeader
+    (warningsAreFailures: bool)
+    (now: DateTime)
+    (name: string)
+    (parsed: ParsedPluginStatus)
+    : string =
     let padded = padName name
-    let glyph = glyphForStatus parsed.Status
+    let glyph = glyphForParsed warningsAreFailures parsed
 
     match parsed.Status with
     | Running since ->
@@ -133,7 +164,7 @@ let private verboseHeader (now: DateTime) (name: string) (parsed: ParsedPluginSt
 
         let detail =
             if n > 0 then
-                $" %s{Color.dim}\u2014 %d{n} running%s{Color.reset}"
+                $" %s{Color.dim}{Glyph.sep} %d{n} running%s{Color.reset}"
             else
                 ""
 
@@ -146,7 +177,7 @@ let private verboseHeader (now: DateTime) (name: string) (parsed: ParsedPluginSt
 
         let summary =
             match parsed.LastRun |> Option.map runSummary with
-            | Some s when s <> "" -> $" %s{Color.dim}\u2014 %s{s}%s{Color.reset}"
+            | Some s when s <> "" -> $" %s{Color.dim}{Glyph.sep} %s{s}%s{Color.reset}"
             | _ -> ""
 
         $"  %s{glyph} %s{padded} %s{UI.timing elapsed}%s{summary}"
@@ -156,7 +187,7 @@ let private verboseHeader (now: DateTime) (name: string) (parsed: ParsedPluginSt
             | Some r -> r.Elapsed
             | None -> TimeSpan.Zero
 
-        $"  %s{glyph} %s{padded} %s{UI.timing elapsed} %s{Color.dim}\u2014 %s{summariseError err}%s{Color.reset}"
+        $"  %s{glyph} %s{padded} %s{UI.timing elapsed} %s{Color.dim}{Glyph.sep} %s{summariseError err}%s{Color.reset}"
     | Idle ->
         match parsed.LastRun with
         | Some r ->
@@ -165,7 +196,7 @@ let private verboseHeader (now: DateTime) (name: string) (parsed: ParsedPluginSt
             let summary =
                 match runSummary r with
                 | "" -> ""
-                | s -> $" \u2014 %s{s}"
+                | s -> $" {Glyph.sep} %s{s}"
 
             $"  %s{glyph} %s{padded} last: %s{UI.timing r.Elapsed} (%s{t})%s{summary}"
         | None -> $"  %s{glyph} %s{padded}"
@@ -187,8 +218,13 @@ let private renderRecent (tail: string list) : string list =
         $"      %s{Color.dim}recent:%s{Color.reset}"
         :: (xs |> List.map (fun l -> $"        %s{l}"))
 
-let private renderVerbose (now: DateTime) (name: string) (parsed: ParsedPluginStatus) : string list =
-    let header = verboseHeader now name parsed
+let private renderVerbose
+    (warningsAreFailures: bool)
+    (now: DateTime)
+    (name: string)
+    (parsed: ParsedPluginStatus)
+    : string list =
+    let header = verboseHeader warningsAreFailures now name parsed
 
     let body =
         match parsed.Status with
@@ -232,14 +268,26 @@ let private renderVerbose (now: DateTime) (name: string) (parsed: ParsedPluginSt
     header :: body
 
 /// Render a single plugin's status block. Returns one or more lines.
-let renderPlugin (mode: RenderMode) (now: DateTime) (name: string) (parsed: ParsedPluginStatus) : string list =
+/// `warningsAreFailures` controls whether ledger warnings count as "completed-with-issues".
+let renderPlugin
+    (mode: RenderMode)
+    (warningsAreFailures: bool)
+    (now: DateTime)
+    (name: string)
+    (parsed: ParsedPluginStatus)
+    : string list =
     match mode with
-    | Compact -> renderCompact now name parsed
-    | Verbose -> renderVerbose now name parsed
+    | Compact -> renderCompact warningsAreFailures now name parsed
+    | Verbose -> renderVerbose warningsAreFailures now name parsed
 
 /// Render all plugin statuses in the given mode. Callers join with newlines
 /// and use the line count for cursor-up erase.
-let renderAll (mode: RenderMode) (now: DateTime) (statuses: Map<string, ParsedPluginStatus>) : string list =
+let renderAll
+    (mode: RenderMode)
+    (warningsAreFailures: bool)
+    (now: DateTime)
+    (statuses: Map<string, ParsedPluginStatus>)
+    : string list =
     statuses
     |> Map.toList
-    |> List.collect (fun (name, parsed) -> renderPlugin mode now name parsed)
+    |> List.collect (fun (name, parsed) -> renderPlugin mode warningsAreFailures now name parsed)

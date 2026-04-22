@@ -46,7 +46,12 @@ let private outcomePayload (outcome: RunOutcome) : obj =
     | CompletedRun -> {| tag = "completed" |} :> obj
     | FailedRun e -> {| tag = "failed"; error = e |} :> obj
 
-let private pluginStatusPayload (host: PluginHost) (name: string) (status: PluginStatus) : obj =
+let private pluginStatusPayload
+    (host: PluginHost)
+    (counts: Map<string, DiagnosticCounts>)
+    (name: string)
+    (status: PluginStatus)
+    : obj =
     let snap = host.GetActivitySnapshot(name)
 
     let subtasks =
@@ -73,25 +78,15 @@ let private pluginStatusPayload (host: PluginHost) (name: string) (status: Plugi
                activityTail = r.ActivityTail |}
             :> obj
 
-    let ledgerEntries = host.GetErrorsByPlugin(name) |> Map.toList |> List.collect snd
-
-    let errorCount, warningCount =
-        ledgerEntries
-        |> List.fold
-            (fun (e, w) entry ->
-                match entry.Severity with
-                | DiagnosticSeverity.Error -> (e + 1, w)
-                | DiagnosticSeverity.Warning -> (e, w + 1)
-                | _ -> (e, w))
-            (0, 0)
+    let d = Map.tryFind name counts |> Option.defaultValue DiagnosticCounts.empty
 
     {| status = statusPayload status
        subtasks = subtasks
        activityTail = snap.ActivityTail
        lastRun = lastRun
        diagnostics =
-        {| errors = errorCount
-           warnings = warningCount |} |}
+        {| errors = d.Errors
+           warnings = d.Warnings |} |}
     :> obj
 
 /// Configuration record for DaemonRpcTarget.
@@ -114,10 +109,11 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
     /// Returns a JSON string of all plugin statuses.
     member _.GetStatus() : string =
         let statuses = config.Host.GetAllStatuses()
+        let counts = config.Host.GetDiagnosticCountsByPlugin()
 
         let entries =
             statuses
-            |> Map.map (fun name status -> pluginStatusPayload config.Host name status)
+            |> Map.map (fun name status -> pluginStatusPayload config.Host counts name status)
 
         JsonSerializer.Serialize(entries)
 
@@ -126,7 +122,8 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
     member _.GetPluginStatus(pluginName: string) : string =
         match config.Host.GetStatus(pluginName) with
         | Some status ->
-            let entry = pluginStatusPayload config.Host pluginName status
+            let counts = config.Host.GetDiagnosticCountsByPlugin()
+            let entry = pluginStatusPayload config.Host counts pluginName status
             let map = Map.ofList [ pluginName, entry ]
             JsonSerializer.Serialize(map)
         | None -> "{}"
@@ -190,9 +187,11 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
 
         let count = allErrors |> Map.fold (fun acc _ entries -> acc + entries.Length) 0
 
+        let counts = config.Host.GetDiagnosticCountsByPlugin()
+
         let statuses =
             config.Host.GetAllStatuses()
-            |> Map.map (fun name status -> pluginStatusPayload config.Host name status)
+            |> Map.map (fun name status -> pluginStatusPayload config.Host counts name status)
 
         let result =
             {| count = count
