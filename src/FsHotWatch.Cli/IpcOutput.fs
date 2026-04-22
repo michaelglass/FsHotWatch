@@ -8,19 +8,16 @@ open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Cli.IpcParsing
 
-/// Render all plugin statuses as a multi-line progress display.
-let renderProgress (statuses: Map<string, PluginStatus>) : string =
-    statuses
-    |> Map.toList
-    |> List.map (fun (name, status) -> RunOnceOutput.formatStepResult name status)
-    |> String.concat "\n"
-
 /// Format the full errors response with colored status lines and error details.
-let formatDiagnosticsResponse (resp: DiagnosticsResponse) : string =
+/// `renderStatuses` produces the per-plugin progress block (glyph-aware compact/verbose
+/// renderer provided by the caller).
+let formatDiagnosticsResponse
+    (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
+    (resp: DiagnosticsResponse)
+    : string =
     let sb = System.Text.StringBuilder()
 
-    let parsedStatuses = statusOnly resp.Statuses
-    let summary = RunOnceOutput.formatSummary parsedStatuses
+    let summary = renderStatuses resp.Statuses |> String.concat "\n"
 
     if summary <> "" then
         sb.AppendLine(summary) |> ignore
@@ -42,8 +39,16 @@ let formatDiagnosticsResponse (resp: DiagnosticsResponse) : string =
     sb.ToString().TrimEnd('\n', '\r')
 
 /// Determine exit code from a DiagnosticsResponse.
-/// When noWarnFail is true, only errors (not warnings) cause a non-zero exit code.
+/// Returns non-zero if any plugin is Failed, or if the ledger has failing entries.
+/// When noWarnFail is true, only errors (not warnings) in the ledger trigger a non-zero exit code.
 let exitCodeFromResponse (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
+    let anyPluginFailed =
+        resp.Statuses
+        |> Map.exists (fun _ parsed ->
+            match parsed.Status with
+            | Failed _ -> true
+            | _ -> false)
+
     let isFailure (e: DiagnosticEntry) =
         match e.Severity with
         | Error -> true
@@ -54,7 +59,7 @@ let exitCodeFromResponse (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
     let failCount =
         resp.Files |> Map.toSeq |> Seq.collect snd |> Seq.filter isFailure |> Seq.length
 
-    if failCount > 0 then 1 else 0
+    if anyPluginFailed || failCount > 0 then 1 else 0
 
 /// Render a generic IPC result (status JSON or plain text).
 let renderIpcResult
@@ -79,7 +84,7 @@ let renderIpcResult
         match root.TryGetProperty("count") with
         | true, _ ->
             let resp = parseDiagnosticsResponse result
-            let output = formatDiagnosticsResponse resp
+            let output = formatDiagnosticsResponse renderStatuses resp
             eprintfn "%s" output
             exitCodeFromResponse noWarnFail resp
         | false, _ ->
@@ -180,6 +185,6 @@ let pollAndRender
 
     let errorsJson = getErrors ()
     let resp = parseDiagnosticsResponse errorsJson
-    let output = formatDiagnosticsResponse resp
+    let output = formatDiagnosticsResponse renderStatuses resp
     eprintfn "%s" output
     exitCodeFromResponse noWarnFail resp

@@ -211,6 +211,9 @@ type PluginHost
     /// Get errors for a specific plugin only.
     member _.GetErrorsByPlugin(name) = ledger.GetByPlugin(name)
 
+    /// Per-plugin error/warning counts from the ledger, in a single roundtrip.
+    member _.GetDiagnosticCountsByPlugin() = ledger.GetCountsByPlugin()
+
     /// True if any failing entries exist (Error, or Warning when warningsAreFailures=true).
     member _.HasFailingReasons(warningsAreFailures: bool) =
         ledger.HasFailingReasons(warningsAreFailures)

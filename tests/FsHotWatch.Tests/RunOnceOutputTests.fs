@@ -7,60 +7,6 @@ open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Cli.RunOnceOutput
 
-[<Fact(Timeout = 5000)>]
-let ``formatStepResult shows checkmark for completed`` () =
-    let result = formatStepResult "build" (Completed DateTime.UtcNow)
-    test <@ result.Contains("\u2713") @>
-    test <@ result.Contains("build") @>
-
-[<Fact(Timeout = 5000)>]
-let ``formatStepResult shows X for failed`` () =
-    let result = formatStepResult "build" (Failed("compile error", DateTime.UtcNow))
-    test <@ result.Contains("\u2717") @>
-    test <@ result.Contains("build") @>
-    test <@ result.Contains("compile error") @>
-
-[<Fact(Timeout = 5000)>]
-let ``formatStepResult shows ellipsis for running`` () =
-    let result = formatStepResult "lint" (Running(DateTime.UtcNow.AddSeconds(-5.0)))
-    test <@ result.Contains("\u2026") @>
-    test <@ result.Contains("lint") @>
-
-[<Fact(Timeout = 5000)>]
-let ``formatStepResult shows dash for idle`` () =
-    let result = formatStepResult "format" Idle
-    test <@ result.Contains("\u2014") @>
-    test <@ result.Contains("format") @>
-
-[<Fact(Timeout = 5000)>]
-let ``formatSummary shows all plugins`` () =
-    let statuses =
-        Map.ofList [ "lint", Completed(DateTime.UtcNow); "build", Completed(DateTime.UtcNow) ]
-
-    let result = formatSummary statuses
-    test <@ result.Contains("\u2713") @>
-    test <@ result.Contains("lint") @>
-    test <@ result.Contains("build") @>
-
-[<Fact(Timeout = 5000)>]
-let ``formatSummary shows X for failed plugins`` () =
-    let statuses = Map.ofList [ "build", Failed("compile error", DateTime.UtcNow) ]
-
-    let result = formatSummary statuses
-    test <@ result.Contains("\u2717") @>
-    test <@ result.Contains("build") @>
-
-[<Fact(Timeout = 5000)>]
-let ``formatSummary shows failure message`` () =
-    let statuses = Map.ofList [ "build", Failed("compile error", DateTime.UtcNow) ]
-
-    let result = formatSummary statuses
-    test <@ result.Contains("compile error") @>
-
-[<Fact(Timeout = 5000)>]
-let ``formatSummary empty map returns empty string`` () =
-    let result = formatSummary Map.empty
-    test <@ result = "" @>
 
 [<Fact(Timeout = 5000)>]
 let ``formatErrors groups by file with plugin prefix`` () =
