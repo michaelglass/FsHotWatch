@@ -558,7 +558,7 @@ let ``executePluginCommand proxies to IPC`` () =
                         return "result"
                     } }
 
-    let result = executePluginCommand ipc "pipe" false "warnings" ""
+    let result = executePluginCommand ipc "pipe" defaultGlobalOptions "warnings" ""
 
     test <@ result = 0 @>
     test <@ cmdName = "warnings" @>
