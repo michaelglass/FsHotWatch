@@ -87,7 +87,6 @@ let generateConfig (projectPaths: string list) (hasJj: bool) : DaemonConfigurati
                 {| BeforeRun = None
                    Extensions = []
                    Projects = testProjects |}
-      Coverage = None
       FileCommands = []
       Exclude = []
       LogDir = "logs" }
@@ -161,24 +160,6 @@ let serializeConfig (config: DaemonConfiguration) : string =
         writer.WriteEndArray()
         writer.WriteEndObject()
     | _ -> ()
-
-    // Coverage
-    match config.Coverage with
-    | Some cov ->
-        writer.WritePropertyName("coverage")
-        writer.WriteStartObject()
-        writer.WriteString("directory", cov.Directory)
-
-        match cov.ThresholdsFile with
-        | Some tf -> writer.WriteString("thresholdsFile", tf)
-        | None -> ()
-
-        match cov.AfterCheck with
-        | Some ac -> writer.WriteString("afterCheck", ac)
-        | None -> ()
-
-        writer.WriteEndObject()
-    | None -> ()
 
     writer.WriteEndObject()
     writer.Flush()

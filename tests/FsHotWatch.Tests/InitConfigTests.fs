@@ -137,7 +137,6 @@ let ``serializeConfig produces valid JSON with build and tests`` () =
               Cache = NoCache
               Analyzers = None
               Tests = None
-              Coverage = None
               FileCommands = []
               Exclude = []
               LogDir = "logs" }
@@ -156,7 +155,6 @@ let ``serializeConfig with no build omits build section`` () =
           Cache = FileBackend
           Analyzers = None
           Tests = None
-          Coverage = None
           FileCommands = []
           Exclude = []
           LogDir = "logs" }
@@ -174,7 +172,6 @@ let ``serializeConfig with empty build list omits build section`` () =
           Cache = FileBackend
           Analyzers = None
           Tests = None
-          Coverage = None
           FileCommands = []
           Exclude = []
           LogDir = "logs" }
@@ -201,7 +198,6 @@ let ``serializeConfig with multiple builds writes array`` () =
           Cache = FileBackend
           Analyzers = None
           Tests = None
-          Coverage = None
           FileCommands = []
           Exclude = []
           LogDir = "logs" }
@@ -220,7 +216,6 @@ let ``serializeConfig format Off writes false`` () =
           Cache = FileBackend
           Analyzers = None
           Tests = None
-          Coverage = None
           FileCommands = []
           Exclude = []
           LogDir = "logs" }
@@ -237,7 +232,6 @@ let ``serializeConfig format Off writes false`` () =
               Cache = NoCache
               Analyzers = None
               Tests = None
-              Coverage = None
               FileCommands = []
               Exclude = []
               LogDir = "logs" }
@@ -253,7 +247,6 @@ let ``serializeConfig format Check writes check string`` () =
           Cache = FileBackend
           Analyzers = None
           Tests = None
-          Coverage = None
           FileCommands = []
           Exclude = []
           LogDir = "logs" }
@@ -270,7 +263,6 @@ let ``serializeConfig format Check writes check string`` () =
               Cache = NoCache
               Analyzers = None
               Tests = None
-              Coverage = None
               FileCommands = []
               Exclude = []
               LogDir = "logs" }
@@ -286,7 +278,6 @@ let ``serializeConfig cache InMemoryOnly writes memory`` () =
           Cache = InMemoryOnly 100
           Analyzers = None
           Tests = None
-          Coverage = None
           FileCommands = []
           Exclude = []
           LogDir = "logs" }
@@ -304,7 +295,6 @@ let ``serializeConfig cache NoCache writes false`` () =
           Cache = NoCache
           Analyzers = None
           Tests = None
-          Coverage = None
           FileCommands = []
           Exclude = []
           LogDir = "logs" }
@@ -321,7 +311,6 @@ let ``serializeConfig cache NoCache writes false`` () =
               Cache = FileBackend
               Analyzers = None
               Tests = None
-              Coverage = None
               FileCommands = []
               Exclude = []
               LogDir = "logs" }
@@ -337,7 +326,6 @@ let ``serializeConfig with no tests omits tests section`` () =
           Cache = FileBackend
           Analyzers = None
           Tests = None
-          Coverage = None
           FileCommands = []
           Exclude = []
           LogDir = "logs" }
@@ -359,7 +347,6 @@ let ``serializeConfig with empty test projects omits tests section`` () =
                 {| BeforeRun = None
                    Extensions = []
                    Projects = [] |}
-          Coverage = None
           FileCommands = []
           Exclude = []
           LogDir = "logs" }
@@ -368,69 +355,7 @@ let ``serializeConfig with empty test projects omits tests section`` () =
     let json = serializeConfig config
     test <@ not (json.Contains("\"tests\"")) @>
 
-[<Fact(Timeout = 5000)>]
-let ``serializeConfig with coverage includes directory`` () =
-    let config =
-        { Build = None
-          Format = Auto
-          Lint = true
-          Cache = FileBackend
-          Analyzers = None
-          Tests = None
-          Coverage =
-            Some
-                {| AfterCheck = None
-                   Directory = "./cov"
-                   ThresholdsFile = None |}
-          FileCommands = []
-          Exclude = []
-          LogDir = "logs" }
-
-
-    let json = serializeConfig config
-    test <@ json.Contains("\"coverage\"") @>
-    test <@ json.Contains("./cov") @>
-
-[<Fact(Timeout = 5000)>]
-let ``serializeConfig with coverage thresholdsFile and afterCheck`` () =
-    let config =
-        { Build = None
-          Format = Auto
-          Lint = true
-          Cache = FileBackend
-          Analyzers = None
-          Tests = None
-          Coverage =
-            Some
-                {| AfterCheck = Some "echo done"
-                   Directory = "./cov"
-                   ThresholdsFile = Some "thresholds.json" |}
-          FileCommands = []
-          Exclude = []
-          LogDir = "logs" }
-
-
-    let json = serializeConfig config
-    test <@ json.Contains("thresholds.json") @>
-    test <@ json.Contains("echo done") @>
-
-[<Fact(Timeout = 5000)>]
-let ``serializeConfig with no coverage omits section`` () =
-    let config =
-        { Build = None
-          Format = Auto
-          Lint = true
-          Cache = FileBackend
-          Analyzers = None
-          Tests = None
-          Coverage = None
-          FileCommands = []
-          Exclude = []
-          LogDir = "logs" }
-
-
-    let json = serializeConfig config
-    test <@ not (json.Contains("\"coverage\"")) @>
+// coverage serialization tests removed — Coverage config block no longer exists
 
 [<Fact(Timeout = 5000)>]
 let ``serializeConfig test project without filterTemplate omits it`` () =
@@ -453,7 +378,6 @@ let ``serializeConfig test project without filterTemplate omits it`` () =
                         FilterTemplate = None
                         ClassJoin = " "
                         Coverage = true } ] |}
-          Coverage = None
           FileCommands = []
           Exclude = []
           LogDir = "logs" }
