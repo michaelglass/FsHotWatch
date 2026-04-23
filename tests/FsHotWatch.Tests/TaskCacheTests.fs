@@ -426,9 +426,11 @@ let ``FileTaskCache roundtrips cached events`` () =
               EmittedEvents =
                 [ CachedBuildCompleted BuildSucceeded
                   CachedBuildCompleted(BuildFailed [ "err1"; "err2" ])
-                  CachedTestCompleted
-                      { Results = Map.ofList [ "proj1", TestsPassed "ok"; "proj2", TestsFailed "fail" ]
-                        Elapsed = System.TimeSpan.FromSeconds(3.5) } ] }
+                  CachedTestRunCompleted
+                      { RunId = System.Guid.NewGuid()
+                        TotalElapsed = System.TimeSpan.FromSeconds(3.5)
+                        Outcome = Normal
+                        Results = Map.ofList [ "proj1", TestsPassed "ok"; "proj2", TestsFailed "fail" ] } ] }
 
         c.Set (ck "build" "X.fs") (hash "k") result
 

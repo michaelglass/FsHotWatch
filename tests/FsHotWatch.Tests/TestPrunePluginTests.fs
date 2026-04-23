@@ -1588,10 +1588,10 @@ let ``tryRepairSchemaDrift is a no-op when the DB file is already gone`` () =
 // ---------------------------------------------------------------------------
 
 [<Fact(Timeout = 30000)>]
-let ``executeTests emits cumulative TestCompleted once per group as groups finish`` () =
+let ``executeTests emits a TestProgress per group as groups finish`` () =
     withTempDir "tp-progressive" (fun tmpDir ->
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let (getEvents, recorder) = testCompletedRecorder ()
+        let (getEvents, recorder) = testProgressRecorder ()
         host.RegisterHandler(recorder)
 
         // Three groups: two run `echo` (near-instant), one runs `sleep 2`.
@@ -1631,35 +1631,36 @@ let ``executeTests emits cumulative TestCompleted once per group as groups finis
         // Trigger test execution by emitting BuildSucceeded.
         host.EmitBuildCompleted(BuildSucceeded)
 
-        // Wait for all three projects to show up in the most-recent emission.
-        waitUntil
-            (fun () ->
-                match getEvents () |> List.tryLast with
-                | Some last -> last.Results.Count = 3
-                | None -> false)
-            20000
+        // Wait for three TestProgress emissions — one per group.
+        waitUntil (fun () -> getEvents () |> List.length >= 3) 20000
 
         let events = getEvents ()
         // One emission per group — three groups, three emissions.
         test <@ events.Length = 3 @>
 
-        // Every emission is a prefix-chain: later emissions' project sets
-        // contain all earlier emissions' project sets.
-        let projectSets =
-            events |> List.map (fun r -> r.Results |> Map.toSeq |> Seq.map fst |> Set.ofSeq)
+        // All three share a single RunId.
+        let runIds = events |> List.map (fun p -> p.RunId) |> List.distinct
+        test <@ runIds.Length = 1 @>
 
-        let isPrefixChain =
-            projectSets
-            |> List.pairwise
-            |> List.forall (fun (earlier, later) -> Set.isSubset earlier later)
+        // Each emission carries exactly that group's projects as a delta.
+        let allProjects =
+            events
+            |> List.collect (fun p -> p.NewResults |> Map.toList |> List.map fst)
+            |> Set.ofList
 
-        test <@ isPrefixChain @>
+        test <@ allProjects = Set.ofList [ "ProjFastA"; "ProjFastB"; "ProjSlow" ] @>
 
-        // The slow group's single project must appear only in the final
-        // emission — not any earlier.
-        let finalSet = projectSets |> List.last
-        test <@ finalSet |> Set.contains "ProjSlow" @>
+        // The slow group must appear in the LAST emission — it completes after
+        // the two fast groups. (Under cumulative emission the invariant was a
+        // prefix-chain; under delta emission the invariant is an ordering.)
+        let lastEvent = events |> List.last
 
-        let nonFinalSets = projectSets |> List.take 2
+        test <@ lastEvent.NewResults |> Map.containsKey "ProjSlow" @>
 
-        test <@ nonFinalSets |> List.forall (fun s -> not (Set.contains "ProjSlow" s)) @>)
+        let earlierEvents = events |> List.take 2
+
+        test
+            <@
+                earlierEvents
+                |> List.forall (fun p -> not (p.NewResults |> Map.containsKey "ProjSlow"))
+            @>)
