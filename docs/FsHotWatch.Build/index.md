@@ -8,7 +8,7 @@ coverage checkers).
 
 Without this plugin, each tool would need to trigger its own build.
 The BuildPlugin centralizes builds so they happen once, and downstream
-plugins (TestPrune, Coverage) react to the result.
+plugins (TestPrune) react to the result.
 
 ## How it works
 

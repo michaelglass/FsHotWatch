@@ -39,7 +39,7 @@ fs-hot-watch status
 | `errors` | Show current errors from all plugins. |
 | `check` | Full check: scan all files, wait for plugins, then report errors. |
 | `invalidate-cache <file>` | Clear cache for a file and re-check it. |
-| `<command> [args]` | Run any plugin-registered command (e.g. `diagnostics`, `coverage`). |
+| `<command> [args]` | Run any plugin-registered command (e.g. `diagnostics`). |
 
 ## Options
 

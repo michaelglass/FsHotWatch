@@ -74,7 +74,6 @@ current status, updated as `OnStatusChanged` events arrive.
 ```
   build         ✓ completed (2.1s)
   test-prune    ⟳ running (since 14:32:01) — executing tests
-  coverage      · idle
   lint          ✓ completed (0.8s)
   format-check  ✓ completed (0.3s)
 ```
@@ -98,7 +97,6 @@ current status, updated as `OnStatusChanged` events arrive.
 |--------|--------------------------|----------------------|
 | BuildPlugin | No (awaits build in Update) | No |
 | TestPrunePlugin | Yes (Async.Start for tests) | Yes, on BuildCompleted |
-| CoveragePlugin | No | No |
 | LintPlugin | No | No |
 | AnalyzersPlugin | No | No |
 | FormatCheckPlugin | No | No |
