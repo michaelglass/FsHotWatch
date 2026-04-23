@@ -84,7 +84,9 @@ type PluginHost
               ClearErrors = fun name file -> ledger.Clear(PluginFramework.PluginName.value name, file)
               ClearPlugin = fun name -> ledger.ClearPlugin(PluginFramework.PluginName.value name)
               EmitBuildCompleted = fun result -> dispatchToAll (PluginFramework.DispatchBuildCompleted result)
-              EmitTestCompleted = fun results -> dispatchToAll (PluginFramework.DispatchTestCompleted results)
+              EmitTestRunStarted = fun started -> dispatchToAll (PluginFramework.DispatchTestRunStarted started)
+              EmitTestProgress = fun progress -> dispatchToAll (PluginFramework.DispatchTestProgress progress)
+              EmitTestRunCompleted = fun completed -> dispatchToAll (PluginFramework.DispatchTestRunCompleted completed)
               EmitCommandCompleted = fun result -> dispatchToAll (PluginFramework.DispatchCommandCompleted result)
               RegisterCommand = fun cmd -> commands[fst cmd] <- snd cmd
               TaskCache = taskCache
@@ -149,9 +151,17 @@ type PluginHost
     member _.EmitFileChecked(result: FileCheckResult) =
         dispatchToAll (PluginFramework.DispatchFileChecked result)
 
-    /// Emit a test completed event to all registered plugins.
-    member _.EmitTestCompleted(results: TestResults) =
-        dispatchToAll (PluginFramework.DispatchTestCompleted results)
+    /// Emit the start of a test run to all registered plugins.
+    member _.EmitTestRunStarted(started: TestRunStarted) =
+        dispatchToAll (PluginFramework.DispatchTestRunStarted started)
+
+    /// Emit progress for a running test run (one or more groups just completed).
+    member _.EmitTestProgress(progress: TestProgress) =
+        dispatchToAll (PluginFramework.DispatchTestProgress progress)
+
+    /// Emit the end of a test run.
+    member _.EmitTestRunCompleted(completed: TestRunCompleted) =
+        dispatchToAll (PluginFramework.DispatchTestRunCompleted completed)
 
     /// Emit a command completed event to all registered plugins.
     member _.EmitCommandCompleted(result: CommandCompletedResult) =
