@@ -9,14 +9,27 @@ All notable changes to FsHotWatch packages are documented here.
 #### Removed
 - **BREAKING:** Package retired. Coverage enforcement now flows through `fileCommands afterTests` in FsHotWatch.Cli, invoking an external CLI (e.g. `coverageratchet`).
 
+### FsHotWatch (core)
+
+#### Changed
+- **BREAKING:** Test-lifecycle events split into three: `TestRunStarted` (once per run, with `RunId` + `StartedAt`), `TestProgress` (per-group delta with `RunId` + `NewResults`), and `TestRunCompleted` (once per run, with `TotalElapsed` + `Outcome` + final cumulative `Results`). All three share one `RunId` per run. Replaces the single `TestCompleted` event. `PluginEvent`, `SubscribedEvent`, `PluginDispatchEvent`, `PluginCtx<_>`, and `PluginHostServices` all updated.
+- `TestResults` retained as a plain internal value type (for TestPrune internals + afterRun hooks); no longer dispatched as an event.
+
+#### Added
+- `TestRunOutcome` DU (`Normal` / `Aborted of reason`). Per-project pass/fail derived from `TestResult` values in `Results`.
+
 ### FsHotWatch.FileCommand
 
 #### Added
-- `afterTests` trigger: react to `TestCompleted` events, optionally filtered by test project names.
+- `afterTests` trigger: fires after a test run completes, optionally filtered by test project names.
 
 #### Changed
 - **BREAKING:** `FileCommandPlugin.create` takes a `CommandTrigger` record instead of positional `fileFilter` + `runOnStart` args.
-- `afterTests` list-form fires iff **every** listed project appears in `TestResults.Results`. Paired with TestPrune's progressive cumulative emission (below), the command fires exactly once per batch and is unblocked by slow non-listed groups.
+- `afterTests` list-form fires iff **every** listed project is present. Combined with TestPrune's per-group progress emission, the command fires exactly once per run — on the first `TestProgress` whose cumulative accumulator covers every listed project, or on `TestRunCompleted` (cache replay) — and is unblocked by slow non-listed groups (e.g. integration tests).
+- **BREAKING:** Subscribes to `SubscribeTestProgress` + `SubscribeTestRunCompleted` (not the removed `SubscribeTestCompleted`). Dedup is keyed on `RunId` via `FileCommandState.LastFiredRunId`.
+
+#### Fixed
+- Idempotency across back-to-back runs with identical project sets. The previous `Set.isSubset`-based batch-boundary heuristic silently skipped every run after the first when project sets were stable (the dominant case).
 
 #### Removed
 - `runOnStart` config/API field.
@@ -24,7 +37,8 @@ All notable changes to FsHotWatch packages are documented here.
 ### FsHotWatch.TestPrune
 
 #### Changed
-- **BREAKING:** `TestCompleted` emits progressively once per group with a cumulative prefix-chain of all projects completed so far, rather than once at batch end. Fixes downstream plugins being blocked by the slowest group.
+- **BREAKING:** `executeTests` emits the three-event lifecycle (`TestRunStarted` → `TestProgress` × N → `TestRunCompleted`) instead of the single `TestCompleted`. The abort path emits `TestRunStarted` + `TestRunCompleted(Aborted reason)` so subscribers see a coherent end to every run.
+- The per-group accumulator is now a mutable `Map<string, TestResult>` under the emission lock (per-project `Map.add`) instead of rebuilding a `Map` from a `ResizeArray` on every emission.
 
 ### FsHotWatch.Cli
 
@@ -36,7 +50,7 @@ All notable changes to FsHotWatch packages are documented here.
 
 #### Changed
 - **BREAKING:** `--compact` / `-q` promoted to a global flag. `fs-hot-watch check -q` → `fs-hot-watch -q check`. Now accepted on every subcommand (including `status` and `errors`), matching the placement of `--verbose` and `--agent`.
-- `fileCommands` entries accept `name` and `afterTests`; validation requires at least one of `pattern` / `afterTests` and an explicit `name` when `afterTests` is set.
+- `fileCommands` entries accept `name` and `afterTests`; validation requires at least one of `pattern` / `afterTests` and an explicit `name` when `afterTests` is set. The config record now carries `PluginName: string` (derived at parse time) instead of `Name: string option`, eliminating a `failwith "unreachable"` fallback in the registration loop.
 - Coverage output directory moves from the removed `coverage.directory` to `tests.coverageDir` (default `"coverage"`). Files are emitted at `<repoRoot>/<tests.coverageDir>/<project>/coverage.cobertura.xml`.
 
 ### FsHotWatch.Fantomas
