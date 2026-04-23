@@ -26,9 +26,6 @@ daemon.Register(TestPrunePlugin(
     ]
 ))
 
-// Coverage checking
-daemon.Register(CoveragePlugin("./coverage"))
-
 // Custom file command
 daemon.Register(FileCommandPlugin(
     "scripts",
