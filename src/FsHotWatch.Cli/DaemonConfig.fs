@@ -94,16 +94,14 @@ type DaemonConfiguration =
         Tests:
             {| BeforeRun: string option
                Extensions: TestExtensionConfig list
-               Projects: TestProjectConfig list |} option
-        Coverage:
-            {| AfterCheck: string option
-               Directory: string
-               ThresholdsFile: string option |} option
+               Projects: TestProjectConfig list
+               CoverageDir: string |} option
         FileCommands:
-            {| Pattern: string
+            {| Name: string option
+               Pattern: string option
+               AfterTests: FsHotWatch.FileCommand.FileCommandPlugin.TestFilter option
                Command: string
-               Args: string
-               RunOnStart: bool |} list
+               Args: string |} list
         Exclude: string list
         /// Directory (relative to repoRoot or absolute) for daemon.log. Defaults to "logs".
         LogDir: string
@@ -121,7 +119,6 @@ let private defaultConfigFor (repoRoot: string) =
       Cache = detectDefaultCacheBackend repoRoot
       Analyzers = None
       Tests = None
-      Coverage = None
       FileCommands = []
       Exclude = []
       LogDir = "logs" }
@@ -308,37 +305,19 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     |> Seq.toList
                 | _ -> []
 
+            let coverageDir =
+                match v.TryGetProperty("coverageDir") with
+                | true, cd when cd.ValueKind = JsonValueKind.String -> cd.GetString()
+                | _ -> "coverage"
+
             if projects.IsEmpty then
                 None
             else
                 Some
                     {| BeforeRun = beforeRun
                        Extensions = extensions
-                       Projects = projects |}
-        | _ -> None
-
-    let coverage =
-        match root.TryGetProperty("coverage") with
-        | true, v ->
-            let dir =
-                match v.TryGetProperty("directory") with
-                | true, d -> d.GetString()
-                | _ -> "./coverage"
-
-            let thresholds =
-                match v.TryGetProperty("thresholdsFile") with
-                | true, t -> Some(t.GetString())
-                | _ -> None
-
-            let afterCheck =
-                match v.TryGetProperty("afterCheck") with
-                | true, a -> Some(a.GetString())
-                | _ -> None
-
-            Some
-                {| AfterCheck = afterCheck
-                   Directory = dir
-                   ThresholdsFile = thresholds |}
+                       Projects = projects
+                       CoverageDir = coverageDir |}
         | _ -> None
 
     let fileCommands =
@@ -346,10 +325,31 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | true, arr ->
             arr.EnumerateArray()
             |> Seq.map (fun fc ->
+                let name =
+                    match fc.TryGetProperty("name") with
+                    | true, v when v.ValueKind = JsonValueKind.String -> Some(v.GetString())
+                    | _ -> None
+
                 let pattern =
                     match fc.TryGetProperty("pattern") with
-                    | true, v -> v.GetString()
-                    | _ -> "*.fsx"
+                    | true, v when v.ValueKind = JsonValueKind.String -> Some(v.GetString())
+                    | _ -> None
+
+                let afterTests =
+                    match fc.TryGetProperty("afterTests") with
+                    | true, v when v.ValueKind = JsonValueKind.True ->
+                        Some FsHotWatch.FileCommand.FileCommandPlugin.AnyTest
+                    | true, v when v.ValueKind = JsonValueKind.False -> None
+                    | true, v when v.ValueKind = JsonValueKind.Array ->
+                        let projects = v.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Set.ofSeq
+
+                        if projects.IsEmpty then
+                            Logging.warn "config" "fileCommands entry has empty afterTests list; treating as absent"
+
+                            None
+                        else
+                            Some(FsHotWatch.FileCommand.FileCommandPlugin.TestProjects projects)
+                    | _ -> None
 
                 let command =
                     match fc.TryGetProperty("command") with
@@ -361,15 +361,17 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     | true, v -> v.GetString()
                     | _ -> ""
 
-                let runOnStart =
-                    match fc.TryGetProperty("runOnStart") with
-                    | true, v when v.ValueKind = JsonValueKind.True -> true
-                    | _ -> false
+                if pattern.IsNone && afterTests.IsNone then
+                    failwith "fileCommands entry must specify `pattern` or `afterTests`"
 
-                {| Pattern = pattern
+                if afterTests.IsSome && name.IsNone then
+                    failwith "fileCommands entries with `afterTests` require an explicit `name`"
+
+                {| Name = name
+                   Pattern = pattern
+                   AfterTests = afterTests
                    Command = command
-                   Args = args
-                   RunOnStart = runOnStart |})
+                   Args = args |})
             |> Seq.toList
         | _ -> []
 
@@ -390,7 +392,6 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       Cache = cache
       Analyzers = analyzers
       Tests = tests
-      Coverage = coverage
       FileCommands = fileCommands
       Exclude = exclude
       LogDir = logDir }
@@ -403,7 +404,6 @@ let stripConfig (config: DaemonConfiguration) : DaemonConfiguration =
         Lint = false
         Analyzers = None
         Tests = None
-        Coverage = None
         FileCommands = [] }
 
 /// Load config from .fs-hot-watch.json in repoRoot. Returns defaults if no file exists.
@@ -545,19 +545,21 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             |> List.map (fun p -> p.Project)
             |> Set.ofList
 
+        // Coverage XML is emitted under <repoRoot>/<tests.coverageDir>/<project>/
+        // so external coverage tools (e.g. coverageratchet invoked via a
+        // fileCommands afterTests entry) can read it. The output directory is
+        // configurable via `tests.coverageDir` (default `"coverage"`).
+        // Per-project opt-out is honored via `coverageExcludedProjects`.
         let coverageArgs =
-            match config.Coverage with
-            | Some cov ->
-                Some(fun (project: string) ->
-                    if coverageExcludedProjects.Contains(project) then
-                        ""
-                    else
-                        let outputDir = Path.Combine(cov.Directory, project)
-                        Directory.CreateDirectory(outputDir) |> ignore
-                        let outputPath = Path.GetFullPath(Path.Combine(outputDir, "coverage.cobertura.xml"))
+            Some(fun (project: string) ->
+                if coverageExcludedProjects.Contains(project) then
+                    ""
+                else
+                    let outputDir = Path.Combine(repoRoot, t.CoverageDir, project)
+                    Directory.CreateDirectory(outputDir) |> ignore
+                    let outputPath = Path.GetFullPath(Path.Combine(outputDir, "coverage.cobertura.xml"))
 
-                        $"--coverage --coverage-output-format cobertura --coverage-output \"%s{outputPath}\"")
-            | None -> None
+                    $"--coverage --coverage-output-format cobertura --coverage-output \"%s{outputPath}\"")
 
         // Extension factories — invoked by the plugin with its own DB, so the
         // RouteStore/SymbolStore an extension captures is guaranteed to be the
@@ -593,33 +595,31 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         daemon.RegisterHandler(handler)
     | None -> ()
 
-    // Coverage plugin (after tests)
-    match config.Coverage with
-    | Some cov ->
-        Logging.info "config" $"Registering CoveragePlugin: %s{cov.Directory}"
-
-        let afterCheck =
-            cov.AfterCheck |> Option.map (makeShellHookWithResult "afterCheck" repoRoot)
-
-        daemon.RegisterHandler(
-            FsHotWatch.Coverage.CoveragePlugin.create cov.Directory cov.ThresholdsFile afterCheck getCommitId
-        )
-    | None -> ()
-
     // File commands
     for fc in config.FileCommands do
-        Logging.info "config" $"Registering FileCommandPlugin: %s{fc.Pattern} → %s{fc.Command} %s{fc.Args}"
-        let suffix = fc.Pattern.TrimStart('*')
+        let pluginName =
+            match fc.Name with
+            | Some n -> n
+            | None ->
+                match fc.Pattern with
+                | Some p -> $"file-cmd-%s{p}"
+                | None -> failwith "unreachable: validation rejects name=None && pattern=None"
 
-        let fileFilter (path: string) =
-            path.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
+        let trigger: FsHotWatch.FileCommand.FileCommandPlugin.CommandTrigger =
+            { FilePattern =
+                fc.Pattern
+                |> Option.map (fun p ->
+                    let suffix = p.TrimStart('*')
+                    fun (path: string) -> path.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+              AfterTests = fc.AfterTests }
+
+        Logging.info "config" $"Registering FileCommandPlugin: %s{pluginName} → %s{fc.Command} %s{fc.Args}"
 
         daemon.RegisterHandler(
             FsHotWatch.FileCommand.FileCommandPlugin.create
-                (FsHotWatch.PluginFramework.PluginName.create $"file-cmd-%s{fc.Pattern}")
-                fileFilter
+                (FsHotWatch.PluginFramework.PluginName.create pluginName)
+                trigger
                 fc.Command
                 fc.Args
-                fc.RunOnStart
                 getCommitId
         )
