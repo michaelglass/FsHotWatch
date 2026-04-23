@@ -64,7 +64,6 @@ FsHotWatch is split into small packages so you only install what you need:
 | [`FsHotWatch.Lint`](src/FsHotWatch.Lint/) | Plugin: runs FSharpLint using the warm compiler's results |
 | [`FsHotWatch.Fantomas`](src/FsHotWatch.Fantomas/) | Plugin: checks if your files are formatted with Fantomas |
 | [`FsHotWatch.Build`](src/FsHotWatch.Build/) | Plugin: runs `dotnet build` and emits BuildCompleted events |
-| [`FsHotWatch.Coverage`](src/FsHotWatch.Coverage/) | Plugin: checks coverage thresholds after tests complete |
 | [`FsHotWatch.FileCommand`](src/FsHotWatch.FileCommand/) | Plugin: runs custom commands when specific files change |
 
 ## Writing your own plugin
@@ -158,10 +157,6 @@ Create `.fs-hot-watch.json` in your repo root. All fields are optional — sensi
       }
     ]
   },
-  "coverage": {
-    "directory": "./coverage",
-    "thresholdsFile": "coverage-thresholds.json"
-  },
   "analyzers": {
     "paths": ["analyzers/"]
   },
@@ -214,13 +209,6 @@ Create `.fs-hot-watch.json` in your repo root. All fields are optional — sensi
 | `environment` | `object` | `{}` | Extra environment variables as `"KEY": "VALUE"` pairs. |
 | `filterTemplate` | `string` | — | Template for class-based filtering. `{classes}` is replaced with affected test class names. |
 | `classJoin` | `string` | `" "` | Separator for joining class names in the filter. |
-
-**`coverage` fields:**
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `directory` | `string` | `"./coverage"` | Directory containing Cobertura XML coverage reports. |
-| `thresholdsFile` | `string` | — | Path to JSON file with per-project coverage thresholds. |
 
 **`analyzers` fields:**
 
