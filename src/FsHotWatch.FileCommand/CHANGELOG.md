@@ -3,12 +3,16 @@
 ## Unreleased
 
 ### Added
-- `afterTests` trigger — fileCommand entries can now run on `TestCompleted` events, optionally filtered by a list of test project names.
+- `afterTests` trigger — fileCommand entries can now run after a test run completes, optionally filtered by a list of test project names.
 - Required `name` field for entries whose primary trigger is `afterTests`.
 
 ### Changed
 - **BREAKING:** `FileCommandPlugin.create` now takes a `CommandTrigger` record (`FilePattern` + `AfterTests`) instead of `fileFilter` + `runOnStart`. Callers registering directly against the plugin API must migrate.
-- `afterTests` list-form semantics: the plugin now fires iff **every** listed project appears in the `TestResults.Results` map (previously "any"). Combined with TestPrune's progressive cumulative `TestCompleted` emission (see FsHotWatch.TestPrune CHANGELOG), this means the command fires exactly once per batch — on the first cumulative emission that covers every listed project — so a hanging non-listed project (e.g. integration tests) never blocks it. Internal `FileCommandState` gains a `LastAfterTestsKey` sentinel to suppress re-firing on later cumulative emissions within the same batch.
+- `afterTests` list-form semantics: the plugin fires iff **every** listed project is present (previously "any"). Combined with TestPrune's progressive per-group emission, this means the command fires exactly once per run — on the first `TestProgress` whose cumulative accumulator covers every listed project, OR on `TestRunCompleted` (whichever arrives first, relevant for cache replay) — so a hanging non-listed project (e.g. integration tests) never blocks it.
+- **BREAKING:** Subscriptions updated for the new event lifecycle — plugins with `AfterTests.IsSome` now subscribe to `SubscribeTestProgress` and `SubscribeTestRunCompleted` (not the removed `SubscribeTestCompleted`). Dedup is now keyed on `RunId` via a `LastFiredRunId` sentinel; the previous `LastAfterTestsKey` superset heuristic is gone — it had a correctness bug whereby identical-project-set runs after the first silently skipped.
+
+### Fixed
+- Idempotency across back-to-back runs with identical project sets. Previously the "is this a fresh batch?" check compared incoming project sets against the last-fired key via `Set.isSubset`; when two consecutive runs produced the same final set (the dominant case for stable configs), the second was treated as a continuation of the first and never fired. Now keyed on `RunId` — distinct runs always re-fire.
 
 ### Removed
 - `runOnStart` config/API field. Use an explicit trigger (e.g. `afterTests: true`) or schedule initialization another way.
