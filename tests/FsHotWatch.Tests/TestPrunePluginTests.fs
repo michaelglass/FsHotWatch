@@ -1579,3 +1579,87 @@ let ``tryRepairSchemaDrift is a no-op when the DB file is already gone`` () =
     // Should not throw even though the file does not exist.
     tryRepairSchemaDrift missingPath (exn "no such column: source")
     test <@ not (File.Exists missingPath) @>
+
+// ---------------------------------------------------------------------------
+// Progressive TestCompleted emission: a group that completes quickly emits a
+// partial snapshot even while a slower group is still running. Without this,
+// downstream plugins subscribed to TestCompleted (e.g. afterTests triggers)
+// are forever blocked by the slowest test project.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 30000)>]
+let ``executeTests emits cumulative TestCompleted once per group as groups finish`` () =
+    withTempDir "tp-progressive" (fun tmpDir ->
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let (getEvents, recorder) = testCompletedRecorder ()
+        host.RegisterHandler(recorder)
+
+        // Three groups: two run `echo` (near-instant), one runs `sleep 2`.
+        // Each group's async must resolve independently; if executeTests emits
+        // only once at batch end, the test will see one event instead of three.
+        // runProcess tokenises args space-separated with no shell, so we use
+        // simple single-binary commands with one numeric arg to avoid quoting.
+        let configs =
+            [ { Project = "ProjFastA"
+                Command = "echo"
+                Args = "a"
+                Group = "fast-a"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " }
+              { Project = "ProjFastB"
+                Command = "echo"
+                Args = "b"
+                Group = "fast-b"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " }
+              { Project = "ProjSlow"
+                Command = "sleep"
+                Args = "2"
+                Group = "slow"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
+
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+
+        let handler = create dbPath tmpDir (Some configs) None None None None None
+
+        host.RegisterHandler(handler)
+
+        // Trigger test execution by emitting BuildSucceeded.
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        // Wait for all three projects to show up in the most-recent emission.
+        waitUntil
+            (fun () ->
+                match getEvents () |> List.tryLast with
+                | Some last -> last.Results.Count = 3
+                | None -> false)
+            20000
+
+        let events = getEvents ()
+        // One emission per group — three groups, three emissions.
+        test <@ events.Length = 3 @>
+
+        // Every emission is a prefix-chain: later emissions' project sets
+        // contain all earlier emissions' project sets.
+        let projectSets =
+            events |> List.map (fun r -> r.Results |> Map.toSeq |> Seq.map fst |> Set.ofSeq)
+
+        let isPrefixChain =
+            projectSets
+            |> List.pairwise
+            |> List.forall (fun (earlier, later) -> Set.isSubset earlier later)
+
+        test <@ isPrefixChain @>
+
+        // The slow group's single project must appear only in the final
+        // emission — not any earlier.
+        let finalSet = projectSets |> List.last
+        test <@ finalSet |> Set.contains "ProjSlow" @>
+
+        let nonFinalSets = projectSets |> List.take 2
+
+        test <@ nonFinalSets |> List.forall (fun s -> not (Set.contains "ProjSlow" s)) @>)

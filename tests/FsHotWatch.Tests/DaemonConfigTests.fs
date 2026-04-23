@@ -22,7 +22,6 @@ let private defaults: DaemonConfiguration =
       Cache = FileBackend
       Analyzers = None
       Tests = None
-      Coverage = None
       FileCommands = []
       Exclude = []
       LogDir = "logs" }
@@ -47,7 +46,6 @@ let ``parseConfig with empty JSON returns defaults`` () =
     test <@ config.Cache = FileBackend @>
     test <@ config.Analyzers = None @>
     test <@ config.Tests = None @>
-    test <@ config.Coverage = None @>
     test <@ config.FileCommands |> List.isEmpty @>
     test <@ config.Exclude |> List.isEmpty @>
     test <@ config.LogDir = "logs" @>
@@ -352,50 +350,23 @@ let ``parseConfig tests project with no project key defaults to unknown`` () =
     test <@ p.Project = "unknown" @>
 
 // --- parseConfig: coverage ---
+// Coverage config block was removed — coverage XMLs are now emitted under
+// <repoRoot>/<tests.coverageDir>/<project>/ (default "coverage"), and
+// ratcheting is driven by fileCommands afterTests invoking an external tool.
 
 [<Fact(Timeout = 5000)>]
-let ``parseConfig coverage with directory`` () =
-    let config = parseConfig """{"coverage": {"directory": "./cov"}}""" defaults
-
-    test
-        <@
-            config.Coverage = Some
-                {| AfterCheck = None
-                   Directory = "./cov"
-                   ThresholdsFile = None |}
-        @>
+let ``parseConfig tests without coverageDir defaults to coverage`` () =
+    let json = """{"tests": {"projects": [{"project": "T"}]}}"""
+    let config = parseConfig json defaults
+    test <@ config.Tests.Value.CoverageDir = "coverage" @>
 
 [<Fact(Timeout = 5000)>]
-let ``parseConfig coverage with directory and thresholdsFile`` () =
+let ``parseConfig tests with explicit coverageDir`` () =
     let json =
-        """{"coverage": {"directory": "./cov", "thresholdsFile": "thresholds.json"}}"""
+        """{"tests": {"coverageDir": "artifacts/cov", "projects": [{"project": "T"}]}}"""
 
     let config = parseConfig json defaults
-
-    test
-        <@
-            config.Coverage = Some
-                {| AfterCheck = None
-                   Directory = "./cov"
-                   ThresholdsFile = Some "thresholds.json" |}
-        @>
-
-[<Fact(Timeout = 5000)>]
-let ``parseConfig coverage with empty object uses default directory`` () =
-    let config = parseConfig """{"coverage": {}}""" defaults
-
-    test
-        <@
-            config.Coverage = Some
-                {| AfterCheck = None
-                   Directory = "./coverage"
-                   ThresholdsFile = None |}
-        @>
-
-[<Fact(Timeout = 5000)>]
-let ``parseConfig no coverage returns None`` () =
-    let config = parseConfig """{}""" defaults
-    test <@ config.Coverage = None @>
+    test <@ config.Tests.Value.CoverageDir = "artifacts/cov" @>
 
 // --- parseConfig: fileCommands ---
 
@@ -411,21 +382,57 @@ let ``parseConfig fileCommands with entries`` () =
 
     let config = parseConfig json defaults
     test <@ config.FileCommands.Length = 2 @>
-    test <@ config.FileCommands.[0].Pattern = "*.fsx" @>
+    test <@ config.FileCommands.[0].Pattern = Some "*.fsx" @>
+    test <@ config.FileCommands.[0].AfterTests = None @>
     test <@ config.FileCommands.[0].Command = "dotnet" @>
     test <@ config.FileCommands.[0].Args = "fsi" @>
-    test <@ config.FileCommands.[1].Pattern = "*.sql" @>
+    test <@ config.FileCommands.[1].Pattern = Some "*.sql" @>
     test <@ config.FileCommands.[1].Command = "psql" @>
     test <@ config.FileCommands.[1].Args = "-f" @>
 
 [<Fact(Timeout = 5000)>]
-let ``parseConfig fileCommands with empty entry uses defaults`` () =
+let ``parseConfig fileCommands entry without pattern or afterTests is rejected`` () =
     let json = """{"fileCommands": [{}]}"""
+
+    let ex = Assert.ThrowsAny<exn>(fun () -> parseConfig json defaults |> ignore)
+
+    test <@ ex.Message.Contains("pattern") && ex.Message.Contains("afterTests") @>
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig fileCommands afterTests true parses to AnyTest`` () =
+    let json =
+        """{"fileCommands": [{"name": "cov", "afterTests": true, "command": "echo", "args": "ran"}]}"""
+
     let config = parseConfig json defaults
     test <@ config.FileCommands.Length = 1 @>
-    test <@ config.FileCommands.[0].Pattern = "*.fsx" @>
-    test <@ config.FileCommands.[0].Command = "echo" @>
-    test <@ config.FileCommands.[0].Args = "" @>
+    test <@ config.FileCommands.[0].Name = Some "cov" @>
+    test <@ config.FileCommands.[0].Pattern = None @>
+
+    test <@ config.FileCommands.[0].AfterTests = Some FsHotWatch.FileCommand.FileCommandPlugin.AnyTest @>
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig fileCommands afterTests list parses to TestProjects`` () =
+    let json =
+        """{"fileCommands": [{"name": "cov", "afterTests": ["A", "B"], "command": "echo", "args": "ran"}]}"""
+
+    let config = parseConfig json defaults
+    test <@ config.FileCommands.Length = 1 @>
+
+    test
+        <@
+            config.FileCommands.[0].AfterTests = Some(
+                FsHotWatch.FileCommand.FileCommandPlugin.TestProjects(Set.ofList [ "A"; "B" ])
+            )
+        @>
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig fileCommands afterTests without name is rejected`` () =
+    let json =
+        """{"fileCommands": [{"afterTests": true, "command": "echo", "args": "ran"}]}"""
+
+    let ex = Assert.ThrowsAny<exn>(fun () -> parseConfig json defaults |> ignore)
+
+    test <@ ex.Message.Contains("name") @>
 
 [<Fact(Timeout = 5000)>]
 let ``parseConfig fileCommands empty array`` () =
@@ -464,7 +471,6 @@ let ``parseConfig with full configuration`` () =
             "beforeRun": "make build",
             "projects": [{"project": "Tests.fsproj"}]
         },
-        "coverage": {"directory": "./cov"},
         "fileCommands": [{"pattern": "*.sql", "command": "psql", "args": "-f"}]
     }"""
 
@@ -484,7 +490,6 @@ let ``parseConfig with full configuration`` () =
     test <@ config.Cache = JjFileBackend @>
     test <@ config.Analyzers = Some {| Paths = [ "/analyzers" ] |} @>
     test <@ config.Tests.IsSome @>
-    test <@ config.Coverage.IsSome @>
     test <@ config.FileCommands.Length = 1 @>
 
 // --- detectDefaultCacheBackend ---
@@ -553,37 +558,7 @@ let ``loadConfig with no config file returns expected defaults`` () =
         test <@ config.Cache = FileBackend @>
         test <@ config.Analyzers = None @>
         test <@ config.Tests = None @>
-        test <@ config.Coverage = None @>
         test <@ config.FileCommands |> List.isEmpty @>)
-
-// --- parseConfig: coverage afterCheck ---
-
-[<Fact(Timeout = 5000)>]
-let ``parseConfig coverage with afterCheck`` () =
-    let json =
-        """{"coverage": {"directory": "./cov", "afterCheck": "dotnet run -- ratchet"}}"""
-
-    let config = parseConfig json defaults
-
-    test
-        <@
-            config.Coverage = Some
-                {| AfterCheck = Some "dotnet run -- ratchet"
-                   Directory = "./cov"
-                   ThresholdsFile = None |}
-        @>
-
-[<Fact(Timeout = 5000)>]
-let ``parseConfig coverage without afterCheck defaults to None`` () =
-    let config = parseConfig """{"coverage": {"directory": "./cov"}}""" defaults
-
-    test
-        <@
-            config.Coverage = Some
-                {| AfterCheck = None
-                   Directory = "./cov"
-                   ThresholdsFile = None |}
-        @>
 
 // --- parseConfig: per-project coverage exclusion ---
 
@@ -690,26 +665,6 @@ let ``parseConfig tests without extensions defaults to empty`` () =
 
     let config = parseConfig json defaults
     test <@ config.Tests.Value.Extensions |> List.isEmpty @>
-
-// --- parseConfig: fileCommands runOnStart ---
-
-[<Fact(Timeout = 5000)>]
-let ``parseConfig fileCommands with runOnStart true`` () =
-    let json =
-        """{"fileCommands": [{"pattern": "*.lock", "command": "npm", "args": "install", "runOnStart": true}]}"""
-
-    let config = parseConfig json defaults
-    test <@ config.FileCommands.Length = 1 @>
-    test <@ config.FileCommands.[0].RunOnStart = true @>
-
-[<Fact(Timeout = 5000)>]
-let ``parseConfig fileCommands without runOnStart defaults to false`` () =
-    let json =
-        """{"fileCommands": [{"pattern": "*.fsx", "command": "dotnet", "args": "fsi"}]}"""
-
-    let config = parseConfig json defaults
-    test <@ config.FileCommands.Length = 1 @>
-    test <@ config.FileCommands.[0].RunOnStart = false @>
 
 [<Fact(Timeout = 5000)>]
 let ``loadConfig with jj repo defaults to JjFileBackend`` () =

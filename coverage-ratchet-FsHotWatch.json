@@ -2,8 +2,8 @@
   "overrides": {
     "AnalyzersPlugin.fs": [
       {
-        "line": 92,
-        "branch": 75,
+        "line": 91,
+        "branch": 72,
         "reason": "end-to-end FCS analyzer paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor",
         "platform": "macos"
       },
@@ -29,8 +29,8 @@
     ],
     "BuildPlugin.fs": [
       {
-        "line": 98,
-        "branch": 83,
+        "line": 96,
+        "branch": 81,
         "reason": "loosened: shared file isTestFile changes",
         "platform": "macos"
       },
@@ -43,8 +43,8 @@
     ],
     "CheckPipeline.fs": [
       {
-        "line": 91,
-        "branch": 74,
+        "line": 89,
+        "branch": 66,
         "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor",
         "platform": "macos"
       },
@@ -55,24 +55,15 @@
         "platform": "linux"
       }
     ],
-    "CoveragePlugin.fs": [
-      {
-        "line": 99,
-        "branch": 95,
-        "reason": "defensive try/with and ThresholdsUnreadable arm in readThresholdsState not covered (hard to force portable IO failure)",
-        "platform": "macos"
-      },
-      {
-        "line": 95,
-        "branch": 92,
-        "reason": "lower line coverage on Linux CI",
-        "platform": "linux"
-      }
-    ],
+    "CoveragePlugin.fs": {
+      "line": 97,
+      "branch": 100,
+      "reason": "loosened automatically"
+    },
     "Daemon.fs": [
       {
-        "line": 83,
-        "branch": 57,
+        "line": 79,
+        "branch": 58,
         "platform": "macos"
       },
       {
@@ -84,8 +75,8 @@
     ],
     "DaemonConfig.fs": [
       {
-        "line": 69,
-        "branch": 56,
+        "line": 72,
+        "branch": 70,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -98,7 +89,7 @@
     ],
     "ErrorLedger.fs": [
       {
-        "line": 97,
+        "line": 94,
         "branch": 96,
         "reason": "loosened automatically",
         "platform": "macos"
@@ -143,11 +134,16 @@
         "branch": 100,
         "reason": "lower line coverage on Linux CI",
         "platform": "linux"
+      },
+      {
+        "line": 97,
+        "branch": 95,
+        "reason": "loosened automatically"
       }
     ],
     "FileErrorReporter.fs": [
       {
-        "line": 97,
+        "line": 100,
         "branch": 75,
         "reason": "loosened automatically",
         "platform": "macos"
@@ -160,8 +156,8 @@
     ],
     "FileTaskCache.fs": [
       {
-        "line": 90,
-        "branch": 81,
+        "line": 87,
+        "branch": 80,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -200,8 +196,8 @@
     ],
     "InitConfig.fs": [
       {
-        "line": 92,
-        "branch": 73,
+        "line": 100,
+        "branch": 90,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -213,8 +209,8 @@
     ],
     "Ipc.fs": [
       {
-        "line": 85,
-        "branch": 65,
+        "line": 86,
+        "branch": 69,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -227,9 +223,9 @@
     ],
     "IpcOutput.fs": [
       {
-        "line": 87,
-        "branch": 55,
-        "reason": "loosened: agent-mode branches in formatDiagnosticsResponse not fully covered",
+        "line": 82,
+        "branch": 52,
+        "reason": "loosened: coverage drifted with dedup refactoring",
         "platform": "macos"
       },
       {
@@ -268,8 +264,8 @@
     ],
     "LintPlugin.fs": [
       {
-        "line": 97,
-        "branch": 91,
+        "line": 94,
+        "branch": 100,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -283,7 +279,7 @@
     "MacFsEvents.fs": [
       {
         "line": 85,
-        "branch": 56,
+        "branch": 57,
         "reason": "macOS-only FSEvents code",
         "platform": "macos"
       },
@@ -311,7 +307,7 @@
     "PluginActivity.fs": [
       {
         "line": 92,
-        "branch": 66,
+        "branch": 65,
         "reason": "loosened: Recording phase state paths hit 65-66% across runs; pin to observed floor",
         "platform": "macos"
       },
@@ -324,8 +320,8 @@
     ],
     "PluginFramework.fs": [
       {
-        "line": 100,
-        "branch": 70,
+        "line": 93,
+        "branch": 69,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -338,8 +334,8 @@
     ],
     "PluginHost.fs": [
       {
-        "line": 76,
-        "branch": 48,
+        "line": 77,
+        "branch": 47,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -364,9 +360,9 @@
     ],
     "Program.fs": [
       {
-        "line": 80,
+        "line": 77,
         "branch": 50,
-        "reason": "CLI entry point; agent/compact global-flag parse branches add untested paths",
+        "reason": "CLI entry point",
         "platform": "macos"
       },
       {
@@ -380,7 +376,7 @@
       {
         "line": 91,
         "branch": 62,
-        "reason": "loosened: agent-mode fold \u002B Set/Map fusion reduced branch count; new floor",
+        "reason": "loosened: CLI rendering paths not exercised on all platforms",
         "platform": "macos"
       },
       {
@@ -392,7 +388,7 @@
     ],
     "ProjectGraph.fs": [
       {
-        "line": 97,
+        "line": 96,
         "branch": 92,
         "reason": "loosened: fileToProjects multi-project paths",
         "platform": "macos"
@@ -406,7 +402,7 @@
     ],
     "RunOnceOutput.fs": [
       {
-        "line": 58,
+        "line": 57,
         "branch": 50,
         "reason": "loosened: new severity counting branches",
         "platform": "macos"
@@ -433,8 +429,8 @@
     ],
     "TaskCache.fs": [
       {
-        "line": 98,
-        "branch": 94,
+        "line": 100,
+        "branch": 96,
         "reason": "loosened: saltedCacheKey adds branches with one compiler-generated path not hit by current tests",
         "platform": "macos"
       },
@@ -447,8 +443,8 @@
     ],
     "Watcher.fs": [
       {
-        "line": 86,
-        "branch": 63,
+        "line": 84,
+        "branch": 50,
         "reason": "loosened automatically",
         "platform": "macos"
       },

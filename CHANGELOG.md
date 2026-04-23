@@ -4,6 +4,37 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### FsHotWatch.Coverage
+
+#### Removed
+- **BREAKING:** Package retired. Coverage enforcement now flows through `fileCommands afterTests` in FsHotWatch.Cli, invoking an external CLI (e.g. `coverageratchet`).
+
+### FsHotWatch.FileCommand
+
+#### Added
+- `afterTests` trigger: react to `TestCompleted` events, optionally filtered by test project names.
+
+#### Changed
+- **BREAKING:** `FileCommandPlugin.create` takes a `CommandTrigger` record instead of positional `fileFilter` + `runOnStart` args.
+- `afterTests` list-form fires iff **every** listed project appears in `TestResults.Results`. Paired with TestPrune's progressive cumulative emission (below), the command fires exactly once per batch and is unblocked by slow non-listed groups.
+
+#### Removed
+- `runOnStart` config/API field.
+
+### FsHotWatch.TestPrune
+
+#### Changed
+- **BREAKING:** `TestCompleted` emits progressively once per group with a cumulative prefix-chain of all projects completed so far, rather than once at batch end. Fixes downstream plugins being blocked by the slowest group.
+
+### FsHotWatch.Cli
+
+#### Removed
+- **BREAKING:** `coverage` config block.
+
+#### Changed
+- `fileCommands` entries accept `name` and `afterTests`; validation requires at least one of `pattern` / `afterTests` and an explicit `name` when `afterTests` is set.
+- Coverage output directory moves from the removed `coverage.directory` to `tests.coverageDir` (default `"coverage"`). Files are emitted at `<repoRoot>/<tests.coverageDir>/<project>/coverage.cobertura.xml`.
+
 ### FsHotWatch.Fantomas
 
 #### Added

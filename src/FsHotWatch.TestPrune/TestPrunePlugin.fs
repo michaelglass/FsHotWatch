@@ -157,12 +157,19 @@ let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<str
 /// Execute test configs with optional affected classes for filtering.
 /// Handles beforeRun, coverageArgs, process execution, result storage.
 /// rawFilter is a passthrough filter string (from run-tests command), bypassing the template.
+///
+/// Emission contract: when `emitPartial` is provided, it's invoked once per test
+/// group as that group completes, with a cumulative snapshot of every project
+/// that has finished across ALL groups so far. The final emission thus equals the
+/// full result map — consumers of TestCompleted can treat the last emission
+/// identically to a batch-end emission.
 let private executeTests
     (ctx: PluginCtx<'msg> option)
     (repoRoot: string)
     (beforeRun: (unit -> unit) option)
     (coverageArgs: (string -> string) option)
     (afterRun: (TestResults -> unit) option)
+    (emitPartial: (TestResults -> unit) option)
     (configs: TestConfig list)
     (affectedClassesByProject: Map<string, string list>)
     (rawFilter: string option)
@@ -179,6 +186,25 @@ let private executeTests
         | None -> ()
 
         let groups = configs |> List.groupBy (fun c -> c.Group)
+
+        // Shared accumulator: each group folds its results in on completion and
+        // emits a cumulative snapshot under the lock so concurrent group
+        // completions produce a strict prefix-chain of snapshots.
+        let accumulator = ResizeArray<string * TestResult>()
+        let accumulatorLock = obj ()
+
+        let foldAndEmit (groupOutput: (string * TestResult) list) =
+            lock accumulatorLock (fun () ->
+                accumulator.AddRange(groupOutput)
+
+                match emitPartial with
+                | Some emit ->
+                    let snapshot =
+                        { Results = accumulator |> Seq.toList |> Map.ofList
+                          Elapsed = sw.Elapsed }
+
+                    emit snapshot
+                | None -> ())
 
         let! groupResults =
             groups
@@ -280,6 +306,10 @@ let private executeTests
                             let result = if success then TestsPassed output else TestsFailed output
                             results <- (config.Project, result) :: results
 
+                    // Atomically fold this group's results into the shared
+                    // accumulator and emit a cumulative snapshot. Groups that
+                    // complete later will extend (never contradict) this one.
+                    foldAndEmit results
                     return results
                 })
             |> Async.Parallel
@@ -490,9 +520,20 @@ let create
                             Logging.info "test-prune" $"Affected classes for %s{proj}: %A{classes}"
 
                     let! results =
-                        executeTests (Some ctx) repoRoot beforeRun coverageArgs afterRun configs affectedByProject None
+                        executeTests
+                            (Some ctx)
+                            repoRoot
+                            beforeRun
+                            coverageArgs
+                            afterRun
+                            (Some ctx.EmitTestCompleted)
+                            configs
+                            affectedByProject
+                            None
 
-                    ctx.EmitTestCompleted(results)
+                    // executeTests emits TestCompleted progressively, once per
+                    // group on completion (the last emission is equivalent to
+                    // the full-batch emit). No explicit final emit needed.
 
                     let allPassed =
                         results.Results
@@ -632,6 +673,7 @@ let create
                                                 beforeRun
                                                 coverageArgs
                                                 afterRun
+                                                None
                                                 configs
                                                 Map.empty
                                                 filter
