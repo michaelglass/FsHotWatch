@@ -12,8 +12,12 @@ type CompositeKey = { Plugin: string; File: string option }
 type CachedEvent =
     /// A build completed event captured for replay.
     | CachedBuildCompleted of FsHotWatch.Events.BuildResult
-    /// A test completed event captured for replay.
-    | CachedTestCompleted of FsHotWatch.Events.TestResults
+    /// Test run started; captured so replays emit a clean lifecycle.
+    | CachedTestRunStarted of FsHotWatch.Events.TestRunStarted
+    /// Test progress emission; a per-group delta captured for replay.
+    | CachedTestProgress of FsHotWatch.Events.TestProgress
+    /// Test run completed; the canonical summary event.
+    | CachedTestRunCompleted of FsHotWatch.Events.TestRunCompleted
     /// A command completed event captured for replay.
     | CachedCommandCompleted of FsHotWatch.Events.CommandCompletedResult
 

@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Changed (breaking)
+
+- **Test lifecycle events split into three**: `TestCompleted` is replaced by
+  `TestRunStarted` (once per run, with `RunId` + `StartedAt`), `TestProgress`
+  (per-group delta with `RunId` + `NewResults`), and `TestRunCompleted` (once
+  per run, with final cumulative `Results` + `Outcome`). All three share one
+  `RunId` per run. Subscribers that only care about end-of-run state read
+  `TestRunCompleted.Results`; subscribers that want per-group progress consume
+  `TestProgress` deltas and accumulate locally keyed by `RunId`.
+- `PluginEvent` adds `TestRunStarted` / `TestProgress` / `TestRunCompleted`;
+  drops `TestCompleted`.
+- `SubscribedEvent` / `PluginDispatchEvent` gain matching variants; drop
+  `SubscribeTestCompleted` / `DispatchTestCompleted`.
+- `PluginCtx<_>` and `PluginHostServices` replace `EmitTestCompleted` with
+  `EmitTestRunStarted` / `EmitTestProgress` / `EmitTestRunCompleted`.
+- `TestResults` kept as a plain value type for internal TestPrune use; no
+  longer dispatched as an event.
+
+### Added
+
+- `TestRunOutcome` DU (`Normal` / `Aborted of reason`). Per-project pass/fail
+  lives in `TestRunCompleted.Results` (derivable from `TestResult` values).
+
+### Fixed
+
+- `FileCommandPlugin`'s `afterTests` trigger previously used a superset
+  heuristic to detect batch boundaries and would silently skip every run
+  after the first when project sets were identical (the dominant case for
+  stable configs). Now keyed on `RunId`: fires exactly once per distinct run.
+
 - chore: bump upstream tool versions
 
 ## 0.8.0-alpha.8 (2026-04-22)
