@@ -8,15 +8,18 @@ open FsHotWatch.PluginHost
 open FsHotWatch.FileCommand.FileCommandPlugin
 open FsHotWatch.Tests.TestHelpers
 
+let private fileTrigger (filter: string -> bool) : CommandTrigger =
+    { FilePattern = Some filter
+      AfterTests = None }
+
 [<Fact(Timeout = 5000)>]
 let ``plugin has correct name`` () =
     let handler =
         create
             (FsHotWatch.PluginFramework.PluginName.create "run-scripts")
-            (fun f -> f.EndsWith(".fsx"))
+            (fileTrigger (fun f -> f.EndsWith(".fsx")))
             "echo"
             "hello"
-            false
             None
 
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "run-scripts" @>
@@ -28,10 +31,9 @@ let ``command runs when matching files change`` () =
     let handler =
         create
             (FsHotWatch.PluginFramework.PluginName.create "run-scripts")
-            (fun f -> f.EndsWith(".fsx"))
+            (fileTrigger (fun f -> f.EndsWith(".fsx")))
             "echo"
             "hello"
-            false
             None
 
     host.RegisterHandler(handler)
@@ -62,10 +64,9 @@ let ``command does not run for non-matching files`` () =
     let handler =
         create
             (FsHotWatch.PluginFramework.PluginName.create "run-scripts")
-            (fun f -> f.EndsWith(".fsx"))
+            (fileTrigger (fun f -> f.EndsWith(".fsx")))
             "echo"
             "hello"
-            false
             None
 
     host.RegisterHandler(handler)
@@ -93,10 +94,9 @@ let ``command captures stdout output`` () =
     let handler =
         create
             (FsHotWatch.PluginFramework.PluginName.create "echo-test")
-            (fun _ -> true)
+            (fileTrigger (fun _ -> true))
             "echo"
             "captured-output"
-            false
             None
 
     host.RegisterHandler(handler)
@@ -122,10 +122,9 @@ let ``command with environment variables`` () =
     let handler =
         create
             (FsHotWatch.PluginFramework.PluginName.create "env-test")
-            (fun _ -> true)
+            (fileTrigger (fun _ -> true))
             "echo"
             "env-test-output"
-            false
             None
 
     host.RegisterHandler(handler)
@@ -156,10 +155,9 @@ let ``command runs on ProjectChanged with matching files`` () =
     let handler =
         create
             (FsHotWatch.PluginFramework.PluginName.create "proj-watcher")
-            (fun f -> f.EndsWith(".fsproj"))
+            (fileTrigger (fun f -> f.EndsWith(".fsproj")))
             "echo"
             "project changed"
-            false
             None
 
     host.RegisterHandler(handler)
@@ -188,7 +186,12 @@ let ``command ignores SolutionChanged`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "sln-watcher") (fun _ -> true) "echo" "hello" false None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "sln-watcher")
+            (fileTrigger (fun _ -> true))
+            "echo"
+            "hello"
+            None
 
     host.RegisterHandler(handler)
 
@@ -212,7 +215,7 @@ let ``command reports Failed status on command failure`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "fail-cmd") (fun _ -> true) "false" "" false None
+        create (FsHotWatch.PluginFramework.PluginName.create "fail-cmd") (fileTrigger (fun _ -> true)) "false" "" None
 
     host.RegisterHandler(handler)
 
@@ -244,10 +247,9 @@ let ``command reports Failed status on exception`` () =
     let handler =
         create
             (FsHotWatch.PluginFramework.PluginName.create "bad-cmd")
-            (fun _ -> true)
+            (fileTrigger (fun _ -> true))
             "this-command-does-not-exist-xyz"
             ""
-            false
             None
 
     host.RegisterHandler(handler)
@@ -278,7 +280,12 @@ let ``status command returns not run when no files matched`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "no-match") (fun _ -> false) "echo" "hello" false None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "no-match")
+            (fileTrigger (fun _ -> false))
+            "echo"
+            "hello"
+            None
 
     host.RegisterHandler(handler)
 
@@ -303,7 +310,12 @@ let ``status command returns false when command failed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "fail-status") (fun _ -> true) "false" "" false None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "fail-status")
+            (fileTrigger (fun _ -> true))
+            "false"
+            ""
+            None
 
     host.RegisterHandler(handler)
 
@@ -327,7 +339,12 @@ let ``emits CommandCompleted on success`` () =
     host.RegisterHandler(recorder)
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "echo-cmd") (fun _ -> true) "echo" "hello" false None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "echo-cmd")
+            (fileTrigger (fun _ -> true))
+            "echo"
+            "hello"
+            None
 
     host.RegisterHandler(handler)
 
@@ -358,7 +375,12 @@ let ``emits CommandCompleted on failure`` () =
     host.RegisterHandler(recorder)
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "fail-cmd-emit") (fun _ -> true) "false" "" false None
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "fail-cmd-emit")
+            (fileTrigger (fun _ -> true))
+            "false"
+            ""
+            None
 
     host.RegisterHandler(handler)
 
@@ -383,24 +405,277 @@ let ``emits CommandCompleted on failure`` () =
         @>
 
 [<Fact(Timeout = 5000)>]
-let ``runOnStart runs command on first FileChanged even without matching files`` () =
+let ``afterTests TestProjects fires when ALL listed projects have results`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
+    let trigger =
+        { FilePattern = None
+          AfterTests = Some(TestProjects(Set.ofList [ "A"; "B" ])) }
+
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "setup-cmd") (fun _ -> false) "echo" "setup" true None
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-listed") trigger "echo" "ran" None
 
     host.RegisterHandler(handler)
 
-    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+    let results: FsHotWatch.Events.TestResults =
+        { Results =
+            Map.ofList
+                [ "A", FsHotWatch.Events.TestsPassed ""
+                  "B", FsHotWatch.Events.TestsPassed ""
+                  "Other", FsHotWatch.Events.TestsPassed "" ]
+          Elapsed = System.TimeSpan.Zero }
+
+    host.EmitTestCompleted(results)
 
     waitUntil
         (fun () ->
-            match host.GetStatus("setup-cmd") with
+            match host.GetStatus("afterTests-listed") with
             | Some(Completed _) -> true
             | _ -> false)
         5000
 
-    let status = host.GetStatus("setup-cmd")
+    let status = host.GetStatus("afterTests-listed")
+    test <@ status.IsSome @>
+
+    test
+        <@
+            match status.Value with
+            | Completed _ -> true
+            | _ -> false
+        @>
+
+[<Fact(Timeout = 10000)>]
+let ``afterTests TestProjects does not fire when only some listed projects have completed`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let trigger =
+        { FilePattern = None
+          AfterTests = Some(TestProjects(Set.ofList [ "A"; "B" ])) }
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-partial") trigger "echo" "ran" None
+
+    host.RegisterHandler(handler)
+
+    // Only A has completed — B is still outstanding.
+    let results: FsHotWatch.Events.TestResults =
+        { Results = Map.ofList [ "A", FsHotWatch.Events.TestsPassed "" ]
+          Elapsed = System.TimeSpan.Zero }
+
+    host.EmitTestCompleted(results)
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("afterTests-partial") with
+            | Some(Completed _)
+            | Some(Failed _) -> true
+            | _ -> false)
+        1000
+    |> ignore
+
+    let status = host.GetStatus("afterTests-partial")
+    test <@ status.IsSome @>
+    test <@ status.Value = Idle @>
+
+[<Fact(Timeout = 10000)>]
+let ``afterTests TestProjects does not fire when no listed project matches`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let trigger =
+        { FilePattern = None
+          AfterTests = Some(TestProjects(Set.ofList [ "Intelligence.Tests.Unit" ])) }
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-miss") trigger "echo" "ran" None
+
+    host.RegisterHandler(handler)
+
+    let results: FsHotWatch.Events.TestResults =
+        { Results = Map.ofList [ "Intelligence.Tests.Integration", FsHotWatch.Events.TestsPassed "" ]
+          Elapsed = System.TimeSpan.Zero }
+
+    host.EmitTestCompleted(results)
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("afterTests-miss") with
+            | Some(Completed _)
+            | Some(Failed _) -> true
+            | _ -> false)
+        1000
+    |> ignore
+
+    let status = host.GetStatus("afterTests-miss")
+    test <@ status.IsSome @>
+    test <@ status.Value = Idle @>
+
+[<Fact(Timeout = 10000)>]
+let ``afterTests TestProjects fires exactly once across progressive cumulative emissions`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let (getCount, counter) = commandCounter "afterTests-once"
+    host.RegisterHandler(counter)
+
+    let trigger =
+        { FilePattern = None
+          AfterTests = Some(TestProjects(Set.ofList [ "A"; "B" ])) }
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-once") trigger "echo" "ran" None
+
+    host.RegisterHandler(handler)
+
+    // Emission 1: only {A} — filter not satisfied, no fire.
+    host.EmitTestCompleted(
+        { Results = Map.ofList [ "A", FsHotWatch.Events.TestsPassed "" ]
+          Elapsed = System.TimeSpan.Zero }
+    )
+
+    // Emission 2: {A, B} — filter first satisfied, plugin fires once.
+    host.EmitTestCompleted(
+        { Results = Map.ofList [ "A", FsHotWatch.Events.TestsPassed ""; "B", FsHotWatch.Events.TestsPassed "" ]
+          Elapsed = System.TimeSpan.Zero }
+    )
+
+    waitUntil (fun () -> getCount () >= 1) 5000
+
+    // Emission 3: {A, B, C} — superset of the key we already fired for; must NOT re-fire.
+    host.EmitTestCompleted(
+        { Results =
+            Map.ofList
+                [ "A", FsHotWatch.Events.TestsPassed ""
+                  "B", FsHotWatch.Events.TestsPassed ""
+                  "C", FsHotWatch.Events.TestsPassed "" ]
+          Elapsed = System.TimeSpan.Zero }
+    )
+
+    // Give the plugin agent a moment to process emission 3 if it were going to.
+    System.Threading.Thread.Sleep(500)
+
+    test <@ getCount () = 1 @>
+
+[<Fact(Timeout = 10000)>]
+let ``afterTests TestProjects fires again on a fresh batch`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let (getCount, counter) = commandCounter "afterTests-rebatch"
+    host.RegisterHandler(counter)
+
+    let trigger =
+        { FilePattern = None
+          AfterTests = Some(TestProjects(Set.ofList [ "A"; "B" ])) }
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-rebatch") trigger "echo" "ran" None
+
+    host.RegisterHandler(handler)
+
+    // Batch 1 completes — cumulative emission includes {A,B}, plugin fires.
+    host.EmitTestCompleted(
+        { Results = Map.ofList [ "A", FsHotWatch.Events.TestsPassed ""; "B", FsHotWatch.Events.TestsPassed "" ]
+          Elapsed = System.TimeSpan.Zero }
+    )
+
+    waitUntil (fun () -> getCount () >= 1) 5000
+
+    // Batch 2 starts with a fresh cumulative run; first emission is just {A}.
+    // That's NOT a superset of batch 1's key {A,B}, so the plugin treats it
+    // as a new batch (but doesn't fire yet — B missing).
+    host.EmitTestCompleted(
+        { Results = Map.ofList [ "A", FsHotWatch.Events.TestsPassed "" ]
+          Elapsed = System.TimeSpan.Zero }
+    )
+
+    System.Threading.Thread.Sleep(200)
+    test <@ getCount () = 1 @>
+
+    // Batch 2 completes with {A,B}. Plugin should fire a SECOND time.
+    host.EmitTestCompleted(
+        { Results = Map.ofList [ "A", FsHotWatch.Events.TestsPassed ""; "B", FsHotWatch.Events.TestsPassed "" ]
+          Elapsed = System.TimeSpan.Zero }
+    )
+
+    waitUntil (fun () -> getCount () >= 2) 5000
+    test <@ getCount () = 2 @>
+
+// Regression: end-to-end from parseConfig(.fs-hot-watch.json) → daemon registration
+// path → TestCompleted dispatch. The earlier unit tests built the CommandTrigger
+// inline and hit the plugin the same way the daemon's RegisterHandler path does,
+// but a bug in the config→trigger glue (e.g. parser yielding AfterTests = None
+// for a valid JSON list) would not be caught without going through parseConfig.
+[<Fact(Timeout = 5000)>]
+let ``parseConfig + registration + TestCompleted fires coverage-ratchet-style plugin`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let json =
+        """{"fileCommands": [{"name": "cov-r", "afterTests": ["ProjA"], "command": "echo", "args": "ok"}]}"""
+
+    let defaults: FsHotWatch.Cli.DaemonConfig.DaemonConfiguration =
+        { Build = None
+          Format = FsHotWatch.Cli.DaemonConfig.Off
+          Lint = false
+          Cache = FsHotWatch.Cli.DaemonConfig.NoCache
+          Analyzers = None
+          Tests = None
+          FileCommands = []
+          Exclude = []
+          LogDir = "logs" }
+
+    let config = FsHotWatch.Cli.DaemonConfig.parseConfig json defaults
+    test <@ config.FileCommands.Length = 1 @>
+    let fc = config.FileCommands.[0]
+    test <@ fc.Name = Some "cov-r" @>
+    test <@ fc.AfterTests.IsSome @>
+
+    // Mirror exactly what DaemonConfig.registerPlugins does for each fileCommand.
+    let trigger: CommandTrigger =
+        { FilePattern =
+            fc.Pattern
+            |> Option.map (fun p ->
+                let suffix = p.TrimStart('*')
+                fun (path: string) -> path.EndsWith(suffix, System.StringComparison.OrdinalIgnoreCase))
+          AfterTests = fc.AfterTests }
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "cov-r") trigger fc.Command fc.Args None
+
+    // The plugin must subscribe to TestCompleted — if this assertion fails,
+    // dispatch will never route events to Update.
+    test
+        <@
+            handler.Subscriptions
+            |> Set.contains FsHotWatch.PluginFramework.SubscribeTestCompleted
+        @>
+
+    host.RegisterHandler(handler)
+
+    // Simulate TestPrune's progressive emission: a partial snapshot that does
+    // NOT yet include the afterTests-listed project, followed by a cumulative
+    // snapshot that does. The plugin must stay Idle after the partial and
+    // only fire on the full snapshot.
+    host.EmitTestCompleted(
+        { Results = Map.ofList [ "Other", FsHotWatch.Events.TestsPassed "" ]
+          Elapsed = System.TimeSpan.Zero }
+    )
+
+    // Brief pause to make sure the partial was processed.
+    System.Threading.Thread.Sleep(200)
+    test <@ host.GetStatus("cov-r") = Some Idle @>
+
+    host.EmitTestCompleted(
+        { Results =
+            Map.ofList
+                [ "Other", FsHotWatch.Events.TestsPassed ""
+                  "ProjA", FsHotWatch.Events.TestsPassed "" ]
+          Elapsed = System.TimeSpan.Zero }
+    )
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("cov-r") with
+            | Some(Completed _) -> true
+            | _ -> false)
+        5000
+
+    let status = host.GetStatus("cov-r")
     test <@ status.IsSome @>
 
     test
@@ -411,45 +686,37 @@ let ``runOnStart runs command on first FileChanged even without matching files``
         @>
 
 [<Fact(Timeout = 5000)>]
-let ``runOnStart only triggers once`` () =
+let ``afterTests AnyTest fires on TestCompleted regardless of projects`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
+    let trigger =
+        { FilePattern = None
+          AfterTests = Some AnyTest }
+
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "setup-once") (fun _ -> false) "echo" "setup" true None
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-any") trigger "echo" "ran" None
 
     host.RegisterHandler(handler)
 
-    // First event — runs despite no matching files
-    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+    let results: FsHotWatch.Events.TestResults =
+        { Results = Map.ofList [ "AnyProject", FsHotWatch.Events.TestsPassed "" ]
+          Elapsed = System.TimeSpan.Zero }
+
+    host.EmitTestCompleted(results)
 
     waitUntil
         (fun () ->
-            match host.GetStatus("setup-once") with
+            match host.GetStatus("afterTests-any") with
             | Some(Completed _) -> true
             | _ -> false)
         5000
 
-    let result1 = host.RunCommand("setup-once-status", [||]) |> Async.RunSynchronously
+    let status = host.GetStatus("afterTests-any")
+    test <@ status.IsSome @>
 
-    test <@ result1.IsSome @>
-    test <@ result1.Value.Contains("true") @>
-
-    // Second event — no matching files and already ran once, should not re-run
-    // Reset status observation by sending another event
-    host.EmitFileChanged(SourceChanged [ "src/Other.fs" ])
-
-    // Wait briefly — command should NOT run again
-    waitUntil
-        (fun () ->
-            match host.GetStatus("setup-once") with
-            | Some(Completed _)
-            | Some(Failed _) -> true
-            | _ -> false)
-        1000
-    |> ignore
-
-    // Status should still show the original successful run
-    let result2 = host.RunCommand("setup-once-status", [||]) |> Async.RunSynchronously
-
-    test <@ result2.IsSome @>
-    test <@ result2.Value.Contains("true") @>
+    test
+        <@
+            match status.Value with
+            | Completed _ -> true
+            | _ -> false
+        @>
