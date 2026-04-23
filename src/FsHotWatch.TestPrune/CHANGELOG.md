@@ -3,8 +3,9 @@
 ## Unreleased
 
 ### Changed
-- **BREAKING:** `TestCompleted` now fires progressively — once per test group as that group completes, each carrying a cumulative snapshot of every project finished across ALL groups so far. The final emission is equivalent to the old batch-end emission, so consumers treating the `Results` map as authoritative see no behavioral change. Consumers that counted `TestCompleted` events (rather than inspecting the map) will now receive one event per group instead of one per batch.
-- Motivation: before this change, a single slow or hanging group (e.g. integration tests) forever-blocked every `TestCompleted`-triggered downstream (coverage ratcheting, `fileCommands afterTests`, etc.) even though the groups the downstream actually depended on had completed long ago.
+- **BREAKING:** The `TestCompleted` event is replaced by a three-event lifecycle (see FsHotWatch CHANGELOG): `TestRunStarted` → `TestProgress` × N → `TestRunCompleted`. TestPrune emits `TestRunStarted` once at the top of `executeTests`, a `TestProgress` per group as it completes (with `NewResults` as a delta keyed by `RunId`), and `TestRunCompleted` once at the end (with the full cumulative `Results` and a `TestRunOutcome`). Cache replay goes through the same path — cached runs replay all three events with a fresh `RunId` so downstream dedup still works.
+- Motivation: before this change, a single slow or hanging group (e.g. integration tests) forever-blocked every `TestCompleted`-triggered downstream (coverage ratcheting, `fileCommands afterTests`, etc.) even though the groups the downstream actually depended on had completed long ago. The new lifecycle lets subscribers fire as soon as their required projects have completed without waiting for the rest of the run.
+- Abort path now emits `TestRunStarted` + `TestRunCompleted(Aborted reason)` instead of just a dummy `TestCompleted`, so subscribers see a coherent end to the run.
 
 - chore: bump upstream tool versions
 

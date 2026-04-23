@@ -405,7 +405,7 @@ let ``parseConfig fileCommands afterTests true parses to AnyTest`` () =
 
     let config = parseConfig json defaults
     test <@ config.FileCommands.Length = 1 @>
-    test <@ config.FileCommands.[0].Name = Some "cov" @>
+    test <@ config.FileCommands.[0].PluginName = "cov" @>
     test <@ config.FileCommands.[0].Pattern = None @>
 
     test <@ config.FileCommands.[0].AfterTests = Some FsHotWatch.FileCommand.FileCommandPlugin.AnyTest @>
