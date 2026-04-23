@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.7 - 2026-04-23
+
 ### Added
 - `afterTests` trigger — fileCommand entries can now run after a test run completes, optionally filtered by a list of test project names.
 - Required `name` field for entries whose primary trigger is `afterTests`.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.9 - 2026-04-23
+
 ### Changed (breaking)
 
 - **Test lifecycle events split into three**: `TestCompleted` is replaced by

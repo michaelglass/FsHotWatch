@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.7 - 2026-04-23
+
 - chore: bump upstream tool versions
 
 ## 0.5.0-alpha.1 (2026-04-12)

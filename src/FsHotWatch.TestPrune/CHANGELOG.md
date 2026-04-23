@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.9 - 2026-04-23
+
 ### Changed
 - **BREAKING:** The `TestCompleted` event is replaced by a three-event lifecycle (see FsHotWatch CHANGELOG): `TestRunStarted` → `TestProgress` × N → `TestRunCompleted`. TestPrune emits `TestRunStarted` once at the top of `executeTests`, a `TestProgress` per group as it completes (with `NewResults` as a delta keyed by `RunId`), and `TestRunCompleted` once at the end (with the full cumulative `Results` and a `TestRunOutcome`). Cache replay goes through the same path — cached runs replay all three events with a fresh `RunId` so downstream dedup still works.
 - Motivation: before this change, a single slow or hanging group (e.g. integration tests) forever-blocked every `TestCompleted`-triggered downstream (coverage ratcheting, `fileCommands afterTests`, etc.) even though the groups the downstream actually depended on had completed long ago. The new lifecycle lets subscribers fire as soon as their required projects have completed without waiting for the rest of the run.
