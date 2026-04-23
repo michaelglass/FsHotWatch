@@ -33,7 +33,6 @@ or writing your own plugin. Most users should install
 File change -> FormatPreprocessor (rewrites) -> FileChanged
   +-- BuildPlugin -> dotnet build -> BuildCompleted
   |     +-- TestPrunePlugin -> affected tests -> TestCompleted
-  |           +-- CoveragePlugin -> threshold check
   +-- FCS Check -> FileChecked
   |     +-- LintPlugin (warm AST + check results)
   |     +-- AnalyzersPlugin (warm check results)
