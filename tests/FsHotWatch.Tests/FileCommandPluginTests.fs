@@ -12,6 +12,22 @@ let private fileTrigger (filter: string -> bool) : CommandTrigger =
     { FilePattern = Some filter
       AfterTests = None }
 
+/// Emit a TestRunCompleted event with the given final Results. Used by tests
+/// that want to drive the plugin as if a test run had just finished.
+let private emitRunCompleted (host: PluginHost) (results: (string * TestResult) list) =
+    host.EmitTestRunCompleted
+        { RunId = System.Guid.NewGuid()
+          TotalElapsed = System.TimeSpan.Zero
+          Outcome = Normal
+          Results = Map.ofList results }
+
+/// Emit a TestProgress event (delta for one group) with the given RunId. Used
+/// by tests that want to simulate the in-progress phase of a run.
+let private emitProgress (host: PluginHost) (runId: System.Guid) (delta: (string * TestResult) list) =
+    host.EmitTestProgress
+        { RunId = runId
+          NewResults = Map.ofList delta }
+
 [<Fact(Timeout = 5000)>]
 let ``plugin has correct name`` () =
     let handler =
@@ -417,15 +433,11 @@ let ``afterTests TestProjects fires when ALL listed projects have results`` () =
 
     host.RegisterHandler(handler)
 
-    let results: FsHotWatch.Events.TestResults =
-        { Results =
-            Map.ofList
-                [ "A", FsHotWatch.Events.TestsPassed ""
-                  "B", FsHotWatch.Events.TestsPassed ""
-                  "Other", FsHotWatch.Events.TestsPassed "" ]
-          Elapsed = System.TimeSpan.Zero }
-
-    host.EmitTestCompleted(results)
+    emitRunCompleted
+        host
+        [ "A", FsHotWatch.Events.TestsPassed ""
+          "B", FsHotWatch.Events.TestsPassed ""
+          "Other", FsHotWatch.Events.TestsPassed "" ]
 
     waitUntil
         (fun () ->
@@ -457,12 +469,8 @@ let ``afterTests TestProjects does not fire when only some listed projects have 
 
     host.RegisterHandler(handler)
 
-    // Only A has completed — B is still outstanding.
-    let results: FsHotWatch.Events.TestResults =
-        { Results = Map.ofList [ "A", FsHotWatch.Events.TestsPassed "" ]
-          Elapsed = System.TimeSpan.Zero }
-
-    host.EmitTestCompleted(results)
+    // Only A has completed — B is still outstanding. Model as mid-run progress.
+    emitProgress host (System.Guid.NewGuid()) [ "A", FsHotWatch.Events.TestsPassed "" ]
 
     waitUntil
         (fun () ->
@@ -490,11 +498,7 @@ let ``afterTests TestProjects does not fire when no listed project matches`` () 
 
     host.RegisterHandler(handler)
 
-    let results: FsHotWatch.Events.TestResults =
-        { Results = Map.ofList [ "Intelligence.Tests.Integration", FsHotWatch.Events.TestsPassed "" ]
-          Elapsed = System.TimeSpan.Zero }
-
-    host.EmitTestCompleted(results)
+    emitRunCompleted host [ "Intelligence.Tests.Integration", FsHotWatch.Events.TestsPassed "" ]
 
     waitUntil
         (fun () ->
@@ -510,7 +514,7 @@ let ``afterTests TestProjects does not fire when no listed project matches`` () 
     test <@ status.Value = Idle @>
 
 [<Fact(Timeout = 10000)>]
-let ``afterTests TestProjects fires exactly once across progressive cumulative emissions`` () =
+let ``afterTests TestProjects fires exactly once across progressive deltas`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getCount, counter) = commandCounter "afterTests-once"
     host.RegisterHandler(counter)
@@ -524,31 +528,20 @@ let ``afterTests TestProjects fires exactly once across progressive cumulative e
 
     host.RegisterHandler(handler)
 
-    // Emission 1: only {A} — filter not satisfied, no fire.
-    host.EmitTestCompleted(
-        { Results = Map.ofList [ "A", FsHotWatch.Events.TestsPassed "" ]
-          Elapsed = System.TimeSpan.Zero }
-    )
+    let runId = System.Guid.NewGuid()
 
-    // Emission 2: {A, B} — filter first satisfied, plugin fires once.
-    host.EmitTestCompleted(
-        { Results = Map.ofList [ "A", FsHotWatch.Events.TestsPassed ""; "B", FsHotWatch.Events.TestsPassed "" ]
-          Elapsed = System.TimeSpan.Zero }
-    )
+    // Delta 1: {A} arrives — accumulator = {A}, filter not satisfied.
+    emitProgress host runId [ "A", FsHotWatch.Events.TestsPassed "" ]
+
+    // Delta 2: {B} arrives — accumulator = {A,B}, filter satisfied; fire.
+    emitProgress host runId [ "B", FsHotWatch.Events.TestsPassed "" ]
 
     waitUntil (fun () -> getCount () >= 1) 5000
 
-    // Emission 3: {A, B, C} — superset of the key we already fired for; must NOT re-fire.
-    host.EmitTestCompleted(
-        { Results =
-            Map.ofList
-                [ "A", FsHotWatch.Events.TestsPassed ""
-                  "B", FsHotWatch.Events.TestsPassed ""
-                  "C", FsHotWatch.Events.TestsPassed "" ]
-          Elapsed = System.TimeSpan.Zero }
-    )
+    // Delta 3: {C} arrives — accumulator = {A,B,C}, filter still satisfies
+    //           but this is the same RunId → dedupe, no re-fire.
+    emitProgress host runId [ "C", FsHotWatch.Events.TestsPassed "" ]
 
-    // Give the plugin agent a moment to process emission 3 if it were going to.
     System.Threading.Thread.Sleep(500)
 
     test <@ getCount () = 1 @>
@@ -568,41 +561,25 @@ let ``afterTests TestProjects fires again on a fresh batch`` () =
 
     host.RegisterHandler(handler)
 
-    // Batch 1 completes — cumulative emission includes {A,B}, plugin fires.
-    host.EmitTestCompleted(
-        { Results = Map.ofList [ "A", FsHotWatch.Events.TestsPassed ""; "B", FsHotWatch.Events.TestsPassed "" ]
-          Elapsed = System.TimeSpan.Zero }
-    )
+    // Batch 1 — plugin fires once when both projects complete.
+    emitRunCompleted host [ "A", FsHotWatch.Events.TestsPassed ""; "B", FsHotWatch.Events.TestsPassed "" ]
 
     waitUntil (fun () -> getCount () >= 1) 5000
 
-    // Batch 2 starts with a fresh cumulative run; first emission is just {A}.
-    // That's NOT a superset of batch 1's key {A,B}, so the plugin treats it
-    // as a new batch (but doesn't fire yet — B missing).
-    host.EmitTestCompleted(
-        { Results = Map.ofList [ "A", FsHotWatch.Events.TestsPassed "" ]
-          Elapsed = System.TimeSpan.Zero }
-    )
-
-    System.Threading.Thread.Sleep(200)
-    test <@ getCount () = 1 @>
-
-    // Batch 2 completes with {A,B}. Plugin should fire a SECOND time.
-    host.EmitTestCompleted(
-        { Results = Map.ofList [ "A", FsHotWatch.Events.TestsPassed ""; "B", FsHotWatch.Events.TestsPassed "" ]
-          Elapsed = System.TimeSpan.Zero }
-    )
+    // Batch 2 — NEW RunId. Plugin's idempotency sentinel is tied to the
+    // previous RunId, so this fresh event must fire again.
+    emitRunCompleted host [ "A", FsHotWatch.Events.TestsPassed ""; "B", FsHotWatch.Events.TestsPassed "" ]
 
     waitUntil (fun () -> getCount () >= 2) 5000
     test <@ getCount () = 2 @>
 
 // Regression: end-to-end from parseConfig(.fs-hot-watch.json) → daemon registration
-// path → TestCompleted dispatch. The earlier unit tests built the CommandTrigger
+// path → lifecycle dispatch. The earlier unit tests built the CommandTrigger
 // inline and hit the plugin the same way the daemon's RegisterHandler path does,
 // but a bug in the config→trigger glue (e.g. parser yielding AfterTests = None
 // for a valid JSON list) would not be caught without going through parseConfig.
 [<Fact(Timeout = 5000)>]
-let ``parseConfig + registration + TestCompleted fires coverage-ratchet-style plugin`` () =
+let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style plugin`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let json =
@@ -622,7 +599,7 @@ let ``parseConfig + registration + TestCompleted fires coverage-ratchet-style pl
     let config = FsHotWatch.Cli.DaemonConfig.parseConfig json defaults
     test <@ config.FileCommands.Length = 1 @>
     let fc = config.FileCommands.[0]
-    test <@ fc.Name = Some "cov-r" @>
+    test <@ fc.PluginName = "cov-r" @>
     test <@ fc.AfterTests.IsSome @>
 
     // Mirror exactly what DaemonConfig.registerPlugins does for each fileCommand.
@@ -635,38 +612,43 @@ let ``parseConfig + registration + TestCompleted fires coverage-ratchet-style pl
           AfterTests = fc.AfterTests }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "cov-r") trigger fc.Command fc.Args None
+        create (FsHotWatch.PluginFramework.PluginName.create fc.PluginName) trigger fc.Command fc.Args None
 
-    // The plugin must subscribe to TestCompleted — if this assertion fails,
-    // dispatch will never route events to Update.
+    // The plugin must subscribe to TestProgress + TestRunCompleted — if this
+    // assertion fails, dispatch will never route events to Update.
     test
         <@
             handler.Subscriptions
-            |> Set.contains FsHotWatch.PluginFramework.SubscribeTestCompleted
+            |> Set.contains FsHotWatch.PluginFramework.SubscribeTestProgress
+        @>
+
+    test
+        <@
+            handler.Subscriptions
+            |> Set.contains FsHotWatch.PluginFramework.SubscribeTestRunCompleted
         @>
 
     host.RegisterHandler(handler)
 
-    // Simulate TestPrune's progressive emission: a partial snapshot that does
-    // NOT yet include the afterTests-listed project, followed by a cumulative
-    // snapshot that does. The plugin must stay Idle after the partial and
-    // only fire on the full snapshot.
-    host.EmitTestCompleted(
-        { Results = Map.ofList [ "Other", FsHotWatch.Events.TestsPassed "" ]
-          Elapsed = System.TimeSpan.Zero }
-    )
+    // Simulate TestPrune's progressive emission: a partial delta that does NOT
+    // include the afterTests-listed project, followed by a TestRunCompleted
+    // whose Results do. The plugin must stay Idle after the partial and only
+    // fire on the completed event.
+    let runId = System.Guid.NewGuid()
+    emitProgress host runId [ "Other", FsHotWatch.Events.TestsPassed "" ]
 
     // Brief pause to make sure the partial was processed.
     System.Threading.Thread.Sleep(200)
     test <@ host.GetStatus("cov-r") = Some Idle @>
 
-    host.EmitTestCompleted(
-        { Results =
+    host.EmitTestRunCompleted
+        { RunId = runId
+          TotalElapsed = System.TimeSpan.Zero
+          Outcome = Normal
+          Results =
             Map.ofList
                 [ "Other", FsHotWatch.Events.TestsPassed ""
-                  "ProjA", FsHotWatch.Events.TestsPassed "" ]
-          Elapsed = System.TimeSpan.Zero }
-    )
+                  "ProjA", FsHotWatch.Events.TestsPassed "" ] }
 
     waitUntil
         (fun () ->
@@ -686,7 +668,7 @@ let ``parseConfig + registration + TestCompleted fires coverage-ratchet-style pl
         @>
 
 [<Fact(Timeout = 5000)>]
-let ``afterTests AnyTest fires on TestCompleted regardless of projects`` () =
+let ``afterTests AnyTest fires on TestRunCompleted regardless of projects`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let trigger =
@@ -698,11 +680,7 @@ let ``afterTests AnyTest fires on TestCompleted regardless of projects`` () =
 
     host.RegisterHandler(handler)
 
-    let results: FsHotWatch.Events.TestResults =
-        { Results = Map.ofList [ "AnyProject", FsHotWatch.Events.TestsPassed "" ]
-          Elapsed = System.TimeSpan.Zero }
-
-    host.EmitTestCompleted(results)
+    emitRunCompleted host [ "AnyProject", FsHotWatch.Events.TestsPassed "" ]
 
     waitUntil
         (fun () ->

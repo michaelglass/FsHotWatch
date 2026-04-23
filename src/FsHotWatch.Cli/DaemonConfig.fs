@@ -97,7 +97,7 @@ type DaemonConfiguration =
                Projects: TestProjectConfig list
                CoverageDir: string |} option
         FileCommands:
-            {| Name: string option
+            {| PluginName: string
                Pattern: string option
                AfterTests: FsHotWatch.FileCommand.FileCommandPlugin.TestFilter option
                Command: string
@@ -367,7 +367,16 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 if afterTests.IsSome && name.IsNone then
                     failwith "fileCommands entries with `afterTests` require an explicit `name`"
 
-                {| Name = name
+                // Derive the effective plugin name up-front so registration is
+                // a straight mapping. Uses the explicit `name` when given, else
+                // falls back to a pattern-derived name (guaranteed Some here by
+                // the validation above).
+                let pluginName =
+                    match name with
+                    | Some n -> n
+                    | None -> $"file-cmd-%s{Option.get pattern}"
+
+                {| PluginName = pluginName
                    Pattern = pattern
                    AfterTests = afterTests
                    Command = command
@@ -597,14 +606,6 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
 
     // File commands
     for fc in config.FileCommands do
-        let pluginName =
-            match fc.Name with
-            | Some n -> n
-            | None ->
-                match fc.Pattern with
-                | Some p -> $"file-cmd-%s{p}"
-                | None -> failwith "unreachable: validation rejects name=None && pattern=None"
-
         let trigger: FsHotWatch.FileCommand.FileCommandPlugin.CommandTrigger =
             { FilePattern =
                 fc.Pattern
@@ -613,11 +614,11 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                     fun (path: string) -> path.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
               AfterTests = fc.AfterTests }
 
-        Logging.info "config" $"Registering FileCommandPlugin: %s{pluginName} → %s{fc.Command} %s{fc.Args}"
+        Logging.info "config" $"Registering FileCommandPlugin: %s{fc.PluginName} → %s{fc.Command} %s{fc.Args}"
 
         daemon.RegisterHandler(
             FsHotWatch.FileCommand.FileCommandPlugin.create
-                (FsHotWatch.PluginFramework.PluginName.create pluginName)
+                (FsHotWatch.PluginFramework.PluginName.create fc.PluginName)
                 trigger
                 fc.Command
                 fc.Args
