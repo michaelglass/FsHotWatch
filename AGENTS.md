@@ -16,7 +16,7 @@ It keeps the F# compiler warm so checks take milliseconds, not minutes.
 | Command | Use |
 |---|---|
 | `fs-hot-watch status` | One-line state per plugin — look for non-idle entries first |
-| `fs-hot-watch status <plugin>` | Deeper detail for `build`, `test-prune`, `analyzers`, `lint`, `format`, `coverage` |
+| `fs-hot-watch status <plugin>` | Deeper detail for `build`, `test-prune`, `analyzers`, `lint`, `format` |
 | `fs-hot-watch errors` | Accumulated diagnostics across all plugins; exit code `0` = clean, non-zero = errors present |
 | `fs-hot-watch check` | Force a full re-run of all checks; use before claiming work is done |
 | `fs-hot-watch scan` | Re-scan the project tree (new files, renames) |

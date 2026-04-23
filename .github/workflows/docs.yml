@@ -3,14 +3,13 @@ name: Deploy Docs
 on:
   push:
     tags:
-      - 'core-v*'
-      - 'testprune-v*'
-      - 'analyzers-v*'
-      - 'lint-v*'
-      - 'fantomas-v*'
-      - 'build-v*'
-      - 'coverage-v*'
-      - 'filecommand-v*'
+      - "core-v*"
+      - "testprune-v*"
+      - "analyzers-v*"
+      - "lint-v*"
+      - "fantomas-v*"
+      - "build-v*"
+      - "filecommand-v*"
 
 permissions:
   contents: read
@@ -26,4 +25,4 @@ jobs:
     if: "!contains(github.ref, '-alpha') && !contains(github.ref, '-beta') && !contains(github.ref, '-rc')"
     uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-docs.yml@main
     with:
-      fsdocs-parameters: '--parameters root /FsHotWatch/'
+      fsdocs-parameters: "--parameters root /FsHotWatch/"

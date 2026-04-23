@@ -3,14 +3,13 @@ name: Release
 on:
   push:
     tags:
-      - 'core-v*'
-      - 'testprune-v*'
-      - 'analyzers-v*'
-      - 'lint-v*'
-      - 'fantomas-v*'
-      - 'build-v*'
-      - 'coverage-v*'
-      - 'filecommand-v*'
+      - "core-v*"
+      - "testprune-v*"
+      - "analyzers-v*"
+      - "lint-v*"
+      - "fantomas-v*"
+      - "build-v*"
+      - "filecommand-v*"
 
 permissions:
   contents: write
@@ -178,35 +177,6 @@ jobs:
   publish-build:
     if: startsWith(github.ref, 'refs/tags/build-v')
     needs: release-build
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: nuget-packages
-          path: ./artifacts
-      - uses: nuget/login@v1
-        id: nuget-login
-        with:
-          user: ${{ vars.NUGET_USER }}
-      - run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
-
-  # --- coverage ---
-
-  release-coverage:
-    if: startsWith(github.ref, 'refs/tags/coverage-v')
-    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-release.yml@main
-    with:
-      package-name: FsHotWatch.Coverage
-      tag-prefix: coverage-v
-      fsproj-path: src/FsHotWatch.Coverage/FsHotWatch.Coverage.fsproj
-    permissions:
-      contents: write
-
-  publish-coverage:
-    if: startsWith(github.ref, 'refs/tags/coverage-v')
-    needs: release-coverage
     runs-on: ubuntu-latest
     permissions:
       id-token: write
