@@ -30,8 +30,16 @@ type PluginCtx<'Msg> =
         ClearAllErrors: unit -> unit
         /// Emit a build completed event to other plugins.
         EmitBuildCompleted: BuildResult -> unit
-        /// Emit a test completed event to other plugins.
-        EmitTestCompleted: TestResults -> unit
+        /// Emit the start of a test run. Fires exactly once per run before any progress.
+        EmitTestRunStarted: TestRunStarted -> unit
+        /// Emit progress for a running test run (one or more groups just completed).
+        /// Carries only newly-completed projects as a delta; subscribers that need
+        /// cumulative state fold locally keyed by RunId.
+        EmitTestProgress: TestProgress -> unit
+        /// Emit the end of a test run. Fires exactly once per run. Carries the full
+        /// cumulative Results so subscribers that don't listen to TestProgress can
+        /// still see the final state.
+        EmitTestRunCompleted: TestRunCompleted -> unit
         /// Emit a command completed event to other plugins.
         EmitCommandCompleted: CommandCompletedResult -> unit
         /// The warm FSharpChecker instance shared across all plugins.
@@ -55,7 +63,9 @@ type SubscribedEvent =
     | SubscribeFileChanged
     | SubscribeFileChecked
     | SubscribeBuildCompleted
-    | SubscribeTestCompleted
+    | SubscribeTestRunStarted
+    | SubscribeTestProgress
+    | SubscribeTestRunCompleted
     | SubscribeCommandCompleted
 
 /// Which events the plugin subscribes to.
@@ -93,7 +103,9 @@ type PluginDispatchEvent =
     | DispatchFileChanged of FileChangeKind
     | DispatchFileChecked of FileCheckResult
     | DispatchBuildCompleted of BuildResult
-    | DispatchTestCompleted of TestResults
+    | DispatchTestRunStarted of TestRunStarted
+    | DispatchTestProgress of TestProgress
+    | DispatchTestRunCompleted of TestRunCompleted
     | DispatchCommandCompleted of CommandCompletedResult
 
 /// Type-erased plugin registration stored by PluginHost.
@@ -118,7 +130,9 @@ type PluginHostServices =
       ClearErrors: PluginName -> string -> unit
       ClearPlugin: PluginName -> unit
       EmitBuildCompleted: BuildResult -> unit
-      EmitTestCompleted: TestResults -> unit
+      EmitTestRunStarted: TestRunStarted -> unit
+      EmitTestProgress: TestProgress -> unit
+      EmitTestRunCompleted: TestRunCompleted -> unit
       EmitCommandCompleted: CommandCompletedResult -> unit
       RegisterCommand: string * CommandHandler -> unit
       TaskCache: TaskCache.ITaskCache option
@@ -141,7 +155,9 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                           ClearErrors = fun file -> services.ClearErrors handler.Name file
                           ClearAllErrors = fun () -> services.ClearPlugin handler.Name
                           EmitBuildCompleted = services.EmitBuildCompleted
-                          EmitTestCompleted = services.EmitTestCompleted
+                          EmitTestRunStarted = services.EmitTestRunStarted
+                          EmitTestProgress = services.EmitTestProgress
+                          EmitTestRunCompleted = services.EmitTestRunCompleted
                           EmitCommandCompleted = services.EmitCommandCompleted
                           Checker = services.Checker
                           RepoRoot = services.RepoRoot
@@ -186,11 +202,22 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                     // Replay status
                                     services.ReportStatus handler.Name result.Status
 
-                                    // Replay emitted events
+                                    // Replay emitted events. Cached test-lifecycle events carry the
+                                    // ORIGINAL run's RunId, which would cause RunId-based dedup (e.g.
+                                    // FileCommand) to skip the replay as if it were the same run. Swap
+                                    // in a single fresh RunId shared across the three test events so
+                                    // the cache hit looks like a distinct run.
+                                    let freshRunId = System.Lazy<System.Guid>(System.Guid.NewGuid)
+
                                     for emitted in result.EmittedEvents do
                                         match emitted with
                                         | TaskCache.CachedBuildCompleted r -> services.EmitBuildCompleted r
-                                        | TaskCache.CachedTestCompleted r -> services.EmitTestCompleted r
+                                        | TaskCache.CachedTestRunStarted r ->
+                                            services.EmitTestRunStarted { r with RunId = freshRunId.Value }
+                                        | TaskCache.CachedTestProgress r ->
+                                            services.EmitTestProgress { r with RunId = freshRunId.Value }
+                                        | TaskCache.CachedTestRunCompleted r ->
+                                            services.EmitTestRunCompleted { r with RunId = freshRunId.Value }
                                         | TaskCache.CachedCommandCompleted r -> services.EmitCommandCompleted r
 
                                     true
@@ -246,10 +273,18 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                             fun r ->
                                                 capturedEvents.Add(TaskCache.CachedBuildCompleted r)
                                                 services.EmitBuildCompleted r
-                                          EmitTestCompleted =
+                                          EmitTestRunStarted =
                                             fun r ->
-                                                capturedEvents.Add(TaskCache.CachedTestCompleted r)
-                                                services.EmitTestCompleted r
+                                                capturedEvents.Add(TaskCache.CachedTestRunStarted r)
+                                                services.EmitTestRunStarted r
+                                          EmitTestProgress =
+                                            fun r ->
+                                                capturedEvents.Add(TaskCache.CachedTestProgress r)
+                                                services.EmitTestProgress r
+                                          EmitTestRunCompleted =
+                                            fun r ->
+                                                capturedEvents.Add(TaskCache.CachedTestRunCompleted r)
+                                                services.EmitTestRunCompleted r
                                           EmitCommandCompleted =
                                             fun r ->
                                                 capturedEvents.Add(TaskCache.CachedCommandCompleted r)
@@ -323,7 +358,9 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
         | DispatchFileChanged c when has SubscribeFileChanged -> post (FileChanged c)
         | DispatchFileChecked r when has SubscribeFileChecked -> post (FileChecked r)
         | DispatchBuildCompleted r when has SubscribeBuildCompleted -> post (BuildCompleted r)
-        | DispatchTestCompleted r when has SubscribeTestCompleted -> post (TestCompleted r)
+        | DispatchTestRunStarted r when has SubscribeTestRunStarted -> post (TestRunStarted r)
+        | DispatchTestProgress r when has SubscribeTestProgress -> post (TestProgress r)
+        | DispatchTestRunCompleted r when has SubscribeTestRunCompleted -> post (TestRunCompleted r)
         | DispatchCommandCompleted r when has SubscribeCommandCompleted -> post (CommandCompleted r)
         | _ -> ()
 

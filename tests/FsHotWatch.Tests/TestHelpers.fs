@@ -193,25 +193,52 @@ let commandCounter (pluginName: string) =
 
 /// Create a plugin that records TestCompleted events in order.
 /// Returns (getEvents, handler) — getEvents returns a snapshot of all received
-/// TestResults in FIFO order.
-let testCompletedRecorder () =
+/// TestProgress events (delta per group) in FIFO order.
+let testProgressRecorder () =
     let received =
-        System.Collections.Concurrent.ConcurrentQueue<FsHotWatch.Events.TestResults>()
+        System.Collections.Concurrent.ConcurrentQueue<FsHotWatch.Events.TestProgress>()
 
     let handler: FsHotWatch.PluginFramework.PluginHandler<unit, obj> =
-        { Name = FsHotWatch.PluginFramework.PluginName.create "test-completed-recorder"
+        { Name = FsHotWatch.PluginFramework.PluginName.create "test-progress-recorder"
           Init = ()
           Update =
             fun _ctx state event ->
                 async {
                     match event with
-                    | FsHotWatch.Events.TestCompleted results -> received.Enqueue(results)
+                    | FsHotWatch.Events.TestProgress progress -> received.Enqueue(progress)
                     | _ -> ()
 
                     return state
                 }
           Commands = []
-          Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeTestCompleted ]
+          Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeTestProgress ]
+          CacheKey = None
+          Teardown = None }
+
+    ((fun () -> received |> Seq.toList), handler)
+
+/// Returns (getEvents, handler) — getEvents returns a snapshot of all received
+/// TestRunCompleted events in FIFO order. (Renamed from testCompletedRecorder
+/// to reflect the new event lifecycle: subscribers observe TestRunCompleted
+/// for the end-of-run summary.)
+let testRunCompletedRecorder () =
+    let received =
+        System.Collections.Concurrent.ConcurrentQueue<FsHotWatch.Events.TestRunCompleted>()
+
+    let handler: FsHotWatch.PluginFramework.PluginHandler<unit, obj> =
+        { Name = FsHotWatch.PluginFramework.PluginName.create "test-run-completed-recorder"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | FsHotWatch.Events.TestRunCompleted completed -> received.Enqueue(completed)
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeTestRunCompleted ]
           CacheKey = None
           Teardown = None }
 

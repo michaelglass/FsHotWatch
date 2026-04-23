@@ -107,15 +107,36 @@ let private serializeCachedEvent (evt: CachedEvent) =
             arr.Add(e)
 
         obj["errors"] <- arr
-    | CachedTestCompleted results ->
-        obj["type"] <- "test"
+    | CachedTestRunStarted started ->
+        obj["type"] <- "testRunStarted"
+        obj["runId"] <- string<System.Guid> started.RunId
+        obj["startedAt"] <- started.StartedAt.ToString("o")
+    | CachedTestProgress progress ->
+        obj["type"] <- "testProgress"
+        obj["runId"] <- string<System.Guid> progress.RunId
         let resultsArr = JsonArray()
 
-        for kvp in results.Results do
+        for kvp in progress.NewResults do
+            resultsArr.Add(serializeTestResult kvp.Key kvp.Value)
+
+        obj["newResults"] <- resultsArr
+    | CachedTestRunCompleted completed ->
+        obj["type"] <- "testRunCompleted"
+        obj["runId"] <- string<System.Guid> completed.RunId
+        obj["elapsedMs"] <- completed.TotalElapsed.TotalMilliseconds
+
+        match completed.Outcome with
+        | Normal -> obj["outcome"] <- "normal"
+        | Aborted reason ->
+            obj["outcome"] <- "aborted"
+            obj["abortReason"] <- reason
+
+        let resultsArr = JsonArray()
+
+        for kvp in completed.Results do
             resultsArr.Add(serializeTestResult kvp.Key kvp.Value)
 
         obj["results"] <- resultsArr
-        obj["elapsedMs"] <- results.Elapsed.TotalMilliseconds
     | CachedCommandCompleted result ->
         obj["type"] <- "command"
         obj["name"] <- result.Name
@@ -141,14 +162,41 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
 
             CachedBuildCompleted(BuildFailed errors)
         | r -> failwith $"Unknown build result: %s{r}"
-    | "test" ->
+    | "testRunStarted" ->
+        let runId = System.Guid.Parse(obj["runId"].GetValue<string>())
+        let startedAt = System.DateTime.Parse(obj["startedAt"].GetValue<string>())
+        CachedTestRunStarted { RunId = runId; StartedAt = startedAt }
+    | "testProgress" ->
+        let runId = System.Guid.Parse(obj["runId"].GetValue<string>())
+
+        let newResults =
+            obj["newResults"].AsArray()
+            |> Seq.map (fun n -> deserializeTestResult (n.AsObject()))
+            |> Map.ofSeq
+
+        CachedTestProgress
+            { RunId = runId
+              NewResults = newResults }
+    | "testRunCompleted" ->
+        let runId = System.Guid.Parse(obj["runId"].GetValue<string>())
+        let elapsed = TimeSpan.FromMilliseconds(obj["elapsedMs"].GetValue<float>())
+
+        let outcome =
+            match obj["outcome"].GetValue<string>() with
+            | "normal" -> Normal
+            | "aborted" -> Aborted(obj["abortReason"].GetValue<string>())
+            | o -> failwith $"Unknown TestRunOutcome: %s{o}"
+
         let results =
             obj["results"].AsArray()
             |> Seq.map (fun n -> deserializeTestResult (n.AsObject()))
             |> Map.ofSeq
 
-        let elapsed = TimeSpan.FromMilliseconds(obj["elapsedMs"].GetValue<float>())
-        CachedTestCompleted { Results = results; Elapsed = elapsed }
+        CachedTestRunCompleted
+            { RunId = runId
+              TotalElapsed = elapsed
+              Outcome = outcome
+              Results = results }
     | "command" ->
         let name = obj["name"].GetValue<string>()
         let output = obj["output"].GetValue<string>()
