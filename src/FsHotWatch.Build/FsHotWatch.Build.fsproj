@@ -4,7 +4,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <PackageId>FsHotWatch.Build</PackageId>
-    <Version>0.7.0-alpha.6</Version>
+    <Version>0.7.0-alpha.7</Version>
     <Authors>Michael Glass</Authors>
     <Description>FsHotWatch plugin that runs dotnet build and emits BuildCompleted events</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
