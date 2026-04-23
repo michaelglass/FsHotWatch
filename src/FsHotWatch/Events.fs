@@ -139,13 +139,46 @@ type TestResult =
     | TestsPassed of output: string
     | TestsFailed of output: string
 
-/// Aggregate test results across all test projects.
+/// Aggregate test results snapshot. Used as a plain value type by TestPrune's
+/// internals and afterRun hooks — NOT dispatched as an event. Subscribers
+/// consume `TestRunCompleted` (which wraps the final Results plus Outcome).
 type TestResults =
+    { Results: Map<string, TestResult>
+      Elapsed: System.TimeSpan }
+
+/// Outcome of a complete test run.
+type TestRunOutcome =
+    /// Run executed to natural completion (inspect Results for per-project pass/fail).
+    | Normal
+    /// Run was cut short (cancelled, timed out, crashed). Results may be incomplete.
+    | Aborted of reason: string
+
+/// Emitted once at the start of every test run. Gives subscribers a clear
+/// lifecycle boundary to reset run-scoped state (e.g. idempotency sentinels).
+type TestRunStarted =
+    { RunId: System.Guid
+      StartedAt: System.DateTime }
+
+/// Emitted each time a group of tests completes within a run. Pure delta —
+/// carries only projects whose execution just finished. Subscribers that need
+/// cumulative run-wide state fold deltas locally, keyed by RunId.
+type TestProgress =
+    { RunId: System.Guid
+      NewResults: Map<string, TestResult> }
+
+/// Emitted once at the end of every run (including aborts). Canonical summary
+/// for subscribers that don't want to listen to TestProgress. Also the only
+/// event emitted on cache-replay — cached runs skip the per-group progress
+/// stream and go straight from TestRunStarted to TestRunCompleted.
+type TestRunCompleted =
     {
-        /// Per-project test results.
+        RunId: System.Guid
+        TotalElapsed: System.TimeSpan
+        Outcome: TestRunOutcome
+        /// Final cumulative state. Equivalent to the fold of every TestProgress
+        /// for this RunId; materialized here so late subscribers can skip
+        /// progress events entirely.
         Results: Map<string, TestResult>
-        /// Total time for all test execution.
-        Elapsed: System.TimeSpan
     }
 
 /// Current state of the daemon's scan operation.
@@ -173,6 +206,8 @@ type PluginEvent<'Msg> =
     | FileChanged of FileChangeKind
     | FileChecked of FileCheckResult
     | BuildCompleted of BuildResult
-    | TestCompleted of TestResults
+    | TestRunStarted of TestRunStarted
+    | TestProgress of TestProgress
+    | TestRunCompleted of TestRunCompleted
     | CommandCompleted of CommandCompletedResult
     | Custom of 'Msg
