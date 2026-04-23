@@ -25,7 +25,9 @@ let private registerWith
           ClearErrors = fun _ _ -> ()
           ClearPlugin = fun _ -> ()
           EmitBuildCompleted = fun _ -> ()
-          EmitTestCompleted = fun _ -> ()
+          EmitTestRunStarted = fun _ -> ()
+          EmitTestProgress = fun _ -> ()
+          EmitTestRunCompleted = fun _ -> ()
           EmitCommandCompleted = fun _ -> ()
           RegisterCommand = registerCommand
           TaskCache = None
@@ -75,7 +77,7 @@ let ``registered plugin skips unsubscribed events`` () =
           Init = 0
           Update = fun _ctx state _event -> async { return state + 1 }
           Commands = [ "get-count", fun state _args -> async { return $"%d{state}" } ]
-          Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeTestCompleted ]
+          Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeTestRunCompleted ]
           CacheKey = None
           Teardown = None }
 
@@ -297,7 +299,9 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
               ClearErrors = fun _ _ -> ()
               ClearPlugin = fun _ -> ()
               EmitBuildCompleted = fun _ -> ()
-              EmitTestCompleted = fun _ -> ()
+              EmitTestRunStarted = fun _ -> ()
+              EmitTestProgress = fun _ -> ()
+              EmitTestRunCompleted = fun _ -> ()
               EmitCommandCompleted = fun _ -> ()
               RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd
               TaskCache = None
