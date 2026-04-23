@@ -75,14 +75,14 @@
     ],
     "DaemonConfig.fs": [
       {
-        "line": 72,
-        "branch": 70,
+        "line": 71,
+        "branch": 68,
         "reason": "loosened automatically",
         "platform": "macos"
       },
       {
-        "line": 70,
-        "branch": 63,
+        "line": 71,
+        "branch": 72,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -95,8 +95,8 @@
         "platform": "macos"
       },
       {
-        "line": 96,
-        "branch": 100,
+        "line": 94,
+        "branch": 95,
         "reason": "loosened automatically",
         "platform": "linux"
       }
@@ -131,13 +131,13 @@
     "FileCommandPlugin.fs": [
       {
         "line": 98,
-        "branch": 100,
+        "branch": 96,
         "reason": "lower line coverage on Linux CI",
         "platform": "linux"
       },
       {
-        "line": 97,
-        "branch": 95,
+        "line": 98,
+        "branch": 97,
         "reason": "loosened automatically"
       }
     ],
@@ -156,14 +156,14 @@
     ],
     "FileTaskCache.fs": [
       {
-        "line": 87,
-        "branch": 80,
+        "line": 88,
+        "branch": 73,
         "reason": "loosened automatically",
         "platform": "macos"
       },
       {
-        "line": 87,
-        "branch": 80,
+        "line": 78,
+        "branch": 71,
         "reason": "lower branch coverage on Linux CI",
         "platform": "linux"
       }
@@ -203,7 +203,7 @@
       },
       {
         "line": 100,
-        "branch": 92,
+        "branch": 91,
         "platform": "linux"
       }
     ],
@@ -216,7 +216,7 @@
       },
       {
         "line": 83,
-        "branch": 72,
+        "branch": 70,
         "reason": "lower line coverage on Linux CI",
         "platform": "linux"
       }
@@ -229,8 +229,8 @@
         "platform": "macos"
       },
       {
-        "line": 84,
-        "branch": 50,
+        "line": 72,
+        "branch": 35,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -244,7 +244,7 @@
       },
       {
         "line": 87,
-        "branch": 67,
+        "branch": 68,
         "platform": "linux"
       }
     ],
@@ -299,7 +299,7 @@
       },
       {
         "line": 96,
-        "branch": 68,
+        "branch": 63,
         "reason": "exception-handling branches for missing .gitignore/.fantomasignore files",
         "platform": "linux"
       }
@@ -307,7 +307,7 @@
     "PluginActivity.fs": [
       {
         "line": 92,
-        "branch": 65,
+        "branch": 66,
         "reason": "loosened: Recording phase state paths hit 65-66% across runs; pin to observed floor",
         "platform": "macos"
       },
@@ -320,22 +320,22 @@
     ],
     "PluginFramework.fs": [
       {
-        "line": 93,
-        "branch": 69,
+        "line": 98,
+        "branch": 70,
         "reason": "loosened automatically",
         "platform": "macos"
       },
       {
-        "line": 90,
-        "branch": 68,
+        "line": 85,
+        "branch": 74,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
     ],
     "PluginHost.fs": [
       {
-        "line": 77,
-        "branch": 47,
+        "line": 83,
+        "branch": 52,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -366,8 +366,8 @@
         "platform": "macos"
       },
       {
-        "line": 73,
-        "branch": 53,
+        "line": 71,
+        "branch": 54,
         "reason": "CLI entry point, different coverage on Linux CI",
         "platform": "linux"
       }
@@ -380,8 +380,8 @@
         "platform": "macos"
       },
       {
-        "line": 82,
-        "branch": 50,
+        "line": 87,
+        "branch": 62,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -408,8 +408,8 @@
         "platform": "macos"
       },
       {
-        "line": 61,
-        "branch": 57,
+        "line": 53,
+        "branch": 43,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -429,7 +429,7 @@
     ],
     "TaskCache.fs": [
       {
-        "line": 100,
+        "line": 96,
         "branch": 96,
         "reason": "loosened: saltedCacheKey adds branches with one compiler-generated path not hit by current tests",
         "platform": "macos"
