@@ -158,18 +158,21 @@ let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<str
 /// Handles beforeRun, coverageArgs, process execution, result storage.
 /// rawFilter is a passthrough filter string (from run-tests command), bypassing the template.
 ///
-/// Emission contract: when `emitPartial` is provided, it's invoked once per test
-/// group as that group completes, with a cumulative snapshot of every project
-/// that has finished across ALL groups so far. The final emission thus equals the
-/// full result map — consumers of TestCompleted can treat the last emission
-/// identically to a batch-end emission.
+/// Emission contract (when `ctx` is Some):
+///   1. `TestRunStarted` once, before any group begins.
+///   2. `TestProgress` once per group as it completes, carrying only that
+///      group's projects as a delta.
+///   3. `TestRunCompleted` once, after all groups finish, carrying the full
+///      cumulative Results plus an Outcome.
+/// All three share a single RunId generated at the start of the run.
+/// When `ctx` is None (e.g. invoked from a one-off command), no lifecycle
+/// events fire; the caller just gets back the final TestResults.
 let private executeTests
     (ctx: PluginCtx<'msg> option)
     (repoRoot: string)
     (beforeRun: (unit -> unit) option)
     (coverageArgs: (string -> string) option)
     (afterRun: (TestResults -> unit) option)
-    (emitPartial: (TestResults -> unit) option)
     (configs: TestConfig list)
     (affectedClassesByProject: Map<string, string list>)
     (rawFilter: string option)
@@ -177,6 +180,13 @@ let private executeTests
     async {
         Logging.info "test-prune" $"executeTests starting with %d{configs.Length} configs"
         let sw = Stopwatch.StartNew()
+        let runId = Guid.NewGuid()
+
+        ctx
+        |> Option.iter (fun c ->
+            c.EmitTestRunStarted
+                { RunId = runId
+                  StartedAt = DateTime.UtcNow })
 
         match beforeRun with
         | Some setup ->
@@ -187,24 +197,23 @@ let private executeTests
 
         let groups = configs |> List.groupBy (fun c -> c.Group)
 
-        // Shared accumulator: each group folds its results in on completion and
-        // emits a cumulative snapshot under the lock so concurrent group
-        // completions produce a strict prefix-chain of snapshots.
-        let accumulator = ResizeArray<string * TestResult>()
+        // Cumulative results built up as groups complete. Mutable under a lock
+        // so concurrent group completions see a consistent prefix-chain. Per-
+        // group deltas are emitted via TestProgress; the final cumulative is
+        // carried by TestRunCompleted (and returned to non-daemon callers).
+        let mutable cumulative: Map<string, TestResult> = Map.empty
         let accumulatorLock = obj ()
 
         let foldAndEmit (groupOutput: (string * TestResult) list) =
             lock accumulatorLock (fun () ->
-                accumulator.AddRange(groupOutput)
+                for (k, v) in groupOutput do
+                    cumulative <- Map.add k v cumulative
 
-                match emitPartial with
-                | Some emit ->
-                    let snapshot =
-                        { Results = accumulator |> Seq.toList |> Map.ofList
-                          Elapsed = sw.Elapsed }
-
-                    emit snapshot
-                | None -> ())
+                ctx
+                |> Option.iter (fun c ->
+                    c.EmitTestProgress
+                        { RunId = runId
+                          NewResults = Map.ofList groupOutput }))
 
         let! groupResults =
             groups
@@ -314,13 +323,28 @@ let private executeTests
                 })
             |> Async.Parallel
 
-        let groupResults = groupResults |> Array.toList |> List.collect id
-
+        // groupResults is the per-group return values; we ignore it because
+        // `cumulative` (populated under the lock inside foldAndEmit) is the
+        // canonical run-wide aggregate.
+        groupResults |> ignore
         sw.Stop()
 
+        let finalResults = lock accumulatorLock (fun () -> cumulative)
+
         let testResults =
-            { Results = groupResults |> Map.ofList
+            { Results = finalResults
               Elapsed = sw.Elapsed }
+
+        // Outcome = Normal means the run completed naturally. Per-project
+        // pass/fail lives in Results; Aborted is reserved for cancellation,
+        // timeouts, or crashes (none wired through this path today).
+        ctx
+        |> Option.iter (fun c ->
+            c.EmitTestRunCompleted
+                { RunId = runId
+                  TotalElapsed = sw.Elapsed
+                  Outcome = Normal
+                  Results = finalResults })
 
         match afterRun with
         | Some hook -> hook testResults
@@ -509,7 +533,21 @@ let create
                         { Results = Map.empty
                           Elapsed = TimeSpan.Zero }
 
-                    ctx.EmitTestCompleted(skipResults)
+                    // Emit a degenerate lifecycle (Started → Completed with empty
+                    // Results) so downstream subscribers see a coherent run even
+                    // when no tests actually executed.
+                    let runId = Guid.NewGuid()
+
+                    ctx.EmitTestRunStarted
+                        { RunId = runId
+                          StartedAt = DateTime.UtcNow }
+
+                    ctx.EmitTestRunCompleted
+                        { RunId = runId
+                          TotalElapsed = TimeSpan.Zero
+                          Outcome = Normal
+                          Results = Map.empty }
+
                     ctx.ClearAllErrors()
                     ctx.Post(TestsFinished skipResults)
                 else
@@ -520,20 +558,10 @@ let create
                             Logging.info "test-prune" $"Affected classes for %s{proj}: %A{classes}"
 
                     let! results =
-                        executeTests
-                            (Some ctx)
-                            repoRoot
-                            beforeRun
-                            coverageArgs
-                            afterRun
-                            (Some ctx.EmitTestCompleted)
-                            configs
-                            affectedByProject
-                            None
+                        executeTests (Some ctx) repoRoot beforeRun coverageArgs afterRun configs affectedByProject None
 
-                    // executeTests emits TestCompleted progressively, once per
-                    // group on completion (the last emission is equivalent to
-                    // the full-batch emit). No explicit final emit needed.
+                    // executeTests emits TestRunStarted → TestProgress × N → TestRunCompleted
+                    // internally; no further lifecycle emits needed here.
 
                     let allPassed =
                         results.Results
@@ -551,7 +579,20 @@ let create
             with ex ->
                 Logging.error "test-prune" $"runTests failed: %s{ex.Message}"
 
-                // Post a dummy failed result so we transition back to idle
+                // Emit an Aborted lifecycle so subscribers see a coherent end
+                // to this run rather than hanging at TestRunStarted.
+                let runId = Guid.NewGuid()
+
+                ctx.EmitTestRunStarted
+                    { RunId = runId
+                      StartedAt = DateTime.UtcNow }
+
+                ctx.EmitTestRunCompleted
+                    { RunId = runId
+                      TotalElapsed = TimeSpan.Zero
+                      Outcome = Aborted ex.Message
+                      Results = Map.empty }
+
                 let failResult =
                     { Results = Map.empty
                       Elapsed = TimeSpan.Zero }
@@ -673,7 +714,6 @@ let create
                                                 beforeRun
                                                 coverageArgs
                                                 afterRun
-                                                None
                                                 configs
                                                 Map.empty
                                                 filter

@@ -15,19 +15,20 @@ type CommandResult =
 type FileCommandState =
     {
         LastResult: CommandResult
-        /// Identity of the most recent TestResults snapshot the afterTests
-        /// branch has already fired for. Progressive emission can send
-        /// multiple TestCompleted events that all satisfy the filter (e.g.
-        /// cumulative emissions after the condition first becomes true); we
-        /// only want to run the command once per batch. A batch is identified
-        /// by the set of project names seen so far — once that set grows to
-        /// include every listed project, subsequent emissions that still
-        /// satisfy the filter share a superset of that key and are skipped.
-        LastAfterTestsKey: Set<string> option
+        /// RunId of the most recent test run whose afterTests filter triggered this
+        /// plugin. Compared against incoming events' RunId to dedupe — at most one
+        /// fire per run. Naturally resets when a new run with a different RunId
+        /// arrives; no superset heuristics or batch-boundary detection required.
+        LastFiredRunId: Guid option
+        /// Per-run local accumulation of project results, keyed by the RunId it
+        /// belongs to. Reset implicitly when a new RunId's first progress arrives.
+        /// Used to evaluate `TestProjects` filters against the cumulative view
+        /// without depending on the event carrying cumulative state itself.
+        RunAccumulator: (Guid * Map<string, TestResult>) option
     }
 
-/// Filter for afterTests trigger — either fire on any TestCompleted event,
-/// or only when the supplied project names appear in the results.
+/// Filter for afterTests trigger — either fire on any completed test run,
+/// or only when all supplied project names have completed.
 type TestFilter =
     | AnyTest
     | TestProjects of Set<string>
@@ -44,19 +45,27 @@ module CommandTrigger =
         [ if t.FilePattern.IsSome then
               SubscribeFileChanged
           if t.AfterTests.IsSome then
-              SubscribeTestCompleted ]
+              SubscribeTestProgress
+              SubscribeTestRunCompleted ]
         |> Set.ofList
 
-    let matchesTestResults (filter: TestFilter) (results: TestResults) : bool =
+    let matches (filter: TestFilter) (results: Map<string, TestResult>) : bool =
         match filter with
-        | AnyTest -> not results.Results.IsEmpty
-        // "all listed projects completed" — since TestPrune emits TestCompleted
-        // progressively (a cumulative prefix-chain per group), this condition
-        // goes from false → true exactly once per batch, on the first emission
-        // that carries every listed project. Plugin-side idempotency (LastResult
-        // check in Update) ensures the command runs once even though subsequent
-        // emissions still satisfy the predicate.
-        | TestProjects names -> names |> Set.forall (fun n -> Map.containsKey n results.Results)
+        | AnyTest -> not results.IsEmpty
+        | TestProjects names -> names |> Set.forall (fun n -> Map.containsKey n results)
+
+/// Why a FileCommandPlugin invocation was triggered. Used as a structured
+/// source for the subtask key passed to the daemon's activity log so that
+/// concurrent invocations of the same plugin (e.g. two rapid file changes,
+/// or a file change immediately followed by a test run) don't collide.
+type private TriggerReason =
+    | FileMatched of firstFile: string
+    | TestsCompleted
+
+let private subtaskKey (nameStr: string) (reason: TriggerReason) : string =
+    match reason with
+    | FileMatched file -> $"{nameStr}:{System.IO.Path.GetFileName file}"
+    | TestsCompleted -> $"{nameStr}:tests-completed"
 
 /// Creates a framework plugin handler that runs a command in response to the configured trigger(s).
 let create
@@ -70,8 +79,10 @@ let create
 
     /// Run the command and return the resulting CommandResult. Callers merge
     /// this into the full plugin state so runCommand stays agnostic of
-    /// trigger-specific fields like LastAfterTestsKey.
-    let runCommand (ctx: PluginCtx<unit>) (triggerKey: string) : Async<CommandResult> =
+    /// trigger-specific fields.
+    let runCommand (ctx: PluginCtx<unit>) (reason: TriggerReason) : Async<CommandResult> =
+        let triggerKey = subtaskKey nameStr reason
+
         async {
             ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
@@ -117,10 +128,32 @@ let create
                     })
         }
 
+    /// Try to fire the command against a run-wide results view. Dedups on RunId
+    /// so at most one fire per run; the caller supplies whichever results view
+    /// is relevant (cumulative for progress, final for completion).
+    let tryFire
+        (ctx: PluginCtx<unit>)
+        (state: FileCommandState)
+        (runId: Guid)
+        (results: Map<string, TestResult>)
+        : Async<FileCommandState> =
+        async {
+            match trigger.AfterTests with
+            | Some filter when state.LastFiredRunId <> Some runId && CommandTrigger.matches filter results ->
+                let! result = runCommand ctx TestsCompleted
+
+                return
+                    { state with
+                        LastResult = result
+                        LastFiredRunId = Some runId }
+            | _ -> return state
+        }
+
     { Name = name
       Init =
         { LastResult = NeverRun
-          LastAfterTestsKey = None }
+          LastFiredRunId = None
+          RunAccumulator = None }
       Update =
         fun ctx state event ->
             async {
@@ -137,61 +170,31 @@ let create
 
                         let matching = files |> List.filter fileFilter
 
-                        if List.isEmpty matching then
-                            return state
-                        else
-                            let triggerKey =
-                                match matching with
-                                | [] -> $"{nameStr}:startup"
-                                | first :: _ -> $"{nameStr}:{System.IO.Path.GetFileName first}"
-
-                            let! result = runCommand ctx triggerKey
+                        match matching with
+                        | [] -> return state
+                        | first :: _ ->
+                            let! result = runCommand ctx (FileMatched first)
                             return { state with LastResult = result }
-                | TestCompleted results ->
-                    match trigger.AfterTests with
-                    | None -> return state
-                    | Some filter ->
-                        let currentKey = results.Results |> Map.toSeq |> Seq.map fst |> Set.ofSeq
 
-                        // Progressive emission can deliver multiple TestCompleted
-                        // events within one batch (each a cumulative prefix-chain
-                        // snapshot) and repeat those batches run after run. We
-                        // want to fire at most once per batch — specifically, on
-                        // the first emission whose project set satisfies the
-                        // filter — and fire again the next time a fresh batch
-                        // reaches the filter-satisfying set.
-                        //
-                        // Batch boundary detection: if the incoming snapshot is
-                        // NOT a superset of the last project set we fired for,
-                        // a new batch has started (its cumulative emissions
-                        // restart with a smaller prefix). Clear the sentinel so
-                        // the upcoming full-satisfying emission can fire.
-                        let freshBatch =
-                            match state.LastAfterTestsKey with
-                            | Some prev when not (Set.isSubset prev currentKey) -> true
-                            | _ -> false
+                | TestProgress progress ->
+                    let accumulated =
+                        match state.RunAccumulator with
+                        | Some(prevRunId, acc) when prevRunId = progress.RunId ->
+                            progress.NewResults |> Map.fold (fun a k v -> Map.add k v a) acc
+                        | _ -> progress.NewResults
 
-                        let carriedKey = if freshBatch then None else state.LastAfterTestsKey
+                    let! state' = tryFire ctx state progress.RunId accumulated
 
-                        if not (CommandTrigger.matchesTestResults filter results) then
-                            return
-                                { state with
-                                    LastAfterTestsKey = carriedKey }
-                        else
-                            match carriedKey with
-                            | Some _ ->
-                                // Same batch, already fired — skip.
-                                return
-                                    { state with
-                                        LastAfterTestsKey = carriedKey }
-                            | None ->
-                                let triggerKey = $"{nameStr}:tests-completed"
-                                let! result = runCommand ctx triggerKey
+                    return
+                        { state' with
+                            RunAccumulator = Some(progress.RunId, accumulated) }
 
-                                return
-                                    { state with
-                                        LastResult = result
-                                        LastAfterTestsKey = Some currentKey }
+                | TestRunCompleted completed ->
+                    // TestRunCompleted always carries the full cumulative Results,
+                    // so cache-hit replays (which skip TestProgress) still fire the
+                    // command correctly. Same dedupe semantics.
+                    return! tryFire ctx state completed.RunId completed.Results
+
                 | _ -> return state
             }
       Commands =
