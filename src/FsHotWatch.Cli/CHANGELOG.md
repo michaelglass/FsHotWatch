@@ -4,6 +4,15 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+### Removed
+- **BREAKING:** `coverage` config block no longer accepted. Coverage enforcement now flows through `fileCommands` with `afterTests`, invoking an external CLI (e.g. `coverageratchet`).
+- `FsHotWatch.Coverage` project dependency (retired).
+- `runOnStart` field on `fileCommands` entries (see FsHotWatch.FileCommand CHANGELOG).
+
+### Changed
+- `fileCommands` entries accept `name` (string) and `afterTests` (`true` or string list) fields. An entry must set at least one of `pattern` / `afterTests`; entries with `afterTests` must have an explicit `name`.
+- Coverage output directory is now configured via `tests.coverageDir` (default `"coverage"`). Previously lived on the removed top-level `coverage.directory`. Per-project opt-out via `tests.projects[].coverage = false` unchanged.
+
 - chore: bump upstream tool versions
 
 ## 0.8.0-alpha.8 (2026-04-22)

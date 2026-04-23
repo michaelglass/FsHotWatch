@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+- `afterTests` trigger — fileCommand entries can now run on `TestCompleted` events, optionally filtered by a list of test project names.
+- Required `name` field for entries whose primary trigger is `afterTests`.
+
+### Changed
+- **BREAKING:** `FileCommandPlugin.create` now takes a `CommandTrigger` record (`FilePattern` + `AfterTests`) instead of `fileFilter` + `runOnStart`. Callers registering directly against the plugin API must migrate.
+- `afterTests` list-form semantics: the plugin now fires iff **every** listed project appears in the `TestResults.Results` map (previously "any"). Combined with TestPrune's progressive cumulative `TestCompleted` emission (see FsHotWatch.TestPrune CHANGELOG), this means the command fires exactly once per batch — on the first cumulative emission that covers every listed project — so a hanging non-listed project (e.g. integration tests) never blocks it. Internal `FileCommandState` gains a `LastAfterTestsKey` sentinel to suppress re-firing on later cumulative emissions within the same batch.
+
+### Removed
+- `runOnStart` config/API field. Use an explicit trigger (e.g. `afterTests: true`) or schedule initialization another way.
+
 - chore: bump upstream tool versions
 
 ## 0.5.0-alpha.1 (2026-04-12)
