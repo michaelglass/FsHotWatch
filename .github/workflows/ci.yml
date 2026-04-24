@@ -31,3 +31,6 @@ jobs:
         jj --version
         jj git init --colocate
         git clone --depth 1 https://github.com/michaelglass/TestPrune.git ../TestPrune
+        # Restore the sibling ProjectReference explicitly — the reusable build
+        # workflow only restores FsHotWatch.slnx, which doesn't list TestPrune.Core.
+        dotnet restore ../TestPrune/src/TestPrune.Core/TestPrune.Core.fsproj
