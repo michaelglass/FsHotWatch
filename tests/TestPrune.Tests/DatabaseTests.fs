@@ -2219,3 +2219,123 @@ module ``Edge source provenance`` =
             db.RebuildProjects([ standardGraph ])
             let sources = db.QueryEdgeSourcesForTest([ "Domain.TypeC" ])
             test <@ sources = [ "core" ] @>)
+
+module ``Schema v5: ParentLinks integration`` =
+
+    // Regression: the FsHotWatch daemon crashed with SQLite Error 1:
+    // 'no such column: parent_symbol_id' after running RebuildProjects
+    // multiple times with real analyzer output. Individual RebuildProjects
+    // calls with ParentLinks must succeed, and repeated calls on the same
+    // Database instance must not corrupt or lose the parent_symbol_id column.
+
+    [<Fact>]
+    let ``RebuildProjects with non-empty ParentLinks succeeds on a fresh DB`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "M.Foo"
+                        Kind = Type
+                        SourceFile = "Foo.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "M.Foo.bar"
+                        Kind = Function
+                        SourceFile = "Foo.fs"
+                        LineStart = 4
+                        LineEnd = 6
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks =
+                    [ { Child = "M.Foo.bar"
+                        Parent = "M.Foo" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+            let parents = db.GetParentLinksInFile "Foo.fs"
+            test <@ parents |> List.exists (fun p -> p.Child = "M.Foo.bar" && p.Parent = "M.Foo") @>)
+
+    [<Fact>]
+    let ``multiple RebuildProjects calls with ParentLinks preserve the parent_symbol_id column`` () =
+        withDb (fun db ->
+            // Mimic the daemon pattern: several per-file analyses flushed
+            // in one RebuildProjects batch, then another batch, repeat.
+            let mkResult file parent child =
+                { Symbols =
+                    [ { FullName = parent
+                        Kind = Type
+                        SourceFile = file
+                        LineStart = 1
+                        LineEnd = 20
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = child
+                        Kind = Function
+                        SourceFile = file
+                        LineStart = 2
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = [ { Child = child; Parent = parent } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            for i in 1..5 do
+                let file = sprintf "F%d.fs" i
+                let parent = sprintf "M.T%d" i
+                let child = sprintf "M.T%d.m%d" i i
+                db.RebuildProjects([ mkResult file parent child ])
+
+            // All 5 parent links should be readable.
+            for i in 1..5 do
+                let links = db.GetParentLinksInFile(sprintf "F%d.fs" i)
+                test <@ links.Length = 1 @>)
+
+    [<Fact>]
+    let ``reopening the DB file preserves the parent_symbol_id column`` () =
+        withDbPath (fun path db1 ->
+            let result =
+                { Symbols =
+                    [ { FullName = "M.T"
+                        Kind = Type
+                        SourceFile = "T.fs"
+                        LineStart = 1
+                        LineEnd = 10
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies = []
+                  TestMethods = []
+                  Attributes = []
+                  ParentLinks = []
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db1.RebuildProjects([ result ])
+
+            // Second Database instance on the same file — what happens to
+            // stale WAL / shm journals? This is what fshotwatch daemon does on
+            // restart.
+            let db2 = Database.create path
+
+            let resultWithLinks =
+                { result with
+                    Symbols =
+                        result.Symbols
+                        @ [ { FullName = "M.T.m"
+                              Kind = Function
+                              SourceFile = "T.fs"
+                              LineStart = 2
+                              LineEnd = 4
+                              ContentHash = ""
+                              IsExtern = false } ]
+                    ParentLinks = [ { Child = "M.T.m"; Parent = "M.T" } ] }
+
+            db2.RebuildProjects([ resultWithLinks ])
+
+            let parents = db2.GetParentLinksInFile "T.fs"
+            test <@ parents |> List.exists (fun p -> p.Child = "M.T.m") @>)
