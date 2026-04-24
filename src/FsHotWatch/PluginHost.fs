@@ -93,6 +93,8 @@ type PluginHost
               TaskCache = taskCache
               StartSubtask =
                 fun name key label -> activity.StartSubtask(PluginFramework.PluginName.value name, key, label)
+              UpdateSubtask =
+                fun name key label -> activity.UpdateSubtask(PluginFramework.PluginName.value name, key, label)
               EndSubtask = fun name key -> activity.EndSubtask(PluginFramework.PluginName.value name, key)
               Log =
                 fun name msg ->
@@ -188,6 +190,9 @@ type PluginHost
     member _.StartSubtask(pluginName: string, key: string, label: string) =
         activity.StartSubtask(pluginName, key, label)
 
+    member _.UpdateSubtask(pluginName: string, key: string, label: string) =
+        activity.UpdateSubtask(pluginName, key, label)
+
     member _.EndSubtask(pluginName: string, key: string) = activity.EndSubtask(pluginName, key)
 
     /// Append an activity log line and route to Logging.info.
@@ -205,6 +210,9 @@ type PluginHost
         { new PluginActivity.IActivitySink with
             member _.StartSubtask(key, label) =
                 this.StartSubtask(pluginName, key, label)
+
+            member _.UpdateSubtask(key, label) =
+                this.UpdateSubtask(pluginName, key, label)
 
             member _.EndSubtask(key) = this.EndSubtask(pluginName, key)
             member _.Log(msg) = this.LogActivity(pluginName, msg)

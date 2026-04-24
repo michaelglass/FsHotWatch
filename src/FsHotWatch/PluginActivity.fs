@@ -13,6 +13,7 @@ let FcsPluginName = "fcs"
 [<NoComparison; NoEquality>]
 type IActivitySink =
     abstract StartSubtask: key: string * label: string -> unit
+    abstract UpdateSubtask: key: string * label: string -> unit
     abstract EndSubtask: key: string -> unit
     abstract Log: message: string -> unit
     abstract SetSummary: summary: string -> unit
@@ -152,6 +153,24 @@ type State() =
 
                 r.Subtasks.[key] <- t
                 addBytes p (subtaskBytes t))
+
+        if totalBytes > maxTotalBytes then
+            enforceGlobalCap ()
+
+    member _.UpdateSubtask(plugin: string, key: string, label: string) : unit =
+        let p = getOrCreate plugin
+
+        lock p.Gate (fun () ->
+            match p.Phase with
+            | Recording r ->
+                match r.Subtasks.TryGetValue key with
+                | true, t ->
+                    addBytes p (-(subtaskBytes t))
+                    let updated = { t with Label = label }
+                    r.Subtasks.[key] <- updated
+                    addBytes p (subtaskBytes updated)
+                | _ -> ()
+            | Idle -> ())
 
         if totalBytes > maxTotalBytes then
             enforceGlobalCap ()
