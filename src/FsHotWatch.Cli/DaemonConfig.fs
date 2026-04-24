@@ -510,6 +510,18 @@ let watchConfigFile (configPath: string) (onChange: string -> unit) : IDisposabl
     watcher.EnableRaisingEvents <- true
     watcher :> IDisposable
 
+/// Watch `.fs-hot-watch.json` at `repoRoot` if it exists, otherwise return a
+/// no-op disposable. Keeps the `start` call-site tidy and gives tests a
+/// direct entry point.
+let watchRepoConfigFile (repoRoot: string) (onChange: string -> unit) : IDisposable =
+    let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
+
+    if File.Exists configPath then
+        watchConfigFile configPath onChange
+    else
+        { new IDisposable with
+            member _.Dispose() = () }
+
 /// Load config, mapping ConfigError to an (exitCode, message) pair suitable for CLI use.
 /// Returns Ok cfg on success, Error (2, msg) on ConfigError. Keeps the daemon startup
 /// path simple and testable without `exit`.
