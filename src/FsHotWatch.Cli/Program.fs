@@ -45,6 +45,8 @@ module WaitMode =
         | true, Some s when s <= 0 -> Error "--timeout must be a positive number of seconds"
         | true, Some s -> Ok(WaitMode.WaitFor(TimeSpan.FromSeconds(float s)))
 
+type ConfigCommand = | [<Cmd("Validate .fs-hot-watch.json without starting the daemon")>] Check
+
 type Command =
     | [<Cmd("Start the daemon")>] Start
     | [<Cmd("Stop the daemon")>] Stop
@@ -60,6 +62,7 @@ type Command =
     | [<Cmd("Scan for file changes")>] Scan of ScanFlag list
     | [<Cmd("Force a plugin to re-run, clearing its cached state")>] Rerun of pluginName: string
     | [<Cmd("Generate initial config")>] Init
+    | [<Cmd("Configuration commands")>] Config of ConfigCommand
     | [<Cmd("Install fish completions")>] Completions
 
 type GlobalFlag =
@@ -724,6 +727,11 @@ let executeCommand
 
         RunOnceOutput.runOnceAndReport (renderBlock mode (not noWarnFail)) noWarnFail createDaemon repoRoot config None
     | Check flags -> queryPluginWith (mode) ""
+    | Config ConfigCommand.Check ->
+        // If we reached here, loadConfigOrExit already succeeded in main, so the
+        // config is valid. Report how many plugins would register.
+        printfn "config: OK (%d plugins configured)" (countPlugins config)
+        0
     | Completions ->
         FishCompletions.writeToFile commandTree cliName
         eprintfn "%s" $"%s{Color.green}✓%s{Color.reset} Fish completions installed"

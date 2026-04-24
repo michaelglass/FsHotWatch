@@ -444,6 +444,20 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
         | ConfigError _ as e -> raise e
         | ex -> raise (ConfigError $".fs-hot-watch.json: %s{ex.Message}")
 
+/// Count the plugins that would be registered for a given configuration.
+/// Used by `fs-hot-watch config check` to report how many plugins are configured.
+let countPlugins (config: DaemonConfiguration) : int =
+    let buildCount =
+        match config.Build with
+        | Some builds -> List.length builds
+        | None -> 0
+
+    let lintCount = if config.Lint then 1 else 0
+    let analyzerCount = if config.Analyzers.IsSome then 1 else 0
+    let testsCount = if config.Tests.IsSome then 1 else 0
+    let fcCount = List.length config.FileCommands
+    buildCount + lintCount + analyzerCount + testsCount + fcCount
+
 /// Load config, mapping ConfigError to an (exitCode, message) pair suitable for CLI use.
 /// Returns Ok cfg on success, Error (2, msg) on ConfigError. Keeps the daemon startup
 /// path simple and testable without `exit`.
