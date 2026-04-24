@@ -551,6 +551,42 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
             return remainingSuppressed
     }
 
+/// Format elapsed as human-readable "5m 3s" / "45s" / "1h 12m". Public so
+/// consumers + tests can share the same cadence.
+let formatElapsed (ts: System.TimeSpan) =
+    if ts.TotalHours >= 1.0 then
+        $"%d{int ts.TotalHours}h %d{ts.Minutes}m"
+    elif ts.TotalMinutes >= 1.0 then
+        $"%d{int ts.TotalMinutes}m %d{ts.Seconds}s"
+    else
+        $"%d{ts.Seconds}s"
+
+/// Pure formatter for "Waiting for plugins" log line. Includes plugin elapsed
+/// time + each active subtask's label + elapsed, so a stuck daemon is
+/// diagnosable from a single log line.
+///
+/// Example output: `test-prune (25m 12s) [Intelligence.Tests.Unit 12m 3s, Intelligence.Tests.Database 10m 1s]`
+let formatPluginWait
+    (now: System.DateTime)
+    (pluginName: string)
+    (since: System.DateTime)
+    (subtasks: (string * System.DateTime) list)
+    : string =
+    let elapsed = formatElapsed (now - since)
+
+    let subtaskPart =
+        match subtasks with
+        | [] -> ""
+        | ts ->
+            let joined =
+                ts
+                |> List.map (fun (label, startedAt) -> $"%s{label} %s{formatElapsed (now - startedAt)}")
+                |> String.concat ", "
+
+            $" [%s{joined}]"
+
+    $"%s{pluginName} (%s{elapsed}){subtaskPart}"
+
 /// Wait for all plugins to reach a terminal state with 1-second stability confirmation.
 /// Times out with TimeoutException after the specified timeout.
 let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) () : Task<unit> =
@@ -565,11 +601,21 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
     let mutable lastLogTime = System.DateTime.UtcNow
 
     let getRunningPlugins () =
+        let now = System.DateTime.UtcNow
+
         host.GetAllStatuses()
         |> Map.toList
         |> List.choose (fun (name, s) ->
             match s with
-            | Running since -> Some $"%s{name} (since %O{since})"
+            | Running since ->
+                let subtasks =
+                    try
+                        host.GetActivitySnapshot(name).Subtasks
+                        |> List.map (fun t -> t.Key, t.StartedAt)
+                    with _ ->
+                        []
+
+                Some(formatPluginWait now name since subtasks)
             | _ -> None)
 
     let logRunningPlugins () =
