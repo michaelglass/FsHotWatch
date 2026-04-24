@@ -205,3 +205,21 @@ let ``watcher detects file changes in src directory`` () =
     probeUntilEvent srcDir (fun () -> changes.Length >= 1) 60000
     test <@ changes.Length >= 1 @>
     Directory.Delete(tmpDir, true)
+
+// === Unit tests for isRelevantFileOrExtra ===
+
+[<Fact(Timeout = 5000)>]
+let ``isRelevantFileOrExtra accepts built-in extensions with no extras`` () =
+    test <@ isRelevantFileOrExtra [] "/repo/src/Lib.fs" @>
+
+[<Fact(Timeout = 5000)>]
+let ``isRelevantFileOrExtra accepts files matching extra suffix`` () =
+    test <@ isRelevantFileOrExtra [ ".ratchet.json" ] "/repo/coverage.ratchet.json" @>
+
+[<Fact(Timeout = 5000)>]
+let ``isRelevantFileOrExtra rejects files not matching extras or built-ins`` () =
+    test <@ not (isRelevantFileOrExtra [ ".ratchet.json" ] "/repo/Program.cs") @>
+
+[<Fact(Timeout = 5000)>]
+let ``isRelevantFileOrExtra rejects extra-matching files in obj directory`` () =
+    test <@ not (isRelevantFileOrExtra [ ".ratchet.json" ] "/repo/obj/Debug/config.ratchet.json") @>
