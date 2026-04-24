@@ -468,6 +468,20 @@ let executeCommand
                 e.Cancel <- true
                 cts.Cancel())
 
+            // Stop the daemon cleanly if `.fs-hot-watch.json` is edited. The
+            // user then runs the daemon again to pick up the new config (or
+            // sees the error if the edit was invalid). No hot-reload.
+            let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
+
+            use _configWatcher =
+                if File.Exists configPath then
+                    watchConfigFile configPath (fun reason ->
+                        FsHotWatch.Logging.info "config" reason
+                        cts.Cancel())
+                else
+                    { new IDisposable with
+                        member _.Dispose() = () }
+
             try
                 Async.RunSynchronously(daemon.RunWithIpc(pipeName, cts))
             with :? OperationCanceledException ->
