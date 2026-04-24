@@ -172,7 +172,8 @@ let ``plugin with testConfigs subscribes to OnBuildCompleted`` () =
             Group = "default"
             Environment = []
             FilterTemplate = None
-            ClassJoin = " " } ]
+            ClassJoin = " "
+            TimeoutSec = None } ]
 
     let handler = create ":memory:" "/tmp" (Some configs) None None None None None
     host.RegisterHandler(handler)
@@ -202,7 +203,8 @@ let ``extension is invoked via AnalyzeEdges during test run`` () =
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -237,7 +239,8 @@ let ``extension error is caught and does not crash plugin`` () =
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -328,7 +331,8 @@ let ``FileChecked does not report Completed when testConfigs are provided (error
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -421,7 +425,8 @@ let ``plugin reports Running status on FileChecked after tests complete`` () =
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None None
@@ -476,7 +481,8 @@ let ``run-tests command runs all projects and returns results`` () =
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None None
@@ -500,14 +506,16 @@ let ``run-tests with project filter runs only named project`` () =
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " }
+                ClassJoin = " "
+                TimeoutSec = None }
               { Project = "Beta"
                 Command = "echo"
                 Args = "beta"
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None None
@@ -531,14 +539,16 @@ let ``run-tests with only-failed reruns failed projects`` () =
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " }
+                ClassJoin = " "
+                TimeoutSec = None }
               { Project = "Fails"
                 Command = "false"
                 Args = ""
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None None
@@ -613,7 +623,8 @@ let ``test failures are reported to error ledger`` () =
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None None
@@ -637,7 +648,8 @@ let ``test errors are cleared when all tests pass`` () =
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None None
@@ -738,7 +750,8 @@ let ``FileChecked reports Completed when testConfigs provided (analysis done, aw
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
@@ -833,7 +846,8 @@ let beta () = ()
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let handler = create dbPath tmpDir (Some testConfigs) None None None None None
         host.RegisterHandler(handler)
@@ -913,7 +927,8 @@ let computeTest () =
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let handler = create dbPath tmpDir (Some testConfigs) None None None None None
         host.RegisterHandler(handler)
@@ -1027,7 +1042,8 @@ let ``cross-file type change only runs affected test classes`` () =
                 Group = "default"
                 Environment = []
                 FilterTemplate = Some "-- --filter-class {classes}"
-                ClassJoin = "|" } ]
+                ClassJoin = "|"
+                TimeoutSec = None } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
@@ -1182,7 +1198,8 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None None
@@ -1313,7 +1330,8 @@ let ``BuildCompleted queries affected tests after flush`` () =
                 Group = "default"
                 Environment = []
                 FilterTemplate = Some "-- --filter-class {classes}"
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None None
@@ -1340,7 +1358,8 @@ let ``skip tests when 0 affected classes and not cold start`` () =
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -1452,7 +1471,8 @@ let ``buildFilterArgs returns None when no classes for project`` () =
           Group = "default"
           Environment = []
           FilterTemplate = Some "-- --filter-class {classes}"
-          ClassJoin = "|" }
+          ClassJoin = "|"
+          TimeoutSec = None }
 
     let result = buildFilterArgs config Map.empty
     test <@ result = None @>
@@ -1466,7 +1486,8 @@ let ``buildFilterArgs returns None when no FilterTemplate configured`` () =
           Group = "default"
           Environment = []
           FilterTemplate = None
-          ClassJoin = "|" }
+          ClassJoin = "|"
+          TimeoutSec = None }
 
     let classesByProject = Map.ofList [ "TestProj", [ "TestClassA"; "TestClassB" ] ]
     let result = buildFilterArgs config classesByProject
@@ -1481,7 +1502,8 @@ let ``buildFilterArgs applies template with ClassJoin`` () =
           Group = "default"
           Environment = []
           FilterTemplate = Some "-- --filter-class {classes}"
-          ClassJoin = "|" }
+          ClassJoin = "|"
+          TimeoutSec = None }
 
     let classesByProject = Map.ofList [ "TestProj", [ "ClassA"; "ClassB" ] ]
     let result = buildFilterArgs config classesByProject
@@ -1496,7 +1518,8 @@ let ``buildFilterArgs applies template with default space join`` () =
           Group = "default"
           Environment = []
           FilterTemplate = Some "-- --filter-class {classes}"
-          ClassJoin = " " }
+          ClassJoin = " "
+          TimeoutSec = None }
 
     let classesByProject = Map.ofList [ "TestProj", [ "ClassA"; "ClassB" ] ]
     let result = buildFilterArgs config classesByProject
@@ -1511,7 +1534,8 @@ let ``buildFilterArgs ignores classes from other projects`` () =
           Group = "default"
           Environment = []
           FilterTemplate = Some "-- --filter-class {classes}"
-          ClassJoin = "|" }
+          ClassJoin = "|"
+          TimeoutSec = None }
 
     let classesByProject =
         Map.ofList [ "TestProjA", [ "ClassA" ]; "TestProjB", [ "ClassB" ] ]
@@ -1606,21 +1630,24 @@ let ``executeTests emits a TestProgress per group as groups finish`` () =
                 Group = "fast-a"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " }
+                ClassJoin = " "
+                TimeoutSec = None }
               { Project = "ProjFastB"
                 Command = "echo"
                 Args = "b"
                 Group = "fast-b"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " }
+                ClassJoin = " "
+                TimeoutSec = None }
               { Project = "ProjSlow"
                 Command = "sleep"
                 Args = "2"
                 Group = "slow"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
 
@@ -1684,7 +1711,8 @@ let ``full run (no filter) produces TestResult with WasFiltered = false`` () =
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let handler = create dbPath tmpDir (Some configs) None None None None None

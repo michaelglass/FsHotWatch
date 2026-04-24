@@ -20,7 +20,8 @@ let private fakeConfig: DaemonConfiguration =
       Tests = None
       FileCommands = []
       Exclude = []
-      LogDir = "logs" }
+      LogDir = "logs"
+      TimeoutSec = None }
 
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }

@@ -66,7 +66,8 @@ let generateConfig (projectPaths: string list) (hasJj: bool) : DaemonConfigurati
                       Environment = []
                       FilterTemplate = Some "--filter-class {classes}"
                       ClassJoin = " "
-                      Coverage = true }
+                      Coverage = true
+                      TimeoutSec = None }
             | SourceProject _ -> None)
 
     { Build =
@@ -74,7 +75,8 @@ let generateConfig (projectPaths: string list) (hasJj: bool) : DaemonConfigurati
             [ {| Command = "dotnet"
                  Args = "build"
                  BuildTemplate = None
-                 DependsOn = [] |} ]
+                 DependsOn = []
+                 TimeoutSec = None |} ]
       Format = Auto
       Lint = true
       Cache = if hasJj then JjFileBackend else FileBackend
@@ -90,7 +92,8 @@ let generateConfig (projectPaths: string list) (hasJj: bool) : DaemonConfigurati
                    CoverageDir = "coverage" |}
       FileCommands = []
       Exclude = []
-      LogDir = "logs" }
+      LogDir = "logs"
+      TimeoutSec = None }
 
 /// Serialize a DaemonConfiguration to a pretty-printed JSON string.
 let serializeConfig (config: DaemonConfiguration) : string =
