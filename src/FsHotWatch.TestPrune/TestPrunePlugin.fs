@@ -57,10 +57,22 @@ let buildCoverageArgs (paths: CoveragePaths) (wasFiltered: bool) : string =
 /// - Filtered run with baseline: merge per-line max, emit cobertura. Keep
 ///   partial.json on disk for debugging.
 let processCoverageOutput (paths: CoveragePaths) (wasFiltered: bool) : unit =
+    // Coverlet's JSON shape can drift across versions. Empty parsed data from
+    // a non-empty file is the warning signal — emit a log so silent coverage
+    // collapse is at least visible in the daemon log.
+    let parseAndCheck path =
+        let raw = File.ReadAllText(path)
+        let data = CoverageMerge.parse raw
+
+        if Map.isEmpty data && raw.Trim().Length > 0 then
+            Logging.warn "test-prune" $"coverage: parsed 0 entries from %s{path} (coverlet schema drift?)"
+
+        data
+
     try
         if not wasFiltered then
             if File.Exists(paths.BaselineJson) then
-                let baseline = CoverageMerge.parse (File.ReadAllText(paths.BaselineJson))
+                let baseline = parseAndCheck paths.BaselineJson
                 let xml = CoverageMerge.toCobertura baseline
                 File.WriteAllText(paths.Cobertura, xml)
 
@@ -73,8 +85,8 @@ let processCoverageOutput (paths: CoveragePaths) (wasFiltered: bool) : unit =
             // that prompts the user to run a full test).
             Logging.info "test-prune" "coverage: skipping cobertura emit (no baseline — run a full test first)"
         else if File.Exists(paths.PartialJson) then
-            let baseline = CoverageMerge.parse (File.ReadAllText(paths.BaselineJson))
-            let partial = CoverageMerge.parse (File.ReadAllText(paths.PartialJson))
+            let baseline = parseAndCheck paths.BaselineJson
+            let partial = parseAndCheck paths.PartialJson
             let merged = CoverageMerge.mergePerLineMax baseline partial
             let xml = CoverageMerge.toCobertura merged
             File.WriteAllText(paths.Cobertura, xml)

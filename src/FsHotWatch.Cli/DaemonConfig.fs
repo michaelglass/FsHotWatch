@@ -660,9 +660,15 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
 
                     Some
                         { FsHotWatch.TestPrune.TestPrunePlugin.CoveragePaths.BaselineJson =
-                            Path.GetFullPath(Path.Combine(outputDir, "coverage.baseline.json"))
-                          PartialJson = Path.GetFullPath(Path.Combine(outputDir, "coverage.partial.json"))
-                          Cobertura = Path.GetFullPath(Path.Combine(outputDir, "coverage.cobertura.xml")) })
+                            Path.GetFullPath(
+                                Path.Combine(outputDir, FsHotWatch.TestPrune.CoverageMerge.BaselineJsonName)
+                            )
+                          PartialJson =
+                            Path.GetFullPath(
+                                Path.Combine(outputDir, FsHotWatch.TestPrune.CoverageMerge.PartialJsonName)
+                            )
+                          Cobertura =
+                            Path.GetFullPath(Path.Combine(outputDir, FsHotWatch.TestPrune.CoverageMerge.CoberturaName)) })
 
         // Extension factories — invoked by the plugin with its own DB, so the
         // RouteStore/SymbolStore an extension captures is guaranteed to be the
