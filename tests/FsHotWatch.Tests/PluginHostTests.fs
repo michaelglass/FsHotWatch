@@ -706,3 +706,23 @@ let ``HasFailingReasons distinguishes warnings from errors`` () =
     let errorsOnly = host.FailingReasons(warningsAreFailures = false)
     test <@ errorsOnly.Count = 1 @>
     test <@ errorsOnly.ContainsKey "/src/B.fs" @>
+
+// --- FileCommand pattern registry ---
+
+[<Fact(Timeout = 5000)>]
+let ``RegisterFileCommandPattern stores pattern retrievable by name`` () =
+    let host = PluginHost.create nullChecker "/tmp"
+    host.RegisterFileCommandPattern("coverage-ratchet", "*.ratchet.json")
+    test <@ host.GetFileCommandPattern("coverage-ratchet") = Some "*.ratchet.json" @>
+
+[<Fact(Timeout = 5000)>]
+let ``GetFileCommandPattern returns None for unregistered plugin`` () =
+    let host = PluginHost.create nullChecker "/tmp"
+    test <@ host.GetFileCommandPattern("nonexistent") = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``RegisterFileCommandPattern overwrites on re-register`` () =
+    let host = PluginHost.create nullChecker "/tmp"
+    host.RegisterFileCommandPattern("plugin-a", "*.ratchet.json")
+    host.RegisterFileCommandPattern("plugin-a", "coverage-ratchet.json")
+    test <@ host.GetFileCommandPattern("plugin-a") = Some "coverage-ratchet.json" @>
