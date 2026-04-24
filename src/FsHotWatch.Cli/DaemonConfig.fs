@@ -636,28 +636,33 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
 
         let beforeRun = t.BeforeRun |> Option.map (makeShellHook "beforeRun" true repoRoot)
 
-        // Coverage args — generate Cobertura XML per test project (respecting per-project opt-out)
+        // Coverage paths — resolve per-project artifact locations (respecting per-project opt-out).
+        // TestPrune itself decides whether a given run writes baseline.json or partial.json
+        // and performs the merge step; this function only exposes the three paths per project.
         let coverageExcludedProjects =
             t.Projects
             |> List.filter (fun p -> not p.Coverage)
             |> List.map (fun p -> p.Project)
             |> Set.ofList
 
-        // Coverage XML is emitted under <repoRoot>/<tests.coverageDir>/<project>/
+        // Coverage artifacts live under <repoRoot>/<tests.coverageDir>/<project>/
         // so external coverage tools (e.g. coverageratchet invoked via a
-        // fileCommands afterTests entry) can read it. The output directory is
-        // configurable via `tests.coverageDir` (default `"coverage"`).
-        // Per-project opt-out is honored via `coverageExcludedProjects`.
-        let coverageArgs =
+        // fileCommands afterTests entry) can read the cobertura output. The
+        // output directory is configurable via `tests.coverageDir` (default
+        // `"coverage"`). Per-project opt-out is honored via `coverageExcludedProjects`.
+        let coveragePaths =
             Some(fun (project: string) ->
                 if coverageExcludedProjects.Contains(project) then
-                    ""
+                    None
                 else
                     let outputDir = Path.Combine(repoRoot, t.CoverageDir, project)
                     Directory.CreateDirectory(outputDir) |> ignore
-                    let outputPath = Path.GetFullPath(Path.Combine(outputDir, "coverage.cobertura.xml"))
 
-                    $"--coverage --coverage-output-format cobertura --coverage-output \"%s{outputPath}\"")
+                    Some
+                        { FsHotWatch.TestPrune.TestPrunePlugin.CoveragePaths.BaselineJson =
+                            Path.GetFullPath(Path.Combine(outputDir, "coverage.baseline.json"))
+                          PartialJson = Path.GetFullPath(Path.Combine(outputDir, "coverage.partial.json"))
+                          Cobertura = Path.GetFullPath(Path.Combine(outputDir, "coverage.cobertura.xml")) })
 
         // Extension factories — invoked by the plugin with its own DB, so the
         // RouteStore/SymbolStore an extension captures is guaranteed to be the
@@ -688,7 +693,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"
 
         let handler =
-            create dbPath repoRoot (Some testConfigs) buildExtensions beforeRun None coverageArgs getCommitId
+            create dbPath repoRoot (Some testConfigs) buildExtensions beforeRun None coveragePaths getCommitId
 
         daemon.RegisterHandler(handler)
     | None -> ()
