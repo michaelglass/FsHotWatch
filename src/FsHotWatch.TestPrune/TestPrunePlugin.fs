@@ -572,7 +572,13 @@ let internal looksLikeSchemaDrift (ex: exn) =
 let internal tryRepairSchemaDrift (dbPath: string) (ex: exn) =
     if looksLikeSchemaDrift ex && File.Exists dbPath then
         try
-            File.Delete dbPath
+            // Delegate to TestPrune.Core — it owns the SQLite-sidecar
+            // invariant. Deleting only the main file leaves stale `-wal` /
+            // `-shm` sidecars that SQLite may try to "recover" against a
+            // freshly created empty DB, producing a 0-byte main DB with no
+            // tables — every subsequent INSERT then hits "no such column:
+            // <name>".
+            TestPrune.Database.deleteCacheFiles dbPath
 
             Logging.warn
                 "test-prune"
