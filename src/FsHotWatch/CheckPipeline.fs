@@ -20,6 +20,7 @@ let private cancelAndDispose (cts: CancellationTokenSource) =
 let private noopSink =
     { new PluginActivity.IActivitySink with
         member _.StartSubtask(_, _) = ()
+        member _.UpdateSubtask(_, _) = ()
         member _.EndSubtask _ = ()
         member _.Log _ = ()
         member _.SetSummary _ = () }
