@@ -847,3 +847,37 @@ let ``loadConfigOrExit returns Error 2 for malformed config with .fs-hot-watch.j
         | Error(code, msg) ->
             test <@ code = 2 @>
             Assert.Contains(".fs-hot-watch.json", msg))
+
+// --- countPlugins ---
+
+[<Fact(Timeout = 5000)>]
+let ``countPlugins counts build lint analyzers tests and fileCommands`` () =
+    let cfg =
+        { defaults with
+            Lint = true
+            Analyzers = Some {| Paths = [ "some/path" ] |}
+            Tests =
+                Some
+                    {| BeforeRun = None
+                       Extensions = []
+                       Projects = []
+                       CoverageDir = "coverage" |}
+            FileCommands =
+                [ {| PluginName = "a"
+                     Pattern = Some "*.md"
+                     AfterTests = None
+                     Command = "echo"
+                     Args = "" |}
+                  {| PluginName = "b"
+                     Pattern = Some "*.fsx"
+                     AfterTests = None
+                     Command = "echo"
+                     Args = "" |} ] }
+
+    // build(1) + lint(1) + analyzers(1) + tests(1) + 2 fileCommands = 6
+    test <@ countPlugins cfg = 6 @>
+
+[<Fact(Timeout = 5000)>]
+let ``countPlugins returns 0 for stripped config`` () =
+    let cfg = stripConfig { defaults with Lint = false }
+    test <@ countPlugins cfg = 0 @>
