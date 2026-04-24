@@ -735,7 +735,7 @@ let ``registerPlugins with build config registers build plugin`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
         let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ]) []
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ]) [] []
 
         let config =
             { stripConfig defaults with
@@ -751,7 +751,7 @@ let ``registerPlugins with stripped config does not register build plugin`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
         let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ]) []
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ]) [] []
 
         let config = stripConfig defaults
         registerPlugins daemon tmpDir config
