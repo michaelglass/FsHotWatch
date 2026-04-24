@@ -23,3 +23,24 @@ let ``runProcessWithTimeout returns normally when fast`` () =
 
     Assert.True success
     Assert.Equal("hi", output.Trim())
+
+[<Fact(Timeout = 10000)>]
+let ``runWithTimeout returns Ok when work completes in time`` () =
+    let result = runWithTimeout (TimeSpan.FromSeconds 1.0) (fun () -> 42)
+    Assert.Equal(Ok 42, result)
+
+[<Fact(Timeout = 10000)>]
+let ``runWithTimeout returns Error TimedOut when work exceeds timeout`` () =
+    let result =
+        runWithTimeout (TimeSpan.FromMilliseconds 50.0) (fun () ->
+            System.Threading.Thread.Sleep 1000
+            42)
+
+    match result with
+    | Error msg -> Assert.Contains("timed out", msg.ToLowerInvariant())
+    | Ok _ -> Assert.Fail "expected timeout"
+
+[<Fact(Timeout = 10000)>]
+let ``runWithTimeout with InfiniteTimeSpan never times out`` () =
+    let result = runWithTimeout System.Threading.Timeout.InfiniteTimeSpan (fun () -> 7)
+    Assert.Equal(Ok 7, result)
