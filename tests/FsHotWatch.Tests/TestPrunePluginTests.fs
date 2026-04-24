@@ -1704,3 +1704,85 @@ let ``full run (no filter) produces TestResult with WasFiltered = false`` () =
             | TestsPassed(_, wasFiltered) -> test <@ wasFiltered = false @>
             | TestsFailed(_, wasFiltered) -> test <@ wasFiltered = false @>
         | None -> Assert.Fail("ProjA not in Results"))
+
+// ---------------------------------------------------------------------------
+// Coverage path selection + post-test merge step. Pure helpers — tested
+// directly against the filesystem with pre-seeded JSON fixtures so we don't
+// need a real coverlet run.
+// ---------------------------------------------------------------------------
+
+open FsHotWatch.TestPrune
+
+[<Fact>]
+let ``buildCoverageArgs picks baseline.json on full run and partial.json on filtered run`` () =
+    let paths: CoveragePaths =
+        { BaselineJson = "/tmp/cov/baseline.json"
+          PartialJson = "/tmp/cov/partial.json"
+          Cobertura = "/tmp/cov/coverage.cobertura.xml" }
+
+    let full = buildCoverageArgs paths false
+    test <@ full.Contains("baseline.json") @>
+    test <@ not (full.Contains("partial.json")) @>
+    test <@ full.Contains("--coverage-output-format json") @>
+
+    let partial = buildCoverageArgs paths true
+    test <@ partial.Contains("partial.json") @>
+    test <@ not (partial.Contains("baseline.json")) @>
+
+[<Fact>]
+let ``processCoverageOutput on full run converts baseline.json to cobertura.xml and deletes partial.json`` () =
+    withTempDir "cov-full" (fun dir ->
+        let paths: CoveragePaths =
+            { BaselineJson = Path.Combine(dir, "coverage.baseline.json")
+              PartialJson = Path.Combine(dir, "coverage.partial.json")
+              Cobertura = Path.Combine(dir, "coverage.cobertura.xml") }
+
+        File.WriteAllText(paths.BaselineJson, """{"Foo.dll":{"Foo.fs":{"10":1,"11":0}}}""")
+        File.WriteAllText(paths.PartialJson, """{"Foo.dll":{"Foo.fs":{"10":5}}}""")
+
+        processCoverageOutput paths false
+
+        test <@ File.Exists(paths.Cobertura) @>
+        test <@ not (File.Exists(paths.PartialJson)) @>
+
+        let xml = File.ReadAllText(paths.Cobertura)
+        // baseline has 1-covered-of-2 → 0.5
+        test <@ xml.Contains("line-rate=\"0.5\"") @>)
+
+[<Fact>]
+let ``processCoverageOutput on filtered run without baseline skips cobertura emission (bootstrap)`` () =
+    withTempDir "cov-bootstrap" (fun dir ->
+        let paths: CoveragePaths =
+            { BaselineJson = Path.Combine(dir, "coverage.baseline.json")
+              PartialJson = Path.Combine(dir, "coverage.partial.json")
+              Cobertura = Path.Combine(dir, "coverage.cobertura.xml") }
+
+        File.WriteAllText(paths.PartialJson, """{"Foo.dll":{"Foo.fs":{"10":1}}}""")
+
+        processCoverageOutput paths true
+
+        test <@ not (File.Exists(paths.Cobertura)) @>
+        // partial is preserved for debugging
+        test <@ File.Exists(paths.PartialJson) @>)
+
+[<Fact>]
+let ``processCoverageOutput on filtered run with baseline merges per-line max into cobertura`` () =
+    withTempDir "cov-merge" (fun dir ->
+        let paths: CoveragePaths =
+            { BaselineJson = Path.Combine(dir, "coverage.baseline.json")
+              PartialJson = Path.Combine(dir, "coverage.partial.json")
+              Cobertura = Path.Combine(dir, "coverage.cobertura.xml") }
+
+        // Baseline says line 10 covered (1 hit), line 11 not covered.
+        File.WriteAllText(paths.BaselineJson, """{"Foo.dll":{"Foo.fs":{"10":1,"11":0}}}""")
+        // Partial says line 10 not covered (filtered run missed it), line 11 covered.
+        File.WriteAllText(paths.PartialJson, """{"Foo.dll":{"Foo.fs":{"10":0,"11":2}}}""")
+
+        processCoverageOutput paths true
+
+        test <@ File.Exists(paths.Cobertura) @>
+        // Merge keeps max: line 10 still 1, line 11 now 2 — both covered → 1.0.
+        let xml = File.ReadAllText(paths.Cobertura)
+        test <@ xml.Contains("line-rate=\"1\"") @>
+        // partial preserved for debugging
+        test <@ File.Exists(paths.PartialJson) @>)
