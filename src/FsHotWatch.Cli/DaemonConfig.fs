@@ -620,7 +620,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         daemon.RegisterPreprocessor(FsHotWatch.Fantomas.FormatCheckPlugin.FormatPreprocessor())
     | Check ->
         Logging.info "config" "Registering FormatCheckPlugin (read-only)"
-        daemon.RegisterHandler(FsHotWatch.Fantomas.FormatCheckPlugin.createFormatCheck getCommitId)
+        daemon.RegisterHandler(FsHotWatch.Fantomas.FormatCheckPlugin.createFormatCheck getCommitId config.TimeoutSec)
     | Off -> ()
 
     // Lint plugin
