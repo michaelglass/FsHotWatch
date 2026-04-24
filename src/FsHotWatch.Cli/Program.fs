@@ -794,7 +794,15 @@ let main args =
         match globalSpec.Parse args with
         | Ok(globals, command) ->
             let opts = applyGlobalFlags globals
-            let config = loadConfig repoRoot
+
+            let config =
+                match loadConfigOrExit repoRoot with
+                | Ok cfg -> cfg
+                | Error(code, msg) ->
+                    eprintfn $"fs-hot-watch: config error: %s{msg}"
+                    exit code
+                    Unchecked.defaultof<_>
+
             let cacheConfig = if opts.NoCache then DaemonConfig.NoCache else config.Cache
             let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
 
