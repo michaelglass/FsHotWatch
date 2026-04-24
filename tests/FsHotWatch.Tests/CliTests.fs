@@ -167,6 +167,77 @@ let ``parse rerun <name> returns Rerun`` () =
     test <@ CommandTree.parse tree [| "rerun"; "coverage-ratchet" |] = Ok(Rerun "coverage-ratchet") @>
 
 [<Fact(Timeout = 5000)>]
+let ``parse coverage refresh-baseline returns Coverage RefreshBaseline`` () =
+    test
+        <@
+            CommandTree.parse tree [| "coverage"; "refresh-baseline" |] = Ok(
+                FsHotWatch.Cli.Program.Coverage FsHotWatch.Cli.Program.RefreshBaseline
+            )
+        @>
+
+[<Fact(Timeout = 5000)>]
+let ``refreshCoverageBaseline deletes baseline.json and partial.json across configured projects`` () =
+    let tmp = Path.Combine(Path.GetTempPath(), $"fshw-cov-refresh-{Guid.NewGuid():N}")
+
+    Directory.CreateDirectory(tmp) |> ignore
+
+    try
+        let makeProj (name: string) (cov: bool) : TestProjectConfig =
+            { Project = name
+              Command = "dotnet"
+              Args = "test"
+              Group = "default"
+              Environment = []
+              FilterTemplate = None
+              ClassJoin = " "
+              Coverage = cov }
+
+        let covDir = "coverage"
+
+        let writeFiles proj =
+            let d = Path.Combine(tmp, covDir, proj)
+            Directory.CreateDirectory(d) |> ignore
+            File.WriteAllText(Path.Combine(d, "coverage.baseline.json"), "{}")
+            File.WriteAllText(Path.Combine(d, "coverage.partial.json"), "{}")
+            File.WriteAllText(Path.Combine(d, "coverage.cobertura.xml"), "<coverage/>")
+
+        writeFiles "ProjA"
+        writeFiles "ProjB"
+        writeFiles "ProjOptOut"
+
+        let config: DaemonConfiguration =
+            { Build = None
+              Format = FormatMode.Off
+              Lint = false
+              Cache = CacheBackendConfig.NoCache
+              Analyzers = None
+              Tests =
+                Some
+                    {| BeforeRun = None
+                       Extensions = []
+                       Projects = [ makeProj "ProjA" true; makeProj "ProjB" true; makeProj "ProjOptOut" false ]
+                       CoverageDir = covDir |}
+              FileCommands = []
+              Exclude = []
+              LogDir = "logs" }
+
+        let deleted = FsHotWatch.Cli.Program.refreshCoverageBaseline tmp config
+        // 4 files total: 2 projects × (baseline + partial)
+        test <@ deleted.Length = 4 @>
+
+        // Cobertura stays (not baseline/partial)
+        test <@ File.Exists(Path.Combine(tmp, covDir, "ProjA", "coverage.cobertura.xml")) @>
+        // Both flavors gone for opted-in projects
+        test <@ not (File.Exists(Path.Combine(tmp, covDir, "ProjA", "coverage.baseline.json"))) @>
+        test <@ not (File.Exists(Path.Combine(tmp, covDir, "ProjA", "coverage.partial.json"))) @>
+        test <@ not (File.Exists(Path.Combine(tmp, covDir, "ProjB", "coverage.baseline.json"))) @>
+        // Opt-out project is untouched
+        test <@ File.Exists(Path.Combine(tmp, covDir, "ProjOptOut", "coverage.baseline.json")) @>
+    finally
+        if Directory.Exists tmp then
+            Directory.Delete(tmp, true)
+
+[<Fact(Timeout = 5000)>]
 let ``parse init returns Init`` () =
     test <@ CommandTree.parse tree [| "init" |] = Ok Init @>
 
