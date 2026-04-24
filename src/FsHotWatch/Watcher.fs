@@ -53,17 +53,24 @@ let internal isRelevantFile (path: string) =
 
     isRelevantExt && not (PathFilter.isGeneratedPath path)
 
-/// Like `isRelevantFile`, but also accepts files whose path ends with any
-/// of the provided suffixes. Used by FileCommandPlugin patterns that match
-/// non-source files (e.g. `.ratchet.json` config files).
-let internal isRelevantFileOrExtra (extraSuffixes: string list) (path: string) =
+/// Match a file path against a FileCommandPlugin pattern.
+///   - Wildcard suffix form (`*.ratchet.json`): matches any path ending with the suffix.
+///   - Literal form (`coverage-ratchet.json`): matches only paths whose filename equals it.
+let matchesPattern (pattern: string) (path: string) =
+    if pattern.StartsWith("*") then
+        let suffix = pattern.Substring(1)
+        path.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
+    else
+        let fileName = Path.GetFileName(path)
+        fileName.Equals(pattern, StringComparison.OrdinalIgnoreCase)
+
+/// Like `isRelevantFile`, but also accepts files matching any of the given
+/// FileCommandPlugin patterns (for non-source extensions like `.ratchet.json`).
+let internal isRelevantFileOrExtra (extraPatterns: string list) (path: string) =
     if isRelevantFile path then
         true
     else
-        let matchesExtra =
-            extraSuffixes
-            |> List.exists (fun s -> path.EndsWith(s, StringComparison.OrdinalIgnoreCase))
-
+        let matchesExtra = extraPatterns |> List.exists (fun p -> matchesPattern p path)
         matchesExtra && not (PathFilter.isGeneratedPath path)
 
 /// Classify a file path as a solution, project, or source change.
@@ -80,17 +87,18 @@ let internal classifyChange (path: string) =
 /// Functions for creating file watchers.
 module FileWatcher =
     /// Create a FileWatcher that monitors src/ and tests/ for F#-relevant file changes,
-    /// plus any files matching `extraSuffixes` (from FileCommandPlugin patterns) across
-    /// the full repo root.
+    /// plus any files matching `extraPatterns` (from FileCommandPlugin patterns) across
+    /// the full repo root. Patterns support both wildcard-suffix form (`*.ratchet.json`)
+    /// and literal filenames (`coverage-ratchet.json`).
     /// Pass isMacOSOverride to force a specific code path (useful for testing).
     let create
         (repoRoot: string)
         (onChange: FileChangeKind -> unit)
         (isMacOSOverride: bool option)
-        (extraSuffixes: string list)
+        (extraPatterns: string list)
         : FileWatcher =
         let handle (path: string) =
-            if isRelevantFileOrExtra extraSuffixes path then
+            if isRelevantFileOrExtra extraPatterns path then
                 onChange (classifyChange path)
 
         let handleFsw (e: FileSystemEventArgs) = handle e.FullPath
@@ -115,17 +123,19 @@ module FileWatcher =
             w.EnableRaisingEvents <- true
             w :> IDisposable
 
-        // Non-source patterns from FileCommandPlugins (e.g. *.ratchet.json). One
-        // recursive FileSystemWatcher per suffix covering the whole repo. Goes
-        // through `handle` so the shared `isRelevantFileOrExtra` + obj/bin
-        // exclusion logic is applied.
+        // Non-source patterns from FileCommandPlugins (e.g. *.ratchet.json or
+        // coverage-ratchet.json). One recursive FileSystemWatcher per pattern
+        // covering the whole repo. The pattern is passed directly as the Filter
+        // glob (.NET FileSystemWatcher handles both wildcard suffixes and literal
+        // filenames). Events still go through `handle` so the shared
+        // `isRelevantFileOrExtra` + obj/bin exclusion logic is applied.
         let extraWatchers =
-            extraSuffixes
-            |> List.map (fun suffix ->
+            extraPatterns
+            |> List.map (fun pattern ->
                 let w = new FileSystemWatcher(repoRoot)
                 w.IncludeSubdirectories <- true
                 w.NotifyFilter <- NotifyFilters.LastWrite ||| NotifyFilters.FileName
-                w.Filter <- $"*%s{suffix}"
+                w.Filter <- pattern
                 w.Changed.Add(handleFsw)
                 w.Created.Add(handleFsw)
                 w.Deleted.Add(handleFsw)
