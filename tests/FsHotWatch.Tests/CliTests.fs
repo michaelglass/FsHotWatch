@@ -530,6 +530,25 @@ let ``executeCommand Stop calls shutdown`` () =
     test <@ called @>
 
 [<Fact(Timeout = 5000)>]
+let ``executeCommand Config Check prints OK and returns 0`` () =
+    let result =
+        executeCommand
+            (fun _ -> Unchecked.defaultof<_>)
+            (fakeIpc ())
+            "/tmp"
+            "pipe"
+            (Config ConfigCommand.Check)
+            defaultGlobalOptions
+            fakeConfig
+            30.0
+
+    test <@ result = 0 @>
+
+[<Fact(Timeout = 5000)>]
+let ``parse config check returns Config ConfigCommand.Check`` () =
+    test <@ CommandTree.parse tree [| "config"; "check" |] = Ok(Config ConfigCommand.Check) @>
+
+[<Fact(Timeout = 5000)>]
 let ``executeCommand Status returns 0`` () =
     let result =
         executeCommand
