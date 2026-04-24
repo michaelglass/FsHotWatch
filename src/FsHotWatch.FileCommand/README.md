@@ -40,18 +40,42 @@ In `.fs-hot-watch.json`:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `pattern` | `string` | `"*.fsx"` | File extension pattern to match (e.g. `"*.fsx"`, `"*.sql"`). |
-| `command` | `string` | `"echo"` | Command to run when a matching file changes. |
+| `name` | `string` | derived from `pattern` | Plugin identifier. Required when `afterTests` is set. |
+| `pattern` | `string` | — | File pattern to match. `*.ext` matches any path ending with `.ext`. A literal filename (e.g. `coverage-ratchet.json`) matches only files with that exact basename. |
+| `afterTests` | `true` or `string[]` | — | Fire after a test run completes. `true` fires on any completed run; an array fires only when all named projects complete. Requires `name`. |
+| `command` | `string` | `"echo"` | Command to run when triggered. |
 | `args` | `string` | `""` | Arguments to the command. |
 
-Each entry in the array creates a separate plugin instance. You can
-have as many file commands as you want.
+At least one of `pattern` or `afterTests` must be specified. Both can
+be set on the same entry — e.g. a coverage ratchet that should re-run
+whenever tests complete OR when its config file changes:
+
+```json
+{
+  "fileCommands": [
+    {
+      "name": "coverage-ratchet",
+      "pattern": "coverage-ratchet.json",
+      "afterTests": true,
+      "command": "dotnet",
+      "args": "tool run coverageratchet"
+    }
+  ]
+}
+```
+
+When `pattern` targets a non-source file (e.g. `*.ratchet.json` or
+`coverage-ratchet.json`), the daemon automatically extends its file
+watcher to cover that pattern so real edits trigger the plugin.
 
 ## CLI
 
 ```bash
-# Check the status of a file command (named by pattern)
-fs-hot-watch file-cmd-*.fsx-status
+# Force a plugin to re-run, clearing its cached state
+fs-hot-watch rerun coverage-ratchet
+
+# Query a plugin's last-run status
+fs-hot-watch coverage-ratchet-status
 ```
 
 ## Programmatic usage
