@@ -736,8 +736,7 @@ let executeCommand
         RunOnceOutput.runOnceAndReport (renderBlock mode (not noWarnFail)) noWarnFail createDaemon repoRoot config None
     | Check flags -> queryPluginWith (mode) ""
     | Config ConfigCommand.Check ->
-        // If we reached here, loadConfigOrExit already succeeded in main, so the
-        // config is valid. Report how many plugins would register.
+        // Config has already been parsed by main; reaching here means it's valid.
         printfn "config: OK (%d plugins configured)" (countPlugins config)
         0
     | Completions ->
