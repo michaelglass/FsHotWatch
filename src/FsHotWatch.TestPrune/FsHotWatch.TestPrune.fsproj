@@ -42,11 +42,11 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.202" PrivateAssets="All" />
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
-    <!-- Temporary: ProjectReference into the sibling TestPrune repo while we
-         consume the in-development [Unreleased] TestPrune.Core (aggregate-type
+    <!-- TODO(testprune-3.1): revert to PackageReference when TestPrune.Core
+         3.1 ships. Temporary ProjectReference into the sibling repo while we
+         consume the in-development [Unreleased] version (aggregate-type
          invalidation, fixture edges, [<Collection>] resolution, Attributes
-         package). Swap back to PackageReference once TestPrune.Core 3.1 ships
-         to NuGet. -->
+         package). -->
     <ProjectReference Include="../../../TestPrune/src/TestPrune.Core/TestPrune.Core.fsproj" />
   </ItemGroup>
 </Project>
