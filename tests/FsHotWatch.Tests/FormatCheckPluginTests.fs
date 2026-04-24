@@ -12,14 +12,44 @@ open FsHotWatch.Tests.TestHelpers
 
 [<Fact(Timeout = 5000)>]
 let ``plugin has correct name`` () =
-    let handler = createFormatCheck None
+    let handler = createFormatCheck None None
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "format-check" @>
+
+[<Fact(Timeout = 10000)>]
+let ``format-check handler times out when formatter exceeds TimeoutSec`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmt-to-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+    let tmpFile = Path.Combine(tmpDir, "Slow.fs")
+    File.WriteAllText(tmpFile, "module Slow")
+
+    try
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let slowHook () = System.Threading.Thread.Sleep 3000
+        let handler = createFormatCheckWithSlowHook None (Some 1) (Some slowHook)
+        host.RegisterHandler(handler)
+
+        host.EmitFileChanged(SourceChanged [ tmpFile ])
+        waitForTerminalStatus host "format-check" 5000
+
+        let snap = host.GetActivitySnapshot("format-check")
+
+        match snap.LastRun with
+        | Some r ->
+            match r.Outcome with
+            | TimedOut _ -> ()
+            | other -> Assert.Fail($"Expected TimedOut, got {other}")
+        | None -> Assert.Fail "Expected LastRun record"
+    finally
+        try
+            Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
 
 [<Fact(Timeout = 5000)>]
 let ``unformatted command returns zero count when no files processed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = createFormatCheck None
+    let handler = createFormatCheck None None
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
@@ -30,7 +60,7 @@ let ``unformatted command returns zero count when no files processed`` () =
 let ``format check handles non-source change events without crashing`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = createFormatCheck None
+    let handler = createFormatCheck None None
     host.RegisterHandler(handler)
 
     // ProjectChanged and SolutionChanged should not crash the plugin
@@ -59,7 +89,7 @@ let ``format check handles non-source change events without crashing`` () =
 let ``format check handles non-existent source file gracefully`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = createFormatCheck None
+    let handler = createFormatCheck None None
     host.RegisterHandler(handler)
 
     // Emit a SourceChanged with a file that doesn't exist — File.Exists check
@@ -175,7 +205,7 @@ let ``format check handles exception gracefully`` () =
 
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-        let handler = createFormatCheck None
+        let handler = createFormatCheck None None
         host.RegisterHandler(handler)
 
         // This should not crash the plugin - errors are caught
@@ -209,7 +239,7 @@ let ``format check detects formatting change even with same commit ID`` () =
         let mockGetCommitId () = Some "fixed-commit-id"
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = createFormatCheck (Some mockGetCommitId)
+        let handler = createFormatCheck (Some mockGetCommitId) None
         host.RegisterHandler(handler)
 
         // First: file is unformatted
@@ -259,7 +289,7 @@ let ``format check reports unformatted files to error ledger`` () =
         File.WriteAllText(file, "module Bad\nlet   x=1\nlet   y   =   2\n")
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = createFormatCheck None
+        let handler = createFormatCheck None None
         host.RegisterHandler(handler)
 
         host.EmitFileChanged(SourceChanged [ file ])
@@ -298,7 +328,7 @@ let ``format check clears errors when file becomes formatted`` () =
         File.WriteAllText(file, "module Fix\nlet   x=1\n")
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = createFormatCheck None
+        let handler = createFormatCheck None None
         host.RegisterHandler(handler)
 
         // First: unformatted

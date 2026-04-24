@@ -8,7 +8,13 @@ open FsHotWatch.Logging
 open FsHotWatch.Plugin
 open FsHotWatch.PluginActivity
 open FsHotWatch.PluginFramework
+open FsHotWatch.ProcessHelper
 open Fantomas.Core
+
+/// Default per-event format-check timeout (seconds). Used when no override is
+/// configured. Chosen to match DaemonConfig.FormatTimeoutDefaultSec.
+[<Literal>]
+let FormatTimeoutDefaultSec = 60
 
 /// Format-on-save preprocessor. Runs before other plugins receive events.
 /// Formats unformatted files and returns the list of files that were rewritten.
@@ -49,11 +55,20 @@ type FormatPreprocessor() =
 /// State for the format-check framework plugin.
 type FormatCheckState = { Unformatted: Set<string> }
 
-/// Read-only format check plugin (reports unformatted files without modifying them).
-/// Use this instead of FormatPreprocessor if you don't want auto-formatting.
-/// Respects .gitignore and .fantomasignore files in the repo root.
-let createFormatCheck (getCommitId: (unit -> string option) option) : PluginHandler<FormatCheckState, unit> =
+/// Internal constructor with a test seam. `slowHook` is invoked inside the
+/// timeout-guarded region before formatting runs so tests can force the
+/// timeout branch. The public `createFormatCheck` passes `None`.
+let internal createFormatCheckWithSlowHook
+    (getCommitId: (unit -> string option) option)
+    (timeoutSec: int option)
+    (slowHook: (unit -> unit) option)
+    : PluginHandler<FormatCheckState, unit> =
     let ignoreCache = FsHotWatch.PathFilter.IgnoreFilterCache()
+
+    let formatTimeout =
+        let secs = defaultArg timeoutSec FormatTimeoutDefaultSec
+        TimeSpan.FromSeconds(float secs)
+
 
     { Name = PluginName.create "format-check"
       Init = { Unformatted = Set.empty }
@@ -75,36 +90,57 @@ let createFormatCheck (getCommitId: (unit -> string option) option) : PluginHand
                     let mutable newUnformatted = state.Unformatted
                     let mutable failed = false
 
+                    let mutable timedOut = false
+
                     for file in files do
-                        if File.Exists(file) && not (isIgnored file) && not failed then
-                            try
+                        if File.Exists(file) && not (isIgnored file) && not failed && not timedOut then
+                            let work () =
+                                match slowHook with
+                                | Some h -> h ()
+                                | None -> ()
+
                                 let source = File.ReadAllText(file)
                                 let isSignature = file.EndsWith(".fsi")
 
                                 let formatted =
                                     CodeFormatter.FormatDocumentAsync(isSignature, source) |> Async.RunSynchronously
 
-                                if formatted.Code <> source then
-                                    newUnformatted <- newUnformatted |> Set.add file
-                                    ctx.Log $"unformatted: {Path.GetFileName file}"
+                                source, formatted
 
-                                    ctx.ReportErrors
-                                        file
-                                        [ { Message = "File is not formatted"
-                                            Severity = FsHotWatch.ErrorLedger.Warning
-                                            Line = 1
-                                            Column = 0
-                                            Detail = None } ]
-                                else
-                                    newUnformatted <- newUnformatted |> Set.remove file
-                                    ctx.ClearErrors file
+                            try
+                                match runWithTimeout formatTimeout work with
+                                | Result.Error reason ->
+                                    Logging.error "format" $"Format check TIMED OUT for %s{file}: %s{reason}"
+
+                                    ctx.CompleteWithTimeout reason
+
+                                    ctx.ReportStatus(
+                                        PluginStatus.Failed($"format check timed out: {reason}", DateTime.UtcNow)
+                                    )
+
+                                    timedOut <- true
+                                | Result.Ok(source, formatted) ->
+                                    if formatted.Code <> source then
+                                        newUnformatted <- newUnformatted |> Set.add file
+                                        ctx.Log $"unformatted: {Path.GetFileName file}"
+
+                                        ctx.ReportErrors
+                                            file
+                                            [ { Message = "File is not formatted"
+                                                Severity = FsHotWatch.ErrorLedger.Warning
+                                                Line = 1
+                                                Column = 0
+                                                Detail = None } ]
+                                    else
+                                        newUnformatted <- newUnformatted |> Set.remove file
+                                        ctx.ClearErrors file
                             with ex ->
                                 ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                                 failed <- true
 
                     ctx.EndSubtask PrimarySubtaskKey
 
-                    if not failed then
+                    if not failed && not timedOut then
                         let summary =
                             if newUnformatted.Count = 0 then
                                 "format OK"
@@ -126,3 +162,15 @@ let createFormatCheck (getCommitId: (unit -> string option) option) : PluginHand
       Subscriptions = Set.ofList [ SubscribeFileChanged ]
       CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId
       Teardown = None }
+
+/// Read-only format check plugin (reports unformatted files without modifying them).
+/// Use this instead of FormatPreprocessor if you don't want auto-formatting.
+/// Respects .gitignore and .fantomasignore files in the repo root.
+/// Per-file format work is wrapped in `runWithTimeout`; on expiry the run is
+/// recorded as `TimedOut` and the orphan work continues running (result
+/// discarded).
+let createFormatCheck
+    (getCommitId: (unit -> string option) option)
+    (timeoutSec: int option)
+    : PluginHandler<FormatCheckState, unit> =
+    createFormatCheckWithSlowHook getCommitId timeoutSec None
