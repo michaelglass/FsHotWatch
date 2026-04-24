@@ -86,7 +86,11 @@ let create
     /// Run the command and return the resulting CommandResult. Callers merge
     /// this into the full plugin state so runCommand stays agnostic of
     /// trigger-specific fields.
-    let runCommand (ctx: PluginCtx<unit>) (reason: TriggerReason) : Async<CommandResult> =
+    let runCommand
+        (ctx: PluginCtx<unit>)
+        (reason: TriggerReason)
+        (extraEnv: (string * string) list)
+        : Async<CommandResult> =
         let triggerKey = subtaskKey nameStr reason
 
         async {
@@ -100,7 +104,7 @@ let create
                     (async {
                         try
                             let (success, output) =
-                                runProcessWithTimeout command args ctx.RepoRoot [] cmdTimeout
+                                runProcessWithTimeout command args ctx.RepoRoot extraEnv cmdTimeout
 
                             let result = if success then Succeeded output else CommandFailed output
 
@@ -149,11 +153,14 @@ let create
         (state: FileCommandState)
         (runId: Guid)
         (results: Map<string, TestResult>)
+        (ranFullSuite: bool)
         : Async<FileCommandState> =
         async {
             match trigger.AfterTests with
             | Some filter when state.LastFiredRunId <> Some runId && CommandTrigger.matches filter results ->
-                let! result = runCommand ctx TestsCompleted
+                let env = [ "FSHW_RAN_FULL_SUITE", (if ranFullSuite then "true" else "false") ]
+
+                let! result = runCommand ctx TestsCompleted env
 
                 return
                     { state with
@@ -186,7 +193,7 @@ let create
                         match matching with
                         | [] -> return state
                         | first :: _ ->
-                            let! result = runCommand ctx (FileMatched first)
+                            let! result = runCommand ctx (FileMatched first) []
                             return { state with LastResult = result }
 
                 | TestProgress progress ->
@@ -196,7 +203,12 @@ let create
                             progress.NewResults |> Map.fold (fun a k v -> Map.add k v a) acc
                         | _ -> progress.NewResults
 
-                    let! state' = tryFire ctx state progress.RunId accumulated
+                    // Mid-run view: derive RanFullSuite from the accumulator.
+                    // An afterTests fire during progress only happens once all
+                    // projects its TestProjects filter names have reported, so
+                    // their wasFiltered values are authoritative by then.
+                    let ranFullSuite = TestResult.ranFullSuite accumulated
+                    let! state' = tryFire ctx state progress.RunId accumulated ranFullSuite
 
                     return
                         { state' with
@@ -206,7 +218,7 @@ let create
                     // TestRunCompleted always carries the full cumulative Results,
                     // so cache-hit replays (which skip TestProgress) still fire the
                     // command correctly. Same dedupe semantics.
-                    return! tryFire ctx state completed.RunId completed.Results
+                    return! tryFire ctx state completed.RunId completed.Results completed.RanFullSuite
 
                 | _ -> return state
             }

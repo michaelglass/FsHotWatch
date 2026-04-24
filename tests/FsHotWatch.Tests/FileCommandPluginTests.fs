@@ -805,3 +805,81 @@ let ``plugin with both pattern and afterTests fires on test completion`` () =
             | Some(Completed _) -> true
             | _ -> false
         @>
+
+// --- FSHW_RAN_FULL_SUITE environment variable ---
+
+let private emitRunCompletedWithRanFullSuite
+    (host: PluginHost)
+    (results: (string * TestResult) list)
+    (ranFullSuite: bool)
+    =
+    host.EmitTestRunCompleted
+        { RunId = System.Guid.NewGuid()
+          TotalElapsed = System.TimeSpan.Zero
+          Outcome = Normal
+          Results = Map.ofList results
+          RanFullSuite = ranFullSuite }
+
+/// Writes a probe script to `dir` that echoes `$FSHW_RAN_FULL_SUITE` into
+/// `outFile`. Returns the script path. The script is marked executable.
+let private writeEnvProbeScript (dir: string) (outFile: string) =
+    let scriptPath = System.IO.Path.Combine(dir, "probe.sh")
+    let script = $"#!/bin/sh\nprintf %%s \"$FSHW_RAN_FULL_SUITE\" > {outFile}\n"
+    System.IO.File.WriteAllText(scriptPath, script)
+
+    System.IO.File.SetUnixFileMode(
+        scriptPath,
+        System.IO.UnixFileMode.UserRead
+        ||| System.IO.UnixFileMode.UserWrite
+        ||| System.IO.UnixFileMode.UserExecute
+    )
+
+    scriptPath
+
+let private runEnvProbe (pluginName: string) (ranFullSuite: bool) : string =
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    System.IO.Directory.CreateDirectory(tmpDir) |> ignore
+    let outFile = System.IO.Path.Combine(tmpDir, "out")
+
+    try
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+        let trigger =
+            { FilePattern = None
+              AfterTests = Some AnyTest }
+
+        let script = writeEnvProbeScript tmpDir outFile
+
+        let handler =
+            create (FsHotWatch.PluginFramework.PluginName.create pluginName) trigger script "" None None
+
+        host.RegisterHandler(handler)
+
+        emitRunCompletedWithRanFullSuite host [ "P", FsHotWatch.Events.TestsPassed("", not ranFullSuite) ] ranFullSuite
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus(pluginName) with
+                | Some(Completed _) -> true
+                | _ -> false)
+            8000
+
+        test <@ System.IO.File.Exists(outFile) @>
+        System.IO.File.ReadAllText(outFile)
+    finally
+        try
+            System.IO.Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 10000)>]
+let ``afterTests command receives FSHW_RAN_FULL_SUITE=true on a full run`` () =
+    let contents = runEnvProbe "env-full" true
+    test <@ contents = "true" @>
+
+[<Fact(Timeout = 10000)>]
+let ``afterTests command receives FSHW_RAN_FULL_SUITE=false on a partial run`` () =
+    let contents = runEnvProbe "env-partial" false
+    test <@ contents = "false" @>
