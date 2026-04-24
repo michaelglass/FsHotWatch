@@ -61,6 +61,23 @@ summary is empty.
 - Per-file `ctx.Log` calls remain useful — they populate the verbose activity
   tail without being promoted to a summary.
 
+### Per-event timeouts
+
+All event-driven plugins — including the in-process `LintPlugin`,
+`AnalyzersPlugin`, and `FormatCheckPlugin` — accept a `timeoutSec: int option`
+on their `create` constructors. When set, per-event work is bounded by
+`ProcessHelper.runWithTimeout`; on expiry the run is recorded as `TimedOut`
+(rendered as ⏱) and the plugin continues with the next event.
+
+**Orphan-task limitation (in-process plugins).** For the three in-process
+plugins above, the timeout is *advisory*: the underlying FCS / FSharpLint /
+Fantomas call is not cancelled, only its result is discarded. Repeated
+timeouts can leak threads under sufficiently broken plugins. A future
+version will plumb `CancellationToken` into FCS / FSharpLint / Fantomas to
+enable real cancellation. Process-spawning plugins (`BuildPlugin`,
+`TestPrunePlugin`, `FileCommandPlugin`) already kill the child process tree
+on expiry via `ProcessHelper.runProcessWithTimeout`.
+
 ## Install
 
 ```bash
