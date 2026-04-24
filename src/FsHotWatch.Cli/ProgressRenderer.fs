@@ -21,6 +21,7 @@ module private Glyph =
     let check = $"%s{Color.green}✓%s{Color.reset}"
     let warn = $"%s{Color.red}⚠%s{Color.reset}"
     let cross = $"%s{Color.red}✗%s{Color.reset}"
+    let timeout = $"%s{Color.red}⏱%s{Color.reset}"
     let ellipsis = $"%s{Color.yellow}…%s{Color.reset}"
     let idle = $"%s{Color.dim}—%s{Color.reset}"
     /// Em-dash used as an inline separator in prose (e.g. "  ✓ build — summary").
@@ -103,7 +104,27 @@ let private renderCompact
                 | None -> TimeSpan.Zero
 
             let timingStr = UI.timing elapsed
-            $"  %s{Glyph.cross} %s{padded} %s{timingStr} %s{Color.dim}{Glyph.sep} %s{short}%s{Color.reset}"
+
+            let isTimedOut =
+                match parsed.LastRun with
+                | Some r ->
+                    match r.Outcome with
+                    | TimedOut _ -> true
+                    | _ -> false
+                | None -> false
+
+            let glyph = if isTimedOut then Glyph.timeout else Glyph.cross
+
+            let label =
+                if isTimedOut then
+                    if String.IsNullOrEmpty short then
+                        "timed out"
+                    else
+                        $"timed out: %s{short}"
+                else
+                    short
+
+            $"  %s{glyph} %s{padded} %s{timingStr} %s{Color.dim}{Glyph.sep} %s{label}%s{Color.reset}"
         | Running since ->
             let elapsed = now - since
             let timingStr = UI.timing elapsed
@@ -149,9 +170,18 @@ let private renderCompact
 // ----- Verbose -----
 
 let private glyphForParsed (warningsAreFailures: bool) (parsed: ParsedPluginStatus) =
+    let isTimedOut () =
+        match parsed.LastRun with
+        | Some r ->
+            match r.Outcome with
+            | TimedOut _ -> true
+            | _ -> false
+        | None -> false
+
     match parsed.Status with
     | Completed _ when DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics -> Glyph.warn
     | Completed _ -> Glyph.check
+    | Failed _ when isTimedOut () -> Glyph.timeout
     | Failed _ -> Glyph.cross
     | Running _ -> Glyph.ellipsis
     | Idle -> Glyph.idle
@@ -289,6 +319,7 @@ module private Agent =
     type State =
         | Ok
         | Fail
+        | TimedOut
         | Warn
         | Running
 
@@ -296,6 +327,7 @@ module private Agent =
         function
         | State.Ok -> "ok"
         | State.Fail -> "fail"
+        | State.TimedOut -> "timed-out"
         | State.Warn -> "warn"
         | State.Running -> "running"
 
@@ -320,8 +352,17 @@ module private Agent =
             else
                 State.Ok
 
+        let timedOutLastRun () =
+            match parsed.LastRun with
+            | Some r ->
+                match r.Outcome with
+                | TimedOut _ -> true
+                | _ -> false
+            | None -> false
+
         match parsed.Status with
         | Running _ -> Some State.Running
+        | Failed _ when timedOutLastRun () -> Some State.TimedOut
         | Failed _ -> Some State.Fail
         | Completed _ -> Some(okOrDiag ())
         | Idle ->
@@ -329,7 +370,7 @@ module private Agent =
             |> Option.map (fun r ->
                 match r.Outcome with
                 | FailedRun _ -> State.Fail
-                | TimedOut _ -> State.Fail
+                | TimedOut _ -> State.TimedOut
                 | CompletedRun -> okOrDiag ())
 
     /// Extract a summary string for non-ok states. None when there's nothing to show.
@@ -357,6 +398,17 @@ module private Agent =
         match state with
         | State.Ok
         | State.Running -> $"%s{name}: %s{tokenOf state}"
+        | State.TimedOut ->
+            let summary =
+                summaryFor parsed |> Option.map escapeSummary |> Option.defaultValue ""
+
+            let display =
+                if summary = "" then
+                    "timed out"
+                else
+                    $"timed out: %s{summary}"
+
+            $"%s{name}: %s{tokenOf state} summary=\"%s{display}\""
         | State.Fail
         | State.Warn ->
             match summaryFor parsed |> Option.map escapeSummary with
@@ -372,7 +424,10 @@ module private Agent =
     /// Callers pass the same map used for per-plugin line rendering.
     let nextStep (warningsAreFailures: bool) (stateByName: Map<string, State>) (activeStates: Set<State>) : string =
         let isFail name =
-            Map.tryFind name stateByName = Some State.Fail
+            match Map.tryFind name stateByName with
+            | Some State.Fail
+            | Some State.TimedOut -> true
+            | _ -> false
 
         if Set.contains State.Running activeStates then
             "next: fs-hot-watch --agent errors --wait"
