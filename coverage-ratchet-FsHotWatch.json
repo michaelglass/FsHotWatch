@@ -3,7 +3,7 @@
     "AnalyzersPlugin.fs": [
       {
         "line": 91,
-        "branch": 72,
+        "branch": 75,
         "reason": "end-to-end FCS analyzer paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor",
         "platform": "macos"
       },
@@ -29,8 +29,8 @@
     ],
     "BuildPlugin.fs": [
       {
-        "line": 96,
-        "branch": 81,
+        "line": 97,
+        "branch": 82,
         "reason": "loosened: shared file isTestFile changes",
         "platform": "macos"
       },
@@ -43,7 +43,7 @@
     ],
     "CheckPipeline.fs": [
       {
-        "line": 89,
+        "line": 90,
         "branch": 66,
         "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor",
         "platform": "macos"
@@ -76,7 +76,7 @@
     "DaemonConfig.fs": [
       {
         "line": 76,
-        "branch": 71,
+        "branch": 73,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -136,7 +136,7 @@
         "platform": "linux"
       },
       {
-        "line": 98,
+        "line": 99,
         "branch": 97,
         "reason": "loosened automatically"
       }
@@ -157,7 +157,7 @@
     "FileTaskCache.fs": [
       {
         "line": 88,
-        "branch": 73,
+        "branch": 74,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -170,7 +170,7 @@
     ],
     "FormatCheckPlugin.fs": [
       {
-        "line": 98,
+        "line": 99,
         "branch": 100,
         "platform": "macos"
       },
@@ -264,7 +264,7 @@
     ],
     "LintPlugin.fs": [
       {
-        "line": 94,
+        "line": 96,
         "branch": 100,
         "reason": "loosened automatically",
         "platform": "macos"
@@ -306,8 +306,8 @@
     ],
     "PluginActivity.fs": [
       {
-        "line": 92,
-        "branch": 65,
+        "line": 97,
+        "branch": 67,
         "reason": "loosened: Recording phase state paths hit 65-66% across runs; pin to observed floor",
         "platform": "macos"
       },
@@ -320,8 +320,8 @@
     ],
     "PluginFramework.fs": [
       {
-        "line": 98,
-        "branch": 70,
+        "line": 99,
+        "branch": 71,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -349,7 +349,7 @@
     "ProcessHelper.fs": [
       {
         "line": 93,
-        "branch": 50,
+        "branch": 70,
         "platform": "macos"
       },
       {
