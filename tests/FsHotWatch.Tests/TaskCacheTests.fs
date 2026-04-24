@@ -441,6 +441,44 @@ let ``FileTaskCache roundtrips cached events`` () =
         test <@ r.Value.EmittedEvents.Length = 3 @>)
 
 [<Fact(Timeout = 5000)>]
+let ``FileTaskCache roundtrips wasFiltered=true and RanFullSuite=false`` () =
+    withTempDir "ftc-filtered" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+
+        let runId = System.Guid.NewGuid()
+
+        let result =
+            { CacheKey = hash "k"
+              Errors = []
+              Status = Completed(at = fixedTime)
+              EmittedEvents =
+                [ CachedTestRunCompleted
+                      { RunId = runId
+                        TotalElapsed = System.TimeSpan.FromSeconds(1.0)
+                        Outcome = Normal
+                        Results = Map.ofList [ "p1", TestsPassed("ok", true); "p2", TestsFailed("bad", true) ]
+                        RanFullSuite = false } ] }
+
+        c.Set (ck "test-prune" "X.fs") (hash "k") result
+
+        let cache2 = FileTaskCache(tmpDir)
+        let r = (cache2 :> ITaskCache).TryGet (ck "test-prune" "X.fs") (hash "k")
+        test <@ r.IsSome @>
+
+        let evt =
+            r.Value.EmittedEvents
+            |> List.tryPick (function
+                | CachedTestRunCompleted e -> Some e
+                | _ -> None)
+
+        test <@ evt.IsSome @>
+        test <@ not evt.Value.RanFullSuite @>
+        let p1 = evt.Value.Results.["p1"]
+        test <@ TestResult.wasFiltered p1 @>
+        test <@ TestResult.isPassed p1 @>)
+
+[<Fact(Timeout = 5000)>]
 let ``FileTaskCache roundtrips error entries with detail`` () =
     withTempDir "ftc-detail" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
