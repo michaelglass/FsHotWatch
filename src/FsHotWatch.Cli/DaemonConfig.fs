@@ -663,6 +663,8 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         for b in builds do
             Logging.info "config" $"Registering BuildPlugin: %s{b.Command} %s{b.Args}"
 
+            let buildTimeout = b.TimeoutSec |> Option.orElse config.TimeoutSec
+
             daemon.RegisterHandler(
                 FsHotWatch.Build.BuildPlugin.create
                     b.Command
@@ -673,6 +675,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                     b.BuildTemplate
                     b.DependsOn
                     getCommitId
+                    buildTimeout
             )
     | _ -> ()
 
@@ -776,6 +779,8 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
 
         Logging.info "config" $"Registering FileCommandPlugin: %s{fc.PluginName} → %s{fc.Command} %s{fc.Args}"
 
+        let fcTimeout = fc.TimeoutSec |> Option.orElse config.TimeoutSec
+
         daemon.RegisterHandler(
             FsHotWatch.FileCommand.FileCommandPlugin.create
                 (FsHotWatch.PluginFramework.PluginName.create fc.PluginName)
@@ -783,6 +788,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                 fc.Command
                 fc.Args
                 getCommitId
+                fcTimeout
         )
 
         // Expose the parsed pattern to the host so the rerun IPC endpoint
