@@ -98,11 +98,12 @@ let create
                             let result = if success then Succeeded output else CommandFailed output
 
                             if success then
-                                ctx.CompleteWithSummary $"ran {nameStr}"
+                                ctx.CompleteWithSummary $"%s{nameStr}: succeeded"
                                 ctx.ClearErrors $"<%s{nameStr}>"
                                 ctx.ReportStatus(Completed(DateTime.UtcNow))
                             else
                                 ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error output ]
+                                ctx.CompleteWithSummary $"%s{nameStr}: failed"
                                 ctx.ReportStatus(PluginStatus.Failed($"%s{nameStr} failed", DateTime.UtcNow))
 
                             ctx.EmitCommandCompleted(
@@ -117,6 +118,7 @@ let create
                             return result
                         with ex ->
                             ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error ex.Message ]
+                            ctx.CompleteWithSummary $"%s{nameStr}: crashed"
                             ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
 
                             ctx.EmitCommandCompleted(
