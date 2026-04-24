@@ -20,14 +20,14 @@ let private fakeResult file : FileCheckResult =
 
 [<Fact(Timeout = 5000)>]
 let ``plugin has correct name`` () =
-    let handler = create [] None
+    let handler = create [] None None
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "analyzers" @>
 
 [<Fact(Timeout = 10000)>]
 let ``diagnostics command returns zeroes when no files checked`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create [] None
+    let handler = create [] None None
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
@@ -40,7 +40,7 @@ let ``diagnostics command returns zeroes when no files checked`` () =
 let ``analyzer error path does not crash`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create [] None
+    let handler = create [] None None
     host.RegisterHandler(handler)
 
     let fakeResult: FileCheckResult =
@@ -72,7 +72,7 @@ let ``analyzer with non-existent path skips loading`` () =
     // Exercise the Directory.Exists false branch
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create [ "/tmp/no-such-analyzer-dir-12345" ] None
+    let handler = create [ "/tmp/no-such-analyzer-dir-12345" ] None None
     host.RegisterHandler(handler)
 
     // No analyzers should be loaded — diagnostics command shows 0 analyzers
@@ -96,6 +96,7 @@ let ``analyzer with mix of valid and invalid paths`` () =
                 [ emptyDir // exists but no analyzer DLLs
                   "/tmp/nonexistent-path-xyz-99999" ] // does not exist
                 None
+                None
 
         host.RegisterHandler(handler)
 
@@ -110,13 +111,13 @@ let ``analyzer with mix of valid and invalid paths`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``concurrent analyzer runs are bounded`` () =
-    let handler = create [] None
+    let handler = create [] None None
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "analyzers" @>
 
 [<Fact(Timeout = 5000)>]
 let ``cache key includes parse-only suffix for ParseOnly results`` () =
     let commitId = "abc123"
-    let handler = create [] (Some(fun () -> Some commitId))
+    let handler = create [] (Some(fun () -> Some commitId)) None
 
     let parseOnlyResult: FileCheckResult =
         { File = "/tmp/Fake.fs"
@@ -144,7 +145,7 @@ let ``cache key includes parse-only suffix for ParseOnly results`` () =
 let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create [] None
+    let handler = create [] None None
     host.RegisterHandler(handler)
 
     let fakeResult: FileCheckResult =
@@ -174,7 +175,7 @@ let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``empty analyzer paths still creates working handler`` () =
-    let handler = create [] None
+    let handler = create [] None None
     test <@ handler.Init.LoadedCount = 0 @>
     test <@ handler.Init.DiagnosticsByFile = Map.empty @>
     test <@ handler.Subscriptions.Contains(FsHotWatch.PluginFramework.SubscribeFileChecked) @>
@@ -183,7 +184,7 @@ let ``empty analyzer paths still creates working handler`` () =
 let ``AnalysisFailed custom message sets status to Completed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create [] None
+    let handler = create [] None None
     host.RegisterHandler(handler)
 
     host.EmitFileChecked(fakeResult "/tmp/test/FailAnalysis.fs")
@@ -199,12 +200,12 @@ let ``AnalysisFailed custom message sets status to Completed`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``cache key is None when getCommitId is None`` () =
-    let handler = create [] None
+    let handler = create [] None None
     test <@ handler.CacheKey.IsNone @>
 
 [<Fact(Timeout = 5000)>]
 let ``cache key returns None when getCommitId returns None`` () =
-    let handler = create [] (Some(fun () -> None))
+    let handler = create [] (Some(fun () -> None)) None
     let cacheKeyFn = handler.CacheKey.Value
 
     let key = cacheKeyFn (FileChecked(fakeResult "/tmp/Fake.fs"))
@@ -213,7 +214,7 @@ let ``cache key returns None when getCommitId returns None`` () =
 [<Fact(Timeout = 5000)>]
 let ``cache key for Custom event returns None`` () =
     let commitId = "commit-xyz"
-    let handler = create [] (Some(fun () -> Some commitId))
+    let handler = create [] (Some(fun () -> Some commitId)) None
     let cacheKeyFn = handler.CacheKey.Value
 
     let customKey = cacheKeyFn (Custom(AnalysisComplete("/tmp/Fake.fs", [])))
@@ -222,7 +223,7 @@ let ``cache key for Custom event returns None`` () =
 [<Fact(Timeout = 5000)>]
 let ``cache key for non-FileChecked non-Custom event returns getCommitId`` () =
     let commitId = "commit-abc"
-    let handler = create [] (Some(fun () -> Some commitId))
+    let handler = create [] (Some(fun () -> Some commitId)) None
     let cacheKeyFn = handler.CacheKey.Value
 
     let buildKey = cacheKeyFn (BuildCompleted BuildSucceeded)
@@ -232,7 +233,7 @@ let ``cache key for non-FileChecked non-Custom event returns getCommitId`` () =
 let ``multiple concurrent FileChecked events are bounded by semaphore`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create [] None
+    let handler = create [] None None
     host.RegisterHandler(handler)
 
     let events =
@@ -252,7 +253,7 @@ let ``multiple concurrent FileChecked events are bounded by semaphore`` () =
 let ``teardown cancels CTS and disposes resources`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create [] None
+    let handler = create [] None None
     host.RegisterHandler(handler)
 
     host.Teardown()
@@ -267,6 +268,24 @@ let ``teardown cancels CTS and disposes resources`` () =
 // These deterministically cover branches that the live-FCS integration tests
 // hit nondeterministically depending on which SDK version is loaded.
 // ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 10000)>]
+let ``analyzers handler times out when work exceeds TimeoutSec`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    // slowHook sleeps longer than the 1s timeout, forcing a TimedOut outcome
+    let slowHook () = System.Threading.Thread.Sleep 3000
+    let handler = createWithSlowHook [] None (Some 1) (Some slowHook)
+    host.RegisterHandler(handler)
+    host.EmitFileChecked(fakeResult "/tmp/slow/File.fs")
+    waitForTerminalStatus host "analyzers" 5000
+    let snap = host.GetActivitySnapshot("analyzers")
+
+    match snap.LastRun with
+    | Some r ->
+        match r.Outcome with
+        | FsHotWatch.Events.TimedOut _ -> ()
+        | other -> Assert.Fail $"Expected TimedOut, got {other}"
+    | None -> Assert.Fail "Expected LastRun record"
 
 [<Fact(Timeout = 1000)>]
 let ``isKnownNonAnalyzerPrefix returns true when name has matching prefix`` () =
