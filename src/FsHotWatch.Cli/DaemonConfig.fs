@@ -48,6 +48,34 @@ let detectDefaultCacheBackend (repoRoot: string) : CacheBackendConfig =
     else
         FileBackend
 
+/// Default timeouts per plugin / subsystem, in seconds. These are placeholders;
+/// the intent is to refine them against `thellma/intelligence` cold-start
+/// measurements (see Plan C Task 7). Used only when no per-entry `timeoutSec`
+/// override and no top-level `timeoutSec` is configured.
+// TODO(timeouts): refine from thellma/intelligence cold-start (2× measured)
+[<Literal>]
+let BuildTimeoutDefaultSec = 300
+
+[<Literal>]
+let LintTimeoutDefaultSec = 120
+
+[<Literal>]
+let AnalyzersTimeoutDefaultSec = 120
+
+[<Literal>]
+let FormatTimeoutDefaultSec = 60
+
+[<Literal>]
+let TestProjectTimeoutDefaultSec = 600
+
+[<Literal>]
+let FileCommandTimeoutDefaultSec = 60
+
+/// Used when a plugin/project has no per-entry override and no per-plugin code
+/// default applies (defensive fallback).
+[<Literal>]
+let GlobalTimeoutDefaultSec = 300
+
 /// Configuration for a single test project.
 type TestProjectConfig =
     { Project: string
@@ -57,7 +85,8 @@ type TestProjectConfig =
       Environment: (string * string) list
       FilterTemplate: string option
       ClassJoin: string
-      Coverage: bool }
+      Coverage: bool
+      TimeoutSec: int option }
 
 /// The kind of test extension.
 type TestExtensionKind =
@@ -86,7 +115,8 @@ type DaemonConfiguration =
             {| Command: string
                Args: string
                BuildTemplate: string option
-               DependsOn: string list |} list option
+               DependsOn: string list
+               TimeoutSec: int option |} list option
         Format: FormatMode
         Lint: bool
         Cache: CacheBackendConfig
@@ -101,10 +131,13 @@ type DaemonConfiguration =
                Pattern: string option
                AfterTests: FsHotWatch.FileCommand.FileCommandPlugin.TestFilter option
                Command: string
-               Args: string |} list
+               Args: string
+               TimeoutSec: int option |} list
         Exclude: string list
         /// Directory (relative to repoRoot or absolute) for daemon.log. Defaults to "logs".
         LogDir: string
+        /// Global default timeout (seconds). Used when no per-entry override set.
+        TimeoutSec: int option
     }
 
 let private defaultConfigFor (repoRoot: string) =
@@ -113,7 +146,8 @@ let private defaultConfigFor (repoRoot: string) =
             [ {| Command = "dotnet"
                  Args = "build"
                  BuildTemplate = None
-                 DependsOn = [] |} ]
+                 DependsOn = []
+                 TimeoutSec = None |} ]
       Format = Auto
       Lint = true
       Cache = detectDefaultCacheBackend repoRoot
@@ -121,7 +155,8 @@ let private defaultConfigFor (repoRoot: string) =
       Tests = None
       FileCommands = []
       Exclude = []
-      LogDir = "logs" }
+      LogDir = "logs"
+      TimeoutSec = None }
 
 /// Raised when `.fs-hot-watch.json` cannot be read, parsed, or validated.
 /// Carries a user-facing message.
@@ -153,10 +188,16 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             | true, arr -> arr.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList
             | _ -> []
 
+        let timeoutSec =
+            match v.TryGetProperty("timeoutSec") with
+            | true, t when t.ValueKind = JsonValueKind.Number -> Some(t.GetInt32())
+            | _ -> None
+
         {| Command = cmd
            Args = args
            BuildTemplate = buildTemplate
-           DependsOn = dependsOn |}
+           DependsOn = dependsOn
+           TimeoutSec = timeoutSec |}
 
     let build =
         match root.TryGetProperty("build") with
@@ -298,6 +339,11 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                             | true, v when v.ValueKind = JsonValueKind.False -> false
                             | _ -> true
 
+                        let timeoutSec =
+                            match p.TryGetProperty("timeoutSec") with
+                            | true, t when t.ValueKind = JsonValueKind.Number -> Some(t.GetInt32())
+                            | _ -> None
+
                         { Project = project
                           Command = command
                           Args = args
@@ -305,7 +351,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                           Environment = env
                           FilterTemplate = filterTemplate
                           ClassJoin = classJoin
-                          Coverage = coverage })
+                          Coverage = coverage
+                          TimeoutSec = timeoutSec })
                     |> Seq.toList
                 | _ -> []
 
@@ -380,11 +427,17 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     | Some n -> n
                     | None -> $"file-cmd-%s{Option.get pattern}"
 
+                let timeoutSec =
+                    match fc.TryGetProperty("timeoutSec") with
+                    | true, t when t.ValueKind = JsonValueKind.Number -> Some(t.GetInt32())
+                    | _ -> None
+
                 {| PluginName = pluginName
                    Pattern = pattern
                    AfterTests = afterTests
                    Command = command
-                   Args = args |})
+                   Args = args
+                   TimeoutSec = timeoutSec |})
             |> Seq.toList
         | _ -> []
 
@@ -399,6 +452,11 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | true, v when v.ValueKind = JsonValueKind.String -> v.GetString()
         | _ -> defaults.LogDir
 
+    let timeoutSec =
+        match root.TryGetProperty("timeoutSec") with
+        | true, v when v.ValueKind = JsonValueKind.Number -> Some(v.GetInt32())
+        | _ -> defaults.TimeoutSec
+
     { Build = build
       Format = format
       Lint = lint
@@ -407,7 +465,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       Tests = tests
       FileCommands = fileCommands
       Exclude = exclude
-      LogDir = logDir }
+      LogDir = logDir
+      TimeoutSec = timeoutSec }
 
 /// Strip a config down to a minimal base for run-once subcommands.
 /// Disables all plugins except format preprocessor. Caller overrides specific fields.
@@ -632,7 +691,8 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                   Group = p.Group
                   Environment = p.Environment
                   FilterTemplate = p.FilterTemplate
-                  ClassJoin = p.ClassJoin })
+                  ClassJoin = p.ClassJoin
+                  TimeoutSec = p.TimeoutSec })
 
         let beforeRun = t.BeforeRun |> Option.map (makeShellHook "beforeRun" true repoRoot)
 

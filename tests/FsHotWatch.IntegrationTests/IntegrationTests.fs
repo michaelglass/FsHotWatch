@@ -960,7 +960,8 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let handler =
             TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None
@@ -1014,7 +1015,8 @@ let ``TestPrunePlugin with failing test reports failure`` () =
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let handler =
             TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None
@@ -1246,7 +1248,8 @@ let ``Full pipeline: format → build → test`` () =
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let testPruneHandler =
             TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None
@@ -1385,7 +1388,8 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
-                ClassJoin = " " } ]
+                ClassJoin = " "
+                TimeoutSec = None } ]
 
         let handler =
             TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None

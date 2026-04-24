@@ -16,7 +16,8 @@ let private defaults: DaemonConfiguration =
             [ {| Command = "dotnet"
                  Args = "build"
                  BuildTemplate = None
-                 DependsOn = [] |} ]
+                 DependsOn = []
+                 TimeoutSec = None |} ]
       Format = Auto
       Lint = true
       Cache = FileBackend
@@ -24,7 +25,8 @@ let private defaults: DaemonConfiguration =
       Tests = None
       FileCommands = []
       Exclude = []
-      LogDir = "logs" }
+      LogDir = "logs"
+      TimeoutSec = None }
 
 // --- parseConfig: empty JSON ---
 
@@ -38,7 +40,8 @@ let ``parseConfig with empty JSON returns defaults`` () =
                 [ {| Command = "dotnet"
                      Args = "build"
                      BuildTemplate = None
-                     DependsOn = [] |} ]
+                     DependsOn = []
+                     TimeoutSec = None |} ]
         @>
 
     test <@ config.Format = Auto @>
@@ -96,7 +99,8 @@ let ``parseConfig build true uses default build`` () =
                 [ {| Command = "dotnet"
                      Args = "build"
                      BuildTemplate = None
-                     DependsOn = [] |} ]
+                     DependsOn = []
+                     TimeoutSec = None |} ]
         @>
 
 [<Fact(Timeout = 5000)>]
@@ -110,7 +114,8 @@ let ``parseConfig build object with custom command and args`` () =
                 [ {| Command = "make"
                      Args = "all"
                      BuildTemplate = None
-                     DependsOn = [] |} ]
+                     DependsOn = []
+                     TimeoutSec = None |} ]
         @>
 
 [<Fact(Timeout = 5000)>]
@@ -123,7 +128,8 @@ let ``parseConfig build object with only command uses default args`` () =
                 [ {| Command = "make"
                      Args = "build"
                      BuildTemplate = None
-                     DependsOn = [] |} ]
+                     DependsOn = []
+                     TimeoutSec = None |} ]
         @>
 
 [<Fact(Timeout = 5000)>]
@@ -136,7 +142,8 @@ let ``parseConfig build object with only args uses default command`` () =
                 [ {| Command = "dotnet"
                      Args = "release"
                      BuildTemplate = None
-                     DependsOn = [] |} ]
+                     DependsOn = []
+                     TimeoutSec = None |} ]
         @>
 
 [<Fact(Timeout = 5000)>]
@@ -149,7 +156,8 @@ let ``parseConfig build empty object uses defaults`` () =
                 [ {| Command = "dotnet"
                      Args = "build"
                      BuildTemplate = None
-                     DependsOn = [] |} ]
+                     DependsOn = []
+                     TimeoutSec = None |} ]
         @>
 
 // --- parseConfig: format ---
@@ -482,7 +490,8 @@ let ``parseConfig with full configuration`` () =
                 [ {| Command = "make"
                      Args = "all"
                      BuildTemplate = None
-                     DependsOn = [] |} ]
+                     DependsOn = []
+                     TimeoutSec = None |} ]
         @>
 
     test <@ config.Format = Off @>
@@ -550,7 +559,8 @@ let ``loadConfig with no config file returns expected defaults`` () =
                     [ {| Command = "dotnet"
                          Args = "build"
                          BuildTemplate = None
-                         DependsOn = [] |} ]
+                         DependsOn = []
+                         TimeoutSec = None |} ]
             @>
 
         test <@ config.Format = Auto @>
@@ -773,7 +783,8 @@ let ``registerPlugins stores FileCommand pattern on host`` () =
                          Pattern = Some "*.ratchet.json"
                          AfterTests = None
                          Command = "echo"
-                         Args = "hi" |} ] }
+                         Args = "hi"
+                         TimeoutSec = None |} ] }
 
         registerPlugins daemon tmpDir config
 
@@ -799,7 +810,8 @@ let ``registerPlugins with afterTests-only plugin does not register pattern`` ()
                          Pattern = None
                          AfterTests = Some FsHotWatch.FileCommand.FileCommandPlugin.AnyTest
                          Command = "echo"
-                         Args = "done" |} ] }
+                         Args = "done"
+                         TimeoutSec = None |} ] }
 
         registerPlugins daemon tmpDir config
         test <@ daemon.Host.GetFileCommandPattern("post-test-hook") = None @>)
@@ -847,12 +859,14 @@ let ``countPlugins counts build lint analyzers tests and fileCommands`` () =
                      Pattern = Some "*.md"
                      AfterTests = None
                      Command = "echo"
-                     Args = "" |}
+                     Args = ""
+                     TimeoutSec = None |}
                   {| PluginName = "b"
                      Pattern = Some "*.fsx"
                      AfterTests = None
                      Command = "echo"
-                     Args = "" |} ] }
+                     Args = ""
+                     TimeoutSec = None |} ] }
 
     // build(1) + lint(1) + analyzers(1) + tests(1) + 2 fileCommands = 6
     test <@ countPlugins cfg = 6 @>
@@ -924,3 +938,49 @@ let ``watchConfigFile reports invalid reason when new contents fail to parse`` (
 
         Assert.True(signal.Wait(5000), "expected watcher callback within 5s")
         Assert.Contains("invalid", observed.Value))
+
+// --- parseConfig: timeoutSec ---
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig top-level timeoutSec lands on config`` () =
+    let config = parseConfig """{"timeoutSec": 42}""" defaults
+    test <@ config.TimeoutSec = Some 42 @>
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig top-level timeoutSec absent is None`` () =
+    let config = parseConfig "{}" defaults
+    test <@ config.TimeoutSec = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig build entry timeoutSec lands on build entry`` () =
+    let config =
+        parseConfig """{"build": {"command": "dotnet", "args": "build", "timeoutSec": 300}}""" defaults
+
+    match config.Build with
+    | Some [ b ] -> test <@ b.TimeoutSec = Some 300 @>
+    | other -> failwithf "expected one build entry, got %A" other
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig test project timeoutSec lands on project`` () =
+    let json =
+        """{"tests": {"projects": [{"project": "Tests.fsproj", "timeoutSec": 600}]}}"""
+
+    let config = parseConfig json defaults
+
+    match config.Tests with
+    | Some t ->
+        match t.Projects with
+        | [ p ] -> test <@ p.TimeoutSec = Some 600 @>
+        | _ -> failwith "expected one project"
+    | None -> failwith "expected tests"
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig fileCommand timeoutSec lands on entry`` () =
+    let json =
+        """{"fileCommands": [{"pattern": "*.md", "command": "echo", "args": "hi", "timeoutSec": 60}]}"""
+
+    let config = parseConfig json defaults
+
+    match config.FileCommands with
+    | [ fc ] -> test <@ fc.TimeoutSec = Some 60 @>
+    | _ -> failwith "expected one file command"

@@ -190,7 +190,8 @@ let ``refreshCoverageBaseline deletes baseline.json and partial.json across conf
               Environment = []
               FilterTemplate = None
               ClassJoin = " "
-              Coverage = cov }
+              Coverage = cov
+              TimeoutSec = None }
 
         let covDir = "coverage"
 
@@ -219,7 +220,8 @@ let ``refreshCoverageBaseline deletes baseline.json and partial.json across conf
                        CoverageDir = covDir |}
               FileCommands = []
               Exclude = []
-              LogDir = "logs" }
+              LogDir = "logs"
+              TimeoutSec = None }
 
         let deleted = FsHotWatch.Cli.Program.refreshCoverageBaseline tmp config
         // 4 files total: 2 projects × (baseline + partial)
@@ -554,7 +556,8 @@ let private fakeConfig: DaemonConfiguration =
       Tests = None
       FileCommands = []
       Exclude = []
-      LogDir = "logs" }
+      LogDir = "logs"
+      TimeoutSec = None }
 
 /// Structured plugin-status JSON in the shape expected by parsePluginStatuses
 /// (object per plugin, not a bare string). Using the bare-string shape made the
