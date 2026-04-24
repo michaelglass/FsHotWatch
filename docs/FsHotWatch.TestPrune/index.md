@@ -67,7 +67,37 @@ fs-hot-watch test --only-failed
 
 # Query which tests are affected by recent changes
 fs-hot-watch affected-tests
+
+# Reset coverage baseline — next full run rebuilds coverage.baseline.json
+fs-hot-watch coverage refresh-baseline
 ```
+
+## Coverage
+
+When `projects[].coverage` is `true` (the default), TestPrune asks coverlet to
+emit its native JSON format per test project under
+`<repoRoot>/<tests.coverageDir>/<project>/`:
+
+- **`coverage.baseline.json`** — written by every *full* run. Authoritative
+  snapshot of the whole suite's coverage.
+- **`coverage.partial.json`** — written by *impact-filtered* runs. Only the
+  subset of lines the filtered tests touched.
+- **`coverage.cobertura.xml`** — always derived; downstream gating
+  (`coverageratchet`, editor badges, etc.) reads this file.
+
+After each test run, TestPrune either converts the baseline directly (full
+run) or merges the partial into the baseline per-line (max of hit counts)
+before rewriting the cobertura file. Partial runs **never lower** the reported
+coverage.
+
+**Bootstrap.** If no `coverage.baseline.json` exists and the run was filtered,
+TestPrune skips cobertura emission entirely. Run `fs-hot-watch test` (or any
+full-suite invocation) once to produce a baseline; subsequent filtered runs
+will merge against it.
+
+**Caveat.** Coverlet's merge keys by file path + line number, not by content
+hash. Edits between a baseline and a partial can misattribute hits at the line
+level. The aggregate coverage ratio stays correct.
 
 ## Programmatic usage
 
@@ -89,8 +119,8 @@ daemon.RegisterHandler(
         ])
         None                      // symbol snapshot
         None                      // beforeRun callback
-        None                      // coverage args
-        None                      // coverage args generator
+        None                      // afterRun callback
+        None                      // coveragePaths: project -> CoveragePaths option
         None                      // getCommitId for caching
 )
 ```
