@@ -52,11 +52,17 @@ let create
     (buildTemplate: string option)
     (dependsOn: string list)
     (getCommitId: (unit -> string option) option)
+    (timeoutSec: int option)
     =
     let buildCommand = command
     let buildArgs = args
     let env = environment
     let testProjectNameSet = testProjectNames |> Set.ofList
+
+    let buildTimeout =
+        match timeoutSec with
+        | Some s -> TimeSpan.FromSeconds(float s)
+        | None -> System.Threading.Timeout.InfiniteTimeSpan
 
     let isTestFile (file: string) =
         graph.GetProjectsForFile(AbsFilePath.create file)
@@ -112,13 +118,20 @@ let create
             "dotnet build"
             (async {
                 try
-                    let (success, output) = runProcess buildCommand buildArgs ctx.RepoRoot env
+                    let (success, output) =
+                        runProcessWithTimeout buildCommand buildArgs ctx.RepoRoot env buildTimeout
+
                     let (outcome, entries) = decideBuildOutcome success output
 
                     match outcome with
                     | BuildOutputFailed _ ->
-                        ctx.Log "Build FAILED"
-                        error "build" "Build FAILED"
+                        if output.StartsWith("timed out") then
+                            ctx.Log "Build TIMED OUT"
+                            error "build" "Build TIMED OUT"
+                            ctx.CompleteWithTimeout(output.Split('\n').[0])
+                        else
+                            ctx.Log "Build FAILED"
+                            error "build" "Build FAILED"
                     | _ -> ()
 
                     applyBuildOutcome ctx outcome entries
@@ -176,12 +189,20 @@ let create
                             ctx.Log $"Running template: %s{cmd} %s{cmdArgs}"
 
                             try
-                                let (success, output) = runProcess cmd cmdArgs ctx.RepoRoot env
+                                let (success, output) =
+                                    runProcessWithTimeout cmd cmdArgs ctx.RepoRoot env buildTimeout
+
                                 outputs <- output :: outputs
 
                                 if not success then
-                                    ctx.Log $"Template build FAILED for %s{rootStr}"
-                                    error "build" $"Template build FAILED for %s{rootStr}"
+                                    if output.StartsWith("timed out") then
+                                        ctx.Log $"Template build TIMED OUT for %s{rootStr}"
+                                        error "build" $"Template build TIMED OUT for %s{rootStr}"
+                                        ctx.CompleteWithTimeout(output.Split('\n').[0])
+                                    else
+                                        ctx.Log $"Template build FAILED for %s{rootStr}"
+                                        error "build" $"Template build FAILED for %s{rootStr}"
+
                                     failures <- output :: failures
                             with ex ->
                                 ctx.Log $"Template build exception for %s{rootStr}: %s{ex.Message}"
