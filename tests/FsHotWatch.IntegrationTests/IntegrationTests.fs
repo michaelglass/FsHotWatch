@@ -870,7 +870,7 @@ let ``BuildPlugin succeeds with echo command`` () =
           Teardown = None }
 
     let handler =
-        BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None
+        BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -914,7 +914,7 @@ let ``BuildPlugin fails with false command`` () =
           CacheKey = None
           Teardown = None }
 
-    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None
+    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None None
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
@@ -1070,7 +1070,7 @@ let ``FileCommandPlugin runs command for matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (PluginName.create "fsx-runner") (fileTrigger (fun f -> f.EndsWith(".fsx"))) "echo" "hello" None
+        create (PluginName.create "fsx-runner") (fileTrigger (fun f -> f.EndsWith(".fsx"))) "echo" "hello" None None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "scripts/build.fsx" ])
@@ -1097,7 +1097,7 @@ let ``FileCommandPlugin ignores non-matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (PluginName.create "fsx-runner") (fileTrigger (fun f -> f.EndsWith(".fsx"))) "echo" "hello" None
+        create (PluginName.create "fsx-runner") (fileTrigger (fun f -> f.EndsWith(".fsx"))) "echo" "hello" None None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -1120,7 +1120,7 @@ let ``FileCommandPlugin reports failure on bad command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (PluginName.create "fsx-runner") (fileTrigger (fun f -> f.EndsWith(".fsx"))) "false" "" None
+        create (PluginName.create "fsx-runner") (fileTrigger (fun f -> f.EndsWith(".fsx"))) "false" "" None None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "scripts/build.fsx" ])
@@ -1181,7 +1181,7 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
               AfterTests = None }
 
         let handler =
-            create (PluginName.create pluginName) trigger cmd args (Some getCommitId)
+            create (PluginName.create pluginName) trigger cmd args (Some getCommitId) None
 
         let parsedPattern = FsHotWatch.Watcher.FilePattern.parse pattern
         host.RegisterHandler(handler)
@@ -1236,7 +1236,7 @@ let ``Full pipeline: format → build → test`` () =
 
         // Register BuildPlugin (echo for success)
         let buildHandler =
-            BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None
+            BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None None
 
         host.RegisterHandler(buildHandler)
 
@@ -1337,7 +1337,7 @@ let ``BuildPlugin does not run concurrent builds`` () =
 
     // Use /bin/sleep 1 as a slow build command so the second emit arrives while the first is running
     let handler =
-        BuildPlugin.create "/bin/sleep" "1" [] (ProjectGraph()) [] None [] None
+        BuildPlugin.create "/bin/sleep" "1" [] (ProjectGraph()) [] None [] None None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)

@@ -74,8 +74,14 @@ let create
     (command: string)
     (args: string)
     (getCommitId: (unit -> string option) option)
+    (timeoutSec: int option)
     : PluginHandler<FileCommandState, unit> =
     let nameStr = PluginName.value name
+
+    let cmdTimeout =
+        match timeoutSec with
+        | Some s -> TimeSpan.FromSeconds(float s)
+        | None -> System.Threading.Timeout.InfiniteTimeSpan
 
     /// Run the command and return the resulting CommandResult. Callers merge
     /// this into the full plugin state so runCommand stays agnostic of
@@ -93,7 +99,8 @@ let create
                     $"running {nameStr}"
                     (async {
                         try
-                            let (success, output) = runProcess command args ctx.RepoRoot []
+                            let (success, output) =
+                                runProcessWithTimeout command args ctx.RepoRoot [] cmdTimeout
 
                             let result = if success then Succeeded output else CommandFailed output
 
@@ -101,6 +108,10 @@ let create
                                 ctx.CompleteWithSummary $"%s{nameStr}: succeeded"
                                 ctx.ClearErrors $"<%s{nameStr}>"
                                 ctx.ReportStatus(Completed(DateTime.UtcNow))
+                            elif output.StartsWith("timed out") then
+                                ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error output ]
+                                ctx.CompleteWithTimeout(output.Split('\n').[0])
+                                ctx.ReportStatus(PluginStatus.Failed($"%s{nameStr} timed out", DateTime.UtcNow))
                             else
                                 ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error output ]
                                 ctx.CompleteWithSummary $"%s{nameStr}: failed"
