@@ -649,7 +649,10 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
 
         if not resolvedPaths.IsEmpty then
             Logging.info "config" $"Registering AnalyzersPlugin with %d{resolvedPaths.Length} paths"
-            daemon.RegisterHandler(FsHotWatch.Analyzers.AnalyzersPlugin.create resolvedPaths getCommitId)
+
+            daemon.RegisterHandler(
+                FsHotWatch.Analyzers.AnalyzersPlugin.create resolvedPaths getCommitId config.TimeoutSec
+            )
     | None -> ()
 
     // Build plugin(s)
