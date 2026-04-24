@@ -79,11 +79,18 @@ let internal classifyChange (path: string) =
 
 /// Functions for creating file watchers.
 module FileWatcher =
-    /// Create a FileWatcher that monitors src/ and tests/ for F#-relevant file changes.
+    /// Create a FileWatcher that monitors src/ and tests/ for F#-relevant file changes,
+    /// plus any files matching `extraSuffixes` (from FileCommandPlugin patterns) across
+    /// the full repo root.
     /// Pass isMacOSOverride to force a specific code path (useful for testing).
-    let create (repoRoot: string) (onChange: FileChangeKind -> unit) (isMacOSOverride: bool option) : FileWatcher =
+    let create
+        (repoRoot: string)
+        (onChange: FileChangeKind -> unit)
+        (isMacOSOverride: bool option)
+        (extraSuffixes: string list)
+        : FileWatcher =
         let handle (path: string) =
-            if isRelevantFile path then
+            if isRelevantFileOrExtra extraSuffixes path then
                 onChange (classifyChange path)
 
         let handleFsw (e: FileSystemEventArgs) = handle e.FullPath
@@ -108,13 +115,31 @@ module FileWatcher =
             w.EnableRaisingEvents <- true
             w :> IDisposable
 
+        // Non-source patterns from FileCommandPlugins (e.g. *.ratchet.json). One
+        // recursive FileSystemWatcher per suffix covering the whole repo. Goes
+        // through `handle` so the shared `isRelevantFileOrExtra` + obj/bin
+        // exclusion logic is applied.
+        let extraWatchers =
+            extraSuffixes
+            |> List.map (fun suffix ->
+                let w = new FileSystemWatcher(repoRoot)
+                w.IncludeSubdirectories <- true
+                w.NotifyFilter <- NotifyFilters.LastWrite ||| NotifyFilters.FileName
+                w.Filter <- $"*%s{suffix}"
+                w.Changed.Add(handleFsw)
+                w.Created.Add(handleFsw)
+                w.Deleted.Add(handleFsw)
+                w.Renamed.Add(handleFsw)
+                w.EnableRaisingEvents <- true
+                w :> IDisposable)
+
         if isMacOS then
             let dirs =
                 [ Path.Combine(repoRoot, "src"); Path.Combine(repoRoot, "tests") ]
                 |> List.filter Directory.Exists
 
             if dirs.IsEmpty then
-                { Disposables = [ slnWatcher ] }
+                { Disposables = slnWatcher :: extraWatchers }
             else
                 let onCoalesced (dirPath: string) =
                     try
@@ -128,7 +153,7 @@ module FileWatcher =
                     | :? UnauthorizedAccessException -> ()
 
                 let stream = MacFsEvents.createWithCoalesced dirs handle onCoalesced
-                { Disposables = [ stream :> IDisposable; slnWatcher ] }
+                { Disposables = (stream :> IDisposable) :: slnWatcher :: extraWatchers }
         else
             let createFsw (dir: string) =
                 if Directory.Exists(dir) then
@@ -154,4 +179,4 @@ module FileWatcher =
                   Some slnWatcher ]
                 |> List.choose id
 
-            { Disposables = watchers }
+            { Disposables = watchers @ extraWatchers }
