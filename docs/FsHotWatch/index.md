@@ -45,6 +45,22 @@ File change -> FormatPreprocessor (rewrites) -> FileChanged
 See the [main README](../../README.md#writing-your-own-plugin) for a
 complete example using the declarative `PluginHandler` framework.
 
+### Status visibility contract
+
+Plugins own their status. The framework no longer derives a terminal summary
+from the last log line — if you forget to set a summary, the run's recorded
+summary is empty.
+
+- At the start of a run, call `ctx.StartSubtask "primary" "<descriptive label>"`.
+  This label is what the compact renderer shows while the plugin is running.
+- As progress changes, call `ctx.UpdateSubtask "primary" "<new label>"` to
+  update the label in place without churning state.
+- At the end of the run, call `ctx.EndSubtask "primary"` then
+  `ctx.CompleteWithSummary "<result totals>"` (alias for `SetSummary`) so the
+  recorded run has a terminal summary.
+- Per-file `ctx.Log` calls remain useful — they populate the verbose activity
+  tail without being promoted to a summary.
+
 ## Install
 
 ```bash

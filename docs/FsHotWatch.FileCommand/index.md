@@ -68,6 +68,16 @@ When `pattern` targets a non-source file (e.g. `*.ratchet.json` or
 `coverage-ratchet.json`), the daemon automatically extends its file
 watcher to cover that pattern so real edits trigger the plugin.
 
+### Environment variables on `afterTests` commands
+
+The following environment variables are set on every `afterTests` command:
+
+- `FSHW_RAN_FULL_SUITE`: `"true"` if every project in the test run executed
+  without an impact filter (i.e., the entire test suite ran), `"false"` if at
+  least one project was filtered to a subset. Use this to gate baseline
+  refreshes or threshold tightening — partial runs should not lower a
+  coverage baseline or tighten a ratchet.
+
 ## CLI
 
 ```bash

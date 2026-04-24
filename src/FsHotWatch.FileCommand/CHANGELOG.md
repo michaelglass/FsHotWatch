@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- Set `FSHW_RAN_FULL_SUITE=true|false` on every `afterTests` command. `"true"`
+  iff every project in the test run executed without an impact filter; use it
+  to gate baseline refreshes or threshold tightening.
+
 ### Changed
 
 - Emit distinct success/failure/crashed summary strings
