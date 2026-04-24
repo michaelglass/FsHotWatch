@@ -48,34 +48,6 @@ let detectDefaultCacheBackend (repoRoot: string) : CacheBackendConfig =
     else
         FileBackend
 
-/// Default timeouts per plugin / subsystem, in seconds. These are placeholders;
-/// the intent is to refine them against `thellma/intelligence` cold-start
-/// measurements (see Plan C Task 7). Used only when no per-entry `timeoutSec`
-/// override and no top-level `timeoutSec` is configured.
-// TODO(timeouts): refine from thellma/intelligence cold-start (2× measured)
-[<Literal>]
-let BuildTimeoutDefaultSec = 300
-
-[<Literal>]
-let LintTimeoutDefaultSec = 120
-
-[<Literal>]
-let AnalyzersTimeoutDefaultSec = 120
-
-[<Literal>]
-let FormatTimeoutDefaultSec = 60
-
-[<Literal>]
-let TestProjectTimeoutDefaultSec = 600
-
-[<Literal>]
-let FileCommandTimeoutDefaultSec = 60
-
-/// Used when a plugin/project has no per-entry override and no per-plugin code
-/// default applies (defensive fallback).
-[<Literal>]
-let GlobalTimeoutDefaultSec = 300
-
 /// Configuration for a single test project.
 type TestProjectConfig =
     { Project: string
