@@ -37,6 +37,13 @@ let private failedRun (ago: TimeSpan) (elapsed: TimeSpan) (error: string) : RunR
       Summary = None
       ActivityTail = [] }
 
+let private timedOutRun (ago: TimeSpan) (elapsed: TimeSpan) (reason: string) : RunRecord =
+    { StartedAt = now - ago
+      Elapsed = elapsed
+      Outcome = TimedOut reason
+      Summary = None
+      ActivityTail = [] }
+
 // ---------------- Compact mode ----------------
 
 [<Fact(Timeout = 5000)>]
@@ -627,9 +634,43 @@ let ``agent output lines match the parseable grammar`` () =
     let lines = agentAll statuses
 
     let pattern =
-        "^(?:# .*|[a-z-]+: (ok|fail|warn|running)(?: summary=\"(?:[^\"\\\\]|\\\\.)*\")?|next: .+)$"
+        "^(?:# .*|[a-z-]+: (ok|fail|warn|running|timed-out)(?: summary=\"(?:[^\"\\\\]|\\\\.)*\")?|next: .+)$"
 
     let rx = System.Text.RegularExpressions.Regex(pattern)
 
     for line in lines do
         test <@ rx.IsMatch line @>
+
+// ---------------- TimedOut rendering ----------------
+
+let private timedOutStatus (reason: string) : ParsedPluginStatus =
+    { Status = Failed($"timed out: {reason}", now - TimeSpan.FromSeconds 1.0)
+      Subtasks = []
+      ActivityTail = []
+      LastRun = Some(timedOutRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) reason)
+      Diagnostics = DiagnosticCounts.empty }
+
+[<Fact(Timeout = 5000)>]
+let ``compact Failed with TimedOut outcome uses timeout glyph and label`` () =
+    let parsed = timedOutStatus "exceeded 60s"
+
+    let lines = renderPlugin Compact true now "Build" parsed |> stripMany
+    test <@ lines.Length = 1 @>
+    let line = lines.[0]
+    test <@ line.Contains "⏱" @> // ⏱
+    test <@ not (line.Contains "✗") @> // no ✗
+    test <@ line.Contains "timed out" @>
+
+[<Fact(Timeout = 5000)>]
+let ``verbose Failed with TimedOut outcome uses timeout glyph`` () =
+    let parsed = timedOutStatus "exceeded 60s"
+
+    let lines = renderPlugin Verbose true now "Build" parsed |> stripMany
+    test <@ lines |> List.exists (fun l -> l.Contains "⏱") @>
+
+[<Fact(Timeout = 5000)>]
+let ``agent Failed with TimedOut outcome emits timed-out token`` () =
+    let parsed = timedOutStatus "exceeded 60s"
+    let line = renderPlugin Agent true now "build" parsed |> List.head |> stripAnsi
+    test <@ line.Contains "build: timed-out" @>
+    test <@ line.Contains "timed out" @>
