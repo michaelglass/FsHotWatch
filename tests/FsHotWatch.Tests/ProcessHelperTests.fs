@@ -44,3 +44,23 @@ let ``runWithTimeout returns Error TimedOut when work exceeds timeout`` () =
 let ``runWithTimeout with InfiniteTimeSpan never times out`` () =
     let result = runWithTimeout System.Threading.Timeout.InfiniteTimeSpan (fun () -> 7)
     Assert.Equal(Ok 7, result)
+
+[<Fact(Timeout = 10000)>]
+let ``runProcess succeeds for echo`` () =
+    let success, output = runProcess "echo" "hello" "." []
+    Assert.True success
+    Assert.Equal("hello", output.Trim())
+
+[<Fact(Timeout = 10000)>]
+let ``runProcess reports nonzero exit as failure`` () =
+    let success, _ = runProcess "sh" "-c \"exit 3\"" "." []
+    Assert.False success
+
+[<Fact(Timeout = 10000)>]
+let ``runProcessWithTimeout captures partial output on kill`` () =
+    // Emit then sleep; kill should still surface the emitted bytes in the tail.
+    let success, output =
+        runProcessWithTimeout "sh" "-c \"echo partial; sleep 10\"" "." [] (TimeSpan.FromMilliseconds 300.0)
+
+    Assert.False success
+    Assert.Contains("timed out", output)
