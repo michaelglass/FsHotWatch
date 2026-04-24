@@ -8,6 +8,12 @@ open FsHotWatch.Events
 [<Literal>]
 let FcsPluginName = "fcs"
 
+/// Convention: each plugin emits one long-lived "primary" subtask per run
+/// whose label is the user-facing status line. The renderer prefers this
+/// label over the recent-activity tail.
+[<Literal>]
+let PrimarySubtaskKey = "primary"
+
 /// Minimal activity sink — used by in-host subsystems (e.g. the check pipeline)
 /// that report activity without being registered plugins.
 [<NoComparison; NoEquality>]

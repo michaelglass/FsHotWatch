@@ -6,6 +6,7 @@ open FsHotWatch
 open FsHotWatch.Events
 open FsHotWatch.Logging
 open FsHotWatch.Plugin
+open FsHotWatch.PluginActivity
 open FsHotWatch.PluginFramework
 open Fantomas.Core
 
@@ -69,7 +70,7 @@ let createFormatCheck (getCommitId: (unit -> string option) option) : PluginHand
                     let isIgnored = ignoreCache.Get(ctx.RepoRoot)
 
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                    ctx.StartSubtask "primary" $"checking format of %d{files.Length} files"
+                    ctx.StartSubtask PrimarySubtaskKey $"checking format of %d{files.Length} files"
 
                     let mutable newUnformatted = state.Unformatted
                     let mutable failed = false
@@ -101,7 +102,7 @@ let createFormatCheck (getCommitId: (unit -> string option) option) : PluginHand
                                 ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                                 failed <- true
 
-                    ctx.EndSubtask "primary"
+                    ctx.EndSubtask PrimarySubtaskKey
 
                     if not failed then
                         let summary =
