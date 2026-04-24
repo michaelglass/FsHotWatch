@@ -58,6 +58,11 @@ type PluginCtx<'Msg> =
         Log: string -> unit
         /// Override the auto-derived summary captured on the next terminal transition.
         CompleteWithSummary: string -> unit
+        /// Mark the next terminal transition as TimedOut with `reason`. Also sets
+        /// the summary. The plugin is still responsible for calling
+        /// `ReportStatus(Failed(..))` (or raising) so the state machine advances
+        /// to a terminal state — the override is consumed when that fires.
+        CompleteWithTimeout: string -> unit
     }
 
 /// Tags for events a plugin can subscribe to.
@@ -125,24 +130,30 @@ type RegisteredPlugin =
 /// Host-provided services bundled into a record to avoid fragile positional params.
 [<NoComparison; NoEquality>]
 type PluginHostServices =
-    { Checker: FSharp.Compiler.CodeAnalysis.FSharpChecker
-      RepoRoot: string
-      ReportStatus: PluginName -> PluginStatus -> unit
-      ReportErrors: PluginName -> string -> ErrorEntry list -> unit
-      ClearErrors: PluginName -> string -> unit
-      ClearPlugin: PluginName -> unit
-      EmitBuildCompleted: BuildResult -> unit
-      EmitTestRunStarted: TestRunStarted -> unit
-      EmitTestProgress: TestProgress -> unit
-      EmitTestRunCompleted: TestRunCompleted -> unit
-      EmitCommandCompleted: CommandCompletedResult -> unit
-      RegisterCommand: string * CommandHandler -> unit
-      TaskCache: TaskCache.ITaskCache option
-      StartSubtask: PluginName -> string -> string -> unit
-      UpdateSubtask: PluginName -> string -> string -> unit
-      EndSubtask: PluginName -> string -> unit
-      Log: PluginName -> string -> unit
-      SetSummary: PluginName -> string -> unit }
+    {
+        Checker: FSharp.Compiler.CodeAnalysis.FSharpChecker
+        RepoRoot: string
+        ReportStatus: PluginName -> PluginStatus -> unit
+        ReportErrors: PluginName -> string -> ErrorEntry list -> unit
+        ClearErrors: PluginName -> string -> unit
+        ClearPlugin: PluginName -> unit
+        EmitBuildCompleted: BuildResult -> unit
+        EmitTestRunStarted: TestRunStarted -> unit
+        EmitTestProgress: TestProgress -> unit
+        EmitTestRunCompleted: TestRunCompleted -> unit
+        EmitCommandCompleted: CommandCompletedResult -> unit
+        RegisterCommand: string * CommandHandler -> unit
+        TaskCache: TaskCache.ITaskCache option
+        StartSubtask: PluginName -> string -> string -> unit
+        UpdateSubtask: PluginName -> string -> string -> unit
+        EndSubtask: PluginName -> string -> unit
+        Log: PluginName -> string -> unit
+        SetSummary: PluginName -> string -> unit
+        /// Set the outcome recorded on the next terminal transition. Lets a plugin
+        /// flip the run's stored outcome (e.g. to TimedOut) without introducing a
+        /// new PluginStatus variant.
+        SetNextTerminalOutcome: PluginName -> RunOutcome -> unit
+    }
 
 /// Register a declarative plugin handler, returning a type-erased RegisteredPlugin.
 /// Creates a MailboxProcessor with error recovery and wires up event dispatch.
@@ -169,7 +180,11 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                           UpdateSubtask = fun key label -> services.UpdateSubtask handler.Name key label
                           EndSubtask = fun key -> services.EndSubtask handler.Name key
                           Log = fun msg -> services.Log handler.Name msg
-                          CompleteWithSummary = fun s -> services.SetSummary handler.Name s }
+                          CompleteWithSummary = fun s -> services.SetSummary handler.Name s
+                          CompleteWithTimeout =
+                            fun reason ->
+                                services.SetSummary handler.Name $"timed out after {reason}"
+                                services.SetNextTerminalOutcome handler.Name (TimedOut reason) }
 
                     /// Compute the composite key for a given event.
                     let compositeKey (event: PluginEvent<'Msg>) : TaskCache.CompositeKey =
@@ -301,7 +316,11 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                             fun key label -> services.UpdateSubtask handler.Name key label
                                           EndSubtask = fun key -> services.EndSubtask handler.Name key
                                           Log = fun msg -> services.Log handler.Name msg
-                                          CompleteWithSummary = fun s -> services.SetSummary handler.Name s }
+                                          CompleteWithSummary = fun s -> services.SetSummary handler.Name s
+                                          CompleteWithTimeout =
+                                            fun reason ->
+                                                services.SetSummary handler.Name $"timed out after {reason}"
+                                                services.SetNextTerminalOutcome handler.Name (TimedOut reason) }
 
                                     let! nextState = safeUpdate capturingCtx state event
 
