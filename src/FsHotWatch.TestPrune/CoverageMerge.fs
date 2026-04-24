@@ -1,12 +1,9 @@
-/// Pure coverlet-JSON coverage merging, with a minimal Cobertura XML emitter.
+/// Per-line max coverage merging for MTP's Cobertura output.
 ///
-/// Coverlet's real JSON shape is considerably richer — each file carries
-/// `Lines`, `Branches`, `Methods`, `Classes` and other sub-objects. We only
-/// need per-line hit counts for partial-run merging, so this module parses
-/// the module → file → line → hits projection and ignores everything else.
-/// When a file node carries a nested `"Lines": { "10": n, ... }` sub-object
-/// (the actual coverlet format) we pull the lines from there; the "flat"
-/// shape `file: { "10": n, ... }` is also accepted so tests can stay compact.
+/// MTP (Microsoft Testing Platform) only supports `coverage | xml | cobertura`
+/// output formats — coverlet's native JSON isn't an option through MTP's
+/// `--coverage` flag. We parse Cobertura XML into a `package → file → line → hits`
+/// projection, merge per-line by max, and emit Cobertura back out.
 ///
 /// This is deliberately a plugin-local concern: TestPrune is the only caller,
 /// and the merge is a file operation, not an impact-analysis primitive.
@@ -14,20 +11,19 @@ module FsHotWatch.TestPrune.CoverageMerge
 
 open System.Globalization
 open System.Text
-open System.Text.Json
-open System.Text.Json.Nodes
+open System.Xml.Linq
 
-/// `module → file → (lineNumber → hitCount)`. Maps give stable iteration order
+/// `package → file → (lineNumber → hitCount)`. Maps give stable iteration order
 /// and cheap structural merge at the leaves.
 type CoverageData = Map<string, Map<string, Map<int, int>>>
 
 /// Canonical filenames for coverage artifacts. Centralized so the daemon,
 /// CLI refresh command, and tests stay in lockstep.
 [<Literal>]
-let BaselineJsonName = "coverage.baseline.json"
+let BaselineName = "coverage.baseline.cobertura.xml"
 
 [<Literal>]
-let PartialJsonName = "coverage.partial.json"
+let PartialName = "coverage.partial.cobertura.xml"
 
 [<Literal>]
 let CoberturaName = "coverage.cobertura.xml"
@@ -37,71 +33,75 @@ let private tryParseInt (s: string) =
     | true, v -> Some v
     | false, _ -> None
 
-/// Extract a `lineNumber → hits` map from a file-node JsonObject. Supports both
-/// `{ "10": 1, "Lines": ... }` (ignore non-numeric siblings) and the real
-/// coverlet shape where lines live under a nested `"Lines"` object.
-let private readLineMap (fileNode: JsonObject) : Map<int, int> =
-    let lineContainer: JsonObject =
-        if fileNode.ContainsKey("Lines") then
-            match fileNode["Lines"] with
-            | :? JsonObject as inner -> inner
-            | _ -> fileNode
+let private xn (s: string) = XName.Get s
+
+let private attrValue (name: string) (el: XElement) =
+    let a = el.Attribute(xn name)
+    if isNull a then "" else a.Value
+
+/// Parse a Cobertura XML document into the `package → file → line → hits`
+/// projection. Non-numeric / malformed entries are skipped silently so one
+/// bad row doesn't nuke the merge.
+let parse (xml: string) : CoverageData =
+    if System.String.IsNullOrWhiteSpace(xml) then
+        Map.empty
+    else
+        let doc = XDocument.Parse(xml)
+        let root = doc.Root
+
+        if isNull root then
+            Map.empty
         else
-            fileNode
+            root.Descendants(xn "package")
+            |> Seq.map (fun pkg ->
+                let pkgName = attrValue "name" pkg
 
-    lineContainer
-    |> Seq.choose (fun (kvp: System.Collections.Generic.KeyValuePair<string, JsonNode>) ->
-        match tryParseInt kvp.Key with
-        | None -> None
-        | Some line ->
-            match kvp.Value with
-            | :? JsonValue as v ->
-                try
-                    Some(line, v.GetValue<int>())
-                with _ ->
-                    None
-            | _ -> None)
-    |> Map.ofSeq
-
-let parse (json: string) : CoverageData =
-    let doc = JsonNode.Parse(json)
-
-    match doc with
-    | :? JsonObject as root ->
-        root
-        |> Seq.choose (fun modEntry ->
-            match modEntry.Value with
-            | :? JsonObject as files ->
                 let fileMap =
-                    files
-                    |> Seq.choose (fun fileEntry ->
-                        match fileEntry.Value with
-                        | :? JsonObject as fileNode -> Some(fileEntry.Key, readLineMap fileNode)
-                        | _ -> None)
+                    pkg.Descendants(xn "class")
+                    |> Seq.groupBy (fun c -> attrValue "filename" c)
+                    |> Seq.map (fun (fn, classes) ->
+                        let lineMap =
+                            classes
+                            |> Seq.collect (fun c -> c.Descendants(xn "line"))
+                            |> Seq.choose (fun l ->
+                                match tryParseInt (attrValue "number" l), tryParseInt (attrValue "hits" l) with
+                                | Some n, Some h -> Some(n, h)
+                                | _ -> None)
+                            // A file's lines can appear in multiple <class> blocks (inner types,
+                            // method groupings). Take max across all occurrences of the same line.
+                            |> Seq.groupBy fst
+                            |> Seq.map (fun (line, hits) -> line, hits |> Seq.map snd |> Seq.max)
+                            |> Map.ofSeq
+
+                        fn, lineMap)
                     |> Map.ofSeq
 
-                Some(modEntry.Key, fileMap)
-            | _ -> None)
-        |> Map.ofSeq
-    | _ -> Map.empty
+                pkgName, fileMap)
+            |> Map.ofSeq
 
+/// Round-trip check helper: emit a CoverageData back to a minimal Cobertura
+/// string. Useful for tests; production callers use `toCobertura`.
 let serialize (data: CoverageData) : string =
-    let root = JsonObject()
+    let sb = StringBuilder()
+    sb.Append("<?xml version=\"1.0\"?><coverage><packages>") |> ignore
 
     for KeyValue(modName, files) in data do
-        let modObj = JsonObject()
+        sb.Append("<package name=\"").Append(modName).Append("\"><classes>") |> ignore
 
         for KeyValue(file, lines) in files do
-            let fileObj = JsonObject()
+            sb.Append("<class filename=\"").Append(file).Append("\" name=\"").Append(file).Append("\"><lines>")
+            |> ignore
 
             for KeyValue(line, hits) in lines do
-                fileObj[string<int> line] <- JsonValue.Create(hits)
+                sb.Append("<line number=\"").Append(line).Append("\" hits=\"").Append(hits).Append("\" />")
+                |> ignore
 
-            modObj[file] <- fileObj
+            sb.Append("</lines></class>") |> ignore
 
-        root[modName] <- modObj
+        sb.Append("</classes></package>") |> ignore
 
-    root.ToJsonString()
+    sb.Append("</packages></coverage>") |> ignore
+    sb.ToString()
 
 let hits (data: CoverageData) (moduleName: string) (file: string) (line: int) : int =
     data
