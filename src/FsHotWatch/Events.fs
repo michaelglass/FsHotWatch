@@ -124,6 +124,7 @@ type Subtask =
 type RunOutcome =
     | CompletedRun
     | FailedRun of error: string
+    | TimedOut of reason: string
 
 /// Record of a single completed or failed plugin run.
 type RunRecord =
