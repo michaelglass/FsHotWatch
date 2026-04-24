@@ -776,7 +776,13 @@ let ``registerPlugins stores FileCommand pattern on host`` () =
                          Args = "hi" |} ] }
 
         registerPlugins daemon tmpDir config
-        test <@ daemon.Host.GetFileCommandPattern("coverage-ratchet") = Some "*.ratchet.json" @>)
+
+        test
+            <@
+                daemon.Host.GetFileCommandPattern("coverage-ratchet") = Some(
+                    FsHotWatch.Watcher.FilePattern.parse "*.ratchet.json"
+                )
+            @>)
 
 [<Fact(Timeout = 5000)>]
 let ``registerPlugins with afterTests-only plugin does not register pattern`` () =

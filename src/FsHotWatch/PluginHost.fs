@@ -15,7 +15,7 @@ type PluginHost
     let ledger = ErrorLedger(?reporters = reporters)
     let commands = ConcurrentDictionary<string, CommandHandler>()
     let preprocessors = ConcurrentBag<IFsHotWatchPreprocessor>()
-    let fileCommandPatterns = ConcurrentDictionary<string, string>()
+    let fileCommandPatterns = ConcurrentDictionary<string, Watcher.FilePattern>()
 
     // Status tracking uses a lock + mutable map instead of a MailboxProcessor.
     // The event fires OUTSIDE the lock so subscribers can safely call GetAllStatuses
@@ -260,13 +260,14 @@ type PluginHost
         | Some c -> c.ClearPluginFile plugin file
         | None -> ()
 
-    /// Register a FileCommandPlugin's file pattern by plugin name. Used by the
-    /// rerun IPC endpoint to synthesize a fake file event whose path matches
-    /// the plugin's filter.
-    member _.RegisterFileCommandPattern(name: string, pattern: string) = fileCommandPatterns[name] <- pattern
+    /// Register a FileCommandPlugin's parsed file pattern by plugin name.
+    /// Used by the rerun IPC endpoint to synthesize a fake file event whose
+    /// path matches the plugin's filter.
+    member _.RegisterFileCommandPattern(name: string, pattern: Watcher.FilePattern) =
+        fileCommandPatterns[name] <- pattern
 
     /// Look up a registered FileCommandPlugin pattern by plugin name.
-    member _.GetFileCommandPattern(name: string) : string option =
+    member _.GetFileCommandPattern(name: string) : Watcher.FilePattern option =
         match fileCommandPatterns.TryGetValue(name) with
         | true, p -> Some p
         | false, _ -> None

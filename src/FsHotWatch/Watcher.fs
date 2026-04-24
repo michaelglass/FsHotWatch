@@ -53,24 +53,57 @@ let internal isRelevantFile (path: string) =
 
     isRelevantExt && not (PathFilter.isGeneratedPath path)
 
-/// Match a file path against a FileCommandPlugin pattern.
-///   - Wildcard suffix form (`*.ratchet.json`): matches any path ending with the suffix.
-///   - Literal form (`coverage-ratchet.json`): matches only paths whose filename equals it.
-let matchesPattern (pattern: string) (path: string) =
-    if pattern.StartsWith("*") then
-        let suffix = pattern.Substring(1)
-        path.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
-    else
-        let fileName = Path.GetFileName(path)
-        fileName.Equals(pattern, StringComparison.OrdinalIgnoreCase)
+/// How a FileCommandPlugin pattern string matches paths. Parsed once at
+/// config-load time via `FilePattern.parse` so downstream code never has to
+/// re-inspect string shape.
+[<RequireQualifiedAccess; NoComparison>]
+type FilePattern =
+    /// `*.ratchet.json` → matches any path ending with the suffix (including the leading dot).
+    | Wildcard of suffix: string
+    /// `coverage-ratchet.json` → matches only paths whose basename equals the given filename.
+    | Literal of fileName: string
+
+module FilePattern =
+    /// Parse a pattern string. A leading `*` denotes a wildcard suffix;
+    /// anything else is treated as a literal filename. Embedded `*` in
+    /// non-leading position is not a glob — it's part of the literal name.
+    let parse (pattern: string) : FilePattern =
+        if pattern.StartsWith("*") then
+            FilePattern.Wildcard(pattern.Substring(1))
+        else
+            FilePattern.Literal pattern
+
+    /// Serialize back to the original pattern string. Used for the underlying
+    /// `FileSystemWatcher.Filter` glob and for human-readable diagnostics.
+    let toString (pattern: FilePattern) : string =
+        match pattern with
+        | FilePattern.Wildcard suffix -> "*" + suffix
+        | FilePattern.Literal name -> name
+
+    /// True when `path` matches the pattern.
+    let matches (pattern: FilePattern) (path: string) : bool =
+        match pattern with
+        | FilePattern.Wildcard suffix -> path.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
+        | FilePattern.Literal name ->
+            let fileName = Path.GetFileName(path)
+            fileName.Equals(name, StringComparison.OrdinalIgnoreCase)
+
+    /// A synthetic path that `matches` this pattern — used by rerun to emit a
+    /// fake FileChanged event that triggers only the target plugin.
+    let syntheticPath (pattern: FilePattern) : string =
+        match pattern with
+        | FilePattern.Wildcard suffix -> "_fshw_rerun_" + suffix
+        | FilePattern.Literal name -> name
 
 /// Like `isRelevantFile`, but also accepts files matching any of the given
 /// FileCommandPlugin patterns (for non-source extensions like `.ratchet.json`).
-let internal isRelevantFileOrExtra (extraPatterns: string list) (path: string) =
+let internal isRelevantFileOrExtra (extraPatterns: FilePattern list) (path: string) =
     if isRelevantFile path then
         true
     else
-        let matchesExtra = extraPatterns |> List.exists (fun p -> matchesPattern p path)
+        let matchesExtra =
+            extraPatterns |> List.exists (fun p -> FilePattern.matches p path)
+
         matchesExtra && not (PathFilter.isGeneratedPath path)
 
 /// Classify a file path as a solution, project, or source change.
@@ -95,7 +128,7 @@ module FileWatcher =
         (repoRoot: string)
         (onChange: FileChangeKind -> unit)
         (isMacOSOverride: bool option)
-        (extraPatterns: string list)
+        (extraPatterns: FilePattern list)
         : FileWatcher =
         let handle (path: string) =
             if isRelevantFileOrExtra extraPatterns path then
@@ -137,7 +170,7 @@ module FileWatcher =
             |> List.map (fun pattern ->
                 mkWatcher repoRoot (fun w ->
                     w.IncludeSubdirectories <- true
-                    w.Filter <- pattern))
+                    w.Filter <- FilePattern.toString pattern))
 
         if isMacOS then
             let dirs =
