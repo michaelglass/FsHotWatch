@@ -9,6 +9,7 @@ open System.Text.Json
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.Logging
+open FsHotWatch.PluginActivity
 open FsHotWatch.PluginFramework
 
 type AnalyzersMsg =
@@ -185,7 +186,7 @@ let create
                 match event with
                 | FileChecked result ->
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                    ctx.StartSubtask "primary" $"analyzing {Path.GetFileName result.File}"
+                    ctx.StartSubtask PrimarySubtaskKey $"analyzing {Path.GetFileName result.File}"
 
                     let checkResultsObj =
                         match result.CheckResults with
@@ -283,7 +284,7 @@ let create
                     let errors = state.RunErrors + newErrors
                     let warnings = state.RunWarnings + newWarnings
 
-                    ctx.EndSubtask "primary"
+                    ctx.EndSubtask PrimarySubtaskKey
 
                     PluginCtxHelpers.completeWith
                         ctx
@@ -299,7 +300,7 @@ let create
                 | Custom(AnalysisFailed(file, error)) ->
                     ctx.ReportErrors file [ ErrorEntry.error $"Analyzer crashed: %s{error}" ]
 
-                    ctx.EndSubtask "primary"
+                    ctx.EndSubtask PrimarySubtaskKey
                     PluginCtxHelpers.completeWith ctx $"analyzer crashed on {Path.GetFileName file}"
                     return state
                 | _ -> return state
