@@ -501,12 +501,17 @@ let private flushPendingAnalysis (db: Database) (state: TestPruneState) =
         | Some items ->
             newPending <- Map.remove projectName newPending
 
+            // Use a full record literal (not AnalysisResult.Create) so per-file
+            // Attributes and ParentLinks survive the per-project merge.
+            // Create defaults both to []; the per-file results above carry them
+            // and we'd silently drop them on every flush.
             let combined =
-                AnalysisResult.Create(
-                    items |> List.collect (fun r -> r.Symbols),
-                    items |> List.collect (fun r -> r.Dependencies),
-                    items |> List.collect (fun r -> r.TestMethods)
-                )
+                { Symbols = items |> List.collect (fun r -> r.Symbols)
+                  Dependencies = items |> List.collect (fun r -> r.Dependencies)
+                  TestMethods = items |> List.collect (fun r -> r.TestMethods)
+                  Attributes = items |> List.collect (fun r -> r.Attributes)
+                  ParentLinks = items |> List.collect (fun r -> r.ParentLinks)
+                  Diagnostics = AnalysisDiagnostics.Zero }
 
             Logging.info "test-prune" $"Flushing %d{items.Length} files for %s{projectName} to DB"
             allResults.Add(combined)
@@ -597,6 +602,7 @@ let create
                       Dependencies = extensionDeps
                       TestMethods = []
                       Attributes = []
+                      ParentLinks = []
                       Diagnostics = AnalysisDiagnostics.Zero }
 
                 db.RebuildProjects([ edgeResult ])
@@ -905,6 +911,7 @@ let create
                                     analysisResult.TestMethods
                                     |> List.map (fun t -> { t with TestProject = projectName })
                                   Attributes = analysisResult.Attributes
+                                  ParentLinks = analysisResult.ParentLinks
                                   Diagnostics = analysisResult.Diagnostics }
 
                             // Read stored symbols from the in-memory snapshot (populated after
