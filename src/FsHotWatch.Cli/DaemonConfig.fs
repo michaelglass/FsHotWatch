@@ -444,6 +444,15 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
         | ConfigError _ as e -> raise e
         | ex -> raise (ConfigError $".fs-hot-watch.json: %s{ex.Message}")
 
+/// Load config, mapping ConfigError to an (exitCode, message) pair suitable for CLI use.
+/// Returns Ok cfg on success, Error (2, msg) on ConfigError. Keeps the daemon startup
+/// path simple and testable without `exit`.
+let loadConfigOrExit (repoRoot: string) : Result<DaemonConfiguration, int * string> =
+    try
+        Ok(loadConfig repoRoot)
+    with ConfigError msg ->
+        Error(2, msg)
+
 /// Wrap a shell command string into a callback that runs via splitCommand + runProcess.
 /// Returns (success, output).
 let private makeShellHookWithResult (label: string) (repoRoot: string) (cmd: string) : unit -> bool * string =
