@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- Emit a `lint failed on <file>` summary on the failure path (previously
+  the failure case relied on the now-removed last-log-line summary fallback).
+
 ## 0.7.0-alpha.7 - 2026-04-23
 
 - chore: bump upstream tool versions

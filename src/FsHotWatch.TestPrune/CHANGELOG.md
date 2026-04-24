@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- Emit a `"primary"` subtask label that differentiates filtered vs full suite
+  runs (`running N selected test projects` vs `running full suite (N projects)`).
+  Terminal summary is now `P passed, F failed in N projects (selected: yes|no)`,
+  leveraging the existing `TestResult.WasFiltered` flag.
+
 ### Added
 - **Partial-run coverage merging.** TestPrune now emits coverlet's native JSON
   format (not Cobertura) per test project. Full runs write
