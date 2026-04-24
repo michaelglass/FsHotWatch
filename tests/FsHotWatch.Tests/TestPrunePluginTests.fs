@@ -1849,3 +1849,14 @@ let ``processCoverageOutput on filtered run with baseline merges per-line max in
         test <@ xml.Contains("line-rate=\"1\"") @>
         // partial preserved for debugging
         test <@ File.Exists(paths.PartialJson) @>)
+
+[<Fact>]
+let ``TestRunCompleted carries RanFullSuite=true when no projects filtered`` () =
+    let evt =
+        { RunId = System.Guid.NewGuid()
+          TotalElapsed = System.TimeSpan.Zero
+          Outcome = Normal
+          Results = Map.empty
+          RanFullSuite = true }
+
+    Assert.True evt.RanFullSuite

@@ -199,6 +199,12 @@ type TestRunCompleted =
         /// for this RunId; materialized here so late subscribers can skip
         /// progress events entirely.
         Results: Map<string, TestResult>
+        /// True iff every project in this run executed without an impact filter
+        /// (i.e., the entire test suite ran). False if at least one project was
+        /// filtered to a subset. Consumers gate baseline refreshes/threshold
+        /// tightening on this — partial runs should not lower a coverage
+        /// baseline or tighten a ratchet.
+        RanFullSuite: bool
     }
 
 /// Current state of the daemon's scan operation.
