@@ -441,7 +441,7 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
             Logging.info "config" "Loaded .fs-hot-watch.json"
             config
         with
-        | ConfigError _ as e -> raise e
+        | ConfigError _ -> reraise ()
         | ex -> raise (ConfigError $".fs-hot-watch.json: %s{ex.Message}")
 
 /// Count the plugins that would be registered for a given configuration.
@@ -476,6 +476,9 @@ let watchConfigFile (configPath: string) (onChange: string -> unit) : IDisposabl
         ||| NotifyFilters.Size
         ||| NotifyFilters.CreationTime
 
+    // Capture defaults once at construction — defaultConfigFor probes the
+    // filesystem (.jj detection) and we don't want that on every event.
+    let defaults = defaultConfigFor dir
     let lastFire = ref DateTime.MinValue
     let gate = obj ()
 
@@ -493,7 +496,6 @@ let watchConfigFile (configPath: string) (onChange: string -> unit) : IDisposabl
         if fire then
             let reason =
                 try
-                    let defaults = defaultConfigFor dir
                     let _ = parseConfig (File.ReadAllText configPath) defaults
                     "config changed, stopping (restart to apply)"
                 with ex ->
@@ -522,14 +524,6 @@ let watchRepoConfigFile (repoRoot: string) (onChange: string -> unit) : IDisposa
         { new IDisposable with
             member _.Dispose() = () }
 
-/// Load config, mapping ConfigError to an (exitCode, message) pair suitable for CLI use.
-/// Returns Ok cfg on success, Error (2, msg) on ConfigError. Keeps the daemon startup
-/// path simple and testable without `exit`.
-let loadConfigOrExit (repoRoot: string) : Result<DaemonConfiguration, int * string> =
-    try
-        Ok(loadConfig repoRoot)
-    with ConfigError msg ->
-        Error(2, msg)
 
 /// Wrap a shell command string into a callback that runs via splitCommand + runProcess.
 /// Returns (success, output).
