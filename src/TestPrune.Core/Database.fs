@@ -176,8 +176,15 @@ let private openConnection (dbPath: string) =
 [<Literal>]
 let private SchemaVersion = 5
 
-let private deleteDbFiles (dbPath: string) =
-    File.Delete(dbPath)
+/// Delete the SQLite database file at `dbPath` along with its WAL mode
+/// sidecars (`-wal`, `-shm`). Deleting only the main file leaves stale
+/// sidecars that a later SQLite connection may attempt to "recover"
+/// against a freshly-created empty DB, producing a 0-byte main DB with
+/// no tables. Consumers recovering from schema drift should call this,
+/// not `File.Delete` directly.
+let deleteCacheFiles (dbPath: string) =
+    if File.Exists(dbPath) then
+        File.Delete(dbPath)
 
     for ext in [ "-wal"; "-shm" ] do
         let p = dbPath + ext
@@ -203,8 +210,16 @@ let private openCheckedConnection (dbPath: string) =
 
         // `user_version = 0` on a file with existing tables is a pre-versioning stale
         // DB — CREATE TABLE IF NOT EXISTS won't migrate its schema, so recreate.
+        //
+        // `version > SchemaVersion` means a NEWER process wrote this DB. Older
+        // code opening it must not clobber: the newer schema likely has
+        // additive columns we don't know about but don't need. Nuking causes
+        // data loss across version skew (e.g. an intelligence-repo build tool
+        // pinned to v3.0.2 clobbering a v3.1 daemon's DB before every test run
+        // — then the daemon hits "no such column" on the next flush).
         let isIncompatible =
             if version = SchemaVersion then false
+            elif version > SchemaVersion then false // forward-compat
             elif version = 0 then hasUserTables conn
             else true
 
@@ -213,7 +228,7 @@ let private openCheckedConnection (dbPath: string) =
 
             SqliteConnection.ClearPool(conn)
             conn.Dispose()
-            deleteDbFiles dbPath
+            deleteCacheFiles dbPath
             openConnection dbPath
         else
             conn
@@ -234,7 +249,10 @@ type Database(dbPath: string) =
         versionCmd.CommandText <- "PRAGMA user_version;"
         let currentVersion = versionCmd.ExecuteScalar() :?> int64 |> int
 
-        if currentVersion <> SchemaVersion then
+        // Only stamp when our schema is newer (or the file was unversioned).
+        // Never downgrade a future version — that would erase the marker a
+        // newer process relies on to detect older clients touching its DB.
+        if currentVersion < SchemaVersion then
             use setCmd = conn.CreateCommand()
             setCmd.CommandText <- $"PRAGMA user_version = %d{SchemaVersion};"
             setCmd.ExecuteNonQuery() |> ignore

@@ -1883,7 +1883,32 @@ module ``Schema version migration`` =
         cmd.ExecuteScalar() :?> int64 |> int
 
     [<Fact>]
-    let ``recreates database when schema version is outdated`` () =
+    let ``recreates database when schema version is older than SchemaVersion`` () =
+        // Older stamps (e.g. v3) are incompatible — columns we now expect
+        // may not exist. Recreation is correct.
+        let path = tempDbPath ()
+
+        try
+            let db = Database.create path
+            db.RebuildProjects([ standardGraph ])
+            let symbols = db.GetSymbolsInFile "src/Lib.fs"
+            test <@ symbols.Length = 1 @>
+
+            // Stamp an OLDER version. Any version < current SchemaVersion
+            // works as long as it's not 0 (which has its own case).
+            setUserVersion path 1
+
+            let db2 = Database.create path
+            let symbols2 = db2.GetSymbolsInFile "src/Lib.fs"
+            test <@ symbols2 |> List.isEmpty @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
+    let ``preserves database when schema version is newer than SchemaVersion`` () =
+        // Forward-compat: a newer daemon stamped v999 on the same DB file.
+        // An older consumer MUST NOT wipe it — the newer schema has additive
+        // columns the older code doesn't know about but doesn't need.
         let path = tempDbPath ()
 
         try
@@ -1895,8 +1920,13 @@ module ``Schema version migration`` =
             setUserVersion path 999
 
             let db2 = Database.create path
+            // Symbols must survive the open-and-create-if-needed path.
             let symbols2 = db2.GetSymbolsInFile "src/Lib.fs"
-            test <@ symbols2 |> List.isEmpty @>
+            test <@ symbols2.Length = 1 @>
+
+            // And the future-version marker must NOT be silently downgraded
+            // — a newer process relies on it to detect older clients.
+            test <@ getUserVersion path = 999 @>
         finally
             cleanupDb path
 
@@ -2339,3 +2369,115 @@ module ``Schema v5: ParentLinks integration`` =
 
             let parents = db2.GetParentLinksInFile "T.fs"
             test <@ parents |> List.exists (fun p -> p.Child = "M.T.m") @>)
+
+module ``Cache file cleanup`` =
+
+    /// Regression: `tryRepairSchemaDrift` in downstream consumers used to
+    /// `File.Delete dbPath` only, leaving stale `-wal` / `-shm` sidecars on
+    /// disk. SQLite in WAL mode ties sidecars to the main DB file; the next
+    /// connection opening a fresh empty DB with stale sidecars produces a
+    /// 0-byte main DB with no tables — every subsequent INSERT then hits
+    /// "no such column: parent_symbol_id". Provide a reusable helper so
+    /// consumers can't get the delete sequence wrong.
+
+    [<Fact>]
+    let ``deleteCacheFiles removes main DB plus -wal and -shm sidecars`` () =
+        let tmpDir =
+            Path.Combine(Path.GetTempPath(), $"tp-delete-{Guid.NewGuid():N}")
+
+        Directory.CreateDirectory(tmpDir) |> ignore
+        let dbPath = Path.Combine(tmpDir, "x.db")
+        let wal = dbPath + "-wal"
+        let shm = dbPath + "-shm"
+
+        File.WriteAllText(dbPath, "main")
+        File.WriteAllText(wal, "wal-entries")
+        File.WriteAllText(shm, "shm-header")
+
+        try
+            deleteCacheFiles dbPath
+
+            test <@ not (File.Exists dbPath) @>
+            test <@ not (File.Exists wal) @>
+            test <@ not (File.Exists shm) @>
+        finally
+            if Directory.Exists tmpDir then
+                Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``deleteCacheFiles is idempotent when main DB does not exist`` () =
+        // If the consumer has already deleted the main file (e.g. a
+        // partial recovery attempt), deleteCacheFiles must still clean up
+        // any leftover sidecars without throwing.
+        let tmpDir =
+            Path.Combine(Path.GetTempPath(), $"tp-delete-sidecars-{Guid.NewGuid():N}")
+
+        Directory.CreateDirectory(tmpDir) |> ignore
+        let dbPath = Path.Combine(tmpDir, "x.db")
+        let wal = dbPath + "-wal"
+
+        File.WriteAllText(wal, "stale")
+
+        try
+            deleteCacheFiles dbPath
+            test <@ not (File.Exists wal) @>
+        finally
+            if Directory.Exists tmpDir then
+                Directory.Delete(tmpDir, true)
+
+module ``Schema forward compatibility`` =
+
+    /// Regression: a NEWER daemon/process writes a DB stamped at
+    /// user_version = SchemaVersion + 1 (or higher). An OLDER consumer
+    /// opening the same DB path must NOT nuke it — its new schema likely
+    /// contains additive columns the older code doesn't understand but
+    /// doesn't need. Nuking would cause data loss across version skew
+    /// (observed with intelligence's build tool pinned to v3.0.2 clobbering
+    /// a v3.1.0 daemon's DB before every test run).
+    ///
+    /// Policy: version > SchemaVersion → leave the DB alone; ALTER TABLE
+    /// IF NOT EXISTS via CREATE TABLE is a no-op on pre-existing tables, so
+    /// CREATE TABLE IF NOT EXISTS in the constructor won't overwrite
+    /// anything. The older code uses its own columns; the newer columns
+    /// simply sit unused.
+
+    [<Fact>]
+    let ``opening a DB stamped at a future version does not recreate it`` () =
+        let tmpDir =
+            Path.Combine(Path.GetTempPath(), $"tp-fwd-{Guid.NewGuid():N}")
+
+        Directory.CreateDirectory(tmpDir) |> ignore
+        let dbPath = Path.Combine(tmpDir, "future.db")
+
+        // Create a DB with tables and user_version = 99 (much newer than our SchemaVersion).
+        use conn = new SqliteConnection($"Data Source=%s{dbPath}")
+        conn.Open()
+        use cmd1 = conn.CreateCommand()
+        cmd1.CommandText <- "CREATE TABLE sentinel (id INTEGER PRIMARY KEY, note TEXT); PRAGMA user_version = 99;"
+        cmd1.ExecuteNonQuery() |> ignore
+        use insert = conn.CreateCommand()
+        insert.CommandText <- "INSERT INTO sentinel(note) VALUES ('do-not-delete')"
+        insert.ExecuteNonQuery() |> ignore
+        conn.Close()
+        SqliteConnection.ClearPool(conn)
+
+        try
+            // Now open via Database — must not wipe the sentinel row.
+            let db = Database.create dbPath
+            db |> ignore
+
+            use verify = new SqliteConnection($"Data Source=%s{dbPath}")
+            verify.Open()
+            use q = verify.CreateCommand()
+            q.CommandText <- "SELECT note FROM sentinel WHERE id = 1"
+
+            let result =
+                try
+                    q.ExecuteScalar() :?> string
+                with _ ->
+                    ""
+
+            test <@ result = "do-not-delete" @>
+        finally
+            if Directory.Exists tmpDir then
+                Directory.Delete(tmpDir, true)
