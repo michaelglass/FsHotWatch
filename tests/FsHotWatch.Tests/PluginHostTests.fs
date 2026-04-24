@@ -728,3 +728,18 @@ let ``RegisterFileCommandPattern overwrites on re-register`` () =
     host.RegisterFileCommandPattern("plugin-a", parsePattern "*.ratchet.json")
     host.RegisterFileCommandPattern("plugin-a", parsePattern "coverage-ratchet.json")
     test <@ host.GetFileCommandPattern("plugin-a") = Some(parsePattern "coverage-ratchet.json") @>
+
+[<Fact(Timeout = 5000)>]
+let ``RerunFileCommandPlugin returns Error for unregistered plugin`` () =
+    let host = PluginHost.create nullChecker "/tmp"
+    let result = host.RerunFileCommandPlugin("nonexistent")
+
+    match result with
+    | Result.Error msg -> test <@ msg.Contains("nonexistent") @>
+    | Result.Ok() -> failwith "expected Error"
+
+[<Fact(Timeout = 5000)>]
+let ``RerunFileCommandPlugin returns Ok for registered plugin`` () =
+    let host = PluginHost.create nullChecker "/tmp"
+    host.RegisterFileCommandPattern("coverage-ratchet", parsePattern "*.ratchet.json")
+    test <@ host.RerunFileCommandPlugin("coverage-ratchet") = Result.Ok() @>
