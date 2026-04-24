@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- **Plugin status visibility sweep.** Plugins are now responsible for calling
+  `ctx.CompleteWithSummary` explicitly at the end of each run; the framework
+  no longer derives a summary from the last log line or the longest-running
+  subtask. `IActivitySink` / `PluginCtx` gain `UpdateSubtask(key, label)` for
+  in-place label updates on a long-lived primary subtask without churning
+  state. The compact renderer now shows the `"primary"` subtask's descriptive
+  label when present, instead of falling back to the activity tail.
+
 ## 0.8.0-alpha.9 - 2026-04-23
 
 ### Changed (breaking)
