@@ -1,10 +1,20 @@
 module FsHotWatch.ProcessHelper
 
+open System
 open System.Diagnostics
+open System.Threading.Tasks
 
-/// Run a process and return (exitCode = 0, combined output).
+/// Run a process with a timeout. Returns (exitCode = 0, combined output).
+/// If the process exceeds `timeout`, it and its child process tree are killed,
+/// the tuple returns `false` with output prefixed by `timed out after {N}s`.
 /// Reads stdout and stderr concurrently to avoid deadlock.
-let runProcess (command: string) (args: string) (workDir: string) (env: (string * string) list) : bool * string =
+let runProcessWithTimeout
+    (command: string)
+    (args: string)
+    (workDir: string)
+    (env: (string * string) list)
+    (timeout: TimeSpan)
+    : bool * string =
     let psi = ProcessStartInfo(command, args)
     psi.RedirectStandardOutput <- true
     psi.RedirectStandardError <- true
@@ -17,10 +27,51 @@ let runProcess (command: string) (args: string) (workDir: string) (env: (string 
     use proc = Process.Start(psi)
     let stdoutTask = proc.StandardOutput.ReadToEndAsync()
     let stderrTask = proc.StandardError.ReadToEndAsync()
-    // Await both concurrently to avoid deadlock when either buffer fills
-    System.Threading.Tasks.Task.WaitAll(stdoutTask, stderrTask)
-    let stdout = stdoutTask.Result
-    let stderr = stderrTask.Result
-    proc.WaitForExit()
-    let output = $"%s{stdout}\n%s{stderr}".Trim()
-    (proc.ExitCode = 0, output)
+
+    let timeoutMs =
+        if timeout = Threading.Timeout.InfiniteTimeSpan then
+            -1
+        else
+            int timeout.TotalMilliseconds
+
+    let exited = proc.WaitForExit(timeoutMs)
+
+    if not exited then
+        try
+            proc.Kill(entireProcessTree = true)
+        with _ ->
+            ()
+
+        // best-effort drain so we still report partial output
+        let drainMs = 500
+
+        try
+            Task.WaitAll([| stdoutTask :> Task; stderrTask :> Task |], drainMs) |> ignore
+        with _ ->
+            ()
+
+        let stdout =
+            if stdoutTask.IsCompletedSuccessfully then
+                stdoutTask.Result
+            else
+                ""
+
+        let stderr =
+            if stderrTask.IsCompletedSuccessfully then
+                stderrTask.Result
+            else
+                ""
+
+        let tail = $"%s{stdout}\n%s{stderr}".Trim()
+        false, $"timed out after %d{int timeout.TotalSeconds}s\n%s{tail}"
+    else
+        Task.WaitAll(stdoutTask, stderrTask)
+        let stdout = stdoutTask.Result
+        let stderr = stderrTask.Result
+        let output = $"%s{stdout}\n%s{stderr}".Trim()
+        (proc.ExitCode = 0, output)
+
+/// Run a process and return (exitCode = 0, combined output).
+/// Reads stdout and stderr concurrently to avoid deadlock.
+let runProcess (command: string) (args: string) (workDir: string) (env: (string * string) list) : bool * string =
+    runProcessWithTimeout command args workDir env Threading.Timeout.InfiniteTimeSpan
