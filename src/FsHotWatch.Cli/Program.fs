@@ -792,13 +792,10 @@ let main args =
             let cacheConfig = if opts.NoCache then DaemonConfig.NoCache else config.Cache
             let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
 
-            let fileCommandSuffixes =
-                config.FileCommands
-                |> List.choose (fun fc -> fc.Pattern)
-                |> List.map (fun p -> p.TrimStart('*'))
+            let fileCommandPatterns = config.FileCommands |> List.choose (fun fc -> fc.Pattern)
 
             let createDaemon (root: string) =
-                Daemon.create root backend keyProvider None config.Exclude fileCommandSuffixes
+                Daemon.create root backend keyProvider None config.Exclude fileCommandPatterns
 
             executeCommand createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
         | Error(HelpRequested path) ->
