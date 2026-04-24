@@ -80,19 +80,34 @@ fs-hot-watch coverage-ratchet-status
 
 ## Programmatic usage
 
-From the [FullPipelineExample](../../examples/FullPipelineExample/):
-
 ```fsharp
+open FsHotWatch.PluginFramework
+open FsHotWatch.FileCommand.FileCommandPlugin
+
 // Type-check .fsx scripts when they change
+let trigger: CommandTrigger =
+    { FilePattern = Some(fun f -> f.EndsWith(".fsx"))
+      AfterTests = None }
+
 daemon.RegisterHandler(
-    FileCommandPlugin.create
-        "scripts"                           // plugin name
-        (fun f -> f.EndsWith(".fsx"))       // file filter predicate
+    create
+        (PluginName.create "scripts")       // plugin name
+        trigger                             // CommandTrigger (pattern and/or afterTests)
         "dotnet"                            // command
         "fsi --typecheck-only build.fsx"    // args
         None                                // getCommitId for caching
 )
 ```
+
+For the combined trigger case (fires on file changes AND test completion):
+
+```fsharp
+let trigger: CommandTrigger =
+    { FilePattern = Some(fun f -> f.EndsWith(".ratchet.json"))
+      AfterTests = Some AnyTest }
+```
+
+See the [FullPipelineExample](../../examples/FullPipelineExample/) for a complete setup.
 
 ## Install
 
