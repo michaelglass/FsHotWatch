@@ -21,6 +21,17 @@ open System.Text.Json.Nodes
 /// and cheap structural merge at the leaves.
 type CoverageData = Map<string, Map<string, Map<int, int>>>
 
+/// Canonical filenames for coverage artifacts. Centralized so the daemon,
+/// CLI refresh command, and tests stay in lockstep.
+[<Literal>]
+let BaselineJsonName = "coverage.baseline.json"
+
+[<Literal>]
+let PartialJsonName = "coverage.partial.json"
+
+[<Literal>]
+let CoberturaName = "coverage.cobertura.xml"
+
 let private tryParseInt (s: string) =
     match System.Int32.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture) with
     | true, v -> Some v
