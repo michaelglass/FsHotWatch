@@ -1,43 +1,24 @@
 # Changelog — TestPrune.Core
 
 ## [Unreleased]
-- feat: aggregate-type invalidation. Type members now carry a containment link
-  (`symbols.parent_symbol_id`, schema v5) and `QueryAffectedTests` expands in
-  both directions along it, gated on `parent.kind = 'Type'`. A change to any
-  member of a type invalidates consumers that touched any part of the type;
-  module siblings are explicitly excluded so editing one helper doesn't fan
-  out to consumers of unrelated ones. Auto-recreates v4 databases on open.
-- feat: direct `testMethod → fixtureType` edges. Every test method now carries
-  explicit edges to its declaring class's primary-ctor parameter types and
-  `IClassFixture<T>`/`ICollectionFixture<T>` interface args. Closes the gap
-  where a test takes a fixture ctor-param but never references it in-body —
-  the class-level edge alone couldn't chain back to the test method.
-- feat: xUnit `[<Collection("name")>]` / `[<CollectionDefinition("name")>]`
-  resolution. A synthetic `TestPrune.__Collection__.<name>` symbol bridges
-  test classes that name a collection by string to the collection-definition
-  class that carries the `ICollectionFixture<T>`. Cross-file references
-  resolve through the existing extern/full_name pipeline.
-- feat: attribute-driven file dependencies. `[<TestPrune.DependsOnFile(path)>]`
-  and `[<TestPrune.DependsOnGlob(pattern)>]` (from the new `TestPrune.Attributes`
-  package) annotate symbols that depend on non-F# files. `ImpactAnalysis.selectTests`
-  matches changed paths against declarations and seeds the transitive walk
-  with the annotated symbols. New `SelectionReason.FileDependencyChanged(path, symbol)`
-  variant surfaces in `TestSelectedEvent`.
-- feat: entity-level attributes are now captured in `symbol_attributes`, so
-  markers on classes/types flow through to impact analysis (previously only
-  method/value attributes were indexed).
-- api: `ImpactAnalysis.selectTests` signature changed from five loose
-  parameters to `(SymbolStore) -> (string list) -> (Map<string, SymbolInfo list>) -> _`.
-  Callers that built the three store callbacks by hand should now pass the
-  full store (or use `Ports.toSymbolStore db` for a `Database` instance).
-- api: new `Ports.SymbolStore.GetParentLinksInFile`, used by the orchestrator
-  to preserve parent links across the cached-file path.
-- api: `AstAnalyzer.AnalysisResult` gained a `ParentLinks` field;
-  `SymbolParentLink` is a new public record.
-- api: new `AstAnalyzer.SyntheticCollectionPrefix` literal
-  (`"TestPrune.__Collection__."`) — the naming convention for the xUnit
-  collection-resolution bridge symbol.
-- api: new `Database.GetParentLinksInFile`. Schema bumped to v5.
+- feat: aggregate-type invalidation (schema v5). Editing any member of a type
+  now invalidates consumers that touched any part of it. Module siblings are
+  excluded. v4 databases auto-recreate on open.
+- feat: direct test-method → fixture-type edges via primary-ctor params and
+  `IClassFixture<T>`/`ICollectionFixture<T>` interfaces. Catches fixtures the
+  test never references in-body.
+- feat: xUnit `[<Collection("name")>]` bridges to `[<CollectionDefinition>]`
+  via a synthetic symbol, resolving cross-file through the extern pipeline.
+- feat: `[<DependsOnFile>]` / `[<DependsOnGlob>]` (new `TestPrune.Attributes`
+  package) seed selection from non-F# file changes. New
+  `SelectionReason.FileDependencyChanged` surfaced on `TestSelectedEvent`.
+- feat: entity-level attributes are now captured in `symbol_attributes`
+  (previously only member-level).
+- api: `ImpactAnalysis.selectTests` now takes a `SymbolStore` instead of
+  three loose callbacks. Use `Ports.toSymbolStore db` to migrate.
+- api: `SymbolStore.GetParentLinksInFile`, `Database.GetParentLinksInFile`.
+- api: `AnalysisResult.ParentLinks` field, `SymbolParentLink` record.
+- api: `AstAnalyzer.SyntheticCollectionPrefix` literal.
 
 ## [3.0.2]
 - fix: `openCheckedConnection` now recreates the DB when `user_version = 0`

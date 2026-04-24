@@ -152,33 +152,28 @@ broken one.
 
 ## Declarative dependencies
 
-Some edges the analyzer can't see from static code alone — reflection,
-DI-by-type, plug-in loading, or dependencies on non-F# files like
-snapshot data, SQL migrations, or config. The
+For edges the analyzer can't see — reflection, DI-by-type, or non-F#
+files like snapshots, migrations, or config —
 [`TestPrune.Attributes`](https://www.nuget.org/packages/TestPrune.Attributes)
-package lets you declare them:
+lets you declare them:
 
 ```fsharp
 open TestPrune
 
-// Reflection / runtime-resolved type: pretend the static graph sees it.
-[<DependsOn(typeof<PluginRegistry>)>]
+[<DependsOn(typeof<PluginRegistry>)>]                    // reflection target
 let registerPlugins () = ...
 
-// A specific data file: editing it invalidates any test downstream of
-// the annotated symbol.
-[<DependsOnFile("tests/snapshots/api.snap.json")>]
+[<DependsOnFile("tests/snapshots/api.snap.json")>]       // specific file
 [<Fact>]
 let ``api snapshot`` () = ...
 
-// Glob: `**` crosses path segments, `*` stays within one, `?` matches
-// a single non-`/` character. Case-sensitive, repo-relative.
-[<DependsOnGlob("migrations/*.sql")>]
+[<DependsOnGlob("migrations/*.sql")>]                    // glob
 type DbIntegrationTests() = ...
 ```
 
-The attributes have no runtime behavior — they're metadata TestPrune
-reads during indexing.
+Glob dialect: `**` crosses path segments, `*` stays within one, `?` is
+a single non-`/` char. Paths are repo-relative and case-sensitive. The
+attributes are metadata — no runtime behavior.
 
 ## Extensions
 
