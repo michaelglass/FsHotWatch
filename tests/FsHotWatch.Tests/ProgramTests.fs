@@ -39,7 +39,7 @@ let private fakeIpc () : IpcOps =
       WaitForComplete = fun _ _ -> async { return "{}" }
       TriggerBuild = fun _ -> async { return "{}" }
       FormatAll = fun _ -> async { return "formatted 0 files" }
-      InvalidateCache = fun _ _ -> async { return """{"status": "rechecked"}""" }
+      RerunPlugin = fun _ _ -> async { return "{}" }
       IsRunning = fun _ -> true
       LaunchDaemon = fun _ _ _ -> () }
 
@@ -671,8 +671,8 @@ let ``executeCommand FormatCheck returns 1 when daemon startup fails`` () =
 let ``executeCommand Analyze returns 1 when daemon startup fails`` () = assertFailsWhenDaemonDown (Analyze [])
 
 [<Fact(Timeout = 5000)>]
-let ``executeCommand InvalidateCache returns 1 when daemon startup fails`` () =
-    assertFailsWhenDaemonDown (InvalidateCache "foo.fs")
+let ``executeCommand Rerun returns 1 when daemon startup fails`` () =
+    assertFailsWhenDaemonDown (Rerun "coverage-ratchet")
 
 /// The agent-mode banner advertises a curated set of subcommands. If any name
 /// drifts from the real command tree (typo, rename, removed subcommand) this
