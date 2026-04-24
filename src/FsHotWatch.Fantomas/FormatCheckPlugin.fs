@@ -69,6 +69,7 @@ let createFormatCheck (getCommitId: (unit -> string option) option) : PluginHand
                     let isIgnored = ignoreCache.Get(ctx.RepoRoot)
 
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                    ctx.StartSubtask "primary" $"checking format of %d{files.Length} files"
 
                     let mutable newUnformatted = state.Unformatted
                     let mutable failed = false
@@ -100,8 +101,16 @@ let createFormatCheck (getCommitId: (unit -> string option) option) : PluginHand
                                 ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                                 failed <- true
 
+                    ctx.EndSubtask "primary"
+
                     if not failed then
-                        PluginCtxHelpers.completeWith ctx $"{newUnformatted.Count} unformatted files"
+                        let summary =
+                            if newUnformatted.Count = 0 then
+                                "format OK"
+                            else
+                                $"%d{newUnformatted.Count} files need formatting"
+
+                        PluginCtxHelpers.completeWith ctx summary
 
                     return { Unformatted = newUnformatted }
                 | _ -> return state
