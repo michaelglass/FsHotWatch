@@ -430,7 +430,8 @@ let ``FileTaskCache roundtrips cached events`` () =
                       { RunId = System.Guid.NewGuid()
                         TotalElapsed = System.TimeSpan.FromSeconds(3.5)
                         Outcome = Normal
-                        Results = Map.ofList [ "proj1", TestsPassed("ok", false); "proj2", TestsFailed("fail", false) ] } ] }
+                        Results = Map.ofList [ "proj1", TestsPassed("ok", false); "proj2", TestsFailed("fail", false) ]
+                        RanFullSuite = true } ] }
 
         c.Set (ck "build" "X.fs") (hash "k") result
 

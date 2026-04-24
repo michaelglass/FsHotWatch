@@ -19,7 +19,8 @@ let private emitRunCompleted (host: PluginHost) (results: (string * TestResult) 
         { RunId = System.Guid.NewGuid()
           TotalElapsed = System.TimeSpan.Zero
           Outcome = Normal
-          Results = Map.ofList results }
+          Results = Map.ofList results
+          RanFullSuite = true }
 
 /// Emit a TestProgress event (delta for one group) with the given RunId. Used
 /// by tests that want to simulate the in-progress phase of a run.
@@ -707,7 +708,8 @@ let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style
           Results =
             Map.ofList
                 [ "Other", FsHotWatch.Events.TestsPassed("", false)
-                  "ProjA", FsHotWatch.Events.TestsPassed("", false) ] }
+                  "ProjA", FsHotWatch.Events.TestsPassed("", false) ]
+          RanFullSuite = true }
 
     waitUntil
         (fun () ->
