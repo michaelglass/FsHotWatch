@@ -101,7 +101,9 @@ type PluginHost
                     let nameStr = PluginFramework.PluginName.value name
                     activity.Log(nameStr, msg)
                     Logging.info nameStr msg
-              SetSummary = fun name s -> activity.SetSummary(PluginFramework.PluginName.value name, s) }
+              SetSummary = fun name s -> activity.SetSummary(PluginFramework.PluginName.value name, s)
+              SetNextTerminalOutcome =
+                fun name outcome -> activity.SetNextTerminalOutcome(PluginFramework.PluginName.value name, outcome) }
 
         let plugin = PluginFramework.registerHandler services handler
 
