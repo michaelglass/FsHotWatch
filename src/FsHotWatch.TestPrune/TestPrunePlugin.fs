@@ -112,6 +112,8 @@ type TestConfig =
         /// Separator for joining class names in the filter. Default: " "
         /// Example: "|ClassName=" for dotnet test --filter "ClassName=A|ClassName=B"
         ClassJoin: string
+        /// Per-project timeout in seconds. None → use top-level default.
+        TimeoutSec: int option
     }
 
 type RerunIntent =
