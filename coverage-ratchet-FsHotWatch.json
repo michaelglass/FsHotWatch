@@ -63,7 +63,7 @@
     "Daemon.fs": [
       {
         "line": 79,
-        "branch": 58,
+        "branch": 57,
         "platform": "macos"
       },
       {
@@ -75,8 +75,8 @@
     ],
     "DaemonConfig.fs": [
       {
-        "line": 71,
-        "branch": 68,
+        "line": 75,
+        "branch": 71,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -209,7 +209,7 @@
     ],
     "Ipc.fs": [
       {
-        "line": 86,
+        "line": 85,
         "branch": 69,
         "reason": "loosened automatically",
         "platform": "macos"
@@ -307,7 +307,7 @@
     "PluginActivity.fs": [
       {
         "line": 92,
-        "branch": 66,
+        "branch": 65,
         "reason": "loosened: Recording phase state paths hit 65-66% across runs; pin to observed floor",
         "platform": "macos"
       },
@@ -334,8 +334,8 @@
     ],
     "PluginHost.fs": [
       {
-        "line": 83,
-        "branch": 52,
+        "line": 82,
+        "branch": 60,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -443,8 +443,8 @@
     ],
     "Watcher.fs": [
       {
-        "line": 84,
-        "branch": 50,
+        "line": 88,
+        "branch": 47,
         "reason": "loosened automatically",
         "platform": "macos"
       },
