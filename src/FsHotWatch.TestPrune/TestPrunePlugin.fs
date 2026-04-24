@@ -9,6 +9,7 @@ open FsHotWatch
 open FsHotWatch.Logging
 open FsHotWatch.ProcessHelper
 open FsHotWatch.Lifecycle
+open FsHotWatch.PluginActivity
 open FsHotWatch.PluginFramework
 open FsHotWatch.StringHelpers
 open TestPrune.AstAnalyzer
@@ -272,7 +273,7 @@ let private executeTests
 
         ctx
         |> Option.iter (fun c ->
-            c.StartSubtask "primary" primaryLabel
+            c.StartSubtask PrimarySubtaskKey primaryLabel
 
             c.EmitTestRunStarted
                 { RunId = runId
@@ -453,7 +454,7 @@ let private executeTests
         // timeouts, or crashes (none wired through this path today).
         ctx
         |> Option.iter (fun c ->
-            c.EndSubtask "primary"
+            c.EndSubtask PrimarySubtaskKey
 
             c.EmitTestRunCompleted
                 { RunId = runId
