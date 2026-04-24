@@ -11,6 +11,12 @@ open FsHotWatch.Events
 open FsHotWatch.Logging
 open FsHotWatch.PluginActivity
 open FsHotWatch.PluginFramework
+open FsHotWatch.ProcessHelper
+
+/// Default per-event analyzer timeout (seconds). Used when no override is
+/// configured. Chosen to match DaemonConfig.AnalyzersTimeoutDefaultSec.
+[<Literal>]
+let AnalyzersTimeoutDefaultSec = 120
 
 type AnalyzersMsg =
     | AnalysisComplete of file: string * entries: ErrorEntry list
@@ -93,9 +99,16 @@ let internal buildAnalyzerProjectOptions
 /// using the warm checker's results.
 /// Uses reflection to construct CliContext, bypassing the FCS 43.10 vs 43.12
 /// type mismatch at compile time (the types are structurally identical).
-let create
+/// Internal constructor with a test seam. `slowHook` is invoked inside the
+/// timeout-guarded region before the real analyzer call so tests can force
+/// the timeout branch without needing a real slow analyzer DLL. The public
+/// `create` passes `None`. In-process timeouts are advisory — the orphan
+/// work continues running; only its result is discarded.
+let internal createWithSlowHook
     (analyzerPaths: string list)
     (getCommitId: (unit -> string option) option)
+    (timeoutSec: int option)
+    (slowHook: (unit -> unit) option)
     : PluginHandler<AnalyzersState, AnalyzersMsg> =
     let client = Client<CliAnalyzerAttribute, CliContext>()
     let concurrencyLimit = 4
@@ -172,6 +185,10 @@ let create
 
     info "analyzers" $"Loaded %d{loadedCount} analyzers from %d{analyzerPaths.Length} paths"
 
+    let analyzerTimeout =
+        let secs = defaultArg timeoutSec AnalyzersTimeoutDefaultSec
+        TimeSpan.FromSeconds(float secs)
+
     { Name = PluginName.create "analyzers"
       Init =
         { DiagnosticsByFile = Map.empty
@@ -207,55 +224,71 @@ let create
                                     $"analyzing {Path.GetFileName result.File}"
                                     (async {
                                         try
-                                            let sourceText = result.Source |> SourceText.ofString
+                                            let runAnalyzers () =
+                                                match slowHook with
+                                                | Some h -> h ()
+                                                | None -> ()
 
-                                            let context =
-                                                createCliContext
-                                                    (box result.File)
-                                                    (box sourceText)
-                                                    (box result.ParseResults)
-                                                    checkResultsObj
-                                                    (box result.ProjectOptions)
+                                                let sourceText = result.Source |> SourceText.ofString
 
-                                            let! messages =
-                                                try
-                                                    client.RunAnalyzersSafely(context)
-                                                with ex ->
-                                                    error
-                                                        "analyzers"
-                                                        $"RunAnalyzersSafely failed for %s{result.File}: %s{ex.ToString()}"
+                                                let context =
+                                                    createCliContext
+                                                        (box result.File)
+                                                        (box sourceText)
+                                                        (box result.ParseResults)
+                                                        checkResultsObj
+                                                        (box result.ProjectOptions)
 
-                                                    reraise ()
+                                                client.RunAnalyzersSafely(context) |> Async.RunSynchronously
 
-                                            let entries =
-                                                messages
-                                                |> List.collect (fun ar ->
-                                                    match ar.Output with
-                                                    | Ok msgs ->
-                                                        msgs
-                                                        |> List.map (fun m ->
-                                                            { Message = m.Message
-                                                              Severity =
-                                                                match m.Severity with
-                                                                | Severity.Error -> DiagnosticSeverity.Error
-                                                                | Severity.Warning -> DiagnosticSeverity.Warning
-                                                                | Severity.Info -> DiagnosticSeverity.Info
-                                                                | Severity.Hint -> DiagnosticSeverity.Hint
-                                                              Line = m.Range.StartLine
-                                                              Column = m.Range.StartColumn
-                                                              Detail = None })
-                                                    | Result.Error _ -> [])
+                                            match runWithTimeout analyzerTimeout runAnalyzers with
+                                            | Result.Error reason ->
+                                                error "analyzers" $"Analyzers TIMED OUT for %s{result.File}: %s{reason}"
 
-                                            debug
-                                                "analyzers"
-                                                $"Analyzed %s{Path.GetFileName result.File}: %d{entries.Length} diagnostics"
+                                                ctx.EndSubtask PrimarySubtaskKey
+                                                ctx.CompleteWithTimeout reason
 
-                                            if entries.IsEmpty then
-                                                ctx.ClearErrors result.File
-                                            else
-                                                ctx.ReportErrors result.File entries
+                                                ctx.ReportStatus(
+                                                    PluginStatus.Failed(
+                                                        $"analyzers timed out: {reason}",
+                                                        DateTime.UtcNow
+                                                    )
+                                                )
+                                            // Do NOT Post(AnalysisFailed ...) — the status is already
+                                            // terminal (TimedOut). Reposting would trigger the
+                                            // AnalysisFailed handler's completeWith which records a
+                                            // second RunRecord and overwrites the TimedOut outcome.
+                                            | Result.Ok messages ->
 
-                                            ctx.Post(AnalysisComplete(result.File, entries))
+                                                let entries =
+                                                    messages
+                                                    |> List.collect (fun ar ->
+                                                        match ar.Output with
+                                                        | Ok msgs ->
+                                                            msgs
+                                                            |> List.map (fun m ->
+                                                                { Message = m.Message
+                                                                  Severity =
+                                                                    match m.Severity with
+                                                                    | Severity.Error -> DiagnosticSeverity.Error
+                                                                    | Severity.Warning -> DiagnosticSeverity.Warning
+                                                                    | Severity.Info -> DiagnosticSeverity.Info
+                                                                    | Severity.Hint -> DiagnosticSeverity.Hint
+                                                                  Line = m.Range.StartLine
+                                                                  Column = m.Range.StartColumn
+                                                                  Detail = None })
+                                                        | Result.Error _ -> [])
+
+                                                debug
+                                                    "analyzers"
+                                                    $"Analyzed %s{Path.GetFileName result.File}: %d{entries.Length} diagnostics"
+
+                                                if entries.IsEmpty then
+                                                    ctx.ClearErrors result.File
+                                                else
+                                                    ctx.ReportErrors result.File entries
+
+                                                ctx.Post(AnalysisComplete(result.File, entries))
                                         with ex ->
                                             ctx.Post(AnalysisFailed(result.File, ex.ToString()))
                                             error "analyzers" $"Error analyzing %s{result.File}: %s{ex.ToString()}"
@@ -340,3 +373,14 @@ let create
             cts.Cancel()
             cts.Dispose()
             semaphore.Dispose()) }
+
+/// Creates a framework plugin handler that hosts F# analyzers in-process
+/// using the warm checker's results. Per-event work is wrapped in
+/// `runWithTimeout`; on expiry the run is recorded as `TimedOut` and the
+/// orphan work continues running in the background (result discarded).
+let create
+    (analyzerPaths: string list)
+    (getCommitId: (unit -> string option) option)
+    (timeoutSec: int option)
+    : PluginHandler<AnalyzersState, AnalyzersMsg> =
+    createWithSlowHook analyzerPaths getCommitId timeoutSec None
