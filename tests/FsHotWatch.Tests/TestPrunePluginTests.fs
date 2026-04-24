@@ -1617,6 +1617,34 @@ let ``tryRepairSchemaDrift deletes the DB when the error looks like schema drift
             Directory.Delete(tmpDir, true)
 
 [<Fact(Timeout = 2000)>]
+let ``tryRepairSchemaDrift deletes WAL and SHM sidecars alongside the main DB`` () =
+    // Regression: deleting only the main DB file leaves -wal/-shm on disk.
+    // SQLite in WAL mode ties the sidecars to the main file; a new connection
+    // opening a fresh (empty) main DB with stale sidecars produces a
+    // 0-byte main DB with garbage recovery state — subsequent inserts hit
+    // "no such column: parent_symbol_id" because the schema DDL never fully
+    // applied. Observed in production after a schema-drift recovery pass.
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-repair-wal-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+    let dbPath = Path.Combine(tmpDir, "testprune.db")
+    let walPath = dbPath + "-wal"
+    let shmPath = dbPath + "-shm"
+
+    File.WriteAllText(dbPath, "stale-main")
+    File.WriteAllText(walPath, "stale-wal-entries")
+    File.WriteAllText(shmPath, "stale-shm-header")
+
+    try
+        tryRepairSchemaDrift dbPath (exn "SQLite Error 1: 'no such column: parent_symbol_id'")
+
+        test <@ not (File.Exists dbPath) @>
+        test <@ not (File.Exists walPath) @>
+        test <@ not (File.Exists shmPath) @>
+    finally
+        if Directory.Exists tmpDir then
+            Directory.Delete(tmpDir, true)
+
+[<Fact(Timeout = 2000)>]
 let ``tryRepairSchemaDrift leaves the DB alone for unrelated errors`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-repair-noop-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
