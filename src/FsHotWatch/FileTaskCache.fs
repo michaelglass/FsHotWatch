@@ -71,22 +71,36 @@ let private serializeTestResult (key: string) (result: TestResult) =
     obj["project"] <- key
 
     match result with
-    | TestsPassed output ->
+    | TestsPassed(output, wasFiltered) ->
         obj["result"] <- "passed"
         obj["output"] <- output
-    | TestsFailed output ->
+        obj["wasFiltered"] <- wasFiltered
+    | TestsFailed(output, wasFiltered) ->
         obj["result"] <- "failed"
         obj["output"] <- output
+        obj["wasFiltered"] <- wasFiltered
 
     obj
 
 let private deserializeTestResult (obj: JsonObject) : string * TestResult =
     let project = obj["project"].GetValue<string>()
 
+    let output = obj["output"].GetValue<string>()
+
+    // wasFiltered is optional for backward compatibility with caches written
+    // before the field existed; default to false (full run).
+    let wasFiltered =
+        if obj.ContainsKey("wasFiltered") then
+            let node = obj["wasFiltered"]
+
+            if isNull node then false else node.GetValue<bool>()
+        else
+            false
+
     let result =
         match obj["result"].GetValue<string>() with
-        | "passed" -> TestsPassed(obj["output"].GetValue<string>())
-        | "failed" -> TestsFailed(obj["output"].GetValue<string>())
+        | "passed" -> TestsPassed(output, wasFiltered)
+        | "failed" -> TestsFailed(output, wasFiltered)
         | r -> failwith $"Unknown test result: %s{r}"
 
     project, result
