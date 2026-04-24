@@ -367,8 +367,21 @@ let private executeTests
 
                             let logToCtx msg = ctx |> Option.iter (fun c -> c.Log msg)
 
+                            let timeoutSpan =
+                                match config.TimeoutSec with
+                                | Some s -> TimeSpan.FromSeconds(float s)
+                                | None -> System.Threading.Timeout.InfiniteTimeSpan
+
                             let runTest =
-                                async { return runProcess config.Command finalArgs repoRoot config.Environment }
+                                async {
+                                    return
+                                        runProcessWithTimeout
+                                            config.Command
+                                            finalArgs
+                                            repoRoot
+                                            config.Environment
+                                            timeoutSpan
+                                }
 
                             let! (success, output) =
                                 match ctx with
@@ -1120,25 +1133,47 @@ let create
 
                         let selectedSuffix = if anyFiltered then "yes" else "no"
 
-                        ctx.CompleteWithSummary
-                            $"%d{passed} passed, %d{failed} failed in %d{total} projects (selected: %s{selectedSuffix})"
+                        // Detect per-project timeouts by scanning failed-run output
+                        // for the runProcessWithTimeout marker. Any project timeout
+                        // flips the plugin's terminal outcome to TimedOut.
+                        let timedOutProjects =
+                            testResults.Results
+                            |> Map.toList
+                            |> List.choose (fun (name, r) ->
+                                match r with
+                                | TestsFailed(output, _) when output.StartsWith("timed out") -> Some name
+                                | _ -> None)
 
-                        if allPassed || testResults.Results.IsEmpty then
-                            ctx.ReportStatus(Completed(DateTime.UtcNow))
-                        else
-                            let failedProjects =
-                                testResults.Results
-                                |> Map.toList
-                                |> List.choose (fun (name, r) ->
-                                    match r with
-                                    | TestsFailed _ -> Some name
-                                    | _ -> None)
-
-                            let names = failedProjects |> String.concat ", "
+                        if not timedOutProjects.IsEmpty then
+                            let names = timedOutProjects |> String.concat ", "
+                            ctx.CompleteWithTimeout $"test project(s): {names}"
 
                             ctx.ReportStatus(
-                                PluginStatus.Failed($"%d{failedProjects.Length} failed: %s{names}", DateTime.UtcNow)
+                                PluginStatus.Failed(
+                                    $"%d{timedOutProjects.Length} timed out: %s{names}",
+                                    DateTime.UtcNow
+                                )
                             )
+                        else
+                            ctx.CompleteWithSummary
+                                $"%d{passed} passed, %d{failed} failed in %d{total} projects (selected: %s{selectedSuffix})"
+
+                            if allPassed || testResults.Results.IsEmpty then
+                                ctx.ReportStatus(Completed(DateTime.UtcNow))
+                            else
+                                let failedProjects =
+                                    testResults.Results
+                                    |> Map.toList
+                                    |> List.choose (fun (name, r) ->
+                                        match r with
+                                        | TestsFailed _ -> Some name
+                                        | _ -> None)
+
+                                let names = failedProjects |> String.concat ", "
+
+                                ctx.ReportStatus(
+                                    PluginStatus.Failed($"%d{failedProjects.Length} failed: %s{names}", DateTime.UtcNow)
+                                )
 
                         return
                             { state with
