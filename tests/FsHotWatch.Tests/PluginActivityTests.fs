@@ -189,6 +189,23 @@ let ``Activity after RecordTerminal starts a fresh recording`` () =
     test <@ (List.item 1 hist).ActivityTail = [ "second" ] @>
 
 [<Fact(Timeout = 5000)>]
+let ``UpdateSubtask replaces label without changing StartedAt`` () =
+    let s = State()
+    s.StartSubtask("p", "primary", "v1")
+    let t1 = s.GetSubtasks("p") |> List.exactlyOne
+    System.Threading.Thread.Sleep(5)
+    s.UpdateSubtask("p", "primary", "v2")
+    let t2 = s.GetSubtasks("p") |> List.exactlyOne
+    test <@ t2.Label = "v2" @>
+    test <@ t1.StartedAt = t2.StartedAt @>
+
+[<Fact(Timeout = 5000)>]
+let ``UpdateSubtask is a no-op when key not present`` () =
+    let s = State()
+    s.UpdateSubtask("p", "missing", "label")
+    test <@ List.isEmpty (s.GetSubtasks("p")) @>
+
+[<Fact(Timeout = 5000)>]
 let ``Thread-safe under concurrent StartSubtask EndSubtask calls`` () =
     let s = State()
 
