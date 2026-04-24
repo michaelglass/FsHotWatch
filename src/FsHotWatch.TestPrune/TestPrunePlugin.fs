@@ -66,8 +66,8 @@ let private formatTestResultsJson (results: TestResults) =
         |> List.map (fun (name, result) ->
             let (status, output) =
                 match result with
-                | TestsPassed o -> ("passed", o)
-                | TestsFailed o -> ("failed", o)
+                | TestsPassed(o, _) -> ("passed", o)
+                | TestsFailed(o, _) -> ("failed", o)
 
             {| project = name
                status = status
@@ -132,7 +132,7 @@ let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<str
         |> Map.toList
         |> List.collect (fun (project, result) ->
             match result with
-            | TestsFailed output ->
+            | TestsFailed(output, _) ->
                 let parsed = parseFailedTests output
 
                 if parsed.IsEmpty then
@@ -235,10 +235,14 @@ let private executeTests
                         if skipProject then
                             Logging.info "test-prune" $"Skipping %s{config.Project} — no affected classes"
 
-                            results <- (config.Project, TestsPassed "") :: results
+                            // Skipped-due-to-impact-analysis is the strongest form of filtering;
+                            // its coverage contribution is "nothing new", so mark as filtered.
+                            results <- (config.Project, TestsPassed("", true)) :: results
                         else
 
-                            match buildFilterArgs config affectedClassesByProject with
+                            let filterArgs = buildFilterArgs config affectedClassesByProject
+
+                            match filterArgs with
                             | Some f -> extraArgs.Add(f)
                             | None -> ()
 
@@ -246,6 +250,8 @@ let private executeTests
                             match rawFilter with
                             | Some f -> extraArgs.Add(f)
                             | None -> ()
+
+                            let wasFiltered = Option.isSome filterArgs || Option.isSome rawFilter
 
                             match coverageArgs with
                             | Some covFn -> extraArgs.Add(covFn config.Project)
@@ -312,7 +318,12 @@ let private executeTests
                                 for line in summaryLines |> Array.filter (fun l -> not (l.StartsWith("failed "))) do
                                     Logging.error "test-prune" $"  %s{line}"
 
-                            let result = if success then TestsPassed output else TestsFailed output
+                            let result =
+                                if success then
+                                    TestsPassed(output, wasFiltered)
+                                else
+                                    TestsFailed(output, wasFiltered)
+
                             results <- (config.Project, result) :: results
 
                     // Atomically fold this group's results into the shared

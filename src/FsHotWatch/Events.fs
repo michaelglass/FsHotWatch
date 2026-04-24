@@ -134,10 +134,29 @@ type RunRecord =
       ActivityTail: string list }
 
 
-/// Result of a single test project execution.
+/// Result of a single test project execution. The `wasFiltered` flag indicates
+/// whether the run was reduced by impact analysis (true) or covered the full
+/// project suite (false). Downstream coverage merging uses this to decide
+/// baseline vs partial output paths.
 type TestResult =
-    | TestsPassed of output: string
-    | TestsFailed of output: string
+    | TestsPassed of output: string * wasFiltered: bool
+    | TestsFailed of output: string * wasFiltered: bool
+
+module TestResult =
+    let output =
+        function
+        | TestsPassed(o, _)
+        | TestsFailed(o, _) -> o
+
+    let wasFiltered =
+        function
+        | TestsPassed(_, w)
+        | TestsFailed(_, w) -> w
+
+    let isPassed =
+        function
+        | TestsPassed _ -> true
+        | TestsFailed _ -> false
 
 /// Aggregate test results snapshot. Used as a plain value type by TestPrune's
 /// internals and afterRun hooks — NOT dispatched as an event. Subscribers
