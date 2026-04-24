@@ -45,6 +45,7 @@ let private outcomePayload (outcome: RunOutcome) : obj =
     match outcome with
     | CompletedRun -> {| tag = "completed" |} :> obj
     | FailedRun e -> {| tag = "failed"; error = e |} :> obj
+    | TimedOut r -> {| tag = "timedOut"; reason = r |} :> obj
 
 let private pluginStatusPayload
     (host: PluginHost)
