@@ -6,7 +6,13 @@ open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 open FsHotWatch.Logging
 open FsHotWatch.ErrorLedger
+open FsHotWatch.ProcessHelper
 open FSharpLint.Application
+
+/// Default per-event lint timeout (seconds). Used when no override is
+/// configured. Chosen to match DaemonConfig.LintTimeoutDefaultSec.
+[<Literal>]
+let LintTimeoutDefaultSec = 120
 
 type LintState =
     { WarningsByFile: Map<string, string list> }
@@ -22,7 +28,13 @@ let create
     (lintConfigPath: string option)
     (getCommitId: (unit -> string option) option)
     (lintRunner: (FileCheckResult -> Lint.LintResult) option)
+    (timeoutSec: int option)
     : PluginHandler<LintState, unit> =
+
+    let lintTimeout =
+        let secs = defaultArg timeoutSec LintTimeoutDefaultSec
+        TimeSpan.FromSeconds(float secs)
+
 
     let lintParams =
         try
@@ -74,8 +86,18 @@ let create
                                     Logging.warn "lint" $"Skipping %s{result.File} — no parse results"
                                     return state
                                 else
-                                    match runLint result with
-                                    | Lint.LintResult.Success warnings ->
+                                    match runWithTimeout lintTimeout (fun () -> runLint result) with
+                                    | Result.Error reason ->
+                                        Logging.error "lint" $"Lint TIMED OUT for %s{result.File}: %s{reason}"
+
+                                        ctx.CompleteWithTimeout reason
+
+                                        ctx.ReportStatus(
+                                            PluginStatus.Failed($"lint timed out: {reason}", DateTime.UtcNow)
+                                        )
+
+                                        return state
+                                    | Result.Ok(Lint.LintResult.Success warnings) ->
                                         Logging.debug
                                             "lint"
                                             $"Linted %s{System.IO.Path.GetFileName result.File}: %d{warnings.Length} warnings"
@@ -108,7 +130,7 @@ let create
                                             $"linted {newWarnings.Count} files, {totalIssues} issues"
 
                                         return newState
-                                    | Lint.LintResult.Failure failure ->
+                                    | Result.Ok(Lint.LintResult.Failure failure) ->
                                         let msg = $"Lint failed for %s{result.File}: %A{failure}"
 
                                         ctx.ReportErrors result.File [ ErrorEntry.error msg ]
