@@ -206,6 +206,26 @@ let ``watcher detects file changes in src directory`` () =
     test <@ changes.Length >= 1 @>
     Directory.Delete(tmpDir, true)
 
+// === Unit tests for matchesPattern ===
+
+[<Fact(Timeout = 5000)>]
+let ``matchesPattern wildcard suffix matches any path ending with suffix`` () =
+    test <@ matchesPattern "*.ratchet.json" "/repo/coverage.ratchet.json" @>
+    test <@ matchesPattern "*.ratchet.json" "/repo/nested/my.ratchet.json" @>
+
+[<Fact(Timeout = 5000)>]
+let ``matchesPattern wildcard does not match non-matching suffix`` () =
+    test <@ not (matchesPattern "*.ratchet.json" "/repo/foo.json") @>
+
+[<Fact(Timeout = 5000)>]
+let ``matchesPattern literal matches only exact filename`` () =
+    test <@ matchesPattern "coverage-ratchet.json" "/repo/coverage-ratchet.json" @>
+    test <@ matchesPattern "coverage-ratchet.json" "/repo/nested/coverage-ratchet.json" @>
+
+[<Fact(Timeout = 5000)>]
+let ``matchesPattern literal does not match files that merely end with the name`` () =
+    test <@ not (matchesPattern "coverage-ratchet.json" "/repo/my-coverage-ratchet.json") @>
+
 // === Unit tests for isRelevantFileOrExtra ===
 
 [<Fact(Timeout = 5000)>]
@@ -213,29 +233,31 @@ let ``isRelevantFileOrExtra accepts built-in extensions with no extras`` () =
     test <@ isRelevantFileOrExtra [] "/repo/src/Lib.fs" @>
 
 [<Fact(Timeout = 5000)>]
-let ``isRelevantFileOrExtra accepts files matching extra suffix`` () =
-    test <@ isRelevantFileOrExtra [ ".ratchet.json" ] "/repo/coverage.ratchet.json" @>
+let ``isRelevantFileOrExtra accepts files matching wildcard pattern`` () =
+    test <@ isRelevantFileOrExtra [ "*.ratchet.json" ] "/repo/coverage.ratchet.json" @>
+
+[<Fact(Timeout = 5000)>]
+let ``isRelevantFileOrExtra accepts files matching literal filename pattern`` () =
+    test <@ isRelevantFileOrExtra [ "coverage-ratchet.json" ] "/repo/coverage-ratchet.json" @>
 
 [<Fact(Timeout = 5000)>]
 let ``isRelevantFileOrExtra rejects files not matching extras or built-ins`` () =
-    test <@ not (isRelevantFileOrExtra [ ".ratchet.json" ] "/repo/Program.cs") @>
+    test <@ not (isRelevantFileOrExtra [ "*.ratchet.json" ] "/repo/Program.cs") @>
 
 [<Fact(Timeout = 5000)>]
 let ``isRelevantFileOrExtra rejects extra-matching files in obj directory`` () =
-    test <@ not (isRelevantFileOrExtra [ ".ratchet.json" ] "/repo/obj/Debug/config.ratchet.json") @>
+    test <@ not (isRelevantFileOrExtra [ "*.ratchet.json" ] "/repo/obj/Debug/config.ratchet.json") @>
 
-// === Integration test: extra-suffix watcher fires for non-source patterns ===
+// === Integration tests: extra-pattern watcher fires for non-source patterns ===
 
 [<Fact(Timeout = 60000)>]
-let ``FileWatcher with extra suffix fires SourceChanged for matching file`` () =
-    withTempDir "watcher-extra" (fun tmpDir ->
+let ``FileWatcher with wildcard pattern fires SourceChanged for matching file`` () =
+    withTempDir "watcher-extra-wild" (fun tmpDir ->
         let received = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
         let onChange change = received.Add(change)
 
-        let suffix = ".ratchet.json"
-
         use _watcher =
-            FileWatcher.create tmpDir onChange (Some false) [ suffix ] :> IDisposable
+            FileWatcher.create tmpDir onChange (Some false) [ "*.ratchet.json" ] :> IDisposable
 
         // Probe by repeatedly rewriting a matching file until the watcher delivers an event.
         // FileSystemWatcher on macOS (kqueue/FSEvents backend) can have cold-start latency.
@@ -245,7 +267,29 @@ let ``FileWatcher with extra suffix fires SourceChanged for matching file`` () =
             received
             |> Seq.exists (fun c ->
                 match c with
-                | SourceChanged files -> files |> List.exists (fun f -> f.EndsWith(suffix))
+                | SourceChanged files -> files |> List.exists (fun f -> f.EndsWith(".ratchet.json"))
+                | _ -> false)
+
+        probeLoop (fun n -> File.WriteAllText(configPath, $"{{\"probe\": {n}}}")) hasMatch 30000
+
+        test <@ hasMatch () @>)
+
+[<Fact(Timeout = 60000)>]
+let ``FileWatcher with literal filename pattern fires only for matching file`` () =
+    withTempDir "watcher-extra-literal" (fun tmpDir ->
+        let received = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
+        let onChange change = received.Add(change)
+
+        use _watcher =
+            FileWatcher.create tmpDir onChange (Some false) [ "coverage-ratchet.json" ] :> IDisposable
+
+        let configPath = Path.Combine(tmpDir, "coverage-ratchet.json")
+
+        let hasMatch () =
+            received
+            |> Seq.exists (fun c ->
+                match c with
+                | SourceChanged files -> files |> List.exists (fun f -> Path.GetFileName(f) = "coverage-ratchet.json")
                 | _ -> false)
 
         probeLoop (fun n -> File.WriteAllText(configPath, $"{{\"probe\": {n}}}")) hasMatch 30000
