@@ -261,7 +261,7 @@ type PluginHost
         | None -> ()
 
     /// Register a FileCommandPlugin's parsed file pattern by plugin name.
-    /// Used by the rerun IPC endpoint to synthesize a fake file event whose
+    /// Used by `RerunFileCommandPlugin` to synthesize a fake file event whose
     /// path matches the plugin's filter.
     member _.RegisterFileCommandPattern(name: string, pattern: Watcher.FilePattern) =
         fileCommandPatterns[name] <- pattern
@@ -271,6 +271,25 @@ type PluginHost
         match fileCommandPatterns.TryGetValue(name) with
         | true, p -> Some p
         | false, _ -> None
+
+    /// Force a specific FileCommandPlugin to re-run. Clears the plugin's task
+    /// cache and emits a synthetic FileChanged event whose path matches the
+    /// plugin's registered pattern — other plugins cache-hit (commit unchanged),
+    /// only the target plugin sees a cache miss.
+    ///
+    /// Returns `Error` if the plugin has no registered pattern (which is the
+    /// case for non-FileCommand plugins and for FileCommand plugins configured
+    /// only with `afterTests`). The caller is responsible for waiting until
+    /// plugins settle before inspecting status.
+    member this.RerunFileCommandPlugin(name: string) : Result<unit, string> =
+        match this.GetFileCommandPattern(name) with
+        | None ->
+            Result.Error
+                $"Plugin '%s{name}' has no registered file pattern (only FileCommand plugins with a pattern support rerun)"
+        | Some pattern ->
+            this.ClearTaskCachePlugin(name)
+            this.EmitFileChanged(SourceChanged [ Watcher.FilePattern.syntheticPath pattern ])
+            Result.Ok()
 
     /// Create a new PluginHost.
     /// Tear down all plugins that have a Teardown function.

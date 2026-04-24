@@ -762,17 +762,7 @@ type Daemon
                         }
 
                 let rerunPlugin (name: string) =
-                    async {
-                        match host.GetFileCommandPattern(name) with
-                        | None ->
-                            return
-                                Result.Error
-                                    $"Plugin '%s{name}' has no registered file pattern (only FileCommand plugins with a pattern support rerun)"
-                        | Some pattern ->
-                            host.ClearTaskCachePlugin(name)
-                            host.EmitFileChanged(SourceChanged [ FilePattern.syntheticPath pattern ])
-                            return Result.Ok()
-                    }
+                    async { return host.RerunFileCommandPlugin(name) }
 
                 let rpcConfig: DaemonRpcConfig =
                     { Host = host

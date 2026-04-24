@@ -1198,11 +1198,9 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
         waitForStatusSettled host pluginName 5000
         test <@ File.ReadAllLines(sentinel).Length = 1 @>
 
-        // Rerun: clear cache for this plugin, then emit a synthetic matching event.
-        // This is exactly what Daemon.RunWithIpc's rerunPlugin closure does.
-        host.ClearTaskCachePlugin(pluginName)
-        let fakeFile = FsHotWatch.Watcher.FilePattern.syntheticPath parsedPattern
-        host.EmitFileChanged(SourceChanged [ fakeFile ])
+        // Rerun via the public host API — same call the IPC endpoint makes.
+        let rerunResult = host.RerunFileCommandPlugin(pluginName)
+        test <@ rerunResult = Result.Ok() @>
 
         // Status already shows Completed from the previous run, so `waitForStatusSettled`
         // would return immediately. Wait for observable side effect (second line).
