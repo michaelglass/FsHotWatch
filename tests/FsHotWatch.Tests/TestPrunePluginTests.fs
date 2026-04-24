@@ -1664,3 +1664,43 @@ let ``executeTests emits a TestProgress per group as groups finish`` () =
                 earlierEvents
                 |> List.forall (fun p -> not (p.NewResults |> Map.containsKey "ProjSlow"))
             @>)
+
+// ---------------------------------------------------------------------------
+// WasFiltered on per-project test results. Full runs (no impact filter applied)
+// must report WasFiltered = false; partial runs report true.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``full run (no filter) produces TestResult with WasFiltered = false`` () =
+    withTempDir "tp-wasfiltered-full" (fun tmpDir ->
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let (getCompleted, recorder) = testRunCompletedRecorder ()
+        host.RegisterHandler(recorder)
+
+        let configs =
+            [ { Project = "ProjA"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " " } ]
+
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let handler = create dbPath tmpDir (Some configs) None None None None None
+        host.RegisterHandler(handler)
+
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        waitUntil (fun () -> getCompleted () |> List.isEmpty |> not) 10000
+
+        let completed = getCompleted ()
+        test <@ completed.Length >= 1 @>
+        let last = completed |> List.last
+
+        match last.Results |> Map.tryFind "ProjA" with
+        | Some r ->
+            match r with
+            | TestsPassed(_, wasFiltered) -> test <@ wasFiltered = false @>
+            | TestsFailed(_, wasFiltered) -> test <@ wasFiltered = false @>
+        | None -> Assert.Fail("ProjA not in Results"))
