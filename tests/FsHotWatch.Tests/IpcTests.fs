@@ -35,7 +35,7 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       FormatAll = fun () -> async { return "formatted 0 files" }
       WaitForScanGeneration = fun _ -> Task.FromResult(())
       WaitForAllTerminal = fun _ -> Task.FromResult(())
-      InvalidateAndRecheck = fun _ -> async { return "{\"status\": \"rechecked\"}" } }
+      RerunPlugin = fun _ -> async { return "{}" } }
 
 [<Fact(Timeout = 5000)>]
 let ``server responds to GetStatus`` () =
@@ -738,23 +738,23 @@ let ``DaemonRpcTarget.FormatAll delegates to config`` () =
     test <@ result = "formatted 5 files" @>
 
 [<Fact(Timeout = 5000)>]
-let ``DaemonRpcTarget.InvalidateCache delegates to config`` () =
+let ``DaemonRpcTarget.RerunPlugin delegates to config`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let mutable capturedPath = ""
+    let mutable capturedName = ""
 
     let config =
         { defaultRpcConfig host with
-            InvalidateAndRecheck =
-                fun path ->
+            RerunPlugin =
+                fun name ->
                     async {
-                        capturedPath <- path
-                        return """{"status": "rechecked"}"""
+                        capturedName <- name
+                        return """{"status": "rerun"}"""
                     } }
 
     let target = DaemonRpcTarget(config)
-    let result = target.InvalidateCache("/tmp/test.fs").Result
-    test <@ result.Contains("rechecked") @>
-    test <@ capturedPath = "/tmp/test.fs" @>
+    let result = target.RerunPlugin("coverage-ratchet").Result
+    test <@ result.Contains("rerun") @>
+    test <@ capturedName = "coverage-ratchet" @>
 
 [<Fact(Timeout = 5000)>]
 let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
