@@ -35,7 +35,8 @@ let private registerWith
           UpdateSubtask = fun _ _ _ -> ()
           EndSubtask = fun _ _ -> ()
           Log = fun _ _ -> ()
-          SetSummary = fun _ _ -> () }
+          SetSummary = fun _ _ -> ()
+          SetNextTerminalOutcome = fun _ _ -> () }
         handler
 
 /// Register with all defaults.
@@ -310,7 +311,8 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
               UpdateSubtask = fun _ _ _ -> ()
               EndSubtask = fun _ _ -> ()
               Log = fun _ _ -> ()
-              SetSummary = fun _ _ -> () }
+              SetSummary = fun _ _ -> ()
+              SetNextTerminalOutcome = fun _ _ -> () }
             handler
 
     reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))

@@ -51,16 +51,23 @@ let private subtaskBytes (t: Subtask) = stringBytes t.Key + stringBytes t.Label
 /// phase flips back to `Idle` and this state is released.
 [<NoComparison; NoEquality>]
 type private RecordingState =
-    { Subtasks: Dictionary<string, Subtask>
-      ActivityLog: Queue<string>
-      mutable SummaryOverride: string option
-      mutable SummaryBytes: int }
+    {
+        Subtasks: Dictionary<string, Subtask>
+        ActivityLog: Queue<string>
+        mutable SummaryOverride: string option
+        mutable SummaryBytes: int
+        /// Override applied to the next RecordTerminal call. Plugins set this
+        /// (via ctx.CompleteWithTimeout) to flip the terminal outcome to
+        /// TimedOut without needing a new PluginStatus variant.
+        mutable OutcomeOverride: RunOutcome option
+    }
 
     static member Create() =
         { Subtasks = Dictionary<string, Subtask>()
           ActivityLog = Queue<string>()
           SummaryOverride = None
-          SummaryBytes = 0 }
+          SummaryBytes = 0
+          OutcomeOverride = None }
 
 /// Phase of a plugin's activity tracking. `Idle` carries no in-progress data,
 /// so calling `RecordTerminal` on an `Idle` plugin cannot accidentally splice
@@ -223,11 +230,18 @@ type State() =
         if totalBytes > maxTotalBytes then
             enforceGlobalCap ()
 
+    member _.SetNextTerminalOutcome(plugin: string, outcome: RunOutcome) : unit =
+        let p = getOrCreate plugin
+
+        lock p.Gate (fun () ->
+            let r = ensureRecording p
+            r.OutcomeOverride <- Some outcome)
+
     member _.RecordTerminal(plugin: string, outcome: RunOutcome, startedAt: DateTime, at: DateTime) : unit =
         let p = getOrCreate plugin
 
         lock p.Gate (fun () ->
-            let tail, derivedSummary, discarded =
+            let tail, derivedSummary, discarded, outcomeOverride =
                 match p.Phase with
                 | Recording r ->
                     let tail = r.ActivityLog |> List.ofSeq
@@ -241,13 +255,15 @@ type State() =
                         + (r.ActivityLog |> Seq.sumBy stringBytes)
                         + r.SummaryBytes
 
-                    tail, derived, d
-                | Idle -> [], None, 0
+                    tail, derived, d, r.OutcomeOverride
+                | Idle -> [], None, 0, None
+
+            let effectiveOutcome = outcomeOverride |> Option.defaultValue outcome
 
             let record =
                 { StartedAt = startedAt
                   Elapsed = at - startedAt
-                  Outcome = outcome
+                  Outcome = effectiveOutcome
                   Summary = derivedSummary
                   ActivityTail = tail }
 
