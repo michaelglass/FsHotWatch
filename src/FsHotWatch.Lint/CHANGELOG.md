@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- Per-event timeout. `create` accepts a new `timeoutSec: int option`;
+  when lint work for a `FileChecked` event exceeds the timeout the run is
+  recorded as `TimedOut` and the plugin continues with the next event.
+  Timeouts are advisory — the orphan `lintParsedSource` call is not
+  cancelled, only the result is discarded.
+
 ### Changed
 
 - Emit a `lint failed on <file>` summary on the failure path (previously
