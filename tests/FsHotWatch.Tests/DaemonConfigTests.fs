@@ -881,3 +881,48 @@ let ``countPlugins counts build lint analyzers tests and fileCommands`` () =
 let ``countPlugins returns 0 for stripped config`` () =
     let cfg = stripConfig { defaults with Lint = false }
     test <@ countPlugins cfg = 0 @>
+
+// --- watchConfigFile ---
+
+[<Fact(Timeout = 10000)>]
+let ``watchConfigFile invokes callback when .fs-hot-watch.json is written`` () =
+    withTempDir "cfg-watch-write" (fun tmpDir ->
+        let configPath = Path.Combine(tmpDir, ".fs-hot-watch.json")
+        File.WriteAllText(configPath, "{}")
+
+        use signal = new System.Threading.ManualResetEventSlim(false)
+        let observed = ref ""
+
+        use _watcher =
+            watchConfigFile configPath (fun reason ->
+                observed.Value <- reason
+                signal.Set())
+
+        // Give the FSW a moment to become active.
+        System.Threading.Thread.Sleep(100)
+
+        File.WriteAllText(configPath, """{"lint": false}""")
+
+        Assert.True(signal.Wait(5000), "expected watcher callback within 5s")
+        test <@ observed.Value.Contains("config") @>)
+
+[<Fact(Timeout = 10000)>]
+let ``watchConfigFile reports invalid reason when new contents fail to parse`` () =
+    withTempDir "cfg-watch-invalid" (fun tmpDir ->
+        let configPath = Path.Combine(tmpDir, ".fs-hot-watch.json")
+        File.WriteAllText(configPath, "{}")
+
+        use signal = new System.Threading.ManualResetEventSlim(false)
+        let observed = ref ""
+
+        use _watcher =
+            watchConfigFile configPath (fun reason ->
+                observed.Value <- reason
+                signal.Set())
+
+        System.Threading.Thread.Sleep(100)
+
+        File.WriteAllText(configPath, "{not valid json")
+
+        Assert.True(signal.Wait(5000), "expected watcher callback within 5s")
+        Assert.Contains("invalid", observed.Value))
