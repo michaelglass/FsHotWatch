@@ -67,6 +67,7 @@ let generateConfig (projectPaths: string list) (hasJj: bool) : DaemonConfigurati
                       FilterTemplate = Some "--filter-class {classes}"
                       ClassJoin = " "
                       Coverage = true
+                      CoverageArgsTemplate = None
                       TimeoutSec = None }
             | SourceProject _ -> None)
 
