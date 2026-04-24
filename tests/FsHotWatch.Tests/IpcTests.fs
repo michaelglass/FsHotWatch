@@ -35,7 +35,7 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       FormatAll = fun () -> async { return "formatted 0 files" }
       WaitForScanGeneration = fun _ -> Task.FromResult(())
       WaitForAllTerminal = fun _ -> Task.FromResult(())
-      RerunPlugin = fun _ -> async { return "{}" } }
+      RerunPlugin = fun _ -> async { return Result.Ok() } }
 
 [<Fact(Timeout = 5000)>]
 let ``server responds to GetStatus`` () =
@@ -748,8 +748,7 @@ let ``DaemonRpcTarget.RerunPlugin delegates to config`` () =
                 fun name ->
                     async {
                         capturedName <- name
-                        // Empty string triggers "wait + return status" path.
-                        return ""
+                        return Result.Ok()
                     } }
 
     let target = DaemonRpcTarget(config)
@@ -764,7 +763,7 @@ let ``DaemonRpcTarget.RerunPlugin returns error payload when plugin has no patte
 
     let config =
         { defaultRpcConfig host with
-            RerunPlugin = fun _ -> async { return """{"error":"Plugin 'missing' has no registered file pattern"}""" } }
+            RerunPlugin = fun _ -> async { return Result.Error "Plugin 'missing' has no registered file pattern" } }
 
     let target = DaemonRpcTarget(config)
     let result = target.RerunPlugin("missing").Result
