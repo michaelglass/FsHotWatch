@@ -471,16 +471,10 @@ let executeCommand
             // Stop the daemon cleanly if `.fs-hot-watch.json` is edited. The
             // user then runs the daemon again to pick up the new config (or
             // sees the error if the edit was invalid). No hot-reload.
-            let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
-
             use _configWatcher =
-                if File.Exists configPath then
-                    watchConfigFile configPath (fun reason ->
-                        FsHotWatch.Logging.info "config" reason
-                        cts.Cancel())
-                else
-                    { new IDisposable with
-                        member _.Dispose() = () }
+                watchRepoConfigFile repoRoot (fun reason ->
+                    FsHotWatch.Logging.info "config" reason
+                    cts.Cancel())
 
             try
                 Async.RunSynchronously(daemon.RunWithIpc(pipeName, cts))
@@ -818,12 +812,11 @@ let main args =
             let opts = applyGlobalFlags globals
 
             let config =
-                match loadConfigOrExit repoRoot with
-                | Ok cfg -> cfg
-                | Error(code, msg) ->
+                try
+                    loadConfig repoRoot
+                with ConfigError msg ->
                     eprintfn $"fs-hot-watch: config error: %s{msg}"
-                    exit code
-                    Unchecked.defaultof<_>
+                    exit 2
 
             let cacheConfig = if opts.NoCache then DaemonConfig.NoCache else config.Cache
             let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
