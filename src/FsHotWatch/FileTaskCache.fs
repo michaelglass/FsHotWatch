@@ -151,6 +151,7 @@ let private serializeCachedEvent (evt: CachedEvent) =
             resultsArr.Add(serializeTestResult kvp.Key kvp.Value)
 
         obj["results"] <- resultsArr
+        obj["ranFullSuite"] <- completed.RanFullSuite
     | CachedCommandCompleted result ->
         obj["type"] <- "command"
         obj["name"] <- result.Name
@@ -206,11 +207,17 @@ let private deserializeCachedEvent (obj: JsonObject) : CachedEvent =
             |> Seq.map (fun n -> deserializeTestResult (n.AsObject()))
             |> Map.ofSeq
 
+        let ranFullSuite =
+            match obj["ranFullSuite"] with
+            | null -> true
+            | node -> node.GetValue<bool>()
+
         CachedTestRunCompleted
             { RunId = runId
               TotalElapsed = elapsed
               Outcome = outcome
-              Results = results }
+              Results = results
+              RanFullSuite = ranFullSuite }
     | "command" ->
         let name = obj["name"].GetValue<string>()
         let output = obj["output"].GetValue<string>()
