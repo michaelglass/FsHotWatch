@@ -622,3 +622,9 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                 fc.Args
                 getCommitId
         )
+
+        // Expose the pattern to the host so the rerun IPC endpoint can
+        // synthesize a matching fake file path.
+        match fc.Pattern with
+        | Some pattern -> daemon.Host.RegisterFileCommandPattern(fc.PluginName, pattern)
+        | None -> ()

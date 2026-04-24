@@ -757,3 +757,43 @@ let ``registerPlugins with stripped config does not register build plugin`` () =
         registerPlugins daemon tmpDir config
         let statuses = daemon.Host.GetAllStatuses()
         test <@ not (statuses.ContainsKey("build")) @>)
+
+[<Fact(Timeout = 5000)>]
+let ``registerPlugins stores FileCommand pattern on host`` () =
+    withTempDir "cfg-fc-register" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+        let daemon =
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ]) [] []
+
+        let config =
+            { stripConfig defaults with
+                FileCommands =
+                    [ {| PluginName = "coverage-ratchet"
+                         Pattern = Some "*.ratchet.json"
+                         AfterTests = None
+                         Command = "echo"
+                         Args = "hi" |} ] }
+
+        registerPlugins daemon tmpDir config
+        test <@ daemon.Host.GetFileCommandPattern("coverage-ratchet") = Some "*.ratchet.json" @>)
+
+[<Fact(Timeout = 5000)>]
+let ``registerPlugins with afterTests-only plugin does not register pattern`` () =
+    withTempDir "cfg-fc-aftertests-only" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+        let daemon =
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ]) [] []
+
+        let config =
+            { stripConfig defaults with
+                FileCommands =
+                    [ {| PluginName = "post-test-hook"
+                         Pattern = None
+                         AfterTests = Some FsHotWatch.FileCommand.FileCommandPlugin.AnyTest
+                         Command = "echo"
+                         Args = "done" |} ] }
+
+        registerPlugins daemon tmpDir config
+        test <@ daemon.Host.GetFileCommandPattern("post-test-hook") = None @>)
