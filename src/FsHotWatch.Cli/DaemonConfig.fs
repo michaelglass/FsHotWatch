@@ -415,7 +415,11 @@ let stripConfig (config: DaemonConfiguration) : DaemonConfiguration =
         Tests = None
         FileCommands = [] }
 
+/// Raised when `.fs-hot-watch.json` cannot be read or parsed. Carries a user-facing message.
+exception ConfigError of message: string
+
 /// Load config from .fs-hot-watch.json in repoRoot. Returns defaults if no file exists.
+/// Raises ConfigError on read / parse / validation failure.
 let loadConfig (repoRoot: string) : DaemonConfiguration =
     let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
 
@@ -425,16 +429,19 @@ let loadConfig (repoRoot: string) : DaemonConfiguration =
         Logging.info "config" "No .fs-hot-watch.json found, using defaults (build + format + lint)"
         defaults
     else
+        let json =
+            try
+                File.ReadAllText(configPath)
+            with ex ->
+                raise (ConfigError $"Cannot read .fs-hot-watch.json: %s{ex.Message}")
 
         try
-            let json = File.ReadAllText(configPath)
             let config = parseConfig json defaults
             Logging.info "config" "Loaded .fs-hot-watch.json"
             config
-        with ex ->
-            Logging.error "config" $"Failed to parse .fs-hot-watch.json: %s{ex.Message}"
-            Logging.info "config" "Using defaults"
-            defaults
+        with
+        | ConfigError _ as e -> raise e
+        | ex -> raise (ConfigError $".fs-hot-watch.json: %s{ex.Message}")
 
 /// Wrap a shell command string into a callback that runs via splitCommand + runProcess.
 /// Returns (success, output).

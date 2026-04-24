@@ -803,3 +803,12 @@ let ``registerPlugins with afterTests-only plugin does not register pattern`` ()
 
         registerPlugins daemon tmpDir config
         test <@ daemon.Host.GetFileCommandPattern("post-test-hook") = None @>)
+
+// --- loadConfig: strict parse errors ---
+
+[<Fact(Timeout = 5000)>]
+let ``loadConfig throws ConfigError on malformed JSON`` () =
+    withTempDir "cfg-malformed" (fun tmpDir ->
+        File.WriteAllText(Path.Combine(tmpDir, ".fs-hot-watch.json"), "{not valid json")
+        let ex = Assert.Throws<ConfigError>(fun () -> loadConfig tmpDir |> ignore)
+        Assert.Contains(".fs-hot-watch.json", ex.Message))
