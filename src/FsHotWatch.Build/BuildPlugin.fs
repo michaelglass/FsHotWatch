@@ -125,7 +125,7 @@ let create
 
                     match outcome with
                     | BuildOutputFailed _ ->
-                        if output.StartsWith("timed out") then
+                        if output.StartsWith(TimedOutPrefix) then
                             ctx.Log "Build TIMED OUT"
                             error "build" "Build TIMED OUT"
                             ctx.CompleteWithTimeout(output.Split('\n').[0])
@@ -195,7 +195,7 @@ let create
                                 outputs <- output :: outputs
 
                                 if not success then
-                                    if output.StartsWith("timed out") then
+                                    if output.StartsWith(TimedOutPrefix) then
                                         ctx.Log $"Template build TIMED OUT for %s{rootStr}"
                                         error "build" $"Template build TIMED OUT for %s{rootStr}"
                                         ctx.CompleteWithTimeout(output.Split('\n').[0])
