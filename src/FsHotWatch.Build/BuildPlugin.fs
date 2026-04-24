@@ -90,6 +90,13 @@ let create
             ctx.EmitBuildCompleted(BuildSucceeded)
         | BuildOutputFailed outputs ->
             ctx.ReportErrors "<build>" entries
+
+            let errCount =
+                entries
+                |> List.filter (fun e -> e.Severity = DiagnosticSeverity.Error)
+                |> List.length
+
+            ctx.CompleteWithSummary $"build failed: %d{errCount} errors"
             ctx.EmitBuildCompleted(BuildFailed outputs)
 
         ctx.Post(BuildDone outcome)
