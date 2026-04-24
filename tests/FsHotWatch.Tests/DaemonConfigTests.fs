@@ -735,7 +735,7 @@ let ``registerPlugins with build config registers build plugin`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
         let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ]) [] []
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
 
         let config =
             { stripConfig defaults with
@@ -751,7 +751,7 @@ let ``registerPlugins with stripped config does not register build plugin`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
         let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ]) [] []
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
 
         let config = stripConfig defaults
         registerPlugins daemon tmpDir config
@@ -764,7 +764,7 @@ let ``registerPlugins stores FileCommand pattern on host`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
         let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ]) [] []
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
 
         let config =
             { stripConfig defaults with
@@ -790,7 +790,7 @@ let ``registerPlugins with afterTests-only plugin does not register pattern`` ()
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
 
         let daemon =
-            Daemon.createWith (Unchecked.defaultof<_>) tmpDir None None (set [ 1182 ]) [] []
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
 
         let config =
             { stripConfig defaults with
