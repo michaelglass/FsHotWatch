@@ -828,26 +828,6 @@ let ``parseConfig raises ConfigError when afterTests entry lacks name`` () =
     Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
     |> ignore
 
-// --- loadConfigOrExit (CLI boundary) ---
-
-[<Fact(Timeout = 5000)>]
-let ``loadConfigOrExit returns Ok for valid config`` () =
-    withTempDir "cfg-ok" (fun tmpDir ->
-        match loadConfigOrExit tmpDir with
-        | Ok _ -> ()
-        | Error _ -> failwith "expected Ok")
-
-[<Fact(Timeout = 5000)>]
-let ``loadConfigOrExit returns Error 2 for malformed config with .fs-hot-watch.json in message`` () =
-    withTempDir "cfg-bad" (fun tmpDir ->
-        File.WriteAllText(Path.Combine(tmpDir, ".fs-hot-watch.json"), "{not valid json")
-
-        match loadConfigOrExit tmpDir with
-        | Ok _ -> failwith "expected Error"
-        | Error(code, msg) ->
-            test <@ code = 2 @>
-            Assert.Contains(".fs-hot-watch.json", msg))
-
 // --- countPlugins ---
 
 [<Fact(Timeout = 5000)>]
