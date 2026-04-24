@@ -609,9 +609,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         let trigger: FsHotWatch.FileCommand.FileCommandPlugin.CommandTrigger =
             { FilePattern =
                 fc.Pattern
-                |> Option.map (fun p ->
-                    let suffix = p.TrimStart('*')
-                    fun (path: string) -> path.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                |> Option.map (fun p -> fun (path: string) -> FsHotWatch.Watcher.matchesPattern p path)
               AfterTests = fc.AfterTests }
 
         Logging.info "config" $"Registering FileCommandPlugin: %s{fc.PluginName} → %s{fc.Command} %s{fc.Args}"
