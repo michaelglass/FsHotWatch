@@ -111,6 +111,20 @@ let ``RecordTerminal captures Failed outcome`` () =
         @>
 
 [<Fact(Timeout = 5000)>]
+let ``RecordTerminal accepts TimedOut outcome`` () =
+    let s = State()
+    let started = DateTime.UtcNow
+    s.RecordTerminal("p", TimedOut "exceeded 60s", started, started.AddSeconds 60.0)
+    let snap = s.GetSnapshot("p")
+
+    test
+        <@
+            match snap.LastRun.Value.Outcome with
+            | TimedOut msg -> msg = "exceeded 60s"
+            | _ -> false
+        @>
+
+[<Fact(Timeout = 5000)>]
 let ``ResetRun clears current subtasks, activity, summary override but keeps history`` () =
     let s = State()
     let now = DateTime.UtcNow
