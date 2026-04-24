@@ -17,6 +17,10 @@ jobs:
     with:
       solution: FsHotWatch.slnx
       fantomas-paths: 'src/ tests/'
+      # Apply our coverage exclusions on CI too — without this, the reusable
+      # workflow's `dotnet test --coverage` ignores coverage.settings and the
+      # sibling TestPrune.Core sources leak into the cobertura XML at 0%.
+      test-extra-args: '--coverage-settings ${{ github.workspace }}/coverage.settings'
       # Host FSharpLint via AnalyzersPlugin to reuse the warm FSharpChecker
       # instead of spawning a fresh compiler per project.
       lint-cmd: 'dotnet run --project src/FsHotWatch.Cli --no-build -- analyze --run-once'
