@@ -26,8 +26,7 @@ module ``Changed symbol with dependent test`` =
                       ContentHash = "changed"
                       IsExtern = false } ] ]
 
-        let result, _events =
-            selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/Lib.fs" ] currentSymbols
+        let result, _events = selectTests store [ "src/Lib.fs" ] currentSymbols
 
         match result with
         | RunSubset tests ->
@@ -53,8 +52,7 @@ module ``Changed symbol with transitive dependent test`` =
                       ContentHash = "changed"
                       IsExtern = false } ] ]
 
-        let result, _events =
-            selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/Domain.fs" ] currentSymbols
+        let result, _events = selectTests store [ "src/Domain.fs" ] currentSymbols
 
         match result with
         | RunSubset tests ->
@@ -80,8 +78,7 @@ module ``Changed symbol with no dependent tests`` =
                       ContentHash = "changed"
                       IsExtern = false } ] ]
 
-        let result, _events =
-            selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/Other.fs" ] currentSymbols
+        let result, _events = selectTests store [ "src/Other.fs" ] currentSymbols
 
         match result with
         | RunSubset tests -> test <@ tests |> List.isEmpty @>
@@ -140,6 +137,7 @@ module ``Multiple changed symbols`` =
                     TestClass = "Tests"
                     TestMethod = "test2" } ]
               Attributes = []
+              ParentLinks = []
               Diagnostics = AnalysisDiagnostics.Zero }
 
         let store = fromAnalysisResults [ graph ]
@@ -163,8 +161,7 @@ module ``Multiple changed symbols`` =
                       ContentHash = "changed-b"
                       IsExtern = false } ] ]
 
-        let result, _events =
-            selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/Lib.fs" ] currentSymbols
+        let result, _events = selectTests store [ "src/Lib.fs" ] currentSymbols
 
         match result with
         | RunSubset tests ->
@@ -181,8 +178,7 @@ module ``No changes`` =
     let ``empty changed files returns empty subset`` () =
         let store = fromAnalysisResults [ standardGraph ]
 
-        let result, _events =
-            selectTests store.GetSymbolsInFile store.QueryAffectedTests [] Map.empty
+        let result, _events = selectTests store [] Map.empty
 
         match result with
         | RunSubset tests -> test <@ tests |> List.isEmpty @>
@@ -206,8 +202,7 @@ module ``New file not indexed`` =
                       ContentHash = ""
                       IsExtern = false } ] ]
 
-        let result, _events =
-            selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/NewModule.fs" ] currentSymbols
+        let result, _events = selectTests store [ "src/NewModule.fs" ] currentSymbols
 
         match result with
         | RunAll _ -> ()
@@ -219,8 +214,7 @@ module ``fsproj changed`` =
     let ``fsproj change triggers RunAll`` () =
         let store = fromAnalysisResults [ standardGraph ]
 
-        let result, _events =
-            selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/MyProject.fsproj" ] Map.empty
+        let result, _events = selectTests store [ "src/MyProject.fsproj" ] Map.empty
 
         match result with
         | RunAll(FsprojChanged _) -> ()
@@ -232,8 +226,7 @@ module ``Empty changed files`` =
     let ``empty list returns empty subset`` () =
         let store = fromAnalysisResults [ standardGraph ]
 
-        let result, _events =
-            selectTests store.GetSymbolsInFile store.QueryAffectedTests [] Map.empty
+        let result, _events = selectTests store [] Map.empty
 
         match result with
         | RunSubset tests -> test <@ tests |> List.isEmpty @>
@@ -248,8 +241,7 @@ module ``File with no stored symbols and no current symbols`` =
         // "src/Empty.fs" was never indexed (no stored symbols) and has no current symbols either
         let currentSymbols = Map.ofList [ "src/Empty.fs", [] ]
 
-        let result, _events =
-            selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/Empty.fs" ] currentSymbols
+        let result, _events = selectTests store [ "src/Empty.fs" ] currentSymbols
 
         match result with
         | RunSubset tests -> test <@ tests |> List.isEmpty @>
@@ -264,8 +256,7 @@ module ``File that had symbols but now has none`` =
         // src/Lib.fs has stored symbols (Lib.funcB) but current symbols list is empty — all removed
         let currentSymbols = Map.ofList [ "src/Lib.fs", [] ]
 
-        let result, _events =
-            selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/Lib.fs" ] currentSymbols
+        let result, _events = selectTests store [ "src/Lib.fs" ] currentSymbols
 
         match result with
         | RunSubset tests ->
@@ -291,8 +282,7 @@ module ``Unchanged file in changed list`` =
                       ContentHash = ""
                       IsExtern = false } ] ]
 
-        let result, _events =
-            selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/Lib.fs" ] currentSymbols
+        let result, _events = selectTests store [ "src/Lib.fs" ] currentSymbols
 
         match result with
         | RunSubset tests -> test <@ tests |> List.isEmpty @>
@@ -305,8 +295,7 @@ module ``File absent from current symbols map`` =
         let store = fromAnalysisResults [ standardGraph ]
 
         // "src/Unknown.fs" is in changedFiles but absent from currentSymbolsByFile AND not in store
-        let result, _events =
-            selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/Unknown.fs" ] Map.empty
+        let result, _events = selectTests store [ "src/Unknown.fs" ] Map.empty
 
         match result with
         | RunSubset tests -> test <@ tests |> List.isEmpty @>
@@ -329,8 +318,7 @@ module ``Event emission`` =
                       ContentHash = "changed"
                       IsExtern = false } ] ]
 
-        let _result, events =
-            selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/Lib.fs" ] currentSymbols
+        let _result, events = selectTests store [ "src/Lib.fs" ] currentSymbols
 
         let symbolChangeEvents =
             events
@@ -351,8 +339,7 @@ module ``Event emission`` =
     let ``fsproj change emits no symbol events`` () =
         let store = fromAnalysisResults [ standardGraph ]
 
-        let _result, events =
-            selectTests store.GetSymbolsInFile store.QueryAffectedTests [ "src/MyProject.fsproj" ] Map.empty
+        let _result, events = selectTests store [ "src/MyProject.fsproj" ] Map.empty
 
         let symbolChangeEvents =
             events
@@ -367,7 +354,235 @@ module ``Event emission`` =
     let ``empty changes emits no events`` () =
         let store = fromAnalysisResults [ standardGraph ]
 
-        let _result, events =
-            selectTests store.GetSymbolsInFile store.QueryAffectedTests [] Map.empty
+        let _result, events = selectTests store [] Map.empty
 
         test <@ events |> List.isEmpty @>
+
+module ``File-dependency attributes`` =
+
+    // standardGraph has:
+    //   Tests.testA (Function, tests/Tests.fs) — a test method
+    //   Lib.funcB   (Function, src/Lib.fs)     — non-test; testA → funcB
+    //
+    // With attributes declaring file dependencies, changes to matching non-F# paths
+    // should seed the walk and pull the downstream test.
+
+    /// Override a store's attribute index without rebuilding the graph. Tests want to
+    /// exercise `[<DependsOnFile>]` resolution independently of whether the attributes
+    /// were indexed alongside the symbols; point-patching GetAllAttributes keeps the
+    /// graph shape of `standardGraph` while injecting the declarations under test.
+    let private withAttributes (attrs: Map<string, (string * string) list>) (store: TestPrune.Ports.SymbolStore) =
+        { store with
+            GetAllAttributes = fun () -> attrs }
+
+    [<Fact>]
+    let ``DependsOnFile exact match on test method selects it`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+
+        let attrs =
+            Map.ofList [ "Tests.testA", [ ("DependsOnFileAttribute", """["data/cases.json"]""") ] ]
+
+        let result, events =
+            selectTests (store |> withAttributes attrs) [ "data/cases.json" ] Map.empty
+
+        match result with
+        | RunSubset tests ->
+            test <@ tests.Length = 1 @>
+            test <@ tests[0].TestMethod = "testA" @>
+        | RunAll reason -> failwith $"Expected RunSubset, got %s{SelectionReason.describe reason}"
+
+        // Event carries the file-dependency reason (no hash-derived changes competed)
+        let fileDepReasons =
+            events
+            |> List.choose (fun e ->
+                match e with
+                | TestSelectedEvent(_, FileDependencyChanged(p, s)) -> Some(p, s)
+                | _ -> None)
+
+        test
+            <@
+                fileDepReasons
+                |> List.exists (fun (p, s) -> p = "data/cases.json" && s = "Tests.testA")
+            @>
+
+    [<Fact>]
+    let ``DependsOnGlob double-star matches nested paths`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+
+        let attrs =
+            Map.ofList [ "Tests.testA", [ ("DependsOnGlobAttribute", """["tests/fixtures/**/*.yaml"]""") ] ]
+
+        let result, _events =
+            selectTests (store |> withAttributes attrs) [ "tests/fixtures/deeply/nested/case.yaml" ] Map.empty
+
+        match result with
+        | RunSubset tests -> test <@ tests |> List.exists (fun t -> t.TestMethod = "testA") @>
+        | RunAll r -> failwith $"Expected RunSubset, got %s{SelectionReason.describe r}"
+
+    [<Fact>]
+    let ``DependsOnGlob does not fire for unrelated changes`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+
+        let attrs =
+            Map.ofList [ "Tests.testA", [ ("DependsOnGlobAttribute", """["data/*.json"]""") ] ]
+
+        // A markdown edit that doesn't match the JSON glob
+        let result, _events =
+            selectTests (store |> withAttributes attrs) [ "docs/readme.md" ] Map.empty
+
+        match result with
+        | RunSubset tests -> test <@ tests |> List.isEmpty @>
+        | RunAll r -> failwith $"Expected RunSubset, got %s{SelectionReason.describe r}"
+
+    [<Fact>]
+    let ``DependsOnFile on a non-test symbol transitively selects dependent tests`` () =
+        // funcB isn't a test, but testA depends on it. Annotating funcB should pull testA
+        // when the declared file changes.
+        let store = fromAnalysisResults [ standardGraph ]
+
+        let attrs =
+            Map.ofList [ "Lib.funcB", [ ("DependsOnFileAttribute", """["config/app.toml"]""") ] ]
+
+        let result, _events =
+            selectTests (store |> withAttributes attrs) [ "config/app.toml" ] Map.empty
+
+        match result with
+        | RunSubset tests -> test <@ tests |> List.exists (fun t -> t.TestMethod = "testA") @>
+        | RunAll r -> failwith $"Expected RunSubset, got %s{SelectionReason.describe r}"
+
+    [<Fact>]
+    let ``path normalization collapses leading ./`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+
+        let attrs =
+            Map.ofList [ "Tests.testA", [ ("DependsOnFileAttribute", """["data/x.json"]""") ] ]
+
+        // Changed file reported as "./data/x.json" — normalization must match "data/x.json"
+        let result, _events =
+            selectTests (store |> withAttributes attrs) [ "./data/x.json" ] Map.empty
+
+        match result with
+        | RunSubset tests -> test <@ tests |> List.exists (fun t -> t.TestMethod = "testA") @>
+        | RunAll r -> failwith $"Expected RunSubset, got %s{SelectionReason.describe r}"
+
+    [<Fact>]
+    let ``malformed args_json is silently ignored`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+
+        // Not JSON at all, empty array, and non-string first element — none should
+        // fire or crash the walk.
+        let attrs =
+            Map.ofList
+                [ "Tests.testA",
+                  [ ("DependsOnFileAttribute", "not-json-at-all")
+                    ("DependsOnFileAttribute", "[]")
+                    ("DependsOnFileAttribute", "[42]") ] ]
+
+        let result, _events =
+            selectTests (store |> withAttributes attrs) [ "data/anything.json" ] Map.empty
+
+        match result with
+        | RunSubset tests -> test <@ tests |> List.isEmpty @>
+        | RunAll r -> failwith $"Expected RunSubset, got %s{SelectionReason.describe r}"
+
+    [<Fact>]
+    let ``attribute name other than DependsOnFile/Glob is ignored`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+
+        let attrs =
+            Map.ofList [ "Tests.testA", [ ("FactAttribute", """[]"""); ("SomeOtherAttribute", """["data/x.json"]""") ] ]
+
+        let result, _events =
+            selectTests (store |> withAttributes attrs) [ "data/x.json" ] Map.empty
+
+        match result with
+        | RunSubset tests -> test <@ tests |> List.isEmpty @>
+        | RunAll r -> failwith $"Expected RunSubset, got %s{SelectionReason.describe r}"
+
+    [<Fact>]
+    let ``glob with single-star does not cross path segments`` () =
+        // `data/*.json` must match `data/x.json` but NOT `data/sub/x.json`.
+        let store = fromAnalysisResults [ standardGraph ]
+
+        let attrs =
+            Map.ofList [ "Tests.testA", [ ("DependsOnGlobAttribute", """["data/*.json"]""") ] ]
+
+        let matched, _ =
+            selectTests (store |> withAttributes attrs) [ "data/x.json" ] Map.empty
+
+        let unmatched, _ =
+            selectTests (store |> withAttributes attrs) [ "data/sub/x.json" ] Map.empty
+
+        match matched with
+        | RunSubset ts -> test <@ ts |> List.exists (fun t -> t.TestMethod = "testA") @>
+        | RunAll r -> failwith $"Expected RunSubset, got %s{SelectionReason.describe r}"
+
+        match unmatched with
+        | RunSubset ts -> test <@ ts |> List.isEmpty @>
+        | RunAll r -> failwith $"Expected RunSubset, got %s{SelectionReason.describe r}"
+
+    [<Fact>]
+    let ``question-mark glob matches single character not slash`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+
+        let attrs =
+            Map.ofList [ "Tests.testA", [ ("DependsOnGlobAttribute", """["data/v?.json"]""") ] ]
+
+        let matched, _ =
+            selectTests (store |> withAttributes attrs) [ "data/v1.json" ] Map.empty
+
+        match matched with
+        | RunSubset ts -> test <@ ts |> List.exists (fun t -> t.TestMethod = "testA") @>
+        | RunAll r -> failwith $"Expected RunSubset, got %s{SelectionReason.describe r}"
+
+    [<Fact>]
+    let ``hash-derived change and file-dep change both fire; hash reason wins`` () =
+        // When both a hash change and a file-dep match produce the same test, the event
+        // reason reports the hash change (matches existing consumer expectations).
+        let store = fromAnalysisResults [ standardGraph ]
+
+        let attrs =
+            Map.ofList [ "Tests.testA", [ ("DependsOnFileAttribute", """["data/x.json"]""") ] ]
+
+        let currentSymbols =
+            Map.ofList
+                [ "src/Lib.fs",
+                  [ { FullName = "Lib.funcB"
+                      Kind = Function
+                      SourceFile = "src/Lib.fs"
+                      LineStart = 1
+                      LineEnd = 10
+                      ContentHash = "changed"
+                      IsExtern = false } ] ]
+
+        let _result, events =
+            selectTests (store |> withAttributes attrs) [ "src/Lib.fs"; "data/x.json" ] currentSymbols
+
+        let reasons =
+            events
+            |> List.choose (fun e ->
+                match e with
+                | TestSelectedEvent(_, reason) -> Some reason
+                | _ -> None)
+
+        // At least one TestSelectedEvent, and the reported reason for it is the
+        // hash-based SymbolChanged (not FileDependencyChanged)
+        test
+            <@
+                reasons
+                |> List.exists (fun r ->
+                    match r with
+                    | SymbolChanged _ -> true
+                    | _ -> false)
+            @>
+
+        test
+            <@
+                not (
+                    reasons
+                    |> List.exists (fun r ->
+                        match r with
+                        | FileDependencyChanged _ -> true
+                        | _ -> false)
+                )
+            @>

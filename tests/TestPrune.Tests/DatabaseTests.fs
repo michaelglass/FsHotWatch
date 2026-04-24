@@ -52,6 +52,7 @@ module ``Store and retrieve symbols`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -107,6 +108,7 @@ module ``Transitive dependency query`` =
                         TestClass = "Tests"
                         TestMethod = "testA" } ]
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -149,6 +151,7 @@ module ``Direct dependency`` =
                         TestClass = "Tests"
                         TestMethod = "testA" } ]
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -196,6 +199,7 @@ module ``No dependency`` =
                         TestClass = "Tests"
                         TestMethod = "testA" } ]
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -220,6 +224,7 @@ module ``RebuildProjects replaces old data`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result1 ])
@@ -236,6 +241,7 @@ module ``RebuildProjects replaces old data`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result2 ])
@@ -266,6 +272,7 @@ module ``Cross-project dependencies`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             // Project B has a test that depends on A's symbol
@@ -289,6 +296,7 @@ module ``Cross-project dependencies`` =
                         TestClass = "Tests.MyTests"
                         TestMethod = "test1" } ]
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             // Pass B before A — the old API would silently drop the edge
@@ -481,6 +489,7 @@ module ``Multiple tests depending on same symbol`` =
                         TestClass = "Tests"
                         TestMethod = "test2" } ]
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -522,6 +531,7 @@ module ``GetAllSymbolNames`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -661,6 +671,7 @@ module ``RebuildProjects with cache keys`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects(
@@ -688,6 +699,7 @@ module ``RebuildProjects with cache keys`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects(
@@ -709,6 +721,7 @@ module ``RebuildProjects with cache keys`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -800,6 +813,7 @@ module ``stringToDepKind fallback`` =
                         TestClass = "Tests"
                         TestMethod = "testA" } ]
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -850,6 +864,7 @@ module ``symbolKindToString and round-trip`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -874,6 +889,7 @@ module ``symbolKindToString and round-trip`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -897,6 +913,7 @@ module ``symbolKindToString and round-trip`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -933,6 +950,7 @@ module ``depKindToString and round-trip`` =
                         Source = "core" } ]
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -967,6 +985,7 @@ module ``depKindToString and round-trip`` =
                         Source = "core" } ]
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -1001,6 +1020,7 @@ module ``depKindToString and round-trip`` =
                         Source = "core" } ]
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -1069,6 +1089,7 @@ module ``GetDependenciesFromFile`` =
                         Source = "core" } ]
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -1094,6 +1115,7 @@ module ``GetDependenciesFromFile`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -1129,6 +1151,7 @@ module ``GetTestMethodsInFile`` =
                         TestClass = "Tests"
                         TestMethod = "testA" } ]
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -1154,6 +1177,7 @@ module ``GetTestMethodsInFile`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -1193,6 +1217,7 @@ module ``Cross-project extern symbol dependencies`` =
                         TestClass = "Tests"
                         TestMethod = "testConstructsType" } ]
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ testProjectResult ])
@@ -1217,6 +1242,7 @@ module ``Cross-project extern symbol dependencies`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             // Test project produces an extern stub for the same symbol
@@ -1247,6 +1273,7 @@ module ``Cross-project extern symbol dependencies`` =
                         TestClass = "Tests"
                         TestMethod = "myTest" } ]
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             // Both results in same call — real symbol should win
@@ -1280,6 +1307,7 @@ module ``Cross-project extern symbol dependencies`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ libResult ])
@@ -1312,6 +1340,7 @@ module ``Cross-project extern symbol dependencies`` =
                         TestClass = "Tests"
                         TestMethod = "myTest" } ]
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ testResult ])
@@ -1347,6 +1376,7 @@ module ``Cross-project extern symbol dependencies`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             let tests =
@@ -1369,6 +1399,7 @@ module ``Cross-project extern symbol dependencies`` =
                         TestClass = "Tests"
                         TestMethod = "myTest" } ]
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ lib; tests ])
@@ -1417,6 +1448,7 @@ module ``Unknown enum deduplication`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -1462,6 +1494,7 @@ module ``Unknown enum deduplication`` =
                         TestClass = "Tests"
                         TestMethod = "testA" } ]
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -1506,6 +1539,7 @@ module ``RebuildProjects edge cases`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             // Should not throw even though no real source files to delete
@@ -1529,6 +1563,7 @@ module ``RebuildProjects edge cases`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             // Pass Some [] for both keys
@@ -1560,6 +1595,7 @@ module ``GetFileKey`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ], fileKeys = [ "src/Mod.fs", "abc123" ])
@@ -1643,6 +1679,7 @@ module ``GetIncomingEdgesBatch`` =
                         Source = "core" } ]
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -1666,6 +1703,7 @@ module ``GetIncomingEdgesBatch`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -1753,6 +1791,7 @@ module ``GetReachableSymbols`` =
                         Source = "core" } ]
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -1787,6 +1826,7 @@ module ``ExternRef kind round-trips through database`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -1820,6 +1860,7 @@ module ``GetTestMethodSymbolNames with data`` =
                         TestClass = "Tests"
                         TestMethod = "testA" } ]
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ result ])
@@ -1949,7 +1990,7 @@ module ``Schema version migration`` =
 
             let symbols = db.GetSymbolsInFile "src/Lib.fs"
             test <@ symbols.Length = 1 @>
-            test <@ getUserVersion path = 4 @>
+            test <@ getUserVersion path = 5 @>
         finally
             cleanupDb path
 

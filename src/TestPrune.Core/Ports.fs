@@ -7,6 +7,7 @@ open TestPrune.Database
 type SymbolStore =
     { GetSymbolsInFile: string -> SymbolInfo list
       GetDependenciesFromFile: string -> Dependency list
+      GetParentLinksInFile: string -> SymbolParentLink list
       GetTestMethodsInFile: string -> TestMethodInfo list
       GetFileKey: string -> string option
       GetProjectKey: string -> string option
@@ -35,6 +36,7 @@ type SymbolSink =
 let toSymbolStore (db: Database) : SymbolStore =
     { GetSymbolsInFile = db.GetSymbolsInFile
       GetDependenciesFromFile = db.GetDependenciesFromFile
+      GetParentLinksInFile = db.GetParentLinksInFile
       GetTestMethodsInFile = db.GetTestMethodsInFile
       GetFileKey = db.GetFileKey
       GetProjectKey = db.GetProjectKey

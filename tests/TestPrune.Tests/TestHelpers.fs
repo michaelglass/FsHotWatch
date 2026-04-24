@@ -88,6 +88,7 @@ let standardGraph =
             TestClass = "Tests"
             TestMethod = "testA" } ]
       Attributes = []
+      ParentLinks = []
       Diagnostics = AnalysisDiagnostics.Zero }
 
 let withDbPath (f: string -> Database -> unit) =

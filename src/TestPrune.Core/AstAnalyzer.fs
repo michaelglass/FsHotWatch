@@ -37,8 +37,34 @@ type SymbolInfo =
       ContentHash: string
       IsExtern: bool }
 
+/// A containment relationship from a member symbol (`Child`) to the Type that declares it.
+/// Only emitted when the declaring entity is a type-with-state (class, record, DU, struct,
+/// interface) — NOT a module. Powers aggregate-type invalidation: when any member of a
+/// type is modified, consumers that touched any part of the type are re-selected.
+type SymbolParentLink = { Child: string; Parent: string }
+
 [<Literal>]
 let ExternSourceFile = "_extern"
+
+/// Prefix for synthetic symbols that bridge xUnit `[<Collection("name")>]` test classes
+/// to `[<CollectionDefinition("name")>]` declarations in potentially different files.
+/// The full name is `<prefix><name>`; used as both the `FromSymbol` of the test→synth
+/// edge and the `ToSymbol` resolved to the collection definition's fixture.
+[<Literal>]
+let SyntheticCollectionPrefix = "TestPrune.__Collection__."
+
+// xUnit marker names matched by DisplayName (which strips the namespace).
+[<Literal>]
+let private IClassFixtureName = "IClassFixture"
+
+[<Literal>]
+let private ICollectionFixtureName = "ICollectionFixture"
+
+[<Literal>]
+let private CollectionAttributeName = "CollectionAttribute"
+
+[<Literal>]
+let private CollectionDefinitionAttributeName = "CollectionDefinitionAttribute"
 
 /// The kind of edge in a dependency graph (calls, uses type, pattern match, etc.).
 type DependencyKind =
@@ -100,11 +126,16 @@ type SymbolAttribute =
       AttributeName: string
       ArgsJson: string }
 
+/// Combined output of analyzing one source file. `ParentLinks` carries the
+/// member → declaring-type containment edges that power aggregate-type
+/// invalidation; `Attributes` includes both member-level and entity-level
+/// custom attributes found in the file.
 type AnalysisResult =
     { Symbols: SymbolInfo list
       Dependencies: Dependency list
       TestMethods: TestMethodInfo list
       Attributes: SymbolAttribute list
+      ParentLinks: SymbolParentLink list
       Diagnostics: AnalysisDiagnostics }
 
     /// Create an AnalysisResult with default (zero) diagnostics.
@@ -114,6 +145,7 @@ type AnalysisResult =
           Dependencies = dependencies
           TestMethods = testMethods
           Attributes = []
+          ParentLinks = []
           Diagnostics = AnalysisDiagnostics.Zero }
 
 /// Internal classification logic that can be tested with injected symbolClassifier.
@@ -747,14 +779,204 @@ let private extractResults
                 |> Seq.distinct
                 |> Seq.toList
 
-            // Single pass over allUses definitions to extract both test methods and attributes
+            // Resolve a type to its declaring-entity full name, or None for generic
+            // parameters / types without a type definition.
+            let tryFullName (t: FSharpType) : string option =
+                try
+                    if t.HasTypeDefinition && not t.IsGenericParameter then
+                        Some t.TypeDefinition.FullName
+                    else
+                        None
+                with :? InvalidOperationException ->
+                    None
+
+            // Render an attribute's constructor arguments as the JSON-ish payload
+            // stored in `symbol_attributes.args_json` (e.g. `["name", 42]`). Reused
+            // by both the entity-attribute pass and the MFV-attribute pass below.
+            let serializeAttributeArgs (attr: FSharpAttribute) : string =
+                let inner =
+                    try
+                        attr.ConstructorArguments
+                        |> Seq.map (fun (_ty, value) ->
+                            match value with
+                            | :? string as s -> $"\"%s{s}\""
+                            | v -> string v)
+                        |> String.concat ", "
+                    with _ ->
+                        ""
+
+                $"[%s{inner}]"
+
+            let firstStringArg (attr: FSharpAttribute) : string option =
+                try
+                    attr.ConstructorArguments
+                    |> Seq.tryHead
+                    |> Option.bind (fun (_, value) ->
+                        match value with
+                        | :? string as s -> Some s
+                        | _ -> None)
+                with :? InvalidOperationException ->
+                    None
+
+            // Pull T out of an `IClassFixture<T>` or `ICollectionFixture<T>` interface
+            // declaration. Used both for direct fixture edges on test methods and for
+            // resolving `[<CollectionDefinition>]` classes to their fixture.
+            let fixtureInterfaceArg (acceptName: string -> bool) (iface: FSharpType) : string option =
+                try
+                    if
+                        iface.HasTypeDefinition
+                        && iface.GenericArguments.Count = 1
+                        && acceptName iface.TypeDefinition.DisplayName
+                    then
+                        tryFullName iface.GenericArguments[0]
+                    else
+                        None
+                with :? InvalidOperationException ->
+                    None
+
+            // Fixture types that should be linked directly to each test method on the
+            // class: primary-ctor parameter types + IClassFixture<T>/ICollectionFixture<T>
+            // interface args. Memoized per entity so a class with N test methods walks
+            // its members/interfaces once instead of N times.
+            let fixtureCache = System.Collections.Generic.Dictionary<string, string list>()
+
+            let collectFixtureTypes (entity: FSharpEntity) : string list =
+                let key =
+                    try
+                        entity.FullName
+                    with :? InvalidOperationException ->
+                        ""
+
+                match fixtureCache.TryGetValue(key) with
+                | true, cached -> cached
+                | false, _ ->
+                    let fromCtorParams =
+                        try
+                            entity.MembersFunctionsAndValues
+                            |> Seq.filter (fun m ->
+                                try
+                                    m.IsConstructor
+                                with :? InvalidOperationException ->
+                                    false)
+                            |> Seq.collect (fun m ->
+                                try
+                                    m.CurriedParameterGroups
+                                    |> Seq.concat
+                                    |> Seq.choose (fun p -> tryFullName p.Type)
+                                with :? InvalidOperationException ->
+                                    Seq.empty)
+                            |> Seq.toList
+                        with :? InvalidOperationException ->
+                            []
+
+                    let fromInterfaces =
+                        try
+                            entity.DeclaredInterfaces
+                            |> Seq.choose (
+                                fixtureInterfaceArg (fun n -> n = IClassFixtureName || n = ICollectionFixtureName)
+                            )
+                            |> Seq.toList
+                        with :? InvalidOperationException ->
+                            []
+
+                    let result = fromCtorParams @ fromInterfaces |> List.distinct
+                    fixtureCache[key] <- result
+                    result
+
+            // Resolve the single ICollectionFixture<T> arg of a [<CollectionDefinition>]
+            // class to T's full name. Thin wrapper over fixtureInterfaceArg.
+            let collectionFixtureFromInterfaces (entity: FSharpEntity) : string option =
+                try
+                    entity.DeclaredInterfaces
+                    |> Seq.tryPick (fixtureInterfaceArg (fun n -> n = ICollectionFixtureName))
+                with :? InvalidOperationException ->
+                    None
+
+            // Pre-pass over entity definitions: capture entity-level attributes (the
+            // MFV-only loop below misses them) and catalog xUnit collection fixtures so
+            // the MFV pass can link test methods to them.
+            //
+            // A synthetic symbol `<SyntheticCollectionPrefix><name>` bridges each
+            // `[<Collection(name)>]` test class to the matching `[<CollectionDefinition(name)>]`
+            // declaration (potentially in a different file). Test methods get edges to the
+            // synth; the synth gets an edge to the fixture T. Cross-file resolution
+            // happens through the existing extern/full_name pipeline.
+            let mutable collectionDefinitions: Map<string, string * string> = Map.empty
+            let mutable collectionMemberships: Map<string, string list> = Map.empty
+            let mutable entityAttributes: SymbolAttribute list = []
+
+            for u in allUses do
+                if u.IsFromDefinition then
+                    match u.Symbol with
+                    | :? FSharpEntity as entity ->
+                        try
+                            let entityFullName = entity.FullName
+
+                            for attr in entity.Attributes do
+                                try
+                                    let attrName = attr.AttributeType.DisplayName
+
+                                    entityAttributes <-
+                                        { SymbolFullName = entityFullName
+                                          AttributeName = attrName
+                                          ArgsJson = serializeAttributeArgs attr }
+                                        :: entityAttributes
+
+                                    if attrName = CollectionDefinitionAttributeName then
+                                        match firstStringArg attr with
+                                        | Some name ->
+                                            match collectionFixtureFromInterfaces entity with
+                                            | Some fixtureFullName ->
+                                                let synthName = SyntheticCollectionPrefix + name
+
+                                                collectionDefinitions <-
+                                                    collectionDefinitions |> Map.add name (synthName, fixtureFullName)
+                                            | None -> ()
+                                        | None -> ()
+                                    elif attrName = CollectionAttributeName then
+                                        match firstStringArg attr with
+                                        | Some name ->
+                                            let existing =
+                                                collectionMemberships
+                                                |> Map.tryFind entityFullName
+                                                |> Option.defaultValue []
+
+                                            collectionMemberships <-
+                                                collectionMemberships |> Map.add entityFullName (name :: existing)
+                                        | None -> ()
+                                with :? InvalidOperationException ->
+                                    ()
+                        with :? InvalidOperationException ->
+                            ()
+                    | _ -> ()
+
             let mutable testMethods = []
             let mutable attributes = []
+            let mutable parentLinks = []
+            let mutable fixtureEdges = []
 
             for u in allUses do
                 if u.IsFromDefinition then
                     match u.Symbol with
                     | :? FSharpMemberOrFunctionOrValue as mfv ->
+                        // Containment link for aggregate-type invalidation. Emitted only
+                        // for members of non-module Types; module bindings must not
+                        // participate (editing one module function would otherwise fan
+                        // out to consumers of sibling functions).
+                        //
+                        // Dedup is downstream: InMemoryStore uses a Map, the Database
+                        // UPDATE is idempotent for repeated (child, parent) pairs.
+                        try
+                            match mfv.DeclaringEntity with
+                            | Some entity when not entity.IsFSharpModule ->
+                                parentLinks <-
+                                    { Child = mfv.FullName
+                                      Parent = entity.FullName }
+                                    :: parentLinks
+                            | _ -> ()
+                        with :? InvalidOperationException ->
+                            ()
+
                         if isTestAttribute mfv then
                             let fallbackClass, testMethod = extractTestClass mfv.FullName
 
@@ -773,25 +995,45 @@ let private extractResults
                                   TestMethod = testMethod }
                                 :: testMethods
 
+                            // Direct edges from the test method to every fixture its
+                            // declaring class exposes (ctor-param types + IClassFixture /
+                            // ICollectionFixture interface args), plus to the synthetic
+                            // symbol for each [<Collection(n)>] membership. Covers tests
+                            // that never reference the fixture in their body — class-level
+                            // edges alone wouldn't chain back to the test method.
+                            try
+                                match mfv.DeclaringEntity with
+                                | Some entity when not entity.IsFSharpModule ->
+                                    for fixtureFullName in collectFixtureTypes entity do
+                                        if fixtureFullName <> mfv.FullName then
+                                            fixtureEdges <-
+                                                { FromSymbol = mfv.FullName
+                                                  ToSymbol = fixtureFullName
+                                                  Kind = UsesType
+                                                  Source = "core" }
+                                                :: fixtureEdges
+
+                                    match collectionMemberships |> Map.tryFind entity.FullName with
+                                    | Some names ->
+                                        for name in names do
+                                            fixtureEdges <-
+                                                { FromSymbol = mfv.FullName
+                                                  ToSymbol = SyntheticCollectionPrefix + name
+                                                  Kind = UsesType
+                                                  Source = "core" }
+                                                :: fixtureEdges
+                                    | None -> ()
+                                | _ -> ()
+                            with :? InvalidOperationException ->
+                                ()
+
                         try
                             for attr in mfv.Attributes do
                                 try
-                                    let name = attr.AttributeType.DisplayName
-
-                                    let args =
-                                        attr.ConstructorArguments
-                                        |> Seq.map (fun (_ty, value) ->
-                                            match value with
-                                            | :? string as s -> $"\"%s{s}\""
-                                            | v -> string v)
-                                        |> String.concat ", "
-
-                                    let argsJson = $"[%s{args}]"
-
                                     attributes <-
                                         { SymbolFullName = mfv.FullName
-                                          AttributeName = name
-                                          ArgsJson = argsJson }
+                                          AttributeName = attr.AttributeType.DisplayName
+                                          ArgsJson = serializeAttributeArgs attr }
                                         :: attributes
                                 with _ ->
                                     ()
@@ -800,7 +1042,40 @@ let private extractResults
                     | _ -> ()
 
             let testMethods = List.rev testMethods
-            let attributes = List.rev attributes
+            let attributes = (List.rev attributes) @ (List.rev entityAttributes)
+            let parentLinks = List.rev parentLinks
+            let fixtureEdges = List.rev fixtureEdges |> List.distinct
+
+            // One synthetic symbol per [<CollectionDefinition(name)>] in this file, plus
+            // synthetic → fixture so the recursive walk reaches T → synth → testMethod.
+            let collectionSynthSymbols, collectionSynthEdges =
+                let mutable syms = []
+                let mutable edges = []
+
+                for KeyValue(_, (synthFullName, fixtureFullName)) in collectionDefinitions do
+                    syms <-
+                        { FullName = synthFullName
+                          Kind = Type
+                          SourceFile = sourceFileName
+                          LineStart = 0
+                          LineEnd = 0
+                          ContentHash = ""
+                          IsExtern = false }
+                        :: syms
+
+                    edges <-
+                        { FromSymbol = synthFullName
+                          ToSymbol = fixtureFullName
+                          Kind = UsesType
+                          Source = "core" }
+                        :: edges
+
+                syms, edges
+
+            // Merge fixture edges + collection synth edges with the primary dependency list.
+            // Downstream consumers (DB INSERT OR IGNORE, InMemoryStore's Map.ofList) dedupe.
+            let dependencies = dependencies @ fixtureEdges @ collectionSynthEdges
+            let symbols = symbols @ collectionSynthSymbols
 
             // Collect extern symbols: ToSymbol names in dependencies that aren't
             // defined in this file. These are cross-assembly references that need
@@ -835,6 +1110,7 @@ let private extractResults
                   Dependencies = dependencies
                   TestMethods = testMethods
                   Attributes = attributes
+                  ParentLinks = parentLinks
                   Diagnostics =
                     { DroppedEdges = droppedEdgeCount
                       FilteredSymbols = filteredSymbolCount

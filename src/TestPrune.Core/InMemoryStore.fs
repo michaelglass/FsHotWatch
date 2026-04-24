@@ -9,6 +9,19 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
     let allDeps = results |> List.collect (fun r -> r.Dependencies)
     let allTests = results |> List.collect (fun r -> r.TestMethods)
     let allAttrs = results |> List.collect (fun r -> r.Attributes)
+    let allParentLinks = results |> List.collect (fun r -> r.ParentLinks)
+
+    let kindBySymbol =
+        allSymbols |> List.map (fun s -> s.FullName, s.Kind) |> Map.ofList
+
+    let parentByChild =
+        allParentLinks |> List.map (fun l -> l.Child, l.Parent) |> Map.ofList
+
+    let childrenByParent =
+        allParentLinks
+        |> List.groupBy (fun l -> l.Parent)
+        |> Map.ofList
+        |> Map.map (fun _ links -> links |> List.map (fun l -> l.Child) |> Set.ofList)
 
     let attrsBySymbol =
         allAttrs |> List.groupBy (fun a -> a.SymbolFullName) |> Map.ofList
@@ -26,6 +39,11 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
     let testsByFile =
         allTests
         |> List.groupBy (fun t -> symbolFileMap |> Map.tryFind t.SymbolFullName |> Option.defaultValue "")
+        |> Map.ofList
+
+    let parentLinksByFile =
+        allParentLinks
+        |> List.groupBy (fun l -> symbolFileMap |> Map.tryFind l.Child |> Option.defaultValue "")
         |> Map.ofList
 
     // Build adjacency list for transitive queries
@@ -62,16 +80,44 @@ let fromAnalysisResults (results: AnalysisResult list) : SymbolStore =
 
         walk Set.empty seeds
 
+    // Mirrors the aggregate-type expansion in Database.QueryAffectedTests — see the
+    // CTE there for the two-phase lift/expand rationale.
+    let expandChanged (changedNames: string list) : string list =
+        let isType name =
+            kindBySymbol |> Map.tryFind name = Some Type
+
+        let liftedParents =
+            changedNames
+            |> List.choose (fun name ->
+                match parentByChild |> Map.tryFind name with
+                | Some parent when isType parent -> Some parent
+                | _ -> None)
+
+        let afterLift = changedNames @ liftedParents |> List.distinct
+
+        let expandedChildren =
+            afterLift
+            |> List.collect (fun name ->
+                if isType name then
+                    childrenByParent
+                    |> Map.tryFind name
+                    |> Option.defaultValue Set.empty
+                    |> Set.toList
+                else
+                    [])
+
+        afterLift @ expandedChildren |> List.distinct
+
     { GetSymbolsInFile = fun file -> symbolsByFile |> Map.tryFind file |> Option.defaultValue []
       GetDependenciesFromFile = fun file -> depsByFile |> Map.tryFind file |> Option.defaultValue []
+      GetParentLinksInFile = fun file -> parentLinksByFile |> Map.tryFind file |> Option.defaultValue []
       GetTestMethodsInFile = fun file -> testsByFile |> Map.tryFind file |> Option.defaultValue []
       GetFileKey = fun _ -> None
       GetProjectKey = fun _ -> None
       QueryAffectedTests =
         fun changedNames ->
-            // Find all symbols transitively depending on changedNames (reverse edges)
-            let affected = transitiveClosure reverseEdges changedNames
-            // Return test methods among the affected
+            let seeds = expandChanged changedNames
+            let affected = transitiveClosure reverseEdges seeds
             allTests |> List.filter (fun t -> Set.contains t.SymbolFullName affected)
       GetAllSymbols = fun () -> allSymbols
       GetAllSymbolNames = fun () -> allSymbolNames

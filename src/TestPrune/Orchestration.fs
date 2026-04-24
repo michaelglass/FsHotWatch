@@ -218,6 +218,7 @@ let indexProject
                                        Dependencies = store.GetDependenciesFromFile(relPath)
                                        TestMethods = store.GetTestMethodsInFile(relPath)
                                        Attributes = []
+                                       ParentLinks = store.GetParentLinksInFile(relPath)
                                        Diagnostics = AnalysisDiagnostics.Zero |}
 
                                 (idx + 1,
@@ -255,6 +256,7 @@ let indexProject
                                            Dependencies = deps
                                            TestMethods = testMethods
                                            Attributes = result.Attributes
+                                           ParentLinks = result.ParentLinks
                                            Diagnostics = result.Diagnostics |}
 
                                     (idx + 1,
@@ -281,6 +283,7 @@ let indexProject
                   Dependencies = results |> List.collect (fun r -> r.Dependencies)
                   TestMethods = results |> List.collect (fun r -> r.TestMethods)
                   Attributes = results |> List.collect (fun r -> r.Attributes)
+                  ParentLinks = results |> List.collect (fun r -> r.ParentLinks)
                   Diagnostics =
                     { DroppedEdges = results |> List.sumBy (fun r -> r.Diagnostics.DroppedEdges)
                       FilteredSymbols = results |> List.sumBy (fun r -> r.Diagnostics.FilteredSymbols)
@@ -503,8 +506,7 @@ let analyzeChanges
                 let failedFiles = parseFailures |> List.rev |> String.concat ", "
                 Ok(RunAll(AnalysisFailedFallback failedFiles), changedFiles)
             else
-                let selection, events =
-                    selectTests store.GetSymbolsInFile store.QueryAffectedTests changedFiles currentSymbolsByFile
+                let selection, events = selectTests store changedFiles currentSymbolsByFile
 
                 for event in events do
                     auditSink.Post(timestamp event)

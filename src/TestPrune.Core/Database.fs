@@ -17,6 +17,7 @@ let private schema =
         line_end INTEGER NOT NULL,
         content_hash TEXT NOT NULL DEFAULT '',
         is_extern INTEGER NOT NULL DEFAULT 0,
+        parent_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
         indexed_at TEXT NOT NULL
     );
 
@@ -68,6 +69,7 @@ let private schema =
     );
 
     CREATE INDEX IF NOT EXISTS idx_symbols_by_file ON symbols (source_file);
+    CREATE INDEX IF NOT EXISTS idx_symbols_by_parent ON symbols (parent_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_deps_to ON dependencies (to_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_deps_from ON dependencies (from_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_route_handlers_source ON route_handlers (handler_source_file);
@@ -164,8 +166,15 @@ let private openConnection (dbPath: string) =
 ///          recreated; a 2.0.0 DB stamped v3 but missing these columns would
 ///          otherwise survive open and blow up on first INSERT with
 ///          "table dependencies has no column named source".
+/// v5     — added `symbols.parent_symbol_id` (self-referential nullable FK) to support
+///          aggregate-type invalidation: a change to any member of a type lifts the
+///          "changed" set to include the type and its sibling members, so tests that
+///          touched any part of the type are selected. Bump forces recreate — legacy
+///          v4 DBs don't have the column and UPDATEs would throw "no column named
+///          parent_symbol_id". Consumers that care about upgrade-in-place can do a
+///          full re-index after upgrade.
 [<Literal>]
-let private SchemaVersion = 4
+let private SchemaVersion = 5
 
 let private deleteDbFiles (dbPath: string) =
     File.Delete(dbPath)
@@ -357,6 +366,44 @@ type Database(dbPath: string) =
                 delOrphan.Parameters.AddWithValue("@now", now) |> ignore
                 delOrphan.ExecuteNonQuery() |> ignore
 
+            // Reset parent links for re-indexed files before re-populating below. Parent links
+            // from non-re-indexed files are untouched (their row ids were preserved by the
+            // symbol UPSERT). Clearing first handles the case where a member moved to a
+            // different type or out of a type entirely.
+            if not sourceFiles.IsEmpty then
+                let placeholders = buildPlaceholders sourceFiles
+
+                use clrParent = conn.CreateCommand()
+                clrParent.Transaction <- txn
+
+                clrParent.CommandText <-
+                    $"UPDATE symbols SET parent_symbol_id = NULL WHERE source_file IN (%s{placeholders})"
+
+                bindPlaceholders clrParent sourceFiles
+                clrParent.ExecuteNonQuery() |> ignore
+
+            // Populate parent_symbol_id from analyzer-supplied links. Only members of
+            // non-module types produce links, so module bindings stay with NULL parents
+            // and aggregate-type invalidation doesn't fan out across module siblings.
+            use plCmd = conn.CreateCommand()
+            plCmd.Transaction <- txn
+
+            plCmd.CommandText <-
+                """
+                UPDATE symbols
+                SET parent_symbol_id = (SELECT id FROM symbols p WHERE p.full_name = @parent)
+                WHERE full_name = @child
+                """
+
+            let pPlChild = plCmd.Parameters.Add("@child", SqliteType.Text)
+            let pPlParent = plCmd.Parameters.Add("@parent", SqliteType.Text)
+
+            for result in results do
+                for link in result.ParentLinks do
+                    pPlChild.Value <- link.Child
+                    pPlParent.Value <- link.Parent
+                    plCmd.ExecuteNonQuery() |> ignore
+
             // Dependencies are inserted after all symbols so cross-project edges resolve
             use depCmd = conn.CreateCommand()
             depCmd.Transaction <- txn
@@ -477,12 +524,50 @@ type Database(dbPath: string) =
 
             use cmd = conn.CreateCommand()
 
+            // Aggregate-type invalidation: before the transitive walk, expand the set of
+            // "changed" symbol ids in both directions along the containment relation, but
+            // ONLY when the containing entity is a Type (never a Module).
+            //
+            //   member → parent type:  a lone-member edit lifts to the type, so tests that
+            //                          touched the type itself or sibling members are hit.
+            //   parent type → members: a type-body edit expands to every member, so tests
+            //                          that accessed any specific member through the type
+            //                          are hit even though their direct edge is to that
+            //                          sibling member, not to the type.
+            //
+            // Module members deliberately do not have parent_symbol_id set (see
+            // AstAnalyzer.fs parentLinks logic), so the expansion can't fan out across
+            // unrelated module siblings.
+            // Two-phase expansion:
+            //   after_lift = changed ∪ (parent types of changed members, parent.kind='Type')
+            //   expanded   = after_lift ∪ (members of every Type in after_lift)
+            // This makes a lone-member change reach sibling members via the lifted type,
+            // which otherwise wouldn't be in the seed set if only the member changed.
+            let typeKindStr = symbolKindToString Type
+
             cmd.CommandText <-
                 $"""
-                WITH RECURSIVE transitive_deps AS (
-                    SELECT from_symbol_id FROM dependencies WHERE to_symbol_id IN (
-                        SELECT id FROM symbols WHERE full_name IN (%s{placeholders})
-                    )
+                WITH after_lift AS (
+                    SELECT id FROM symbols WHERE full_name IN (%s{placeholders})
+                    UNION
+                    SELECT parent.id
+                    FROM symbols child
+                    JOIN symbols parent ON child.parent_symbol_id = parent.id
+                    WHERE child.full_name IN (%s{placeholders})
+                      AND parent.kind = '%s{typeKindStr}'
+                ),
+                expanded AS (
+                    SELECT id FROM after_lift
+                    UNION
+                    SELECT child.id
+                    FROM symbols child
+                    JOIN symbols parent ON child.parent_symbol_id = parent.id
+                    WHERE parent.id IN (SELECT id FROM after_lift)
+                      AND parent.kind = '%s{typeKindStr}'
+                ),
+                transitive_deps AS (
+                    SELECT from_symbol_id FROM dependencies
+                    WHERE to_symbol_id IN (SELECT id FROM expanded)
                     UNION
                     SELECT d.from_symbol_id FROM dependencies d
                     JOIN transitive_deps td ON d.to_symbol_id = td.from_symbol_id
@@ -750,6 +835,29 @@ type Database(dbPath: string) =
               ToSymbol = r.GetString(1)
               Kind = stringToDepKind warnedUnknownKinds (r.GetString(2))
               Source = r.GetString(3) })
+
+    /// Return parent containment links for every symbol in the given source file whose
+    /// parent type is resolved. Used by the orchestrator's cached-file path to survive
+    /// the parent_symbol_id clearance in RebuildProjects when a file wasn't re-analyzed.
+    member _.GetParentLinksInFile(sourceFile: string) : SymbolParentLink list =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            """
+            SELECT c.full_name, p.full_name
+            FROM symbols c
+            JOIN symbols p ON p.id = c.parent_symbol_id
+            WHERE c.source_file = @sourceFile
+            """
+
+        cmd.Parameters.AddWithValue("@sourceFile", sourceFile) |> ignore
+
+        use reader = cmd.ExecuteReader()
+
+        readAll reader (fun r ->
+            { Child = r.GetString(0)
+              Parent = r.GetString(1) })
 
     /// Insert an audit event into the analysis_events table.
     member _.InsertEvent(runId: string, timestamp: string, eventType: string, eventData: string) =

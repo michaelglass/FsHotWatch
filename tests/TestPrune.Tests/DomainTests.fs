@@ -75,3 +75,10 @@ let ``SelectionReason.describe AnalysisFailedFallback includes file`` () =
     let reason = AnalysisFailedFallback "src/Broken.fs"
     let msg = SelectionReason.describe reason
     test <@ msg.Contains("src/Broken.fs") @>
+
+[<Fact>]
+let ``SelectionReason.describe FileDependencyChanged includes path and symbol`` () =
+    let reason = FileDependencyChanged("data/cases.json", "Tests.snap")
+    let msg = SelectionReason.describe reason
+    test <@ msg.Contains("data/cases.json") @>
+    test <@ msg.Contains("Tests.snap") @>

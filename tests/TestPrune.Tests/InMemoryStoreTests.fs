@@ -165,6 +165,7 @@ module ``InMemoryStore basics`` =
                     Source = "core" } ]
               TestMethods = []
               Attributes = []
+              ParentLinks = []
               Diagnostics = AnalysisDiagnostics.Zero }
 
         let store = fromAnalysisResults [ cycleGraph ]
@@ -194,6 +195,7 @@ module ``InMemoryStore basics`` =
                     Source = "core" } ]
               TestMethods = []
               Attributes = []
+              ParentLinks = []
               Diagnostics = AnalysisDiagnostics.Zero }
 
         let store = fromAnalysisResults [ graph ]
@@ -213,6 +215,7 @@ module ``InMemoryStore basics`` =
                     TestClass = "Tests"
                     TestMethod = "test1" } ]
               Attributes = []
+              ParentLinks = []
               Diagnostics = AnalysisDiagnostics.Zero }
 
         let store = fromAnalysisResults [ graph ]
@@ -248,3 +251,146 @@ module ``InMemoryStore basics`` =
         let store = fromAnalysisResults [ standardGraph ]
         let result = store.GetIncomingEdgesBatch [ "NonExistent.func" ]
         test <@ result.IsEmpty @>
+
+module ``Aggregate-type invalidation`` =
+
+    // Graph:
+    //   TestFix (Type)     — fixture class with two members
+    //   ├── TestFix.alpha  — member touched by the test
+    //   └── TestFix.beta   — member NOT touched by the test
+    //
+    //   Harness (Type)     — test class
+    //   ├── Harness.testA  — accesses TestFix.alpha only (edge testA → alpha)
+    //
+    //   ModHelpers (Module) — non-type container; its members must NOT fan out
+    //   ├── ModHelpers.m1  — sibling of m2
+    //   └── ModHelpers.m2
+    //
+    //   Cons.uses_m1       — standalone function that calls ModHelpers.m1
+    let private fixtureGraph =
+        { Symbols =
+            [ { FullName = "TestFix"
+                Kind = Type
+                SourceFile = "src/Fix.fs"
+                LineStart = 1
+                LineEnd = 10
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "TestFix.alpha"
+                Kind = Function
+                SourceFile = "src/Fix.fs"
+                LineStart = 2
+                LineEnd = 3
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "TestFix.beta"
+                Kind = Function
+                SourceFile = "src/Fix.fs"
+                LineStart = 4
+                LineEnd = 5
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "Harness"
+                Kind = Type
+                SourceFile = "tests/Harness.fs"
+                LineStart = 1
+                LineEnd = 5
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "Harness.testA"
+                Kind = Function
+                SourceFile = "tests/Harness.fs"
+                LineStart = 2
+                LineEnd = 3
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "ModHelpers"
+                Kind = Module
+                SourceFile = "src/Helpers.fs"
+                LineStart = 1
+                LineEnd = 10
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "ModHelpers.m1"
+                Kind = Function
+                SourceFile = "src/Helpers.fs"
+                LineStart = 2
+                LineEnd = 3
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "ModHelpers.m2"
+                Kind = Function
+                SourceFile = "src/Helpers.fs"
+                LineStart = 4
+                LineEnd = 5
+                ContentHash = ""
+                IsExtern = false }
+              { FullName = "Cons.uses_m1"
+                Kind = Function
+                SourceFile = "src/Cons.fs"
+                LineStart = 1
+                LineEnd = 3
+                ContentHash = ""
+                IsExtern = false } ]
+          Dependencies =
+            [ { FromSymbol = "Harness.testA"
+                ToSymbol = "TestFix.alpha"
+                Kind = Calls
+                Source = "core" }
+              { FromSymbol = "Cons.uses_m1"
+                ToSymbol = "ModHelpers.m1"
+                Kind = Calls
+                Source = "core" } ]
+          TestMethods =
+            [ { SymbolFullName = "Harness.testA"
+                TestProject = "Tests"
+                TestClass = "Harness"
+                TestMethod = "testA" } ]
+          Attributes = []
+          ParentLinks =
+            [ { Child = "TestFix.alpha"
+                Parent = "TestFix" }
+              { Child = "TestFix.beta"
+                Parent = "TestFix" } ]
+          Diagnostics = AnalysisDiagnostics.Zero }
+
+    [<Fact>]
+    let ``editing an unreferenced fixture member still selects the dependent test`` () =
+        let store = fromAnalysisResults [ fixtureGraph ]
+        // testA touches alpha, not beta. Edit beta — expansion lifts to TestFix and
+        // then expands to alpha, so testA is reached via its edge to alpha.
+        let affected = store.QueryAffectedTests [ "TestFix.beta" ]
+        test <@ affected |> List.exists (fun t -> t.TestMethod = "testA") @>
+
+    [<Fact>]
+    let ``editing the type itself expands to cover all its members`` () =
+        let store = fromAnalysisResults [ fixtureGraph ]
+        // Simulate a type-body edit (e.g. new field). testA's direct edge is to alpha;
+        // expansion from TestFix → its members picks up alpha, so testA is selected.
+        let affected = store.QueryAffectedTests [ "TestFix" ]
+        test <@ affected |> List.exists (fun t -> t.TestMethod = "testA") @>
+
+    [<Fact>]
+    let ``module sibling edits do not fan out`` () =
+        // ModHelpers is a Module, so children m1/m2 don't have parent links.
+        // Editing m2 must not reach Cons.uses_m1 (which only calls m1).
+        let store = fromAnalysisResults [ fixtureGraph ]
+        let affected = store.QueryAffectedTests [ "ModHelpers.m2" ]
+        // No test methods depend on Cons; the check here is that expansion didn't
+        // silently lift to ModHelpers (which would pull in m1 and then uses_m1).
+        // To make that observable, we can check GetReachableSymbols isn't involved —
+        // but QueryAffectedTests returning empty is the direct proof.
+        test <@ affected |> List.isEmpty @>
+
+    [<Fact>]
+    let ``GetParentLinksInFile returns only this file's links`` () =
+        let store = fromAnalysisResults [ fixtureGraph ]
+        let fixLinks = store.GetParentLinksInFile "src/Fix.fs"
+        test <@ fixLinks.Length = 2 @>
+        test <@ fixLinks |> List.forall (fun l -> l.Parent = "TestFix") @>
+
+        let helperLinks = store.GetParentLinksInFile "src/Helpers.fs"
+        test <@ helperLinks |> List.isEmpty @>
+
+        let unknownLinks = store.GetParentLinksInFile "nowhere.fs"
+        test <@ unknownLinks |> List.isEmpty @>

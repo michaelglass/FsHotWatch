@@ -7,6 +7,7 @@ open FSharp.Compiler.CodeAnalysis
 open TestPrune.AstAnalyzer
 open TestPrune.Database
 open TestPrune.DeadCode
+open TestPrune.Ports
 open TestPrune.SymbolDiff
 open TestPrune.Domain
 open TestPrune.ImpactAnalysis
@@ -80,6 +81,7 @@ let ``counter starts at zero`` () =
                   Dependencies = libResult.Dependencies
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             let testAnalysis =
@@ -89,6 +91,7 @@ let ``counter starts at zero`` () =
                     testResult.TestMethods
                     |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             // Store both in DB
@@ -150,6 +153,7 @@ let testMethod () = helperFunc 5 |> ignore
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -226,6 +230,7 @@ let testDescribe () = describe (Circle 1.0) |> ignore
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -280,6 +285,7 @@ let f x = x
                   Dependencies = result.Dependencies
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -297,7 +303,7 @@ let f x = x
                           IsExtern = false } ] ]
 
             let result, _events =
-                selectTests db.GetSymbolsInFile db.QueryAffectedTests [ "src/NewModule.fs" ] currentSymbols
+                selectTests (toSymbolStore db) [ "src/NewModule.fs" ] currentSymbols
 
             match result with
             | RunAll _ -> ()
@@ -321,12 +327,12 @@ let f x = x
                   Dependencies = result.Dependencies
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
 
-            let result, _events =
-                selectTests db.GetSymbolsInFile db.QueryAffectedTests [] Map.empty
+            let result, _events = selectTests (toSymbolStore db) [] Map.empty
 
             match result with
             | RunSubset tests -> test <@ tests |> List.isEmpty @>
@@ -353,6 +359,7 @@ let deadFunc x = x * 2
                   Dependencies = result.Dependencies
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -401,6 +408,7 @@ let orphan x = x - 1
                   Dependencies = result.Dependencies
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -456,6 +464,7 @@ let main () = area (Circle 1.0) |> ignore
                   Dependencies = result.Dependencies
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -828,6 +837,7 @@ let myTest () = used 5 |> ignore
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -879,6 +889,7 @@ let testBeta () = wrapperB 2 |> ignore
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -927,6 +938,7 @@ let testLoad () = loadConfigs () |> ignore
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -975,6 +987,7 @@ let testMake () = makePerson () |> ignore
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -1029,6 +1042,7 @@ let testDescribe () = describe Red |> ignore
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -1078,6 +1092,7 @@ let testDeep () = depth1 5 |> ignore
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -1136,6 +1151,7 @@ let testProcess () =
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -1179,6 +1195,7 @@ let main () = loadAll () |> ignore
                   Dependencies = result.Dependencies
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -1216,6 +1233,7 @@ let main () = defaultSettings () |> ignore
                   Dependencies = result.Dependencies
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -1260,6 +1278,7 @@ let main () = isVertical North |> ignore
                   Dependencies = result.Dependencies
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -1335,6 +1354,7 @@ type MyTests() =
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = result.Attributes
+                  ParentLinks = result.ParentLinks
                   Diagnostics = result.Diagnostics }
 
             db.RebuildProjects([ analysis ])
@@ -1421,6 +1441,7 @@ type ComputeTests() =
                   Dependencies = libResult.Dependencies
                   TestMethods = []
                   Attributes = libResult.Attributes
+                  ParentLinks = libResult.ParentLinks
                   Diagnostics = libResult.Diagnostics }
 
             let testAnalysis =
@@ -1434,6 +1455,7 @@ type ComputeTests() =
                     testResult.TestMethods
                     |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = testResult.Attributes
+                  ParentLinks = testResult.ParentLinks
                   Diagnostics = testResult.Diagnostics }
 
             db.RebuildProjects([ libAnalysis; testAnalysis ])
@@ -1505,6 +1527,7 @@ let ``test uses string builder`` () =
                   Dependencies = result.Dependencies
                   TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ analysis ])
@@ -1513,3 +1536,467 @@ let ``test uses string builder`` () =
             let affected = db.QueryAffectedTests [ "System.Text.StringBuilder" ]
             test <@ affected.Length = 1 @>
             test <@ affected[0].TestMethod.Contains("string builder") @>)
+
+module ``Fixture member invalidation`` =
+
+    [<Fact>]
+    let ``editing a fixture member the test doesn't directly call still selects the test`` () =
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+type TestServerFixture() =
+    member _.HttpClient = "client"
+    member _.shutdown () = ()
+
+type BrowserTests(fixture: TestServerFixture) =
+    [<Fact>]
+    member _.``uses client`` () =
+        fixture.HttpClient |> ignore
+"""
+
+            let result = analyze source
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = []
+                  ParentLinks = result.ParentLinks
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ analysis ])
+
+            // Sanity: parent links captured shutdown and HttpClient as members of TestServerFixture
+            test
+                <@
+                    result.ParentLinks
+                    |> List.exists (fun l ->
+                        l.Child.EndsWith("TestServerFixture.shutdown", StringComparison.Ordinal)
+                        && l.Parent.EndsWith("TestServerFixture", StringComparison.Ordinal))
+                @>
+
+            test <@ result.TestMethods |> List.exists (fun t -> t.TestMethod.Contains "uses client") @>
+
+            let browserUsesFixture =
+                result.Dependencies
+                |> List.exists (fun d ->
+                    d.FromSymbol.Contains "BrowserTests"
+                    && d.ToSymbol.EndsWith("TestServerFixture", StringComparison.Ordinal))
+
+            test <@ browserUsesFixture @>
+
+            let testUsesHttpClient =
+                result.Dependencies
+                |> List.exists (fun d -> d.FromSymbol.Contains "uses client" && d.ToSymbol.Contains "HttpClient")
+
+            test <@ testUsesHttpClient @>
+
+            // Simulate editing the fixture: the `shutdown` member body changed, which also
+            // changes the TestServerFixture type symbol's hash (its range covers all members).
+            // The test body only accesses `HttpClient`, so without aggregate-type
+            // invalidation the recursive walk finds no path from shutdown or from the
+            // type itself back to the test method.
+            let storedSymbols = db.GetSymbolsInFile "src/M.fs"
+
+            let modifiedSymbols =
+                storedSymbols
+                |> List.map (fun s ->
+                    if s.FullName.EndsWith("TestServerFixture.shutdown", StringComparison.Ordinal) then
+                        { s with
+                            ContentHash = "modified_member" }
+                    elif
+                        s.FullName.EndsWith("TestServerFixture", StringComparison.Ordinal)
+                        && s.Kind = Type
+                    then
+                        { s with ContentHash = "modified_type" }
+                    else
+                        s)
+
+            let changes, _events = detectChanges modifiedSymbols storedSymbols
+            let changedNames = changedSymbolNames changes
+
+            test
+                <@
+                    changedNames
+                    |> List.exists (fun n -> n.EndsWith("TestServerFixture.shutdown", StringComparison.Ordinal))
+                @>
+
+            let affected = db.QueryAffectedTests changedNames
+
+            test <@ affected |> List.exists (fun t -> t.TestMethod.Contains "uses client") @>)
+
+    [<Fact>]
+    let ``test that receives fixture but never accesses it is still selected`` () =
+        // Layer 1 gap: with aggregate-type invalidation, editing a fixture member
+        // selects tests that accessed ANY member of the fixture. But a test method
+        // whose body never references the fixture at all has no direct edge into
+        // the fixture's member set — only its enclosing class does (via ctor-param).
+        // Layer 2a.1 closes this by emitting a direct testMethod → fixtureType edge
+        // for every ctor-param type of the test's declaring class.
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+type TestFix() =
+    member _.start () = ()
+
+type Tests(_fixture: TestFix) =
+    [<Fact>]
+    member _.``standalone test`` () =
+        let x = 1 + 1
+        ()
+"""
+
+            let result = analyze source
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = []
+                  ParentLinks = result.ParentLinks
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ analysis ])
+
+            // Simulate editing the fixture's `start` member. The test body touches
+            // nothing on TestFix, so without a direct edge the aggregate expansion
+            // lifts to TestFix → {start, .ctor} but the reverse walk can't reach
+            // `standalone test`.
+            let storedSymbols = db.GetSymbolsInFile "src/M.fs"
+
+            let modifiedSymbols =
+                storedSymbols
+                |> List.map (fun s ->
+                    if s.FullName.EndsWith("TestFix.start", StringComparison.Ordinal) then
+                        { s with
+                            ContentHash = "modified_start" }
+                    elif s.FullName.EndsWith("TestFix", StringComparison.Ordinal) && s.Kind = Type then
+                        { s with ContentHash = "modified_type" }
+                    else
+                        s)
+
+            let changes, _events = detectChanges modifiedSymbols storedSymbols
+            let changedNames = changedSymbolNames changes
+
+            let affected = db.QueryAffectedTests changedNames
+            test <@ affected |> List.exists (fun t -> t.TestMethod.Contains "standalone test") @>)
+
+    [<Fact>]
+    let ``test class declaring IClassFixture<T> interface gets a direct fixture edge`` () =
+        // xUnit's IClassFixture<T> pattern: declaring the interface is how you opt in
+        // to per-class fixture lifecycle. Layer 2a.1 detects this even when there's
+        // no primary-ctor param (xUnit receives the fixture via interface).
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+// Local stand-in for xUnit's IClassFixture<T> — TestPrune matches by DisplayName.
+type IClassFixture<'T> = interface end
+
+type TestFix() =
+    member _.start () = ()
+
+type Tests() =
+    interface IClassFixture<TestFix>
+
+    [<Fact>]
+    member _.``standalone test`` () =
+        let x = 1 + 1
+        ()
+"""
+
+            let result = analyze source
+
+            // Sanity: the direct testMethod → TestFix edge exists via interface detection
+            let testToFixture =
+                result.Dependencies
+                |> List.exists (fun d ->
+                    d.FromSymbol.Contains "standalone test"
+                    && d.ToSymbol.EndsWith("TestFix", StringComparison.Ordinal))
+
+            test <@ testToFixture @>
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = []
+                  ParentLinks = result.ParentLinks
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ analysis ])
+
+            let storedSymbols = db.GetSymbolsInFile "src/M.fs"
+
+            let modifiedSymbols =
+                storedSymbols
+                |> List.map (fun s ->
+                    if s.FullName.EndsWith("TestFix.start", StringComparison.Ordinal) then
+                        { s with ContentHash = "modified" }
+                    elif s.FullName.EndsWith("TestFix", StringComparison.Ordinal) && s.Kind = Type then
+                        { s with ContentHash = "modified_type" }
+                    else
+                        s)
+
+            let changes, _events = detectChanges modifiedSymbols storedSymbols
+            let changedNames = changedSymbolNames changes
+            let affected = db.QueryAffectedTests changedNames
+            test <@ affected |> List.exists (fun t -> t.TestMethod.Contains "standalone test") @>)
+
+    [<Fact>]
+    let ``ClassData typeof reference is captured as a dependency edge`` () =
+        // xUnit's [<ClassData(typeof<T>)>] points theory tests at a data source class.
+        // FCS emits a symbol use for T at the typeof<T> site (inside the attribute list),
+        // which findEnclosing attributes to the enclosing test method. So this edge is
+        // captured by the main dependency pass — no framework-specific handling needed.
+        let source =
+            """
+module M
+
+type FactAttribute() = inherit System.Attribute()
+type TheoryAttribute() = inherit System.Attribute()
+
+type ClassDataAttribute(t: System.Type) =
+    inherit System.Attribute()
+
+type DataProvider() =
+    interface System.Collections.IEnumerable with
+        member _.GetEnumerator() = (Seq.empty :> System.Collections.IEnumerable).GetEnumerator()
+
+[<Theory>]
+[<ClassData(typeof<DataProvider>)>]
+let ``theory test`` () = ()
+"""
+
+        let result = analyze source
+
+        let theoryToProvider =
+            result.Dependencies
+            |> List.exists (fun d ->
+                d.FromSymbol.Contains "theory test"
+                && d.ToSymbol.EndsWith("DataProvider", StringComparison.Ordinal))
+
+        test <@ theoryToProvider @>
+
+    [<Fact>]
+    let ``MemberData nameof reference is captured as a dependency edge`` () =
+        // xUnit's [<MemberData(nameof source)>] is the F# idiom. `nameof` is resolved
+        // by the compiler to a string, but FCS still reports the underlying symbol use,
+        // so the edge from the theory test to the data source gets captured.
+        let source =
+            """
+module M
+
+type FactAttribute() = inherit System.Attribute()
+type TheoryAttribute() = inherit System.Attribute()
+
+type MemberDataAttribute(name: string) =
+    inherit System.Attribute()
+
+let myData : int seq = Seq.empty
+
+[<Theory>]
+[<MemberData(nameof myData)>]
+let ``theory via nameof`` (_: int) = ()
+"""
+
+        let result = analyze source
+
+        let theoryToData =
+            result.Dependencies
+            |> List.exists (fun d ->
+                d.FromSymbol.Contains "theory via nameof"
+                && d.ToSymbol.EndsWith("myData", StringComparison.Ordinal))
+
+        test <@ theoryToData @>
+
+    [<Fact>]
+    let ``TestPrune.DependsOn(typeof<T>) creates a dependency edge like any typeof arg`` () =
+        // The TestPrune.Attributes package ships [<TestPrune.DependsOn(typeof<T>)>] as
+        // a plain marker with no runtime behavior. The edge is captured for free by the
+        // same FCS typeof-in-attribute-arg mechanism that handles ClassData/MemberData,
+        // so the published attribute works without any special-case code in the analyzer.
+        // This test uses a local stand-in attribute with the same shape as proof-by-analogy;
+        // an end-to-end test requiring the Attributes assembly to be loaded by FCS is out
+        // of scope for the script-based `analyze` harness.
+        let source =
+            """
+namespace TestPrune
+
+open System
+
+[<AttributeUsage(AttributeTargets.Method, AllowMultiple = true)>]
+type DependsOnAttribute(target: Type) =
+    inherit Attribute()
+    member _.Target = target
+
+namespace Consumer
+
+open System
+open TestPrune
+
+type FactAttribute() = inherit Attribute()
+
+type ReflectionTarget() =
+    member _.lookup () = 42
+
+module Tests =
+    [<Fact>]
+    [<DependsOn(typeof<ReflectionTarget>)>]
+    let ``reflection-backed test`` () = ()
+"""
+
+        let result = analyze source
+
+        let testToTarget =
+            result.Dependencies
+            |> List.exists (fun d ->
+                d.FromSymbol.Contains "reflection-backed test"
+                && d.ToSymbol.EndsWith("ReflectionTarget", StringComparison.Ordinal))
+
+        test <@ testToTarget @>
+
+    [<Fact>]
+    let ``Collection/CollectionDefinition resolves tests to fixture through synthetic symbol`` () =
+        // xUnit collection fixtures: the test class names a collection by string
+        // ([<Collection("name")>]) and the collection is declared elsewhere with
+        // [<CollectionDefinition("name")>] + ICollectionFixture<T>. Layer 2a.2 bridges
+        // the two with a synthetic "TestPrune.__Collection__.<name>" symbol.
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+open System
+
+type FactAttribute() = inherit Attribute()
+type CollectionAttribute(name: string) = inherit Attribute()
+type CollectionDefinitionAttribute(name: string) = inherit Attribute()
+type ICollectionFixture<'T> = interface end
+
+type TestServerFixture() =
+    member _.HttpClient = "c"
+
+[<CollectionDefinition("Browser")>]
+type BrowserCollection() =
+    interface ICollectionFixture<TestServerFixture>
+
+[<Collection("Browser")>]
+type BrowserTests() =
+    [<Fact>]
+    member _.``browser test`` () = 1 + 1 |> ignore
+"""
+
+            let result = analyze source
+
+            // Sanity: test method reaches the fixture via the synthetic collection symbol.
+            let syntheticName = "TestPrune.__Collection__.Browser"
+
+            let testToSynthetic =
+                result.Dependencies
+                |> List.exists (fun d -> d.FromSymbol.Contains "browser test" && d.ToSymbol = syntheticName)
+
+            test <@ testToSynthetic @>
+
+            let syntheticToFixture =
+                result.Dependencies
+                |> List.exists (fun d ->
+                    d.FromSymbol = syntheticName
+                    && d.ToSymbol.EndsWith("TestServerFixture", StringComparison.Ordinal))
+
+            test <@ syntheticToFixture @>
+
+            // End-to-end: editing the fixture flows through the synthetic to the test.
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = []
+                  ParentLinks = result.ParentLinks
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ analysis ])
+
+            let storedSymbols = db.GetSymbolsInFile "src/M.fs"
+
+            let modifiedSymbols =
+                storedSymbols
+                |> List.map (fun s ->
+                    if
+                        s.FullName.EndsWith("TestServerFixture", StringComparison.Ordinal)
+                        && s.Kind = Type
+                    then
+                        { s with
+                            ContentHash = "modified_fixture" }
+                    else
+                        s)
+
+            let changes, _events = detectChanges modifiedSymbols storedSymbols
+            let changedNames = changedSymbolNames changes
+            let affected = db.QueryAffectedTests changedNames
+            test <@ affected |> List.exists (fun t -> t.TestMethod.Contains "browser test") @>)
+
+    [<Fact>]
+    let ``module sibling edits do not fan out to unrelated tests`` () =
+        // Aggregate-type invalidation must NOT apply to module members: editing one
+        // helper in a module must not invalidate tests whose only connection is a
+        // different helper in the same module.
+        withDb (fun db ->
+            let source =
+                """
+module M
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+let alpha x = x + 1
+let beta x = x * 2
+
+[<Fact>]
+let ``uses alpha only`` () = alpha 3 |> ignore
+"""
+
+            let result = analyze source
+
+            let analysis =
+                { Symbols = result.Symbols |> List.map (fun s -> { s with SourceFile = "src/M.fs" })
+                  Dependencies = result.Dependencies
+                  TestMethods = result.TestMethods |> List.map (fun t -> { t with TestProject = "TestProject" })
+                  Attributes = []
+                  ParentLinks = result.ParentLinks
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ analysis ])
+
+            // `beta` and `alpha` live in the same module but are independent bindings.
+            // Editing `beta` should NOT select the test that only touches `alpha`.
+            let storedSymbols = db.GetSymbolsInFile "src/M.fs"
+
+            let modifiedSymbols =
+                storedSymbols
+                |> List.map (fun s ->
+                    if s.FullName.EndsWith("beta", StringComparison.Ordinal) then
+                        { s with ContentHash = "modified_beta" }
+                    else
+                        s)
+
+            let changes, _events = detectChanges modifiedSymbols storedSymbols
+            let changedNames = changedSymbolNames changes
+
+            let affected = db.QueryAffectedTests changedNames
+
+            test <@ affected |> List.forall (fun t -> not (t.TestMethod.Contains "uses alpha only")) @>)

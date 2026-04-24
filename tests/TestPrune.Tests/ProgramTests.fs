@@ -390,6 +390,7 @@ module ``runDeadCode`` =
               Dependencies = deps
               TestMethods = []
               Attributes = []
+              ParentLinks = []
               Diagnostics = AnalysisDiagnostics.Zero }
 
         db.RebuildProjects([ result ])
@@ -708,6 +709,7 @@ module ``runStatusWith RunSubset`` =
               Dependencies = deps
               TestMethods = testMethods
               Attributes = []
+              ParentLinks = []
               Diagnostics = AnalysisDiagnostics.Zero }
 
         db.RebuildProjects([ result ])
@@ -883,6 +885,7 @@ module ``runRunWithExecutor`` =
               Dependencies = deps
               TestMethods = testMethods
               Attributes = []
+              ParentLinks = []
               Diagnostics = AnalysisDiagnostics.Zero }
 
         db.RebuildProjects([ result ])

@@ -30,6 +30,7 @@ type SelectionReason =
     | FsprojChanged of file: string
     | NewFileNotIndexed of file: string
     | AnalysisFailedFallback of file: string
+    | FileDependencyChanged of path: string * symbolName: string
 
 module SelectionReason =
     let describe (reason: SelectionReason) =
@@ -44,6 +45,8 @@ module SelectionReason =
         | FsprojChanged file -> $"Project file changed: '%s{file}'"
         | NewFileNotIndexed file -> $"New file not yet indexed: '%s{file}'"
         | AnalysisFailedFallback file -> $"Analysis failed, selecting as fallback: '%s{file}'"
+        | FileDependencyChanged(path, symbolName) ->
+            $"File dependency '%s{path}' changed (declared by '%s{symbolName}')"
 
 type AnalysisEvent =
     | FileAnalyzedEvent of file: string * symbolCount: int * depCount: int * testCount: int

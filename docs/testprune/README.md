@@ -106,7 +106,9 @@ When you're ready to test, compare the current code against the index
 to find what changed, then ask which tests are affected:
 
 ```fsharp
-match selectTests db changedFiles currentSymbolsByFile with
+let store = Ports.toSymbolStore db
+
+match selectTests store changedFiles currentSymbolsByFile with
 | RunSubset tests -> // only these tests need to run
 | RunAll reason   -> // something changed that we can't analyze — run everything
 ```
@@ -148,6 +150,36 @@ If anything looks uncertain (new files, project file changes), it falls
 back to running everything. Better to run too many tests than miss a
 broken one.
 
+## Declarative dependencies
+
+Some edges the analyzer can't see from static code alone — reflection,
+DI-by-type, plug-in loading, or dependencies on non-F# files like
+snapshot data, SQL migrations, or config. The
+[`TestPrune.Attributes`](https://www.nuget.org/packages/TestPrune.Attributes)
+package lets you declare them:
+
+```fsharp
+open TestPrune
+
+// Reflection / runtime-resolved type: pretend the static graph sees it.
+[<DependsOn(typeof<PluginRegistry>)>]
+let registerPlugins () = ...
+
+// A specific data file: editing it invalidates any test downstream of
+// the annotated symbol.
+[<DependsOnFile("tests/snapshots/api.snap.json")>]
+[<Fact>]
+let ``api snapshot`` () = ...
+
+// Glob: `**` crosses path segments, `*` stays within one, `?` matches
+// a single non-`/` character. Case-sensitive, repo-relative.
+[<DependsOnGlob("migrations/*.sql")>]
+type DbIntegrationTests() = ...
+```
+
+The attributes have no runtime behavior — they're metadata TestPrune
+reads during indexing.
+
 ## Extensions
 
 Some dependencies don't show up in code — like HTTP routes mapping to
@@ -168,6 +200,7 @@ web apps that maps URL routes to integration tests.
 | Package | What it's for |
 |---------|---------------|
 | [`TestPrune.Core`](https://www.nuget.org/packages/TestPrune.Core) | The library — use this in your build system or editor |
+| [`TestPrune.Attributes`](https://www.nuget.org/packages/TestPrune.Attributes) | Consumer-side markers: `[<DependsOn>]`, `[<DependsOnFile>]`, `[<DependsOnGlob>]` |
 | [`TestPrune.Falco`](https://www.nuget.org/packages/TestPrune.Falco) | Extension for Falco web apps (route → test mapping) |
 | `TestPrune` | CLI tool (reference implementation — see below) |
 

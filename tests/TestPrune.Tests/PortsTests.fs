@@ -24,6 +24,7 @@ module ``SymbolStore from Database`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             db.RebuildProjects([ graph ])
@@ -59,6 +60,7 @@ module ``SymbolSink from Database`` =
                   Dependencies = []
                   TestMethods = []
                   Attributes = []
+                  ParentLinks = []
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             sink.RebuildProjects [ graph ] CacheKeys.Empty

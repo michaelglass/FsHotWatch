@@ -12,10 +12,16 @@
     <ItemGroup>
         <Compile Include="MathTests.fs" />
         <Compile Include="StringUtilsTests.fs" />
+        <Compile Include="FixtureAndFileDepTests.fs" />
     </ItemGroup>
 
     <ItemGroup>
         <ProjectReference Include="../../src/SampleLib/SampleLib.fsproj" />
+        <ProjectReference Include="../../../../src/TestPrune.Attributes/TestPrune.Attributes.fsproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="data/golden.json" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
 
     <ItemGroup>
