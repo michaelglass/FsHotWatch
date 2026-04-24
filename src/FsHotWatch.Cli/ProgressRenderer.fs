@@ -51,6 +51,7 @@ let private runSummary (lastRun: RunRecord) : string =
     | _, Some s -> s
     | CompletedRun, None -> ""
     | FailedRun err, None -> summariseError err
+    | TimedOut reason, None -> summariseError reason
 
 let private latestActivity (tail: string list) =
     match tail |> List.tryLast with
@@ -328,6 +329,7 @@ module private Agent =
             |> Option.map (fun r ->
                 match r.Outcome with
                 | FailedRun _ -> State.Fail
+                | TimedOut _ -> State.Fail
                 | CompletedRun -> okOrDiag ())
 
     /// Extract a summary string for non-ok states. None when there's nothing to show.
