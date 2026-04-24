@@ -411,7 +411,8 @@ let refreshCoverageBaseline (repoRoot: string) (config: DaemonConfiguration) : s
         |> List.collect (fun p ->
             let dir = Path.Combine(repoRoot, t.CoverageDir, p.Project)
 
-            [ "coverage.baseline.json"; "coverage.partial.json" ]
+            [ FsHotWatch.TestPrune.CoverageMerge.BaselineJsonName
+              FsHotWatch.TestPrune.CoverageMerge.PartialJsonName ]
             |> List.map (fun name -> Path.Combine(dir, name))
             |> List.filter File.Exists
             |> List.choose (fun path ->
