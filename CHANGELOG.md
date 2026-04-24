@@ -4,6 +4,22 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### Per-task timeouts (cross-package)
+
+#### Added
+- `timeoutSec` configuration at three levels:
+  - Top-level (`"timeoutSec": 120`) — default for plugins/projects that don't set their own.
+  - Per-build-entry (`build.timeoutSec`) and per-file-command entry (`fileCommands[].timeoutSec`).
+  - Per-test-project (`tests.projects[].timeoutSec`).
+- `FsHotWatch.Events.RunOutcome.TimedOut of reason: string` — new variant recorded when a plugin's configured timeout fires.
+- `FsHotWatch.ProcessHelper.runProcessWithTimeout` — kills the child process tree on expiry and prefixes output with `timed out after Ns` (best-effort drain). `runProcess` now delegates with `Timeout.InfiniteTimeSpan`.
+- `PluginCtx.CompleteWithTimeout reason` — lets a plugin flip its terminal outcome to `TimedOut` without introducing a new `PluginStatus` case. Backed by `PluginHostServices.SetNextTerminalOutcome` + `PluginActivity.SetNextTerminalOutcome`.
+- Renderer: distinct `⏱` glyph in compact/verbose modes; `timed-out` token with `summary="timed out: …"` in agent mode.
+
+#### Behavior
+- On timeout the daemon kills the process tree, records `TimedOut`, and keeps running. The next change retriggers normally.
+- Plugins wired: `TestPrune` (per-project), `Build` (per build entry), `FileCommand` (per entry). Lint / Analyzers / Fantomas are in-process and use `Timeout.InfiniteTimeSpan` by default; timeout wrapping for those runs on a future change.
+
 ### FsHotWatch.Coverage
 
 #### Removed

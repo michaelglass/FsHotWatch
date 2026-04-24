@@ -59,6 +59,11 @@ let private latestActivity (tail: string list) =
     | Some s -> s
     | None -> ""
 
+let private isTimedOut (parsed: ParsedPluginStatus) : bool =
+    match parsed.LastRun with
+    | Some { Outcome = TimedOut _ } -> true
+    | _ -> false
+
 // ----- Compact -----
 
 let private renderCompact
@@ -104,19 +109,11 @@ let private renderCompact
                 | None -> TimeSpan.Zero
 
             let timingStr = UI.timing elapsed
-
-            let isTimedOut =
-                match parsed.LastRun with
-                | Some r ->
-                    match r.Outcome with
-                    | TimedOut _ -> true
-                    | _ -> false
-                | None -> false
-
-            let glyph = if isTimedOut then Glyph.timeout else Glyph.cross
+            let timedOut = isTimedOut parsed
+            let glyph = if timedOut then Glyph.timeout else Glyph.cross
 
             let label =
-                if isTimedOut then
+                if timedOut then
                     if String.IsNullOrEmpty short then
                         "timed out"
                     else
@@ -170,18 +167,10 @@ let private renderCompact
 // ----- Verbose -----
 
 let private glyphForParsed (warningsAreFailures: bool) (parsed: ParsedPluginStatus) =
-    let isTimedOut () =
-        match parsed.LastRun with
-        | Some r ->
-            match r.Outcome with
-            | TimedOut _ -> true
-            | _ -> false
-        | None -> false
-
     match parsed.Status with
     | Completed _ when DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics -> Glyph.warn
     | Completed _ -> Glyph.check
-    | Failed _ when isTimedOut () -> Glyph.timeout
+    | Failed _ when isTimedOut parsed -> Glyph.timeout
     | Failed _ -> Glyph.cross
     | Running _ -> Glyph.ellipsis
     | Idle -> Glyph.idle
