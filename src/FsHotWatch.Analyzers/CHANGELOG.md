@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- Emit a `"primary"` subtask with a descriptive label per `FileChecked` event,
+  and a richer terminal summary of the form
+  `analyzed N files, F findings (E errors, W warnings)`.
+
 ## 0.7.0-alpha.8 - 2026-04-23
 
 - chore: bump upstream tool versions
