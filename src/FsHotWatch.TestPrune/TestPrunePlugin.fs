@@ -262,8 +262,18 @@ let private executeTests
         let sw = Stopwatch.StartNew()
         let runId = Guid.NewGuid()
 
+        let isFilteredRun = not affectedClassesByProject.IsEmpty || Option.isSome rawFilter
+
+        let primaryLabel =
+            if isFilteredRun then
+                $"running %d{configs.Length} selected test projects"
+            else
+                $"running full suite (%d{configs.Length} projects)"
+
         ctx
         |> Option.iter (fun c ->
+            c.StartSubtask "primary" primaryLabel
+
             c.EmitTestRunStarted
                 { RunId = runId
                   StartedAt = DateTime.UtcNow })
@@ -443,6 +453,8 @@ let private executeTests
         // timeouts, or crashes (none wired through this path today).
         ctx
         |> Option.iter (fun c ->
+            c.EndSubtask "primary"
+
             c.EmitTestRunCompleted
                 { RunId = runId
                   TotalElapsed = sw.Elapsed
@@ -1098,7 +1110,15 @@ let create
                                 | _ -> false)
                             |> List.length
 
-                        ctx.CompleteWithSummary $"ran {total} projects, {failed} failed"
+                        let passed = total - failed
+
+                        let anyFiltered =
+                            testResults.Results |> Map.exists (fun _ r -> TestResult.wasFiltered r)
+
+                        let selectedSuffix = if anyFiltered then "yes" else "no"
+
+                        ctx.CompleteWithSummary
+                            $"%d{passed} passed, %d{failed} failed in %d{total} projects (selected: %s{selectedSuffix})"
 
                         if allPassed || testResults.Results.IsEmpty then
                             ctx.ReportStatus(Completed(DateTime.UtcNow))
