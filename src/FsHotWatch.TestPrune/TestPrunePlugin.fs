@@ -476,7 +476,7 @@ let private executeTests
                   TotalElapsed = sw.Elapsed
                   Outcome = Normal
                   Results = finalResults
-                  RanFullSuite = true })
+                  RanFullSuite = TestResult.ranFullSuite finalResults })
 
         match afterRun with
         | Some hook -> hook testResults
