@@ -53,6 +53,19 @@ let internal isRelevantFile (path: string) =
 
     isRelevantExt && not (PathFilter.isGeneratedPath path)
 
+/// Like `isRelevantFile`, but also accepts files whose path ends with any
+/// of the provided suffixes. Used by FileCommandPlugin patterns that match
+/// non-source files (e.g. `.ratchet.json` config files).
+let internal isRelevantFileOrExtra (extraSuffixes: string list) (path: string) =
+    if isRelevantFile path then
+        true
+    else
+        let matchesExtra =
+            extraSuffixes
+            |> List.exists (fun s -> path.EndsWith(s, StringComparison.OrdinalIgnoreCase))
+
+        matchesExtra && not (PathFilter.isGeneratedPath path)
+
 /// Classify a file path as a solution, project, or source change.
 let internal classifyChange (path: string) =
     let ext = Path.GetExtension(path).ToLowerInvariant()
