@@ -504,13 +504,19 @@ let private flushPendingAnalysis (db: Database) (state: TestPruneState) =
             // Use a full record literal (not AnalysisResult.Create) so per-file
             // Attributes and ParentLinks survive the per-project merge.
             // Create defaults both to []; the per-file results above carry them
-            // and we'd silently drop them on every flush.
+            // and we'd silently drop them on every flush. Single fold over
+            // items to avoid 5 separate passes.
+            let syms, deps, tms, attrs, pls =
+                (([], [], [], [], []), items)
+                ||> List.fold (fun (s, d, t, a, p) r ->
+                    (r.Symbols :: s, r.Dependencies :: d, r.TestMethods :: t, r.Attributes :: a, r.ParentLinks :: p))
+
             let combined =
-                { Symbols = items |> List.collect (fun r -> r.Symbols)
-                  Dependencies = items |> List.collect (fun r -> r.Dependencies)
-                  TestMethods = items |> List.collect (fun r -> r.TestMethods)
-                  Attributes = items |> List.collect (fun r -> r.Attributes)
-                  ParentLinks = items |> List.collect (fun r -> r.ParentLinks)
+                { Symbols = syms |> List.rev |> List.concat
+                  Dependencies = deps |> List.rev |> List.concat
+                  TestMethods = tms |> List.rev |> List.concat
+                  Attributes = attrs |> List.rev |> List.concat
+                  ParentLinks = pls |> List.rev |> List.concat
                   Diagnostics = AnalysisDiagnostics.Zero }
 
             Logging.info "test-prune" $"Flushing %d{items.Length} files for %s{projectName} to DB"
