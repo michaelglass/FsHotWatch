@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- FormatCheckPlugin emits a `"primary"` subtask (`checking format of N files`)
+  and a distinct terminal summary (`format OK` / `N files need formatting`).
+
 ## 0.7.0-alpha.7 - 2026-04-23
 
 - chore: bump upstream tool versions
