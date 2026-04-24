@@ -798,7 +798,10 @@ let main args =
             let cacheConfig = if opts.NoCache then DaemonConfig.NoCache else config.Cache
             let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
 
-            let fileCommandPatterns = config.FileCommands |> List.choose (fun fc -> fc.Pattern)
+            let fileCommandPatterns =
+                config.FileCommands
+                |> List.choose (fun fc -> fc.Pattern)
+                |> List.map FsHotWatch.Watcher.FilePattern.parse
 
             let createDaemon (root: string) =
                 Daemon.create root backend keyProvider None config.Exclude fileCommandPatterns
