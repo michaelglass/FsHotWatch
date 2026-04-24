@@ -458,6 +458,58 @@ let countPlugins (config: DaemonConfiguration) : int =
     let fcCount = List.length config.FileCommands
     buildCount + lintCount + analyzerCount + testsCount + fcCount
 
+/// Watch `.fs-hot-watch.json` for any write/rename/create and invoke the callback
+/// once with a human-readable reason. Re-parses the file to distinguish
+/// "config changed" from "config invalid, stopping".
+///
+/// Debounces bursts (editors commonly emit multiple events per save) so the
+/// callback fires at most once per ~200 ms window. Returns a disposable that
+/// stops watching.
+let watchConfigFile (configPath: string) (onChange: string -> unit) : IDisposable =
+    let dir = Path.GetDirectoryName(configPath)
+    let name = Path.GetFileName(configPath)
+    let watcher = new FileSystemWatcher(dir, name)
+
+    watcher.NotifyFilter <-
+        NotifyFilters.LastWrite
+        ||| NotifyFilters.FileName
+        ||| NotifyFilters.Size
+        ||| NotifyFilters.CreationTime
+
+    let lastFire = ref DateTime.MinValue
+    let gate = obj ()
+
+    let handler (_: FileSystemEventArgs) =
+        let fire =
+            lock gate (fun () ->
+                let now = DateTime.UtcNow
+
+                if now - lastFire.Value > TimeSpan.FromMilliseconds(200.0) then
+                    lastFire.Value <- now
+                    true
+                else
+                    false)
+
+        if fire then
+            let reason =
+                try
+                    let defaults = defaultConfigFor dir
+                    let _ = parseConfig (File.ReadAllText configPath) defaults
+                    "config changed, stopping (restart to apply)"
+                with ex ->
+                    $"config invalid, stopping: %s{ex.Message}"
+
+            try
+                onChange reason
+            with _ ->
+                ()
+
+    watcher.Changed.Add(handler)
+    watcher.Created.Add(handler)
+    watcher.Renamed.Add(fun e -> handler (FileSystemEventArgs(WatcherChangeTypes.Renamed, dir, e.Name)))
+    watcher.EnableRaisingEvents <- true
+    watcher :> IDisposable
+
 /// Load config, mapping ConfigError to an (exitCode, message) pair suitable for CLI use.
 /// Returns Ok cfg on success, Error (2, msg) on ConfigError. Keeps the daemon startup
 /// path simple and testable without `exit`.
