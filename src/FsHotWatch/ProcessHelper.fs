@@ -87,11 +87,18 @@ let runProcess (command: string) (args: string) (workDir: string) (env: (string 
 /// orphan task continues running in the background — there is no cancellation
 /// hook. Acceptable for plugin handlers where the next event will start a
 /// fresh unit of work.
+///
+/// Uses `TaskCreationOptions.LongRunning` so the work runs on a dedicated
+/// thread rather than a pool worker. Plugin work can be CPU-heavy (FCS,
+/// analyzers) and the timeout-test path injects `Thread.Sleep` to force
+/// expiry; both starve the default thread pool under parallel test load and
+/// caused 5s xUnit timeouts to fire spuriously on unrelated tests.
 let runWithTimeout (timeout: TimeSpan) (work: unit -> 'a) : Result<'a, string> =
     if timeout = Threading.Timeout.InfiniteTimeSpan then
         Ok(work ())
     else
-        let task = Task.Run(fun () -> work ())
+        let task =
+            Task.Factory.StartNew((fun () -> work ()), TaskCreationOptions.LongRunning)
 
         if task.Wait(timeout) then
             Ok task.Result
