@@ -68,25 +68,23 @@ let ``RecordTerminal with SetSummary uses override`` () =
     test <@ r.Summary = Some "explicit" @>
 
 [<Fact(Timeout = 5000)>]
-let ``Derived summary is last log line when no explicit summary and no subtasks`` () =
+let ``RecordTerminal does not derive summary from last log line`` () =
     let s = State()
-    s.Log("p", "first")
-    s.Log("p", "second")
+    s.Log("p", "processing foo.fs")
+    s.Log("p", "processing bar.fs")
     let now = DateTime.UtcNow
     s.RecordTerminal("p", CompletedRun, now, now.AddMilliseconds(1.0))
     let r = List.head (s.GetHistory("p"))
-    test <@ r.Summary = Some "second" @>
+    test <@ r.Summary = None @>
 
 [<Fact(Timeout = 5000)>]
-let ``Derived summary is longest-lived subtask label when no log and no override`` () =
+let ``RecordTerminal does not derive summary from subtask labels`` () =
     let s = State()
     s.StartSubtask("p", "k-old", "oldest subtask")
-    System.Threading.Thread.Sleep(5)
-    s.StartSubtask("p", "k-new", "newer subtask")
     let now = DateTime.UtcNow
     s.RecordTerminal("p", CompletedRun, now, now.AddMilliseconds(1.0))
     let r = List.head (s.GetHistory("p"))
-    test <@ r.Summary = Some "oldest subtask" @>
+    test <@ r.Summary = None @>
 
 [<Fact(Timeout = 5000)>]
 let ``RecordTerminal auto-ends open subtasks and clears run state`` () =
