@@ -766,21 +766,12 @@ type Daemon
                         match host.GetFileCommandPattern(name) with
                         | None ->
                             return
-                                JsonSerializer.Serialize
-                                    {| error =
-                                        $"Plugin '%s{name}' has no registered file pattern (only FileCommand plugins with a pattern support rerun)" |}
+                                Result.Error
+                                    $"Plugin '%s{name}' has no registered file pattern (only FileCommand plugins with a pattern support rerun)"
                         | Some pattern ->
-                            // Synthesize a path the FileCommand filter will match,
-                            // so the plugin fires without any real file changing.
-                            let fakeFile =
-                                if pattern.StartsWith("*") then
-                                    "_fshw_rerun_" + pattern.Substring(1)
-                                else
-                                    pattern
-
                             host.ClearTaskCachePlugin(name)
-                            host.EmitFileChanged(SourceChanged [ fakeFile ])
-                            return ""
+                            host.EmitFileChanged(SourceChanged [ FilePattern.syntheticPath pattern ])
+                            return Result.Ok()
                     }
 
                 let rpcConfig: DaemonRpcConfig =
@@ -986,7 +977,7 @@ module Daemon =
         (cacheKeyProvider: ICacheKeyProvider option)
         (fcsSuppressedCodes: Set<int>)
         (excludePatterns: string list)
-        (extraWatchPatterns: string list)
+        (extraWatchPatterns: FilePattern list)
         =
         let lifetime = new CancellationTokenSource()
 
@@ -1180,7 +1171,7 @@ module Daemon =
         (cacheKeyProvider: ICacheKeyProvider option)
         (fcsSuppressedCodes: int list option)
         (excludePatterns: string list)
-        (extraWatchPatterns: string list)
+        (extraWatchPatterns: FilePattern list)
         =
         let suppressedCodes =
             fcsSuppressedCodes |> Option.defaultValue [ 1182 ] |> Set.ofList
