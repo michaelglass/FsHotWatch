@@ -1141,6 +1141,81 @@ let ``FileCommandPlugin reports failure on bad command`` () =
         @>
 
 // ===========================================================================
+// rerun — end-to-end: clear cache + synthetic file event re-runs plugin
+// ===========================================================================
+
+[<Fact(Timeout = 15000)>]
+let ``rerun re-executes a cached FileCommandPlugin`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-rerun-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let sentinel = Path.Combine(tmpDir, "counter.txt")
+        // Use `sh -c` with a direct append — avoids writing/chmoding a helper script.
+        // The plugin's command appends a line to the sentinel every time it runs.
+        let cmd = "sh"
+        let args = $"-c \"echo ran >> '{sentinel}'\""
+
+        // Use an in-memory cache so we can observe cache-hit vs cache-miss behavior.
+        let taskCache = FsHotWatch.TaskCache.InMemoryTaskCache()
+
+        let host =
+            PluginHost(
+                Unchecked.defaultof<_>,
+                tmpDir,
+                reporters = [],
+                taskCache = (taskCache :> FsHotWatch.TaskCache.ITaskCache)
+            )
+
+        let pattern = "*.ratchet.json"
+        let pluginName = "rerun-test"
+
+        // Fix a stable cache key so replays hit the cache (otherwise each event
+        // produces a new key and cache replay never fires — defeating the test).
+        let getCommitId () = Some "stable-commit-for-test"
+
+        let trigger: FsHotWatch.FileCommand.FileCommandPlugin.CommandTrigger =
+            { FilePattern = Some(fun f -> f.EndsWith(".ratchet.json"))
+              AfterTests = None }
+
+        let handler =
+            create (PluginName.create pluginName) trigger cmd args (Some getCommitId)
+
+        host.RegisterHandler(handler)
+        host.RegisterFileCommandPattern(pluginName, pattern)
+
+        // First run: matching file event → plugin runs, sentinel has 1 line.
+        host.EmitFileChanged(SourceChanged [ "coverage.ratchet.json" ])
+        waitForStatusSettled host pluginName 5000
+        test <@ File.Exists(sentinel) @>
+        test <@ File.ReadAllLines(sentinel).Length = 1 @>
+
+        // Second run with same commit id: cache hit, plugin does NOT run.
+        // Sentinel line count should stay at 1.
+        host.EmitFileChanged(SourceChanged [ "coverage.ratchet.json" ])
+        Thread.Sleep(500) // cache replay is synchronous but give dispatch time to settle
+        waitForStatusSettled host pluginName 5000
+        test <@ File.ReadAllLines(sentinel).Length = 1 @>
+
+        // Rerun: clear cache for this plugin, then emit a synthetic matching event.
+        // This is exactly what Daemon.RunWithIpc's rerunPlugin closure does.
+        host.ClearTaskCachePlugin(pluginName)
+        let fakeFile = "_fshw_rerun_" + pattern.Substring(1)
+        host.EmitFileChanged(SourceChanged [ fakeFile ])
+
+        // Status already shows Completed from the previous run, so `waitForStatusSettled`
+        // would return immediately. Wait for observable side effect (second line).
+        waitUntil (fun () -> File.Exists(sentinel) && File.ReadAllLines(sentinel).Length >= 2) 5000
+        waitForStatusSettled host pluginName 5000
+
+        test <@ File.ReadAllLines(sentinel).Length = 2 @>
+    finally
+        try
+            Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+// ===========================================================================
 // Full pipeline integration
 // ===========================================================================
 
