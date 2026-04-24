@@ -804,7 +804,13 @@ let main args =
                 |> List.map FsHotWatch.Watcher.FilePattern.parse
 
             let createDaemon (root: string) =
-                Daemon.create root backend keyProvider None config.Exclude fileCommandPatterns
+                Daemon.create
+                    root
+                    { Daemon.DaemonOptions.defaults with
+                        CacheBackend = backend
+                        CacheKeyProvider = keyProvider
+                        ExcludePatterns = config.Exclude
+                        ExtraWatchPatterns = fileCommandPatterns }
 
             executeCommand createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
         | Error(HelpRequested path) ->
