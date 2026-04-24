@@ -581,6 +581,38 @@ let ``agent next is done when all clean`` () =
     let lines = agentAll statuses
     test <@ List.last lines = "next: done" @>
 
+// ----- primary subtask rendering -----
+
+[<Fact(Timeout = 5000)>]
+let ``compact Running prefers primary subtask label over activity tail`` () =
+    let parsed: ParsedPluginStatus =
+        { Status = Running(now - TimeSpan.FromSeconds(1.5))
+          Subtasks = [ makeSubtask "primary" "running 3 selected tests" 1.5 ]
+          ActivityTail = [ "processing bar.fs" ]
+          LastRun = None
+          Diagnostics = DiagnosticCounts.empty }
+
+    let lines = renderPlugin Compact true now "test-prune" parsed |> stripMany
+    test <@ lines.Length = 1 @>
+    let line = lines.[0]
+    test <@ line.Contains "running 3 selected tests" @>
+    // The primary label should win — activity-tail fallback is suppressed.
+    test <@ not (line.Contains "processing bar.fs") @>
+
+[<Fact(Timeout = 5000)>]
+let ``compact Idle shows explicit summary not last log line`` () =
+    let parsed: ParsedPluginStatus =
+        { Status = Completed(now - TimeSpan.FromSeconds(2.0))
+          Subtasks = []
+          ActivityTail = [ "processing foo.fs"; "processing bar.fs" ]
+          LastRun = Some(completedRun (TimeSpan.FromSeconds 2.0) (TimeSpan.FromSeconds 2.0) (Some "5 passed, 0 failed"))
+          Diagnostics = DiagnosticCounts.empty }
+
+    let lines = renderPlugin Compact true now "test-prune" parsed |> stripMany
+    let line = lines.[0]
+    test <@ line.Contains "5 passed, 0 failed" @>
+    test <@ not (line.Contains "processing bar.fs") @>
+
 // ----- regex roundtrip -----
 
 [<Fact(Timeout = 5000)>]

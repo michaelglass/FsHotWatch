@@ -116,9 +116,16 @@ let private renderCompact
                     else
                         $" %s{Color.dim}{Glyph.sep} %s{la}%s{Color.reset}"
                 | xs ->
-                    let n = List.length xs
-                    let names = xs |> List.map (fun s -> s.Key) |> String.concat ", "
-                    $" %s{Color.dim}{Glyph.sep} %d{n} running: %s{names}%s{Color.reset}"
+                    // Prefer the "primary" subtask's descriptive label when present;
+                    // otherwise summarise concurrent subtasks by key.
+                    let primary = xs |> List.tryFind (fun s -> s.Key = "primary")
+
+                    match primary with
+                    | Some p -> $" %s{Color.dim}{Glyph.sep} %s{p.Label}%s{Color.reset}"
+                    | None ->
+                        let n = List.length xs
+                        let names = xs |> List.map (fun s -> s.Key) |> String.concat ", "
+                        $" %s{Color.dim}{Glyph.sep} %d{n} running: %s{names}%s{Color.reset}"
 
             $"  %s{Glyph.ellipsis} %s{padded} %s{timingStr}%s{detail}"
         | Idle ->
