@@ -121,6 +121,11 @@ description = "Tag a release based on API changes"
 run = "dotnet tool run fssemantictagger release"
 depends = ["restore"]
 
+[tasks.release-dry-run]
+description = "Preview a release without mutating (no tag, no publish)"
+run = "dotnet tool run fssemantictagger release --dry-run"
+depends = ["restore"]
+
 [tasks.release-alpha]
 description = "Tag an alpha release"
 run = "dotnet tool run fssemantictagger release --prerelease alpha"
