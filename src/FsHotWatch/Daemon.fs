@@ -770,9 +770,8 @@ type Daemon
                                     {| error =
                                         $"Plugin '%s{name}' has no registered file pattern (only FileCommand plugins with a pattern support rerun)" |}
                         | Some pattern ->
-                            // Synthesize a path that matches `pattern`:
-                            //   *.ratchet.json      → "_fshw_rerun_.ratchet.json"
-                            //   coverage-ratchet.json → "coverage-ratchet.json" (literal match)
+                            // Synthesize a path the FileCommand filter will match,
+                            // so the plugin fires without any real file changing.
                             let fakeFile =
                                 if pattern.StartsWith("*") then
                                     "_fshw_rerun_" + pattern.Substring(1)
