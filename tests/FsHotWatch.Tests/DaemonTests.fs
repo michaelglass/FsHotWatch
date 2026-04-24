@@ -89,7 +89,7 @@ let ``daemon starts and stops without error`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ]) [] []
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
         let task = Async.StartAsTask(daemon.Run(cts.Token))
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
         cts.Cancel()
@@ -107,7 +107,7 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
         let srcDir = Path.Combine(tmpDir, "src")
         Directory.CreateDirectory(srcDir) |> ignore
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ]) [] []
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
 
         let preprocessor =
             { new FsHotWatch.Plugin.IFsHotWatchPreprocessor with
@@ -156,7 +156,7 @@ let ``daemon dispatches file change events to plugins`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let mutable receivedChanges: FileChangeKind list = []
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ]) [] []
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
 
         let handler =
             { Name = PluginName.create "test-recorder"
@@ -205,7 +205,7 @@ let ``daemon debounces rapid file changes into one batch`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let mutable receivedChanges: FileChangeKind list = []
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ]) [] []
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
 
         let handler =
             { Name = PluginName.create "debounce-recorder"
@@ -276,7 +276,7 @@ let ``daemon handles ProjectChanged events`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let mutable receivedChanges: FileChangeKind list = []
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ]) [] []
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
 
         let handler =
             { Name = PluginName.create "project-recorder"
@@ -335,7 +335,7 @@ let ``daemon handles SolutionChanged events`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let mutable receivedChanges: FileChangeKind list = []
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ]) [] []
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
 
         let handler =
             { Name = PluginName.create "solution-recorder"
@@ -393,7 +393,7 @@ let ``daemon Run completes when cancellation is immediate`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ]) [] []
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
         cts.Cancel()
         let task = Async.StartAsTask(daemon.Run(cts.Token))
 
@@ -409,7 +409,7 @@ let ``Daemon.create creates a working daemon with real checker`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let cts = new CancellationTokenSource()
-        let daemon = Daemon.create tmpDir None None None [] []
+        let daemon = Daemon.create tmpDir Daemon.DaemonOptions.defaults
         let task = Async.StartAsTask(daemon.Run(cts.Token))
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
         cts.Cancel()
@@ -428,7 +428,7 @@ let ``daemon RunWithIpc starts and stops cleanly`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let cts = new CancellationTokenSource()
         let pipeName = $"fshw-test-{Guid.NewGuid():N}"
-        let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ]) [] []
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
         let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
         cts.Cancel()
@@ -446,7 +446,7 @@ let ``daemon RunWithIpc responds to IPC queries`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let cts = new CancellationTokenSource()
         let pipeName = $"fshw-test-{Guid.NewGuid():N}"
-        let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ]) [] []
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
 
         let handler =
             { Name = PluginName.create "ipc-test"
@@ -479,7 +479,7 @@ let ``daemon RegisterProject stores options in pipeline`` () =
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
-        let daemon = Daemon.createWith checker tmpDir None None (set [ 1182 ]) [] []
+        let daemon = Daemon.createWith checker tmpDir Daemon.DaemonOptions.defaults
 
         let sourceFile = Path.Combine(tmpDir, "src", "Lib.fs")
         File.WriteAllText(sourceFile, "module Lib\nlet x = 42\n")
@@ -513,7 +513,7 @@ let ``daemon RegisterProject stores options in pipeline`` () =
 let ``FormatScanStatus returns idle for ScanIdle`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ]) [] []
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
         daemon.SetScanState(ScanIdle)
         test <@ daemon.FormatScanStatus() = "idle" @>)
 
@@ -521,7 +521,7 @@ let ``FormatScanStatus returns idle for ScanIdle`` () =
 let ``FormatScanStatus returns progress for Scanning`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ]) [] []
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
         daemon.SetScanState(Scanning(10, 5, DateTime.UtcNow))
         let status = daemon.FormatScanStatus()
         test <@ status.Contains("5/10") @>
@@ -531,7 +531,7 @@ let ``FormatScanStatus returns progress for Scanning`` () =
 let ``FormatScanStatus returns complete for ScanComplete`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ]) [] []
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
         daemon.SetScanState(ScanComplete(70, TimeSpan.FromSeconds(15.5)))
         let status = daemon.FormatScanStatus()
         test <@ status.Contains("70 files") @>
@@ -541,7 +541,7 @@ let ``FormatScanStatus returns complete for ScanComplete`` () =
 let ``RunOnce completes and returns plugin statuses`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let daemon = Daemon.createWith nullChecker tmpDir None None (set [ 1182 ]) [] []
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
 
         let handler =
             { Name = PluginName.create "runonce-test"
