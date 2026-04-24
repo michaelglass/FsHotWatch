@@ -17,6 +17,74 @@ open TestPrune.Extensions
 open TestPrune.ImpactAnalysis
 open TestPrune.SymbolDiff
 
+/// Per-project coverage artifact paths. The plugin writes coverlet's native
+/// JSON format to BaselineJson (full run) or PartialJson (impact-filtered
+/// run), then converts or merges into the Cobertura XML consumed by
+/// downstream tooling (coverageratchet). Callers (DaemonConfig) decide the
+/// directory layout; the plugin treats these as opaque absolute paths.
+type CoveragePaths =
+    { BaselineJson: string
+      PartialJson: string
+      Cobertura: string }
+
+/// Compose the coverlet collector args for a given run. `wasFiltered` picks
+/// the destination file — full runs refresh the baseline, partial runs write
+/// a companion file that gets merged in `processCoverageOutput`.
+let buildCoverageArgs (paths: CoveragePaths) (wasFiltered: bool) : string =
+    let target =
+        if wasFiltered then
+            paths.PartialJson
+        else
+            paths.BaselineJson
+
+    let dir = Path.GetDirectoryName(target)
+
+    if not (String.IsNullOrEmpty dir) then
+        Directory.CreateDirectory(dir) |> ignore
+
+    $"--coverage --coverage-output-format json --coverage-output \"%s{target}\""
+
+/// After a test run completes, collapse the coverlet JSON output into a
+/// Cobertura document downstream tools can read. Behavior depends on whether
+/// this was a full or filtered run:
+///
+/// - Full run: the fresh baseline.json becomes the authoritative coverage
+///   snapshot. Convert it to cobertura and delete any stale partial.json so
+///   a subsequent filtered run starts clean.
+/// - Filtered run, no baseline on disk: bootstrap — skip cobertura entirely.
+///   Downstream gating (coverageratchet) that reads the cobertura file will
+///   see no file, which is the intended "no baseline yet" signal.
+/// - Filtered run with baseline: merge per-line max, emit cobertura. Keep
+///   partial.json on disk for debugging.
+let processCoverageOutput (paths: CoveragePaths) (wasFiltered: bool) : unit =
+    try
+        if not wasFiltered then
+            if File.Exists(paths.BaselineJson) then
+                let baseline = CoverageMerge.parse (File.ReadAllText(paths.BaselineJson))
+                let xml = CoverageMerge.toCobertura baseline
+                File.WriteAllText(paths.Cobertura, xml)
+
+            if File.Exists(paths.PartialJson) then
+                File.Delete(paths.PartialJson)
+        else if not (File.Exists(paths.BaselineJson)) then
+            // Bootstrap: no baseline yet, partial can't produce a faithful
+            // Cobertura on its own. Leave everything as-is so downstream
+            // ratchets skip (or fail with a clear "missing file" message
+            // that prompts the user to run a full test).
+            Logging.info "test-prune" "coverage: skipping cobertura emit (no baseline — run a full test first)"
+        else if File.Exists(paths.PartialJson) then
+            let baseline = CoverageMerge.parse (File.ReadAllText(paths.BaselineJson))
+            let partial = CoverageMerge.parse (File.ReadAllText(paths.PartialJson))
+            let merged = CoverageMerge.mergePerLineMax baseline partial
+            let xml = CoverageMerge.toCobertura merged
+            File.WriteAllText(paths.Cobertura, xml)
+        else
+            // Filtered run produced no partial (e.g. test skipped entirely);
+            // nothing to merge. Leave existing cobertura alone.
+            ()
+    with ex ->
+        Logging.error "test-prune" $"coverage post-processing failed: %s{ex.Message}"
+
 /// Configuration for a test project to run.
 type TestConfig =
     {
@@ -155,7 +223,7 @@ let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<str
         ctx.ReportErrors file entries
 
 /// Execute test configs with optional affected classes for filtering.
-/// Handles beforeRun, coverageArgs, process execution, result storage.
+/// Handles beforeRun, coveragePaths, process execution, result storage.
 /// rawFilter is a passthrough filter string (from run-tests command), bypassing the template.
 ///
 /// Emission contract (when `ctx` is Some):
@@ -171,7 +239,7 @@ let private executeTests
     (ctx: PluginCtx<'msg> option)
     (repoRoot: string)
     (beforeRun: (unit -> unit) option)
-    (coverageArgs: (string -> string) option)
+    (coveragePaths: (string -> CoveragePaths option) option)
     (afterRun: (TestResults -> unit) option)
     (configs: TestConfig list)
     (affectedClassesByProject: Map<string, string list>)
@@ -253,8 +321,14 @@ let private executeTests
 
                             let wasFiltered = Option.isSome filterArgs || Option.isSome rawFilter
 
-                            match coverageArgs with
-                            | Some covFn -> extraArgs.Add(covFn config.Project)
+                            // Resolve per-project coverage paths (if coverage is configured for
+                            // this project). wasFiltered determines which file coverlet writes
+                            // to; the post-test step reads those files back to produce cobertura.
+                            let projectCoveragePaths =
+                                coveragePaths |> Option.bind (fun fn -> fn config.Project)
+
+                            match projectCoveragePaths with
+                            | Some paths -> extraArgs.Add(buildCoverageArgs paths wasFiltered)
                             | None -> ()
 
                             let finalArgs =
@@ -323,6 +397,12 @@ let private executeTests
                                     TestsPassed(output, wasFiltered)
                                 else
                                     TestsFailed(output, wasFiltered)
+
+                            // Post-test coverage step: merge or convert the coverlet JSON
+                            // output into the Cobertura file downstream consumers read.
+                            match projectCoveragePaths with
+                            | Some paths -> processCoverageOutput paths wasFiltered
+                            | None -> ()
 
                             results <- (config.Project, result) :: results
 
@@ -443,7 +523,7 @@ let create
     (buildExtensions: (Database -> ITestPruneExtension list) option)
     (beforeRun: (unit -> unit) option)
     (afterRun: (TestResults -> unit) option)
-    (coverageArgs: (string -> string) option)
+    (coveragePaths: (string -> CoveragePaths option) option)
     (getCommitId: (unit -> string option) option)
     =
     let db = Database.create dbPath
@@ -569,7 +649,7 @@ let create
                             Logging.info "test-prune" $"Affected classes for %s{proj}: %A{classes}"
 
                     let! results =
-                        executeTests (Some ctx) repoRoot beforeRun coverageArgs afterRun configs affectedByProject None
+                        executeTests (Some ctx) repoRoot beforeRun coveragePaths afterRun configs affectedByProject None
 
                     // executeTests emits TestRunStarted → TestProgress × N → TestRunCompleted
                     // internally; no further lifecycle emits needed here.
@@ -723,7 +803,7 @@ let create
                                                 None
                                                 repoRoot
                                                 beforeRun
-                                                coverageArgs
+                                                coveragePaths
                                                 afterRun
                                                 configs
                                                 Map.empty
