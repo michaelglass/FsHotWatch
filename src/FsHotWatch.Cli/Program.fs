@@ -58,7 +58,7 @@ type Command =
     | [<Cmd("Show current status")>] Status of plugin: string option
     | [<Cmd("Show accumulated errors")>] Errors of ErrorsFlag list
     | [<Cmd("Scan for file changes")>] Scan of ScanFlag list
-    | [<Cmd("Invalidate cache for a file"); CmdFileCompletion>] InvalidateCache of filePath: string
+    | [<Cmd("Force a plugin to re-run, clearing its cached state")>] Rerun of pluginName: string
     | [<Cmd("Generate initial config")>] Init
     | [<Cmd("Install fish completions")>] Completions
 
@@ -169,7 +169,7 @@ type IpcOps =
       WaitForComplete: string -> int -> Async<string>
       TriggerBuild: string -> Async<string>
       FormatAll: string -> Async<string>
-      InvalidateCache: string -> string -> Async<string>
+      RerunPlugin: string -> string -> Async<string>
       IsRunning: string -> bool
       LaunchDaemon: string -> string -> string -> unit }
 
@@ -186,7 +186,7 @@ let defaultIpcOps: IpcOps =
       WaitForComplete = IpcClient.waitForComplete
       TriggerBuild = IpcClient.triggerBuild
       FormatAll = IpcClient.formatAll
-      InvalidateCache = IpcClient.invalidateCache
+      RerunPlugin = IpcClient.rerunPlugin
       IsRunning = IpcClient.isRunning
       LaunchDaemon =
         fun repoRoot extraArgs logFile ->
@@ -692,10 +692,16 @@ let executeCommand
                     eprintfn "%s" (IpcOutput.formatDiagnosticsResponse mode (renderLines mode (not noWarnFail)) resp)
 
                     IpcOutput.exitCodeFromResponse noWarnFail resp)
-    | InvalidateCache filePath ->
+    | Rerun pluginName ->
         withDaemonAndIpc (fun () ->
+            let result =
+                if UI.isInteractive then
+                    UI.withSpinner $"Running %s{pluginName}" (fun () ->
+                        ipc.RerunPlugin pipeName pluginName |> Async.RunSynchronously)
+                else
+                    eprintfn "  Running %s..." pluginName
+                    ipc.RerunPlugin pipeName pluginName |> Async.RunSynchronously
 
-            let result = ipc.InvalidateCache pipeName filePath |> Async.RunSynchronously
             IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
     | Init ->
         let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
