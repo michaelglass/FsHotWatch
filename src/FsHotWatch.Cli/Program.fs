@@ -47,6 +47,10 @@ module WaitMode =
 
 type ConfigCommand = | [<Cmd("Validate .fs-hot-watch.json without starting the daemon")>] Check
 
+type CoverageCommand =
+    | [<Cmd("Delete coverage baseline + partial JSON so the next full run rebuilds from scratch",
+            Name = "refresh-baseline")>] RefreshBaseline
+
 type Command =
     | [<Cmd("Start the daemon")>] Start
     | [<Cmd("Stop the daemon")>] Stop
@@ -63,6 +67,7 @@ type Command =
     | [<Cmd("Force a plugin to re-run, clearing its cached state")>] Rerun of pluginName: string
     | [<Cmd("Generate initial config")>] Init
     | [<Cmd("Configuration commands")>] Config of ConfigCommand
+    | [<Cmd("Coverage commands")>] Coverage of CoverageCommand
     | [<Cmd("Install fish completions")>] Completions
 
 type GlobalFlag =
@@ -392,6 +397,29 @@ let defaultGlobalOptions =
       AgentMode = false
       CompactMode = false
       DaemonExtraArgs = "" }
+
+/// Delete coverage baseline + partial JSON for every configured test project
+/// (skipping those with coverage opted out). Returns the list of paths that
+/// were actually removed — empty when nothing was present. Pure wrt. the
+/// filesystem inputs; safe to call when the coverage directory doesn't exist.
+let refreshCoverageBaseline (repoRoot: string) (config: DaemonConfiguration) : string list =
+    match config.Tests with
+    | None -> []
+    | Some t ->
+        t.Projects
+        |> List.filter (fun p -> p.Coverage)
+        |> List.collect (fun p ->
+            let dir = Path.Combine(repoRoot, t.CoverageDir, p.Project)
+
+            [ "coverage.baseline.json"; "coverage.partial.json" ]
+            |> List.map (fun name -> Path.Combine(dir, name))
+            |> List.filter File.Exists
+            |> List.choose (fun path ->
+                try
+                    File.Delete(path)
+                    Some path
+                with _ ->
+                    None))
 
 /// Execute a parsed command with injectable dependencies.
 let executeCommand
@@ -738,6 +766,18 @@ let executeCommand
     | Config ConfigCommand.Check ->
         // Config has already been parsed by main; reaching here means it's valid.
         printfn "config: OK (%d plugins configured)" (countPlugins config)
+        0
+    | Coverage CoverageCommand.RefreshBaseline ->
+        let deleted = refreshCoverageBaseline repoRoot config
+
+        if deleted.IsEmpty then
+            printfn "No coverage baseline/partial JSON files found to remove."
+        else
+            printfn "Removed:"
+
+            for p in deleted do
+                printfn "  %s" p
+
         0
     | Completions ->
         FishCompletions.writeToFile commandTree cliName
