@@ -283,4 +283,6 @@ type PluginHost
                     Logging.error (PluginFramework.PluginName.value p.Name) $"Teardown failed: %s{ex.Message}"
             | None -> ()
 
+        fileCommandPatterns.Clear()
+
     static member create (checker: FSharpChecker) (repoRoot: string) = PluginHost(checker, repoRoot)
