@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- Emit distinct success/failure/crashed summary strings
+  (`<name>: succeeded` / `<name>: failed` / `<name>: crashed`) instead of
+  the ambiguous `ran <name>` for every outcome.
+
 ## 0.7.0-alpha.7 - 2026-04-23
 
 ### Added
