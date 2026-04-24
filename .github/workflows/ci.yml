@@ -31,6 +31,9 @@ jobs:
         jj --version
         jj git init --colocate
         git clone --depth 1 https://github.com/michaelglass/TestPrune.git ../TestPrune
-        # Restore the sibling ProjectReference explicitly — the reusable build
-        # workflow only restores FsHotWatch.slnx, which doesn't list TestPrune.Core.
-        dotnet restore ../TestPrune/src/TestPrune.Core/TestPrune.Core.fsproj
+        # Re-run restore now that the sibling exists. The reusable workflow's
+        # `dotnet restore` ran before this hook (see michaels-wacky-build.yml)
+        # and cached "ProjectReference not found", so the subsequent
+        # `dotnet build --no-restore` would fail to copy TestPrune.Core.dll
+        # into FsHotWatch.Cli's bin dir without this re-restore.
+        dotnet restore
