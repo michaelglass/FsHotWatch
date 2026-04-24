@@ -1141,7 +1141,7 @@ let create
                             |> Map.toList
                             |> List.choose (fun (name, r) ->
                                 match r with
-                                | TestsFailed(output, _) when output.StartsWith("timed out") -> Some name
+                                | TestsFailed(output, _) when output.StartsWith(TimedOutPrefix) -> Some name
                                 | _ -> None)
 
                         if not timedOutProjects.IsEmpty then

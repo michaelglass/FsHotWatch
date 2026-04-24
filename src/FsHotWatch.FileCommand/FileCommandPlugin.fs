@@ -108,7 +108,7 @@ let create
                                 ctx.CompleteWithSummary $"%s{nameStr}: succeeded"
                                 ctx.ClearErrors $"<%s{nameStr}>"
                                 ctx.ReportStatus(Completed(DateTime.UtcNow))
-                            elif output.StartsWith("timed out") then
+                            elif output.StartsWith(TimedOutPrefix) then
                                 ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error output ]
                                 ctx.CompleteWithTimeout(output.Split('\n').[0])
                                 ctx.ReportStatus(PluginStatus.Failed($"%s{nameStr} timed out", DateTime.UtcNow))
