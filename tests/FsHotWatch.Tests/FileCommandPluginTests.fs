@@ -698,3 +698,49 @@ let ``afterTests AnyTest fires on TestRunCompleted regardless of projects`` () =
             | Completed _ -> true
             | _ -> false
         @>
+
+// --- Combined trigger: pattern + afterTests ---
+
+[<Fact(Timeout = 10000)>]
+let ``plugin with both pattern and afterTests fires on file change`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let trigger: CommandTrigger =
+        { FilePattern = Some(fun f -> f.EndsWith(".ratchet.json"))
+          AfterTests = Some AnyTest }
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "combined-a") trigger "echo" "hi" None
+
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "coverage.ratchet.json" ])
+    waitForTerminalStatus host "combined-a" 5000
+
+    test
+        <@
+            match host.GetStatus("combined-a") with
+            | Some(Completed _) -> true
+            | _ -> false
+        @>
+
+[<Fact(Timeout = 10000)>]
+let ``plugin with both pattern and afterTests fires on test completion`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let trigger: CommandTrigger =
+        { FilePattern = Some(fun f -> f.EndsWith(".ratchet.json"))
+          AfterTests = Some AnyTest }
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "combined-b") trigger "echo" "hi" None
+
+    host.RegisterHandler(handler)
+    emitRunCompleted host [ "proj-a", TestsPassed "ok" ]
+    waitForTerminalStatus host "combined-b" 5000
+
+    test
+        <@
+            match host.GetStatus("combined-b") with
+            | Some(Completed _) -> true
+            | _ -> false
+        @>
