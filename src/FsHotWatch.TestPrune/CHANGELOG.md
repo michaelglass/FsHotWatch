@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Added
+- **Partial-run coverage merging.** TestPrune now emits coverlet's native JSON
+  format (not Cobertura) per test project. Full runs write
+  `coverage.baseline.json`; impact-filtered runs write
+  `coverage.partial.json` and then merge it with the baseline (per-line max) to
+  produce `coverage.cobertura.xml` for downstream gating (e.g. `coverageratchet`).
+  Partial runs without a baseline skip cobertura emission entirely (bootstrap);
+  run a full test once to establish the baseline.
+- `TestResult.WasFiltered`: per-project boolean on `TestsPassed`/`TestsFailed`
+  indicating whether impact analysis reduced the run for that project.
+  Downstream consumers can distinguish full vs partial results without
+  inspecting the command args.
+- `fs-hot-watch coverage refresh-baseline` CLI command: deletes
+  `coverage.baseline.json` and `coverage.partial.json` for every configured
+  test project so the next full run rebuilds coverage from scratch.
+
+### Caveat
+- Coverlet's merge keys by file path + line number, not by content hash. File
+  edits between baseline and partial may misattribute hits at the line level;
+  coverage % stays correct. Revisit with per-test attribution if that noise
+  becomes an issue.
+
+### Breaking
+- `TestPrunePlugin.create`'s `coverageArgs: (string -> string) option` is
+  replaced by `coveragePaths: (string -> CoveragePaths option) option` — the
+  caller supplies per-project baseline/partial/cobertura file paths and
+  TestPrune composes the coverlet args + merge step internally.
+- `TestResult.TestsPassed` and `TestResult.TestsFailed` each gain a
+  `wasFiltered: bool` second field. Consumers pattern-matching on
+  `TestsPassed output` must update to `TestsPassed(output, _)`.
+
 ## 0.7.0-alpha.9 - 2026-04-23
 
 ### Changed
