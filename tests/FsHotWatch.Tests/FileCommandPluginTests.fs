@@ -600,7 +600,8 @@ let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style
           Tests = None
           FileCommands = []
           Exclude = []
-          LogDir = "logs" }
+          LogDir = "logs"
+          TimeoutSec = None }
 
     let config = FsHotWatch.Cli.DaemonConfig.parseConfig json defaults
     test <@ config.FileCommands.Length = 1 @>
