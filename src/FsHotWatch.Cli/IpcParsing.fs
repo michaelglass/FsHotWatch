@@ -76,6 +76,9 @@ let parseTaggedOutcome (el: JsonElement) : RunOutcome option =
         | Some "failed" ->
             let err = tryGetStringProp el "error" |> Option.defaultValue ""
             Some(FailedRun err)
+        | Some "timedOut" ->
+            let reason = tryGetStringProp el "reason" |> Option.defaultValue ""
+            Some(TimedOut reason)
         | _ -> None
 
 /// Parse a lastRun.outcome field (tagged-object shape).
