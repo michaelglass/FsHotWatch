@@ -139,7 +139,8 @@ let ``serializeConfig produces valid JSON with build and tests`` () =
               Tests = None
               FileCommands = []
               Exclude = []
-              LogDir = "logs" }
+              LogDir = "logs"
+              TimeoutSec = None }
 
     test <@ parsed.Build.IsSome @>
     test <@ parsed.Format = Auto @>
@@ -157,7 +158,8 @@ let ``serializeConfig with no build omits build section`` () =
           Tests = None
           FileCommands = []
           Exclude = []
-          LogDir = "logs" }
+          LogDir = "logs"
+          TimeoutSec = None }
 
 
     let json = serializeConfig config
@@ -174,7 +176,8 @@ let ``serializeConfig with empty build list omits build section`` () =
           Tests = None
           FileCommands = []
           Exclude = []
-          LogDir = "logs" }
+          LogDir = "logs"
+          TimeoutSec = None }
 
 
     let json = serializeConfig config
@@ -188,11 +191,13 @@ let ``serializeConfig with multiple builds writes array`` () =
                 [ {| Command = "dotnet"
                      Args = "build src/A"
                      BuildTemplate = None
-                     DependsOn = [] |}
+                     DependsOn = []
+                     TimeoutSec = None |}
                   {| Command = "dotnet"
                      Args = "build src/B"
                      BuildTemplate = None
-                     DependsOn = [] |} ]
+                     DependsOn = []
+                     TimeoutSec = None |} ]
           Format = Auto
           Lint = true
           Cache = FileBackend
@@ -200,7 +205,8 @@ let ``serializeConfig with multiple builds writes array`` () =
           Tests = None
           FileCommands = []
           Exclude = []
-          LogDir = "logs" }
+          LogDir = "logs"
+          TimeoutSec = None }
 
 
     let json = serializeConfig config
@@ -218,7 +224,8 @@ let ``serializeConfig format Off writes false`` () =
           Tests = None
           FileCommands = []
           Exclude = []
-          LogDir = "logs" }
+          LogDir = "logs"
+          TimeoutSec = None }
 
 
     let json = serializeConfig config
@@ -234,7 +241,8 @@ let ``serializeConfig format Off writes false`` () =
               Tests = None
               FileCommands = []
               Exclude = []
-              LogDir = "logs" }
+              LogDir = "logs"
+              TimeoutSec = None }
 
     test <@ parsed.Format = Off @>
 
@@ -249,7 +257,8 @@ let ``serializeConfig format Check writes check string`` () =
           Tests = None
           FileCommands = []
           Exclude = []
-          LogDir = "logs" }
+          LogDir = "logs"
+          TimeoutSec = None }
 
 
     let json = serializeConfig config
@@ -265,7 +274,8 @@ let ``serializeConfig format Check writes check string`` () =
               Tests = None
               FileCommands = []
               Exclude = []
-              LogDir = "logs" }
+              LogDir = "logs"
+              TimeoutSec = None }
 
     test <@ parsed.Format = Check @>
 
@@ -280,7 +290,8 @@ let ``serializeConfig cache InMemoryOnly writes memory`` () =
           Tests = None
           FileCommands = []
           Exclude = []
-          LogDir = "logs" }
+          LogDir = "logs"
+          TimeoutSec = None }
 
 
     let json = serializeConfig config
@@ -297,7 +308,8 @@ let ``serializeConfig cache NoCache writes false`` () =
           Tests = None
           FileCommands = []
           Exclude = []
-          LogDir = "logs" }
+          LogDir = "logs"
+          TimeoutSec = None }
 
 
     let json = serializeConfig config
@@ -313,7 +325,8 @@ let ``serializeConfig cache NoCache writes false`` () =
               Tests = None
               FileCommands = []
               Exclude = []
-              LogDir = "logs" }
+              LogDir = "logs"
+              TimeoutSec = None }
 
     test <@ parsed.Cache = NoCache @>
 
@@ -328,7 +341,8 @@ let ``serializeConfig with no tests omits tests section`` () =
           Tests = None
           FileCommands = []
           Exclude = []
-          LogDir = "logs" }
+          LogDir = "logs"
+          TimeoutSec = None }
 
 
     let json = serializeConfig config
@@ -350,7 +364,8 @@ let ``serializeConfig with empty test projects omits tests section`` () =
                    CoverageDir = "coverage" |}
           FileCommands = []
           Exclude = []
-          LogDir = "logs" }
+          LogDir = "logs"
+          TimeoutSec = None }
 
 
     let json = serializeConfig config
@@ -378,11 +393,13 @@ let ``serializeConfig test project without filterTemplate omits it`` () =
                         Environment = []
                         FilterTemplate = None
                         ClassJoin = " "
-                        Coverage = true } ]
+                        Coverage = true
+                        TimeoutSec = None } ]
                    CoverageDir = "coverage" |}
           FileCommands = []
           Exclude = []
-          LogDir = "logs" }
+          LogDir = "logs"
+          TimeoutSec = None }
 
 
     let json = serializeConfig config
