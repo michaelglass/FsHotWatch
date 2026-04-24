@@ -81,3 +81,19 @@ let runProcessWithTimeout
 /// Reads stdout and stderr concurrently to avoid deadlock.
 let runProcess (command: string) (args: string) (workDir: string) (env: (string * string) list) : bool * string =
     runProcessWithTimeout command args workDir env Threading.Timeout.InfiniteTimeSpan
+
+/// Run a synchronous unit of work with a wall-clock timeout. Returns Ok on
+/// completion, Error with a `timed out after Ns` message on expiry. The
+/// orphan task continues running in the background — there is no cancellation
+/// hook. Acceptable for plugin handlers where the next event will start a
+/// fresh unit of work.
+let runWithTimeout (timeout: TimeSpan) (work: unit -> 'a) : Result<'a, string> =
+    if timeout = Threading.Timeout.InfiniteTimeSpan then
+        Ok(work ())
+    else
+        let task = Task.Run(fun () -> work ())
+
+        if task.Wait(timeout) then
+            Ok task.Result
+        else
+            Error $"%s{TimedOutPrefix}%d{int timeout.TotalSeconds}s"
