@@ -175,7 +175,7 @@ let ``FileWatcher.create with isMacOS=false watches src and tests dirs`` () =
         let mutable changes: FileChangeKind list = []
         let onChange change = changes <- change :: changes
 
-        use watcher = FileWatcher.create tmpDir onChange (Some false)
+        use watcher = FileWatcher.create tmpDir onChange (Some false) []
 
         probeUntilEvent srcDir (fun () -> changes.Length >= 1) 10000
         test <@ changes.Length >= 1 @>)
@@ -186,7 +186,7 @@ let ``FileWatcher.create with isMacOS=false when neither src nor tests exist`` (
         let mutable changes: FileChangeKind list = []
         let onChange change = changes <- change :: changes
 
-        use watcher = FileWatcher.create tmpDir onChange (Some false)
+        use watcher = FileWatcher.create tmpDir onChange (Some false) []
         test <@ watcher.Disposables.Length = 1 @>)
 
 // === Integration test: verify FileWatcher.create produces a working watcher (default OS path) ===
@@ -199,7 +199,7 @@ let ``watcher detects file changes in src directory`` () =
     let mutable changes = []
     let onChange change = changes <- change :: changes
 
-    use watcher = FileWatcher.create tmpDir onChange None
+    use watcher = FileWatcher.create tmpDir onChange None []
 
     // Probe until the watcher is delivering events (FSEvents cold-start can be 4-20s).
     probeUntilEvent srcDir (fun () -> changes.Length >= 1) 60000
@@ -223,3 +223,31 @@ let ``isRelevantFileOrExtra rejects files not matching extras or built-ins`` () 
 [<Fact(Timeout = 5000)>]
 let ``isRelevantFileOrExtra rejects extra-matching files in obj directory`` () =
     test <@ not (isRelevantFileOrExtra [ ".ratchet.json" ] "/repo/obj/Debug/config.ratchet.json") @>
+
+// === Integration test: extra-suffix watcher fires for non-source patterns ===
+
+[<Fact(Timeout = 60000)>]
+let ``FileWatcher with extra suffix fires SourceChanged for matching file`` () =
+    withTempDir "watcher-extra" (fun tmpDir ->
+        let received = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
+        let onChange change = received.Add(change)
+
+        let suffix = ".ratchet.json"
+
+        use _watcher =
+            FileWatcher.create tmpDir onChange (Some false) [ suffix ] :> IDisposable
+
+        // Probe by repeatedly rewriting a matching file until the watcher delivers an event.
+        // FileSystemWatcher on macOS (kqueue/FSEvents backend) can have cold-start latency.
+        let configPath = Path.Combine(tmpDir, "coverage.ratchet.json")
+
+        let hasMatch () =
+            received
+            |> Seq.exists (fun c ->
+                match c with
+                | SourceChanged files -> files |> List.exists (fun f -> f.EndsWith(suffix))
+                | _ -> false)
+
+        probeLoop (fun n -> File.WriteAllText(configPath, $"{{\"probe\": {n}}}")) hasMatch 30000
+
+        test <@ hasMatch () @>)
