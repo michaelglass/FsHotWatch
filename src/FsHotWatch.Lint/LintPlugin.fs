@@ -113,6 +113,9 @@ let create
 
                                         ctx.ReportErrors result.File [ ErrorEntry.error msg ]
 
+                                        ctx.CompleteWithSummary
+                                            $"lint failed on {System.IO.Path.GetFileName result.File}"
+
                                         ctx.ReportStatus(PluginStatus.Failed(msg, DateTime.UtcNow))
                                         return state
                             })
