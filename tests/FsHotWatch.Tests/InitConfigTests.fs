@@ -394,6 +394,7 @@ let ``serializeConfig test project without filterTemplate omits it`` () =
                         FilterTemplate = None
                         ClassJoin = " "
                         Coverage = true
+                        CoverageArgsTemplate = None
                         TimeoutSec = None } ]
                    CoverageDir = "coverage" |}
           FileCommands = []

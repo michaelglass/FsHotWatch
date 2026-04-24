@@ -18,76 +18,95 @@ open TestPrune.Extensions
 open TestPrune.ImpactAnalysis
 open TestPrune.SymbolDiff
 
-/// Per-project coverage artifact paths. The plugin writes coverlet's native
-/// JSON format to BaselineJson (full run) or PartialJson (impact-filtered
-/// run), then converts or merges into the Cobertura XML consumed by
-/// downstream tooling (coverageratchet). Callers (DaemonConfig) decide the
-/// directory layout; the plugin treats these as opaque absolute paths.
+/// Per-project coverage artifact paths + the command-line template used to
+/// produce them. The plugin writes Cobertura XML to Baseline (full run) or
+/// Partial (impact-filtered run), then merges into the Cobertura XML consumed
+/// by downstream tooling (coverageratchet). Callers (DaemonConfig) decide the
+/// directory layout and the arg template; the plugin treats the paths as
+/// opaque absolute paths and substitutes `{output}` in `ArgsTemplate`.
+///
+/// The file format is Cobertura regardless of `ArgsTemplate` — the template
+/// is responsible for telling its runner to write Cobertura to `{output}`.
+/// For Microsoft Testing Platform, use `defaultCoverageArgsTemplate`; for
+/// other runners (coverlet.collector, AltCover, OpenCover) supply your own.
 type CoveragePaths =
-    { BaselineJson: string
-      PartialJson: string
-      Cobertura: string }
+    { Baseline: string
+      Partial: string
+      Cobertura: string
+      ArgsTemplate: string }
 
-/// Compose the coverlet collector args for a given run. `wasFiltered` picks
-/// the destination file — full runs refresh the baseline, partial runs write
-/// a companion file that gets merged in `processCoverageOutput`.
+/// Default coverage args template for Microsoft Testing Platform hosts
+/// (xUnit v3, MSTest v3 — anything invoked as `dotnet run --project <test>
+/// --no-build -- ...`). `{output}` is replaced with the target file path.
+[<Literal>]
+let defaultCoverageArgsTemplate =
+    "--coverage --coverage-output-format cobertura --coverage-output \"{output}\""
+
+[<Literal>]
+let private OutputPlaceholder = "{output}"
+
+/// Substitute `{output}` in `paths.ArgsTemplate` with either Baseline or
+/// Partial depending on `wasFiltered`. Creates the output dir if missing.
+/// Raises with a clear message if the template is missing the placeholder —
+/// silent emission of broken args is the bug we just fixed.
 let buildCoverageArgs (paths: CoveragePaths) (wasFiltered: bool) : string =
-    let target =
-        if wasFiltered then
-            paths.PartialJson
-        else
-            paths.BaselineJson
+    let target = if wasFiltered then paths.Partial else paths.Baseline
 
     let dir = Path.GetDirectoryName(target)
 
     if not (String.IsNullOrEmpty dir) then
         Directory.CreateDirectory(dir) |> ignore
 
-    $"--coverage --coverage-output-format json --coverage-output \"%s{target}\""
+    if not (paths.ArgsTemplate.Contains(OutputPlaceholder)) then
+        invalidArg
+            "ArgsTemplate"
+            (sprintf "coverage args template must contain %s placeholder; got %A" OutputPlaceholder paths.ArgsTemplate)
+
+    paths.ArgsTemplate.Replace(OutputPlaceholder, target)
 
 /// After a test run completes, collapse the coverlet JSON output into a
 /// Cobertura document downstream tools can read. Behavior depends on whether
 /// this was a full or filtered run:
 ///
-/// - Full run: the fresh baseline.json becomes the authoritative coverage
-///   snapshot. Convert it to cobertura and delete any stale partial.json so
-///   a subsequent filtered run starts clean.
-/// - Filtered run, no baseline on disk: bootstrap — skip cobertura entirely.
+/// - Full run: the fresh baseline cobertura becomes the authoritative coverage
+///   snapshot. Copy it to the final cobertura path and delete any stale
+///   partial file so a subsequent filtered run starts clean.
+/// - Filtered run, no baseline on disk: bootstrap — skip final cobertura entirely.
 ///   Downstream gating (coverageratchet) that reads the cobertura file will
 ///   see no file, which is the intended "no baseline yet" signal.
-/// - Filtered run with baseline: merge per-line max, emit cobertura. Keep
-///   partial.json on disk for debugging.
+/// - Filtered run with baseline: merge per-line max, emit final cobertura. Keep
+///   partial on disk for debugging.
 let processCoverageOutput (paths: CoveragePaths) (wasFiltered: bool) : unit =
-    // Coverlet's JSON shape can drift across versions. Empty parsed data from
-    // a non-empty file is the warning signal — emit a log so silent coverage
-    // collapse is at least visible in the daemon log.
+    // MTP's cobertura shape is stable but empty parsed data from a non-empty
+    // file is the warning signal — emit a log so silent coverage collapse is
+    // at least visible in the daemon log.
     let parseAndCheck path =
         let raw = File.ReadAllText(path)
         let data = CoverageMerge.parse raw
 
         if Map.isEmpty data && raw.Trim().Length > 0 then
-            Logging.warn "test-prune" $"coverage: parsed 0 entries from %s{path} (coverlet schema drift?)"
+            Logging.warn "test-prune" $"coverage: parsed 0 entries from %s{path} (cobertura schema drift?)"
 
         data
 
     try
         if not wasFiltered then
-            if File.Exists(paths.BaselineJson) then
-                let baseline = parseAndCheck paths.BaselineJson
+            if File.Exists(paths.Baseline) then
+                let baseline = parseAndCheck paths.Baseline
                 let xml = CoverageMerge.toCobertura baseline
                 File.WriteAllText(paths.Cobertura, xml)
 
-            if File.Exists(paths.PartialJson) then
-                File.Delete(paths.PartialJson)
-        else if not (File.Exists(paths.BaselineJson)) then
+            if File.Exists(paths.Partial) then
+                File.Delete(paths.Partial)
+        else if not (File.Exists(paths.Baseline)) then
             // Bootstrap: no baseline yet, partial can't produce a faithful
             // Cobertura on its own. Leave everything as-is so downstream
             // ratchets skip (or fail with a clear "missing file" message
             // that prompts the user to run a full test).
             Logging.info "test-prune" "coverage: skipping cobertura emit (no baseline — run a full test first)"
-        else if File.Exists(paths.PartialJson) then
-            let baseline = parseAndCheck paths.BaselineJson
-            let partial = parseAndCheck paths.PartialJson
+        else if File.Exists(paths.Partial) then
+            let baseline = parseAndCheck paths.Baseline
+            let partial = parseAndCheck paths.Partial
             let merged = CoverageMerge.mergePerLineMax baseline partial
             let xml = CoverageMerge.toCobertura merged
             File.WriteAllText(paths.Cobertura, xml)

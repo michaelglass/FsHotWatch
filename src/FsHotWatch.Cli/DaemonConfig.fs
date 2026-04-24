@@ -49,6 +49,13 @@ let detectDefaultCacheBackend (repoRoot: string) : CacheBackendConfig =
         FileBackend
 
 /// Configuration for a single test project.
+///
+/// `CoverageArgsTemplate` is the command-line template the daemon appends
+/// when collecting coverage. `{output}` is substituted with the per-run
+/// baseline or partial file path. `None` means use the MTP-cobertura default
+/// (`FsHotWatch.TestPrune.TestPrunePlugin.defaultCoverageArgsTemplate`).
+/// For other test runners (coverlet.collector, AltCover, etc.), provide
+/// your own template.
 type TestProjectConfig =
     { Project: string
       Command: string
@@ -58,6 +65,7 @@ type TestProjectConfig =
       FilterTemplate: string option
       ClassJoin: string
       Coverage: bool
+      CoverageArgsTemplate: string option
       TimeoutSec: int option }
 
 /// The kind of test extension.
@@ -306,10 +314,26 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                             | true, v -> v.GetString()
                             | _ -> " "
 
-                        let coverage =
+                        // `coverage` may be bool (enable/disable, default template)
+                        // or an object `{ "enabled": bool, "argsTemplate": string }`
+                        // for per-project overrides.
+                        let coverage, coverageArgsTemplate =
                             match p.TryGetProperty("coverage") with
-                            | true, v when v.ValueKind = JsonValueKind.False -> false
-                            | _ -> true
+                            | true, v when v.ValueKind = JsonValueKind.False -> false, None
+                            | true, v when v.ValueKind = JsonValueKind.True -> true, None
+                            | true, v when v.ValueKind = JsonValueKind.Object ->
+                                let enabled =
+                                    match v.TryGetProperty("enabled") with
+                                    | true, e when e.ValueKind = JsonValueKind.False -> false
+                                    | _ -> true
+
+                                let tmpl =
+                                    match v.TryGetProperty("argsTemplate") with
+                                    | true, t when t.ValueKind = JsonValueKind.String -> Some(t.GetString())
+                                    | _ -> None
+
+                                enabled, tmpl
+                            | _ -> true, None
 
                         let timeoutSec =
                             match p.TryGetProperty("timeoutSec") with
@@ -324,6 +348,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                           FilterTemplate = filterTemplate
                           ClassJoin = classJoin
                           Coverage = coverage
+                          CoverageArgsTemplate = coverageArgsTemplate
                           TimeoutSec = timeoutSec })
                     |> Seq.toList
                 | _ -> []
@@ -677,6 +702,8 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         // Coverage paths — resolve per-project artifact locations (respecting per-project opt-out).
         // TestPrune itself decides whether a given run writes baseline.json or partial.json
         // and performs the merge step; this function only exposes the three paths per project.
+        let projectsByName = t.Projects |> List.map (fun p -> p.Project, p) |> Map.ofList
+
         let coverageExcludedProjects =
             t.Projects
             |> List.filter (fun p -> not p.Coverage)
@@ -688,6 +715,9 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         // fileCommands afterTests entry) can read the cobertura output. The
         // output directory is configurable via `tests.coverageDir` (default
         // `"coverage"`). Per-project opt-out is honored via `coverageExcludedProjects`.
+        // The ArgsTemplate is per-project (defaults to the MTP-cobertura template),
+        // so alternate test runners can swap in their own coverage invocation
+        // without patching the plugin.
         let coveragePaths =
             Some(fun (project: string) ->
                 if coverageExcludedProjects.Contains(project) then
@@ -696,17 +726,19 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                     let outputDir = Path.Combine(repoRoot, t.CoverageDir, project)
                     Directory.CreateDirectory(outputDir) |> ignore
 
+                    let argsTemplate =
+                        Map.tryFind project projectsByName
+                        |> Option.bind (fun p -> p.CoverageArgsTemplate)
+                        |> Option.defaultValue FsHotWatch.TestPrune.TestPrunePlugin.defaultCoverageArgsTemplate
+
                     Some
-                        { FsHotWatch.TestPrune.TestPrunePlugin.CoveragePaths.BaselineJson =
-                            Path.GetFullPath(
-                                Path.Combine(outputDir, FsHotWatch.TestPrune.CoverageMerge.BaselineJsonName)
-                            )
-                          PartialJson =
-                            Path.GetFullPath(
-                                Path.Combine(outputDir, FsHotWatch.TestPrune.CoverageMerge.PartialJsonName)
-                            )
+                        { FsHotWatch.TestPrune.TestPrunePlugin.CoveragePaths.Baseline =
+                            Path.GetFullPath(Path.Combine(outputDir, FsHotWatch.TestPrune.CoverageMerge.BaselineName))
+                          Partial =
+                            Path.GetFullPath(Path.Combine(outputDir, FsHotWatch.TestPrune.CoverageMerge.PartialName))
                           Cobertura =
-                            Path.GetFullPath(Path.Combine(outputDir, FsHotWatch.TestPrune.CoverageMerge.CoberturaName)) })
+                            Path.GetFullPath(Path.Combine(outputDir, FsHotWatch.TestPrune.CoverageMerge.CoberturaName))
+                          ArgsTemplate = argsTemplate })
 
         // Extension factories — invoked by the plugin with its own DB, so the
         // RouteStore/SymbolStore an extension captures is guaranteed to be the

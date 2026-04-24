@@ -54,7 +54,12 @@ run = "rm -rf .fshw/cache/"
 
 [tasks.test-direct]
 description = "Run tests directly with coverage (for CI). Excludes IntegrationTests whose SDK-reflection paths fire nondeterministically and make the coverage ratchet flaky."
+# Wipe any stale per-project coverage the daemon may have written to
+# coverage/<project>/ in prior runs — coverageratchet walks the tree and
+# would otherwise see TestPrune.Core sources (from the sibling ProjectReference)
+# that aren't filtered by coverage.settings in the daemon path.
 run = """
+rm -rf coverage
 dotnet test --project tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj \
   --coverage \
   --coverage-output-format cobertura \

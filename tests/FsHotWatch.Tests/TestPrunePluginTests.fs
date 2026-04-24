@@ -1777,36 +1777,110 @@ let ``full run (no filter) produces TestResult with WasFiltered = false`` () =
 open FsHotWatch.TestPrune
 
 [<Fact>]
-let ``buildCoverageArgs picks baseline.json on full run and partial.json on filtered run`` () =
+let ``buildCoverageArgs picks baseline on full run and partial on filtered run`` () =
     let paths: CoveragePaths =
-        { BaselineJson = "/tmp/cov/baseline.json"
-          PartialJson = "/tmp/cov/partial.json"
-          Cobertura = "/tmp/cov/coverage.cobertura.xml" }
+        { Baseline = "/tmp/cov/baseline.cobertura.xml"
+          Partial = "/tmp/cov/partial.cobertura.xml"
+          Cobertura = "/tmp/cov/coverage.cobertura.xml"
+          ArgsTemplate = defaultCoverageArgsTemplate }
 
     let full = buildCoverageArgs paths false
-    test <@ full.Contains("baseline.json") @>
-    test <@ not (full.Contains("partial.json")) @>
-    test <@ full.Contains("--coverage-output-format json") @>
+    test <@ full.Contains("baseline.cobertura.xml") @>
+    test <@ not (full.Contains("partial.cobertura.xml")) @>
 
     let partial = buildCoverageArgs paths true
-    test <@ partial.Contains("partial.json") @>
-    test <@ not (partial.Contains("baseline.json")) @>
+    test <@ partial.Contains("partial.cobertura.xml") @>
+    test <@ not (partial.Contains("baseline.cobertura.xml")) @>
 
 [<Fact>]
-let ``processCoverageOutput on full run converts baseline.json to cobertura.xml and deletes partial.json`` () =
+let ``default template uses an MTP-accepted output format`` () =
+    // Regression: previous impl emitted `--coverage-output-format json`, but
+    // MTP (Microsoft Testing Platform) only accepts `coverage | xml | cobertura`.
+    // Passing `json` made every test run fail at startup with an invalid-args
+    // error and zero tests executed. Pin the default template value so this
+    // can't silently regress.
+    let paths: CoveragePaths =
+        { Baseline = "/tmp/cov/baseline.cobertura.xml"
+          Partial = "/tmp/cov/partial.cobertura.xml"
+          Cobertura = "/tmp/cov/coverage.cobertura.xml"
+          ArgsTemplate = defaultCoverageArgsTemplate }
+
+    let args = buildCoverageArgs paths false
+    let mtpAccepts = [ "coverage"; "xml"; "cobertura" ]
+
+    let usesAnAccepted =
+        mtpAccepts
+        |> List.exists (fun fmt -> args.Contains(sprintf "--coverage-output-format %s" fmt))
+
+    test <@ usesAnAccepted @>
+    test <@ not (args.Contains("--coverage-output-format json")) @>
+
+[<Fact>]
+let ``buildCoverageArgs honors a custom ArgsTemplate with {output} substitution`` () =
+    // Coverage invocation varies by test runner (MTP / classic dotnet test +
+    // coverlet.collector / AltCover / xUnit classic + OpenCover). The plugin
+    // must not hard-code one shape. Callers supply a template; the plugin
+    // substitutes `{output}` with the chosen baseline/partial path.
+    //
+    // Substitution is a pure string replace — the template is responsible for
+    // its own quoting if paths might contain spaces.
+    let paths: CoveragePaths =
+        { Baseline = "/tmp/cov/B.xml"
+          Partial = "/tmp/cov/P.xml"
+          Cobertura = "/tmp/cov/C.xml"
+          ArgsTemplate = "--custom-collector --out \"{output}\" --extra" }
+
+    let full = buildCoverageArgs paths false
+    test <@ full = "--custom-collector --out \"/tmp/cov/B.xml\" --extra" @>
+
+    let partial = buildCoverageArgs paths true
+    test <@ partial = "--custom-collector --out \"/tmp/cov/P.xml\" --extra" @>
+
+[<Fact>]
+let ``buildCoverageArgs treats a template missing {output} as invalid`` () =
+    // If the caller forgot the placeholder we don't silently produce invalid
+    // args — surface the mistake. Pattern-pinning via substring makes the
+    // error diagnosable.
+    let paths: CoveragePaths =
+        { Baseline = "/tmp/cov/B.xml"
+          Partial = "/tmp/cov/P.xml"
+          Cobertura = "/tmp/cov/C.xml"
+          ArgsTemplate = "--broken-template-no-placeholder" }
+
+    let ex = Assert.ThrowsAny(fun () -> buildCoverageArgs paths false |> ignore)
+
+    test <@ ex.Message.Contains("{output}") @>
+
+/// Build a minimal cobertura document with a single package/class/two-line shape.
+let private mkCobertura (pkg: string) (file: string) (lines: (int * int) list) : string =
+    let linesXml =
+        lines
+        |> List.map (fun (n, h) -> sprintf "<line number=\"%d\" hits=\"%d\" />" n h)
+        |> String.concat ""
+
+    sprintf
+        "<?xml version=\"1.0\"?><coverage><packages><package name=\"%s\"><classes><class filename=\"%s\" name=\"%s\"><lines>%s</lines></class></classes></package></packages></coverage>"
+        pkg
+        file
+        file
+        linesXml
+
+[<Fact>]
+let ``processCoverageOutput on full run copies baseline to cobertura and deletes partial`` () =
     withTempDir "cov-full" (fun dir ->
         let paths: CoveragePaths =
-            { BaselineJson = Path.Combine(dir, "coverage.baseline.json")
-              PartialJson = Path.Combine(dir, "coverage.partial.json")
-              Cobertura = Path.Combine(dir, "coverage.cobertura.xml") }
+            { Baseline = Path.Combine(dir, "coverage.baseline.cobertura.xml")
+              Partial = Path.Combine(dir, "coverage.partial.cobertura.xml")
+              Cobertura = Path.Combine(dir, "coverage.cobertura.xml")
+              ArgsTemplate = defaultCoverageArgsTemplate }
 
-        File.WriteAllText(paths.BaselineJson, """{"Foo.dll":{"Foo.fs":{"10":1,"11":0}}}""")
-        File.WriteAllText(paths.PartialJson, """{"Foo.dll":{"Foo.fs":{"10":5}}}""")
+        File.WriteAllText(paths.Baseline, mkCobertura "Foo.dll" "Foo.fs" [ (10, 1); (11, 0) ])
+        File.WriteAllText(paths.Partial, mkCobertura "Foo.dll" "Foo.fs" [ (10, 5) ])
 
         processCoverageOutput paths false
 
         test <@ File.Exists(paths.Cobertura) @>
-        test <@ not (File.Exists(paths.PartialJson)) @>
+        test <@ not (File.Exists(paths.Partial)) @>
 
         let xml = File.ReadAllText(paths.Cobertura)
         // baseline has 1-covered-of-2 → 0.5
@@ -1816,30 +1890,32 @@ let ``processCoverageOutput on full run converts baseline.json to cobertura.xml 
 let ``processCoverageOutput on filtered run without baseline skips cobertura emission (bootstrap)`` () =
     withTempDir "cov-bootstrap" (fun dir ->
         let paths: CoveragePaths =
-            { BaselineJson = Path.Combine(dir, "coverage.baseline.json")
-              PartialJson = Path.Combine(dir, "coverage.partial.json")
-              Cobertura = Path.Combine(dir, "coverage.cobertura.xml") }
+            { Baseline = Path.Combine(dir, "coverage.baseline.cobertura.xml")
+              Partial = Path.Combine(dir, "coverage.partial.cobertura.xml")
+              Cobertura = Path.Combine(dir, "coverage.cobertura.xml")
+              ArgsTemplate = defaultCoverageArgsTemplate }
 
-        File.WriteAllText(paths.PartialJson, """{"Foo.dll":{"Foo.fs":{"10":1}}}""")
+        File.WriteAllText(paths.Partial, mkCobertura "Foo.dll" "Foo.fs" [ (10, 1) ])
 
         processCoverageOutput paths true
 
         test <@ not (File.Exists(paths.Cobertura)) @>
         // partial is preserved for debugging
-        test <@ File.Exists(paths.PartialJson) @>)
+        test <@ File.Exists(paths.Partial) @>)
 
 [<Fact>]
 let ``processCoverageOutput on filtered run with baseline merges per-line max into cobertura`` () =
     withTempDir "cov-merge" (fun dir ->
         let paths: CoveragePaths =
-            { BaselineJson = Path.Combine(dir, "coverage.baseline.json")
-              PartialJson = Path.Combine(dir, "coverage.partial.json")
-              Cobertura = Path.Combine(dir, "coverage.cobertura.xml") }
+            { Baseline = Path.Combine(dir, "coverage.baseline.cobertura.xml")
+              Partial = Path.Combine(dir, "coverage.partial.cobertura.xml")
+              Cobertura = Path.Combine(dir, "coverage.cobertura.xml")
+              ArgsTemplate = defaultCoverageArgsTemplate }
 
         // Baseline says line 10 covered (1 hit), line 11 not covered.
-        File.WriteAllText(paths.BaselineJson, """{"Foo.dll":{"Foo.fs":{"10":1,"11":0}}}""")
+        File.WriteAllText(paths.Baseline, mkCobertura "Foo.dll" "Foo.fs" [ (10, 1); (11, 0) ])
         // Partial says line 10 not covered (filtered run missed it), line 11 covered.
-        File.WriteAllText(paths.PartialJson, """{"Foo.dll":{"Foo.fs":{"10":0,"11":2}}}""")
+        File.WriteAllText(paths.Partial, mkCobertura "Foo.dll" "Foo.fs" [ (10, 0); (11, 2) ])
 
         processCoverageOutput paths true
 
@@ -1848,7 +1924,7 @@ let ``processCoverageOutput on filtered run with baseline merges per-line max in
         let xml = File.ReadAllText(paths.Cobertura)
         test <@ xml.Contains("line-rate=\"1\"") @>
         // partial preserved for debugging
-        test <@ File.Exists(paths.PartialJson) @>)
+        test <@ File.Exists(paths.Partial) @>)
 
 [<Fact>]
 let ``TestRunCompleted carries RanFullSuite=true when no projects filtered`` () =
