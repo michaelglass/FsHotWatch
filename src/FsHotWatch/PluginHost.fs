@@ -15,6 +15,7 @@ type PluginHost
     let ledger = ErrorLedger(?reporters = reporters)
     let commands = ConcurrentDictionary<string, CommandHandler>()
     let preprocessors = ConcurrentBag<IFsHotWatchPreprocessor>()
+    let fileCommandPatterns = ConcurrentDictionary<string, string>()
 
     // Status tracking uses a lock + mutable map instead of a MailboxProcessor.
     // The event fires OUTSIDE the lock so subscribers can safely call GetAllStatuses
@@ -258,6 +259,17 @@ type PluginHost
         match taskCache with
         | Some c -> c.ClearPluginFile plugin file
         | None -> ()
+
+    /// Register a FileCommandPlugin's file pattern by plugin name. Used by the
+    /// rerun IPC endpoint to synthesize a fake file event whose path matches
+    /// the plugin's filter.
+    member _.RegisterFileCommandPattern(name: string, pattern: string) = fileCommandPatterns[name] <- pattern
+
+    /// Look up a registered FileCommandPlugin pattern by plugin name.
+    member _.GetFileCommandPattern(name: string) : string option =
+        match fileCommandPatterns.TryGetValue(name) with
+        | true, p -> Some p
+        | false, _ -> None
 
     /// Create a new PluginHost.
     /// Tear down all plugins that have a Teardown function.
