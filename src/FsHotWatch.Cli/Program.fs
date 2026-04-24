@@ -52,9 +52,9 @@ type Command =
     | [<Cmd("Build the project")>] Build of RunFlag list
     | [<Cmd("Run tests")>] Test of RunFlag list
     | [<Cmd("Format code")>] Format of RunFlag list
-    | [<Cmd("Lint code")>] Lint of RunFlag list
-    | [<Cmd("Check formatting", Name = "format-check")>] FormatCheck of RunFlag list
-    | [<Cmd("Run analyzers")>] Analyze of RunFlag list
+    | [<Cmd("Show lint results from daemon")>] Lint of RunFlag list
+    | [<Cmd("Show format-check results from daemon", Name = "format-check")>] FormatCheck of RunFlag list
+    | [<Cmd("Show analyzer results from daemon")>] Analyze of RunFlag list
     | [<Cmd("Show current status")>] Status of plugin: string option
     | [<Cmd("Show accumulated errors")>] Errors of ErrorsFlag list
     | [<Cmd("Scan for file changes")>] Scan of ScanFlag list
