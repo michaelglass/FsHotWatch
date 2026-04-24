@@ -650,3 +650,53 @@ let ``dumpProjectOptions swallows IO errors`` () =
     let opts = makeProjectOptions "/tmp/X.fsproj" [] [ "-r:/a.dll" ]
     // Should not throw — errors are logged at debug level.
     dumpProjectOptions bogusDir opts
+
+// ---------------------------------------------------------------------------
+// formatElapsed / formatPluginWait — the [wait] log formatter
+// ---------------------------------------------------------------------------
+//
+// Regression: a daemon stuck waiting on test-prune emitted
+// `Waiting for plugins: test-prune (since 04/24/2026 19:00:39)` every 10s
+// for 26+ minutes with no indication of WHICH test subprocess was still
+// running. The new formatter includes subtask labels + per-task elapsed so a
+// stuck daemon is diagnosable from a single log line.
+
+[<Fact>]
+let ``formatElapsed shows seconds under 1 minute`` () =
+    test <@ FsHotWatch.Daemon.formatElapsed (TimeSpan.FromSeconds 45.0) = "45s" @>
+    test <@ FsHotWatch.Daemon.formatElapsed (TimeSpan.FromSeconds 0.0) = "0s" @>
+
+[<Fact>]
+let ``formatElapsed shows minutes + seconds between 1 minute and 1 hour`` () =
+    test <@ FsHotWatch.Daemon.formatElapsed (TimeSpan.FromSeconds 75.0) = "1m 15s" @>
+    test <@ FsHotWatch.Daemon.formatElapsed (TimeSpan.FromSeconds 185.0) = "3m 5s" @>
+
+[<Fact>]
+let ``formatElapsed shows hours + minutes past 1 hour`` () =
+    let ts = TimeSpan(1, 12, 30) // 1h 12m 30s
+    test <@ FsHotWatch.Daemon.formatElapsed ts = "1h 12m" @>
+
+[<Fact>]
+let ``formatPluginWait shows only plugin name + elapsed when no subtasks`` () =
+    let now = DateTime(2026, 4, 24, 19, 30, 0)
+    let since = DateTime(2026, 4, 24, 19, 29, 15)
+
+    let formatted = FsHotWatch.Daemon.formatPluginWait now "test-prune" since []
+    test <@ formatted = "test-prune (45s)" @>
+
+[<Fact>]
+let ``formatPluginWait includes subtask labels + elapsed when present`` () =
+    // The diagnostic line from a stuck daemon should show each in-flight
+    // subtask so the user can tell what's still running.
+    let now = DateTime(2026, 4, 24, 19, 30, 0)
+    let since = DateTime(2026, 4, 24, 19, 0, 0) // 30m ago
+
+    let subtasks =
+        [ "Intelligence.Tests.Unit", DateTime(2026, 4, 24, 19, 18, 0) // 12m
+          "Intelligence.Tests.Database", DateTime(2026, 4, 24, 19, 20, 0) ] // 10m
+
+    let formatted = FsHotWatch.Daemon.formatPluginWait now "test-prune" since subtasks
+
+    test <@ formatted.Contains("test-prune (30m 0s)") @>
+    test <@ formatted.Contains("Intelligence.Tests.Unit 12m 0s") @>
+    test <@ formatted.Contains("Intelligence.Tests.Database 10m 0s") @>
