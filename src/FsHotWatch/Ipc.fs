@@ -101,7 +101,7 @@ type DaemonRpcConfig =
       FormatAll: unit -> Async<string>
       WaitForScanGeneration: int64 -> Task<unit>
       WaitForAllTerminal: TimeSpan -> Task<unit>
-      InvalidateAndRecheck: string -> Async<string> }
+      RerunPlugin: string -> Async<string> }
 
 /// RPC target object exposed to clients via StreamJsonRpc.
 type DaemonRpcTarget(config: DaemonRpcConfig) =
@@ -245,11 +245,21 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
             return this.GetStatus()
         }
 
-    /// Invalidate cache for a file and re-check it.
-    member _.InvalidateCache(filePath: string) : Task<string> =
+    /// Force a specific plugin to re-run by clearing its task cache and
+    /// emitting a synthetic FileChanged event whose path matches the plugin's
+    /// registered pattern. Waits for all plugins to reach terminal state and
+    /// returns the status JSON (or an error payload if the plugin has no
+    /// registered pattern).
+    member this.RerunPlugin(name: string) : Task<string> =
         task {
-            let! result = config.InvalidateAndRecheck filePath |> Async.StartAsTask
-            return result
+            let! result = config.RerunPlugin name |> Async.StartAsTask
+
+            if result = "" then
+                let! _ = this.WaitForComplete(0)
+                return this.GetStatus()
+            else
+                // Error payload from rerunPlugin — return it as-is.
+                return result
         }
 
     /// Clear task cache entries. Optionally filter by plugin and/or file.
@@ -408,8 +418,8 @@ module IpcClient =
         invoke pipeName "cache-clear" [| plugin; file |]
 
     /// Invalidate cache for a file and re-check it.
-    let invalidateCache (pipeName: string) (filePath: string) : Async<string> =
-        invoke pipeName "InvalidateCache" [| filePath |]
+    let rerunPlugin (pipeName: string) (name: string) : Async<string> =
+        invoke pipeName "RerunPlugin" [| name |]
 
     /// Quick probe to check if a daemon is listening on the named pipe.
     let isRunning (pipeName: string) : bool =

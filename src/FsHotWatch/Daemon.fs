@@ -630,7 +630,7 @@ type Daemon
         ready: ManualResetEventSlim,
         scanSignal: ScanSignal,
         _jjGuard: JjHelper.JjScanGuard option,
-        fcsSuppressedCodes: Set<int>,
+        _fcsSuppressedCodes: Set<int>,
         lifetime: CancellationTokenSource,
         formatAllFn: (unit -> Async<string>) option,
         excludePatterns: string list
@@ -680,30 +680,6 @@ type Daemon
 
     /// Set scan state (internal, for testing).
     member internal _.SetScanState(state: ScanState) = setScanStatus scanAgent state
-
-    /// Invalidate cache for a file, re-check it, and emit results to plugins.
-    member _.InvalidateAndRecheck(filePath: string) =
-        async {
-            pipeline.InvalidateFile(filePath)
-            let! result = pipeline.CheckFile(filePath)
-
-            match result with
-            | Some checkResult ->
-                host.EmitFileChecked(checkResult)
-                reportFcsDiagnostics fcsSuppressedCodes host checkResult
-
-                return
-                    JsonSerializer.Serialize(
-                        {| status = "rechecked"
-                           file = checkResult.File |}
-                    )
-            | None ->
-                return
-                    JsonSerializer.Serialize(
-                        {| status = "failed"
-                           file = Path.GetFullPath(filePath) |}
-                    )
-        }
 
     /// Scan all registered files — check each one and emit events to plugins.
     /// Blocks until complete. If a scan is already running, waits for it to finish.
@@ -785,6 +761,29 @@ type Daemon
                             return $"formatted %d{modified.Length} files"
                         }
 
+                let rerunPlugin (name: string) =
+                    async {
+                        match host.GetFileCommandPattern(name) with
+                        | None ->
+                            return
+                                JsonSerializer.Serialize
+                                    {| error =
+                                        $"Plugin '%s{name}' has no registered file pattern (only FileCommand plugins with a pattern support rerun)" |}
+                        | Some pattern ->
+                            // Synthesize a path that matches `pattern`:
+                            //   *.ratchet.json      → "_fshw_rerun_.ratchet.json"
+                            //   coverage-ratchet.json → "coverage-ratchet.json" (literal match)
+                            let fakeFile =
+                                if pattern.StartsWith("*") then
+                                    "_fshw_rerun_" + pattern.Substring(1)
+                                else
+                                    pattern
+
+                            host.ClearTaskCachePlugin(name)
+                            host.EmitFileChanged(SourceChanged [ fakeFile ])
+                            return ""
+                    }
+
                 let rpcConfig: DaemonRpcConfig =
                     { Host = host
                       RequestShutdown = fun () -> cts.Cancel()
@@ -796,7 +795,7 @@ type Daemon
                       WaitForScanGeneration =
                         fun afterGen -> scanSignal.WaitForGeneration(afterGen, this.GetScanGeneration())
                       WaitForAllTerminal = fun timeout -> waitForAllTerminal host timeout ()
-                      InvalidateAndRecheck = fun filePath -> this.InvalidateAndRecheck(filePath) }
+                      RerunPlugin = rerunPlugin }
 
                 let ipcTask = Async.StartAsTask(IpcServer.start pipeName rpcConfig cts)
 
