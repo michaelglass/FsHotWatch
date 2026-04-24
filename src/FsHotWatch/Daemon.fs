@@ -988,7 +988,7 @@ module Daemon =
         (cacheKeyProvider: ICacheKeyProvider option)
         (fcsSuppressedCodes: Set<int>)
         (excludePatterns: string list)
-        (extraWatchSuffixes: string list)
+        (extraWatchPatterns: string list)
         =
         let lifetime = new CancellationTokenSource()
 
@@ -1101,7 +1101,7 @@ module Daemon =
                 Logging.debug "watcher" $"%O{change}"
                 changeAgent.Post(Choice1Of2 change)
 
-            let watcher = FileWatcher.create repoRoot onChange None extraWatchSuffixes
+            let watcher = FileWatcher.create repoRoot onChange None extraWatchPatterns
 
             let jjGuard =
                 match cacheKeyProvider with
@@ -1182,7 +1182,7 @@ module Daemon =
         (cacheKeyProvider: ICacheKeyProvider option)
         (fcsSuppressedCodes: int list option)
         (excludePatterns: string list)
-        (extraWatchSuffixes: string list)
+        (extraWatchPatterns: string list)
         =
         let suppressedCodes =
             fcsSuppressedCodes |> Option.defaultValue [ 1182 ] |> Set.ofList
@@ -1196,4 +1196,4 @@ module Daemon =
                 useTransparentCompiler = true
             )
 
-        createWith checker repoRoot cacheBackend cacheKeyProvider suppressedCodes excludePatterns extraWatchSuffixes
+        createWith checker repoRoot cacheBackend cacheKeyProvider suppressedCodes excludePatterns extraWatchPatterns
