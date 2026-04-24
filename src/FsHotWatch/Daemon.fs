@@ -968,17 +968,40 @@ module Daemon =
     let private sourceDebounceMs = 500
     let private projectDebounceMs = 200
 
+    /// Options controlling daemon construction. Callers use `DaemonOptions.defaults`
+    /// and modify only what they need.
+    [<NoComparison; NoEquality>]
+    type DaemonOptions =
+        {
+            CacheBackend: ICheckCacheBackend option
+            CacheKeyProvider: ICacheKeyProvider option
+            /// FCS diagnostic codes to suppress. `None` means the default suppression set.
+            FcsSuppressedCodes: int list option
+            /// `PathFilter.isExcludedPath` patterns applied during project discovery.
+            ExcludePatterns: string list
+            /// Extra file patterns from FileCommandPlugin configs that the watcher
+            /// should monitor beyond the default F# source/project set.
+            ExtraWatchPatterns: FilePattern list
+        }
+
+    module DaemonOptions =
+        let defaults: DaemonOptions =
+            { CacheBackend = None
+              CacheKeyProvider = None
+              FcsSuppressedCodes = None
+              ExcludePatterns = []
+              ExtraWatchPatterns = [] }
+
     /// Create a daemon with the given checker (internal, for testing).
-    /// Pass None for both cache params to disable caching entirely.
-    let internal createWith
-        (checker: FSharpChecker)
-        (repoRoot: string)
-        (cacheBackend: ICheckCacheBackend option)
-        (cacheKeyProvider: ICacheKeyProvider option)
-        (fcsSuppressedCodes: Set<int>)
-        (excludePatterns: string list)
-        (extraWatchPatterns: FilePattern list)
-        =
+    let internal createWith (checker: FSharpChecker) (repoRoot: string) (opts: DaemonOptions) =
+        let cacheBackend = opts.CacheBackend
+        let cacheKeyProvider = opts.CacheKeyProvider
+
+        let fcsSuppressedCodes =
+            opts.FcsSuppressedCodes |> Option.defaultValue [ 1182 ] |> Set.ofList
+
+        let excludePatterns = opts.ExcludePatterns
+        let extraWatchPatterns = opts.ExtraWatchPatterns
         let lifetime = new CancellationTokenSource()
 
         try
@@ -1164,18 +1187,8 @@ module Daemon =
             reraise ()
 
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
-    /// When cacheBackend or cacheKeyProvider are None, defaults to FileCheckCache + TimestampCacheKeyProvider.
-    let create
-        (repoRoot: string)
-        (cacheBackend: ICheckCacheBackend option)
-        (cacheKeyProvider: ICacheKeyProvider option)
-        (fcsSuppressedCodes: int list option)
-        (excludePatterns: string list)
-        (extraWatchPatterns: FilePattern list)
-        =
-        let suppressedCodes =
-            fcsSuppressedCodes |> Option.defaultValue [ 1182 ] |> Set.ofList
-
+    /// Pass `DaemonOptions.defaults` and override only the fields you need.
+    let create (repoRoot: string) (opts: DaemonOptions) =
         let checker =
             FSharpChecker.Create(
                 projectCacheSize = 200,
@@ -1185,4 +1198,4 @@ module Daemon =
                 useTransparentCompiler = true
             )
 
-        createWith checker repoRoot cacheBackend cacheKeyProvider suppressedCodes excludePatterns extraWatchPatterns
+        createWith checker repoRoot opts
