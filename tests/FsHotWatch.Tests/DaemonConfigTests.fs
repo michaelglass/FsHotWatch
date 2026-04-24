@@ -906,6 +906,24 @@ let ``watchConfigFile invokes callback when .fs-hot-watch.json is written`` () =
         Assert.True(signal.Wait(5000), "expected watcher callback within 5s")
         test <@ observed.Value.Contains("config") @>)
 
+[<Fact(Timeout = 5000)>]
+let ``watchRepoConfigFile returns no-op disposable when no config file exists`` () =
+    withTempDir "cfg-watch-none" (fun tmpDir ->
+        let mutable called = false
+        use w = watchRepoConfigFile tmpDir (fun _ -> called <- true)
+        System.Threading.Thread.Sleep(50)
+        test <@ not called @>)
+
+[<Fact(Timeout = 10000)>]
+let ``watchRepoConfigFile watches existing config file`` () =
+    withTempDir "cfg-watch-existing" (fun tmpDir ->
+        File.WriteAllText(Path.Combine(tmpDir, ".fs-hot-watch.json"), "{}")
+        use signal = new System.Threading.ManualResetEventSlim(false)
+        use _w = watchRepoConfigFile tmpDir (fun _ -> signal.Set())
+        System.Threading.Thread.Sleep(100)
+        File.WriteAllText(Path.Combine(tmpDir, ".fs-hot-watch.json"), """{"lint": false}""")
+        Assert.True(signal.Wait(5000), "expected callback within 5s"))
+
 [<Fact(Timeout = 10000)>]
 let ``watchConfigFile reports invalid reason when new contents fail to parse`` () =
     withTempDir "cfg-watch-invalid" (fun tmpDir ->

@@ -38,6 +38,7 @@ fs-hot-watch status
 | `lint` | Run FSharpLint on all files and report warnings. |
 | `errors` | Show current errors from all plugins. |
 | `check` | Full check: scan all files, wait for plugins, then report errors. |
+| `config check` | Validate `.fs-hot-watch.json` without starting the daemon. Exits `0` on valid config, `2` on parse/validation error. |
 | `invalidate-cache <file>` | Clear cache for a file and re-check it. |
 | `<command> [args]` | Run any plugin-registered command (e.g. `diagnostics`). |
 
@@ -66,6 +67,23 @@ fs-hot-watch diagnostics
 fs-hot-watch coverage
 fs-hot-watch warnings
 ```
+
+## Config validation
+
+`.fs-hot-watch.json` is parsed strictly: any parse or validation error
+aborts startup with exit code `2` and a message naming the offending
+field. Use `fs-hot-watch config check` to validate without starting
+the daemon (handy for editor integration and CI).
+
+While the daemon is running, any write to `.fs-hot-watch.json` causes
+it to stop cleanly, logging the reason:
+
+- Valid edit: `config changed, stopping (restart to apply)`
+- Invalid edit: `config invalid, stopping: <parse error>`
+
+Re-invoke the CLI to start a fresh daemon with the new config. There
+is no hot-reload — symmetric stop-on-any-change avoids the race risks
+of mid-flight plugin re-registration.
 
 ## How it works
 

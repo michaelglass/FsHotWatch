@@ -62,8 +62,8 @@
     },
     "Daemon.fs": [
       {
-        "line": 78,
-        "branch": 58,
+        "line": 79,
+        "branch": 59,
         "platform": "macos"
       },
       {
@@ -75,7 +75,7 @@
     ],
     "DaemonConfig.fs": [
       {
-        "line": 75,
+        "line": 76,
         "branch": 71,
         "reason": "loosened automatically",
         "platform": "macos"
@@ -334,8 +334,8 @@
     ],
     "PluginHost.fs": [
       {
-        "line": 82,
-        "branch": 60,
+        "line": 84,
+        "branch": 63,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -360,8 +360,8 @@
     ],
     "Program.fs": [
       {
-        "line": 76,
-        "branch": 50,
+        "line": 74,
+        "branch": 49,
         "reason": "CLI entry point",
         "platform": "macos"
       },
@@ -444,7 +444,7 @@
     "Watcher.fs": [
       {
         "line": 87,
-        "branch": 54,
+        "branch": 56,
         "reason": "loosened automatically",
         "platform": "macos"
       },
