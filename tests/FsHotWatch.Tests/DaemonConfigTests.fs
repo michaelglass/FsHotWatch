@@ -812,3 +812,18 @@ let ``loadConfig throws ConfigError on malformed JSON`` () =
         File.WriteAllText(Path.Combine(tmpDir, ".fs-hot-watch.json"), "{not valid json")
         let ex = Assert.Throws<ConfigError>(fun () -> loadConfig tmpDir |> ignore)
         Assert.Contains(".fs-hot-watch.json", ex.Message))
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig raises ConfigError when fileCommands entry lacks pattern and afterTests`` () =
+    let json = """{ "fileCommands": [ { "command": "echo", "args": "hi" } ] }"""
+
+    Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    |> ignore
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig raises ConfigError when afterTests entry lacks name`` () =
+    let json =
+        """{ "fileCommands": [ { "afterTests": true, "command": "echo", "args": "hi" } ] }"""
+
+    Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    |> ignore

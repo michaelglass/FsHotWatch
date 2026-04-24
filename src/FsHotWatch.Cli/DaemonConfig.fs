@@ -123,6 +123,10 @@ let private defaultConfigFor (repoRoot: string) =
       Exclude = []
       LogDir = "logs" }
 
+/// Raised when `.fs-hot-watch.json` cannot be read, parsed, or validated.
+/// Carries a user-facing message.
+exception ConfigError of message: string
+
 /// Parse a JSON string into a DaemonConfiguration, using defaults for missing fields.
 let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfiguration =
     use doc = JsonDocument.Parse(json)
@@ -362,10 +366,10 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     | _ -> ""
 
                 if pattern.IsNone && afterTests.IsNone then
-                    failwith "fileCommands entry must specify `pattern` or `afterTests`"
+                    raise (ConfigError "fileCommands entry must specify `pattern` or `afterTests`")
 
                 if afterTests.IsSome && name.IsNone then
-                    failwith "fileCommands entries with `afterTests` require an explicit `name`"
+                    raise (ConfigError "fileCommands entries with `afterTests` require an explicit `name`")
 
                 // Derive the effective plugin name up-front so registration is
                 // a straight mapping. Uses the explicit `name` when given, else
@@ -414,9 +418,6 @@ let stripConfig (config: DaemonConfiguration) : DaemonConfiguration =
         Analyzers = None
         Tests = None
         FileCommands = [] }
-
-/// Raised when `.fs-hot-watch.json` cannot be read or parsed. Carries a user-facing message.
-exception ConfigError of message: string
 
 /// Load config from .fs-hot-watch.json in repoRoot. Returns defaults if no file exists.
 /// Raises ConfigError on read / parse / validation failure.
