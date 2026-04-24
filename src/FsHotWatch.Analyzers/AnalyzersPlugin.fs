@@ -17,7 +17,11 @@ type AnalyzersMsg =
 
 type AnalyzersState =
     { DiagnosticsByFile: Map<string, ErrorEntry list>
-      LoadedCount: int }
+      LoadedCount: int
+      RunAnalyzed: int
+      RunFindings: int
+      RunErrors: int
+      RunWarnings: int }
 
 /// Assembly-name prefixes we always skip when loading analyzers. Analyzer
 /// packages (e.g. FSharpLintAnalyzerShim) ship bundled BCL/FCS deps that aren't
@@ -170,13 +174,18 @@ let create
     { Name = PluginName.create "analyzers"
       Init =
         { DiagnosticsByFile = Map.empty
-          LoadedCount = loadedCount }
+          LoadedCount = loadedCount
+          RunAnalyzed = 0
+          RunFindings = 0
+          RunErrors = 0
+          RunWarnings = 0 }
       Update =
         fun ctx state event ->
             async {
                 match event with
                 | FileChecked result ->
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                    ctx.StartSubtask "primary" $"analyzing {Path.GetFileName result.File}"
 
                     let checkResultsObj =
                         match result.CheckResults with
@@ -259,17 +268,39 @@ let create
                 | Custom(AnalysisComplete(file, entries)) ->
                     let updated = state.DiagnosticsByFile |> Map.add file entries
 
-                    let totalIssues = updated |> Map.toList |> List.sumBy (fun (_, e) -> e.Length)
+                    let newErrors =
+                        entries
+                        |> List.filter (fun e -> e.Severity = DiagnosticSeverity.Error)
+                        |> List.length
 
-                    PluginCtxHelpers.completeWith ctx $"analyzed {updated.Count} files, {totalIssues} issues"
+                    let newWarnings =
+                        entries
+                        |> List.filter (fun e -> e.Severity = DiagnosticSeverity.Warning)
+                        |> List.length
+
+                    let analyzed = state.RunAnalyzed + 1
+                    let findings = state.RunFindings + entries.Length
+                    let errors = state.RunErrors + newErrors
+                    let warnings = state.RunWarnings + newWarnings
+
+                    ctx.EndSubtask "primary"
+
+                    PluginCtxHelpers.completeWith
+                        ctx
+                        $"analyzed %d{analyzed} files, %d{findings} findings (%d{errors} errors, %d{warnings} warnings)"
 
                     return
                         { state with
-                            DiagnosticsByFile = updated }
+                            DiagnosticsByFile = updated
+                            RunAnalyzed = analyzed
+                            RunFindings = findings
+                            RunErrors = errors
+                            RunWarnings = warnings }
                 | Custom(AnalysisFailed(file, error)) ->
                     ctx.ReportErrors file [ ErrorEntry.error $"Analyzer crashed: %s{error}" ]
 
-                    ctx.ReportStatus(Completed(DateTime.UtcNow))
+                    ctx.EndSubtask "primary"
+                    PluginCtxHelpers.completeWith ctx $"analyzer crashed on {Path.GetFileName file}"
                     return state
                 | _ -> return state
             }
