@@ -50,6 +50,8 @@ type PluginCtx<'Msg> =
         Post: 'Msg -> unit
         /// Start a named concurrent subtask. Duplicate keys are no-ops.
         StartSubtask: string -> string -> unit
+        /// Update an existing subtask's label in-place. No-op if not started.
+        UpdateSubtask: string -> string -> unit
         /// End a named subtask. No-op if not started.
         EndSubtask: string -> unit
         /// Append an activity log line. Also routes to Logging.info.
@@ -137,6 +139,7 @@ type PluginHostServices =
       RegisterCommand: string * CommandHandler -> unit
       TaskCache: TaskCache.ITaskCache option
       StartSubtask: PluginName -> string -> string -> unit
+      UpdateSubtask: PluginName -> string -> string -> unit
       EndSubtask: PluginName -> string -> unit
       Log: PluginName -> string -> unit
       SetSummary: PluginName -> string -> unit }
@@ -163,6 +166,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                           RepoRoot = services.RepoRoot
                           Post = fun msg -> inbox.Post(Choice1Of2(Custom msg))
                           StartSubtask = fun key label -> services.StartSubtask handler.Name key label
+                          UpdateSubtask = fun key label -> services.UpdateSubtask handler.Name key label
                           EndSubtask = fun key -> services.EndSubtask handler.Name key
                           Log = fun msg -> services.Log handler.Name msg
                           CompleteWithSummary = fun s -> services.SetSummary handler.Name s }
@@ -293,6 +297,8 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                           RepoRoot = services.RepoRoot
                                           Post = fun msg -> inbox.Post(Choice1Of2(Custom msg))
                                           StartSubtask = fun key label -> services.StartSubtask handler.Name key label
+                                          UpdateSubtask =
+                                            fun key label -> services.UpdateSubtask handler.Name key label
                                           EndSubtask = fun key -> services.EndSubtask handler.Name key
                                           Log = fun msg -> services.Log handler.Name msg
                                           CompleteWithSummary = fun s -> services.SetSummary handler.Name s }

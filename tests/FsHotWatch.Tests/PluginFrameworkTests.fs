@@ -32,6 +32,7 @@ let private registerWith
           RegisterCommand = registerCommand
           TaskCache = None
           StartSubtask = fun _ _ _ -> ()
+          UpdateSubtask = fun _ _ _ -> ()
           EndSubtask = fun _ _ -> ()
           Log = fun _ _ -> ()
           SetSummary = fun _ _ -> () }
@@ -306,6 +307,7 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
               RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd
               TaskCache = None
               StartSubtask = fun _ _ _ -> ()
+              UpdateSubtask = fun _ _ _ -> ()
               EndSubtask = fun _ _ -> ()
               Log = fun _ _ -> ()
               SetSummary = fun _ _ -> () }
