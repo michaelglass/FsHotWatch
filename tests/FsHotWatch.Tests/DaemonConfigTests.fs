@@ -602,6 +602,46 @@ let ``parseConfig test project without coverage defaults to true`` () =
     let config = parseConfig json defaults
     let p = config.Tests.Value.Projects.[0]
     test <@ p.Coverage = true @>
+    test <@ p.CoverageArgsTemplate = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig test project with coverage as object captures argsTemplate`` () =
+    // Custom coverage args for an AltCover-style runner — any template that
+    // doesn't match the MTP default.
+    let json =
+        """{
+        "tests": {
+            "projects": [{
+                "project": "UnitTests",
+                "coverage": {
+                    "enabled": true,
+                    "argsTemplate": "--altcover --out \"{output}\""
+                }
+            }]
+        }
+    }"""
+
+    let config = parseConfig json defaults
+    let p = config.Tests.Value.Projects.[0]
+    test <@ p.Coverage = true @>
+    test <@ p.CoverageArgsTemplate = Some "--altcover --out \"{output}\"" @>
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig test project with coverage object enabled=false disables coverage`` () =
+    let json =
+        """{
+        "tests": {
+            "projects": [{
+                "project": "IntTests",
+                "coverage": { "enabled": false }
+            }]
+        }
+    }"""
+
+    let config = parseConfig json defaults
+    let p = config.Tests.Value.Projects.[0]
+    test <@ p.Coverage = false @>
+    test <@ p.CoverageArgsTemplate = None @>
 
 // --- parseConfig: build as array ---
 

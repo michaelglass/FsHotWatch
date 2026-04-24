@@ -176,7 +176,7 @@ let ``parse coverage refresh-baseline returns Coverage RefreshBaseline`` () =
         @>
 
 [<Fact(Timeout = 5000)>]
-let ``refreshCoverageBaseline deletes baseline.json and partial.json across configured projects`` () =
+let ``refreshCoverageBaseline deletes baseline and partial cobertura across configured projects`` () =
     let tmp = Path.Combine(Path.GetTempPath(), $"fshw-cov-refresh-{Guid.NewGuid():N}")
 
     Directory.CreateDirectory(tmp) |> ignore
@@ -191,6 +191,7 @@ let ``refreshCoverageBaseline deletes baseline.json and partial.json across conf
               FilterTemplate = None
               ClassJoin = " "
               Coverage = cov
+              CoverageArgsTemplate = None
               TimeoutSec = None }
 
         let covDir = "coverage"
@@ -198,8 +199,8 @@ let ``refreshCoverageBaseline deletes baseline.json and partial.json across conf
         let writeFiles proj =
             let d = Path.Combine(tmp, covDir, proj)
             Directory.CreateDirectory(d) |> ignore
-            File.WriteAllText(Path.Combine(d, "coverage.baseline.json"), "{}")
-            File.WriteAllText(Path.Combine(d, "coverage.partial.json"), "{}")
+            File.WriteAllText(Path.Combine(d, "coverage.baseline.cobertura.xml"), "{}")
+            File.WriteAllText(Path.Combine(d, "coverage.partial.cobertura.xml"), "{}")
             File.WriteAllText(Path.Combine(d, "coverage.cobertura.xml"), "<coverage/>")
 
         writeFiles "ProjA"
@@ -230,11 +231,11 @@ let ``refreshCoverageBaseline deletes baseline.json and partial.json across conf
         // Cobertura stays (not baseline/partial)
         test <@ File.Exists(Path.Combine(tmp, covDir, "ProjA", "coverage.cobertura.xml")) @>
         // Both flavors gone for opted-in projects
-        test <@ not (File.Exists(Path.Combine(tmp, covDir, "ProjA", "coverage.baseline.json"))) @>
-        test <@ not (File.Exists(Path.Combine(tmp, covDir, "ProjA", "coverage.partial.json"))) @>
-        test <@ not (File.Exists(Path.Combine(tmp, covDir, "ProjB", "coverage.baseline.json"))) @>
+        test <@ not (File.Exists(Path.Combine(tmp, covDir, "ProjA", "coverage.baseline.cobertura.xml"))) @>
+        test <@ not (File.Exists(Path.Combine(tmp, covDir, "ProjA", "coverage.partial.cobertura.xml"))) @>
+        test <@ not (File.Exists(Path.Combine(tmp, covDir, "ProjB", "coverage.baseline.cobertura.xml"))) @>
         // Opt-out project is untouched
-        test <@ File.Exists(Path.Combine(tmp, covDir, "ProjOptOut", "coverage.baseline.json")) @>
+        test <@ File.Exists(Path.Combine(tmp, covDir, "ProjOptOut", "coverage.baseline.cobertura.xml")) @>
     finally
         if Directory.Exists tmp then
             Directory.Delete(tmp, true)
