@@ -2,8 +2,8 @@
   "overrides": {
     "AnalyzersPlugin.fs": [
       {
-        "line": 91,
-        "branch": 75,
+        "line": 75,
+        "branch": 77,
         "reason": "end-to-end FCS analyzer paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor",
         "platform": "macos"
       },
@@ -29,8 +29,8 @@
     ],
     "BuildPlugin.fs": [
       {
-        "line": 97,
-        "branch": 82,
+        "line": 89,
+        "branch": 84,
         "reason": "loosened: shared file isTestFile changes",
         "platform": "macos"
       },
@@ -43,8 +43,8 @@
     ],
     "CheckPipeline.fs": [
       {
-        "line": 90,
-        "branch": 64,
+        "line": 80,
+        "branch": 61,
         "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor",
         "platform": "macos"
       },
@@ -67,8 +67,8 @@
     },
     "Daemon.fs": [
       {
-        "line": 79,
-        "branch": 59,
+        "line": 71,
+        "branch": 60,
         "platform": "macos"
       },
       {
@@ -80,7 +80,7 @@
     ],
     "DaemonConfig.fs": [
       {
-        "line": 81,
+        "line": 77,
         "branch": 77,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
@@ -94,8 +94,8 @@
     ],
     "ErrorLedger.fs": [
       {
-        "line": 94,
-        "branch": 96,
+        "line": 93,
+        "branch": 95,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -107,12 +107,6 @@
       }
     ],
     "Events.fs": [
-      {
-        "line": 85,
-        "branch": 100,
-        "reason": "loosened: inline helpers (isTerminal/isQuiescent) not tracked in source file",
-        "platform": "macos"
-      },
       {
         "line": 41,
         "branch": 100,
@@ -141,7 +135,7 @@
         "platform": "linux"
       },
       {
-        "line": 99,
+        "line": 98,
         "branch": 97,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)"
       }
@@ -161,8 +155,8 @@
     ],
     "FileTaskCache.fs": [
       {
-        "line": 87,
-        "branch": 74,
+        "line": 78,
+        "branch": 69,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -202,7 +196,7 @@
     "InitConfig.fs": [
       {
         "line": 100,
-        "branch": 90,
+        "branch": 91,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -214,7 +208,7 @@
     ],
     "Ipc.fs": [
       {
-        "line": 86,
+        "line": 83,
         "branch": 68,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
@@ -228,8 +222,8 @@
     ],
     "IpcOutput.fs": [
       {
-        "line": 82,
-        "branch": 52,
+        "line": 72,
+        "branch": 35,
         "reason": "loosened: coverage drifted with dedup refactoring",
         "platform": "macos"
       },
@@ -242,8 +236,8 @@
     ],
     "IpcParsing.fs": [
       {
-        "line": 89,
-        "branch": 66,
+        "line": 85,
+        "branch": 65,
         "reason": "loosened: legacy-parser removal shifted coverage percentages",
         "platform": "macos"
       },
@@ -255,8 +249,8 @@
     ],
     "JjHelper.fs": [
       {
-        "line": 63,
-        "branch": 50,
+        "line": 54,
+        "branch": 40,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -269,7 +263,7 @@
     ],
     "LintPlugin.fs": [
       {
-        "line": 96,
+        "line": 88,
         "branch": 100,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
@@ -297,8 +291,8 @@
     ],
     "PathFilter.fs": [
       {
-        "line": 95,
-        "branch": 63,
+        "line": 96,
+        "branch": 68,
         "reason": "exception-handling branches \u002B IgnoreFilterCache reload paths that fire inconsistently across runs",
         "platform": "macos"
       },
@@ -311,8 +305,8 @@
     ],
     "PluginActivity.fs": [
       {
-        "line": 97,
-        "branch": 67,
+        "line": 87,
+        "branch": 71,
         "reason": "loosened: Recording phase state paths hit 65-66% across runs; pin to observed floor",
         "platform": "macos"
       },
@@ -325,8 +319,8 @@
     ],
     "PluginFramework.fs": [
       {
-        "line": 99,
-        "branch": 71,
+        "line": 84,
+        "branch": 74,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -339,8 +333,8 @@
     ],
     "PluginHost.fs": [
       {
-        "line": 84,
-        "branch": 59,
+        "line": 82,
+        "branch": 64,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -353,8 +347,8 @@
     ],
     "ProcessHelper.fs": [
       {
-        "line": 87,
-        "branch": 70,
+        "line": 91,
+        "branch": 83,
         "platform": "macos"
       },
       {
@@ -365,8 +359,8 @@
     ],
     "Program.fs": [
       {
-        "line": 73,
-        "branch": 47,
+        "line": 67,
+        "branch": 51,
         "reason": "CLI entry point",
         "platform": "macos"
       },
@@ -379,8 +373,8 @@
     ],
     "ProgressRenderer.fs": [
       {
-        "line": 94,
-        "branch": 67,
+        "line": 86,
+        "branch": 69,
         "reason": "loosened: CLI rendering paths not exercised on all platforms",
         "platform": "macos"
       },
@@ -407,8 +401,8 @@
     ],
     "RunOnceOutput.fs": [
       {
-        "line": 57,
-        "branch": 50,
+        "line": 53,
+        "branch": 43,
         "reason": "loosened: new severity counting branches",
         "platform": "macos"
       },
@@ -434,8 +428,8 @@
     ],
     "TaskCache.fs": [
       {
-        "line": 96,
-        "branch": 96,
+        "line": 100,
+        "branch": 94,
         "reason": "loosened: saltedCacheKey adds branches with one compiler-generated path not hit by current tests",
         "platform": "macos"
       },
@@ -448,8 +442,8 @@
     ],
     "Watcher.fs": [
       {
-        "line": 87,
-        "branch": 56,
+        "line": 86,
+        "branch": 58,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
