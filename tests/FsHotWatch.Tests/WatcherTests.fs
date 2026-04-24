@@ -210,21 +210,21 @@ let ``watcher detects file changes in src directory`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``matchesPattern wildcard suffix matches any path ending with suffix`` () =
-    test <@ matchesPattern "*.ratchet.json" "/repo/coverage.ratchet.json" @>
-    test <@ matchesPattern "*.ratchet.json" "/repo/nested/my.ratchet.json" @>
+    test <@ FilePattern.matches (FilePattern.parse "*.ratchet.json") "/repo/coverage.ratchet.json" @>
+    test <@ FilePattern.matches (FilePattern.parse "*.ratchet.json") "/repo/nested/my.ratchet.json" @>
 
 [<Fact(Timeout = 5000)>]
 let ``matchesPattern wildcard does not match non-matching suffix`` () =
-    test <@ not (matchesPattern "*.ratchet.json" "/repo/foo.json") @>
+    test <@ not (FilePattern.matches (FilePattern.parse "*.ratchet.json") "/repo/foo.json") @>
 
 [<Fact(Timeout = 5000)>]
 let ``matchesPattern literal matches only exact filename`` () =
-    test <@ matchesPattern "coverage-ratchet.json" "/repo/coverage-ratchet.json" @>
-    test <@ matchesPattern "coverage-ratchet.json" "/repo/nested/coverage-ratchet.json" @>
+    test <@ FilePattern.matches (FilePattern.parse "coverage-ratchet.json") "/repo/coverage-ratchet.json" @>
+    test <@ FilePattern.matches (FilePattern.parse "coverage-ratchet.json") "/repo/nested/coverage-ratchet.json" @>
 
 [<Fact(Timeout = 5000)>]
 let ``matchesPattern literal does not match files that merely end with the name`` () =
-    test <@ not (matchesPattern "coverage-ratchet.json" "/repo/my-coverage-ratchet.json") @>
+    test <@ not (FilePattern.matches (FilePattern.parse "coverage-ratchet.json") "/repo/my-coverage-ratchet.json") @>
 
 // === Unit tests for isRelevantFileOrExtra ===
 
@@ -234,19 +234,19 @@ let ``isRelevantFileOrExtra accepts built-in extensions with no extras`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``isRelevantFileOrExtra accepts files matching wildcard pattern`` () =
-    test <@ isRelevantFileOrExtra [ "*.ratchet.json" ] "/repo/coverage.ratchet.json" @>
+    test <@ isRelevantFileOrExtra [ FilePattern.parse "*.ratchet.json" ] "/repo/coverage.ratchet.json" @>
 
 [<Fact(Timeout = 5000)>]
 let ``isRelevantFileOrExtra accepts files matching literal filename pattern`` () =
-    test <@ isRelevantFileOrExtra [ "coverage-ratchet.json" ] "/repo/coverage-ratchet.json" @>
+    test <@ isRelevantFileOrExtra [ FilePattern.parse "coverage-ratchet.json" ] "/repo/coverage-ratchet.json" @>
 
 [<Fact(Timeout = 5000)>]
 let ``isRelevantFileOrExtra rejects files not matching extras or built-ins`` () =
-    test <@ not (isRelevantFileOrExtra [ "*.ratchet.json" ] "/repo/Program.cs") @>
+    test <@ not (isRelevantFileOrExtra [ FilePattern.parse "*.ratchet.json" ] "/repo/Program.cs") @>
 
 [<Fact(Timeout = 5000)>]
 let ``isRelevantFileOrExtra rejects extra-matching files in obj directory`` () =
-    test <@ not (isRelevantFileOrExtra [ "*.ratchet.json" ] "/repo/obj/Debug/config.ratchet.json") @>
+    test <@ not (isRelevantFileOrExtra [ FilePattern.parse "*.ratchet.json" ] "/repo/obj/Debug/config.ratchet.json") @>
 
 // === Integration tests: extra-pattern watcher fires for non-source patterns ===
 
@@ -257,7 +257,7 @@ let ``FileWatcher with wildcard pattern fires SourceChanged for matching file`` 
         let onChange change = received.Add(change)
 
         use _watcher =
-            FileWatcher.create tmpDir onChange (Some false) [ "*.ratchet.json" ] :> IDisposable
+            FileWatcher.create tmpDir onChange (Some false) [ FilePattern.parse "*.ratchet.json" ] :> IDisposable
 
         // Probe by repeatedly rewriting a matching file until the watcher delivers an event.
         // FileSystemWatcher on macOS (kqueue/FSEvents backend) can have cold-start latency.
@@ -281,7 +281,8 @@ let ``FileWatcher with literal filename pattern fires only for matching file`` (
         let onChange change = received.Add(change)
 
         use _watcher =
-            FileWatcher.create tmpDir onChange (Some false) [ "coverage-ratchet.json" ] :> IDisposable
+            FileWatcher.create tmpDir onChange (Some false) [ FilePattern.parse "coverage-ratchet.json" ]
+            :> IDisposable
 
         let configPath = Path.Combine(tmpDir, "coverage-ratchet.json")
 

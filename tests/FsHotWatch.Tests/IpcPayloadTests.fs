@@ -25,7 +25,7 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       FormatAll = fun () -> async { return "" }
       WaitForScanGeneration = fun _ -> Task.FromResult(())
       WaitForAllTerminal = fun _ -> Task.FromResult(())
-      RerunPlugin = fun _ -> async { return "" } }
+      RerunPlugin = fun _ -> async { return Result.Ok() } }
 
 let private completedHandler (name: string) (action: PluginCtx<unit> -> Async<unit>) =
     { Name = PluginName.create name

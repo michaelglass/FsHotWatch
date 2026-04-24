@@ -606,10 +606,12 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
 
     // File commands
     for fc in config.FileCommands do
+        let parsedPattern = fc.Pattern |> Option.map FsHotWatch.Watcher.FilePattern.parse
+
         let trigger: FsHotWatch.FileCommand.FileCommandPlugin.CommandTrigger =
             { FilePattern =
-                fc.Pattern
-                |> Option.map (fun p -> fun (path: string) -> FsHotWatch.Watcher.matchesPattern p path)
+                parsedPattern
+                |> Option.map (fun p -> fun (path: string) -> FsHotWatch.Watcher.FilePattern.matches p path)
               AfterTests = fc.AfterTests }
 
         Logging.info "config" $"Registering FileCommandPlugin: %s{fc.PluginName} → %s{fc.Command} %s{fc.Args}"
@@ -623,8 +625,8 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                 getCommitId
         )
 
-        // Expose the pattern to the host so the rerun IPC endpoint can
-        // synthesize a matching fake file path.
-        match fc.Pattern with
+        // Expose the parsed pattern to the host so the rerun IPC endpoint
+        // can synthesize a matching fake file path.
+        match parsedPattern with
         | Some pattern -> daemon.Host.RegisterFileCommandPattern(fc.PluginName, pattern)
         | None -> ()
