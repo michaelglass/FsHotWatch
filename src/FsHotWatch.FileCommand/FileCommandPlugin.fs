@@ -7,6 +7,12 @@ open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 open FsHotWatch.ProcessHelper
 
+/// Env var name set on every afterTests-triggered child process.
+/// Value is `"true"` iff every project in the triggering run executed without
+/// an impact filter. See README for downstream usage.
+[<Literal>]
+let RanFullSuiteEnvVar = "FSHW_RAN_FULL_SUITE"
+
 type CommandResult =
     | NeverRun
     | Succeeded of output: string
@@ -158,7 +164,7 @@ let create
         async {
             match trigger.AfterTests with
             | Some filter when state.LastFiredRunId <> Some runId && CommandTrigger.matches filter results ->
-                let env = [ "FSHW_RAN_FULL_SUITE", (if ranFullSuite then "true" else "false") ]
+                let env = [ RanFullSuiteEnvVar, (if ranFullSuite then "true" else "false") ]
 
                 let! result = runCommand ctx TestsCompleted env
 
