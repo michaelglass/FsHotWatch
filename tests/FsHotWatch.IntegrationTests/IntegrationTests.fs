@@ -1181,8 +1181,9 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
         let handler =
             create (PluginName.create pluginName) trigger cmd args (Some getCommitId)
 
+        let parsedPattern = FsHotWatch.Watcher.FilePattern.parse pattern
         host.RegisterHandler(handler)
-        host.RegisterFileCommandPattern(pluginName, pattern)
+        host.RegisterFileCommandPattern(pluginName, parsedPattern)
 
         // First run: matching file event → plugin runs, sentinel has 1 line.
         host.EmitFileChanged(SourceChanged [ "coverage.ratchet.json" ])
@@ -1200,7 +1201,7 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
         // Rerun: clear cache for this plugin, then emit a synthetic matching event.
         // This is exactly what Daemon.RunWithIpc's rerunPlugin closure does.
         host.ClearTaskCachePlugin(pluginName)
-        let fakeFile = "_fshw_rerun_" + pattern.Substring(1)
+        let fakeFile = FsHotWatch.Watcher.FilePattern.syntheticPath parsedPattern
         host.EmitFileChanged(SourceChanged [ fakeFile ])
 
         // Status already shows Completed from the previous run, so `waitForStatusSettled`
