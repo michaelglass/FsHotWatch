@@ -475,7 +475,8 @@ let private executeTests
                 { RunId = runId
                   TotalElapsed = sw.Elapsed
                   Outcome = Normal
-                  Results = finalResults })
+                  Results = finalResults
+                  RanFullSuite = true })
 
         match afterRun with
         | Some hook -> hook testResults
@@ -677,7 +678,8 @@ let create
                         { RunId = runId
                           TotalElapsed = TimeSpan.Zero
                           Outcome = Normal
-                          Results = Map.empty }
+                          Results = Map.empty
+                          RanFullSuite = true }
 
                     ctx.ClearAllErrors()
                     ctx.Post(TestsFinished skipResults)
@@ -722,7 +724,8 @@ let create
                     { RunId = runId
                       TotalElapsed = TimeSpan.Zero
                       Outcome = Aborted ex.Message
-                      Results = Map.empty }
+                      Results = Map.empty
+                      RanFullSuite = true }
 
                 let failResult =
                     { Results = Map.empty
