@@ -1859,4 +1859,50 @@ let ``TestRunCompleted carries RanFullSuite=true when no projects filtered`` () 
           Results = Map.empty
           RanFullSuite = true }
 
+
     Assert.True evt.RanFullSuite
+
+[<Fact>]
+let ``ranFullSuite is true for empty results`` () =
+    test <@ TestResult.ranFullSuite Map.empty @>
+
+[<Fact>]
+let ``ranFullSuite is true when no project was filtered`` () =
+    let results =
+        Map.ofList [ "A", TestsPassed("", false); "B", TestsFailed("", false) ]
+
+    test <@ TestResult.ranFullSuite results @>
+
+[<Fact>]
+let ``ranFullSuite is false when at least one project was filtered`` () =
+    let results = Map.ofList [ "A", TestsPassed("", false); "B", TestsPassed("", true) ]
+
+    test <@ not (TestResult.ranFullSuite results) @>
+
+[<Fact(Timeout = 15000)>]
+let ``full run (no filter) emits TestRunCompleted with RanFullSuite=true`` () =
+    withTempDir "tp-ranfullsuite-full" (fun tmpDir ->
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let (getCompleted, recorder) = testRunCompletedRecorder ()
+        host.RegisterHandler(recorder)
+
+        let configs =
+            [ { Project = "ProjA"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let handler = create dbPath tmpDir (Some configs) None None None None None
+        host.RegisterHandler(handler)
+
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        waitUntil (fun () -> getCompleted () |> List.isEmpty |> not) 10000
+
+        let last = getCompleted () |> List.last
+        test <@ last.RanFullSuite @>)
