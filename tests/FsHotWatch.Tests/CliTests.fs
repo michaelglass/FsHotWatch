@@ -163,8 +163,8 @@ let ``WaitMode.fromFlags rejects negative timeout`` () =
     | Ok _ -> failwith "expected Error"
 
 [<Fact(Timeout = 5000)>]
-let ``parse invalidate-cache returns InvalidateCache`` () =
-    test <@ CommandTree.parse tree [| "invalidate-cache"; "some/file.fs" |] = Ok(InvalidateCache "some/file.fs") @>
+let ``parse rerun <name> returns Rerun`` () =
+    test <@ CommandTree.parse tree [| "rerun"; "coverage-ratchet" |] = Ok(Rerun "coverage-ratchet") @>
 
 [<Fact(Timeout = 5000)>]
 let ``parse init returns Init`` () =
@@ -503,7 +503,7 @@ let private fakeIpc () : IpcOps =
       WaitForComplete = fun _ _ -> async { return "{}" }
       TriggerBuild = fun _ -> async { return "{}" }
       FormatAll = fun _ -> async { return "formatted 0 files" }
-      InvalidateCache = fun _ _ -> async { return "{\"status\": \"rechecked\"}" }
+      RerunPlugin = fun _ _ -> async { return "{}" }
       IsRunning = fun _ -> true
       LaunchDaemon = fun _ _ _ -> () }
 
@@ -1151,19 +1151,19 @@ let ``executeCommand Check waits for scan and returns errors`` () =
     test <@ getStatusCalled @>
     test <@ getErrorsCalled @>
 
-// --- executeCommand for InvalidateCache ---
+// --- executeCommand for Rerun ---
 
 [<Fact(Timeout = 5000)>]
-let ``executeCommand InvalidateCache calls invalidateCache with file path`` () =
-    let mutable calledWithPath = ""
+let ``executeCommand Rerun calls rerunPlugin with plugin name`` () =
+    let mutable calledWithName = ""
 
     let ipc =
         { fakeIpc () with
-            InvalidateCache =
-                fun _ path ->
+            RerunPlugin =
+                fun _ name ->
                     async {
-                        calledWithPath <- path
-                        return """{"status": "rechecked"}"""
+                        calledWithName <- name
+                        return """{}"""
                     } }
 
     let result =
@@ -1172,13 +1172,13 @@ let ``executeCommand InvalidateCache calls invalidateCache with file path`` () =
             ipc
             "/tmp"
             "pipe"
-            (InvalidateCache "some/file.fs")
+            (Rerun "coverage-ratchet")
             defaultGlobalOptions
             fakeConfig
             30.0
 
     test <@ result = 0 @>
-    test <@ calledWithPath = "some/file.fs" @>
+    test <@ calledWithName = "coverage-ratchet" @>
 
 // --- Regression tests for bug fixes ---
 
