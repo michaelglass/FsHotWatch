@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- Per-event timeout on `createFormatCheck`. A new `timeoutSec: int option`
+  parameter bounds the wall-clock time for a single `FileChanged` batch's
+  format check. When `CodeFormatter.FormatDocumentAsync` exceeds the
+  timeout the run is recorded as `TimedOut` and the plugin continues with
+  the next event. Timeouts are advisory — the orphan Fantomas task is not
+  cancelled, only its result is discarded.
+
 ### Changed
 
 - FormatCheckPlugin emits a `"primary"` subtask (`checking format of N files`)

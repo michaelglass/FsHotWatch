@@ -102,9 +102,9 @@ let ``all plugins receive events when checking a file`` () =
     let dbPath = Path.Combine(Path.GetTempPath(), $"fshw-inttest-{Guid.NewGuid():N}.db")
 
     let testPrune = TestPrunePlugin.create dbPath repoRoot None None None None None None
-    let lint = LintPlugin.create None None None
-    let fantomas = createFormatCheck None
-    let analyzers = AnalyzersPlugin.create [] None
+    let lint = LintPlugin.create None None None None
+    let fantomas = createFormatCheck None None
+    let analyzers = AnalyzersPlugin.create [] None None
 
     host.RegisterHandler(testPrune)
     host.RegisterHandler(lint)
@@ -185,7 +185,7 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let analyzerPaths =
         [ gResearchPath; customAnalyzerPath ] |> List.filter Directory.Exists
 
-    let analyzers = AnalyzersPlugin.create analyzerPaths None
+    let analyzers = AnalyzersPlugin.create analyzerPaths None None
 
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
@@ -291,7 +291,7 @@ let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> stri
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let host = PluginHost.create checker repoRoot
-        let analyzers = AnalyzersPlugin.create [ analyzerPath ] None
+        let analyzers = AnalyzersPlugin.create [ analyzerPath ] None None
         host.RegisterHandler(analyzers)
 
         withTempFsFile source (fun _dir tmpFile ->
@@ -316,7 +316,7 @@ let x = 5
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let lint = LintPlugin.create None None None
+        let lint = LintPlugin.create None None None None
         host.RegisterHandler(lint)
 
         try
@@ -360,7 +360,7 @@ let ``format check plugin detects unformatted code`` () =
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let fantomas = createFormatCheck None
+        let fantomas = createFormatCheck None None
         host.RegisterHandler(fantomas)
 
         host.EmitFileChanged(SourceChanged [ filePath ])
@@ -391,7 +391,7 @@ let ``format check plugin passes on well-formatted code`` () =
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let fantomas = createFormatCheck None
+        let fantomas = createFormatCheck None None
         host.RegisterHandler(fantomas)
 
         host.EmitFileChanged(SourceChanged [ filePath ])
@@ -419,7 +419,7 @@ let ``plugin status reflects running to completed lifecycle`` () =
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let fantomas = createFormatCheck None
+        let fantomas = createFormatCheck None None
         host.RegisterHandler(fantomas)
 
         // Before any event, plugin status is Idle (initialized on register)
@@ -474,7 +474,7 @@ let ``multiple file changes are debounced into one batch by SourceChanged`` () =
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let fantomas = createFormatCheck None
+        let fantomas = createFormatCheck None None
         host.RegisterHandler(fantomas)
 
         // Emit all files as a single batched SourceChanged event
@@ -644,7 +644,7 @@ let ``LintPlugin reports no warnings on clean code`` () =
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let host = PluginHost.create checker repoRoot
-    let lint = LintPlugin.create None None None
+    let lint = LintPlugin.create None None None None
     host.RegisterHandler(lint)
 
     // Events.fs from FsHotWatch itself should be clean
@@ -691,7 +691,7 @@ let ``LintPlugin reports warnings on code with issues`` () =
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let host = PluginHost.create checker repoRoot
-    let lint = LintPlugin.create None None None
+    let lint = LintPlugin.create None None None None
     host.RegisterHandler(lint)
 
     let badCode =
@@ -734,7 +734,7 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let host = PluginHost.create checker repoRoot
-        let analyzers = AnalyzersPlugin.create [] None
+        let analyzers = AnalyzersPlugin.create [] None None
         host.RegisterHandler(analyzers)
 
         let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
@@ -774,7 +774,7 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let host = PluginHost.create checker repoRoot
-        let analyzers = AnalyzersPlugin.create [ analyzerPath ] None
+        let analyzers = AnalyzersPlugin.create [ analyzerPath ] None None
         host.RegisterHandler(analyzers)
 
         let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
