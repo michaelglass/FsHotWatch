@@ -748,13 +748,28 @@ let ``DaemonRpcTarget.RerunPlugin delegates to config`` () =
                 fun name ->
                     async {
                         capturedName <- name
-                        return """{"status": "rerun"}"""
+                        // Empty string triggers "wait + return status" path.
+                        return ""
                     } }
 
     let target = DaemonRpcTarget(config)
     let result = target.RerunPlugin("coverage-ratchet").Result
-    test <@ result.Contains("rerun") @>
+    // Returns GetStatus payload (empty map "{}" when no plugins registered aside from mocks).
+    test <@ result = "{}" @>
     test <@ capturedName = "coverage-ratchet" @>
+
+[<Fact(Timeout = 5000)>]
+let ``DaemonRpcTarget.RerunPlugin returns error payload when plugin has no pattern`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let config =
+        { defaultRpcConfig host with
+            RerunPlugin = fun _ -> async { return """{"error":"Plugin 'missing' has no registered file pattern"}""" } }
+
+    let target = DaemonRpcTarget(config)
+    let result = target.RerunPlugin("missing").Result
+    test <@ result.Contains("error") @>
+    test <@ result.Contains("missing") @>
 
 [<Fact(Timeout = 5000)>]
 let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
