@@ -225,16 +225,9 @@ type State() =
                 | Recording r ->
                     let tail = r.ActivityLog |> List.ofSeq
 
-                    let derived =
-                        match r.SummaryOverride with
-                        | Some s -> Some s
-                        | None ->
-                            match tail with
-                            | _ :: _ -> Some(List.last tail)
-                            | [] when r.Subtasks.Count > 0 ->
-                                let longest = r.Subtasks.Values |> Seq.minBy (fun t -> t.StartedAt)
-                                Some longest.Label
-                            | [] -> None
+                    // No fallback; plugins must call SetSummary explicitly
+                    // (via ctx.CompleteWithSummary) or the summary is empty.
+                    let derived = r.SummaryOverride
 
                     let d =
                         (r.Subtasks.Values |> Seq.sumBy subtaskBytes)
