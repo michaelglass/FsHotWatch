@@ -709,11 +709,13 @@ let ``HasFailingReasons distinguishes warnings from errors`` () =
 
 // --- FileCommand pattern registry ---
 
+let private parsePattern = FsHotWatch.Watcher.FilePattern.parse
+
 [<Fact(Timeout = 5000)>]
 let ``RegisterFileCommandPattern stores pattern retrievable by name`` () =
     let host = PluginHost.create nullChecker "/tmp"
-    host.RegisterFileCommandPattern("coverage-ratchet", "*.ratchet.json")
-    test <@ host.GetFileCommandPattern("coverage-ratchet") = Some "*.ratchet.json" @>
+    host.RegisterFileCommandPattern("coverage-ratchet", parsePattern "*.ratchet.json")
+    test <@ host.GetFileCommandPattern("coverage-ratchet") = Some(parsePattern "*.ratchet.json") @>
 
 [<Fact(Timeout = 5000)>]
 let ``GetFileCommandPattern returns None for unregistered plugin`` () =
@@ -723,6 +725,6 @@ let ``GetFileCommandPattern returns None for unregistered plugin`` () =
 [<Fact(Timeout = 5000)>]
 let ``RegisterFileCommandPattern overwrites on re-register`` () =
     let host = PluginHost.create nullChecker "/tmp"
-    host.RegisterFileCommandPattern("plugin-a", "*.ratchet.json")
-    host.RegisterFileCommandPattern("plugin-a", "coverage-ratchet.json")
-    test <@ host.GetFileCommandPattern("plugin-a") = Some "coverage-ratchet.json" @>
+    host.RegisterFileCommandPattern("plugin-a", parsePattern "*.ratchet.json")
+    host.RegisterFileCommandPattern("plugin-a", parsePattern "coverage-ratchet.json")
+    test <@ host.GetFileCommandPattern("plugin-a") = Some(parsePattern "coverage-ratchet.json") @>

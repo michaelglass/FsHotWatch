@@ -101,7 +101,7 @@ type DaemonRpcConfig =
       FormatAll: unit -> Async<string>
       WaitForScanGeneration: int64 -> Task<unit>
       WaitForAllTerminal: TimeSpan -> Task<unit>
-      RerunPlugin: string -> Async<string> }
+      RerunPlugin: string -> Async<Result<unit, string>> }
 
 /// RPC target object exposed to clients via StreamJsonRpc.
 type DaemonRpcTarget(config: DaemonRpcConfig) =
@@ -252,14 +252,11 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
     /// registered pattern).
     member this.RerunPlugin(name: string) : Task<string> =
         task {
-            let! result = config.RerunPlugin name |> Async.StartAsTask
-
-            if result = "" then
+            match! config.RerunPlugin name |> Async.StartAsTask with
+            | Result.Ok() ->
                 let! _ = this.WaitForComplete(0)
                 return this.GetStatus()
-            else
-                // Error payload from rerunPlugin — return it as-is.
-                return result
+            | Result.Error msg -> return JsonSerializer.Serialize {| error = msg |}
         }
 
     /// Clear task cache entries. Optionally filter by plugin and/or file.
