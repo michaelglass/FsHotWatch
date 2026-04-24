@@ -103,19 +103,13 @@ module FileWatcher =
 
         let handleFsw (e: FileSystemEventArgs) = handle e.FullPath
 
-        let isMacOS =
-            defaultArg
-                isMacOSOverride
-                (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
-                    System.Runtime.InteropServices.OSPlatform.OSX
-                ))
-
-        // Solution file watcher: always FileSystemWatcher (single dir, non-recursive)
-        let slnWatcher =
-            let w = new FileSystemWatcher(repoRoot)
-            w.Filters.Add("*.sln")
-            w.Filters.Add("*.slnx")
+        // Construct a FileSystemWatcher with the shared LastWrite+FileName notify
+        // filter and standard Changed/Created/Deleted/Renamed handlers. `configure`
+        // sets per-watcher specifics (filters, recursion).
+        let mkWatcher (dir: string) (configure: FileSystemWatcher -> unit) : IDisposable =
+            let w = new FileSystemWatcher(dir)
             w.NotifyFilter <- NotifyFilters.LastWrite ||| NotifyFilters.FileName
+            configure w
             w.Changed.Add(handleFsw)
             w.Created.Add(handleFsw)
             w.Deleted.Add(handleFsw)
@@ -123,25 +117,27 @@ module FileWatcher =
             w.EnableRaisingEvents <- true
             w :> IDisposable
 
-        // Non-source patterns from FileCommandPlugins (e.g. *.ratchet.json or
-        // coverage-ratchet.json). One recursive FileSystemWatcher per pattern
-        // covering the whole repo. The pattern is passed directly as the Filter
-        // glob (.NET FileSystemWatcher handles both wildcard suffixes and literal
-        // filenames). Events still go through `handle` so the shared
-        // `isRelevantFileOrExtra` + obj/bin exclusion logic is applied.
+        let isMacOS =
+            defaultArg
+                isMacOSOverride
+                (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+                    System.Runtime.InteropServices.OSPlatform.OSX
+                ))
+
+        let slnWatcher =
+            mkWatcher repoRoot (fun w ->
+                w.Filters.Add("*.sln")
+                w.Filters.Add("*.slnx"))
+
+        // Each FileCommandPlugin pattern gets its own recursive watcher at the
+        // repo root. The pattern is passed directly as the Filter glob — .NET
+        // FileSystemWatcher handles both `*.ratchet.json` and literal filenames.
         let extraWatchers =
             extraPatterns
             |> List.map (fun pattern ->
-                let w = new FileSystemWatcher(repoRoot)
-                w.IncludeSubdirectories <- true
-                w.NotifyFilter <- NotifyFilters.LastWrite ||| NotifyFilters.FileName
-                w.Filter <- pattern
-                w.Changed.Add(handleFsw)
-                w.Created.Add(handleFsw)
-                w.Deleted.Add(handleFsw)
-                w.Renamed.Add(handleFsw)
-                w.EnableRaisingEvents <- true
-                w :> IDisposable)
+                mkWatcher repoRoot (fun w ->
+                    w.IncludeSubdirectories <- true
+                    w.Filter <- pattern))
 
         if isMacOS then
             let dirs =
@@ -167,19 +163,14 @@ module FileWatcher =
         else
             let createFsw (dir: string) =
                 if Directory.Exists(dir) then
-                    let w = new FileSystemWatcher(dir)
-                    w.IncludeSubdirectories <- true
-                    w.NotifyFilter <- NotifyFilters.LastWrite ||| NotifyFilters.FileName
-                    w.Filters.Add("*.fs")
-                    w.Filters.Add("*.fsx")
-                    w.Filters.Add("*.fsproj")
-                    w.Filters.Add("*.props")
-                    w.Changed.Add(handleFsw)
-                    w.Created.Add(handleFsw)
-                    w.Deleted.Add(handleFsw)
-                    w.Renamed.Add(handleFsw)
-                    w.EnableRaisingEvents <- true
-                    Some(w :> IDisposable)
+                    Some(
+                        mkWatcher dir (fun w ->
+                            w.IncludeSubdirectories <- true
+                            w.Filters.Add("*.fs")
+                            w.Filters.Add("*.fsx")
+                            w.Filters.Add("*.fsproj")
+                            w.Filters.Add("*.props"))
+                    )
                 else
                     None
 
