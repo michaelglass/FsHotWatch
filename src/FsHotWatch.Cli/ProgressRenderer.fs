@@ -4,6 +4,7 @@ open System
 open CommandTree
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
+open FsHotWatch.PluginActivity
 open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcParsing
 
@@ -116,9 +117,9 @@ let private renderCompact
                     else
                         $" %s{Color.dim}{Glyph.sep} %s{la}%s{Color.reset}"
                 | xs ->
-                    // Prefer the "primary" subtask's descriptive label when present;
+                    // Prefer the primary subtask's descriptive label when present;
                     // otherwise summarise concurrent subtasks by key.
-                    let primary = xs |> List.tryFind (fun s -> s.Key = "primary")
+                    let primary = xs |> List.tryFind (fun s -> s.Key = PrimarySubtaskKey)
 
                     match primary with
                     | Some p -> $" %s{Color.dim}{Glyph.sep} %s{p.Label}%s{Color.reset}"
