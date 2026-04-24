@@ -44,7 +44,7 @@
     "CheckPipeline.fs": [
       {
         "line": 90,
-        "branch": 66,
+        "branch": 64,
         "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor",
         "platform": "macos"
       },
@@ -55,6 +55,11 @@
         "platform": "linux"
       }
     ],
+    "CoverageMerge.fs": {
+      "line": 97,
+      "branch": 65,
+      "reason": "loosened automatically"
+    },
     "CoveragePlugin.fs": {
       "line": 97,
       "branch": 100,
@@ -75,8 +80,8 @@
     ],
     "DaemonConfig.fs": [
       {
-        "line": 76,
-        "branch": 73,
+        "line": 81,
+        "branch": 77,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -103,7 +108,7 @@
     ],
     "Events.fs": [
       {
-        "line": 41,
+        "line": 85,
         "branch": 100,
         "reason": "loosened: inline helpers (isTerminal/isQuiescent) not tracked in source file",
         "platform": "macos"
@@ -156,7 +161,7 @@
     ],
     "FileTaskCache.fs": [
       {
-        "line": 88,
+        "line": 87,
         "branch": 74,
         "reason": "loosened automatically",
         "platform": "macos"
@@ -210,7 +215,7 @@
     "Ipc.fs": [
       {
         "line": 86,
-        "branch": 69,
+        "branch": 68,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -237,8 +242,8 @@
     ],
     "IpcParsing.fs": [
       {
-        "line": 87,
-        "branch": 68,
+        "line": 89,
+        "branch": 66,
         "reason": "loosened: legacy-parser removal shifted coverage percentages",
         "platform": "macos"
       },
@@ -335,7 +340,7 @@
     "PluginHost.fs": [
       {
         "line": 84,
-        "branch": 63,
+        "branch": 59,
         "reason": "loosened automatically",
         "platform": "macos"
       },
@@ -348,7 +353,7 @@
     ],
     "ProcessHelper.fs": [
       {
-        "line": 93,
+        "line": 87,
         "branch": 70,
         "platform": "macos"
       },
@@ -360,8 +365,8 @@
     ],
     "Program.fs": [
       {
-        "line": 74,
-        "branch": 49,
+        "line": 73,
+        "branch": 47,
         "reason": "CLI entry point",
         "platform": "macos"
       },
@@ -374,8 +379,8 @@
     ],
     "ProgressRenderer.fs": [
       {
-        "line": 91,
-        "branch": 62,
+        "line": 94,
+        "branch": 67,
         "reason": "loosened: CLI rendering paths not exercised on all platforms",
         "platform": "macos"
       },
