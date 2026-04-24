@@ -4,9 +4,15 @@ open System
 open System.Diagnostics
 open System.Threading.Tasks
 
+/// Prefix on the output string when `runProcessWithTimeout` killed the
+/// process for exceeding its timeout. Plugins use this to distinguish a
+/// timeout from a normal nonzero exit.
+[<Literal>]
+let TimedOutPrefix = "timed out after "
+
 /// Run a process with a timeout. Returns (exitCode = 0, combined output).
 /// If the process exceeds `timeout`, it and its child process tree are killed,
-/// the tuple returns `false` with output prefixed by `timed out after {N}s`.
+/// the tuple returns `false` with output prefixed by `TimedOutPrefix`.
 /// Reads stdout and stderr concurrently to avoid deadlock.
 let runProcessWithTimeout
     (command: string)
@@ -63,7 +69,7 @@ let runProcessWithTimeout
                 ""
 
         let tail = $"%s{stdout}\n%s{stderr}".Trim()
-        false, $"timed out after %d{int timeout.TotalSeconds}s\n%s{tail}"
+        false, $"%s{TimedOutPrefix}%d{int timeout.TotalSeconds}s\n%s{tail}"
     else
         Task.WaitAll(stdoutTask, stderrTask)
         let stdout = stdoutTask.Result

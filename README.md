@@ -182,6 +182,9 @@ Create `.fs-hot-watch.json` in your repo root. All fields are optional — sensi
 | `coverage` | `object` | — | Coverage threshold checking. |
 | `analyzers` | `object` | — | F# Analyzers SDK integration. |
 | `fileCommands` | `array` | `[]` | Custom commands triggered by file patterns. |
+| `timeoutSec` | `int` | — | Global default per-task timeout in seconds. Used when a plugin/project has no per-entry override. |
+
+**Per-task timeouts.** Any of `build[]`, `tests.projects[]`, and `fileCommands[]` entries may set their own `timeoutSec` to override the global default. When a task exceeds its timeout, the daemon kills the child process tree, records the run with outcome `timed out` (distinct `⏱` glyph in the UI, `timed-out` token in agent mode), and stays running — the next change retriggers normally.
 
 **`build` fields:**
 
