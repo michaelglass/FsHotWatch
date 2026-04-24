@@ -10,6 +10,10 @@
   leveraging the existing `TestResult.WasFiltered` flag.
 
 ### Added
+- `RanFullSuite: bool` field on the `TestRunCompleted` event — `true` iff
+  every project in the run executed without an impact filter. Derived from
+  per-project `TestResult.WasFiltered`; downstream consumers (e.g.
+  FileCommand's `afterTests`) use it to gate baseline-affecting actions.
 - **Partial-run coverage merging.** TestPrune now emits coverlet's native JSON
   format (not Cobertura) per test project. Full runs write
   `coverage.baseline.json`; impact-filtered runs write
