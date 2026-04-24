@@ -159,6 +159,12 @@ module TestResult =
         | TestsPassed _ -> true
         | TestsFailed _ -> false
 
+    /// Derive run-level `RanFullSuite` from a per-project Results map: true iff
+    /// no project was run with an impact filter (i.e., the entire test suite
+    /// ran). Empty map is full-suite by convention (nothing was filtered).
+    let ranFullSuite (results: Map<string, TestResult>) : bool =
+        results |> Map.forall (fun _ r -> not (wasFiltered r))
+
 /// Aggregate test results snapshot. Used as a plain value type by TestPrune's
 /// internals and afterRun hooks — NOT dispatched as an event. Subscribers
 /// consume `TestRunCompleted` (which wraps the final Results plus Outcome).
