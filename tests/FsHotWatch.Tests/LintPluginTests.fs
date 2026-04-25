@@ -1,9 +1,7 @@
 module FsHotWatch.Tests.LintPluginTests
 
-open System.Runtime.CompilerServices
 open Xunit
 open Swensen.Unquote
-open FSharp.Compiler.CodeAnalysis
 open FSharpLint.Application
 open FSharpLint.Framework.Suggestion
 open FSharp.Compiler.Text
@@ -13,19 +11,6 @@ open FsHotWatch.PluginHost
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Lint.LintPlugin
 open FsHotWatch.Tests.TestHelpers
-
-/// Create a non-null FSharpParseFileResults without calling the constructor.
-/// The injected lint runner won't access any fields, so uninitialized is fine.
-let private dummyParseResults () =
-    RuntimeHelpers.GetUninitializedObject(typeof<FSharpParseFileResults>) :?> FSharpParseFileResults
-
-let private fakeFileCheckResult file =
-    { File = file
-      Source = "module Fake"
-      ParseResults = dummyParseResults ()
-      CheckResults = ParseOnly
-      ProjectOptions = Unchecked.defaultof<_>
-      Version = 0L }
 
 [<Fact(Timeout = 5000)>]
 let ``plugin has correct name`` () =
@@ -56,13 +41,11 @@ let ``lint error path sets Failed status on null check results`` () =
     let handler = create None None None None
     host.RegisterHandler(handler)
 
-    let fakeResult: FileCheckResult =
-        { File = "/tmp/nonexistent/Fake.fs"
-          Source = ""
-          ParseResults = Unchecked.defaultof<_>
-          CheckResults = ParseOnly
-          ProjectOptions = Unchecked.defaultof<_>
-          Version = 0L }
+    // Explicitly null ParseResults to exercise the lint plugin's null-guard path.
+    let fakeResult =
+        { fakeFileCheckResult "/tmp/nonexistent/Fake.fs" with
+            Source = ""
+            ParseResults = Unchecked.defaultof<_> }
 
     try
         host.EmitFileChecked(fakeResult)
@@ -106,13 +89,10 @@ let ``lint skips file with null ParseResults without crashing`` () =
     let handler = create None None None None
     host.RegisterHandler(handler)
 
-    let fakeResult: FileCheckResult =
-        { File = "/tmp/test/Empty.fs"
-          Source = "module Empty"
-          ParseResults = Unchecked.defaultof<_>
-          CheckResults = ParseOnly
-          ProjectOptions = Unchecked.defaultof<_>
-          Version = 0L }
+    let fakeResult =
+        { fakeFileCheckResult "/tmp/test/Empty.fs" with
+            Source = "module Empty"
+            ParseResults = Unchecked.defaultof<_> }
 
     // Should not throw
     host.EmitFileChecked(fakeResult)

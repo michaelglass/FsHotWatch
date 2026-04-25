@@ -2,8 +2,26 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Skip-for-test-files-only path no longer races FCS.** When `SourceChanged`
+  carries only test files, the build plugin used to emit `BuildSucceeded`
+  immediately. Downstream test-prune dispatched off stale `AffectedTests`
+  before FCS finished checking the changed file, so partial test runs were
+  silently skipped. Plugin now subscribes to `FileChecked`, transitions into
+  a new `WaitingForFcsPhase` carrying the awaiting set (path-normalized via
+  `Path.GetFullPath`), and emits `BuildSucceeded` only when every changed
+  file has produced a `FileChecked`.
+
 ### Changed
 
+- **BREAKING:** `BuildPhase` DU gains a `WaitingForFcsPhase` variant.
+  Consumers that pattern-match `BuildPhase` must add a case for it.
+- Subscriptions: build plugin now subscribes to `SubscribeFileChecked` in
+  addition to `SubscribeFileChanged`.
+- Timeout-handling: build failures induced by exceeding the configured
+  `timeoutSec` are reported via the `ProcessOutcome.TimedOut` case
+  (replacing the prior `output.StartsWith TimedOutPrefix` heuristic).
 - Emit a `build failed: N errors` summary on the failure path (previously the
   failure case relied on the now-removed last-log-line summary fallback).
 
