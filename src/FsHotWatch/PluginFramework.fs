@@ -412,3 +412,13 @@ module PluginCtxHelpers =
     let completeWith (ctx: PluginCtx<'Msg>) (summary: string) : unit =
         ctx.CompleteWithSummary summary
         ctx.ReportStatus(Completed System.DateTime.UtcNow)
+
+    /// Report or clear the per-file error scope based on whether any entries exist.
+    /// Used by per-file analyzers (Lint, Analyzers, FormatCheck) so that a file
+    /// transitions cleanly between "has findings" and "clean" without leaking
+    /// stale entries.
+    let reportOrClearFile (ctx: PluginCtx<'Msg>) (file: string) (entries: ErrorEntry list) : unit =
+        if entries.IsEmpty then
+            ctx.ClearErrors file
+        else
+            ctx.ReportErrors file entries
