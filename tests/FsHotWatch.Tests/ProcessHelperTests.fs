@@ -114,3 +114,32 @@ let ``ProcessRegistry.killAll kills a child started via runProcessWithTimeout fr
 
     let completed = task.Wait(5000)
     Assert.True(completed, "runProcessWithTimeout did not return after killAll")
+
+[<Fact(Timeout = 5000)>]
+let ``isDotnetCommand matches dotnet basename`` () =
+    Assert.True(isDotnetCommand "dotnet")
+    Assert.True(isDotnetCommand "dotnet.exe")
+    Assert.True(isDotnetCommand "/usr/local/share/dotnet/dotnet")
+    Assert.True(isDotnetCommand "/c/Program Files/dotnet/dotnet.exe")
+
+[<Fact(Timeout = 5000)>]
+let ``isDotnetCommand rejects non-dotnet commands`` () =
+    Assert.False(isDotnetCommand "sh")
+    Assert.False(isDotnetCommand "echo")
+    Assert.False(isDotnetCommand "/bin/sh")
+    Assert.False(isDotnetCommand "dotnet-coverage")
+
+[<Fact(Timeout = 5000)>]
+let ``mergeDotnetEnv injects MSBUILDDISABLENODEREUSE for dotnet`` () =
+    let merged = mergeDotnetEnv "dotnet" []
+    Assert.Contains(("MSBUILDDISABLENODEREUSE", "1"), merged)
+
+[<Fact(Timeout = 5000)>]
+let ``mergeDotnetEnv leaves non-dotnet commands untouched`` () =
+    Assert.Empty(mergeDotnetEnv "sh" [])
+    Assert.Equal<(string * string) list>([ "FOO", "bar" ], mergeDotnetEnv "sh" [ "FOO", "bar" ])
+
+[<Fact(Timeout = 5000)>]
+let ``mergeDotnetEnv preserves caller-supplied MSBUILDDISABLENODEREUSE`` () =
+    let merged = mergeDotnetEnv "dotnet" [ "MSBUILDDISABLENODEREUSE", "0" ]
+    Assert.Equal<(string * string) list>([ "MSBUILDDISABLENODEREUSE", "0" ], merged)

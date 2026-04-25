@@ -738,14 +738,7 @@ let create
                     // executeTests emits TestRunStarted → TestProgress × N → TestRunCompleted
                     // internally; no further lifecycle emits needed here.
 
-                    let allPassed =
-                        results.Results
-                        |> Map.forall (fun _ r ->
-                            match r with
-                            | TestsPassed _ -> true
-                            | _ -> false)
-
-                    if allPassed then
+                    if results.Results |> Map.forall (fun _ r -> TestResult.isPassed r) then
                         ctx.ClearAllErrors()
                     else
                         reportTestErrors ctx state.TestClassFiles results
@@ -1115,6 +1108,49 @@ let create
                     | BuildFailed _ -> return state
 
                 | Custom(TestsFinished testResults) ->
+                    // Pushing a terminal Completed/Failed status is what appends the
+                    // run to history; both RerunQueued and NoRerun branches must call this.
+                    let recordRunOutcome (results: TestResults) =
+                        let total = results.Results.Count
+
+                        let failedList =
+                            results.Results
+                            |> Map.toList
+                            |> List.filter (fun (_, r) -> not (TestResult.isPassed r))
+
+                        let failed = failedList.Length
+                        let passed = total - failed
+
+                        let anyFiltered =
+                            results.Results |> Map.exists (fun _ r -> TestResult.wasFiltered r)
+
+                        let selectedSuffix = if anyFiltered then "yes" else "no"
+
+                        let timedOutProjects =
+                            failedList
+                            |> List.choose (fun (name, r) -> if TestResult.isTimedOut r then Some name else None)
+
+                        if not timedOutProjects.IsEmpty then
+                            let names = timedOutProjects |> String.concat ", "
+                            ctx.CompleteWithTimeout $"test project(s): {names}"
+
+                            ctx.ReportStatus(
+                                PluginStatus.Failed(
+                                    $"%d{timedOutProjects.Length} timed out: %s{names}",
+                                    DateTime.UtcNow
+                                )
+                            )
+                        else
+                            ctx.CompleteWithSummary
+                                $"%d{passed} passed, %d{failed} failed in %d{total} projects (selected: %s{selectedSuffix})"
+
+                            if failed = 0 then
+                                ctx.ReportStatus(Completed(DateTime.UtcNow))
+                            else
+                                let names = failedList |> List.map fst |> String.concat ", "
+
+                                ctx.ReportStatus(PluginStatus.Failed($"%d{failed} failed: %s{names}", DateTime.UtcNow))
+
                     match state.TestPhase with
                     | TestsRunning(running, RerunQueued) ->
                         Logging.info "test-prune" "Re-running tests (queued during previous run)"
@@ -1145,6 +1181,17 @@ let create
                                     ChangedSymbols = []
                                     AffectedTests = Analyzed [] }
                         | Ok rerunState ->
+                            recordRunOutcome testResults
+                            changedSymbolsRef <- []
+
+                            let rerunRunning = Lifecycle.complete (Some testResults) running |> Lifecycle.start
+
+                            ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
+
+                            let rerunState =
+                                { rerunState with
+                                    TestPhase = TestsRunning(rerunRunning, NoRerun) }
+
                             match testConfigs with
                             | Some configs when not configs.IsEmpty ->
                                 async { do! runTestsWithImpact ctx configs rerunState true } |> Async.Start
@@ -1154,66 +1201,7 @@ let create
                     | TestsRunning(running, NoRerun) ->
                         let completed = Lifecycle.complete (Some testResults) running
                         changedSymbolsRef <- []
-
-                        let allPassed =
-                            testResults.Results
-                            |> Map.forall (fun _ r ->
-                                match r with
-                                | TestsPassed _ -> true
-                                | _ -> false)
-
-                        let total = testResults.Results.Count
-
-                        let failed =
-                            testResults.Results
-                            |> Map.toList
-                            |> List.filter (fun (_, r) -> not (TestResult.isPassed r))
-                            |> List.length
-
-                        let passed = total - failed
-
-                        let anyFiltered =
-                            testResults.Results |> Map.exists (fun _ r -> TestResult.wasFiltered r)
-
-                        let selectedSuffix = if anyFiltered then "yes" else "no"
-
-                        // Any project timeout flips the plugin's terminal outcome to TimedOut.
-                        let timedOutProjects =
-                            testResults.Results
-                            |> Map.toList
-                            |> List.choose (fun (name, r) -> if TestResult.isTimedOut r then Some name else None)
-
-                        if not timedOutProjects.IsEmpty then
-                            let names = timedOutProjects |> String.concat ", "
-                            ctx.CompleteWithTimeout $"test project(s): {names}"
-
-                            ctx.ReportStatus(
-                                PluginStatus.Failed(
-                                    $"%d{timedOutProjects.Length} timed out: %s{names}",
-                                    DateTime.UtcNow
-                                )
-                            )
-                        else
-                            ctx.CompleteWithSummary
-                                $"%d{passed} passed, %d{failed} failed in %d{total} projects (selected: %s{selectedSuffix})"
-
-                            if allPassed || testResults.Results.IsEmpty then
-                                ctx.ReportStatus(Completed(DateTime.UtcNow))
-                            else
-                                let failedProjects =
-                                    testResults.Results
-                                    |> Map.toList
-                                    |> List.choose (fun (name, r) ->
-                                        match r with
-                                        | TestsFailed _
-                                        | TestsTimedOut _ -> Some name
-                                        | _ -> None)
-
-                                let names = failedProjects |> String.concat ", "
-
-                                ctx.ReportStatus(
-                                    PluginStatus.Failed($"%d{failedProjects.Length} failed: %s{names}", DateTime.UtcNow)
-                                )
+                        recordRunOutcome testResults
 
                         return
                             { state with

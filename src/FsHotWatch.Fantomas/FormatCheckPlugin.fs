@@ -121,20 +121,27 @@ let internal createFormatCheckWithSlowHook
 
                                     timedOut <- true
                                 | WorkCompleted(source, formatted) ->
-                                    if formatted.Code <> source then
-                                        newUnformatted <- newUnformatted |> Set.add file
-                                        ctx.Log $"unformatted: {Path.GetFileName file}"
+                                    let isUnformatted = formatted.Code <> source
 
-                                        ctx.ReportErrors
-                                            file
+                                    newUnformatted <-
+                                        if isUnformatted then
+                                            newUnformatted |> Set.add file
+                                        else
+                                            newUnformatted |> Set.remove file
+
+                                    let entries: FsHotWatch.ErrorLedger.ErrorEntry list =
+                                        if isUnformatted then
+                                            ctx.Log $"unformatted: {Path.GetFileName file}"
+
                                             [ { Message = "File is not formatted"
                                                 Severity = FsHotWatch.ErrorLedger.Warning
                                                 Line = 1
                                                 Column = 0
                                                 Detail = None } ]
-                                    else
-                                        newUnformatted <- newUnformatted |> Set.remove file
-                                        ctx.ClearErrors file
+                                        else
+                                            []
+
+                                    PluginCtxHelpers.reportOrClearFile ctx file entries
                             with ex ->
                                 ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                                 failed <- true
