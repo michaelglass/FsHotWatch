@@ -6,7 +6,7 @@
 
     <!-- Package metadata -->
     <PackageId>FsHotWatch.Fantomas</PackageId>
-    <Version>0.7.0-alpha.7</Version>
+    <Version>0.7.0-alpha.8</Version>
     <Authors>Michael Glass</Authors>
     <Description>FsHotWatch plugin for Fantomas format checking</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

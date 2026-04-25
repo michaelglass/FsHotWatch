@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.10 - 2026-04-25
+
 ### Changed
 
 - **Timeout outcomes are now structural.** Per-project timeouts produce

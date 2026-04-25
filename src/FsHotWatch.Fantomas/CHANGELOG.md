@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.8 - 2026-04-25
+
 ### Added
 
 - Per-event timeout on `createFormatCheck`. A new `timeoutSec: int option`
