@@ -21,7 +21,7 @@
 
     <!-- Package metadata -->
     <PackageId>FsHotWatch</PackageId>
-    <Version>0.8.0-alpha.9</Version>
+    <Version>0.8.0-alpha.10</Version>
     <Authors>Michael Glass</Authors>
     <Description>F# file watcher daemon — keeps FSharpChecker warm for instant re-analysis</Description>
     <PackageTags>fsharp;file-watcher;fsharp-compiler-service;incremental;analysis</PackageTags>
