@@ -50,6 +50,7 @@
 <Compile Include="Lifecycle.fs" />
     <Compile Include="Events.fs" />
     <Compile Include="PathFilter.fs" />
+    <Compile Include="ProcessRegistry.fs" />
     <Compile Include="ProcessHelper.fs" />
     <Compile Include="FsHwPaths.fs" />
     <Compile Include="JjHelper.fs" />

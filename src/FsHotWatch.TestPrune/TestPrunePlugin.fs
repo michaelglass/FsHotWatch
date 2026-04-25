@@ -170,6 +170,7 @@ let private formatTestResultsJson (results: TestResults) =
                 match result with
                 | TestsPassed(o, _) -> ("passed", o)
                 | TestsFailed(o, _) -> ("failed", o)
+                | TestsTimedOut(o, _, _) -> ("timed-out", o)
 
             {| project = name
                status = status
@@ -234,7 +235,8 @@ let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<str
         |> Map.toList
         |> List.collect (fun (project, result) ->
             match result with
-            | TestsFailed(output, _) ->
+            | TestsFailed(output, _)
+            | TestsTimedOut(output, _, _) ->
                 let parsed = parseFailedTests output
 
                 if parsed.IsEmpty then
@@ -402,11 +404,14 @@ let private executeTests
                                             timeoutSpan
                                 }
 
-                            let! (success, output) =
+                            let! processResult =
                                 match ctx with
                                 | Some c ->
                                     PluginCtxHelpers.withSubtask c config.Project $"testing {config.Project}" runTest
                                 | None -> runTest
+
+                            let success = isSucceeded processResult
+                            let output = outputOf processResult
 
                             if success then
                                 logToCtx $"{config.Project}: passed"
@@ -450,10 +455,10 @@ let private executeTests
                                     Logging.error "test-prune" $"  %s{line}"
 
                             let result =
-                                if success then
-                                    TestsPassed(output, wasFiltered)
-                                else
-                                    TestsFailed(output, wasFiltered)
+                                match processResult with
+                                | ProcessOutcome.Succeeded _ -> TestsPassed(output, wasFiltered)
+                                | ProcessOutcome.TimedOut(after, _) -> TestsTimedOut(output, after, wasFiltered)
+                                | ProcessOutcome.Failed _ -> TestsFailed(output, wasFiltered)
 
                             // Post-test coverage step: merge or convert the coverlet JSON
                             // output into the Cobertura file downstream consumers read.
@@ -861,7 +866,8 @@ let create
                                                     |> Map.toList
                                                     |> List.choose (fun (name, r) ->
                                                         match r with
-                                                        | TestsFailed _ -> Some name
+                                                        | TestsFailed _
+                                                        | TestsTimedOut _ -> Some name
                                                         | _ -> None)
                                                     |> Set.ofList
 
@@ -1161,10 +1167,7 @@ let create
                         let failed =
                             testResults.Results
                             |> Map.toList
-                            |> List.filter (fun (_, r) ->
-                                match r with
-                                | TestsFailed _ -> true
-                                | _ -> false)
+                            |> List.filter (fun (_, r) -> not (TestResult.isPassed r))
                             |> List.length
 
                         let passed = total - failed
@@ -1174,16 +1177,11 @@ let create
 
                         let selectedSuffix = if anyFiltered then "yes" else "no"
 
-                        // Detect per-project timeouts by scanning failed-run output
-                        // for the runProcessWithTimeout marker. Any project timeout
-                        // flips the plugin's terminal outcome to TimedOut.
+                        // Any project timeout flips the plugin's terminal outcome to TimedOut.
                         let timedOutProjects =
                             testResults.Results
                             |> Map.toList
-                            |> List.choose (fun (name, r) ->
-                                match r with
-                                | TestsFailed(output, _) when output.StartsWith(TimedOutPrefix) -> Some name
-                                | _ -> None)
+                            |> List.choose (fun (name, r) -> if TestResult.isTimedOut r then Some name else None)
 
                         if not timedOutProjects.IsEmpty then
                             let names = timedOutProjects |> String.concat ", "
@@ -1207,7 +1205,8 @@ let create
                                     |> Map.toList
                                     |> List.choose (fun (name, r) ->
                                         match r with
-                                        | TestsFailed _ -> Some name
+                                        | TestsFailed _
+                                        | TestsTimedOut _ -> Some name
                                         | _ -> None)
 
                                 let names = failedProjects |> String.concat ", "

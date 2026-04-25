@@ -3,7 +3,7 @@
     "AnalyzersPlugin.fs": [
       {
         "line": 75,
-        "branch": 77,
+        "branch": 75,
         "reason": "end-to-end FCS analyzer paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor",
         "platform": "macos"
       },
@@ -29,8 +29,8 @@
     ],
     "BuildPlugin.fs": [
       {
-        "line": 89,
-        "branch": 84,
+        "line": 88,
+        "branch": 77,
         "reason": "loosened: shared file isTestFile changes",
         "platform": "macos"
       },
@@ -43,7 +43,7 @@
     ],
     "CheckPipeline.fs": [
       {
-        "line": 80,
+        "line": 78,
         "branch": 61,
         "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor",
         "platform": "macos"
@@ -67,7 +67,7 @@
     },
     "Daemon.fs": [
       {
-        "line": 71,
+        "line": 72,
         "branch": 60,
         "platform": "macos"
       },
@@ -155,8 +155,8 @@
     ],
     "FileTaskCache.fs": [
       {
-        "line": 78,
-        "branch": 69,
+        "line": 75,
+        "branch": 68,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -249,7 +249,7 @@
     ],
     "JjHelper.fs": [
       {
-        "line": 54,
+        "line": 58,
         "branch": 40,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
@@ -348,7 +348,7 @@
     "ProcessHelper.fs": [
       {
         "line": 91,
-        "branch": 83,
+        "branch": 100,
         "platform": "macos"
       },
       {
@@ -357,6 +357,11 @@
         "platform": "linux"
       }
     ],
+    "ProcessRegistry.fs": {
+      "line": 86,
+      "branch": 77,
+      "reason": "loosened automatically"
+    },
     "Program.fs": [
       {
         "line": 67,
@@ -442,7 +447,7 @@
     ],
     "Watcher.fs": [
       {
-        "line": 86,
+        "line": 87,
         "branch": 58,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"

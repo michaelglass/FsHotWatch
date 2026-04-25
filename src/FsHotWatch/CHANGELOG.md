@@ -2,8 +2,33 @@
 
 ## Unreleased
 
+### Added
+
+- **`FsHotWatch.ProcessHelper.ProcessOutcome` DU** (`Succeeded of output` /
+  `Failed of exitCode * output` / `TimedOut of after * tail`) replaces the
+  historical `bool * string` return on `runProcessWithTimeout` / `runProcess`.
+  Callers pattern-match instead of parsing a magic prefix from the output. Helpers:
+  `isSucceeded`, `isTimedOut`, `outputOf`.
+- **`FsHotWatch.ProcessHelper.WorkOutcome<'a>` DU** (`WorkCompleted of 'a` /
+  `WorkTimedOut of after`) replaces `Result<'a, string>` on `runWithTimeout`.
+- **`FsHotWatch.Events.TestResult.TestsTimedOut of output * after * wasFiltered`** —
+  new variant distinguishing timeout-killed test runs from regular failures.
+  `TestResult.isTimedOut` helper added; existing helpers updated to handle the
+  new case. `FileTaskCache` round-trips it under the `"timed-out"` JSON tag.
+- **`FsHotWatch.ProcessRegistry`** module — per-daemon, `AsyncLocal`-scoped
+  registry of live `Process` handles. `Daemon.Dispose` calls `KillAll` so
+  `dotnet fs-hot-watch stop` reaps in-flight test runners (and their playwright
+  drivers etc.) instead of leaving orphans that contend with the next start.
+  `runProcessWithTimeout` registers spawned children and unregisters in
+  `finally`.
+
 ### Changed
 
+- **BREAKING:** `runProcessWithTimeout` / `runProcess` return `ProcessOutcome`
+  (was `bool * string`).
+- **BREAKING:** `runWithTimeout` returns `WorkOutcome<'a>` (was `Result<'a, string>`).
+- **BREAKING:** `FsHotWatch.ProcessHelper.TimedOutPrefix` literal removed.
+  Pattern-match the new DUs.
 - **Plugin status visibility sweep.** Plugins are now responsible for calling
   `ctx.CompleteWithSummary` explicitly at the end of each run; the framework
   no longer derives a summary from the last log line or the longest-running

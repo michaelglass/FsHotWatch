@@ -300,7 +300,7 @@ let ``build plugin triggers on ProjectChanged`` () =
     test <@ getBuild () = Some BuildSucceeded @>
 
 [<Fact(Timeout = 5000)>]
-let ``build is skipped when only test files change`` () =
+let ``build is skipped when only test files change, after FCS confirms the file`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
 
@@ -319,8 +319,46 @@ let ``build is skipped when only test files change`` () =
 
     host.EmitFileChanged(SourceChanged [ "/tmp/tests/MyTests/Tests.fs" ])
 
+    // BuildSucceeded must not be emitted before FCS finishes checking the changed file —
+    // downstream test-prune queries stale AffectedTests if it fires too early.
+    Threading.Thread.Sleep(200)
+    test <@ getBuild () = None @>
+
+    host.EmitFileChecked(fakeFileCheckResult "/tmp/tests/MyTests/Tests.fs")
+
     waitForTerminalStatus host "build" 5000
 
+    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    test <@ getBuild () = Some BuildSucceeded @>
+
+[<Fact(Timeout = 5000)>]
+let ``build skip waits for FileChecked of all changed test files before emitting BuildSucceeded`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let (getBuild, recorder) = buildRecorder ()
+
+    let graph = ProjectGraph()
+
+    graph.RegisterProject(
+        AbsProjectPath.create "/tmp/tests/MyTests/MyTests.fsproj",
+        [ AbsFilePath.create "/tmp/tests/MyTests/A.fs"
+          AbsFilePath.create "/tmp/tests/MyTests/B.fs" ],
+        []
+    )
+
+    let handler = BuildPlugin.create "false" "" [] graph [ "MyTests" ] None [] None None
+
+    host.RegisterHandler(recorder)
+    host.RegisterHandler(handler)
+
+    host.EmitFileChanged(SourceChanged [ "/tmp/tests/MyTests/A.fs"; "/tmp/tests/MyTests/B.fs" ])
+
+    // First FileChecked: still missing B.fs, build must NOT have completed yet.
+    host.EmitFileChecked(fakeFileCheckResult "/tmp/tests/MyTests/A.fs")
+    Threading.Thread.Sleep(150)
+    test <@ getBuild () = None @>
+
+    // Second FileChecked: now both files seen, BuildSucceeded should fire.
+    host.EmitFileChecked(fakeFileCheckResult "/tmp/tests/MyTests/B.fs")
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 

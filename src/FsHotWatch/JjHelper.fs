@@ -9,13 +9,11 @@ open FsHotWatch.Logging
 /// This call triggers jj's auto-snapshot, so the returned ID reflects current disk state.
 let getWorkingCopyCommitId (repoRoot: string) : string option =
     try
-        let (success, output) =
-            ProcessHelper.runProcess "jj" "log -r @ --no-graph -T commit_id" repoRoot []
-
-        if success then
+        match ProcessHelper.runProcess "jj" "log -r @ --no-graph -T commit_id" repoRoot [] with
+        | ProcessOutcome.Succeeded output ->
             let id = output.Trim()
             if id.Length > 0 then Some id else None
-        else
+        | _ ->
             Logging.debug "jj-helper" "Failed to get jj commit_id"
             None
     with ex ->
@@ -25,14 +23,12 @@ let getWorkingCopyCommitId (repoRoot: string) : string option =
 /// Get files changed between two jj commits. Returns absolute paths.
 let getChangedFiles (repoRoot: string) (fromCommitId: string) : Set<string> =
     try
-        let (success, output) =
-            ProcessHelper.runProcess "jj" $"diff --name-only --from %s{fromCommitId} --to @" repoRoot []
-
-        if success then
+        match ProcessHelper.runProcess "jj" $"diff --name-only --from %s{fromCommitId} --to @" repoRoot [] with
+        | ProcessOutcome.Succeeded output ->
             output.Split([| '\n'; '\r' |], StringSplitOptions.RemoveEmptyEntries)
             |> Array.map (fun relPath -> Path.GetFullPath(Path.Combine(repoRoot, relPath.Trim())))
             |> Set.ofArray
-        else
+        | _ ->
             Logging.debug "jj-helper" "jj diff failed, treating all files as changed"
             Set.empty
     with ex ->

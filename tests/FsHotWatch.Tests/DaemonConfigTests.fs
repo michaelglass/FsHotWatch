@@ -1024,3 +1024,31 @@ let ``parseConfig fileCommand timeoutSec lands on entry`` () =
     match config.FileCommands with
     | [ fc ] -> test <@ fc.TimeoutSec = Some 60 @>
     | _ -> failwith "expected one file command"
+
+// ---------------------------------------------------------------------------
+// shellInvocation — shell-hook command dispatch
+// ---------------------------------------------------------------------------
+//
+// Regression: `beforeRun`/hooks used to run the user's command via
+// `splitCommand` → `runProcess`, which tokenizes but doesn't invoke a shell.
+// That silently ignored `&&`, `|`, `$VAR`, etc., because those are shell
+// metacharacters, not arguments. Now we dispatch through `/bin/sh -c`
+// (unix) or `cmd /C` (windows) so the string is interpreted as a shell
+// command.
+
+[<Fact(Timeout = 2000)>]
+let ``shellInvocation wraps with /bin/sh -c`` () =
+    let (cmd, args) =
+        FsHotWatch.Cli.DaemonConfig.shellInvocation "echo hi && echo there"
+
+    test <@ cmd = "/bin/sh" @>
+    test <@ args.StartsWith("-c ") @>
+    test <@ args.Contains("echo hi && echo there") @>
+
+[<Fact(Timeout = 2000)>]
+let ``shellInvocation escapes double quotes in the passed command`` () =
+    // Inside the -c string, embedded double quotes must be backslash-escaped
+    // so the outer `"..."` quoting the whole command stays balanced.
+    let (_, args) = FsHotWatch.Cli.DaemonConfig.shellInvocation "echo \"hello world\""
+
+    test <@ args.Contains("\\\"hello world\\\"") @>

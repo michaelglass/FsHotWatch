@@ -1,14 +1,59 @@
 module FsHotWatch.Tests.TestHelpers
 
 open System
+open System.Diagnostics
 open System.IO
+open System.Runtime.CompilerServices
 open System.Threading
 open FSharp.Compiler.CodeAnalysis
+open FsHotWatch.Events
 
 /// Shared FSharpChecker for tests that only need basic compilation.
 /// Lazy so it's only created if actually used.
 let sharedChecker =
     lazy FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+
+/// A non-null FSharpParseFileResults built without invoking the constructor.
+/// Plugins under test that consume FileCheckResult never inspect parse fields.
+let dummyParseResults () : FSharpParseFileResults =
+    RuntimeHelpers.GetUninitializedObject(typeof<FSharpParseFileResults>) :?> FSharpParseFileResults
+
+/// Build a FileCheckResult with safe-uninitialized FCS parts. Lets plugin tests
+/// fire FileChecked events without spinning up real FCS.
+let fakeFileCheckResult (file: string) : FileCheckResult =
+    { File = file
+      Source = "module Fake"
+      ParseResults = dummyParseResults ()
+      CheckResults = ParseOnly
+      ProjectOptions = Unchecked.defaultof<_>
+      Version = 0L }
+
+/// Spawn a redirected `sleep N` child for tests that need a long-lived but
+/// inert process (registry kill paths, daemon teardown checks).
+let startSleep (seconds: int) : Process =
+    let psi = ProcessStartInfo("sleep", string seconds)
+    psi.UseShellExecute <- false
+    psi.RedirectStandardOutput <- true
+    psi.RedirectStandardError <- true
+    Process.Start(psi)
+
+/// Run `body` with a freshly-spawned `sleep` child, force-killing the process
+/// in `finally` so an assertion failure inside `body` cannot leak the child
+/// (registry KillAll swallows errors, so `use proc = startSleep ...` alone is
+/// not enough on its own).
+let withTrackedSleep (seconds: int) (body: Process -> 'a) : 'a =
+    let proc = startSleep seconds
+
+    try
+        body proc
+    finally
+        try
+            if not proc.HasExited then
+                proc.Kill(entireProcessTree = true)
+        with _ ->
+            ()
+
+        proc.Dispose()
 
 /// Poll until condition is true or timeout (default 50ms poll interval).
 let waitUntil (condition: unit -> bool) (timeoutMs: int) =

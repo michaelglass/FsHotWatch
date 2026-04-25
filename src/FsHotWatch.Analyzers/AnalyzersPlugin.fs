@@ -242,7 +242,8 @@ let internal createWithSlowHook
                                                 client.RunAnalyzersSafely(context) |> Async.RunSynchronously
 
                                             match runWithTimeout analyzerTimeout runAnalyzers with
-                                            | Result.Error reason ->
+                                            | WorkTimedOut after ->
+                                                let reason = $"timed out after %d{int after.TotalSeconds}s"
                                                 error "analyzers" $"Analyzers TIMED OUT for %s{result.File}: %s{reason}"
 
                                                 ctx.EndSubtask PrimarySubtaskKey
@@ -258,7 +259,7 @@ let internal createWithSlowHook
                                             // terminal (TimedOut). Reposting would trigger the
                                             // AnalysisFailed handler's completeWith which records a
                                             // second RunRecord and overwrites the TimedOut outcome.
-                                            | Result.Ok messages ->
+                                            | WorkCompleted messages ->
 
                                                 let entries =
                                                     messages

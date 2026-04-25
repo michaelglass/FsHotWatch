@@ -583,11 +583,24 @@ let watchRepoConfigFile (repoRoot: string) (onChange: string -> unit) : IDisposa
 
 /// Wrap a shell command string into a callback that runs via splitCommand + runProcess.
 /// Returns (success, output).
+/// Split the (command, args) pair a shell hook should actually invoke.
+/// Runs the user's command string through `/bin/sh -c` so shell features
+/// (`&&`, pipes, globs, env-var interpolation) work as written in
+/// `.fs-hot-watch.json`. Unix-only — Windows isn't a supported platform.
+/// Exposed for unit-testability.
+let shellInvocation (cmd: string) : string * string =
+    // Escape embedded double quotes so the outer `"..."` around the -c
+    // argument stays balanced for /bin/sh.
+    let escaped = cmd.Replace("\"", "\\\"")
+    "/bin/sh", "-c \"" + escaped + "\""
+
 let private makeShellHookWithResult (label: string) (repoRoot: string) (cmd: string) : unit -> bool * string =
     fun () ->
         Logging.info label $"Running %s{label}: %s{cmd}"
-        let (command, args) = FsHotWatch.StringHelpers.splitCommand cmd
-        let (success, output) = runProcess command args repoRoot []
+        let (command, args) = shellInvocation cmd
+        let result = runProcess command args repoRoot []
+        let success = isSucceeded result
+        let output = outputOf result
 
         if not success then
             Logging.error label $"%s{label} failed:\n%s{output}"
