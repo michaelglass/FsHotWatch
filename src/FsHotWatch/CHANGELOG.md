@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.10 - 2026-04-25
+
 ### Added
 
 - **`FsHotWatch.ProcessHelper.ProcessOutcome` DU** (`Succeeded of output` /
