@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.8 - 2026-04-25
+
 ### Added
 
 - Set `FSHW_RAN_FULL_SUITE=true|false` on every `afterTests` command. `"true"`
