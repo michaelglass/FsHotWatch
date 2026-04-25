@@ -101,6 +101,20 @@ let ``daemon starts and stops without error`` () =
 
         test <@ task.IsCompleted @>)
 
+[<Fact(Timeout = 15000)>]
+let ``daemon Dispose kills tracked child processes`` () =
+    // Regression: `dotnet fs-hot-watch stop` used to leak in-flight test runners.
+    withTrackedSleep 60 (fun proc ->
+        withTempDir "daemon-stop" (fun tmpDir ->
+            let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+            // Track manually against this daemon's registry — bypasses the AsyncLocal
+            // path and directly verifies Dispose drains the registry it owns.
+            daemon.ProcessRegistry.Track proc
+            (daemon :> IDisposable).Dispose())
+
+        proc.WaitForExit(5000) |> ignore
+        test <@ proc.HasExited @>)
+
 [<Fact(Timeout = 5000)>]
 let ``daemon suppresses watcher events for preprocessor-modified files`` () =
     withTempDir "daemon" (fun tmpDir ->

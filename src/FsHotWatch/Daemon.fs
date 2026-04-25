@@ -684,8 +684,19 @@ type Daemon
 
     let mutable disposed = false
 
+    // Per-daemon process registry. Installed as AsyncLocal current on construction
+    // so plugin-spawned children (test runners, playwright drivers, etc.) register
+    // against this daemon's registry. Dispose kills everything still tracked —
+    // that's how `dotnet fs-hot-watch stop` reaps in-flight test runners.
+    // The install IDisposable is intentionally discarded: the daemon owns this
+    // registry for its full lifetime.
+    let processRegistry = ProcessRegistry.Registry()
+    do ProcessRegistry.install processRegistry |> ignore
+
     /// The plugin host that manages plugin lifecycle and event dispatch.
     member _.Host = host
+
+    member internal _.ProcessRegistry = processRegistry
 
     /// The check pipeline that performs incremental file checking.
     member _.Pipeline = pipeline
@@ -703,6 +714,10 @@ type Daemon
         member this.Dispose() =
             if not disposed then
                 disposed <- true
+                // Call directly on the daemon's own registry rather than the
+                // AsyncLocal current one — Dispose may run from a different
+                // async context than the one that installed it.
+                processRegistry.KillAll()
                 lifetime.Cancel()
                 lifetime.Dispose()
                 (watcher :> IDisposable).Dispose()

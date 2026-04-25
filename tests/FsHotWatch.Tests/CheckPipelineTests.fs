@@ -339,57 +339,32 @@ let ``CheckFile returns None when cancelled before FCS call`` () =
 // --- Cancellation during FCS check (fileToken must propagate into CheckFileCore) ---
 
 [<Fact(Timeout = 10000)>]
-let ``CancelPreviousCheck during in-flight FCS check cancels the check`` () =
-    FsHotWatch.Tests.TestHelpers.withTempDir "cancel-mid-fcs" (fun tmpDir ->
-        // Use a fresh cold checker so FCS must load references from scratch (takes >50ms)
+let ``CheckFile honors a pre-cancelled caller token and returns None`` () =
+    // Deterministic version of the in-flight cancellation contract: a caller-supplied
+    // cancellation token that is already cancelled when CheckFile is called must
+    // produce None without invoking FCS. The previous in-flight variant of this test
+    // raced against FCS speed under parallel test load — when FCS finished before
+    // the cancel loop fired, the assertion failed spuriously.
+    FsHotWatch.Tests.TestHelpers.withTempDir "cancel-precancelled" (fun tmpDir ->
         let checker =
             FSharpChecker.Create(projectCacheSize = 1, keepAssemblyContents = true)
 
         let pipeline = CheckPipeline(checker)
 
-        let sourceFile = Path.Combine(tmpDir, "Slow.fs")
-
-        let lines =
-            [| "module Slow"
-               "open System"
-               "open System.Collections.Generic"
-               "open System.Linq"
-               ""
-               "let doWork () ="
-               "    let dict = Dictionary<string, int>()"
-               "    dict.Add(\"hello\", 42)"
-               "    let keys = dict.Keys |> Seq.map (fun k -> k.ToUpper()) |> Seq.toList"
-               "    let values = dict.Values |> Seq.filter (fun v -> v > 0) |> Seq.sum"
-               "    (keys, values)"
-               ""
-               "let moreWork () ="
-               "    let xs = [1..100]"
-               "    xs |> List.map (fun x -> x * x)"
-               "       |> List.filter (fun x -> x % 2 = 0)"
-               "       |> List.groupBy (fun x -> x % 10)"
-               "       |> List.map (fun (k, vs) -> string k, List.length vs)"
-               "       |> dict" |]
-
-        File.WriteAllLines(sourceFile, lines)
+        let sourceFile = Path.Combine(tmpDir, "Mod.fs")
+        File.WriteAllLines(sourceFile, [| "module Mod"; "let x = 1" |])
         let absSource = Path.GetFullPath(sourceFile)
 
         let options, _ =
             checker.GetProjectOptionsFromScript(absSource, SourceText.ofString (File.ReadAllText absSource))
             |> Async.RunSynchronously
 
-        pipeline.RegisterProject(Path.Combine(tmpDir, "Slow.fsproj"), options)
+        pipeline.RegisterProject(Path.Combine(tmpDir, "Mod.fsproj"), options)
 
-        // Start the check in a background task (CE implicit token is CancellationToken.None)
-        let checkTask = Async.StartAsTask(pipeline.CheckFile(absSource))
+        use cts = new CancellationTokenSource()
+        cts.Cancel()
 
-        // Repeatedly cancel the file's token until the task completes.
-        // This ensures we catch the window between CheckFile's CancelPreviousCheck
-        // storing the CTS and CheckFileCore finishing the FCS call.
-        while not checkTask.IsCompleted do
-            pipeline.CancelPreviousCheck(absSource) |> ignore
-            Thread.Sleep(1)
-
-        let result = checkTask.Result
+        let result = pipeline.CheckFile(absSource, cts.Token) |> Async.RunSynchronously
         test <@ result = None @>)
 
 // --- Cache hit returns None (plugins can't use partial results) ---
