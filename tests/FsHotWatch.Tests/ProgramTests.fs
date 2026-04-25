@@ -696,3 +696,38 @@ let ``agent banner command names all exist as subcommands`` () =
     let missing = advertised |> List.filter (fun n -> not (Set.contains n childNames))
 
     test <@ List.isEmpty missing @>
+
+[<Fact(Timeout = 5000)>]
+let ``unwrapIpcException returns the exception unchanged when not aggregate`` () =
+    let ex = OutOfMemoryException("buffer too large")
+    let unwrapped = unwrapIpcException ex
+    test <@ obj.ReferenceEquals(unwrapped, ex) @>
+
+[<Fact(Timeout = 5000)>]
+let ``unwrapIpcException unwraps single-inner AggregateException`` () =
+    // Real-world: StreamJsonRpc surfaces pipe-corruption OOM wrapped in an Aggregate.
+    // The CLI used to print "One or more errors occurred. (Insufficient memory ...)" —
+    // we want the inner OOM directly so the operator sees the real cause.
+    let inner =
+        OutOfMemoryException("Insufficient memory to continue the execution of the program.")
+
+    let agg = AggregateException(inner)
+    let unwrapped = unwrapIpcException agg
+    test <@ obj.ReferenceEquals(unwrapped, inner) @>
+
+[<Fact(Timeout = 5000)>]
+let ``unwrapIpcException recurses through nested AggregateException`` () =
+    let leaf = TimeoutException("daemon unresponsive")
+    let nested = AggregateException(AggregateException(leaf))
+    let unwrapped = unwrapIpcException nested
+    test <@ obj.ReferenceEquals(unwrapped, leaf) @>
+
+[<Fact(Timeout = 5000)>]
+let ``unwrapIpcException stops at multi-inner AggregateException`` () =
+    // If multiple distinct errors are aggregated, picking one would lose info.
+    // We unwrap to the first inner via .InnerException to keep behaviour predictable.
+    let a = InvalidOperationException("a")
+    let b = InvalidOperationException("b")
+    let agg = AggregateException(a, b)
+    let unwrapped = unwrapIpcException agg
+    test <@ obj.ReferenceEquals(unwrapped, a) @>

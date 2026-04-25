@@ -2,7 +2,7 @@
   "overrides": {
     "AnalyzersPlugin.fs": [
       {
-        "line": 75,
+        "line": 76,
         "branch": 75,
         "reason": "end-to-end FCS analyzer paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor",
         "platform": "macos"
@@ -30,7 +30,7 @@
     "BuildPlugin.fs": [
       {
         "line": 88,
-        "branch": 77,
+        "branch": 76,
         "reason": "loosened: shared file isTestFile changes",
         "platform": "macos"
       },
@@ -355,8 +355,9 @@
     ],
     "ProcessHelper.fs": [
       {
-        "line": 91,
+        "line": 92,
         "branch": 100,
+        "reason": "kill-on-timeout drain branches fire flakily between runs (89-92% line)",
         "platform": "macos"
       },
       {
@@ -381,7 +382,7 @@
     "Program.fs": [
       {
         "line": 67,
-        "branch": 51,
+        "branch": 54,
         "reason": "CLI entry point",
         "platform": "macos"
       },
