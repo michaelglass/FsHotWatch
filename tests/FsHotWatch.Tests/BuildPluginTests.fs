@@ -98,6 +98,65 @@ let ``build-status command returns not run initially`` () =
     test <@ result.Value.Contains("not run") @>
 
 [<Fact(Timeout = 5000)>]
+let ``formatSilentFailureDiagnostic includes exit code and output length`` () =
+    let output = "Build FAILED.\n    0 Warning(s)\n    0 Error(s)\n\nTime Elapsed 00:00:02.96"
+    let detail = formatSilentFailureDiagnostic 1 output
+    test <@ detail.Contains "exit=1" @>
+    test <@ detail.Contains $"output={output.Length} bytes" @>
+    test <@ detail.Contains "MSBuild aborted" @>
+
+[<Fact(Timeout = 5000)>]
+let ``formatSilentFailureDiagnostic includes elapsed time when present in output`` () =
+    let output = "Build FAILED.\n    0 Warning(s)\n    0 Error(s)\n\nTime Elapsed 00:01:23.45"
+    let detail = formatSilentFailureDiagnostic 134 output
+    test <@ detail.Contains "elapsed=00:01:23.45" @>
+
+[<Fact(Timeout = 5000)>]
+let ``formatSilentFailureDiagnostic omits elapsed when not present`` () =
+    let output = "Build FAILED.\n    0 Warning(s)\n    0 Error(s)"
+    let detail = formatSilentFailureDiagnostic 1 output
+    test <@ not (detail.Contains "elapsed=") @>
+
+[<Fact(Timeout = 5000)>]
+let ``build plugin sets MSBUILDDISABLENODEREUSE to prevent worker process accumulation`` () =
+    // Regression: when the daemon (a long-running dotnet process) repeatedly
+    // spawns `dotnet build`, MSBuild Server's `/nodeReuse:true` workers
+    // accumulate as orphan processes — observed 431 stale `MSBuild.dll
+    // /nodemode:1 /nodeReuse:true` workers after a few hours of editing.
+    // Stale workers serve subsequent builds with bad cwd/state, producing
+    // the silent "Build FAILED. 0 errors" output where MSBuild reports zero
+    // projects built. Setting MSBUILDDISABLENODEREUSE=1 in the build env
+    // prevents reuse and forces fresh workers per invocation.
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    // The shell test exits 0 if the env var is "1", non-zero otherwise.
+    let handler =
+        BuildPlugin.create
+            "sh"
+            "-c \"test \\\"$MSBUILDDISABLENODEREUSE\\\" = \\\"1\\\"\""
+            []
+            (ProjectGraph())
+            []
+            None
+            []
+            None
+            None
+
+    host.RegisterHandler(handler)
+
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    waitForTerminalStatus host "build" 5000
+
+    match host.GetStatus("build") with
+    | Some(Completed _) -> ()
+    | other ->
+        Assert.Fail(
+            $"Expected build Completed (MSBUILDDISABLENODEREUSE=1 should be in env), \
+              got: %A{other}"
+        )
+
+[<Fact(Timeout = 5000)>]
 let ``build plugin emits BuildCompleted on successful build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
