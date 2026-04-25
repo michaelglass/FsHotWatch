@@ -33,6 +33,18 @@ type BuildMsg = BuildDone of BuildOutcome
 /// determine the BuildOutcome and the list of ErrorEntry diagnostics to surface.
 /// On failure with no parsed MSBuild diagnostics, the raw output is wrapped as
 /// a single error entry so callers always have something to report.
+
+/// Diagnostic for the "MSBuild exited non-zero but produced no parseable
+/// diagnostics" failure mode (typically a bail during evaluation/restore).
+/// Surfaces exit code, output size, and any "Time Elapsed" tail to give the
+/// next debugging session a starting point.
+let formatSilentFailureDiagnostic (exitCode: int) (output: string) : string =
+    let elapsed =
+        let m = System.Text.RegularExpressions.Regex.Match(output, @"Time Elapsed ([\d:.]+)")
+        if m.Success then $" elapsed={m.Groups.[1].Value}" else ""
+
+    $"MSBuild aborted before producing diagnostics: exit=%d{exitCode} output=%d{output.Length} bytes%s{elapsed}"
+
 let decideBuildOutcome (success: bool) (output: string) : BuildOutcome * ErrorEntry list =
     let parsed = BuildDiagnostics.parseMSBuildDiagnostics output
 
@@ -60,7 +72,19 @@ let create
     =
     let buildCommand = command
     let buildArgs = args
-    let env = environment
+
+    // Disable MSBuild node reuse so each `dotnet build` spawns fresh workers
+    // instead of reusing pooled ones. Without this, a long-running daemon
+    // accumulates hundreds of orphan MSBuild worker processes
+    // (`/nodemode:1 /nodeReuse:true`); reused workers retain stale cwd/state
+    // from prior invocations and silently report "Build FAILED. 0 errors" with
+    // zero projects built. Caller-supplied env wins on the same key.
+    let env =
+        if environment |> List.exists (fun (k, _) -> k = "MSBUILDDISABLENODEREUSE") then
+            environment
+        else
+            ("MSBUILDDISABLENODEREUSE", "1") :: environment
+
     let testProjectNameSet = testProjectNames |> Set.ofList
 
     let buildTimeout =
@@ -138,6 +162,16 @@ let create
                         ctx.Log "Build TIMED OUT"
                         error "build" "Build TIMED OUT"
                         ctx.CompleteWithTimeout summary
+                    | BuildOutputFailed _, Failed(exitCode, output) ->
+                        ctx.Log "Build FAILED"
+                        error "build" "Build FAILED"
+
+                        let parsedCount = BuildDiagnostics.parseMSBuildDiagnostics output |> List.length
+
+                        if parsedCount = 0 then
+                            let detail = formatSilentFailureDiagnostic exitCode output
+                            ctx.Log detail
+                            error "build" detail
                     | BuildOutputFailed _, _ ->
                         ctx.Log "Build FAILED"
                         error "build" "Build FAILED"
