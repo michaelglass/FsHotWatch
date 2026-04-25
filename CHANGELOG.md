@@ -12,13 +12,34 @@ All notable changes to FsHotWatch packages are documented here.
   - Per-build-entry (`build.timeoutSec`) and per-file-command entry (`fileCommands[].timeoutSec`).
   - Per-test-project (`tests.projects[].timeoutSec`).
 - `FsHotWatch.Events.RunOutcome.TimedOut of reason: string` — new variant recorded when a plugin's configured timeout fires.
-- `FsHotWatch.ProcessHelper.runProcessWithTimeout` — kills the child process tree on expiry and prefixes output with `timed out after Ns` (best-effort drain). `runProcess` now delegates with `Timeout.InfiniteTimeSpan`.
+- `FsHotWatch.ProcessHelper.ProcessOutcome` DU (`Succeeded` / `Failed of exitCode * output` / `TimedOut of after * tail`) replaces the historical `bool * string` return on `runProcessWithTimeout` / `runProcess`. Callers pattern-match instead of parsing a magic prefix from the output.
+- `FsHotWatch.ProcessHelper.WorkOutcome<'a>` DU (`WorkCompleted` / `WorkTimedOut of after`) replaces `Result<'a, string>` on `runWithTimeout`.
+- `FsHotWatch.Events.TestResult.TestsTimedOut of output * after * wasFiltered` — distinguishes timeout-killed test runs from regular failures. `TestResult.isTimedOut` helper added.
 - `PluginCtx.CompleteWithTimeout reason` — lets a plugin flip its terminal outcome to `TimedOut` without introducing a new `PluginStatus` case. Backed by `PluginHostServices.SetNextTerminalOutcome` + `PluginActivity.SetNextTerminalOutcome`.
 - Renderer: distinct `⏱` glyph in compact/verbose modes; `timed-out` token with `summary="timed out: …"` in agent mode.
+
+#### Removed
+- **BREAKING:** `FsHotWatch.ProcessHelper.TimedOutPrefix` literal. Pattern-match `ProcessOutcome` / `TestResult.TestsTimedOut` instead.
 
 #### Behavior
 - On timeout the daemon kills the process tree, records `TimedOut`, and keeps running. The next change retriggers normally.
 - Plugins wired: `TestPrune` (per-project), `Build` (per build entry), `FileCommand` (per entry). Lint / Analyzers / Fantomas are in-process and use `Timeout.InfiniteTimeSpan` by default; timeout wrapping for those runs on a future change.
+
+### Daemon shutdown reaps in-flight child processes
+
+#### Added
+- `FsHotWatch.ProcessRegistry` — per-daemon `AsyncLocal`-scoped registry of live `Process` handles. `Daemon.Dispose` calls `processRegistry.KillAll()` so `dotnet fs-hot-watch stop` no longer leaves orphan dotnet test runners (and their playwright drivers) competing with the next start.
+- `Daemon.ProcessRegistry` (internal) — used by tests to track child processes against a daemon's registry without going through `runProcessWithTimeout`.
+
+#### Fixed
+- `runProcessWithTimeout` now registers the spawned process and unregisters in a `finally` block so daemon shutdown can tear it down even mid-call.
+
+### Build plugin: skip-for-test-files-only no longer races FCS
+
+#### Fixed
+- `FsHotWatch.Build.BuildPlugin` test-only-skip path used to emit `BuildSucceeded` instantly, beating FCS to the file. Test-prune then dispatched off stale `AffectedTests` and skipped runs that should have happened.
+- New `BuildPhase.WaitingForFcsPhase` variant: when `SourceChanged` carries only test files, the plugin transitions into a wait phase carrying the awaiting set (path-normalized via `Path.GetFullPath`) and emits `BuildSucceeded` only once every file has produced a `FileChecked`. Subscribes to `SubscribeFileChecked`.
+- **BREAKING:** `BuildPhase` is a public DU; consumers that pattern-match on it must add a `WaitingForFcsPhase` case.
 
 ### FsHotWatch.Coverage
 

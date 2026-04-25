@@ -109,7 +109,8 @@ let internal createFormatCheckWithSlowHook
 
                             try
                                 match runWithTimeout formatTimeout work with
-                                | Result.Error reason ->
+                                | WorkTimedOut after ->
+                                    let reason = $"timed out after %d{int after.TotalSeconds}s"
                                     Logging.error "format" $"Format check TIMED OUT for %s{file}: %s{reason}"
 
                                     ctx.CompleteWithTimeout reason
@@ -119,7 +120,7 @@ let internal createFormatCheckWithSlowHook
                                     )
 
                                     timedOut <- true
-                                | Result.Ok(source, formatted) ->
+                                | WorkCompleted(source, formatted) ->
                                     if formatted.Code <> source then
                                         newUnformatted <- newUnformatted |> Set.add file
                                         ctx.Log $"unformatted: {Path.GetFileName file}"
