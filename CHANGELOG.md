@@ -4,6 +4,20 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### MSBuild orphan workers fixed at the ProcessHelper layer
+
+#### Added
+- `FsHotWatch.ProcessHelper.isDotnetCommand` and `mergeDotnetEnv` (public).
+- `runProcessWithTimeout` now injects `MSBUILDDISABLENODEREUSE=1` automatically whenever the command is `dotnet` (or `dotnet.exe`) and the caller hasn't set the key. Eliminates orphan `MSBuild.dll /nodemode:1` workers across daemon-spawned builds without requiring per-plugin opt-in. See `docs/msbuild-node-reuse-bug.md` for the reproduction (verified: 5 builds → 22 orphan workers without env, single-generation with).
+- `FsHotWatch.PluginFramework.PluginCtxHelpers.reportOrClearFile` — collapses the per-file "if entries.IsEmpty then ClearErrors else ReportErrors" idiom shared by Lint, Analyzers, and FormatCheck.
+
+### TestPrune: rerun history + IPC error formatting + silent-build diagnostic
+
+#### Added
+- TestPrune's `RerunQueued` branch now records the just-finished run's terminal Completed/Failed status before kicking off the rerun. Without this, the previous run's outcome was silently dropped from history.
+- `FsHotWatch.Build.BuildPlugin.formatSilentFailureDiagnostic` — surfaces exit code, output size, and "Time Elapsed" tail when `dotnet build` exits non-zero with no parseable diagnostics (typically MSBuild bailing during evaluation/restore).
+- CLI: `unwrapIpcException` peels `AggregateException` wrappers so `dotnet fs-hot-watch` surfaces the underlying OOM / Timeout instead of "One or more errors occurred".
+
 ### Per-task timeouts (cross-package)
 
 #### Added
