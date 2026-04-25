@@ -10,13 +10,13 @@ open FsHotWatch.PluginHost
 open FsHotWatch.Analyzers.AnalyzersPlugin
 open FsHotWatch.Tests.TestHelpers
 
-let private fakeResult file : FileCheckResult =
-    { File = file
-      Source = "let x = 1"
-      ParseResults = Unchecked.defaultof<_>
-      CheckResults = ParseOnly
-      ProjectOptions = Unchecked.defaultof<_>
-      Version = 0L }
+// Analyzer tests use Unchecked.defaultof for ParseResults to verify the plugin
+// guards against null inputs from FCS aborts. Override the shared helper rather
+// than reinvent the record literal at every site.
+let private fakeResult file =
+    { fakeFileCheckResult file with
+        Source = "let x = 1"
+        ParseResults = Unchecked.defaultof<_> }
 
 [<Fact(Timeout = 5000)>]
 let ``plugin has correct name`` () =
@@ -43,13 +43,10 @@ let ``analyzer error path does not crash`` () =
     let handler = create [] None None
     host.RegisterHandler(handler)
 
-    let fakeResult: FileCheckResult =
-        { File = "/tmp/nonexistent/Fake.fs"
-          Source = ""
-          ParseResults = Unchecked.defaultof<_>
-          CheckResults = ParseOnly
-          ProjectOptions = Unchecked.defaultof<_>
-          Version = 0L }
+    let fakeResult =
+        { fakeFileCheckResult "/tmp/nonexistent/Fake.fs" with
+            Source = ""
+            ParseResults = Unchecked.defaultof<_> }
 
     try
         host.EmitFileChecked(fakeResult)
@@ -119,15 +116,12 @@ let ``cache key includes parse-only suffix for ParseOnly results`` () =
     let commitId = "abc123"
     let handler = create [] (Some(fun () -> Some commitId)) None
 
-    let parseOnlyResult: FileCheckResult =
-        { File = "/tmp/Fake.fs"
-          Source = ""
-          ParseResults = Unchecked.defaultof<_>
-          CheckResults = ParseOnly
-          ProjectOptions = Unchecked.defaultof<_>
-          Version = 0L }
+    let parseOnlyResult =
+        { fakeFileCheckResult "/tmp/Fake.fs" with
+            Source = ""
+            ParseResults = Unchecked.defaultof<_> }
 
-    let fullCheckResult: FileCheckResult =
+    let fullCheckResult =
         { parseOnlyResult with
             CheckResults = FullCheck(Unchecked.defaultof<_>) }
 

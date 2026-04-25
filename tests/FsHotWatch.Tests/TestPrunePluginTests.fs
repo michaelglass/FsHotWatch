@@ -59,13 +59,9 @@ let ``test-prune error path sets Failed status on null check results`` () =
     let handler = create ":memory:" "/tmp" None None None None None None
     host.RegisterHandler(handler)
 
-    let fakeResult: FileCheckResult =
-        { File = "/tmp/nonexistent/Fake.fs"
-          Source = ""
-          ParseResults = Unchecked.defaultof<_>
-          CheckResults = ParseOnly
-          ProjectOptions = Unchecked.defaultof<_>
-          Version = 0L }
+    let fakeResult =
+        { fakeFileCheckResult "/tmp/nonexistent/Fake.fs" with
+            Source = "" }
 
     try
         host.EmitFileChecked(fakeResult)
@@ -104,13 +100,9 @@ let ``changed-files tracks files after emit with valid relative path`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         File.WriteAllText(fakeFile, "module Lib\nlet x = 1\n")
 
-        let fakeResult: FileCheckResult =
-            { File = fakeFile
-              Source = "module Lib\nlet x = 1\n"
-              ParseResults = Unchecked.defaultof<_>
-              CheckResults = ParseOnly
-              ProjectOptions = Unchecked.defaultof<_>
-              Version = 0L }
+        let fakeResult =
+            { fakeFileCheckResult fakeFile with
+                Source = "module Lib\nlet x = 1\n" }
 
         try
             host.EmitFileChecked(fakeResult)
@@ -133,13 +125,9 @@ let ``duplicate file checks do not duplicate in changed-files list`` () =
         let fakeFile = Path.Combine(tmpDir, "Dup.fs")
         File.WriteAllText(fakeFile, "module Dup\n")
 
-        let fakeResult: FileCheckResult =
-            { File = fakeFile
-              Source = "module Dup\n"
-              ParseResults = Unchecked.defaultof<_>
-              CheckResults = ParseOnly
-              ProjectOptions = Unchecked.defaultof<_>
-              Version = 0L }
+        let fakeResult =
+            { fakeFileCheckResult fakeFile with
+                Source = "module Dup\n" }
 
         for _ in 1..2 do
             try
@@ -343,13 +331,9 @@ let ``FileChecked does not report Completed when testConfigs are provided (error
         Directory.CreateDirectory(tmpDir) |> ignore
         File.WriteAllText(fakeFile, "module Lib\nlet x = 1\n")
 
-        let fakeResult: FileCheckResult =
-            { File = fakeFile
-              Source = "module Lib\nlet x = 1\n"
-              ParseResults = Unchecked.defaultof<_>
-              CheckResults = ParseOnly
-              ProjectOptions = Unchecked.defaultof<_>
-              Version = 0L }
+        let fakeResult =
+            { fakeFileCheckResult fakeFile with
+                Source = "module Lib\nlet x = 1\n" }
 
         try
             host.EmitFileChecked(fakeResult)
@@ -391,13 +375,9 @@ let ``FileChecked reports terminal status when no testConfigs (analysis-only mod
         let fakeFile = Path.Combine(tmpDir, "Lib.fs")
         File.WriteAllText(fakeFile, "module Lib\nlet x = 1\n")
 
-        let fakeResult: FileCheckResult =
-            { File = fakeFile
-              Source = "module Lib\nlet x = 1\n"
-              ParseResults = Unchecked.defaultof<_>
-              CheckResults = ParseOnly
-              ProjectOptions = Unchecked.defaultof<_>
-              Version = 0L }
+        let fakeResult =
+            { fakeFileCheckResult fakeFile with
+                Source = "module Lib\nlet x = 1\n" }
 
         try
             host.EmitFileChecked(fakeResult)
@@ -441,13 +421,9 @@ let ``plugin reports Running status on FileChecked after tests complete`` () =
         let fakeFile = Path.Combine(tmpDir, "New.fs")
         File.WriteAllText(fakeFile, "module New")
 
-        let fakeResult: FileCheckResult =
-            { File = fakeFile
-              Source = "module New"
-              ParseResults = Unchecked.defaultof<_>
-              CheckResults = ParseOnly
-              ProjectOptions = Unchecked.defaultof<_>
-              Version = 0L }
+        let fakeResult =
+            { fakeFileCheckResult fakeFile with
+                Source = "module New" }
 
         try
             host.EmitFileChecked(fakeResult)
@@ -1257,13 +1233,9 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
         let fakeFile = Path.Combine(tmpDir, "Late.fs")
         File.WriteAllText(fakeFile, "module Late\nlet x = 1\n")
 
-        let fakeResult: FileCheckResult =
-            { File = fakeFile
-              Source = "module Late\nlet x = 1\n"
-              ParseResults = Unchecked.defaultof<_>
-              CheckResults = ParseOnly
-              ProjectOptions = Unchecked.defaultof<_>
-              Version = 0L }
+        let fakeResult =
+            { fakeFileCheckResult fakeFile with
+                Source = "module Late\nlet x = 1\n" }
 
         try
             host.EmitFileChecked(fakeResult)
@@ -1331,13 +1303,9 @@ let ``FileChecked does not query DB for affected tests`` () =
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         File.WriteAllText(fakeFile, "module Lib\nlet foo = 2\n")
 
-        let fakeResult: FileCheckResult =
-            { File = fakeFile
-              Source = "module Lib\nlet foo = 2\n"
-              ParseResults = Unchecked.defaultof<_>
-              CheckResults = ParseOnly
-              ProjectOptions = Unchecked.defaultof<_>
-              Version = 0L }
+        let fakeResult =
+            { fakeFileCheckResult fakeFile with
+                Source = "module Lib\nlet foo = 2\n" }
 
         try
             host.EmitFileChecked(fakeResult)
@@ -1790,10 +1758,7 @@ let ``full run (no filter) produces TestResult with WasFiltered = false`` () =
         let last = completed |> List.last
 
         match last.Results |> Map.tryFind "ProjA" with
-        | Some r ->
-            match r with
-            | TestsPassed(_, wasFiltered) -> test <@ wasFiltered = false @>
-            | TestsFailed(_, wasFiltered) -> test <@ wasFiltered = false @>
+        | Some r -> test <@ TestResult.wasFiltered r = false @>
         | None -> Assert.Fail("ProjA not in Results"))
 
 // ---------------------------------------------------------------------------

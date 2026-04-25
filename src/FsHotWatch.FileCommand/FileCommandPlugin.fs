@@ -109,20 +109,26 @@ let create
                     $"running {nameStr}"
                     (async {
                         try
-                            let (success, output) =
+                            let processResult =
                                 runProcessWithTimeout command args ctx.RepoRoot extraEnv cmdTimeout
 
-                            let result = if success then Succeeded output else CommandFailed output
+                            let output = outputOf processResult
 
-                            if success then
+                            let cmdResult =
+                                match processResult with
+                                | ProcessOutcome.Succeeded out -> Succeeded out
+                                | _ -> CommandFailed output
+
+                            match processResult with
+                            | ProcessOutcome.Succeeded _ ->
                                 ctx.CompleteWithSummary $"%s{nameStr}: succeeded"
                                 ctx.ClearErrors $"<%s{nameStr}>"
                                 ctx.ReportStatus(Completed(DateTime.UtcNow))
-                            elif output.StartsWith(TimedOutPrefix) then
+                            | ProcessOutcome.TimedOut(after, _) ->
                                 ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error output ]
-                                ctx.CompleteWithTimeout(output.Split('\n').[0])
+                                ctx.CompleteWithTimeout $"timed out after %d{int after.TotalSeconds}s"
                                 ctx.ReportStatus(PluginStatus.Failed($"%s{nameStr} timed out", DateTime.UtcNow))
-                            else
+                            | ProcessOutcome.Failed _ ->
                                 ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error output ]
                                 ctx.CompleteWithSummary $"%s{nameStr}: failed"
                                 ctx.ReportStatus(PluginStatus.Failed($"%s{nameStr} failed", DateTime.UtcNow))
@@ -130,13 +136,12 @@ let create
                             ctx.EmitCommandCompleted(
                                 { Name = nameStr
                                   Outcome =
-                                    if success then
-                                        FsHotWatch.Events.CommandSucceeded output
-                                    else
-                                        FsHotWatch.Events.CommandFailed output }
+                                    match processResult with
+                                    | ProcessOutcome.Succeeded out -> FsHotWatch.Events.CommandSucceeded out
+                                    | _ -> FsHotWatch.Events.CommandFailed output }
                             )
 
-                            return result
+                            return cmdResult
                         with ex ->
                             ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error ex.Message ]
                             ctx.CompleteWithSummary $"%s{nameStr}: crashed"

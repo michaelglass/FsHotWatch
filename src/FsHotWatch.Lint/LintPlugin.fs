@@ -87,7 +87,8 @@ let create
                                     return state
                                 else
                                     match runWithTimeout lintTimeout (fun () -> runLint result) with
-                                    | Result.Error reason ->
+                                    | WorkTimedOut after ->
+                                        let reason = $"timed out after %d{int after.TotalSeconds}s"
                                         Logging.error "lint" $"Lint TIMED OUT for %s{result.File}: %s{reason}"
 
                                         ctx.CompleteWithTimeout reason
@@ -97,7 +98,7 @@ let create
                                         )
 
                                         return state
-                                    | Result.Ok(Lint.LintResult.Success warnings) ->
+                                    | WorkCompleted(Lint.LintResult.Success warnings) ->
                                         Logging.debug
                                             "lint"
                                             $"Linted %s{System.IO.Path.GetFileName result.File}: %d{warnings.Length} warnings"
@@ -130,7 +131,7 @@ let create
                                             $"linted {newWarnings.Count} files, {totalIssues} issues"
 
                                         return newState
-                                    | Result.Ok(Lint.LintResult.Failure failure) ->
+                                    | WorkCompleted(Lint.LintResult.Failure failure) ->
                                         let msg = $"Lint failed for %s{result.File}: %A{failure}"
 
                                         ctx.ReportErrors result.File [ ErrorEntry.error msg ]
