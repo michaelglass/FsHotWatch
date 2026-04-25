@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.8 - 2026-04-25
+
 ### Fixed
 
 - **Skip-for-test-files-only path no longer races FCS.** When `SourceChanged`

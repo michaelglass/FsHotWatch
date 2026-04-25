@@ -4,6 +4,8 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+## 0.8.0-alpha.10 - 2026-04-25
+
 ### Added
 - `fs-hot-watch config check` — validates `.fs-hot-watch.json` without starting the daemon. Exits `0` on valid config, `2` on parse/validation error. Intended for editor integration and CI.
 
