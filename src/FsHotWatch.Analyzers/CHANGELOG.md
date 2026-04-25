@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.9 - 2026-04-25
+
 ### Added
 
 - Per-event timeout. `create` accepts a new `timeoutSec: int option`;
