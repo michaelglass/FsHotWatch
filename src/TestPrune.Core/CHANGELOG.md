@@ -1,6 +1,8 @@
 # Changelog — TestPrune.Core
 
-## [Unreleased]
+## Unreleased
+
+## 4.0.0 - 2026-04-25
 - fix: schema forward-compat. `openCheckedConnection` now treats
   `user_version > SchemaVersion` as "leave it alone" (a newer process wrote
   this DB; older code must not clobber). The `Database` constructor's

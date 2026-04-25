@@ -1,6 +1,8 @@
 # Changelog — TestPrune
 
-## [Unreleased]
+## Unreleased
+
+## 4.0.0 - 2026-04-25
 - feat: indexer captures entity-level attributes and containment edges for
   TestPrune.Core's aggregate-type invalidation. No CLI surface changes;
   databases auto-migrate from v4 to v5 on open.
