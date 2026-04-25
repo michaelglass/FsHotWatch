@@ -8,8 +8,8 @@
         "platform": "macos"
       },
       {
-        "line": 72,
-        "branch": 68,
+        "line": 75,
+        "branch": 75,
         "reason": "reflection-based CliContext branches vary by platform; parse-only path \u002B knownNonAnalyzerPrefixes filter both add untested branches on Linux",
         "platform": "linux"
       }
@@ -35,8 +35,8 @@
         "platform": "macos"
       },
       {
-        "line": 90,
-        "branch": 83,
+        "line": 88,
+        "branch": 77,
         "reason": "loosened: shared file isTestFile changes",
         "platform": "linux"
       }
@@ -49,17 +49,25 @@
         "platform": "macos"
       },
       {
-        "line": 82,
+        "line": 80,
         "branch": 69,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
     ],
-    "CoverageMerge.fs": {
-      "line": 97,
-      "branch": 65,
-      "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)"
-    },
+    "CoverageMerge.fs": [
+      {
+        "line": 97,
+        "branch": 65,
+        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
+        "platform": "macos"
+      },
+      {
+        "line": 97,
+        "branch": 65,
+        "platform": "linux"
+      }
+    ],
     "CoveragePlugin.fs": {
       "line": 97,
       "branch": 100,
@@ -72,8 +80,8 @@
         "platform": "macos"
       },
       {
-        "line": 72,
-        "branch": 61,
+        "line": 74,
+        "branch": 62,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -86,8 +94,8 @@
         "platform": "macos"
       },
       {
-        "line": 71,
-        "branch": 72,
+        "line": 77,
+        "branch": 77,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -130,7 +138,7 @@
     "FileCommandPlugin.fs": [
       {
         "line": 98,
-        "branch": 96,
+        "branch": 97,
         "reason": "lower line coverage on Linux CI",
         "platform": "linux"
       },
@@ -161,8 +169,8 @@
         "platform": "macos"
       },
       {
-        "line": 78,
-        "branch": 71,
+        "line": 75,
+        "branch": 68,
         "reason": "lower branch coverage on Linux CI",
         "platform": "linux"
       }
@@ -174,7 +182,7 @@
         "platform": "macos"
       },
       {
-        "line": 98,
+        "line": 99,
         "branch": 100,
         "reason": "lower line coverage on Linux CI",
         "platform": "linux"
@@ -215,7 +223,7 @@
       },
       {
         "line": 83,
-        "branch": 70,
+        "branch": 68,
         "reason": "lower line coverage on Linux CI",
         "platform": "linux"
       }
@@ -242,8 +250,8 @@
         "platform": "macos"
       },
       {
-        "line": 87,
-        "branch": 68,
+        "line": 85,
+        "branch": 65,
         "platform": "linux"
       }
     ],
@@ -255,7 +263,7 @@
         "platform": "macos"
       },
       {
-        "line": 54,
+        "line": 58,
         "branch": 40,
         "reason": "Linux tests exercise fewer JjHelper branches than macOS even with jj installed \u2014 daemon scan is not hit during unit tests",
         "platform": "linux"
@@ -269,7 +277,7 @@
         "platform": "macos"
       },
       {
-        "line": 86,
+        "line": 88,
         "branch": 100,
         "reason": "lower line coverage on Linux CI",
         "platform": "linux"
@@ -298,7 +306,7 @@
       },
       {
         "line": 96,
-        "branch": 63,
+        "branch": 68,
         "reason": "exception-handling branches for missing .gitignore/.fantomasignore files",
         "platform": "linux"
       }
@@ -311,8 +319,8 @@
         "platform": "macos"
       },
       {
-        "line": 86,
-        "branch": 68,
+        "line": 87,
+        "branch": 71,
         "reason": "lower line coverage on Linux CI",
         "platform": "linux"
       }
@@ -325,7 +333,7 @@
         "platform": "macos"
       },
       {
-        "line": 85,
+        "line": 84,
         "branch": 74,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
@@ -339,8 +347,8 @@
         "platform": "macos"
       },
       {
-        "line": 83,
-        "branch": 57,
+        "line": 84,
+        "branch": 64,
         "reason": "significantly lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -352,16 +360,24 @@
         "platform": "macos"
       },
       {
-        "line": 93,
-        "branch": 50,
+        "line": 87,
+        "branch": 100,
         "platform": "linux"
       }
     ],
-    "ProcessRegistry.fs": {
-      "line": 86,
-      "branch": 77,
-      "reason": "loosened automatically"
-    },
+    "ProcessRegistry.fs": [
+      {
+        "line": 86,
+        "branch": 77,
+        "reason": "loosened automatically",
+        "platform": "macos"
+      },
+      {
+        "line": 86,
+        "branch": 77,
+        "platform": "linux"
+      }
+    ],
     "Program.fs": [
       {
         "line": 67,
@@ -370,8 +386,8 @@
         "platform": "macos"
       },
       {
-        "line": 71,
-        "branch": 54,
+        "line": 69,
+        "branch": 51,
         "reason": "CLI entry point, different coverage on Linux CI",
         "platform": "linux"
       }
@@ -384,8 +400,8 @@
         "platform": "macos"
       },
       {
-        "line": 87,
-        "branch": 62,
+        "line": 86,
+        "branch": 69,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -453,8 +469,8 @@
         "platform": "macos"
       },
       {
-        "line": 78,
-        "branch": 46,
+        "line": 81,
+        "branch": 55,
         "reason": "higher line coverage on Linux CI (no FSEvents)",
         "platform": "linux"
       }
