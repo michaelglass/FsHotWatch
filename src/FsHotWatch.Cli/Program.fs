@@ -211,12 +211,43 @@ let defaultIpcOps: IpcOps =
             let proc = System.Diagnostics.Process.Start(psi)
             proc.WaitForExit() }
 
+/// Unwrap nested AggregateException down to the most informative inner exception
+/// so we don't print "One or more errors occurred. (...)" wrapping the real message.
+let rec unwrapIpcException (ex: exn) : exn =
+    match ex with
+    | :? AggregateException as agg when agg.InnerExceptions.Count = 1 -> unwrapIpcException agg.InnerExceptions.[0]
+    | :? AggregateException as agg when agg.InnerException <> null -> unwrapIpcException agg.InnerException
+    | _ -> ex
+
 /// Wrap an IPC call with connection error handling.
 let private withIpc (action: unit -> int) : int =
     try
         action ()
     with ex ->
-        eprintfn "Could not connect to daemon: %s" ex.Message
+        let inner = unwrapIpcException ex
+
+        let hint =
+            match inner with
+            // StreamJsonRpc reads a Content-Length header then allocates a buffer of
+            // that size. A corrupted/garbage header (commonly: two daemons sharing the
+            // same pipe, or a leftover stale daemon from an older version) makes the
+            // length nonsensical, and the buffer alloc throws OutOfMemoryException —
+            // which is misleading because the machine isn't actually out of memory.
+            | :? OutOfMemoryException ->
+                Some
+                    "The IPC pipe returned a corrupted message — usually caused by another \
+                     daemon (possibly an older version) writing to the same pipe. Try: \
+                     `pkill -f FsHotWatch.Cli.dll` then `dotnet fs-hot-watch start`."
+            | :? TimeoutException ->
+                Some "Daemon did not respond in time. It may be busy or hung — check `logs/daemon.log`."
+            | _ -> None
+
+        eprintfn "Could not connect to daemon: %s" inner.Message
+
+        match hint with
+        | Some h -> eprintfn "  hint: %s" h
+        | None -> ()
+
         1
 
 /// Ensure daemon, poll for progress, render colored output.
@@ -485,6 +516,7 @@ let executeCommand
             use _lock = lockStream
             eprintfn $"Starting FsHotWatch daemon for %s{repoRoot}"
             eprintfn $"Pipe: %s{pipeName}"
+
             // Write our own PID so killStaleDaemon can find the actual daemon process,
             // not the nohup wrapper that launched us.
             File.WriteAllText(pidFile, string (System.Diagnostics.Process.GetCurrentProcess().Id))

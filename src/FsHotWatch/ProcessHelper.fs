@@ -39,8 +39,28 @@ let outputOf (outcome: ProcessOutcome) : string =
     | Failed(_, out) -> out
     | TimedOut(after, tail) -> $"timed out after %d{int after.TotalSeconds}s\n%s{tail}"
 
+/// True when the command will spawn `dotnet` (matching `dotnet`, `dotnet.exe`,
+/// or paths ending in either). Used to inject MSBUILDDISABLENODEREUSE.
+let isDotnetCommand (command: string) =
+    let basename = System.IO.Path.GetFileName(command)
+    basename = "dotnet" || basename = "dotnet.exe"
+
+/// Merge `MSBUILDDISABLENODEREUSE=1` into the env when the command is `dotnet`
+/// and the caller hasn't already set the key. See docs/msbuild-node-reuse-bug.md.
+let mergeDotnetEnv (command: string) (env: (string * string) list) : (string * string) list =
+    if
+        isDotnetCommand command
+        && not (env |> List.exists (fun (k, _) -> k = "MSBUILDDISABLENODEREUSE"))
+    then
+        ("MSBUILDDISABLENODEREUSE", "1") :: env
+    else
+        env
+
 /// Run a process with a timeout. Reads stdout and stderr concurrently to avoid
 /// deadlock. On timeout the process tree is killed and TimedOut is returned.
+///
+/// For `dotnet` commands, injects `MSBUILDDISABLENODEREUSE=1` unless the
+/// caller already set it. See docs/msbuild-node-reuse-bug.md.
 let runProcessWithTimeout
     (command: string)
     (args: string)
@@ -54,7 +74,7 @@ let runProcessWithTimeout
     psi.UseShellExecute <- false
     psi.WorkingDirectory <- workDir
 
-    for (key, value) in env do
+    for (key, value) in mergeDotnetEnv command env do
         psi.Environment[key] <- value
 
     use proc = Process.Start(psi)

@@ -687,6 +687,57 @@ let ``test errors are cleared when all tests pass`` () =
         waitForPluginTerminal host "test-prune" 5.0
         test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>)
 
+[<Fact(Timeout = 15000)>]
+let ``RerunQueued path records previous run outcome to history before starting rerun`` () =
+    withTempDir "tp-rerun-queued-history" (fun tmpDir ->
+        // First run sleeps ~1s and fails. The second BuildSucceeded arrives mid-run,
+        // putting state into RerunQueued. Both runs' outcomes must end up in history —
+        // before the fix, the RerunQueued path silently dropped the previous run's
+        // lifecycle, so only the rerun's outcome ever made it to history.
+        let configs =
+            [ { Project = "TestProject"
+                Command = "sh"
+                Args = "-c \"sleep 1; exit 1\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None None
+        host.RegisterHandler(handler)
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        // Wait until run 1 is actually executing before queueing the rerun.
+        waitUntil
+            (fun () ->
+                match host.GetStatus("test-prune") with
+                | Some(Running _) -> true
+                | _ -> false)
+            5000
+
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        waitForPluginTerminal host "test-prune" 12.0
+
+        let history = host.GetHistory("test-prune")
+
+        // Two runs were dispatched — both outcomes must be recorded.
+        test <@ history.Length = 2 @>
+
+        let firstFailed =
+            history
+            |> List.exists (fun r ->
+                match r.Outcome with
+                | FailedRun _ -> true
+                | _ -> false)
+
+        // The first run definitely failed (script always exits 1). The rerun is a
+        // no-op skip (no affected files), but we don't need to assert on it — the
+        // bug was about the *previous* run's outcome being dropped.
+        test <@ firstFailed @>)
+
 // Inline FactAttribute so test detection works without xUnit assemblies in script options.
 // Uses module-level [<Fact>] functions — the pattern that analyzeSource reliably detects
 // via FCS symbol uses without needing resolved assembly references.

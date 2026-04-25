@@ -107,19 +107,16 @@ let create
 
                                         let newWarnings = state.WarningsByFile |> Map.add result.File msgs
 
-                                        if warnings.IsEmpty then
-                                            ctx.ClearErrors result.File
-                                        else
-                                            let entries =
-                                                warnings
-                                                |> List.map (fun w ->
-                                                    { Message = w.Details.Message
-                                                      Severity = DiagnosticSeverity.Warning
-                                                      Line = w.Details.Range.StartLine
-                                                      Column = w.Details.Range.StartColumn
-                                                      Detail = None })
+                                        let entries =
+                                            warnings
+                                            |> List.map (fun w ->
+                                                { Message = w.Details.Message
+                                                  Severity = DiagnosticSeverity.Warning
+                                                  Line = w.Details.Range.StartLine
+                                                  Column = w.Details.Range.StartColumn
+                                                  Detail = None })
 
-                                            ctx.ReportErrors result.File entries
+                                        PluginCtxHelpers.reportOrClearFile ctx result.File entries
 
                                         let newState = { WarningsByFile = newWarnings }
 
