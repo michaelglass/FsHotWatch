@@ -2382,8 +2382,7 @@ module ``Cache file cleanup`` =
 
     [<Fact>]
     let ``deleteCacheFiles removes main DB plus -wal and -shm sidecars`` () =
-        let tmpDir =
-            Path.Combine(Path.GetTempPath(), $"tp-delete-{Guid.NewGuid():N}")
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-delete-{Guid.NewGuid():N}")
 
         Directory.CreateDirectory(tmpDir) |> ignore
         let dbPath = Path.Combine(tmpDir, "x.db")
@@ -2443,8 +2442,7 @@ module ``Schema forward compatibility`` =
 
     [<Fact>]
     let ``opening a DB stamped at a future version does not recreate it`` () =
-        let tmpDir =
-            Path.Combine(Path.GetTempPath(), $"tp-fwd-{Guid.NewGuid():N}")
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"tp-fwd-{Guid.NewGuid():N}")
 
         Directory.CreateDirectory(tmpDir) |> ignore
         let dbPath = Path.Combine(tmpDir, "future.db")

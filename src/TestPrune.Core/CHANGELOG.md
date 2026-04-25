@@ -1,6 +1,17 @@
 # Changelog — TestPrune.Core
 
 ## [Unreleased]
+- fix: schema forward-compat. `openCheckedConnection` now treats
+  `user_version > SchemaVersion` as "leave it alone" (a newer process wrote
+  this DB; older code must not clobber). The `Database` constructor's
+  user_version stamp gate flipped from `<>` to `<` so the marker never
+  regresses. Without this, an older client opening a daemon's newer DB would
+  erase the version marker, then the daemon would hit "no such column" on its
+  next flush.
+- api: `Database.deleteCacheFiles` (formerly `private deleteDbFiles`) is now
+  public. Plugins recovering from schema drift should call this — it deletes
+  the main DB along with WAL/SHM sidecars in one shot, preventing the
+  "0-byte main DB after partial cleanup" failure mode.
 - feat: aggregate-type invalidation (schema v5). Editing any member of a type
   now invalidates consumers that touched any part of it. Module siblings are
   excluded. v4 databases auto-recreate on open.
