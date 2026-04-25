@@ -18,6 +18,10 @@ type BuildOutcome =
 type BuildPhase =
     | IdlePhase of Lifecycle<Idle, BuildOutcome option> * pendingFiles: FileChangeKind list
     | RunningPhase of Lifecycle<Running, BuildOutcome option>
+    /// Test-files-only change — build is logically a no-op but we wait for FCS to finish
+    /// checking the changed files before emitting BuildSucceeded. Otherwise downstream
+    /// test-prune dispatch would race FCS and read stale AffectedTests.
+    | WaitingForFcsPhase of awaiting: Set<string> * Lifecycle<Idle, BuildOutcome option>
 
 type BuildState =
     { Phase: BuildPhase
@@ -63,6 +67,11 @@ let create
         match timeoutSec with
         | Some s -> TimeSpan.FromSeconds(float s)
         | None -> System.Threading.Timeout.InfiniteTimeSpan
+
+    // Normalize file paths to match what FCS emits in FileCheckResult.File so
+    // the WaitingForFcsPhase set drains reliably. Watcher events and FCS go
+    // through different pipelines and either may produce non-canonical forms.
+    let normalizePath (file: string) = Path.GetFullPath(file)
 
     let isTestFile (file: string) =
         graph.GetProjectsForFile(AbsFilePath.create file)
@@ -118,20 +127,20 @@ let create
             "dotnet build"
             (async {
                 try
-                    let (success, output) =
+                    let result =
                         runProcessWithTimeout buildCommand buildArgs ctx.RepoRoot env buildTimeout
 
-                    let (outcome, entries) = decideBuildOutcome success output
+                    let (outcome, entries) = decideBuildOutcome (isSucceeded result) (outputOf result)
 
-                    match outcome with
-                    | BuildOutputFailed _ ->
-                        if output.StartsWith(TimedOutPrefix) then
-                            ctx.Log "Build TIMED OUT"
-                            error "build" "Build TIMED OUT"
-                            ctx.CompleteWithTimeout(output.Split('\n').[0])
-                        else
-                            ctx.Log "Build FAILED"
-                            error "build" "Build FAILED"
+                    match outcome, result with
+                    | BuildOutputFailed _, TimedOut(after, _) ->
+                        let summary = $"timed out after %d{int after.TotalSeconds}s"
+                        ctx.Log "Build TIMED OUT"
+                        error "build" "Build TIMED OUT"
+                        ctx.CompleteWithTimeout summary
+                    | BuildOutputFailed _, _ ->
+                        ctx.Log "Build FAILED"
+                        error "build" "Build FAILED"
                     | _ -> ()
 
                     applyBuildOutcome ctx outcome entries
@@ -189,20 +198,21 @@ let create
                             ctx.Log $"Running template: %s{cmd} %s{cmdArgs}"
 
                             try
-                                let (success, output) =
-                                    runProcessWithTimeout cmd cmdArgs ctx.RepoRoot env buildTimeout
-
+                                let result = runProcessWithTimeout cmd cmdArgs ctx.RepoRoot env buildTimeout
+                                let output = outputOf result
                                 outputs <- output :: outputs
 
-                                if not success then
-                                    if output.StartsWith(TimedOutPrefix) then
-                                        ctx.Log $"Template build TIMED OUT for %s{rootStr}"
-                                        error "build" $"Template build TIMED OUT for %s{rootStr}"
-                                        ctx.CompleteWithTimeout(output.Split('\n').[0])
-                                    else
-                                        ctx.Log $"Template build FAILED for %s{rootStr}"
-                                        error "build" $"Template build FAILED for %s{rootStr}"
-
+                                match result with
+                                | Succeeded _ -> ()
+                                | TimedOut(after, _) ->
+                                    let summary = $"timed out after %d{int after.TotalSeconds}s"
+                                    ctx.Log $"Template build TIMED OUT for %s{rootStr}"
+                                    error "build" $"Template build TIMED OUT for %s{rootStr}"
+                                    ctx.CompleteWithTimeout summary
+                                    failures <- output :: failures
+                                | Failed _ ->
+                                    ctx.Log $"Template build FAILED for %s{rootStr}"
+                                    error "build" $"Template build FAILED for %s{rootStr}"
                                     failures <- output :: failures
                             with ex ->
                                 ctx.Log $"Template build exception for %s{rootStr}: %s{ex.Message}"
@@ -246,12 +256,11 @@ let create
         let allTestFiles = not files.IsEmpty && files |> List.forall isTestFile
 
         if allTestFiles then
-            info "build" "Skipping build — only test files changed"
-            ctx.EmitBuildCompleted(BuildSucceeded)
-            ctx.ReportStatus(Completed(DateTime.UtcNow))
+            info "build" "Skipping build — only test files changed; waiting for FCS to confirm"
+            ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
 
             { state with
-                Phase = IdlePhase(idle, []) }
+                Phase = WaitingForFcsPhase(files |> List.map normalizePath |> Set.ofList, idle) }
         else
             match buildTemplate with
             | Some template ->
@@ -290,7 +299,8 @@ let create
                             let pendingFiles =
                                 match state.Phase with
                                 | IdlePhase(_, pending) -> pending
-                                | RunningPhase _ -> []
+                                | RunningPhase _
+                                | WaitingForFcsPhase _ -> []
 
                             let updatedState = { state with SatisfiedDeps = newDeps }
 
@@ -345,6 +355,35 @@ let create
                 | FileChanged _, RunningPhase _ ->
                     info "build" "Skipping: build already in progress"
                     return state
+
+                | FileChecked result, WaitingForFcsPhase(awaiting, idle) ->
+                    let remaining = Set.remove (normalizePath result.File) awaiting
+
+                    if remaining.IsEmpty then
+                        ctx.EmitBuildCompleted(BuildSucceeded)
+                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+
+                        return
+                            { state with
+                                Phase = IdlePhase(idle, []) }
+                    else
+                        return
+                            { state with
+                                Phase = WaitingForFcsPhase(remaining, idle) }
+
+                | FileChanged(ProjectChanged _), WaitingForFcsPhase(_, idle) ->
+                    return handleProjectChanged ctx state idle
+                | FileChanged(SourceChanged files), WaitingForFcsPhase(awaiting, idle) ->
+                    let nonTest = files |> List.filter (fun f -> not (isTestFile f))
+
+                    if nonTest.IsEmpty then
+                        let merged = files |> List.fold (fun s f -> Set.add (normalizePath f) s) awaiting
+
+                        return
+                            { state with
+                                Phase = WaitingForFcsPhase(merged, idle) }
+                    else
+                        return handleSourceChanged ctx state idle files
                 | _ -> return state
             }
       Commands =
@@ -355,6 +394,7 @@ let create
                       match state.Phase with
                       | IdlePhase(idle, _) -> Lifecycle.value idle
                       | RunningPhase running -> Lifecycle.value running
+                      | WaitingForFcsPhase(_, idle) -> Lifecycle.value idle
 
                   match lastResult with
                   | Some(BuildPassed output) ->
@@ -373,7 +413,7 @@ let create
               } ]
       Subscriptions =
         Set.ofList (
-            [ SubscribeFileChanged ]
+            [ SubscribeFileChanged; SubscribeFileChecked ]
             @ (if dependsOn.IsEmpty then
                    []
                else

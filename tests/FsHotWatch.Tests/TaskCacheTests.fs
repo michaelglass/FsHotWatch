@@ -208,13 +208,13 @@ let ``optionalSaltedCacheKey wraps getSalt when getCommitId is Some`` () =
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
 
-let private dummyFileCheckResult file : FileCheckResult =
-    { File = file
-      Source = ""
-      ParseResults = Unchecked.defaultof<_>
-      CheckResults = ParseOnly
-      ProjectOptions = Unchecked.defaultof<_>
-      Version = 0L }
+// Cache tests use Source = "" and null ParseResults — the cache intercept
+// doesn't read either, so override the shared helper rather than build the
+// record by hand.
+let private dummyFileCheckResult file =
+    { fakeFileCheckResult file with
+        Source = ""
+        ParseResults = Unchecked.defaultof<_> }
 
 [<Fact(Timeout = 5000)>]
 let ``plugin skips Update on cache hit and replays errors`` () =

@@ -142,22 +142,34 @@ type RunRecord =
 type TestResult =
     | TestsPassed of output: string * wasFiltered: bool
     | TestsFailed of output: string * wasFiltered: bool
+    /// The runner exceeded its configured `timeoutSec` and was killed. Distinct
+    /// from `TestsFailed` so consumers can react to "stuck" runs (e.g. flag the
+    /// whole run TimedOut) without grepping the output for a magic prefix.
+    | TestsTimedOut of output: string * after: System.TimeSpan * wasFiltered: bool
 
 module TestResult =
     let output =
         function
         | TestsPassed(o, _)
-        | TestsFailed(o, _) -> o
+        | TestsFailed(o, _)
+        | TestsTimedOut(o, _, _) -> o
 
     let wasFiltered =
         function
         | TestsPassed(_, w)
-        | TestsFailed(_, w) -> w
+        | TestsFailed(_, w)
+        | TestsTimedOut(_, _, w) -> w
 
     let isPassed =
         function
         | TestsPassed _ -> true
-        | TestsFailed _ -> false
+        | TestsFailed _
+        | TestsTimedOut _ -> false
+
+    let isTimedOut =
+        function
+        | TestsTimedOut _ -> true
+        | _ -> false
 
     /// Derive run-level `RanFullSuite` from a per-project Results map: true iff
     /// no project was run with an impact filter (i.e., the entire test suite

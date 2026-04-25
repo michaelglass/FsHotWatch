@@ -4,6 +4,14 @@
 
 ### Changed
 
+- **Timeout outcomes are now structural.** Per-project timeouts produce
+  `TestResult.TestsTimedOut(output, after, wasFiltered)` instead of a regular
+  `TestsFailed` whose output happens to start with `"timed out after Ns"`.
+  Plugin's run-completion logic (terminal status, `onlyFailed` re-run filter,
+  failed-projects list) now matches the variant directly. The `formatTestResultsJson`
+  command surfaces a `"timed-out"` status.
+- `runProcessWithTimeout` is consumed via the new `ProcessOutcome` DU; the
+  string-prefix heuristic is gone.
 - Emit a `"primary"` subtask label that differentiates filtered vs full suite
   runs (`running N selected test projects` vs `running full suite (N projects)`).
   Terminal summary is now `P passed, F failed in N projects (selected: yes|no)`,

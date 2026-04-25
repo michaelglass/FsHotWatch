@@ -79,6 +79,11 @@ let private serializeTestResult (key: string) (result: TestResult) =
         obj["result"] <- "failed"
         obj["output"] <- output
         obj["wasFiltered"] <- wasFiltered
+    | TestsTimedOut(output, after, wasFiltered) ->
+        obj["result"] <- "timed-out"
+        obj["output"] <- output
+        obj["wasFiltered"] <- wasFiltered
+        obj["timeoutSeconds"] <- after.TotalSeconds
 
     obj
 
@@ -101,6 +106,14 @@ let private deserializeTestResult (obj: JsonObject) : string * TestResult =
         match obj["result"].GetValue<string>() with
         | "passed" -> TestsPassed(output, wasFiltered)
         | "failed" -> TestsFailed(output, wasFiltered)
+        | "timed-out" ->
+            let secs =
+                if obj.ContainsKey("timeoutSeconds") then
+                    obj["timeoutSeconds"].GetValue<float>()
+                else
+                    0.0
+
+            TestsTimedOut(output, TimeSpan.FromSeconds secs, wasFiltered)
         | r -> failwith $"Unknown test result: %s{r}"
 
     project, result
