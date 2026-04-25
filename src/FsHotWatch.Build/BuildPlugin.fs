@@ -33,6 +33,19 @@ type BuildMsg = BuildDone of BuildOutcome
 /// determine the BuildOutcome and the list of ErrorEntry diagnostics to surface.
 /// On failure with no parsed MSBuild diagnostics, the raw output is wrapped as
 /// a single error entry so callers always have something to report.
+/// Diagnostic for the "MSBuild exited non-zero but produced no parseable
+/// diagnostics" failure mode (typically a bail during evaluation/restore).
+/// Surfaces exit code, output size, and any "Time Elapsed" tail to give the
+/// next debugging session a starting point.
+let formatSilentFailureDiagnostic (exitCode: int) (output: string) : string =
+    let elapsed =
+        let m =
+            System.Text.RegularExpressions.Regex.Match(output, @"Time Elapsed ([\d:.]+)")
+
+        if m.Success then $" elapsed={m.Groups.[1].Value}" else ""
+
+    $"MSBuild aborted before producing diagnostics: exit=%d{exitCode} output=%d{output.Length} bytes%s{elapsed}"
+
 let decideBuildOutcome (success: bool) (output: string) : BuildOutcome * ErrorEntry list =
     let parsed = BuildDiagnostics.parseMSBuildDiagnostics output
 
@@ -60,7 +73,7 @@ let create
     =
     let buildCommand = command
     let buildArgs = args
-    let env = environment
+
     let testProjectNameSet = testProjectNames |> Set.ofList
 
     let buildTimeout =
@@ -128,7 +141,7 @@ let create
             (async {
                 try
                     let result =
-                        runProcessWithTimeout buildCommand buildArgs ctx.RepoRoot env buildTimeout
+                        runProcessWithTimeout buildCommand buildArgs ctx.RepoRoot environment buildTimeout
 
                     let (outcome, entries) = decideBuildOutcome (isSucceeded result) (outputOf result)
 
@@ -138,6 +151,16 @@ let create
                         ctx.Log "Build TIMED OUT"
                         error "build" "Build TIMED OUT"
                         ctx.CompleteWithTimeout summary
+                    | BuildOutputFailed _, Failed(exitCode, output) ->
+                        ctx.Log "Build FAILED"
+                        error "build" "Build FAILED"
+
+                        let parsedCount = BuildDiagnostics.parseMSBuildDiagnostics output |> List.length
+
+                        if parsedCount = 0 then
+                            let detail = formatSilentFailureDiagnostic exitCode output
+                            ctx.Log detail
+                            error "build" detail
                     | BuildOutputFailed _, _ ->
                         ctx.Log "Build FAILED"
                         error "build" "Build FAILED"
@@ -198,7 +221,7 @@ let create
                             ctx.Log $"Running template: %s{cmd} %s{cmdArgs}"
 
                             try
-                                let result = runProcessWithTimeout cmd cmdArgs ctx.RepoRoot env buildTimeout
+                                let result = runProcessWithTimeout cmd cmdArgs ctx.RepoRoot environment buildTimeout
                                 let output = outputOf result
                                 outputs <- output :: outputs
 

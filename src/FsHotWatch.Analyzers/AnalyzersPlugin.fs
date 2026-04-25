@@ -284,11 +284,7 @@ let internal createWithSlowHook
                                                     "analyzers"
                                                     $"Analyzed %s{Path.GetFileName result.File}: %d{entries.Length} diagnostics"
 
-                                                if entries.IsEmpty then
-                                                    ctx.ClearErrors result.File
-                                                else
-                                                    ctx.ReportErrors result.File entries
-
+                                                PluginCtxHelpers.reportOrClearFile ctx result.File entries
                                                 ctx.Post(AnalysisComplete(result.File, entries))
                                         with ex ->
                                             ctx.Post(AnalysisFailed(result.File, ex.ToString()))

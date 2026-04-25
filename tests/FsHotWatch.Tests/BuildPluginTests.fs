@@ -98,6 +98,30 @@ let ``build-status command returns not run initially`` () =
     test <@ result.Value.Contains("not run") @>
 
 [<Fact(Timeout = 5000)>]
+let ``formatSilentFailureDiagnostic includes exit code and output length`` () =
+    let output =
+        "Build FAILED.\n    0 Warning(s)\n    0 Error(s)\n\nTime Elapsed 00:00:02.96"
+
+    let detail = formatSilentFailureDiagnostic 1 output
+    test <@ detail.Contains "exit=1" @>
+    test <@ detail.Contains $"output={output.Length} bytes" @>
+    test <@ detail.Contains "MSBuild aborted" @>
+
+[<Fact(Timeout = 5000)>]
+let ``formatSilentFailureDiagnostic includes elapsed time when present in output`` () =
+    let output =
+        "Build FAILED.\n    0 Warning(s)\n    0 Error(s)\n\nTime Elapsed 00:01:23.45"
+
+    let detail = formatSilentFailureDiagnostic 134 output
+    test <@ detail.Contains "elapsed=00:01:23.45" @>
+
+[<Fact(Timeout = 5000)>]
+let ``formatSilentFailureDiagnostic omits elapsed when not present`` () =
+    let output = "Build FAILED.\n    0 Warning(s)\n    0 Error(s)"
+    let detail = formatSilentFailureDiagnostic 1 output
+    test <@ not (detail.Contains "elapsed=") @>
+
+[<Fact(Timeout = 5000)>]
 let ``build plugin emits BuildCompleted on successful build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
