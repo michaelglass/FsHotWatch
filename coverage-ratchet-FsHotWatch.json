@@ -2,9 +2,9 @@
   "overrides": {
     "AnalyzersPlugin.fs": [
       {
-        "line": 76,
+        "line": 75,
         "branch": 72,
-        "reason": "end-to-end FCS analyzer paths in IntegrationTests (excluded); §2a merkle-key match-with branches not all unit-tested",
+        "reason": "FCS analyzer paths in IntegrationTests (excluded); §2a merkle-key + lifecycle-fix Choice paths add untested branches",
         "platform": "macos"
       },
       {
