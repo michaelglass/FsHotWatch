@@ -353,18 +353,32 @@ let internal createWithSlowHook
               } ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey =
-        getCommitId
-        |> Option.map (fun getId ->
-            fun (event: PluginEvent<AnalyzersMsg>) ->
-                match event with
-                | FileChecked result ->
-                    getId ()
-                    |> Option.map (fun id ->
-                        match result.CheckResults with
-                        | ParseOnly -> ContentHash.create (id + ":parse-only")
-                        | FullCheck _ -> ContentHash.create id)
-                | Custom _ -> None
-                | _ -> getId () |> Option.map ContentHash.create)
+        // §2a propagation: content-merkle key (file source + analyzer paths + parse/full flag).
+        // getCommitId is no longer used; the cache is reachable across snapshots when content reverts.
+        ignore getCommitId
+
+        let analyzerPathsHash =
+            FsHotWatch.CheckCache.sha256Hex (String.concat "|" (List.sort analyzerPaths))
+
+        let cacheKey (event: PluginEvent<AnalyzersMsg>) : ContentHash option =
+            match event with
+            | FileChecked result ->
+                let parseFlag =
+                    match result.CheckResults with
+                    | ParseOnly -> "parse-only"
+                    | FullCheck _ -> "full-check"
+
+                Some(
+                    FsHotWatch.TaskCache.merkleCacheKey
+                        [ "plugin-version", "analyzers-merkle-v1"
+                          "analyzer-paths", analyzerPathsHash
+                          "check-state", parseFlag
+                          "file", result.File
+                          "source", result.Source ]
+                )
+            | _ -> None
+
+        Some cacheKey
       Teardown =
         Some(fun () ->
             cts.Cancel()
