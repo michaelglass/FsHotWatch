@@ -60,6 +60,49 @@ let decideBuildOutcome (success: bool) (output: string) : BuildOutcome * ErrorEn
 
         BuildOutputFailed [ output ], entries
 
+/// §2a: build all-inputs merkle. Hashes content of every source file the
+/// project graph knows about, plus every .fsproj. mtime-cached for amortized
+/// O(changed) cost after the first call.
+type internal BuildInputsHasher(graph: FsHotWatch.ProjectGraph.IProjectGraphReader) =
+    // (path, mtimeTicks) -> contentHash
+    let cache =
+        System.Collections.Concurrent.ConcurrentDictionary<string * int64, string>()
+
+    let hashFile (path: string) =
+        let mtime =
+            try
+                File.GetLastWriteTimeUtc(path).Ticks
+            with _ ->
+                0L
+
+        cache.GetOrAdd(
+            (path, mtime),
+            fun _ ->
+                try
+                    FsHotWatch.CheckCache.sha256Hex (File.ReadAllText path)
+                with _ ->
+                    "read-error"
+        )
+
+    member _.Compute() : string =
+        let sourceFiles = graph.GetAllFiles() |> List.map AbsFilePath.value
+
+        let projectFiles = graph.GetAllProjects() |> List.map AbsProjectPath.value
+
+        let allInputs = (sourceFiles @ projectFiles) |> List.sort
+        let sb = System.Text.StringBuilder()
+
+        for path in allInputs do
+            let h = hashFile path
+            sb.Append(path.Length) |> ignore
+            sb.Append(':') |> ignore
+            sb.Append(path) |> ignore
+            sb.Append('@') |> ignore
+            sb.Append(h) |> ignore
+            sb.Append('\n') |> ignore
+
+        FsHotWatch.CheckCache.sha256Hex (sb.ToString())
+
 let create
     (command: string)
     (args: string)
@@ -73,6 +116,7 @@ let create
     =
     let buildCommand = command
     let buildArgs = args
+    ignore getCommitId
 
     let testProjectNameSet = testProjectNames |> Set.ofList
 
@@ -442,5 +486,24 @@ let create
                else
                    [ SubscribeCommandCompleted ])
         )
-      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId
+      CacheKey =
+        // §2a: content-merkle key over all build-relevant files in the project graph.
+        // The hasher is constructed lazily so plugin tests that don't exercise
+        // the cache path don't pay the walk cost.
+        let inputsHasher = lazy BuildInputsHasher(graph)
+
+        let cacheKey (event: PluginEvent<BuildMsg>) : ContentHash option =
+            match event with
+            | Custom _ -> None
+            | _ ->
+                Some(
+                    FsHotWatch.TaskCache.merkleCacheKey
+                        [ "plugin-version", "build-merkle-v1"
+                          "command", buildCommand
+                          "args", buildArgs
+                          "depends-on", String.concat "," (List.sort dependsOn)
+                          "inputs", inputsHasher.Value.Compute() ]
+                )
+
+        Some cacheKey
       Teardown = None }
