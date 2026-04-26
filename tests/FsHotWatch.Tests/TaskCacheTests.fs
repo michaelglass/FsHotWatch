@@ -329,6 +329,33 @@ let ``LintPlugin cache key reflects config file content`` () =
                 test <@ key1 <> key2 @>)
 
 [<Fact(Timeout = 5000)>]
+let ``§1: LintPlugin cache key reflects FCS check signature for ParseOnly vs FullCheck`` () =
+    // §1 oracle: the cache key must distinguish ParseOnly from FullCheck even
+    // when source bytes are identical — they may produce different lint
+    // results because Lint inspects type info from check results when available.
+    let handler = FsHotWatch.Lint.LintPlugin.create None None None None
+
+    let mkResult (file: string) (source: string) (state: FileCheckState) : FileCheckResult =
+        { File = file
+          Source = source
+          ParseResults = Unchecked.defaultof<_>
+          CheckResults = state
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = 0L }
+
+    match handler.CacheKey with
+    | None -> failwith "expected CacheKey"
+    | Some keyFn ->
+        let parseOnly = keyFn (FileChecked(mkResult "/src/X.fs" "let x = 1" ParseOnly))
+
+        let fullCheckNull =
+            keyFn (FileChecked(mkResult "/src/X.fs" "let x = 1" (FullCheck(Unchecked.defaultof<_>))))
+
+        test <@ parseOnly.IsSome @>
+        test <@ fullCheckNull.IsSome @>
+        test <@ parseOnly <> fullCheckNull @>
+
+[<Fact(Timeout = 5000)>]
 let ``LintPlugin cache key uses missing-config marker when config path doesn't exist`` () =
     // Covers the `Some path` branch where the file is not on disk — should
     // produce a stable key (no exception) distinct from the `None` case.
