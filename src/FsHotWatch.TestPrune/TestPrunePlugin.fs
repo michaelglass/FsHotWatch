@@ -159,7 +159,17 @@ type TestPruneState =
         TestClassFiles: Map<string, string>
     }
 
-type TestPruneMsg = TestsFinished of TestResults
+/// Custom message posted from the async test runner back to the synchronous
+/// Custom handler. Carries the lifecycle events (Started + Completed) so the
+/// handler can emit them inside the framework's per-event capture window —
+/// required for the §2a cache to record EmittedEvents on terminal status,
+/// which `tryReplayCache` re-fires to downstream subscribers (FileCommandPlugin
+/// keys off TestRunCompleted) when the cache hits.
+///
+/// Live `TestProgress` events still fire from the async (per-group, streaming)
+/// because they're not part of cache replay (cache replay skips per-group
+/// progress and goes straight from Started to Completed by design).
+type TestPruneMsg = TestsFinished of started: TestRunStarted * completed: TestRunCompleted
 
 let private formatTestResultsJson (results: TestResults) =
     let projects =
@@ -294,13 +304,13 @@ let private executeTests
             else
                 $"running full suite (%d{configs.Length} projects)"
 
-        ctx
-        |> Option.iter (fun c ->
-            c.StartSubtask PrimarySubtaskKey primaryLabel
+        let startedAt = DateTime.UtcNow
 
-            c.EmitTestRunStarted
-                { RunId = runId
-                  StartedAt = DateTime.UtcNow })
+        ctx |> Option.iter (fun c -> c.StartSubtask PrimarySubtaskKey primaryLabel)
+        // EmitTestRunStarted moved to caller (so the synchronous Custom
+        // TestsFinished handler can emit it inside the cache-write capture
+        // window). Caller receives `started` in the returned tuple.
+        let started: TestRunStarted = { RunId = runId; StartedAt = startedAt }
 
         match beforeRun with
         | Some setup ->
@@ -491,16 +501,17 @@ let private executeTests
         // Outcome = Normal means the run completed naturally. Per-project
         // pass/fail lives in Results; Aborted is reserved for cancellation,
         // timeouts, or crashes (none wired through this path today).
-        ctx
-        |> Option.iter (fun c ->
-            c.EndSubtask PrimarySubtaskKey
+        ctx |> Option.iter (fun c -> c.EndSubtask PrimarySubtaskKey)
 
-            c.EmitTestRunCompleted
-                { RunId = runId
-                  TotalElapsed = sw.Elapsed
-                  Outcome = Normal
-                  Results = finalResults
-                  RanFullSuite = TestResult.ranFullSuite finalResults })
+        // EmitTestRunCompleted moved to caller (synchronous Custom handler)
+        // so it's captured in EmittedEvents for cache replay. Returned as part
+        // of the tuple instead.
+        let completed: TestRunCompleted =
+            { RunId = runId
+              TotalElapsed = sw.Elapsed
+              Outcome = Normal
+              Results = finalResults
+              RanFullSuite = TestResult.ranFullSuite finalResults }
 
         match afterRun with
         | Some hook -> hook testResults
@@ -510,7 +521,7 @@ let private executeTests
             "test-prune"
             $"Tests complete: %d{testResults.Results.Count} projects, %.1f{testResults.Elapsed.TotalSeconds}s"
 
-        return testResults
+        return testResults, started, completed
     }
 
 /// Flush accumulated per-file analysis results to the DB in a single RebuildProjects
@@ -703,28 +714,24 @@ let create
                 if totalClasses = 0 && hasCachedResults then
                     Logging.info "test-prune" "No affected classes — skipping tests (not cold start)"
 
-                    let skipResults =
-                        { Results = Map.empty
-                          Elapsed = TimeSpan.Zero }
-
-                    // Emit a degenerate lifecycle (Started → Completed with empty
-                    // Results) so downstream subscribers see a coherent run even
-                    // when no tests actually executed.
+                    // Build a degenerate lifecycle (Started → Completed with empty
+                    // Results) and post it. The synchronous Custom handler emits
+                    // both events inside the cache-write capture window so they
+                    // replay correctly on cache hit.
                     let runId = Guid.NewGuid()
 
-                    ctx.EmitTestRunStarted
+                    let started: TestRunStarted =
                         { RunId = runId
                           StartedAt = DateTime.UtcNow }
 
-                    ctx.EmitTestRunCompleted
+                    let completed: TestRunCompleted =
                         { RunId = runId
                           TotalElapsed = TimeSpan.Zero
                           Outcome = Normal
                           Results = Map.empty
                           RanFullSuite = true }
 
-                    ctx.ClearAllErrors()
-                    ctx.Post(TestsFinished skipResults)
+                    ctx.Post(TestsFinished(started, completed))
                 else
                     if totalClasses = 0 then
                         Logging.info "test-prune" "No affected classes (cold start) — running all tests"
@@ -732,41 +739,33 @@ let create
                         for (proj, classes) in affectedByProject |> Map.toList do
                             Logging.info "test-prune" $"Affected classes for %s{proj}: %A{classes}"
 
-                    let! results =
+                    let! results, started, completed =
                         executeTests (Some ctx) repoRoot beforeRun coveragePaths afterRun configs affectedByProject None
 
-                    // executeTests emits TestRunStarted → TestProgress × N → TestRunCompleted
-                    // internally; no further lifecycle emits needed here.
-
-                    if results.Results |> Map.forall (fun _ r -> TestResult.isPassed r) then
-                        ctx.ClearAllErrors()
-                    else
-                        reportTestErrors ctx state.TestClassFiles results
-
-                    ctx.Post(TestsFinished results)
+                    // executeTests still emits per-group TestProgress live; the
+                    // synchronous handler emits Started + Completed for the
+                    // §2a cache-write capture window.
+                    ignore results
+                    ctx.Post(TestsFinished(started, completed))
             with ex ->
                 Logging.error "test-prune" $"runTests failed: %s{ex.Message}"
 
-                // Emit an Aborted lifecycle so subscribers see a coherent end
+                // Build an Aborted lifecycle so subscribers see a coherent end
                 // to this run rather than hanging at TestRunStarted.
                 let runId = Guid.NewGuid()
 
-                ctx.EmitTestRunStarted
+                let started: TestRunStarted =
                     { RunId = runId
                       StartedAt = DateTime.UtcNow }
 
-                ctx.EmitTestRunCompleted
+                let completed: TestRunCompleted =
                     { RunId = runId
                       TotalElapsed = TimeSpan.Zero
                       Outcome = Aborted ex.Message
                       Results = Map.empty
                       RanFullSuite = true }
 
-                let failResult =
-                    { Results = Map.empty
-                      Elapsed = TimeSpan.Zero }
-
-                ctx.Post(TestsFinished failResult)
+                ctx.Post(TestsFinished(started, completed))
         }
 
     let commands =
@@ -877,7 +876,7 @@ let create
                                     | Ok configs when configs.IsEmpty ->
                                         return JsonSerializer.Serialize({| error = "no matching test projects" |})
                                     | Ok configs ->
-                                        let! results =
+                                        let! results, _started, _completed =
                                             executeTests
                                                 None
                                                 repoRoot
@@ -1107,7 +1106,26 @@ let create
                                             TestPhase = TestsIdle idleAgain }
                     | BuildFailed _ -> return state
 
-                | Custom(TestsFinished testResults) ->
+                | Custom(TestsFinished(started, completed)) ->
+                    // §2a: emit lifecycle events synchronously here (inside the framework's
+                    // per-event capture window) so they're recorded in the cached
+                    // EmittedEvents and re-fired on cache replay. Live per-group
+                    // TestProgress already fired from the async; subscribers that key off
+                    // TestRunCompleted (e.g. FileCommandPlugin) must see it on cache hit.
+                    ctx.EmitTestRunStarted started
+                    ctx.EmitTestRunCompleted completed
+
+                    // Apply error reporting synchronously here too — live emission from
+                    // the async wouldn't be captured for cache replay.
+                    let testResults: TestResults =
+                        { Results = completed.Results
+                          Elapsed = completed.TotalElapsed }
+
+                    if testResults.Results |> Map.forall (fun _ r -> TestResult.isPassed r) then
+                        ctx.ClearAllErrors()
+                    else
+                        reportTestErrors ctx state.TestClassFiles testResults
+
                     // Pushing a terminal Completed/Failed status is what appends the
                     // run to history; both RerunQueued and NoRerun branches must call this.
                     let recordRunOutcome (results: TestResults) =
@@ -1229,9 +1247,12 @@ let create
         ignore getCommitId
 
         let cacheKey (event: PluginEvent<TestPruneMsg>) : ContentHash option =
-            match event with
-            | Custom _ -> None
-            | BuildCompleted br ->
+            // Reuses the same merkle for BuildCompleted and Custom TestsFinished
+            // so the cache writes on TestsFinished (synchronous handler — captures
+            // EmittedEvents) and the next BuildCompleted hits via the matching key.
+            // TestsFinished only fires after BuildSucceeded (BuildFailed short-circuits
+            // earlier), so outcome="succeeded" is correct for the Custom path.
+            let buildCompletedKey () =
                 let symbolsHash =
                     changedSymbolsRef
                     |> List.distinct
@@ -1239,18 +1260,30 @@ let create
                     |> String.concat "|"
                     |> FsHotWatch.CheckCache.sha256Hex
 
-                let buildOutcome =
-                    match br with
-                    | BuildSucceeded -> "succeeded"
-                    | BuildFailed errs -> "failed:" + String.concat "|" (List.sort errs)
+                FsHotWatch.TaskCache.merkleCacheKey
+                    [ "plugin-version", "test-prune-merkle-v1"
+                      "event", "BuildCompleted"
+                      "changed-symbols", symbolsHash
+                      "build-outcome", "succeeded" ]
+
+            match event with
+            | BuildCompleted BuildSucceeded -> Some(buildCompletedKey ())
+            | BuildCompleted(BuildFailed errs) ->
+                let symbolsHash =
+                    changedSymbolsRef
+                    |> List.distinct
+                    |> List.sort
+                    |> String.concat "|"
+                    |> FsHotWatch.CheckCache.sha256Hex
 
                 Some(
                     FsHotWatch.TaskCache.merkleCacheKey
                         [ "plugin-version", "test-prune-merkle-v1"
                           "event", "BuildCompleted"
                           "changed-symbols", symbolsHash
-                          "build-outcome", buildOutcome ]
+                          "build-outcome", "failed:" + String.concat "|" (List.sort errs) ]
                 )
+            | Custom(TestsFinished _) -> Some(buildCompletedKey ())
             | FileChecked r ->
                 Some(
                     FsHotWatch.TaskCache.merkleCacheKey
