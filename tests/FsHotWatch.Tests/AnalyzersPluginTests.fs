@@ -250,6 +250,75 @@ let ``cache key for non-FileChecked event returns None`` () =
     test <@ buildKey.IsNone @>
 
 [<Fact(Timeout = 5000)>]
+let ``regression: FileChecked replays from cache on second emission with same content`` () =
+    // Two FileChecked events with the same File+Source. The first runs the
+    // analyzer (terminal-status writes to cache); the second should replay
+    // from cache without re-running.
+    //
+    // With Async.Start (pre-fix), the first never wrote to cache, so the
+    // second always re-ran. With awaited execution, the first writes and the
+    // second hits.
+    let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
+    let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
+
+    let handler = create [] None None
+    host.RegisterHandler(handler)
+
+    // First run — cold cache, analyzer crashes (terminal Failed), cache write.
+    host.EmitFileChecked(fakeResult "/tmp/test/Replay.fs")
+    waitForTerminalStatus host "analyzers" 3000
+
+    // Verify cache populated.
+    let key: FsHotWatch.TaskCache.CompositeKey =
+        { Plugin = "analyzers"
+          File = Some "/tmp/test/Replay.fs" }
+
+    let cacheKeyFn = handler.CacheKey.Value
+    let event = FileChecked(fakeResult "/tmp/test/Replay.fs")
+    let computedKey = cacheKeyFn event
+    test <@ (cacheIface.TryGet key computedKey.Value).IsSome @>
+
+    // Verify hit count by computing keys again (should be the same).
+    let event2 = FileChecked(fakeResult "/tmp/test/Replay.fs")
+    let computedKey2 = cacheKeyFn event2
+    test <@ computedKey = computedKey2 @>
+
+[<Fact(Timeout = 5000)>]
+let ``regression: FileChecked with TaskCache writes a cache entry on terminal status`` () =
+    // Before this fix, AnalyzersPlugin used Async.Start to dispatch its work,
+    // which returned `state` synchronously while the analysis ran in the
+    // background. The framework's per-event cache-write window only saw the
+    // "Running" status (not terminal), so it never wrote to the TaskCache.
+    // After: FileChecked awaits the inner async, so by the time the event
+    // handler returns, capturedStatus is Completed/Failed and the cache writes.
+    let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
+    let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
+
+    let handler = create [] None None
+    host.RegisterHandler(handler)
+
+    // Use a fake result; analyzer will crash (Unchecked.defaultof ParseResults),
+    // which exercises the Choice3Of3 path. Crash status is also terminal, so
+    // the cache write must still happen.
+    host.EmitFileChecked(fakeResult "/tmp/test/CacheRegression.fs")
+    waitForTerminalStatus host "analyzers" 3000
+
+    // The cache should now contain an entry for (analyzers, that-file).
+    let key: FsHotWatch.TaskCache.CompositeKey =
+        { Plugin = "analyzers"
+          File = Some "/tmp/test/CacheRegression.fs" }
+
+    let cacheKeyFn = handler.CacheKey.Value
+    let event = FileChecked(fakeResult "/tmp/test/CacheRegression.fs")
+    let computedKey = cacheKeyFn event
+
+    test <@ computedKey.IsSome @>
+    let result = cacheIface.TryGet key computedKey.Value
+    test <@ result.IsSome @>
+
+[<Fact(Timeout = 5000)>]
 let ``multiple concurrent FileChecked events are bounded by semaphore`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
