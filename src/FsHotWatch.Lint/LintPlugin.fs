@@ -22,18 +22,57 @@ type LintState =
 // Lint.lintProject with a warm FSharpChecker instead of per-file lintParsedSource.
 // See ../FsharpLint for the FSharpLint.Core source.
 
+/// FSharpLint version embedded into cache keys so a tool upgrade invalidates
+/// every entry without manual flushing.
+let private fsharpLintVersion =
+    typeof<FSharpLint.Application.Lint.OptionalLintParameters>.Assembly
+        .GetName()
+        .Version
+    |> string
+
+/// Bumped manually when this plugin's caching semantics change in a way that
+/// previously-cached results must be discarded. Independent of FSharpLint's
+/// own version.
+[<Literal>]
+let private pluginCacheSalt = "lint-merkle-v1"
+
 /// Creates a framework plugin handler that lints files using pre-parsed AST
 /// and check results from the daemon's warm FSharpChecker.
+///
+/// `getCommitId` is retained for backward compatibility but unused: the cache
+/// key is now content-merkle (file source + tool/config hashes), so the cache
+/// is reachable across commits when file content reverts. See design doc §2a.
 let create
     (lintConfigPath: string option)
     (getCommitId: (unit -> string option) option)
     (lintRunner: (FileCheckResult -> Lint.LintResult) option)
     (timeoutSec: int option)
     : PluginHandler<LintState, unit> =
+    ignore getCommitId
 
     let lintTimeout =
         let secs = defaultArg timeoutSec LintTimeoutDefaultSec
         TimeSpan.FromSeconds(float secs)
+
+    let configHash =
+        match lintConfigPath with
+        | Some path when System.IO.File.Exists path ->
+            FsHotWatch.CheckCache.sha256Hex (System.IO.File.ReadAllText path)
+        | Some _ -> "missing-config"
+        | None -> "no-config"
+
+    let cacheKey (event: PluginEvent<unit>) : ContentHash option =
+        match event with
+        | FileChecked r ->
+            Some(
+                FsHotWatch.TaskCache.merkleCacheKey
+                    [ "plugin-version", pluginCacheSalt
+                      "tool", fsharpLintVersion
+                      "config", configHash
+                      "file", r.File
+                      "source", r.Source ]
+            )
+        | _ -> None
 
 
     let lintParams =
@@ -150,5 +189,5 @@ let create
                   return $"{{\"files\": %d{current.Count}, \"warnings\": %d{count}}}"
               } ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
-      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId
+      CacheKey = Some cacheKey
       Teardown = None }

@@ -201,8 +201,15 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                             match cacheKeyFn event with
                             | Some cacheKey ->
                                 let compKey = compositeKey event
+                                let lookupResult = cache.TryGet compKey cacheKey
+                                // §2a measurement A: per-plugin hit/miss counts. Filter post-hoc.
+                                let pluginName = PluginName.value handler.Name
 
-                                match cache.TryGet compKey cacheKey with
+                                FsHotWatch.Logging.debug
+                                    "task-cache"
+                                    $"plugin=%s{pluginName} hit=%b{lookupResult.IsSome}"
+
+                                match lookupResult with
                                 | Some result ->
                                     // Clear stale errors before replay
                                     match event with
