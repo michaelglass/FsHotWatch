@@ -559,3 +559,51 @@ let ``fcsCheckSignature is stable across calls with same null FullCheck`` () =
     let s1 = fcsCheckSignature (FullCheck(Unchecked.defaultof<_>))
     let s2 = fcsCheckSignature (FullCheck(Unchecked.defaultof<_>))
     Assert.Equal(s1, s2)
+
+// --- hashDiagnosticSignatures (extracted for testability without FCS) ---
+
+let private mkSig line col errNo sev msg : DiagnosticSignature =
+    { StartLine = line
+      StartColumn = col
+      ErrorNumber = errNo
+      Severity = sev
+      Message = msg }
+
+[<Fact(Timeout = 2000)>]
+let ``hashDiagnosticSignatures empty sequence is stable`` () =
+    let h1 = hashDiagnosticSignatures Seq.empty
+    let h2 = hashDiagnosticSignatures Seq.empty
+    Assert.Equal(h1, h2)
+
+[<Fact(Timeout = 2000)>]
+let ``hashDiagnosticSignatures differs across distinct diagnostics`` () =
+    let h1 = hashDiagnosticSignatures [ mkSig 1 2 100 "Error" "type mismatch" ]
+    let h2 = hashDiagnosticSignatures [ mkSig 1 2 101 "Error" "type mismatch" ]
+    Assert.NotEqual<string>(h1, h2)
+
+[<Fact(Timeout = 2000)>]
+let ``hashDiagnosticSignatures is order-independent (sorted internally)`` () =
+    let a = mkSig 1 2 100 "Error" "first"
+    let b = mkSig 5 8 200 "Warning" "second"
+    Assert.Equal(hashDiagnosticSignatures [ a; b ], hashDiagnosticSignatures [ b; a ])
+
+[<Fact(Timeout = 2000)>]
+let ``hashDiagnosticSignatures distinguishes severity changes`` () =
+    let warn = mkSig 1 2 100 "Warning" "msg"
+    let err = mkSig 1 2 100 "Error" "msg"
+    Assert.NotEqual<string>(hashDiagnosticSignatures [ warn ], hashDiagnosticSignatures [ err ])
+
+[<Fact(Timeout = 2000)>]
+let ``hashDiagnosticSignatures distinguishes message text changes`` () =
+    let a = mkSig 1 2 100 "Error" "type int but expected string"
+    let b = mkSig 1 2 100 "Error" "type string but expected int"
+    Assert.NotEqual<string>(hashDiagnosticSignatures [ a ], hashDiagnosticSignatures [ b ])
+
+[<Fact(Timeout = 2000)>]
+let ``hashDiagnosticSignatures stable when same diagnostic list given twice`` () =
+    let diags =
+        [ mkSig 1 1 100 "Error" "a"
+          mkSig 5 1 200 "Warning" "b"
+          mkSig 10 1 300 "Info" "c" ]
+
+    Assert.Equal(hashDiagnosticSignatures diags, hashDiagnosticSignatures diags)
