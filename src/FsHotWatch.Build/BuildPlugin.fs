@@ -27,7 +27,13 @@ type BuildState =
     { Phase: BuildPhase
       SatisfiedDeps: Set<string> }
 
-type BuildMsg = BuildDone of BuildOutcome
+/// Internal message posted from the async build runner back to the plugin's
+/// own mailbox. Carries the outcome AND the parsed diagnostic entries so the
+/// synchronous Custom handler can apply them to the error ledger and emit
+/// BuildCompleted within the framework's per-event capture window — required
+/// for the §2a cache to record errors and downstream emissions on terminal
+/// status.
+type BuildMsg = BuildDone of BuildOutcome * ErrorEntry list
 
 /// Pure decision logic: given a subprocess's success flag and combined output,
 /// determine the BuildOutcome and the list of ErrorEntry diagnostics to surface.
@@ -146,6 +152,10 @@ let create
         |> Array.filter (fun line -> line.Contains(" -> ") && not (line.Contains("error")))
         |> Array.length
 
+    /// Run from the async build worker. Logs+summary happens here (live UI),
+    /// but the *captured* operations (ReportErrors / ClearErrors / EmitBuildCompleted)
+    /// are deferred to the synchronous Custom BuildDone handler so the framework's
+    /// per-event capture window records them for the §2a cache.
     let applyBuildOutcome (ctx: PluginCtx<BuildMsg>) (outcome: BuildOutcome) (entries: ErrorEntry list) =
         match outcome with
         | BuildPassed out ->
@@ -153,25 +163,15 @@ let create
             let summary = if n > 0 then $"built {n} projects" else "build succeeded"
             ctx.Log summary
             ctx.CompleteWithSummary summary
-
-            if entries.IsEmpty then
-                ctx.ClearErrors "<build>"
-            else
-                ctx.ReportErrors "<build>" entries
-
-            ctx.EmitBuildCompleted(BuildSucceeded)
-        | BuildOutputFailed outputs ->
-            ctx.ReportErrors "<build>" entries
-
+        | BuildOutputFailed _ ->
             let errCount =
                 entries
                 |> List.filter (fun e -> e.Severity = DiagnosticSeverity.Error)
                 |> List.length
 
             ctx.CompleteWithSummary $"build failed: %d{errCount} errors"
-            ctx.EmitBuildCompleted(BuildFailed outputs)
 
-        ctx.Post(BuildDone outcome)
+        ctx.Post(BuildDone(outcome, entries))
 
     let startBuild (ctx: PluginCtx<BuildMsg>) (idle: Lifecycle<Idle, BuildOutcome option>) =
         ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
@@ -212,10 +212,11 @@ let create
 
                     applyBuildOutcome ctx outcome entries
                 with ex ->
-                    ctx.ReportErrors "<build>" [ ErrorEntry.error ex.Message ]
-
-                    ctx.EmitBuildCompleted(BuildFailed [ ex.Message ])
-                    ctx.Post(BuildDone(BuildOutputFailed [ ex.Message ]))
+                    let crashEntry = ErrorEntry.error ex.Message
+                    // ReportErrors / EmitBuildCompleted moved into the synchronous
+                    // BuildDone handler (see applyBuildOutcome doc) so they're captured
+                    // for cache replay.
+                    ctx.Post(BuildDone(BuildOutputFailed [ ex.Message ], [ crashEntry ]))
             })
         |> Async.Start
 
@@ -307,7 +308,8 @@ let create
                         applyBuildOutcome ctx outcome entries
                     with ex ->
                         error "build" $"Unexpected error: %s{ex.Message}"
-                        ctx.Post(BuildDone(BuildOutputFailed [ ex.Message ]))
+
+                        ctx.Post(BuildDone(BuildOutputFailed [ ex.Message ], [ ErrorEntry.error ex.Message ]))
                 })
             |> Async.Start
 
@@ -406,12 +408,25 @@ let create
                 | FileChanged(SourceChanged files), IdlePhase(idle, _) ->
                     return handleSourceChanged ctx state idle files
                 | FileChanged(ProjectChanged _), IdlePhase(idle, _) -> return handleProjectChanged ctx state idle
-                | Custom(BuildDone outcome), RunningPhase running ->
+                | Custom(BuildDone(outcome, entries)), RunningPhase running ->
                     let idle = Lifecycle.complete (Some outcome) running
 
+                    // Apply captured operations within this synchronous handler so
+                    // the framework's §2a cache-write window records them. Replay
+                    // of a cached BuildDone re-fires these via EmittedEvents +
+                    // captured Errors.
                     match outcome with
-                    | BuildPassed _ -> ctx.ReportStatus(Completed(DateTime.UtcNow))
+                    | BuildPassed _ ->
+                        if entries.IsEmpty then
+                            ctx.ClearErrors "<build>"
+                        else
+                            ctx.ReportErrors "<build>" entries
+
+                        ctx.EmitBuildCompleted(BuildSucceeded)
+                        ctx.ReportStatus(Completed(DateTime.UtcNow))
                     | BuildOutputFailed outputs ->
+                        ctx.ReportErrors "<build>" entries
+                        ctx.EmitBuildCompleted(BuildFailed outputs)
                         let summary = outputs |> String.concat "\n" |> truncateOutput 5
                         ctx.ReportStatus(PluginStatus.Failed($"Build failed: %s{summary}", DateTime.UtcNow))
 
@@ -488,22 +503,22 @@ let create
         )
       CacheKey =
         // §2a: content-merkle key over all build-relevant files in the project graph.
-        // The hasher is constructed lazily so plugin tests that don't exercise
-        // the cache path don't pay the walk cost.
+        // Same key for all events (FileChanged, FileChecked, Custom BuildDone) —
+        // the build result is determined by inputs, not by which event triggered
+        // the lookup. Caching on Custom BuildDone (terminal handler — see
+        // applyBuildOutcome doc) and looking up on FileChanged (incoming) requires
+        // both to compute identical keys.
         let inputsHasher = lazy BuildInputsHasher(graph)
 
-        let cacheKey (event: PluginEvent<BuildMsg>) : ContentHash option =
-            match event with
-            | Custom _ -> None
-            | _ ->
-                Some(
-                    FsHotWatch.TaskCache.merkleCacheKey
-                        [ "plugin-version", "build-merkle-v1"
-                          "command", buildCommand
-                          "args", buildArgs
-                          "depends-on", String.concat "," (List.sort dependsOn)
-                          "inputs", inputsHasher.Value.Compute() ]
-                )
+        let cacheKey (_event: PluginEvent<BuildMsg>) : ContentHash option =
+            Some(
+                FsHotWatch.TaskCache.merkleCacheKey
+                    [ "plugin-version", "build-merkle-v1"
+                      "command", buildCommand
+                      "args", buildArgs
+                      "depends-on", String.concat "," (List.sort dependsOn)
+                      "inputs", inputsHasher.Value.Compute() ]
+            )
 
         Some cacheKey
       Teardown = None }
