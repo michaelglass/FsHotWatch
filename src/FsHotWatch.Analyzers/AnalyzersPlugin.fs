@@ -212,90 +212,143 @@ let internal createWithSlowHook
                             debug "analyzers" $"Running parse-only analyzers for %s{result.File}"
                             null
 
-                    // Dispatch analysis to thread pool, semaphore-gated
-                    async {
-                        do! semaphore.WaitAsync(cts.Token) |> Async.AwaitTask
+                    // Run analysis inline (awaited) so the framework's per-event
+                    // cache-write window sees the final terminal status. Semaphore
+                    // still bounds concurrency across plugins; per-plugin events
+                    // are already serialized by the MailboxProcessor.
+                    //
+                    // Returns Some entries on success, None on timeout (terminal status
+                    // already reported), or raises on crash (caught below as failure).
+                    let! analysisOutcome =
+                        async {
+                            do! semaphore.WaitAsync(cts.Token) |> Async.AwaitTask
 
-                        try
-                            return!
-                                PluginCtxHelpers.withSubtask
-                                    ctx
-                                    result.File
-                                    $"analyzing {Path.GetFileName result.File}"
-                                    (async {
-                                        try
-                                            let runAnalyzers () =
-                                                match slowHook with
-                                                | Some h -> h ()
-                                                | None -> ()
+                            try
+                                return!
+                                    PluginCtxHelpers.withSubtask
+                                        ctx
+                                        result.File
+                                        $"analyzing {Path.GetFileName result.File}"
+                                        (async {
+                                            try
+                                                let runAnalyzers () =
+                                                    match slowHook with
+                                                    | Some h -> h ()
+                                                    | None -> ()
 
-                                                let sourceText = result.Source |> SourceText.ofString
+                                                    let sourceText = result.Source |> SourceText.ofString
 
-                                                let context =
-                                                    createCliContext
-                                                        (box result.File)
-                                                        (box sourceText)
-                                                        (box result.ParseResults)
-                                                        checkResultsObj
-                                                        (box result.ProjectOptions)
+                                                    let context =
+                                                        createCliContext
+                                                            (box result.File)
+                                                            (box sourceText)
+                                                            (box result.ParseResults)
+                                                            checkResultsObj
+                                                            (box result.ProjectOptions)
 
-                                                client.RunAnalyzersSafely(context) |> Async.RunSynchronously
+                                                    client.RunAnalyzersSafely(context) |> Async.RunSynchronously
 
-                                            match runWithTimeout analyzerTimeout runAnalyzers with
-                                            | WorkTimedOut after ->
-                                                let reason = $"timed out after %d{int after.TotalSeconds}s"
-                                                error "analyzers" $"Analyzers TIMED OUT for %s{result.File}: %s{reason}"
+                                                match runWithTimeout analyzerTimeout runAnalyzers with
+                                                | WorkTimedOut after ->
+                                                    let reason = $"timed out after %d{int after.TotalSeconds}s"
 
-                                                ctx.EndSubtask PrimarySubtaskKey
-                                                ctx.CompleteWithTimeout reason
+                                                    error
+                                                        "analyzers"
+                                                        $"Analyzers TIMED OUT for %s{result.File}: %s{reason}"
 
-                                                ctx.ReportStatus(
-                                                    PluginStatus.Failed(
-                                                        $"analyzers timed out: {reason}",
-                                                        DateTime.UtcNow
+                                                    ctx.EndSubtask PrimarySubtaskKey
+                                                    ctx.CompleteWithTimeout reason
+
+                                                    ctx.ReportStatus(
+                                                        PluginStatus.Failed(
+                                                            $"analyzers timed out: {reason}",
+                                                            DateTime.UtcNow
+                                                        )
                                                     )
-                                                )
-                                            // Do NOT Post(AnalysisFailed ...) — the status is already
-                                            // terminal (TimedOut). Reposting would trigger the
-                                            // AnalysisFailed handler's completeWith which records a
-                                            // second RunRecord and overwrites the TimedOut outcome.
-                                            | WorkCompleted messages ->
 
-                                                let entries =
-                                                    messages
-                                                    |> List.collect (fun ar ->
-                                                        match ar.Output with
-                                                        | Ok msgs ->
-                                                            msgs
-                                                            |> List.map (fun m ->
-                                                                { Message = m.Message
-                                                                  Severity =
-                                                                    match m.Severity with
-                                                                    | Severity.Error -> DiagnosticSeverity.Error
-                                                                    | Severity.Warning -> DiagnosticSeverity.Warning
-                                                                    | Severity.Info -> DiagnosticSeverity.Info
-                                                                    | Severity.Hint -> DiagnosticSeverity.Hint
-                                                                  Line = m.Range.StartLine
-                                                                  Column = m.Range.StartColumn
-                                                                  Detail = None })
-                                                        | Result.Error _ -> [])
+                                                    return Choice1Of3()
+                                                | WorkCompleted messages ->
 
-                                                debug
-                                                    "analyzers"
-                                                    $"Analyzed %s{Path.GetFileName result.File}: %d{entries.Length} diagnostics"
+                                                    let entries =
+                                                        messages
+                                                        |> List.collect (fun ar ->
+                                                            match ar.Output with
+                                                            | Ok msgs ->
+                                                                msgs
+                                                                |> List.map (fun m ->
+                                                                    { Message = m.Message
+                                                                      Severity =
+                                                                        match m.Severity with
+                                                                        | Severity.Error -> DiagnosticSeverity.Error
+                                                                        | Severity.Warning ->
+                                                                            DiagnosticSeverity.Warning
+                                                                        | Severity.Info -> DiagnosticSeverity.Info
+                                                                        | Severity.Hint -> DiagnosticSeverity.Hint
+                                                                      Line = m.Range.StartLine
+                                                                      Column = m.Range.StartColumn
+                                                                      Detail = None })
+                                                            | Result.Error _ -> [])
 
-                                                PluginCtxHelpers.reportOrClearFile ctx result.File entries
-                                                ctx.Post(AnalysisComplete(result.File, entries))
-                                        with ex ->
-                                            ctx.Post(AnalysisFailed(result.File, ex.ToString()))
-                                            error "analyzers" $"Error analyzing %s{result.File}: %s{ex.ToString()}"
-                                    })
-                        finally
-                            semaphore.Release() |> ignore
-                    }
-                    |> fun a -> Async.Start(a, cts.Token)
+                                                    debug
+                                                        "analyzers"
+                                                        $"Analyzed %s{Path.GetFileName result.File}: %d{entries.Length} diagnostics"
 
-                    return state
+                                                    return Choice2Of3 entries
+                                            with ex ->
+                                                error "analyzers" $"Error analyzing %s{result.File}: %s{ex.ToString()}"
+
+                                                return Choice3Of3(ex.ToString())
+                                        })
+                            finally
+                                semaphore.Release() |> ignore
+                        }
+
+                    match analysisOutcome with
+                    | Choice1Of3() ->
+                        // Timed out — terminal status already reported, state unchanged.
+                        return state
+                    | Choice2Of3 entries ->
+                        // Success — apply the same state updates the old AnalysisComplete handler did,
+                        // then call completeWith inside this event's window so the framework writes the
+                        // cache for FileChecked.
+                        PluginCtxHelpers.reportOrClearFile ctx result.File entries
+
+                        let updated = state.DiagnosticsByFile |> Map.add result.File entries
+
+                        let newErrors =
+                            entries
+                            |> List.filter (fun e -> e.Severity = DiagnosticSeverity.Error)
+                            |> List.length
+
+                        let newWarnings =
+                            entries
+                            |> List.filter (fun e -> e.Severity = DiagnosticSeverity.Warning)
+                            |> List.length
+
+                        let analyzed = state.RunAnalyzed + 1
+                        let findings = state.RunFindings + entries.Length
+                        let errors = state.RunErrors + newErrors
+                        let warnings = state.RunWarnings + newWarnings
+
+                        ctx.EndSubtask PrimarySubtaskKey
+
+                        PluginCtxHelpers.completeWith
+                            ctx
+                            $"analyzed %d{analyzed} files, %d{findings} findings (%d{errors} errors, %d{warnings} warnings)"
+
+                        return
+                            { state with
+                                DiagnosticsByFile = updated
+                                RunAnalyzed = analyzed
+                                RunFindings = findings
+                                RunErrors = errors
+                                RunWarnings = warnings }
+                    | Choice3Of3 errMsg ->
+                        // Crash — same logic as old Custom AnalysisFailed handler.
+                        ctx.ReportErrors result.File [ ErrorEntry.error $"Analyzer crashed: %s{errMsg}" ]
+                        ctx.EndSubtask PrimarySubtaskKey
+                        PluginCtxHelpers.completeWith ctx $"analyzer crashed on {Path.GetFileName result.File}"
+                        return state
                 | Custom(AnalysisComplete(file, entries)) ->
                     let updated = state.DiagnosticsByFile |> Map.add file entries
 
