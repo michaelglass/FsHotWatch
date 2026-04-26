@@ -1222,15 +1222,44 @@ let create
             @ (if hasTestConfigs then [ SubscribeBuildCompleted ] else [])
         )
       CacheKey =
-        FsHotWatch.TaskCache.optionalSaltedCacheKey
-            (fun event ->
-                match event with
-                | BuildCompleted _ ->
+        // §2a: drop commit_id; key on inputs that actually determine the result.
+        // For BuildCompleted: changed symbols + build outcome — together these
+        // dictate which tests run. For FileChecked: file path + source content
+        // (TestPrune updates internal symbol state from the source bytes).
+        ignore getCommitId
+
+        let cacheKey (event: PluginEvent<TestPruneMsg>) : ContentHash option =
+            match event with
+            | Custom _ -> None
+            | BuildCompleted br ->
+                let symbolsHash =
                     changedSymbolsRef
                     |> List.distinct
                     |> List.sort
                     |> String.concat "|"
                     |> FsHotWatch.CheckCache.sha256Hex
-                | _ -> "")
-            getCommitId
+
+                let buildOutcome =
+                    match br with
+                    | BuildSucceeded -> "succeeded"
+                    | BuildFailed errs -> "failed:" + String.concat "|" (List.sort errs)
+
+                Some(
+                    FsHotWatch.TaskCache.merkleCacheKey
+                        [ "plugin-version", "test-prune-merkle-v1"
+                          "event", "BuildCompleted"
+                          "changed-symbols", symbolsHash
+                          "build-outcome", buildOutcome ]
+                )
+            | FileChecked r ->
+                Some(
+                    FsHotWatch.TaskCache.merkleCacheKey
+                        [ "plugin-version", "test-prune-merkle-v1"
+                          "event", "FileChecked"
+                          "file", r.File
+                          "source", r.Source ]
+                )
+            | _ -> None
+
+        Some cacheKey
       Teardown = None }
