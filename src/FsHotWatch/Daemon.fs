@@ -1064,6 +1064,12 @@ module Daemon =
             fileReporter.ClearAll()
             let taskCacheDir = Path.Combine(FsHwPaths.root repoRoot, "cache", "tasks")
             let taskCache = FsHotWatch.FileTaskCache.FileTaskCache(taskCacheDir)
+            // §2c telemetry: log cache size on startup so we can pick LRU thresholds from data.
+            let stats = taskCache.Stats
+
+            Logging.info
+                "task-cache"
+                $"On-disk cache: %d{stats.EntryCount} entries, %.1f{float stats.SizeBytes / 1024.0 / 1024.0} MB"
 
             let host =
                 PluginHost(checker, repoRoot, reporters = [ fileReporter ], taskCache = taskCache)
