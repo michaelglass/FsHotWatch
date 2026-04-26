@@ -2026,3 +2026,53 @@ let ``full run (no filter) emits TestRunCompleted with RanFullSuite=true`` () =
 
         let last = getCompleted () |> List.last
         test <@ last.RanFullSuite @>)
+
+[<Fact(Timeout = 10000)>]
+let ``regression: TestPrune writes a cache entry with TestRunCompleted on terminal status`` () =
+    // Before this fix, TestPrune emitted TestRunStarted/Completed from the
+    // fire-and-forget async (runTestsWithImpact). The framework's per-event
+    // capture window for the synchronous Custom TestsFinished handler had
+    // no events to capture, so the cached EmittedEvents was empty.
+    // After: lifecycle events emit from the synchronous handler instead, so
+    // they're captured. Cache replay can re-fire TestRunCompleted to
+    // downstream subscribers (e.g. FileCommandPlugin) on a hit.
+    withTempDir "tp-cache-emit" (fun tmpDir ->
+        let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
+        let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
+        let host = PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = cacheIface)
+
+        let configs =
+            [ { Project = "TestProject"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let handler = create dbPath tmpDir (Some configs) None None None None None
+        host.RegisterHandler(handler)
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForTerminalStatus host "test-prune" 10000
+
+        // Cache should now contain an entry with at least one TestRun event captured.
+        let key: FsHotWatch.TaskCache.CompositeKey = { Plugin = "test-prune"; File = None }
+
+        let cacheKeyFn = handler.CacheKey.Value
+        let computedKey = cacheKeyFn (BuildCompleted BuildSucceeded)
+        test <@ computedKey.IsSome @>
+
+        let result = cacheIface.TryGet key computedKey.Value
+        test <@ result.IsSome @>
+
+        let hasCompleted =
+            result.Value.EmittedEvents
+            |> List.exists (fun e ->
+                match e with
+                | FsHotWatch.TaskCache.CachedTestRunCompleted _ -> true
+                | _ -> false)
+
+        test <@ hasCompleted @>)
