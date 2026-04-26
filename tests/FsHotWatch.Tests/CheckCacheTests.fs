@@ -535,3 +535,27 @@ let ``JjScanGuard truncId handles short ids`` () =
         match guard.BeginScan() with
         | CheckSubset files -> Assert.Contains("/repo/f.fs", files)
         | other -> Assert.Fail($"Expected CheckSubset but got %A{other}"))
+
+// --- §1: fcsCheckSignature ---
+
+[<Fact(Timeout = 5000)>]
+let ``fcsCheckSignature returns parse-only marker for ParseOnly`` () =
+    let sig1 = fcsCheckSignature ParseOnly
+    let sig2 = fcsCheckSignature ParseOnly
+    Assert.Equal("parse-only", sig1)
+    Assert.Equal(sig1, sig2)
+
+[<Fact(Timeout = 5000)>]
+let ``fcsCheckSignature differs between ParseOnly and FullCheck`` () =
+    // §1 oracle requires distinguishing the two states so plugin caches
+    // invalidate when FCS transitions from parse-only to full-check (or vice
+    // versa) — the lint result depends on whether type info was available.
+    let parseOnly = fcsCheckSignature ParseOnly
+    let fullCheckNull = fcsCheckSignature (FullCheck(Unchecked.defaultof<_>))
+    Assert.NotEqual<string>(parseOnly, fullCheckNull)
+
+[<Fact(Timeout = 5000)>]
+let ``fcsCheckSignature is stable across calls with same null FullCheck`` () =
+    let s1 = fcsCheckSignature (FullCheck(Unchecked.defaultof<_>))
+    let s2 = fcsCheckSignature (FullCheck(Unchecked.defaultof<_>))
+    Assert.Equal(s1, s2)
