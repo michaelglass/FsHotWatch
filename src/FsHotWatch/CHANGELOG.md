@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- **`FsHotWatch.ProcessHelper.isDotnetCommand`** and **`mergeDotnetEnv`** — public helpers that detect a `dotnet`/`dotnet.exe` command basename and merge `MSBUILDDISABLENODEREUSE=1` into its env (unless already set).
+- `runProcessWithTimeout` now injects the env automatically for `dotnet` commands. Eliminates orphan `MSBuild.dll /nodemode:1` workers across daemon-spawned builds without per-plugin opt-in. See `docs/msbuild-node-reuse-bug.md`.
+- **`FsHotWatch.PluginFramework.PluginCtxHelpers.reportOrClearFile`** — collapses the per-file `if entries.IsEmpty then ClearErrors else ReportErrors` idiom shared across analyzer-style plugins.
+
 ## 0.8.0-alpha.10 - 2026-04-25
 
 ### Added
