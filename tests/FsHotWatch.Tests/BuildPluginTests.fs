@@ -609,3 +609,56 @@ let ``build with multiple dependsOn waits for all`` () =
     waitForTerminalStatus host "build" 5000
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
+
+// --- §2a: BuildPlugin cache key behaviour ---
+
+[<Fact(Timeout = 5000)>]
+let ``BuildPlugin cache key is provided regardless of getCommitId`` () =
+    let h1 = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None None
+
+    let h2 =
+        BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] (Some(fun () -> Some "abc")) None
+
+    test <@ h1.CacheKey.IsSome @>
+    test <@ h2.CacheKey.IsSome @>
+
+[<Fact(Timeout = 5000)>]
+let ``BuildPlugin cache key returns None for Custom events`` () =
+    let handler =
+        BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None None
+
+    let cacheKeyFn = handler.CacheKey.Value
+    let key = cacheKeyFn (Custom(BuildDone(BuildPassed "x")))
+    test <@ key.IsNone @>
+
+[<Fact(Timeout = 5000)>]
+let ``BuildPlugin cache key reflects build command`` () =
+    // §2a: changing the build command/args should invalidate the cache.
+    let h1 =
+        BuildPlugin.create "dotnet" "build" [] (ProjectGraph()) [] None [] None None
+
+    let h2 = BuildPlugin.create "dotnet" "test" [] (ProjectGraph()) [] None [] None None
+
+    let evt = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
+    let k1 = h1.CacheKey.Value evt
+    let k2 = h2.CacheKey.Value evt
+    test <@ k1.IsSome @>
+    test <@ k1 <> k2 @>
+
+[<Fact(Timeout = 5000)>]
+let ``BuildPlugin cache key reflects dependsOn ordering and content`` () =
+    let h1 =
+        BuildPlugin.create "dotnet" "build" [] (ProjectGraph()) [] None [ "a"; "b" ] None None
+
+    let h2 =
+        BuildPlugin.create "dotnet" "build" [] (ProjectGraph()) [] None [ "b"; "a" ] None None
+
+    let h3 =
+        BuildPlugin.create "dotnet" "build" [] (ProjectGraph()) [] None [ "a"; "c" ] None None
+
+    let evt = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
+    let k1 = h1.CacheKey.Value evt
+    let k2 = h2.CacheKey.Value evt
+    let k3 = h3.CacheKey.Value evt
+    test <@ k1 = k2 @> // sorted internally
+    test <@ k1 <> k3 @>
