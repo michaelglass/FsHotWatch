@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.11 - 2026-04-26
+
 ### Fixed
 
 - **`RerunQueued` no longer drops the previous run's outcome from history.** The branch that kicks off a queued rerun now records the just-finished run's terminal Completed/Failed status before starting the rerun, so both runs appear in plugin history.
