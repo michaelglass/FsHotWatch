@@ -60,6 +60,30 @@ let getProjectOptionsHash (options: FSharpProjectOptions) : string =
 
     sha256Hex (String.concat "||" parts)
 
+/// Compact tuple representation of an FCS diagnostic — what the hash actually
+/// depends on. Extracted from fcsCheckSignature so the hashing/sorting logic
+/// can be unit-tested without constructing a real FSharpCheckFileResults
+/// (which has no public constructor and requires a live FCS instance).
+type DiagnosticSignature =
+    { StartLine: int
+      StartColumn: int
+      ErrorNumber: int
+      Severity: string
+      Message: string }
+
+/// Hash a sequence of diagnostic signatures. Sorting by (line, column, error)
+/// makes the hash stable across FCS internal ordering changes; encoding is
+/// length-implicit-via-newline-separator (FCS diagnostic fields don't contain
+/// newlines in normal usage).
+let hashDiagnosticSignatures (signatures: DiagnosticSignature seq) : string =
+    let parts =
+        signatures
+        |> Seq.sortBy (fun d -> d.StartLine, d.StartColumn, d.ErrorNumber)
+        |> Seq.map (fun d -> $"%d{d.StartLine}:%d{d.StartColumn}:%d{d.ErrorNumber}:%s{d.Severity}:%s{d.Message}")
+        |> String.concat "\n"
+
+    sha256Hex parts
+
 /// §1: signature of FCS check results, suitable as an oracle answer for plugin
 /// cache keys. Two runs of the same file with identical FCS view (i.e., the
 /// transitive cross-file state that affects this file's compilation produced
@@ -78,19 +102,17 @@ let fcsCheckSignature (checkResults: FileCheckState) : string =
         // the same as ParseOnly so callers get a stable signature.
         "full-check-null"
     | FullCheck results ->
-        // Sort by (start line, start column, error number) so the hash is
-        // stable across FCS internal ordering changes.
-        let parts =
-            try
-                results.Diagnostics
-                |> Array.sortBy (fun d -> d.StartLine, d.StartColumn, d.ErrorNumber)
-                |> Array.map (fun d ->
-                    $"%d{d.StartLine}:%d{d.StartColumn}:%d{d.ErrorNumber}:%A{d.Severity}:%s{d.Message}")
-                |> String.concat "\n"
-            with _ ->
-                "full-check-error"
-
-        sha256Hex parts
+        try
+            results.Diagnostics
+            |> Array.map (fun d ->
+                { StartLine = d.StartLine
+                  StartColumn = d.StartColumn
+                  ErrorNumber = d.ErrorNumber
+                  Severity = $"%A{d.Severity}"
+                  Message = d.Message })
+            |> hashDiagnosticSignatures
+        with _ ->
+            "full-check-error"
 
 /// jj-based cache key provider. Per-file hashing uses timestamp
 /// (jj commit_id is tree-wide, not per-file).
