@@ -308,10 +308,21 @@ let private compositeKeyToString (key: CompositeKey) =
     | Some file -> $"%s{key.Plugin}--%s{file}"
     | None -> key.Plugin
 
+/// Snapshot of on-disk cache size for §2c telemetry.
+[<Struct>]
+type CacheStats = { EntryCount: int; SizeBytes: int64 }
+
 /// On-disk task cache. Each entry is a JSON file in the cache directory.
 /// Files are named `{compositeKey}@{cacheKeyHash}.json` so multiple versions coexist.
 type FileTaskCache(cacheDir: string) =
     do Directory.CreateDirectory(cacheDir) |> ignore
+    // Sweep orphan *.tmp files left from prior process crashes mid-write.
+    do
+        for f in Directory.EnumerateFiles(cacheDir, "*.tmp") do
+            try
+                File.Delete(f)
+            with _ ->
+                ()
 
     let filePath (compositeKey: CompositeKey) cacheKey =
         let keyHash = hashCacheKey cacheKey
@@ -319,21 +330,31 @@ type FileTaskCache(cacheDir: string) =
 
     let jsonWriteOptions = System.Text.Json.JsonSerializerOptions(WriteIndented = true)
 
+    // Counts read attempts that found a file but failed to parse it (corrupt or stale-format).
+    // Telemetry for §2b measurement A: confirms the rate of corruption-style failures.
+    let mutable parseFailureCount = 0
+
     let tryGet (compositeKey: CompositeKey) (cacheKey: ContentHash) =
         let path = filePath compositeKey cacheKey
 
-        try
-            let json = File.ReadAllText(path)
-            let result = deserializeResult json
-
-            if result.CacheKey = cacheKey then Some result else None
-        with _ ->
+        if not (File.Exists path) then
             None
+        else
+            try
+                let json = File.ReadAllText(path)
+                let result = deserializeResult json
+
+                if result.CacheKey = cacheKey then Some result else None
+            with _ ->
+                System.Threading.Interlocked.Increment(&parseFailureCount) |> ignore
+                None
 
     let set (compositeKey: CompositeKey) (cacheKey: ContentHash) (result: TaskCacheResult) =
         let path = filePath compositeKey cacheKey
+        let tmp = path + ".tmp"
         let json = serializeResult result
-        File.WriteAllText(path, json.ToJsonString(jsonWriteOptions))
+        File.WriteAllText(tmp, json.ToJsonString(jsonWriteOptions))
+        File.Move(tmp, path, overwrite = true)
 
     let clear () =
         for f in Directory.EnumerateFiles(cacheDir, "*.json") do
@@ -367,6 +388,24 @@ type FileTaskCache(cacheDir: string) =
 
             if name.StartsWith(prefix) then
                 File.Delete(f)
+
+    /// Total entry count and byte size of cache files in `cacheDir`. §2c
+    /// telemetry: log on daemon startup to set future LRU thresholds from data.
+    member _.Stats =
+        let mutable count = 0
+        let mutable bytes = 0L
+
+        for f in Directory.EnumerateFiles(cacheDir, "*.json") do
+            count <- count + 1
+            bytes <- bytes + FileInfo(f).Length
+
+        { EntryCount = count
+          SizeBytes = bytes }
+
+    /// Number of read attempts that found a file but couldn't deserialise it.
+    /// §2b measurement A: a non-zero value indicates corruption (e.g. crash mid-write
+    /// before the atomic-rename change shipped) or a stale on-disk format.
+    member _.ParseFailureCount = parseFailureCount
 
     /// Try to retrieve a cached result.
     member _.TryGet(compositeKey: CompositeKey, cacheKey: ContentHash) = tryGet compositeKey cacheKey
