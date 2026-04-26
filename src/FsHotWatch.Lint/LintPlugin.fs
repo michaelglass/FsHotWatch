@@ -25,9 +25,7 @@ type LintState =
 /// FSharpLint version embedded into cache keys so a tool upgrade invalidates
 /// every entry without manual flushing.
 let private fsharpLintVersion =
-    typeof<FSharpLint.Application.Lint.OptionalLintParameters>.Assembly
-        .GetName()
-        .Version
+    typeof<FSharpLint.Application.Lint.OptionalLintParameters>.Assembly.GetName().Version
     |> string
 
 /// Bumped manually when this plugin's caching semantics change in a way that
@@ -56,8 +54,7 @@ let create
 
     let configHash =
         match lintConfigPath with
-        | Some path when System.IO.File.Exists path ->
-            FsHotWatch.CheckCache.sha256Hex (System.IO.File.ReadAllText path)
+        | Some path when System.IO.File.Exists path -> FsHotWatch.CheckCache.sha256Hex (System.IO.File.ReadAllText path)
         | Some _ -> "missing-config"
         | None -> "no-config"
 

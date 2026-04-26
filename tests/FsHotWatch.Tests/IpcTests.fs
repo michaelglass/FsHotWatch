@@ -546,6 +546,22 @@ let ``WaitForScan legacy path blocks on cold daemon`` () =
     test <@ task.IsCompleted @>
 
 [<Fact(Timeout = 5000)>]
+let ``WaitForGeneration does not hang when scan completes before waiter is registered`` () =
+    // Race: client reads currentGeneration=0, then before posting WaitFor to the
+    // agent the scan completes and SignalGeneration(1) fires. Without latching
+    // the latest seen generation in the agent, the WaitFor message arrives after
+    // Signal has already been processed (no waiters present), and the waiter
+    // hangs forever despite the scan being done.
+    let signal = FsHotWatch.Daemon.ScanSignal()
+    // Simulate: signal arrives BEFORE waiter registration.
+    signal.SignalGeneration(1L)
+    // Caller still sees stale currentGeneration=0 (Volatile.Write happens after
+    // SignalGeneration in performScan).
+    let task = signal.WaitForGeneration(-1L, 0L)
+    task.Wait(System.TimeSpan.FromSeconds(2.0)) |> ignore
+    test <@ task.IsCompleted @>
+
+[<Fact(Timeout = 5000)>]
 let ``WaitForComplete resolves when all plugins terminal`` () =
     let tcs = TaskCompletionSource<unit>()
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
