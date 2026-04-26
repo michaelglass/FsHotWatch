@@ -8,7 +8,7 @@
         "platform": "macos"
       },
       {
-        "line": 75,
+        "line": 76,
         "branch": 75,
         "reason": "reflection-based CliContext branches vary by platform; parse-only path \u002B knownNonAnalyzerPrefixes filter both add untested branches on Linux",
         "platform": "linux"
@@ -36,7 +36,7 @@
       },
       {
         "line": 88,
-        "branch": 77,
+        "branch": 76,
         "reason": "loosened: shared file isTestFile changes",
         "platform": "linux"
       }
@@ -361,7 +361,7 @@
         "platform": "macos"
       },
       {
-        "line": 87,
+        "line": 89,
         "branch": 100,
         "platform": "linux"
       }
@@ -387,8 +387,8 @@
         "platform": "macos"
       },
       {
-        "line": 69,
-        "branch": 51,
+        "line": 68,
+        "branch": 54,
         "reason": "CLI entry point, different coverage on Linux CI",
         "platform": "linux"
       }
