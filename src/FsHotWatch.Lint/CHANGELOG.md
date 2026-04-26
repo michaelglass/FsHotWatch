@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.9 - 2026-04-26
+
 ### Changed
 
 - Per-file error reporting now goes through `PluginCtxHelpers.reportOrClearFile` (core). No behavior change.
