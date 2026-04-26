@@ -209,6 +209,10 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                     "task-cache"
                                     $"plugin=%s{pluginName} hit=%b{lookupResult.IsSome}"
 
+                                // Always-on event log shared across daemons; analyse offline
+                                // to compute hit-rate trends. Disabled later if signal is absent.
+                                FsHotWatch.CacheEventLog.record pluginName lookupResult.IsSome services.RepoRoot
+
                                 match lookupResult with
                                 | Some result ->
                                     // Clear stale errors before replay

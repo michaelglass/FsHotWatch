@@ -54,6 +54,7 @@
     <Compile Include="BuildPluginTests.fs" />
     <Compile Include="FileCommandPluginTests.fs" />
     <Compile Include="LoggingTests.fs" />
+    <Compile Include="CacheEventLogTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

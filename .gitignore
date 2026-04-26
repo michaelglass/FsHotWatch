@@ -72,3 +72,6 @@ DONE.md
 
 # Implementation plans (working documents)
 docs/plans/
+
+# Cache event log (always-on telemetry; planned to disable after observation)
+cache-events.log
