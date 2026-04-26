@@ -623,13 +623,58 @@ let ``BuildPlugin cache key is provided regardless of getCommitId`` () =
     test <@ h2.CacheKey.IsSome @>
 
 [<Fact(Timeout = 5000)>]
-let ``BuildPlugin cache key returns None for Custom events`` () =
+let ``regression: BuildPlugin writes a cache entry on terminal Custom BuildDone`` () =
+    // Before this fix, BuildPlugin's applyBuildOutcome called EmitBuildCompleted
+    // and ReportErrors from inside the fire-and-forget async, so the framework's
+    // per-event cache-write window for FileChanged saw only "Running" and the
+    // Custom BuildDone window had nothing to capture (events emitted earlier).
+    // After: the captured operations move into the Custom BuildDone handler,
+    // which runs synchronously and IS captured.
+    let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
+    let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
+
+    let handler =
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None None
+
+    host.RegisterHandler(handler)
+
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+    waitForTerminalStatus host "build" 5000
+
+    // After terminal status, the cache should contain an entry for build.
+    let key: FsHotWatch.TaskCache.CompositeKey = { Plugin = "build"; File = None }
+
+    let cacheKeyFn = handler.CacheKey.Value
+    // The cache lookup happens at FileChanged time in production; the entry
+    // is stored with the same merkle key (whether emitted from FileChanged
+    // or Custom BuildDone — they share the input set).
+    let computedKey = cacheKeyFn (FileChanged(SourceChanged [ "src/Lib.fs" ]))
+    test <@ computedKey.IsSome @>
+
+    let result = cacheIface.TryGet key computedKey.Value
+    test <@ result.IsSome @>
+    // EmittedEvents should include the BuildCompleted that the synchronous
+    // handler emitted — this is what cache replay will re-fire to downstream
+    // plugins (TestPrune, Coverage).
+    test <@ not result.Value.EmittedEvents.IsEmpty @>
+
+[<Fact(Timeout = 5000)>]
+let ``BuildPlugin cache key matches between FileChanged and Custom BuildDone`` () =
+    // The cache stores a result on the synchronous Custom BuildDone handler;
+    // future FileChanged events look up by the same merkle key. Both must
+    // compute identical keys for the cache to hit.
     let handler =
         BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None None
 
     let cacheKeyFn = handler.CacheKey.Value
-    let key = cacheKeyFn (Custom(BuildDone(BuildPassed "x")))
-    test <@ key.IsNone @>
+    let fileEvt = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
+    let buildDoneEvt = Custom(BuildDone(BuildPassed "x", []))
+
+    let fileKey = cacheKeyFn fileEvt
+    let doneKey = cacheKeyFn buildDoneEvt
+    test <@ fileKey.IsSome @>
+    test <@ fileKey = doneKey @>
 
 [<Fact(Timeout = 5000)>]
 let ``BuildPlugin cache key reflects build command`` () =
