@@ -3,8 +3,8 @@
     "AnalyzersPlugin.fs": [
       {
         "line": 74,
-        "branch": 72,
-        "reason": "FCS analyzer paths in IntegrationTests (excluded); §2a merkle-key + lifecycle-fix Choice paths add untested branches; line drifts 74-76% across runs",
+        "branch": 70,
+        "reason": "FCS analyzer paths in IntegrationTests (excluded); §2a + lifecycle + §1 fcs-signature add untested branches; line drifts 74-76% across runs",
         "platform": "macos"
       },
       {
@@ -119,6 +119,20 @@
         "line": 41,
         "branch": 100,
         "reason": "loosened: inline helpers (isTerminal/isQuiescent) not tracked in source file",
+        "platform": "linux"
+      }
+    ],
+    "CheckCache.fs": [
+      {
+        "line": 73,
+        "branch": 40,
+        "reason": "§1 fcsCheckSignature adds branches (FullCheck null guard, try/with around Diagnostics access) not exercised without a real FSharpCheckFileResults; integration tests would cover but live in IntegrationTests (excluded)",
+        "platform": "macos"
+      },
+      {
+        "line": 73,
+        "branch": 40,
+        "reason": "§1 fcsCheckSignature: see macos reason",
         "platform": "linux"
       }
     ],

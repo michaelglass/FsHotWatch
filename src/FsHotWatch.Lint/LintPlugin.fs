@@ -61,13 +61,21 @@ let create
     let cacheKey (event: PluginEvent<unit>) : ContentHash option =
         match event with
         | FileChecked r ->
+            // §1: include FCS check signature so cross-file changes that shift
+            // FCS's view of this file invalidate the cache, even when the file's
+            // own source bytes are unchanged. Without this, a change to an
+            // upstream symbol's signature would let stale lint results serve
+            // through cache hits keyed on source-only.
+            let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature r.CheckResults
+
             Some(
                 FsHotWatch.TaskCache.merkleCacheKey
                     [ "plugin-version", pluginCacheSalt
                       "tool", fsharpLintVersion
                       "config", configHash
                       "file", r.File
-                      "source", r.Source ]
+                      "source", r.Source
+                      "fcs-signature", fcsSignature ]
             )
         | _ -> None
 
