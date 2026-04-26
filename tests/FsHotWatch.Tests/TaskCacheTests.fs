@@ -220,6 +220,50 @@ let ``merkleCacheKey distinguishes "ab","" from "a","b"`` () =
     let b = merkleCacheKey [ "x", "a"; "y", "b" ]
     test <@ a <> b @>
 
+[<Fact(Timeout = 30000); Trait("Category", "Benchmark")>]
+let ``BENCH merkleCacheKey on representative .fs file`` () =
+    // §2a measurement B: per-FileChecked hashing cost. Repo avg .fs size ~12KB.
+    // Use the longest .fs file we can find as a worst-case proxy.
+    let testSrc =
+        let typical =
+            String.replicate 240 "let aReasonablyLongIdentifier = someValue + otherValue\n"
+
+        typical // ~12KB
+
+    let inputs =
+        [ "plugin-version", "lint-merkle-v1"
+          "tool", "1.2.3.4"
+          "config", "abc123def456"
+          "file", "/Users/me/repo/src/SomeModule/SomeFile.fs"
+          "source", testSrc ]
+
+    let warmup = 100
+    let iterations = 1000
+
+    for _ in 1..warmup do
+        merkleCacheKey inputs |> ignore
+
+    let sw = System.Diagnostics.Stopwatch.StartNew()
+
+    for _ in 1..iterations do
+        merkleCacheKey inputs |> ignore
+
+    sw.Stop()
+    let perCallUs = sw.Elapsed.TotalMicroseconds / float iterations
+
+    // Print to stdout via xunit's facility — using printfn since Trait gives
+    // us a way to filter this test out of normal runs if needed.
+    printfn
+        "merkleCacheKey on %d-byte source: %.1f µs/call (%d iters in %d ms)"
+        testSrc.Length
+        perCallUs
+        iterations
+        sw.ElapsedMilliseconds
+
+    // Soft assertion: < 1 ms per call. If this fires, predicted downside #1
+    // (hashing cost per tick) is real.
+    test <@ perCallUs < 1000.0 @>
+
 [<Fact(Timeout = 5000)>]
 let ``LintPlugin cache key is stable across runs for same file content`` () =
     // §2a hypothesis: editing Foo.fs and reverting it should hit the cache.
@@ -243,6 +287,70 @@ let ``LintPlugin cache key is stable across runs for same file content`` () =
         let edited = keyFn (FileChecked(mkResult "/src/Foo.fs" "let x = 2"))
         test <@ a = b @>
         test <@ a <> edited @>
+
+[<Fact(Timeout = 5000)>]
+let ``LintPlugin cache key is None for non-FileChecked events`` () =
+    let handler = FsHotWatch.Lint.LintPlugin.create None None None None
+
+    match handler.CacheKey with
+    | None -> failwith "expected LintPlugin to provide a CacheKey"
+    | Some keyFn ->
+        let result = keyFn (FileChanged(SourceChanged [ "/src/Foo.fs" ]))
+        test <@ result = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``LintPlugin cache key reflects config file content`` () =
+    // §2a: editing the lint config should invalidate cached lint results.
+    withTempDir "lint-config" (fun tmpDir ->
+        let configPath = System.IO.Path.Combine(tmpDir, "fsharplint.json")
+        System.IO.File.WriteAllText(configPath, "{\"rules\":\"v1\"}")
+        let handler1 = FsHotWatch.Lint.LintPlugin.create (Some configPath) None None None
+
+        let mkResult source : FileCheckResult =
+            { File = "/src/Foo.fs"
+              Source = source
+              ParseResults = Unchecked.defaultof<_>
+              CheckResults = ParseOnly
+              ProjectOptions = Unchecked.defaultof<_>
+              Version = 0L }
+
+        match handler1.CacheKey with
+        | None -> failwith "expected CacheKey"
+        | Some k1 ->
+            let key1 = k1 (FileChecked(mkResult "let x = 1"))
+            // Edit config, rebuild handler.
+            System.IO.File.WriteAllText(configPath, "{\"rules\":\"v2\"}")
+            let handler2 = FsHotWatch.Lint.LintPlugin.create (Some configPath) None None None
+
+            match handler2.CacheKey with
+            | None -> failwith "expected CacheKey"
+            | Some k2 ->
+                let key2 = k2 (FileChecked(mkResult "let x = 1"))
+                test <@ key1 <> key2 @>)
+
+[<Fact(Timeout = 5000)>]
+let ``LintPlugin cache key uses missing-config marker when config path doesn't exist`` () =
+    // Covers the `Some path` branch where the file is not on disk — should
+    // produce a stable key (no exception) distinct from the `None` case.
+    let h1 =
+        FsHotWatch.Lint.LintPlugin.create (Some "/nonexistent/fsharplint.json") None None None
+
+    let h2 = FsHotWatch.Lint.LintPlugin.create None None None None
+
+    let mkResult () : FileCheckResult =
+        { File = "/src/Foo.fs"
+          Source = "let x = 1"
+          ParseResults = Unchecked.defaultof<_>
+          CheckResults = ParseOnly
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = 0L }
+
+    let evt = FileChecked(mkResult ())
+
+    let k1 = h1.CacheKey |> Option.bind (fun f -> f evt)
+    let k2 = h2.CacheKey |> Option.bind (fun f -> f evt)
+    test <@ k1.IsSome @>
+    test <@ k1 <> k2 @>
 
 [<Fact(Timeout = 5000)>]
 let ``optionalSaltedCacheKey wraps getSalt when getCommitId is Some`` () =
@@ -605,7 +713,7 @@ let ``FileTaskCache.Set leaves no .tmp files behind`` () =
         let cache = FileTaskCache(tmpDir)
         (cache :> ITaskCache).Set (ck "build" "Foo.fs") (hash "h1") (makeResult "h1")
         let tmps = System.IO.Directory.EnumerateFiles(tmpDir, "*.tmp") |> Seq.toList
-        test <@ tmps = [] @>)
+        test <@ List.isEmpty tmps @>)
 
 [<Fact(Timeout = 5000)>]
 let ``FileTaskCache constructor sweeps orphan .tmp files`` () =
