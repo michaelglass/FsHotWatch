@@ -4,6 +4,10 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+### Added
+
+- `unwrapIpcException` — peels `AggregateException` wrappers so the CLI surfaces the underlying OOM / Timeout / pipe-corruption exception instead of "One or more errors occurred."
+
 ## 0.8.0-alpha.10 - 2026-04-25
 
 ### Added

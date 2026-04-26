@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- **`formatSilentFailureDiagnostic`** — surfaces exit code, output size, and any `Time Elapsed` tail when `dotnet build` exits non-zero with no parseable diagnostics (typically MSBuild bailing during evaluation/restore).
+
+### Changed
+
+- The MSBUILDDISABLENODEREUSE env injection moved to `ProcessHelper.runProcessWithTimeout` (core), so the build plugin no longer maintains its own copy. Behavior is identical from the caller's perspective.
+
 ## 0.7.0-alpha.8 - 2026-04-25
 
 ### Fixed
