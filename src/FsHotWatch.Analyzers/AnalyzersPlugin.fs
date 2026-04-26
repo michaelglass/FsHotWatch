@@ -416,18 +416,17 @@ let internal createWithSlowHook
         let cacheKey (event: PluginEvent<AnalyzersMsg>) : ContentHash option =
             match event with
             | FileChecked result ->
-                let parseFlag =
-                    match result.CheckResults with
-                    | ParseOnly -> "parse-only"
-                    | FullCheck _ -> "full-check"
+                // §1: fcs-signature captures cross-file FCS state changes so
+                // upstream symbol changes invalidate this file's cache.
+                let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature result.CheckResults
 
                 Some(
                     FsHotWatch.TaskCache.merkleCacheKey
-                        [ "plugin-version", "analyzers-merkle-v1"
+                        [ "plugin-version", "analyzers-merkle-v2"
                           "analyzer-paths", analyzerPathsHash
-                          "check-state", parseFlag
                           "file", result.File
-                          "source", result.Source ]
+                          "source", result.Source
+                          "fcs-signature", fcsSignature ]
                 )
             | _ -> None
 
