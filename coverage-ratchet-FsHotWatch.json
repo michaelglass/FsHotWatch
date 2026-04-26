@@ -29,15 +29,15 @@
     ],
     "BuildPlugin.fs": [
       {
-        "line": 84,
-        "branch": 74,
-        "reason": "loosened 2026-04-26 §2a: BuildInputsHasher mtime/cache branches not exercised by unit tests; integration coverage in IntegrationTests (excluded)",
+        "line": 89,
+        "branch": 77,
+        "reason": "BuildInputsHasher now unit-tested (stub IProjectGraphReader, temp-dir hashing) — raised threshold back from §2a-era loosening",
         "platform": "macos"
       },
       {
-        "line": 84,
-        "branch": 74,
-        "reason": "loosened 2026-04-26 §2a: BuildInputsHasher mtime/cache branches not exercised by unit tests",
+        "line": 89,
+        "branch": 77,
+        "reason": "BuildInputsHasher unit-tested",
         "platform": "linux"
       }
     ],
