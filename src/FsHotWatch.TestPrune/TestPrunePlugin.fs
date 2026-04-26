@@ -1285,12 +1285,17 @@ let create
                 )
             | Custom(TestsFinished _) -> Some(buildCompletedKey ())
             | FileChecked r ->
+                // §1: fcs-signature captures cross-file FCS state so symbol
+                // changes upstream invalidate this file's cached symbol-diff.
+                let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature r.CheckResults
+
                 Some(
                     FsHotWatch.TaskCache.merkleCacheKey
-                        [ "plugin-version", "test-prune-merkle-v1"
+                        [ "plugin-version", "test-prune-merkle-v2"
                           "event", "FileChecked"
                           "file", r.File
-                          "source", r.Source ]
+                          "source", r.Source
+                          "fcs-signature", fcsSignature ]
                 )
             | _ -> None
 
