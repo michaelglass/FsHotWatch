@@ -29,15 +29,15 @@
     ],
     "BuildPlugin.fs": [
       {
-        "line": 88,
-        "branch": 76,
-        "reason": "loosened: shared file isTestFile changes",
+        "line": 84,
+        "branch": 74,
+        "reason": "loosened 2026-04-26 §2a: BuildInputsHasher mtime/cache branches not exercised by unit tests; integration coverage in IntegrationTests (excluded)",
         "platform": "macos"
       },
       {
-        "line": 88,
-        "branch": 76,
-        "reason": "loosened: shared file isTestFile changes",
+        "line": 84,
+        "branch": 74,
+        "reason": "loosened 2026-04-26 §2a: BuildInputsHasher mtime/cache branches not exercised by unit tests",
         "platform": "linux"
       }
     ],
