@@ -707,3 +707,90 @@ let ``BuildPlugin cache key reflects dependsOn ordering and content`` () =
     let k3 = h3.CacheKey.Value evt
     test <@ k1 = k2 @> // sorted internally
     test <@ k1 <> k3 @>
+
+// --- §2a: BuildInputsHasher (extracted via internal visibility for testability) ---
+
+let private stubGraph (sources: string list) (projects: string list) =
+    { new IProjectGraphReader with
+        member _.GetProjectForFile _ = None
+        member _.GetProjectsForFile _ = []
+        member _.GetSourceFiles _ = []
+        member _.GetDependents _ = []
+        member _.GetAffectedProjects _ = []
+
+        member _.GetAllProjects() =
+            projects |> List.map AbsProjectPath.create
+
+        member _.GetAllFiles() = sources |> List.map AbsFilePath.create }
+
+[<Fact(Timeout = 5000)>]
+let ``BuildInputsHasher produces stable hash for unchanged files`` () =
+    withTempDir "binhasher-stable" (fun tmpDir ->
+        let f1 = System.IO.Path.Combine(tmpDir, "A.fs")
+        let f2 = System.IO.Path.Combine(tmpDir, "B.fs")
+        System.IO.File.WriteAllText(f1, "let a = 1")
+        System.IO.File.WriteAllText(f2, "let b = 2")
+
+        let graph = stubGraph [ f1; f2 ] []
+        let h = BuildInputsHasher(graph)
+        test <@ h.Compute() = h.Compute() @>)
+
+[<Fact(Timeout = 5000)>]
+let ``BuildInputsHasher hash differs when a source file's content changes`` () =
+    withTempDir "binhasher-content" (fun tmpDir ->
+        let f1 = System.IO.Path.Combine(tmpDir, "A.fs")
+        System.IO.File.WriteAllText(f1, "let a = 1")
+
+        let graph = stubGraph [ f1 ] []
+        let h = BuildInputsHasher(graph)
+        let before = h.Compute()
+        // Brief sleep to ensure mtime advances; the cache key is (path, mtimeTicks).
+        System.Threading.Thread.Sleep(50)
+        System.IO.File.WriteAllText(f1, "let a = 2")
+        test <@ before <> h.Compute() @>)
+
+[<Fact(Timeout = 5000)>]
+let ``BuildInputsHasher hash differs when files are added or removed`` () =
+    withTempDir "binhasher-fileset" (fun tmpDir ->
+        let f1 = System.IO.Path.Combine(tmpDir, "A.fs")
+        let f2 = System.IO.Path.Combine(tmpDir, "B.fs")
+        System.IO.File.WriteAllText(f1, "let a = 1")
+        System.IO.File.WriteAllText(f2, "let b = 2")
+
+        let oneFile = BuildInputsHasher(stubGraph [ f1 ] []).Compute()
+        let twoFiles = BuildInputsHasher(stubGraph [ f1; f2 ] []).Compute()
+        test <@ oneFile <> twoFiles @>)
+
+[<Fact(Timeout = 5000)>]
+let ``BuildInputsHasher does not crash when a listed file is missing`` () =
+    withTempDir "binhasher-missing" (fun tmpDir ->
+        let exists = System.IO.Path.Combine(tmpDir, "A.fs")
+        let missing = System.IO.Path.Combine(tmpDir, "MissingNeverWritten.fs")
+        System.IO.File.WriteAllText(exists, "let a = 1")
+
+        let h = BuildInputsHasher(stubGraph [ exists; missing ] [])
+        // Missing file is hashed via the read-error sentinel; no exception.
+        test <@ not (System.String.IsNullOrEmpty(h.Compute())) @>)
+
+[<Fact(Timeout = 5000)>]
+let ``BuildInputsHasher mtime cache returns stable hash across repeat calls`` () =
+    withTempDir "binhasher-cache" (fun tmpDir ->
+        let f = System.IO.Path.Combine(tmpDir, "A.fs")
+        System.IO.File.WriteAllText(f, "let a = 1")
+
+        let h = BuildInputsHasher(stubGraph [ f ] [])
+        let h1 = h.Compute()
+        let h2 = h.Compute()
+        let h3 = h.Compute()
+        test <@ h1 = h2 @>
+        test <@ h2 = h3 @>)
+
+[<Fact(Timeout = 5000)>]
+let ``BuildInputsHasher includes project files in the merkle`` () =
+    withTempDir "binhasher-projfiles" (fun tmpDir ->
+        let proj = System.IO.Path.Combine(tmpDir, "P.fsproj")
+        System.IO.File.WriteAllText(proj, "<Project></Project>")
+
+        let withProj = BuildInputsHasher(stubGraph [] [ proj ]).Compute()
+        let empty = BuildInputsHasher(stubGraph [] []).Compute()
+        test <@ withProj <> empty @>)
