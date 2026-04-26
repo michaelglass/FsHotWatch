@@ -144,3 +144,25 @@ let optionalCacheKey (getCommitId: (unit -> string option) option) =
 /// Build an optional salted CacheKey from an optional getCommitId function.
 let optionalSaltedCacheKey (getSalt: PluginEvent<'Msg> -> string) (getCommitId: (unit -> string option) option) =
     getCommitId |> Option.map (saltedCacheKey getSalt)
+
+/// §2a: content-merkle cache key. Hashes a list of (label, value) inputs into a
+/// stable ContentHash that depends only on the values — no commit_id, so a file
+/// reverted to its earlier content hits its earlier cache entry.
+///
+/// Encoding is length-prefixed to avoid `("x","ab"),("y","")` colliding with
+/// `("x","a"),("y","b")`. Sorted by label to make order-of-construction
+/// irrelevant at call sites.
+let merkleCacheKey (inputs: (string * string) list) : ContentHash =
+    let sb = System.Text.StringBuilder()
+
+    for (label, value) in inputs |> List.sortBy fst do
+        sb.Append(label.Length) |> ignore
+        sb.Append(':') |> ignore
+        sb.Append(label) |> ignore
+        sb.Append('|') |> ignore
+        sb.Append(value.Length) |> ignore
+        sb.Append(':') |> ignore
+        sb.Append(value) |> ignore
+        sb.Append('|') |> ignore
+
+    ContentHash.create (FsHotWatch.CheckCache.sha256Hex (sb.ToString()))
