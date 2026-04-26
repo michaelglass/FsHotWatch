@@ -268,16 +268,33 @@ type ScanSignal(?cancellationToken: CancellationToken) =
     let agent =
         MailboxProcessor.Start(
             (fun inbox ->
-                let rec loop (waiters: (int64 * TaskCompletionSource<unit>) list) =
+                // latestGeneration latches the most recent SignalGeneration so a
+                // WaitFor that arrives after the signal can resolve immediately.
+                // Without this, a race between performScan signalling completion
+                // and the client posting WaitFor leaves the waiter hanging.
+                let rec loop (latestGeneration: int64) (waiters: (int64 * TaskCompletionSource<unit>) list) =
                     async {
                         let! msg = inbox.Receive()
 
                         try
                             match msg with
                             | WaitFor(afterGeneration, tcs) ->
-                                Logging.debug "scan-signal" $"WaitFor(%d{afterGeneration}) — registering waiter"
+                                let alreadySatisfied =
+                                    if afterGeneration >= 0L then
+                                        latestGeneration > afterGeneration
+                                    else
+                                        latestGeneration > 0L
 
-                                return! loop ((afterGeneration, tcs) :: waiters)
+                                if alreadySatisfied then
+                                    Logging.debug
+                                        "scan-signal"
+                                        $"WaitFor(%d{afterGeneration}) — already satisfied (latest=%d{latestGeneration}), resolving"
+
+                                    tcs.TrySetResult(()) |> ignore
+                                    return! loop latestGeneration waiters
+                                else
+                                    Logging.debug "scan-signal" $"WaitFor(%d{afterGeneration}) — registering waiter"
+                                    return! loop latestGeneration ((afterGeneration, tcs) :: waiters)
 
                             | Signal newGeneration ->
                                 let toSignal, remaining =
@@ -291,13 +308,13 @@ type ScanSignal(?cancellationToken: CancellationToken) =
                                 for _, tcs in toSignal do
                                     tcs.TrySetResult(()) |> ignore
 
-                                return! loop remaining
+                                return! loop (max latestGeneration newGeneration) remaining
                         with ex ->
                             Logging.error "scan-signal" $"Agent failed: %s{ex.ToString()}"
-                            return! loop waiters
+                            return! loop latestGeneration waiters
                     }
 
-                loop []),
+                loop 0L []),
             ?cancellationToken = cancellationToken
         )
 
