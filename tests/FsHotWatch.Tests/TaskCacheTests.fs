@@ -552,7 +552,7 @@ let ``FileTaskCache.Set leaves no .tmp files behind`` () =
         let cache = FileTaskCache(tmpDir)
         (cache :> ITaskCache).Set (ck "build" "Foo.fs") (hash "h1") (makeResult "h1")
         let tmps = System.IO.Directory.EnumerateFiles(tmpDir, "*.tmp") |> Seq.toList
-        test <@ tmps = [] @>)
+        test <@ List.isEmpty tmps @>)
 
 [<Fact(Timeout = 5000)>]
 let ``FileTaskCache constructor sweeps orphan .tmp files`` () =

@@ -75,7 +75,7 @@
     },
     "Daemon.fs": [
       {
-        "line": 72,
+        "line": 73,
         "branch": 60,
         "platform": "macos"
       },
@@ -163,8 +163,8 @@
     ],
     "FileTaskCache.fs": [
       {
-        "line": 75,
-        "branch": 68,
+        "line": 76,
+        "branch": 69,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -357,7 +357,7 @@
       {
         "line": 92,
         "branch": 100,
-        "reason": "kill-on-timeout drain branches fire flakily between runs (89-92% line)",
+        "reason": "kill-on-timeout drain branches fire flakily between runs (89-92% line); pinned to floor",
         "platform": "macos"
       },
       {
