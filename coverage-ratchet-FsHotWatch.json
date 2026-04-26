@@ -4,7 +4,7 @@
       {
         "line": 74,
         "branch": 70,
-        "reason": "FCS analyzer paths in IntegrationTests (excluded); §2a + lifecycle + §1 fcs-signature add untested branches; line drifts 74-76% across runs",
+        "reason": "FCS analyzer paths in IntegrationTests (excluded); \u00A72a \u002B lifecycle \u002B \u00A71 fcs-signature add untested branches; line drifts 74-76% across runs",
         "platform": "macos"
       },
       {
@@ -31,13 +31,27 @@
       {
         "line": 89,
         "branch": 77,
-        "reason": "BuildInputsHasher now unit-tested (stub IProjectGraphReader, temp-dir hashing) — raised threshold back from §2a-era loosening",
+        "reason": "BuildInputsHasher now unit-tested (stub IProjectGraphReader, temp-dir hashing) \u2014 raised threshold back from \u00A72a-era loosening",
         "platform": "macos"
       },
       {
         "line": 89,
         "branch": 77,
         "reason": "BuildInputsHasher unit-tested",
+        "platform": "linux"
+      }
+    ],
+    "CheckCache.fs": [
+      {
+        "line": 73,
+        "branch": 40,
+        "reason": "\u00A71 fcsCheckSignature adds branches (FullCheck null guard, try/with around Diagnostics access) not exercised without a real FSharpCheckFileResults; integration tests would cover but live in IntegrationTests (excluded)",
+        "platform": "macos"
+      },
+      {
+        "line": 73,
+        "branch": 40,
+        "reason": "\u00A71 fcsCheckSignature: see macos reason",
         "platform": "linux"
       }
     ],
@@ -88,9 +102,9 @@
     ],
     "DaemonConfig.fs": [
       {
-        "line": 76,
+        "line": 77,
         "branch": 77,
-        "reason": "loosened 2026-04-24 + 2026-04-26 race-fix retry-resolution path adds untested live-system warning branch",
+        "reason": "loosened 2026-04-24 \u002B 2026-04-26 race-fix retry-resolution path adds untested live-system warning branch",
         "platform": "macos"
       },
       {
@@ -119,20 +133,6 @@
         "line": 41,
         "branch": 100,
         "reason": "loosened: inline helpers (isTerminal/isQuiescent) not tracked in source file",
-        "platform": "linux"
-      }
-    ],
-    "CheckCache.fs": [
-      {
-        "line": 73,
-        "branch": 40,
-        "reason": "§1 fcsCheckSignature adds branches (FullCheck null guard, try/with around Diagnostics access) not exercised without a real FSharpCheckFileResults; integration tests would cover but live in IntegrationTests (excluded)",
-        "platform": "macos"
-      },
-      {
-        "line": 73,
-        "branch": 40,
-        "reason": "§1 fcsCheckSignature: see macos reason",
         "platform": "linux"
       }
     ],
@@ -285,15 +285,15 @@
     ],
     "LintPlugin.fs": [
       {
-        "line": 89,
+        "line": 90,
         "branch": 72,
-        "reason": "loosened 2026-04-26 §2a: cache-key construction adds match-with-when branches; lint timeout/failure/error paths covered via integration tests, not unit tests",
+        "reason": "loosened 2026-04-26 \u00A72a: cache-key construction adds match-with-when branches; lint timeout/failure/error paths covered via integration tests, not unit tests",
         "platform": "macos"
       },
       {
         "line": 88,
         "branch": 72,
-        "reason": "lower line coverage on Linux CI; branch threshold matches macOS post §2a",
+        "reason": "lower line coverage on Linux CI; branch threshold matches macOS post \u00A72a",
         "platform": "linux"
       }
     ],
@@ -341,8 +341,8 @@
     ],
     "PluginFramework.fs": [
       {
-        "line": 85,
-        "branch": 74,
+        "line": 93,
+        "branch": 85,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -371,7 +371,7 @@
       {
         "line": 89,
         "branch": 100,
-        "reason": "kill-on-timeout drain branches fire flakily between runs (89-92% line); pinned to floor 89 — note: avoid 'mise run check' auto-ratchet, it bumps back to ceiling on lucky run",
+        "reason": "kill-on-timeout drain branches fire flakily between runs (89-92% line); pinned to floor 89 \u2014 note: avoid \u0027mise run check\u0027 auto-ratchet, it bumps back to ceiling on lucky run",
         "platform": "macos"
       },
       {
@@ -397,7 +397,7 @@
       {
         "line": 67,
         "branch": 54,
-        "reason": "CLI entry point",
+        "reason": "CLI entry point; line drifts 67-68% across runs",
         "platform": "macos"
       },
       {
@@ -423,7 +423,7 @@
     ],
     "ProjectGraph.fs": [
       {
-        "line": 96,
+        "line": 98,
         "branch": 92,
         "reason": "loosened: fileToProjects multi-project paths",
         "platform": "macos"

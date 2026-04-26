@@ -1094,7 +1094,7 @@ let ``resolveExistingPathsWithRetry gives up after 3 attempts when paths still m
 
     let result = resolveExistingPathsWithRetry dirExists sleep [ "/a"; "/b" ]
 
-    test <@ result = [] @>
+    test <@ List.isEmpty result @>
     test <@ sleepCount = 3 @>
 
 [<Fact(Timeout = 2000)>]
@@ -1116,5 +1116,5 @@ let ``resolveExistingPathsWithRetry handles empty input without sleeping`` () =
     let sleep _ = sleepCount <- sleepCount + 1
 
     let result = resolveExistingPathsWithRetry dirExists sleep []
-    test <@ result = [] @>
+    test <@ List.isEmpty result @>
     test <@ sleepCount = 0 @>
