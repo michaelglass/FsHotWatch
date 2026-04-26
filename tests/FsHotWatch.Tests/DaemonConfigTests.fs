@@ -1052,3 +1052,69 @@ let ``shellInvocation escapes double quotes in the passed command`` () =
     let (_, args) = FsHotWatch.Cli.DaemonConfig.shellInvocation "echo \"hello world\""
 
     test <@ args.Contains("\\\"hello world\\\"") @>
+
+// --- resolveExistingPathsWithRetry ---
+
+[<Fact(Timeout = 2000)>]
+let ``resolveExistingPathsWithRetry returns all paths when all exist on first attempt`` () =
+    let mutable sleepCount = 0
+    let dirExists _ = true
+    let sleep _ = sleepCount <- sleepCount + 1
+
+    let result = resolveExistingPathsWithRetry dirExists sleep [ "/a"; "/b"; "/c" ]
+
+    test <@ result = [ "/a"; "/b"; "/c" ] @>
+    test <@ sleepCount = 0 @>
+
+[<Fact(Timeout = 2000)>]
+let ``resolveExistingPathsWithRetry retries when paths transiently missing`` () =
+    // Simulate a workspace race: 1st batch reports false, 2nd reports true.
+    let mutable callsBeforeSucceed = 3 // 3 paths × 1 batch = 3 calls before flipping
+    let mutable sleepCount = 0
+
+    let dirExists _ =
+        if callsBeforeSucceed > 0 then
+            callsBeforeSucceed <- callsBeforeSucceed - 1
+            false
+        else
+            true
+
+    let sleep _ = sleepCount <- sleepCount + 1
+
+    let result = resolveExistingPathsWithRetry dirExists sleep [ "/a"; "/b"; "/c" ]
+
+    test <@ result.Length = 3 @>
+    test <@ sleepCount >= 1 @>
+
+[<Fact(Timeout = 2000)>]
+let ``resolveExistingPathsWithRetry gives up after 3 attempts when paths still missing`` () =
+    let mutable sleepCount = 0
+    let dirExists _ = false
+    let sleep _ = sleepCount <- sleepCount + 1
+
+    let result = resolveExistingPathsWithRetry dirExists sleep [ "/a"; "/b" ]
+
+    test <@ result = [] @>
+    test <@ sleepCount = 3 @>
+
+[<Fact(Timeout = 2000)>]
+let ``resolveExistingPathsWithRetry returns subset when some paths permanently missing`` () =
+    let mutable sleepCount = 0
+    let dirExists path = path = "/exists"
+    let sleep _ = sleepCount <- sleepCount + 1
+
+    let result =
+        resolveExistingPathsWithRetry dirExists sleep [ "/exists"; "/missing"; "/also-missing" ]
+
+    test <@ result = [ "/exists" ] @>
+    test <@ sleepCount = 3 @>
+
+[<Fact(Timeout = 2000)>]
+let ``resolveExistingPathsWithRetry handles empty input without sleeping`` () =
+    let mutable sleepCount = 0
+    let dirExists _ = false
+    let sleep _ = sleepCount <- sleepCount + 1
+
+    let result = resolveExistingPathsWithRetry dirExists sleep []
+    test <@ result = [] @>
+    test <@ sleepCount = 0 @>
