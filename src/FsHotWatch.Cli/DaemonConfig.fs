@@ -41,6 +41,28 @@ let createCacheComponents
         (Some(FsHotWatch.FileCheckCache.FileCheckCache(cacheDir) :> ICheckCacheBackend),
          Some(JjCacheKeyProvider(repoRoot) :> ICacheKeyProvider))
 
+/// Resolves which paths from `paths` exist, retrying with short backoff to
+/// handle the case where the daemon starts immediately after `jj workspace
+/// add`: workspace population is async and `dirExists` can transiently return
+/// false for newly-materialised directories even though they're about to
+/// appear. ~300 ms total wait in the worst case (3 retries × 100 ms) is
+/// invisible in normal operation but prevents a silent "0 paths resolved →
+/// plugin doesn't register" failure when starting in a fresh workspace.
+///
+/// Injectable `dirExists` and `sleep` for unit testing without timing or
+/// disk dependencies.
+let resolveExistingPathsWithRetry (dirExists: string -> bool) (sleep: int -> unit) (paths: string list) : string list =
+    let resolveAttempt () = paths |> List.filter dirExists
+    let mutable resolved = resolveAttempt ()
+    let mutable attempts = 0
+
+    while resolved.Length < paths.Length && attempts < 3 do
+        attempts <- attempts + 1
+        sleep 100
+        resolved <- resolveAttempt ()
+
+    resolved
+
 /// Detect the default cache backend: jj if .jj/ exists, otherwise file.
 let detectDefaultCacheBackend (repoRoot: string) : CacheBackendConfig =
     if Directory.Exists(Path.Combine(repoRoot, ".jj")) then
@@ -648,14 +670,24 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
     // Analyzers plugin
     match config.Analyzers with
     | Some a ->
-        let resolvedPaths =
+        let absolutePaths =
             a.Paths
             |> List.map (fun p ->
                 if Path.IsPathRooted(p) then
                     p
                 else
                     Path.GetFullPath(Path.Combine(repoRoot, p)))
-            |> List.filter Directory.Exists
+
+        let resolvedPaths =
+            resolveExistingPathsWithRetry Directory.Exists System.Threading.Thread.Sleep absolutePaths
+
+        if resolvedPaths.Length < absolutePaths.Length then
+            let missing =
+                absolutePaths |> List.filter (Directory.Exists >> not) |> String.concat ", "
+
+            Logging.warn
+                "config"
+                $"Analyzers: %d{resolvedPaths.Length}/%d{absolutePaths.Length} paths resolved (missing after retry: %s{missing})"
 
         if not resolvedPaths.IsEmpty then
             Logging.info "config" $"Registering AnalyzersPlugin with %d{resolvedPaths.Length} paths"
