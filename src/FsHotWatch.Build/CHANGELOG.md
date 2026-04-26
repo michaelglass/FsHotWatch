@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.9 - 2026-04-26
+
 ### Added
 
 - **`formatSilentFailureDiagnostic`** — surfaces exit code, output size, and any `Time Elapsed` tail when `dotnet build` exits non-zero with no parseable diagnostics (typically MSBuild bailing during evaluation/restore).
