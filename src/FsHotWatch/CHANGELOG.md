@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.11 - 2026-04-26
+
 ### Added
 
 - **`FsHotWatch.ProcessHelper.isDotnetCommand`** and **`mergeDotnetEnv`** — public helpers that detect a `dotnet`/`dotnet.exe` command basename and merge `MSBUILDDISABLENODEREUSE=1` into its env (unless already set).
