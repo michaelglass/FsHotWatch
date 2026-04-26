@@ -543,3 +543,59 @@ let ``FileTaskCache ClearPluginFile removes specific entry`` () =
         c.ClearPluginFile "build" "Foo.fs"
         test <@ c.TryGet (ck "build" "Foo.fs") (hash "h1") |> Option.isNone @>
         test <@ c.TryGet (ck "build" "Bar.fs") (hash "h2") |> Option.isSome @>)
+
+// --- §2b: atomic write tests ---
+
+[<Fact(Timeout = 5000)>]
+let ``FileTaskCache.Set leaves no .tmp files behind`` () =
+    withTempDir "ftc-atomic-clean" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        (cache :> ITaskCache).Set (ck "build" "Foo.fs") (hash "h1") (makeResult "h1")
+        let tmps = System.IO.Directory.EnumerateFiles(tmpDir, "*.tmp") |> Seq.toList
+        test <@ tmps = [] @>)
+
+[<Fact(Timeout = 5000)>]
+let ``FileTaskCache constructor sweeps orphan .tmp files`` () =
+    withTempDir "ftc-atomic-sweep" (fun tmpDir ->
+        // Simulate a prior crash mid-write by dropping an orphan .tmp file.
+        let orphan = System.IO.Path.Combine(tmpDir, "build--Foo.fs@deadbeef.json.tmp")
+        System.IO.File.WriteAllText(orphan, "{ partial JSON")
+        // Constructor should sweep it.
+        let _cache = FileTaskCache(tmpDir)
+        test <@ not (System.IO.File.Exists orphan) @>)
+
+[<Fact(Timeout = 5000)>]
+let ``FileTaskCache.Stats reports entry count and total bytes`` () =
+    withTempDir "ftc-stats" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+        c.Set (ck "build" "Foo.fs") (hash "h1") (makeResult "h1")
+        c.Set (ck "lint" "Bar.fs") (hash "h2") (makeResult "h2")
+
+        let entryCount = cache.Stats.EntryCount
+        let sizeBytes = cache.Stats.SizeBytes
+        test <@ entryCount = 2 @>
+        test <@ sizeBytes > 0L @>)
+
+[<Fact(Timeout = 5000)>]
+let ``FileTaskCache.Stats on empty dir reports zero`` () =
+    withTempDir "ftc-stats-empty" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let entryCount = cache.Stats.EntryCount
+        let sizeBytes = cache.Stats.SizeBytes
+        test <@ entryCount = 0 @>
+        test <@ sizeBytes = 0L @>)
+
+[<Fact(Timeout = 5000)>]
+let ``FileTaskCache.ParseFailureCount increments on malformed cache file`` () =
+    withTempDir "ftc-parse-counter" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let key = ck "lint" "X.fs"
+        let cacheKey = hash "k1"
+        (cache :> ITaskCache).Set key cacheKey (makeResult "k1")
+        let path = System.IO.Directory.EnumerateFiles(tmpDir, "*.json") |> Seq.head
+        System.IO.File.WriteAllText(path, "{ not valid json")
+        let before = cache.ParseFailureCount
+        let result = (cache :> ITaskCache).TryGet key cacheKey
+        test <@ result = None @>
+        test <@ cache.ParseFailureCount = before + 1 @>)
