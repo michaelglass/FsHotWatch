@@ -192,36 +192,62 @@ let ``AnalysisFailed custom message sets status to Completed`` () =
 
     test <@ hasAnalyzerCrash @>
 
-[<Fact(Timeout = 5000)>]
-let ``cache key is None when getCommitId is None`` () =
-    let handler = create [] None None
-    test <@ handler.CacheKey.IsNone @>
+// §2a: getCommitId is no longer consulted by Analyzers; the plugin always
+// provides a CacheKey and the key depends only on the FileChecked content.
+// Earlier "cache key when getCommitId is None" tests are obsolete under the
+// new contract — replaced below by content-based behavior.
 
 [<Fact(Timeout = 5000)>]
-let ``cache key returns None when getCommitId returns None`` () =
+let ``cache key is provided regardless of getCommitId`` () =
+    let h1 = create [] None None
+    let h2 = create [] (Some(fun () -> None)) None
+    let h3 = create [] (Some(fun () -> Some "abc123")) None
+    test <@ h1.CacheKey.IsSome @>
+    test <@ h2.CacheKey.IsSome @>
+    test <@ h3.CacheKey.IsSome @>
+
+[<Fact(Timeout = 5000)>]
+let ``cache key reflects file content when getCommitId is unavailable`` () =
+    // §2a: even with no jj commit, identical source bytes produce identical keys.
     let handler = create [] (Some(fun () -> None)) None
     let cacheKeyFn = handler.CacheKey.Value
 
-    let key = cacheKeyFn (FileChecked(fakeResult "/tmp/Fake.fs"))
-    test <@ key.IsNone @>
+    let r1 =
+        { fakeResult "/tmp/X.fs" with
+            Source = "let x = 1" }
+
+    let r2 =
+        { fakeResult "/tmp/X.fs" with
+            Source = "let x = 1" }
+
+    let r3 =
+        { fakeResult "/tmp/X.fs" with
+            Source = "let x = 2" }
+
+    let k1 = cacheKeyFn (FileChecked r1)
+    let k2 = cacheKeyFn (FileChecked r2)
+    let k3 = cacheKeyFn (FileChecked r3)
+    test <@ k1.IsSome @>
+    test <@ k1 = k2 @>
+    test <@ k1 <> k3 @>
 
 [<Fact(Timeout = 5000)>]
 let ``cache key for Custom event returns None`` () =
-    let commitId = "commit-xyz"
-    let handler = create [] (Some(fun () -> Some commitId)) None
+    let handler = create [] None None
     let cacheKeyFn = handler.CacheKey.Value
 
     let customKey = cacheKeyFn (Custom(AnalysisComplete("/tmp/Fake.fs", [])))
     test <@ customKey.IsNone @>
 
 [<Fact(Timeout = 5000)>]
-let ``cache key for non-FileChecked non-Custom event returns getCommitId`` () =
-    let commitId = "commit-abc"
-    let handler = create [] (Some(fun () -> Some commitId)) None
+let ``cache key for non-FileChecked event returns None`` () =
+    // §2a: only FileChecked produces a cache key; other events aren't
+    // cached at all (the plugin only subscribes to SubscribeFileChecked anyway).
+    let handler = create [] None None
     let cacheKeyFn = handler.CacheKey.Value
 
     let buildKey = cacheKeyFn (BuildCompleted BuildSucceeded)
-    test <@ buildKey = Some(ContentHash.create commitId) @>
+    test <@ buildKey.IsNone @>
 
 [<Fact(Timeout = 5000)>]
 let ``multiple concurrent FileChecked events are bounded by semaphore`` () =
