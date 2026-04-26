@@ -60,6 +60,38 @@ let getProjectOptionsHash (options: FSharpProjectOptions) : string =
 
     sha256Hex (String.concat "||" parts)
 
+/// §1: signature of FCS check results, suitable as an oracle answer for plugin
+/// cache keys. Two runs of the same file with identical FCS view (i.e., the
+/// transitive cross-file state that affects this file's compilation produced
+/// identical diagnostics) hash the same. When a cross-file change shifts FCS's
+/// view of this file (new error introduced by an upstream symbol change),
+/// the signature differs even though the file's source bytes are identical —
+/// invalidating downstream plugin caches that include the signature.
+///
+/// Returns "parse-only" for ParseOnly results (FCS aborted before type
+/// checking, so no useful signature is available).
+let fcsCheckSignature (checkResults: FileCheckState) : string =
+    match checkResults with
+    | ParseOnly -> "parse-only"
+    | FullCheck results when isNull (box results) ->
+        // Test fixtures pass Unchecked.defaultof<FSharpCheckFileResults>; treat
+        // the same as ParseOnly so callers get a stable signature.
+        "full-check-null"
+    | FullCheck results ->
+        // Sort by (start line, start column, error number) so the hash is
+        // stable across FCS internal ordering changes.
+        let parts =
+            try
+                results.Diagnostics
+                |> Array.sortBy (fun d -> d.StartLine, d.StartColumn, d.ErrorNumber)
+                |> Array.map (fun d ->
+                    $"%d{d.StartLine}:%d{d.StartColumn}:%d{d.ErrorNumber}:%A{d.Severity}:%s{d.Message}")
+                |> String.concat "\n"
+            with _ ->
+                "full-check-error"
+
+        sha256Hex parts
+
 /// jj-based cache key provider. Per-file hashing uses timestamp
 /// (jj commit_id is tree-wide, not per-file).
 /// Preserved as a distinct type so jj-specific optimizations
