@@ -191,6 +191,59 @@ let ``optionalSaltedCacheKey returns None when getCommitId is None`` () =
 
     test <@ Option.isNone result @>
 
+// --- §2a: merkle cache key tests ---
+
+[<Fact(Timeout = 5000)>]
+let ``merkleCacheKey is stable for identical inputs`` () =
+    let a = merkleCacheKey [ "tool", "FSharpLint-1.0"; "src", "let x = 1" ]
+    let b = merkleCacheKey [ "tool", "FSharpLint-1.0"; "src", "let x = 1" ]
+    test <@ a = b @>
+
+[<Fact(Timeout = 5000)>]
+let ``merkleCacheKey changes when any input value changes`` () =
+    let baseline = merkleCacheKey [ "tool", "v1"; "src", "let x = 1" ]
+    let editedSrc = merkleCacheKey [ "tool", "v1"; "src", "let x = 2" ]
+    let editedTool = merkleCacheKey [ "tool", "v2"; "src", "let x = 1" ]
+    test <@ baseline <> editedSrc @>
+    test <@ baseline <> editedTool @>
+
+[<Fact(Timeout = 5000)>]
+let ``merkleCacheKey is order-independent on labels`` () =
+    let a = merkleCacheKey [ "tool", "v1"; "src", "x" ]
+    let b = merkleCacheKey [ "src", "x"; "tool", "v1" ]
+    test <@ a = b @>
+
+[<Fact(Timeout = 5000)>]
+let ``merkleCacheKey distinguishes "ab","" from "a","b"`` () =
+    // Guard against naive concatenation collision.
+    let a = merkleCacheKey [ "x", "ab"; "y", "" ]
+    let b = merkleCacheKey [ "x", "a"; "y", "b" ]
+    test <@ a <> b @>
+
+[<Fact(Timeout = 5000)>]
+let ``LintPlugin cache key is stable across runs for same file content`` () =
+    // §2a hypothesis: editing Foo.fs and reverting it should hit the cache.
+    // The cache key for a FileChecked event should depend on file content,
+    // not on jj commit_id (which would change on every save).
+    let handler = FsHotWatch.Lint.LintPlugin.create None None None None
+
+    let mkResult (file: string) (source: string) : FileCheckResult =
+        { File = file
+          Source = source
+          ParseResults = Unchecked.defaultof<_>
+          CheckResults = ParseOnly
+          ProjectOptions = Unchecked.defaultof<_>
+          Version = 0L }
+
+    match handler.CacheKey with
+    | None -> failwith "expected LintPlugin to provide a CacheKey"
+    | Some keyFn ->
+        let a = keyFn (FileChecked(mkResult "/src/Foo.fs" "let x = 1"))
+        let b = keyFn (FileChecked(mkResult "/src/Foo.fs" "let x = 1"))
+        let edited = keyFn (FileChecked(mkResult "/src/Foo.fs" "let x = 2"))
+        test <@ a = b @>
+        test <@ a <> edited @>
+
 [<Fact(Timeout = 5000)>]
 let ``optionalSaltedCacheKey wraps getSalt when getCommitId is Some`` () =
     let getCommitId = Some(fun () -> Some "abc123")
