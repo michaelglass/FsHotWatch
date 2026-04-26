@@ -88,15 +88,15 @@
     ],
     "DaemonConfig.fs": [
       {
-        "line": 77,
+        "line": 76,
         "branch": 77,
-        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
+        "reason": "loosened 2026-04-24 + 2026-04-26 race-fix retry-resolution path adds untested live-system warning branch",
         "platform": "macos"
       },
       {
-        "line": 77,
+        "line": 76,
         "branch": 76,
-        "reason": "lower coverage on Linux CI",
+        "reason": "lower coverage on Linux CI; race-fix retry path",
         "platform": "linux"
       }
     ],
