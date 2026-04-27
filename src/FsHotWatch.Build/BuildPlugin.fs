@@ -145,6 +145,9 @@ let create
     let isTestProject (proj: AbsProjectPath) =
         testProjectNameSet.Contains(Path.GetFileNameWithoutExtension(AbsProjectPath.value proj))
 
+    let projectStem (p: AbsProjectPath) =
+        Path.GetFileNameWithoutExtension(AbsProjectPath.value p)
+
     let markDirty (files: string list) =
         match dirtyTracker with
         | None -> ()
@@ -155,11 +158,7 @@ let create
                 let affected =
                     graph.GetAffectedProjects(nonTestFiles |> List.map AbsFilePath.create)
 
-                let stems =
-                    affected
-                    |> List.map (fun p -> Path.GetFileNameWithoutExtension(AbsProjectPath.value p))
-
-                tracker.MarkDirty stems
+                tracker.MarkDirty(affected |> List.map projectStem)
 
     let clearFreshProjects (output: string) =
         match dirtyTracker with
@@ -169,9 +168,7 @@ let create
             let allProjects = graph.GetAllProjects()
 
             let projectByStem =
-                allProjects
-                |> List.map (fun p -> Path.GetFileNameWithoutExtension(AbsProjectPath.value p), p)
-                |> Map.ofList
+                allProjects |> List.map (fun p -> projectStem p, p) |> Map.ofList
 
             for KeyValue(stem, dllPath) in dllPaths do
                 match Map.tryFind stem projectByStem with
@@ -212,9 +209,12 @@ let create
                                 srcTime)
                     | _ -> tracker.ClearDirty stem // can't check → optimistically clear
 
-            // Clear test-project dirty bits whose source-project deps are now all clean
+            // Clear test-project dirty bits whose source-project deps are now all clean.
+            // Single snapshot so both passes see the same post-DLL-freshness state.
+            let allDirtyNow = tracker.AllDirty
+
             let remainingDirtySourceStems =
-                tracker.AllDirty
+                allDirtyNow
                 |> List.filter (fun s ->
                     match Map.tryFind s projectByStem with
                     | Some p -> not (isTestProject p)
@@ -226,11 +226,11 @@ let create
                 |> Set.toList
                 |> List.choose (fun s -> Map.tryFind s projectByStem)
                 |> List.collect (fun p -> graph.GetDependents(p))
-                |> List.map (fun p -> Path.GetFileNameWithoutExtension(AbsProjectPath.value p))
+                |> List.map projectStem
                 |> Set.ofList
 
             for testStem in
-                tracker.AllDirty
+                allDirtyNow
                 |> List.filter (fun s ->
                     match Map.tryFind s projectByStem with
                     | Some p -> isTestProject p
@@ -242,9 +242,7 @@ let create
     let allDepsSatisfied deps = Set.isSubset depNames deps
 
     let countBuiltProjects (output: string) =
-        output.Split('\n')
-        |> Array.filter (fun line -> line.Contains(" -> ") && not (line.Contains("error")))
-        |> Array.length
+        BuildDiagnostics.parseDllPaths output |> Map.count
 
     /// Run from the async build worker. Logs+summary happens here (live UI),
     /// but the *captured* operations (ReportErrors / ClearErrors / EmitBuildCompleted)
