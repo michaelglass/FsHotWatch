@@ -281,6 +281,17 @@ let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<str
 /// All three share a single RunId generated at the start of the run.
 /// When `ctx` is None (e.g. invoked from a one-off command), no lifecycle
 /// events fire; the caller just gets back the final TestResults.
+let private staleBinaryEntry (project: string) : ErrorLedger.ErrorEntry =
+    { Message =
+        $"Tests for %s{project} skipped — binary is stale "
+        + "(sources newer than DLL). This usually means MSBuild's incremental "
+        + "cache decided the project was up-to-date when it was not. "
+        + "A full rebuild should fix it."
+      Severity = ErrorLedger.Warning
+      Line = 0
+      Column = 0
+      Detail = None }
+
 let private executeTests
     (ctx: PluginCtx<'msg> option)
     (repoRoot: string)
@@ -363,7 +374,7 @@ let private executeTests
                             && not (affectedClassesByProject |> Map.containsKey config.Project)
 
                         if staleProject then
-                            Logging.warn "test-prune" $"Skipping %s{config.Project} — stale binary (dirty tracker)"
+                            Logging.warn "test-prune" (staleBinaryEntry config.Project).Message
 
                             results <- (config.Project, TestsPassed("", true)) :: results
                         elif skipProject then
@@ -1154,18 +1165,7 @@ let create
                     | Some tracker, Some configs ->
                         for c in configs do
                             if tracker.IsDirty c.Project then
-                                let warnEntry: ErrorLedger.ErrorEntry =
-                                    { Message =
-                                        $"Tests for %s{c.Project} skipped — binary is stale "
-                                        + "(sources newer than DLL). This usually means MSBuild's incremental "
-                                        + "cache decided the project was up-to-date when it was not. "
-                                        + "A full rebuild should fix it."
-                                      Severity = ErrorLedger.Warning
-                                      Line = 0
-                                      Column = 0
-                                      Detail = None }
-
-                                ctx.ReportErrors c.Project [ warnEntry ]
+                                ctx.ReportErrors c.Project [ staleBinaryEntry c.Project ]
                     | _ -> ()
 
                     // Pushing a terminal Completed/Failed status is what appends the
