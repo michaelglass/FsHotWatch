@@ -12,16 +12,8 @@ open FsHotWatch.Cli.IpcParsing
 ///   `<plugin>:<file>:<line>:<col>: <severity> <message>`
 /// No ANSI, no indentation. Message is single-line (collapses newlines).
 let private agentDiagnosticLine (file: string) (d: DiagnosticEntry) : string =
-    let severity =
-        match d.Severity with
-        | Error -> "error"
-        | Warning -> "warning"
-        | Info -> "info"
-        | Hint -> "hint"
-
     let msg = d.Message.Replace('\r', ' ').Replace('\n', ' ').Trim()
-
-    $"%s{d.Plugin}:%s{file}:%d{d.Line}:%d{d.Column}: %s{severity} %s{msg}"
+    $"%s{d.Plugin}:%s{file}:%d{d.Line}:%d{d.Column}: %s{DiagnosticSeverity.toString d.Severity} %s{msg}"
 
 /// Format the full errors response.
 ///

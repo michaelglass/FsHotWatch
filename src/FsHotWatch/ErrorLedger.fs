@@ -35,11 +35,11 @@ module DiagnosticSeverity =
 
     let fromString (s: string) =
         match s with
-        | "error" -> Error
-        | "warning" -> Warning
-        | "info" -> Info
-        | "hint" -> Hint
-        | _ -> Error
+        | "error" -> Some Error
+        | "warning" -> Some Warning
+        | "info" -> Some Info
+        | "hint" -> Some Hint
+        | _ -> None
 
     let order (severity: DiagnosticSeverity) =
         match severity with
