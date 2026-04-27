@@ -1,13 +1,11 @@
-/// Always-on append-only log of every plugin cache lookup. Each hit/miss
-/// appends one line:
+/// Always-on append-only log of cache misses. Each miss appends one line:
 ///
-///     {ISO-8601 timestamp UTC}\t{plugin}\t{hit|miss}\t{repoRoot}\t{triggerFile}
+///     {ISO-8601 timestamp UTC}\t{plugin}\t{repoRoot}\t{triggerFile}
 ///
 /// triggerFile is the file that triggered the lookup (empty for non-file events).
 /// Hardcoded to a single shared file so all daemons (FsHotWatch's own,
 /// thellma's, etc.) write to one place — point grep at it after a few
-/// hours of use to compute per-plugin hit rate without trawling each
-/// daemon's verbose log.
+/// hours of use to identify which files drive cache misses per plugin.
 ///
 /// Concurrent writers across daemons rely on the OS appending each
 /// `File.AppendAllText` call atomically. Within a single daemon, an
@@ -23,25 +21,18 @@ open System.IO
 [<Literal>]
 let LogPath = "/Users/michaelglass/Developer/opensource/FsHotWatch/cache-events.log"
 
-/// Lock guarding the file append. Multiple plugins can call `record`
+/// Lock guarding the file append. Multiple plugins can call `recordMiss`
 /// concurrently from different mailbox loops; serialise to avoid
 /// interleaved partial lines within a single daemon.
 let private writeLock = obj ()
 
-/// Format a single event line. Pure: separated from IO so tests can verify
+/// Format a single miss line. Pure: separated from IO so tests can verify
 /// the wire format without touching the filesystem.
-let internal formatEvent
-    (now: DateTime)
-    (plugin: string)
-    (hit: bool)
-    (repoRoot: string)
-    (triggerFile: string)
-    : string =
-    let outcome = if hit then "hit" else "miss"
+let internal formatMiss (now: DateTime) (plugin: string) (repoRoot: string) (triggerFile: string) : string =
     let timestamp = now.ToString("O")
-    sprintf "%s\t%s\t%s\t%s\t%s\n" timestamp plugin outcome repoRoot triggerFile
+    sprintf "%s\t%s\t%s\t%s\n" timestamp plugin repoRoot triggerFile
 
-/// Internal: append to a specific path. Used by `record` (with `LogPath`)
+/// Internal: append to a specific path. Used by `recordMiss` (with `LogPath`)
 /// and by tests (with a temp file). Failures are swallowed so telemetry IO
 /// can't disturb the daemon's hot path.
 let internal appendTo (path: string) (line: string) =
@@ -51,7 +42,7 @@ let internal appendTo (path: string) (line: string) =
         with _ ->
             ())
 
-/// Append a single hit/miss event to the shared log.
-let record (plugin: string) (hit: bool) (repoRoot: string) (triggerFile: string) =
-    let line = formatEvent DateTime.UtcNow plugin hit repoRoot triggerFile
+/// Append a cache miss to the shared log.
+let recordMiss (plugin: string) (repoRoot: string) (triggerFile: string) =
+    let line = formatMiss DateTime.UtcNow plugin repoRoot triggerFile
     appendTo LogPath line
