@@ -101,7 +101,9 @@ let ``all plugins receive events when checking a file`` () =
     // Register all four plugins
     let dbPath = Path.Combine(Path.GetTempPath(), $"fshw-inttest-{Guid.NewGuid():N}.db")
 
-    let testPrune = TestPrunePlugin.create dbPath repoRoot None None None None None None
+    let testPrune =
+        TestPrunePlugin.create dbPath repoRoot None None None None None None None
+
     let lint = LintPlugin.create None None None None
     let fantomas = createFormatCheck None None
     let analyzers = AnalyzersPlugin.create [] None None
@@ -870,7 +872,7 @@ let ``BuildPlugin succeeds with echo command`` () =
           Teardown = None }
 
     let handler =
-        BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None None
+        BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None None None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -914,7 +916,9 @@ let ``BuildPlugin fails with false command`` () =
           CacheKey = None
           Teardown = None }
 
-    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None None
+    let handler =
+        BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None None None
+
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
@@ -964,7 +968,7 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
                 TimeoutSec = None } ]
 
         let handler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None
 
         host.RegisterHandler(handler)
 
@@ -1019,7 +1023,7 @@ let ``TestPrunePlugin with failing test reports failure`` () =
                 TimeoutSec = None } ]
 
         let handler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None
 
         host.RegisterHandler(handler)
 
@@ -1236,7 +1240,7 @@ let ``Full pipeline: format → build → test`` () =
 
         // Register BuildPlugin (echo for success)
         let buildHandler =
-            BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None None
+            BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None None None
 
         host.RegisterHandler(buildHandler)
 
@@ -1252,7 +1256,7 @@ let ``Full pipeline: format → build → test`` () =
                 TimeoutSec = None } ]
 
         let testPruneHandler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None
 
         host.RegisterHandler(testPruneHandler)
 
@@ -1337,7 +1341,7 @@ let ``BuildPlugin does not run concurrent builds`` () =
 
     // Use /bin/sleep 1 as a slow build command so the second emit arrives while the first is running
     let handler =
-        BuildPlugin.create "/bin/sleep" "1" [] (ProjectGraph()) [] None [] None None
+        BuildPlugin.create "/bin/sleep" "1" [] (ProjectGraph()) [] None [] None None None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -1392,7 +1396,7 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
                 TimeoutSec = None } ]
 
         let handler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None
 
         host.RegisterHandler(handler)
 
