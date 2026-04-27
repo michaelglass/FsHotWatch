@@ -11,7 +11,9 @@ open FsHotWatch.ErrorLedger
 let private sanitizeKey = FsHotWatch.StringHelpers.sanitizeFileName
 
 let private severityToString = DiagnosticSeverity.toString
-let private stringToSeverity = DiagnosticSeverity.fromString
+
+let private stringToSeverity s =
+    DiagnosticSeverity.fromString s |> Option.defaultValue DiagnosticSeverity.Error
 
 let private serializeErrorEntry (e: ErrorEntry) =
     let obj = JsonObject()
