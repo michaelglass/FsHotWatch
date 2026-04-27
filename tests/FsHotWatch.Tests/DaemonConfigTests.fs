@@ -6,6 +6,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.Cli.DaemonConfig
 open FsHotWatch.Daemon
+open FsHotWatch.ErrorLedger
 open FsHotWatch.Tests.TestHelpers
 
 // --- Helper: defaults with known cache backend ---
@@ -243,7 +244,35 @@ let ``parseConfig cache missing uses defaults`` () =
 let ``parseConfig analyzers with paths`` () =
     let config = parseConfig """{"analyzers": {"paths": ["path1", "path2"]}}""" defaults
 
-    test <@ config.Analyzers = Some {| Paths = [ "path1"; "path2" ] |} @>
+    test
+        <@
+            config.Analyzers = Some
+                {| Paths = [ "path1"; "path2" ]
+                   FailOnSeverity = DiagnosticSeverity.Hint |}
+        @>
+
+[<Fact(Timeout = 5000)>]
+let ``analyzers config defaults failOnSeverity to Hint`` () =
+    let config = parseConfig """{"analyzers":{"paths":["p1"]}}""" defaults
+
+    test
+        <@
+            config.Analyzers = Some
+                {| Paths = [ "p1" ]
+                   FailOnSeverity = DiagnosticSeverity.Hint |}
+        @>
+
+[<Fact(Timeout = 5000)>]
+let ``analyzers config parses explicit failOnSeverity`` () =
+    let config =
+        parseConfig """{"analyzers":{"paths":["p1"],"failOnSeverity":"warning"}}""" defaults
+
+    test
+        <@
+            config.Analyzers = Some
+                {| Paths = [ "p1" ]
+                   FailOnSeverity = DiagnosticSeverity.Warning |}
+        @>
 
 [<Fact(Timeout = 5000)>]
 let ``parseConfig analyzers with empty paths returns None`` () =
@@ -497,7 +526,14 @@ let ``parseConfig with full configuration`` () =
     test <@ config.Format = Off @>
     test <@ config.Lint = false @>
     test <@ config.Cache = JjFileBackend @>
-    test <@ config.Analyzers = Some {| Paths = [ "/analyzers" ] |} @>
+
+    test
+        <@
+            config.Analyzers = Some
+                {| Paths = [ "/analyzers" ]
+                   FailOnSeverity = DiagnosticSeverity.Hint |}
+        @>
+
     test <@ config.Tests.IsSome @>
     test <@ config.FileCommands.Length = 1 @>
 
@@ -887,7 +923,10 @@ let ``countPlugins counts build lint analyzers tests and fileCommands`` () =
     let cfg =
         { defaults with
             Lint = true
-            Analyzers = Some {| Paths = [ "some/path" ] |}
+            Analyzers =
+                Some
+                    {| Paths = [ "some/path" ]
+                       FailOnSeverity = DiagnosticSeverity.Hint |}
             Tests =
                 Some
                     {| BeforeRun = None
