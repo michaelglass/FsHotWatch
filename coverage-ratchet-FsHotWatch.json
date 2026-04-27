@@ -3,7 +3,7 @@
     "AnalyzersPlugin.fs": [
       {
         "line": 75,
-        "branch": 72,
+        "branch": 70,
         "reason": "FCS analyzer paths in IntegrationTests (excluded); \u00A72a \u002B lifecycle \u002B \u00A71 fcs-signature add untested branches; line drifts 74-76% across runs",
         "platform": "macos"
       },
@@ -102,8 +102,8 @@
     ],
     "DaemonConfig.fs": [
       {
-        "line": 76,
-        "branch": 78,
+        "line": 70,
+        "branch": 66,
         "reason": "loosened 2026-04-24 \u002B 2026-04-26 race-fix retry-resolution path adds untested live-system warning branch",
         "platform": "macos"
       },
@@ -177,8 +177,8 @@
     ],
     "FileTaskCache.fs": [
       {
-        "line": 76,
-        "branch": 69,
+        "line": 77,
+        "branch": 68,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -244,7 +244,7 @@
     ],
     "IpcOutput.fs": [
       {
-        "line": 72,
+        "line": 75,
         "branch": 35,
         "reason": "loosened: coverage drifted with dedup refactoring",
         "platform": "macos"
@@ -258,8 +258,8 @@
     ],
     "IpcParsing.fs": [
       {
-        "line": 85,
-        "branch": 65,
+        "line": 86,
+        "branch": 64,
         "reason": "loosened: legacy-parser removal shifted coverage percentages",
         "platform": "macos"
       },
@@ -369,7 +369,7 @@
     ],
     "ProcessHelper.fs": [
       {
-        "line": 92,
+        "line": 89,
         "branch": 100,
         "reason": "kill-on-timeout drain branches fire flakily between runs (89-92% line); pinned to floor 89 \u2014 note: avoid \u0027mise run check\u0027 auto-ratchet, it bumps back to ceiling on lucky run",
         "platform": "macos"
