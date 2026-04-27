@@ -290,6 +290,7 @@ let private executeTests
     (configs: TestConfig list)
     (affectedClassesByProject: Map<string, string list>)
     (rawFilter: string option)
+    (dirtyTracker: FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker option)
     =
     async {
         Logging.info "test-prune" $"executeTests starting with %d{configs.Length} configs"
@@ -349,6 +350,11 @@ let private executeTests
                         // Collect extra args (filter + coverage) to append
                         let extraArgs = ResizeArray<string>()
 
+                        let staleProject =
+                            match dirtyTracker with
+                            | Some t when t.IsDirty config.Project -> true
+                            | _ -> false
+
                         // Template-based class filter (from impact analysis).
                         // When the map is non-empty but has no classes for this project,
                         // skip the project entirely (impact analysis found no relevant tests).
@@ -356,7 +362,13 @@ let private executeTests
                             not affectedClassesByProject.IsEmpty
                             && not (affectedClassesByProject |> Map.containsKey config.Project)
 
-                        if skipProject then
+                        if staleProject then
+                            Logging.warn
+                                "test-prune"
+                                $"Skipping %s{config.Project} — stale binary (dirty tracker)"
+
+                            results <- (config.Project, TestsPassed("", true)) :: results
+                        elif skipProject then
                             Logging.info "test-prune" $"Skipping %s{config.Project} — no affected classes"
 
                             // Skipped-due-to-impact-analysis is the strongest form of filtering;
@@ -618,6 +630,7 @@ let create
     (afterRun: (TestResults -> unit) option)
     (coveragePaths: (string -> CoveragePaths option) option)
     (getCommitId: (unit -> string option) option)
+    (dirtyTracker: FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker option)
     =
     let db = Database.create dbPath
     let extensions = buildExtensions |> Option.map (fun f -> f db)
@@ -740,7 +753,16 @@ let create
                             Logging.info "test-prune" $"Affected classes for %s{proj}: %A{classes}"
 
                     let! results, started, completed =
-                        executeTests (Some ctx) repoRoot beforeRun coveragePaths afterRun configs affectedByProject None
+                        executeTests
+                            (Some ctx)
+                            repoRoot
+                            beforeRun
+                            coveragePaths
+                            afterRun
+                            configs
+                            affectedByProject
+                            None
+                            dirtyTracker
 
                     // executeTests still emits per-group TestProgress live; the
                     // synchronous handler emits Started + Completed for the
@@ -886,6 +908,7 @@ let create
                                                 configs
                                                 Map.empty
                                                 filter
+                                                dirtyTracker
 
                                         return formatTestResultsJson results
                             with ex ->
@@ -1125,6 +1148,27 @@ let create
                         ctx.ClearAllErrors()
                     else
                         reportTestErrors ctx state.TestClassFiles testResults
+
+                    // Re-emit stale-binary warnings for any project the dirty tracker still
+                    // reports as stale. Done after the clear/report step above so the warning
+                    // survives ClearAllErrors when stale-skipped projects pass trivially.
+                    match dirtyTracker, testConfigs with
+                    | Some tracker, Some configs ->
+                        for c in configs do
+                            if tracker.IsDirty c.Project then
+                                let warnEntry: ErrorLedger.ErrorEntry =
+                                    { Message =
+                                        $"Tests for %s{c.Project} skipped — binary is stale "
+                                        + "(sources newer than DLL). This usually means MSBuild's incremental "
+                                        + "cache decided the project was up-to-date when it was not. "
+                                        + "A full rebuild should fix it."
+                                      Severity = ErrorLedger.Warning
+                                      Line = 0
+                                      Column = 0
+                                      Detail = None }
+
+                                ctx.ReportErrors c.Project [ warnEntry ]
+                    | _ -> ()
 
                     // Pushing a terminal Completed/Failed status is what appends the
                     // run to history; both RerunQueued and NoRerun branches must call this.
