@@ -258,7 +258,17 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
 
             let failOnSeverity =
                 match v.TryGetProperty("failOnSeverity") with
-                | true, s -> DiagnosticSeverity.fromString (s.GetString())
+                | true, s ->
+                    let str = s.GetString()
+
+                    match str with
+                    | "error"
+                    | "warning"
+                    | "info"
+                    | "hint" -> DiagnosticSeverity.fromString str
+                    | other ->
+                        Logging.warn "config" $"Unknown failOnSeverity value '%s{other}', using default 'hint'"
+                        DiagnosticSeverity.Hint
                 | _ -> DiagnosticSeverity.Hint
 
             if paths.IsEmpty then
@@ -833,6 +843,59 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                             Logging.warn "config" $"Unknown test extension type: %s{other}"
                             None))
 
+        // Belt-and-suspenders mtime check for stale test DLLs. Used by executeTests
+        // when the dirty tracker has no record for a project (e.g. run-tests command
+        // at cold start, or a project MSBuild's incremental cache omitted from the
+        // last build output). Returns true if sources are newer than the DLL.
+        let stalenessCheck =
+            let allProjects = daemon.Graph.GetAllProjects()
+
+            let projByName =
+                allProjects
+                |> List.map (fun p -> Path.GetFileNameWithoutExtension(FsHotWatch.Events.AbsProjectPath.value p), p)
+                |> Map.ofList
+
+            Some(fun (projectName: string) ->
+                match Map.tryFind projectName projByName with
+                | None -> false
+                | Some proj ->
+                    let projPath = FsHotWatch.Events.AbsProjectPath.value proj
+                    let projDir = Path.GetDirectoryName(projPath)
+                    let sources = daemon.Graph.GetSourceFiles(proj)
+
+                    let maxSourceTime =
+                        sources
+                        |> List.choose (fun f ->
+                            let path = FsHotWatch.Events.AbsFilePath.value f
+
+                            if File.Exists path then
+                                Some(File.GetLastWriteTimeUtc path)
+                            else
+                                None)
+                        |> function
+                            | [] -> None
+                            | times -> Some(List.max times)
+
+                    match maxSourceTime with
+                    | None -> false
+                    | Some srcTime ->
+                        let binDir = Path.Combine(projDir, "bin")
+
+                        if not (Directory.Exists binDir) then
+                            false
+                        else
+                            let dllFiles =
+                                try
+                                    Directory.GetFiles(binDir, projectName + ".dll", SearchOption.AllDirectories)
+                                with _ ->
+                                    [||]
+
+                            match dllFiles with
+                            | [||] -> false
+                            | files ->
+                                let maxDllTime = files |> Array.map File.GetLastWriteTimeUtc |> Array.max
+                                maxDllTime < srcTime)
+
         Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"
 
         let handler =
@@ -846,6 +909,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                 coveragePaths
                 getCommitId
                 dirtyTracker
+                stalenessCheck
 
         daemon.RegisterHandler(handler)
     | None -> ()
