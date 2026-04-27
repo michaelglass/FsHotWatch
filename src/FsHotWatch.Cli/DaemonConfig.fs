@@ -265,7 +265,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     | "error"
                     | "warning"
                     | "info"
-                    | "hint" -> DiagnosticSeverity.fromString str
+                    | "hint" -> DiagnosticSeverity.fromString str |> Option.get
                     | other ->
                         Logging.warn "config" $"Unknown failOnSeverity value '%s{other}', using default 'hint'"
                         DiagnosticSeverity.Hint
