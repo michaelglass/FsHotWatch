@@ -721,6 +721,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                     b.DependsOn
                     getCommitId
                     buildTimeout
+                    None
             )
     | _ -> ()
 
