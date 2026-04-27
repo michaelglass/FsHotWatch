@@ -10,13 +10,13 @@ open FsHotWatch.Cli.DaemonConfig
 open FsHotWatch.Daemon
 open FsHotWatch.Ipc
 
-type RunFlag = | [<Cmd("Run once without daemon")>] RunOnce
+type RunFlag = | [<CmdFlag(Short = "r", Description = "Run once without daemon")>] RunOnce
 
-type ScanFlag = | [<Cmd("Force rescan even if no changes detected")>] Force
+type ScanFlag = | [<CmdFlag(Description = "Force rescan even if no changes detected")>] Force
 
 type ErrorsFlag =
-    | [<CmdFlag(Short = "w"); Cmd("Block until every plugin reaches a terminal state")>] Wait
-    | [<CmdFlag(Name = "timeout"); Cmd("Timeout in seconds for --wait (default 600)")>] Timeout of int
+    | [<CmdFlag(Short = "w", Description = "Block until every plugin reaches a terminal state")>] Wait
+    | [<CmdFlag(Description = "Timeout in seconds for --wait"); CmdArg("seconds", Default = "600")>] Timeout of int
 
 /// Normalized wait policy parsed from ErrorsFlag list. Prevents the impossible
 /// states allowed by the raw flag list (e.g. --timeout without --wait, negative timeout).
@@ -52,31 +52,35 @@ type CoverageCommand =
             Name = "refresh-baseline")>] RefreshBaseline
 
 type Command =
-    | [<Cmd("Start the daemon")>] Start
+    | [<CmdExample("", "--no-cache"); Cmd("Start the daemon")>] Start
     | [<Cmd("Stop the daemon")>] Stop
-    | [<Cmd("Run all checks")>] Check of RunFlag list
-    | [<Cmd("Build the project")>] Build of RunFlag list
-    | [<Cmd("Run tests")>] Test of RunFlag list
-    | [<Cmd("Format code")>] Format of RunFlag list
+    | [<CmdExample("", "--run-once"); Cmd("Run all checks")>] Check of RunFlag list
+    | [<CmdExample("", "--run-once"); Cmd("Build the project")>] Build of RunFlag list
+    | [<CmdExample("", "--run-once"); Cmd("Run tests")>] Test of RunFlag list
+    | [<CmdExample("", "--run-once"); Cmd("Format code")>] Format of RunFlag list
     | [<Cmd("Show lint results from daemon")>] Lint of RunFlag list
     | [<Cmd("Show format-check results from daemon", Name = "format-check")>] FormatCheck of RunFlag list
     | [<Cmd("Show analyzer results from daemon")>] Analyze of RunFlag list
-    | [<Cmd("Show current status")>] Status of plugin: string option
-    | [<Cmd("Show accumulated errors")>] Errors of ErrorsFlag list
+    | [<CmdArg("plugin name (optional)"); CmdExample("", "build", "test-prune"); Cmd("Show current status")>] Status of
+        plugin: string option
+    | [<CmdExample("", "--wait", "--wait --timeout 60"); Cmd("Show accumulated errors")>] Errors of ErrorsFlag list
     | [<Cmd("Scan for file changes")>] Scan of ScanFlag list
-    | [<Cmd("Force a plugin to re-run, clearing its cached state")>] Rerun of pluginName: string
+    | [<CmdArg("plugin name");
+        CmdExample("build", "test-prune", "analyzers");
+        Cmd("Force a plugin to re-run, clearing its cached state")>] Rerun of pluginName: string
     | [<Cmd("Generate initial config")>] Init
     | [<Cmd("Configuration commands")>] Config of ConfigCommand
     | [<Cmd("Coverage commands")>] Coverage of CoverageCommand
     | [<Cmd("Install fish completions")>] Completions
 
 type GlobalFlag =
-    | [<CmdFlag(Short = "v"); Cmd("Enable debug-level logging")>] Verbose
-    | [<CmdFlag(Name = "log-level"); Cmd("Set log level: error|warning|info|debug")>] LogLevel of string
-    | [<CmdFlag(Name = "no-cache"); Cmd("Disable on-disk task result cache")>] NoCache
-    | [<CmdFlag(Name = "no-warn-fail"); Cmd("Treat warnings as non-fatal (errors still fail)")>] NoWarnFail
-    | [<CmdFlag(Short = "q"); Cmd("Compact one-line-per-plugin output")>] Compact
-    | [<CmdFlag(Short = "a"); Cmd("Agent-friendly parseable output with next-step hint")>] Agent
+    | [<CmdFlag(Short = "v", Description = "Enable debug-level logging")>] Verbose
+    | [<CmdFlag(Description = "Set log level: error|warning|info|debug"); CmdArg("level", Default = "info")>] LogLevel of
+        string
+    | [<CmdFlag(Description = "Disable on-disk task result cache")>] NoCache
+    | [<CmdFlag(Description = "Treat warnings as non-fatal (errors still fail)")>] NoWarnFail
+    | [<CmdFlag(Short = "q", Description = "Compact one-line-per-plugin output")>] Compact
+    | [<CmdFlag(Short = "a", Description = "Agent-friendly parseable output with next-step hint")>] Agent
 
 let globalSpec =
     CommandReflection.fromUnionWithGlobalsAndEnv<Command, GlobalFlag>
@@ -544,6 +548,10 @@ let executeCommand
                 ()
 
             eprintfn "Daemon stopped."
+
+            if File.Exists pidFile then
+                File.Delete pidFile
+
             0
     | Stop ->
         withIpc (fun () ->
