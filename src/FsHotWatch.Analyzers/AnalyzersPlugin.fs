@@ -96,12 +96,9 @@ let internal buildAnalyzerProjectOptions
             null
 
 let internal promoteIfFailing (threshold: DiagnosticSeverity) (entry: ErrorEntry) : ErrorEntry =
-    let order = DiagnosticSeverity.order
-
-    if
-        order entry.Severity >= order threshold
-        && entry.Severity <> DiagnosticSeverity.Error
-    then
+    if entry.Severity = DiagnosticSeverity.Error then
+        entry
+    elif DiagnosticSeverity.order entry.Severity >= DiagnosticSeverity.order threshold then
         { entry with
             Severity = DiagnosticSeverity.Error
             Message = $"[{DiagnosticSeverity.toString entry.Severity}] {entry.Message}" }
