@@ -870,7 +870,7 @@ let ``BuildPlugin succeeds with echo command`` () =
           Teardown = None }
 
     let handler =
-        BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None None
+        BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None None None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -914,7 +914,7 @@ let ``BuildPlugin fails with false command`` () =
           CacheKey = None
           Teardown = None }
 
-    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None None
+    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None None None
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
@@ -1236,7 +1236,7 @@ let ``Full pipeline: format → build → test`` () =
 
         // Register BuildPlugin (echo for success)
         let buildHandler =
-            BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None None
+            BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None None None
 
         host.RegisterHandler(buildHandler)
 
@@ -1337,7 +1337,7 @@ let ``BuildPlugin does not run concurrent builds`` () =
 
     // Use /bin/sleep 1 as a slow build command so the second emit arrives while the first is running
     let handler =
-        BuildPlugin.create "/bin/sleep" "1" [] (ProjectGraph()) [] None [] None None
+        BuildPlugin.create "/bin/sleep" "1" [] (ProjectGraph()) [] None [] None None None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
