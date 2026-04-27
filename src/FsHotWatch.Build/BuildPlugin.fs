@@ -119,6 +119,7 @@ let create
     (dependsOn: string list)
     (getCommitId: (unit -> string option) option)
     (timeoutSec: int option)
+    (dirtyTracker: FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker option)
     =
     let buildCommand = command
     let buildArgs = args
@@ -143,6 +144,99 @@ let create
 
     let isTestProject (proj: AbsProjectPath) =
         testProjectNameSet.Contains(Path.GetFileNameWithoutExtension(AbsProjectPath.value proj))
+
+    let markDirty (files: string list) =
+        match dirtyTracker with
+        | None -> ()
+        | Some tracker ->
+            let nonTestFiles = files |> List.filter (fun f -> not (isTestFile f))
+
+            if not nonTestFiles.IsEmpty then
+                let affected =
+                    graph.GetAffectedProjects(nonTestFiles |> List.map AbsFilePath.create)
+
+                let stems =
+                    affected
+                    |> List.map (fun p -> Path.GetFileNameWithoutExtension(AbsProjectPath.value p))
+
+                tracker.MarkDirty stems
+
+    let clearFreshProjects (output: string) =
+        match dirtyTracker with
+        | None -> ()
+        | Some tracker ->
+            let dllPaths = BuildDiagnostics.parseDllPaths output
+            let allProjects = graph.GetAllProjects()
+
+            let projectByStem =
+                allProjects
+                |> List.map (fun p -> Path.GetFileNameWithoutExtension(AbsProjectPath.value p), p)
+                |> Map.ofList
+
+            for KeyValue(stem, dllPath) in dllPaths do
+                match Map.tryFind stem projectByStem with
+                | None -> ()
+                | Some proj ->
+                    let sources = graph.GetSourceFiles(proj)
+
+                    let maxSourceTime =
+                        sources
+                        |> List.choose (fun f ->
+                            let path = AbsFilePath.value f
+
+                            if File.Exists path then
+                                Some(File.GetLastWriteTimeUtc path)
+                            else
+                                None)
+                        |> (function
+                        | [] -> None
+                        | times -> Some(List.max times))
+
+                    let dllTime =
+                        if File.Exists dllPath then
+                            Some(File.GetLastWriteTimeUtc dllPath)
+                        else
+                            None
+
+                    match maxSourceTime, dllTime with
+                    | Some srcTime, Some dllT when dllT >= srcTime ->
+                        tracker.ClearDirty stem
+                        debug "build" $"DLL fresh for %s{stem} — cleared dirty bit"
+                    | Some srcTime, Some dllT ->
+                        warn
+                            "build"
+                            (sprintf
+                                "Stale binary detected: %s DLL is %O but sources are as new as %O. MSBuild incremental cache may be lying — tests for this project will be blocked."
+                                stem
+                                dllT
+                                srcTime)
+                    | _ -> tracker.ClearDirty stem // can't check → optimistically clear
+
+            // Clear test-project dirty bits whose source-project deps are now all clean
+            let remainingDirtySourceStems =
+                tracker.AllDirty
+                |> List.filter (fun s ->
+                    match Map.tryFind s projectByStem with
+                    | Some p -> not (isTestProject p)
+                    | None -> false)
+                |> Set.ofList
+
+            let stillAffectedByDirtySource =
+                remainingDirtySourceStems
+                |> Set.toList
+                |> List.choose (fun s -> Map.tryFind s projectByStem)
+                |> List.collect (fun p -> graph.GetDependents(p))
+                |> List.map (fun p -> Path.GetFileNameWithoutExtension(AbsProjectPath.value p))
+                |> Set.ofList
+
+            for testStem in
+                tracker.AllDirty
+                |> List.filter (fun s ->
+                    match Map.tryFind s projectByStem with
+                    | Some p -> isTestProject p
+                    | None -> false) do
+                if not (stillAffectedByDirtySource.Contains testStem) then
+                    tracker.ClearDirty testStem
 
     let depNames = dependsOn |> Set.ofList
     let allDepsSatisfied deps = Set.isSubset depNames deps
@@ -322,6 +416,7 @@ let create
         (idle: Lifecycle<Idle, BuildOutcome option>)
         (files: string list)
         =
+        markDirty files
         let allTestFiles = not files.IsEmpty && files |> List.forall isTestFile
 
         if allTestFiles then
@@ -416,12 +511,13 @@ let create
                     // of a cached BuildDone re-fires these via EmittedEvents +
                     // captured Errors.
                     match outcome with
-                    | BuildPassed _ ->
+                    | BuildPassed out ->
                         if entries.IsEmpty then
                             ctx.ClearErrors "<build>"
                         else
                             ctx.ReportErrors "<build>" entries
 
+                        clearFreshProjects out
                         ctx.EmitBuildCompleted(BuildSucceeded)
                         ctx.ReportStatus(Completed(DateTime.UtcNow))
                     | BuildOutputFailed outputs ->
