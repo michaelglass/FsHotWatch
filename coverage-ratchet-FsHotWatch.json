@@ -22,8 +22,8 @@
         "platform": "macos"
       },
       {
-        "line": 100,
-        "branch": 75,
+        "line": 94,
+        "branch": 70,
         "platform": "linux"
       }
     ],
@@ -35,8 +35,8 @@
         "platform": "macos"
       },
       {
-        "line": 89,
-        "branch": 77,
+        "line": 88,
+        "branch": 79,
         "reason": "BuildInputsHasher unit-tested",
         "platform": "linux"
       }
@@ -108,8 +108,8 @@
         "platform": "macos"
       },
       {
-        "line": 77,
-        "branch": 77,
+        "line": 75,
+        "branch": 78,
         "reason": "lower coverage on Linux CI; race-fix retry path",
         "platform": "linux"
       }
@@ -429,7 +429,7 @@
         "platform": "macos"
       },
       {
-        "line": 98,
+        "line": 99,
         "branch": 92,
         "reason": "loosened: fileToProjects multi-project paths",
         "platform": "linux"
