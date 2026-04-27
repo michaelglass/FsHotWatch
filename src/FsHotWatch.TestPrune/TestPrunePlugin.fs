@@ -4,6 +4,7 @@ open System
 open System.Diagnostics
 open System.IO
 open System.Text.Json
+open System.Threading
 open FsHotWatch.Events
 open FsHotWatch
 open FsHotWatch.Logging
@@ -707,6 +708,12 @@ let create
     // before Update) sees the symbols accumulated from prior FileChecked events.
     let mutable changedSymbolsRef: string list = []
 
+    // False until the first TestsFinished in this session. BuildCompleted returns
+    // None (non-cacheable) while this is false so the full-suite cold-start path
+    // in runTestsWithImpact always runs on daemon restart, even when the on-disk
+    // task cache holds a matching entry from a prior session.
+    let mutable hadPriorResultsRef: bool = false
+
     let hasTestConfigs =
         testConfigs |> Option.map (List.isEmpty >> not) |> Option.defaultValue false
 
@@ -945,14 +952,10 @@ let create
             async {
                 match event with
                 | PluginEvent.FileChecked result ->
-                    // Reset completed flag so new file changes can report status
                     let isIdle =
                         match state.TestPhase with
                         | TestsIdle _ -> true
                         | TestsRunning _ -> false
-
-                    if isIdle then
-                        ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
 
                     try
                         let relPath = Path.GetRelativePath(repoRoot, result.File).Replace('\\', '/')
@@ -1067,14 +1070,9 @@ let create
                                     AffectedTests = Analyzed queriedAffected }
 
                             // Keep the mutable snapshot in sync for the cache key function
-                            changedSymbolsRef <- newState.ChangedSymbols
+                            Volatile.Write(&changedSymbolsRef, newState.ChangedSymbols)
 
                             if isIdle then
-                                // Analysis done — report Completed. If a BuildCompleted arrives
-                                // later it will re-trigger test execution and set Running again.
-                                // Previously we stayed Running here when testConfigs existed,
-                                // which caused WaitForComplete to hang when FileChecked events
-                                // arrived after the build had already completed.
                                 ctx.ReportStatus(Completed(DateTime.UtcNow))
 
                             return newState
@@ -1106,7 +1104,7 @@ let create
                                 { state with
                                     TestPhase = TestsRunning(running, RerunQueued) }
                         | TestsIdle idle ->
-                            Logging.info "test-prune" $"BuildSucceeded received, running tests"
+                            Logging.info "test-prune" "BuildSucceeded: starting test run"
 
                             // Flush/query before announcing Running so the reported status never
                             // lies (the old order would flash Running even on schema-drifted DBs).
@@ -1158,6 +1156,7 @@ let create
                     // TestRunCompleted (e.g. FileCommandPlugin) must see it on cache hit.
                     ctx.EmitTestRunStarted started
                     ctx.EmitTestRunCompleted completed
+                    Volatile.Write(&hadPriorResultsRef, true)
 
                     // Apply error reporting synchronously here too — live emission from
                     // the async wouldn't be captured for cache replay.
@@ -1255,7 +1254,7 @@ let create
                                     AffectedTests = Analyzed [] }
                         | Ok rerunState ->
                             recordRunOutcome testResults
-                            changedSymbolsRef <- []
+                            Volatile.Write(&changedSymbolsRef, [])
 
                             let rerunRunning = Lifecycle.complete (Some testResults) running |> Lifecycle.start
 
@@ -1273,7 +1272,7 @@ let create
                             return rerunState
                     | TestsRunning(running, NoRerun) ->
                         let completed = Lifecycle.complete (Some testResults) running
-                        changedSymbolsRef <- []
+                        Volatile.Write(&changedSymbolsRef, [])
                         recordRunOutcome testResults
 
                         return
@@ -1309,7 +1308,7 @@ let create
             // earlier), so outcome="succeeded" is correct for the Custom path.
             let buildCompletedKey () =
                 let symbolsHash =
-                    changedSymbolsRef
+                    Volatile.Read(&changedSymbolsRef)
                     |> List.distinct
                     |> List.sort
                     |> String.concat "|"
@@ -1322,10 +1321,15 @@ let create
                       "build-outcome", "succeeded" ]
 
             match event with
-            | BuildCompleted BuildSucceeded -> Some(buildCompletedKey ())
+            | BuildCompleted BuildSucceeded ->
+                // hadPriorResultsRef is set in Custom(TestsFinished) after the first run completes.
+                if not (Volatile.Read(&hadPriorResultsRef)) then
+                    None
+                else
+                    Some(buildCompletedKey ())
             | BuildCompleted(BuildFailed errs) ->
                 let symbolsHash =
-                    changedSymbolsRef
+                    Volatile.Read(&changedSymbolsRef)
                     |> List.distinct
                     |> List.sort
                     |> String.concat "|"

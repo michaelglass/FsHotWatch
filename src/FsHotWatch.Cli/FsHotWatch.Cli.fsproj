@@ -7,7 +7,7 @@
         <PackAsTool>true</PackAsTool>
         <ToolCommandName>fs-hot-watch</ToolCommandName>
         <PackageId>FsHotWatch.Cli</PackageId>
-        <Version>0.8.0-alpha.11</Version>
+        <Version>0.9.0-alpha.0-local98</Version>
         <Authors>Michael Glass</Authors>
         <Description>CLI for FsHotWatch — F# file watcher daemon</Description>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -46,7 +46,7 @@
 
     <ItemGroup>
         <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.202" PrivateAssets="All" />
-        <PackageReference Include="CommandTree" Version="0.4.0" />
+        <PackageReference Include="CommandTree" Version="0.5.0" />
         <PackageReference Include="TestPrune.Falco" Version="2.0.1" />
         <PackageReference Update="FSharp.Core" Version="10.1.*" />
     </ItemGroup>

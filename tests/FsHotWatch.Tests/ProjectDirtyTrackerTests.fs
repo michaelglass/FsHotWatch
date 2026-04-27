@@ -7,7 +7,7 @@ open FsHotWatch.ProjectDirtyTracker
 [<Fact(Timeout = 5000)>]
 let ``newly created tracker has nothing dirty`` () =
     let t = ProjectDirtyTracker()
-    test <@ t.AllDirty = [] @>
+    test <@ List.isEmpty t.AllDirty @>
 
 [<Fact(Timeout = 5000)>]
 let ``MarkDirty makes IsDirty return true`` () =
@@ -42,4 +42,4 @@ let ``MarkDirty is idempotent`` () =
 let ``ClearDirty on non-dirty project is safe`` () =
     let t = ProjectDirtyTracker()
     t.ClearDirty "NotDirty"
-    test <@ t.AllDirty = [] @>
+    test <@ List.isEmpty t.AllDirty @>
