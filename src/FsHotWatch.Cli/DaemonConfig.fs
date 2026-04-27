@@ -697,6 +697,14 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             )
     | None -> ()
 
+    // Shared dirty tracker — populated by BuildPlugin (on FileChanged) and queried
+    // by TestPrunePlugin to skip projects whose binaries are stale.
+    let dirtyTracker =
+        if config.Build.IsSome && config.Tests.IsSome then
+            Some(FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker())
+        else
+            None
+
     // Build plugin(s)
     match config.Build with
     | Some builds when not builds.IsEmpty ->
@@ -721,6 +729,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                     b.DependsOn
                     getCommitId
                     buildTimeout
+                    dirtyTracker
             )
     | _ -> ()
 
@@ -814,7 +823,16 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"
 
         let handler =
-            create dbPath repoRoot (Some testConfigs) buildExtensions beforeRun None coveragePaths getCommitId
+            create
+                dbPath
+                repoRoot
+                (Some testConfigs)
+                buildExtensions
+                beforeRun
+                None
+                coveragePaths
+                getCommitId
+                dirtyTracker
 
         daemon.RegisterHandler(handler)
     | None -> ()
