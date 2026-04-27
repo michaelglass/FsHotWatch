@@ -598,9 +598,8 @@ let create
       CacheKey =
         // §2a: content-merkle key over all build-relevant files in the project graph.
         // FileChanged and Custom BuildDone share the same key so a stored result
-        // is found on the next matching FileChanged. FileChecked events skip the
-        // cache (None) because they use a different composite key (File = Some x)
-        // that never matches the stored File = None entry — every lookup would miss.
+        // is found on the next matching FileChanged. FileChecked events return None
+        // to skip the cache — they're handled by WaitingForFcsPhase state, not triggers.
         let inputsHasher = lazy BuildInputsHasher(graph)
 
         let cacheKey (event: PluginEvent<BuildMsg>) : ContentHash option =
