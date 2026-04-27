@@ -1169,15 +1169,20 @@ let create
                     else
                         reportTestErrors ctx state.TestClassFiles testResults
 
-                    // Re-emit stale-binary warnings for any project the dirty tracker still
-                    // reports as stale. Done after the clear/report step above so the warning
-                    // survives ClearAllErrors when stale-skipped projects pass trivially.
-                    match dirtyTracker, testConfigs with
-                    | Some tracker, Some configs ->
+                    // Re-emit stale-binary warnings for projects flagged by either the dirty
+                    // tracker or the independent staleness check. Done after the clear/report
+                    // step above so the warnings survive ClearAllErrors when stale-skipped
+                    // projects pass trivially.
+                    match testConfigs with
+                    | Some configs ->
                         for c in configs do
-                            if tracker.IsDirty c.Project then
+                            let dirtyTrackerStale = dirtyTracker |> Option.exists (fun t -> t.IsDirty c.Project)
+
+                            let stalenessCheckStale = stalenessCheck |> Option.exists (fun f -> f c.Project)
+
+                            if dirtyTrackerStale || stalenessCheckStale then
                                 ctx.ReportErrors c.Project [ staleBinaryEntry c.Project ]
-                    | _ -> ()
+                    | None -> ()
 
                     // Pushing a terminal Completed/Failed status is what appends the
                     // run to history; both RerunQueued and NoRerun branches must call this.
