@@ -102,7 +102,7 @@ let ``all plugins receive events when checking a file`` () =
     let dbPath = Path.Combine(Path.GetTempPath(), $"fshw-inttest-{Guid.NewGuid():N}.db")
 
     let testPrune =
-        TestPrunePlugin.create dbPath repoRoot None None None None None None None
+        TestPrunePlugin.create dbPath repoRoot None None None None None None None None
 
     let lint = LintPlugin.create None None None None
     let fantomas = createFormatCheck None None
@@ -975,7 +975,7 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
                 TimeoutSec = None } ]
 
         let handler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None None
 
         host.RegisterHandler(handler)
 
@@ -1030,7 +1030,7 @@ let ``TestPrunePlugin with failing test reports failure`` () =
                 TimeoutSec = None } ]
 
         let handler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None None
 
         host.RegisterHandler(handler)
 
@@ -1263,7 +1263,7 @@ let ``Full pipeline: format → build → test`` () =
                 TimeoutSec = None } ]
 
         let testPruneHandler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None None
 
         host.RegisterHandler(testPruneHandler)
 
@@ -1403,7 +1403,7 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
                 TimeoutSec = None } ]
 
         let handler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None None
 
         host.RegisterHandler(handler)
 
