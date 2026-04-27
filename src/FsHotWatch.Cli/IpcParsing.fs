@@ -184,7 +184,10 @@ let parseDiagnosticsResponse (json: string) : DiagnosticsResponse =
                       [ for entry in prop.Value.EnumerateArray() do
                             { Plugin = entry.GetProperty("plugin").GetString()
                               Message = entry.GetProperty("message").GetString()
-                              Severity = DiagnosticSeverity.fromString (entry.GetProperty("severity").GetString())
+                              Severity =
+                                entry.GetProperty("severity").GetString()
+                                |> DiagnosticSeverity.fromString
+                                |> Option.defaultValue DiagnosticSeverity.Error
                               Line = entry.GetProperty("line").GetInt32()
                               Column = entry.GetProperty("column").GetInt32()
                               Detail = tryGetStringProp entry "detail" } ]
