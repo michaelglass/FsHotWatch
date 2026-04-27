@@ -211,7 +211,21 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
 
                                 // Always-on event log shared across daemons; analyse offline
                                 // to compute hit-rate trends. Disabled later if signal is absent.
-                                FsHotWatch.CacheEventLog.record pluginName lookupResult.IsSome services.RepoRoot
+                                let triggerFile =
+                                    match event with
+                                    | FileChecked r -> r.File
+                                    | FileChanged(SourceChanged files)
+                                    | FileChanged(ProjectChanged files) ->
+                                        match files with
+                                        | [ f ] -> f
+                                        | _ -> String.concat "," files
+                                    | _ -> ""
+
+                                FsHotWatch.CacheEventLog.record
+                                    pluginName
+                                    lookupResult.IsSome
+                                    services.RepoRoot
+                                    triggerFile
 
                                 match lookupResult with
                                 | Some result ->
