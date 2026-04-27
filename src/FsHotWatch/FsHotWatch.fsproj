@@ -68,6 +68,7 @@
     <Compile Include="PluginActivity.fs" />
     <Compile Include="MacFsEvents.fs" />
     <Compile Include="Watcher.fs" />
+    <Compile Include="ProjectDirtyTracker.fs" />
     <Compile Include="PluginHost.fs" />
     <Compile Include="ProjectGraph.fs" />
     <Compile Include="CheckPipeline.fs" />
