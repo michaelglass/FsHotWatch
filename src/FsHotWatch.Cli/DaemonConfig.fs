@@ -706,7 +706,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             Logging.info "config" $"Registering AnalyzersPlugin with %d{resolvedPaths.Length} paths"
 
             daemon.RegisterHandler(
-                FsHotWatch.Analyzers.AnalyzersPlugin.create resolvedPaths getCommitId config.TimeoutSec
+                FsHotWatch.Analyzers.AnalyzersPlugin.create resolvedPaths getCommitId config.TimeoutSec a.FailOnSeverity
             )
     | None -> ()
 

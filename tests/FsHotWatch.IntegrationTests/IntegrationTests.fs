@@ -106,7 +106,7 @@ let ``all plugins receive events when checking a file`` () =
 
     let lint = LintPlugin.create None None None None
     let fantomas = createFormatCheck None None
-    let analyzers = AnalyzersPlugin.create [] None None
+    let analyzers = AnalyzersPlugin.create [] None None DiagnosticSeverity.Hint
 
     host.RegisterHandler(testPrune)
     host.RegisterHandler(lint)
@@ -187,7 +187,8 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let analyzerPaths =
         [ gResearchPath; customAnalyzerPath ] |> List.filter Directory.Exists
 
-    let analyzers = AnalyzersPlugin.create analyzerPaths None None
+    let analyzers =
+        AnalyzersPlugin.create analyzerPaths None None DiagnosticSeverity.Hint
 
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
@@ -293,7 +294,10 @@ let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> stri
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let host = PluginHost.create checker repoRoot
-        let analyzers = AnalyzersPlugin.create [ analyzerPath ] None None
+
+        let analyzers =
+            AnalyzersPlugin.create [ analyzerPath ] None None DiagnosticSeverity.Hint
+
         host.RegisterHandler(analyzers)
 
         withTempFsFile source (fun _dir tmpFile ->
@@ -736,7 +740,7 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let host = PluginHost.create checker repoRoot
-        let analyzers = AnalyzersPlugin.create [] None None
+        let analyzers = AnalyzersPlugin.create [] None None DiagnosticSeverity.Hint
         host.RegisterHandler(analyzers)
 
         let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
@@ -776,7 +780,10 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let host = PluginHost.create checker repoRoot
-        let analyzers = AnalyzersPlugin.create [ analyzerPath ] None None
+
+        let analyzers =
+            AnalyzersPlugin.create [ analyzerPath ] None None DiagnosticSeverity.Hint
+
         host.RegisterHandler(analyzers)
 
         let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
