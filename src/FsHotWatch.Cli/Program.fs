@@ -71,10 +71,10 @@ type Command =
     | [<Cmd("Install fish completions")>] Completions
 
 type GlobalFlag =
-    | [<CmdFlag(Short = "v")>] Verbose
-    | [<CmdFlag(Name = "log-level")>] LogLevel of string
-    | [<CmdFlag(Name = "no-cache")>] NoCache
-    | [<CmdFlag(Name = "no-warn-fail")>] NoWarnFail
+    | [<CmdFlag(Short = "v"); Cmd("Enable debug-level logging")>] Verbose
+    | [<CmdFlag(Name = "log-level"); Cmd("Set log level: error|warning|info|debug")>] LogLevel of string
+    | [<CmdFlag(Name = "no-cache"); Cmd("Disable on-disk task result cache")>] NoCache
+    | [<CmdFlag(Name = "no-warn-fail"); Cmd("Treat warnings as non-fatal (errors still fail)")>] NoWarnFail
     | [<CmdFlag(Short = "q"); Cmd("Compact one-line-per-plugin output")>] Compact
     | [<CmdFlag(Short = "a"); Cmd("Agent-friendly parseable output with next-step hint")>] Agent
 
@@ -263,13 +263,14 @@ let private ensureAndQueryErrors
         eprintfn "Failed to start daemon"
         1
     else
-        IpcOutput.pollAndRender
-            mode
-            (renderLines mode (not noWarnFail))
-            noWarnFail
-            (fun () -> ipc.WaitForScan pipeName -1L |> Async.RunSynchronously)
-            (fun () -> ipc.GetStatus pipeName |> Async.RunSynchronously)
-            (fun () -> ipc.GetDiagnostics pipeName pluginFilter |> Async.RunSynchronously)
+        withIpc (fun () ->
+            IpcOutput.pollAndRender
+                mode
+                (renderLines mode (not noWarnFail))
+                noWarnFail
+                (fun () -> ipc.WaitForScan pipeName -1L |> Async.RunSynchronously)
+                (fun () -> ipc.GetStatus pipeName |> Async.RunSynchronously)
+                (fun () -> ipc.GetDiagnostics pipeName pluginFilter |> Async.RunSynchronously))
 
 /// Compute a hash of the config file + CLI binary for staleness detection (injectable).
 let computeConfigHashWith (fileOps: FileOps) (repoRoot: string) (exePath: string) =
@@ -751,7 +752,9 @@ let executeCommand
                             Ok()
                         with
                         | :? TimeoutException as ex -> Error ex.Message
-                        | ex -> Error ex.Message
+                        | ex ->
+                            let inner = unwrapIpcException ex
+                            Error $"daemon stopped or died before wait completed: %s{inner.Message}"
 
                 match waitResult with
                 | Error msg ->
@@ -863,51 +866,27 @@ let applyGlobalFlags (globals: GlobalFlag list) : GlobalOptions =
 let main args =
     let argList = args |> Array.toList
 
-    // Handle --help/-h as global flags (CommandTree handles subcommand help via HelpRequested)
-    if argList |> List.exists (fun a -> a = "--help" || a = "-h" || a = "help") then
+    // Bare `--help` / `-h` / `help` (no subcommand) prints global help with global flags.
+    // Subcommand help (e.g. `errors --help`) is handled by Parse via HelpRequested below
+    // so per-command flags like --wait and --timeout actually appear in the output.
+    let isHelpToken (a: string) = a = "--help" || a = "-h" || a = "help"
+
+    let onlyHelpRequested =
+        match argList with
+        | [] -> true
+        | args when args |> List.forall isHelpToken -> true
+        | _ -> false
+
+    if onlyHelpRequested then
         printfn "%s" (CommandTree.helpWithGlobals commandTree globalSpec.GlobalFlags cliName)
         0
     else
 
-        let repoRoot =
-            match findRepoRoot (Directory.GetCurrentDirectory()) with
-            | Some root -> root
-            | None ->
-                eprintfn "Error: not in a jj or git repository"
-                exit 1
-                ""
+        // Parse before locating the repo root so `<cmd> --help` and `--version`
+        // work outside a jj/git checkout.
+        let parsed = globalSpec.Parse args
 
-        let pipeName = computePipeName repoRoot
-
-        match globalSpec.Parse args with
-        | Ok(globals, command) ->
-            let opts = applyGlobalFlags globals
-
-            let config =
-                try
-                    loadConfig repoRoot
-                with ConfigError msg ->
-                    eprintfn $"fs-hot-watch: config error: %s{msg}"
-                    exit 2
-
-            let cacheConfig = if opts.NoCache then DaemonConfig.NoCache else config.Cache
-            let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
-
-            let fileCommandPatterns =
-                config.FileCommands
-                |> List.choose (fun fc -> fc.Pattern)
-                |> List.map FsHotWatch.Watcher.FilePattern.parse
-
-            let createDaemon (root: string) =
-                Daemon.create
-                    root
-                    { Daemon.DaemonOptions.defaults with
-                        CacheBackend = backend
-                        CacheKeyProvider = keyProvider
-                        ExcludePatterns = config.Exclude
-                        ExtraWatchPatterns = fileCommandPatterns }
-
-            executeCommand createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
+        match parsed with
         | Error(HelpRequested path) ->
             printfn "%s" (CommandTree.helpForPath commandTree path cliName)
             0
@@ -917,28 +896,73 @@ let main args =
 
             printfn "%s %s" cliName version
             0
-        | Error(UnknownCommand(input, _path)) ->
-            let argsStr =
-                argList
-                |> List.skipWhile (fun a -> a <> input)
-                |> List.skip 1
-                |> String.concat " "
+        | _ ->
 
-            let opts =
-                { defaultGlobalOptions with
-                    AgentMode = argList |> List.exists (fun a -> a = "--agent" || a = "-a")
-                    CompactMode = argList |> List.exists (fun a -> a = "--compact" || a = "-q") }
+            let repoRoot =
+                match findRepoRoot (Directory.GetCurrentDirectory()) with
+                | Some root -> root
+                | None ->
+                    eprintfn "Error: not in a jj or git repository"
+                    exit 1
+                    ""
 
-            executePluginCommand defaultIpcOps pipeName opts input argsStr
-        | Error(InvalidArguments(cmd, msg)) ->
-            eprintfn "Invalid arguments for '%s': %s" cmd msg
-            1
-        | Error(AmbiguousArgument(input, candidates)) ->
-            eprintfn "Ambiguous command '%s'. Did you mean: %s" input (String.concat ", " candidates)
-            1
-        | Error(UnknownFlag(flag, cmd, validFlags)) ->
-            eprintfn "Unknown flag '%s' for '%s'. Valid flags: %s" flag cmd (String.concat ", " validFlags)
-            1
-        | Error(DuplicateFlag(flag, cmd)) ->
-            eprintfn "Flag '%s' provided more than once for '%s'" flag cmd
-            1
+            let pipeName = computePipeName repoRoot
+
+            match parsed with
+            | Ok(globals, command) ->
+                let opts = applyGlobalFlags globals
+
+                let config =
+                    try
+                        loadConfig repoRoot
+                    with ConfigError msg ->
+                        eprintfn $"fs-hot-watch: config error: %s{msg}"
+                        exit 2
+
+                let cacheConfig = if opts.NoCache then DaemonConfig.NoCache else config.Cache
+                let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
+
+                let fileCommandPatterns =
+                    config.FileCommands
+                    |> List.choose (fun fc -> fc.Pattern)
+                    |> List.map FsHotWatch.Watcher.FilePattern.parse
+
+                let createDaemon (root: string) =
+                    Daemon.create
+                        root
+                        { Daemon.DaemonOptions.defaults with
+                            CacheBackend = backend
+                            CacheKeyProvider = keyProvider
+                            ExcludePatterns = config.Exclude
+                            ExtraWatchPatterns = fileCommandPatterns }
+
+                executeCommand createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
+            | Error(HelpRequested _)
+            | Error VersionRequested ->
+                // Already handled above before repo-root lookup.
+                0
+            | Error(UnknownCommand(input, _path)) ->
+                let argsStr =
+                    argList
+                    |> List.skipWhile (fun a -> a <> input)
+                    |> List.skip 1
+                    |> String.concat " "
+
+                let opts =
+                    { defaultGlobalOptions with
+                        AgentMode = argList |> List.exists (fun a -> a = "--agent" || a = "-a")
+                        CompactMode = argList |> List.exists (fun a -> a = "--compact" || a = "-q") }
+
+                executePluginCommand defaultIpcOps pipeName opts input argsStr
+            | Error(InvalidArguments(cmd, msg)) ->
+                eprintfn "Invalid arguments for '%s': %s" cmd msg
+                1
+            | Error(AmbiguousArgument(input, candidates)) ->
+                eprintfn "Ambiguous command '%s'. Did you mean: %s" input (String.concat ", " candidates)
+                1
+            | Error(UnknownFlag(flag, cmd, validFlags)) ->
+                eprintfn "Unknown flag '%s' for '%s'. Valid flags: %s" flag cmd (String.concat ", " validFlags)
+                1
+            | Error(DuplicateFlag(flag, cmd)) ->
+                eprintfn "Flag '%s' provided more than once for '%s'" flag cmd
+                1

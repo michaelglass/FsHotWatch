@@ -846,6 +846,29 @@ let ``executeCommand Errors with IPC failure returns exit code 1`` () =
     test <@ result = 1 @>
 
 [<Fact(Timeout = 5000)>]
+let ``executeCommand Check returns exit code 1 when daemon dies during poll`` () =
+    // `check` polls GetStatus in a loop until plugins are terminal. If the
+    // daemon dies (or is gracefully stopped) mid-poll the RPC throws and we
+    // must exit non-zero so wait-style scripts notice.
+    let ipc =
+        { fakeIpc () with
+            WaitForScan = fun _ _ -> async { return "idle" }
+            GetStatus = fun _ -> async { return failwith "pipe is broken" } }
+
+    let result =
+        executeCommand
+            (fun _ -> Unchecked.defaultof<_>)
+            ipc
+            "/tmp"
+            "pipe"
+            (Check [])
+            defaultGlobalOptions
+            fakeConfig
+            30.0
+
+    test <@ result = 1 @>
+
+[<Fact(Timeout = 5000)>]
 let ``executeCommand Errors --wait blocks on WaitForComplete before reading diagnostics`` () =
     let mutable waitCalled = false
     let mutable waitFinishedBeforeDiagnostics = false
@@ -927,6 +950,31 @@ let ``executeCommand Errors --wait returns exit code 2 when WaitForComplete time
             "/tmp"
             "pipe"
             (Errors [ Wait; Timeout 1 ])
+            defaultGlobalOptions
+            fakeConfig
+            30.0
+
+    test <@ result = 2 @>
+
+[<Fact(Timeout = 5000)>]
+let ``executeCommand Errors --wait returns exit code 2 when daemon dies mid-wait`` () =
+    // Simulates the daemon being gracefully stopped (or crashing) while a client
+    // is blocked in WaitForComplete: the RPC stream breaks and the StreamJsonRpc
+    // call throws an IOException-shaped error. The waiter must surface a non-zero
+    // exit so wait-based scripts (`fs-hot-watch errors --wait`, etc.) don't
+    // silently succeed when the daemon disappears.
+    let ipc =
+        { fakeIpc () with
+            WaitForComplete = fun _ _ -> async { return raise (System.IO.IOException("pipe is broken")) }
+            GetDiagnostics = fun _ _ -> async { return """{"count": 0}""" } }
+
+    let result =
+        executeCommand
+            (fun _ -> Unchecked.defaultof<_>)
+            ipc
+            "/tmp"
+            "pipe"
+            (Errors [ Wait ])
             defaultGlobalOptions
             fakeConfig
             30.0
