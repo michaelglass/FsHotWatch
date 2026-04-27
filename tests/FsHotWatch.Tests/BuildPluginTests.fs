@@ -689,6 +689,17 @@ let ``BuildPlugin cache key matches between FileChanged and Custom BuildDone`` (
     test <@ fileKey = doneKey @>
 
 [<Fact(Timeout = 5000)>]
+let ``BuildPlugin cache key returns None for FileChecked events`` () =
+    // FileChecked events use a different composite key (File = Some x) so they
+    // would always miss if looked up; returning None skips the cache entirely.
+    let handler =
+        BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None None None
+
+    let cacheKeyFn = handler.CacheKey.Value
+    let checkedEvt = FileChecked(fakeFileCheckResult "/tmp/Foo.fs")
+    test <@ cacheKeyFn checkedEvt = None @>
+
+[<Fact(Timeout = 5000)>]
 let ``BuildPlugin cache key reflects build command`` () =
     // §2a: changing the build command/args should invalidate the cache.
     let h1 =
