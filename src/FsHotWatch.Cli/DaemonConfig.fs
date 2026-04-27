@@ -5,6 +5,7 @@ open System.IO
 open System.Text.Json
 open FsHotWatch
 open FsHotWatch.CheckCache
+open FsHotWatch.ErrorLedger
 open FsHotWatch.Daemon
 open FsHotWatch.Events
 open FsHotWatch.Plugin
@@ -122,7 +123,9 @@ type DaemonConfiguration =
         Format: FormatMode
         Lint: bool
         Cache: CacheBackendConfig
-        Analyzers: {| Paths: string list |} option
+        Analyzers:
+            {| Paths: string list
+               FailOnSeverity: DiagnosticSeverity |} option
         Tests:
             {| BeforeRun: string option
                Extensions: TestExtensionConfig list
@@ -253,7 +256,17 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 | true, arr -> arr.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList
                 | _ -> []
 
-            if paths.IsEmpty then None else Some {| Paths = paths |}
+            let failOnSeverity =
+                match v.TryGetProperty("failOnSeverity") with
+                | true, s -> DiagnosticSeverity.fromString (s.GetString())
+                | _ -> DiagnosticSeverity.Hint
+
+            if paths.IsEmpty then
+                None
+            else
+                Some
+                    {| Paths = paths
+                       FailOnSeverity = failOnSeverity |}
         | _ -> None
 
     let tests =
