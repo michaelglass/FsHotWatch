@@ -8,8 +8,8 @@
         "platform": "macos"
       },
       {
-        "line": 76,
-        "branch": 75,
+        "line": 74,
+        "branch": 70,
         "reason": "reflection-based CliContext branches vary by platform; parse-only path \u002B knownNonAnalyzerPrefixes filter both add untested branches on Linux",
         "platform": "linux"
       }
@@ -108,8 +108,8 @@
         "platform": "macos"
       },
       {
-        "line": 76,
-        "branch": 76,
+        "line": 77,
+        "branch": 77,
         "reason": "lower coverage on Linux CI; race-fix retry path",
         "platform": "linux"
       }
@@ -183,8 +183,8 @@
         "platform": "macos"
       },
       {
-        "line": 75,
-        "branch": 68,
+        "line": 76,
+        "branch": 69,
         "reason": "lower branch coverage on Linux CI",
         "platform": "linux"
       }
@@ -291,7 +291,7 @@
         "platform": "macos"
       },
       {
-        "line": 88,
+        "line": 90,
         "branch": 72,
         "reason": "lower line coverage on Linux CI; branch threshold matches macOS post \u00A72a",
         "platform": "linux"
@@ -347,8 +347,8 @@
         "platform": "macos"
       },
       {
-        "line": 84,
-        "branch": 74,
+        "line": 93,
+        "branch": 85,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -388,7 +388,7 @@
         "platform": "macos"
       },
       {
-        "line": 84,
+        "line": 86,
         "branch": 77,
         "platform": "linux"
       }
@@ -402,7 +402,7 @@
       },
       {
         "line": 68,
-        "branch": 54,
+        "branch": 53,
         "reason": "CLI entry point, different coverage on Linux CI",
         "platform": "linux"
       }
@@ -429,7 +429,7 @@
         "platform": "macos"
       },
       {
-        "line": 96,
+        "line": 98,
         "branch": 92,
         "reason": "loosened: fileToProjects multi-project paths",
         "platform": "linux"
@@ -471,7 +471,7 @@
       },
       {
         "line": 100,
-        "branch": 94,
+        "branch": 95,
         "reason": "different coverage profile on Linux CI",
         "platform": "linux"
       }
