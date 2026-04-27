@@ -95,6 +95,19 @@ let internal buildAnalyzerProjectOptions
             warn "analyzers" $"AnalyzerProjectOptions ctor failed: %s{ex.Message}"
             null
 
+let internal promoteIfFailing (threshold: DiagnosticSeverity) (entry: ErrorEntry) : ErrorEntry =
+    let order = DiagnosticSeverity.order
+
+    if
+        order entry.Severity >= order threshold
+        && entry.Severity <> DiagnosticSeverity.Error
+    then
+        { entry with
+            Severity = DiagnosticSeverity.Error
+            Message = $"[{DiagnosticSeverity.toString entry.Severity}] {entry.Message}" }
+    else
+        entry
+
 /// Creates a framework plugin handler that hosts F# analyzers in-process
 /// using the warm checker's results.
 /// Uses reflection to construct CliContext, bypassing the FCS 43.10 vs 43.12
@@ -108,6 +121,7 @@ let internal createWithSlowHook
     (analyzerPaths: string list)
     (getCommitId: (unit -> string option) option)
     (timeoutSec: int option)
+    (failOnSeverity: DiagnosticSeverity)
     (slowHook: (unit -> unit) option)
     : PluginHandler<AnalyzersState, AnalyzersMsg> =
     let client = Client<CliAnalyzerAttribute, CliContext>()
@@ -289,6 +303,8 @@ let internal createWithSlowHook
                                                                       Detail = None })
                                                             | Result.Error _ -> [])
 
+                                                    let entries = entries |> List.map (promoteIfFailing failOnSeverity)
+
                                                     debug
                                                         "analyzers"
                                                         $"Analyzed %s{Path.GetFileName result.File}: %d{entries.Length} diagnostics"
@@ -445,5 +461,6 @@ let create
     (analyzerPaths: string list)
     (getCommitId: (unit -> string option) option)
     (timeoutSec: int option)
+    (failOnSeverity: DiagnosticSeverity)
     : PluginHandler<AnalyzersState, AnalyzersMsg> =
-    createWithSlowHook analyzerPaths getCommitId timeoutSec None
+    createWithSlowHook analyzerPaths getCommitId timeoutSec failOnSeverity None
