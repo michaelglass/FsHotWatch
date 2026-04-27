@@ -320,7 +320,42 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
         test <@ noChangedNames.IsEmpty @>)
 
 [<Fact(Timeout = 5000)>]
-let ``FileChecked does not report Completed when testConfigs are provided (error path)`` () =
+let ``FileChecked never transitions plugin to Running status`` () =
+    withTempDir "tp-no-running" (fun tmpDir ->
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir None None None None None None None None
+        host.RegisterHandler(handler)
+
+        let observedRunning = ref false
+
+        host.OnStatusChanged.Add(fun (name, status) ->
+            if name = "test-prune" then
+                match status with
+                | Running _ -> observedRunning.Value <- true
+                | _ -> ())
+
+        let fakeFile = Path.Combine(tmpDir, "Lib.fs")
+        File.WriteAllText(fakeFile, "module Lib\nlet x = 1\n")
+
+        let fakeResult =
+            { fakeFileCheckResult fakeFile with
+                Source = "module Lib\nlet x = 1\n" }
+
+        try
+            host.EmitFileChecked(fakeResult)
+        with _ ->
+            ()
+
+        // Wait for processing to complete (error path sets Failed with null checker)
+        waitForPluginTerminal host "test-prune" 5.0
+
+        // Regression: FileChecked must never set Running — that caused rapid Running→Completed
+        // cycling during FCS cold-start, making the UI show constantly-changing elapsed time
+        // as if individual tests were running one-by-one.
+        test <@ not observedRunning.Value @>)
+
+[<Fact(Timeout = 5000)>]
+let ``FileChecked does not set Running status`` () =
     withTempDir "tp-no-complete" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
@@ -352,35 +387,24 @@ let ``FileChecked does not report Completed when testConfigs are provided (error
         with _ ->
             ()
 
-        waitUntil
-            (fun () ->
-                match host.GetStatus("test-prune") with
-                | Some(Running _)
-                | Some(Completed _)
-                | Some(Failed _) -> true
-                | _ -> false)
-            5000
+        waitForPluginTerminal host "test-prune" 5.0
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
 
-        // When testConfigs are provided, FileChecked analysis should NOT report Completed
-        // because tests haven't actually run yet (they run on BuildCompleted).
+        // FileChecked must not set Running — that causes status cycling in the UI.
+        // Completed is acceptable (set on success path); Failed is acceptable (error path).
         match status.Value with
-        | Completed _ ->
-            Assert.Fail(
-                "Expected Running (not Completed) after FileChecked when testConfigs are provided — tests haven't run yet"
-            )
+        | Running _ -> Assert.Fail("FileChecked must not set Running — causes status cycling in the UI")
         | _ -> ())
 
 [<Fact(Timeout = 5000)>]
-let ``FileChecked reports terminal status when no testConfigs (analysis-only mode, error path)`` () =
+let ``FileChecked sets Failed status on analysis error`` () =
     withTempDir "tp-complete-no-configs" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        // No testConfigs — analysis-only mode
         let handler = create dbPath tmpDir None None None None None None None None
         host.RegisterHandler(handler)
 
@@ -401,14 +425,13 @@ let ``FileChecked reports terminal status when no testConfigs (analysis-only mod
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
 
-        // Without testConfigs, FileChecked analysis CAN report Completed (or Failed for null check results)
+        // Error path (null checker in tests) reports Failed; success path leaves status unchanged.
         match status.Value with
-        | Completed _
-        | Failed _ -> () // Both are acceptable terminal states for analysis-only mode
-        | other -> Assert.Fail($"Expected Completed or Failed in analysis-only mode, got: %A{other}"))
+        | Failed _ -> ()
+        | other -> Assert.Fail($"Expected Failed on analysis error, got: %A{other}"))
 
 [<Fact(Timeout = 5000)>]
-let ``plugin reports Running status on FileChecked after tests complete`` () =
+let ``FileChecked replaces test-run Completed status with error state`` () =
     withTempDir "tp-reset" (fun tmpDir ->
         let configs =
             [ { Project = "TestProject"
@@ -432,7 +455,8 @@ let ``plugin reports Running status on FileChecked after tests complete`` () =
 
         waitForPluginTerminal host "test-prune" 5.0
 
-        // After tests complete, emit a FileChecked — should transition away from test-run status
+        // After tests complete (Completed), emit FileChecked — error path (null checker) sets Failed,
+        // so status changes away from Completed. On success path it would remain Completed.
         let fakeFile = Path.Combine(tmpDir, "New.fs")
         File.WriteAllText(fakeFile, "module New")
 
@@ -459,7 +483,7 @@ let ``plugin reports Running status on FileChecked after tests complete`` () =
 
         match status.Value with
         | Completed _ ->
-            Assert.Fail("Expected status to change after new FileChecked, not remain as test-run Completed")
+            Assert.Fail("Expected status to change after FileChecked analysis error, not remain as test-run Completed")
         | _ -> ())
 
 [<Fact(Timeout = 5000)>]
@@ -2261,3 +2285,68 @@ let ``executeTests skips project when stalenessCheck reports stale even though d
             |> List.exists (fun e -> e.Severity = FsHotWatch.ErrorLedger.Warning && e.Message.Contains("stale"))
 
         test <@ staleWarning @>)
+
+[<Fact(Timeout = 25000)>]
+let ``regression: cold-start BuildCompleted bypasses task cache and runs tests`` () =
+    // When the daemon restarts, a new plugin instance has hadPriorResults=false.
+    // If we returned Some(buildCompletedKey) on cold start, the framework would hit
+    // the persisted cache entry from the prior session and replay it without ever
+    // calling runTestsWithImpact. This meant the full-suite cold-start path was
+    // bypassed and any project absent from the cached impact set never ran.
+    withTempDir "tp-cold-cache-bypass" (fun tmpDir ->
+        let taskCache =
+            FsHotWatch.FileTaskCache.FileTaskCache(Path.Combine(tmpDir, "task-cache"))
+            :> FsHotWatch.TaskCache.ITaskCache
+
+        let sentinel = Path.Combine(tmpDir, "ran")
+
+        let configs =
+            [ { Project = "TestProject"
+                Command = "sh"
+                Args = $"-c \"touch {sentinel}\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        // Session 1: run once to populate the task cache with a prior-session result.
+        do
+            let dbPath1 = Path.Combine(tmpDir, "tp1.db")
+            let host1 = PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = taskCache)
+
+            let handler1 =
+                create dbPath1 tmpDir (Some configs) None None None None None None None
+
+            host1.RegisterHandler(handler1)
+            host1.EmitBuildCompleted(BuildSucceeded)
+            waitForTerminalStatus host1 "test-prune" 10000
+
+        // Delete sentinel so session 2 can prove it ran again.
+        if File.Exists sentinel then
+            File.Delete sentinel
+
+        // Session 2: new plugin instance (simulates daemon restart) using same on-disk cache.
+        let dbPath2 = Path.Combine(tmpDir, "tp2.db")
+        let host2 = PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = taskCache)
+
+        let handler2 =
+            create dbPath2 tmpDir (Some configs) None None None None None None None
+
+        host2.RegisterHandler(handler2)
+
+        let observedRunning = ref false
+
+        host2.OnStatusChanged.Add(fun (name, status) ->
+            if name = "test-prune" then
+                match status with
+                | Running _ -> observedRunning.Value <- true
+                | _ -> ())
+
+        host2.EmitBuildCompleted(BuildSucceeded)
+        waitForTerminalStatus host2 "test-prune" 10000
+
+        // Cold start must trigger an actual test run (Running observed and sentinel written),
+        // not a silent cache replay that skips runTestsWithImpact.
+        test <@ observedRunning.Value @>
+        test <@ File.Exists sentinel @>)
