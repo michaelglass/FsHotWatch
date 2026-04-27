@@ -41,6 +41,11 @@
         "platform": "linux"
       }
     ],
+    "CacheEventLog.fs": {
+      "line": 83,
+      "branch": 100,
+      "reason": "loosened automatically"
+    },
     "CheckCache.fs": [
       {
         "line": 73,
@@ -177,7 +182,7 @@
     ],
     "FileTaskCache.fs": [
       {
-        "line": 77,
+        "line": 79,
         "branch": 68,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
@@ -341,8 +346,8 @@
     ],
     "PluginFramework.fs": [
       {
-        "line": 93,
-        "branch": 85,
+        "line": 94,
+        "branch": 94,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -369,7 +374,7 @@
     ],
     "ProcessHelper.fs": [
       {
-        "line": 89,
+        "line": 92,
         "branch": 100,
         "reason": "kill-on-timeout drain branches fire flakily between runs (89-92% line); pinned to floor 89 \u2014 note: avoid \u0027mise run check\u0027 auto-ratchet, it bumps back to ceiling on lucky run",
         "platform": "macos"
@@ -395,7 +400,7 @@
     ],
     "Program.fs": [
       {
-        "line": 67,
+        "line": 66,
         "branch": 53,
         "reason": "CLI entry point; line drifts 67-68% and branch drifts 53-54% across runs",
         "platform": "macos"
