@@ -302,6 +302,7 @@ let private executeTests
     (affectedClassesByProject: Map<string, string list>)
     (rawFilter: string option)
     (dirtyTracker: FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker option)
+    (stalenessCheck: (string -> bool) option)
     =
     async {
         Logging.info "test-prune" $"executeTests starting with %d{configs.Length} configs"
@@ -364,7 +365,14 @@ let private executeTests
                         let staleProject =
                             match dirtyTracker with
                             | Some t when t.IsDirty config.Project -> true
-                            | _ -> false
+                            | _ ->
+                                // Belt-and-suspenders: independently verify mtime even when the
+                                // dirty tracker has no record (e.g. cold start or run-tests
+                                // command). Catches stale projects that MSBuild's incremental
+                                // cache omitted from the last build output.
+                                match stalenessCheck with
+                                | Some check -> check config.Project
+                                | None -> false
 
                         // Template-based class filter (from impact analysis).
                         // When the map is non-empty but has no classes for this project,
@@ -640,6 +648,7 @@ let create
     (coveragePaths: (string -> CoveragePaths option) option)
     (getCommitId: (unit -> string option) option)
     (dirtyTracker: FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker option)
+    (stalenessCheck: (string -> bool) option)
     =
     let db = Database.create dbPath
     let extensions = buildExtensions |> Option.map (fun f -> f db)
@@ -772,6 +781,7 @@ let create
                             affectedByProject
                             None
                             dirtyTracker
+                            stalenessCheck
 
                     // executeTests still emits per-group TestProgress live; the
                     // synchronous handler emits Started + Completed for the
@@ -918,6 +928,7 @@ let create
                                                 Map.empty
                                                 filter
                                                 dirtyTracker
+                                                stalenessCheck
 
                                         return formatTestResultsJson results
                             with ex ->
