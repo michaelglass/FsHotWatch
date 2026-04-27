@@ -40,3 +40,30 @@ let ``parseMSBuildDiagnostics returns empty for clean output`` () =
 
     let diagnostics = parseMSBuildDiagnostics output
     test <@ diagnostics.IsEmpty @>
+
+[<Fact(Timeout = 5000)>]
+let ``parseDllPaths extracts project-to-dll mapping from dotnet build output`` () =
+    let output =
+        """
+Build succeeded.
+  FsHotWatch -> /repo/src/FsHotWatch/bin/Debug/net10.0/FsHotWatch.dll
+  FsHotWatch.Cli -> /repo/src/FsHotWatch.Cli/bin/Debug/net10.0/FsHotWatch.Cli.dll
+    0 Warning(s)
+    0 Error(s)
+"""
+
+    let result = parseDllPaths output
+    test <@ result |> Map.containsKey "FsHotWatch" @>
+    test <@ result |> Map.containsKey "FsHotWatch.Cli" @>
+    test <@ result.["FsHotWatch"] = "/repo/src/FsHotWatch/bin/Debug/net10.0/FsHotWatch.dll" @>
+
+[<Fact(Timeout = 5000)>]
+let ``parseDllPaths ignores lines that contain 'error'`` () =
+    let output = "  MyProject -> /path/error/MyProject.dll"
+    let result = parseDllPaths output
+    test <@ Map.isEmpty result @>
+
+[<Fact(Timeout = 5000)>]
+let ``parseDllPaths returns empty map for output with no arrow lines`` () =
+    let result = parseDllPaths "Build succeeded.\n  0 Warning(s)\n  0 Error(s)"
+    test <@ Map.isEmpty result @>
