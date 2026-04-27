@@ -597,22 +597,24 @@ let create
         )
       CacheKey =
         // §2a: content-merkle key over all build-relevant files in the project graph.
-        // Same key for all events (FileChanged, FileChecked, Custom BuildDone) —
-        // the build result is determined by inputs, not by which event triggered
-        // the lookup. Caching on Custom BuildDone (terminal handler — see
-        // applyBuildOutcome doc) and looking up on FileChanged (incoming) requires
-        // both to compute identical keys.
+        // FileChanged and Custom BuildDone share the same key so a stored result
+        // is found on the next matching FileChanged. FileChecked events skip the
+        // cache (None) because they use a different composite key (File = Some x)
+        // that never matches the stored File = None entry — every lookup would miss.
         let inputsHasher = lazy BuildInputsHasher(graph)
 
-        let cacheKey (_event: PluginEvent<BuildMsg>) : ContentHash option =
-            Some(
-                FsHotWatch.TaskCache.merkleCacheKey
-                    [ "plugin-version", "build-merkle-v1"
-                      "command", buildCommand
-                      "args", buildArgs
-                      "depends-on", String.concat "," (List.sort dependsOn)
-                      "inputs", inputsHasher.Value.Compute() ]
-            )
+        let cacheKey (event: PluginEvent<BuildMsg>) : ContentHash option =
+            match event with
+            | FileChecked _ -> None
+            | _ ->
+                Some(
+                    FsHotWatch.TaskCache.merkleCacheKey
+                        [ "plugin-version", "build-merkle-v1"
+                          "command", buildCommand
+                          "args", buildArgs
+                          "depends-on", String.concat "," (List.sort dependsOn)
+                          "inputs", inputsHasher.Value.Compute() ]
+                )
 
         Some cacheKey
       Teardown = None }
