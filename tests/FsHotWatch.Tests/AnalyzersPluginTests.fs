@@ -4,6 +4,7 @@ open System
 open System.Reflection
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginHost
@@ -20,14 +21,14 @@ let private fakeResult file =
 
 [<Fact(Timeout = 5000)>]
 let ``plugin has correct name`` () =
-    let handler = create [] None None
+    let handler = create [] None None DiagnosticSeverity.Hint
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "analyzers" @>
 
 [<Fact(Timeout = 10000)>]
 let ``diagnostics command returns zeroes when no files checked`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create [] None None
+    let handler = create [] None None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("diagnostics", [||]) |> Async.RunSynchronously
@@ -40,7 +41,7 @@ let ``diagnostics command returns zeroes when no files checked`` () =
 let ``analyzer error path does not crash`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create [] None None
+    let handler = create [] None None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
 
     let fakeResult =
@@ -69,7 +70,9 @@ let ``analyzer with non-existent path skips loading`` () =
     // Exercise the Directory.Exists false branch
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create [ "/tmp/no-such-analyzer-dir-12345" ] None None
+    let handler =
+        create [ "/tmp/no-such-analyzer-dir-12345" ] None None DiagnosticSeverity.Hint
+
     host.RegisterHandler(handler)
 
     // No analyzers should be loaded — diagnostics command shows 0 analyzers
@@ -94,6 +97,7 @@ let ``analyzer with mix of valid and invalid paths`` () =
                   "/tmp/nonexistent-path-xyz-99999" ] // does not exist
                 None
                 None
+                DiagnosticSeverity.Hint
 
         host.RegisterHandler(handler)
 
@@ -108,13 +112,13 @@ let ``analyzer with mix of valid and invalid paths`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``concurrent analyzer runs are bounded`` () =
-    let handler = create [] None None
+    let handler = create [] None None DiagnosticSeverity.Hint
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "analyzers" @>
 
 [<Fact(Timeout = 5000)>]
 let ``cache key includes parse-only suffix for ParseOnly results`` () =
     let commitId = "abc123"
-    let handler = create [] (Some(fun () -> Some commitId)) None
+    let handler = create [] (Some(fun () -> Some commitId)) None DiagnosticSeverity.Hint
 
     let parseOnlyResult =
         { fakeFileCheckResult "/tmp/Fake.fs" with
@@ -139,7 +143,7 @@ let ``cache key includes parse-only suffix for ParseOnly results`` () =
 let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create [] None None
+    let handler = create [] None None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
 
     let fakeResult: FileCheckResult =
@@ -169,7 +173,7 @@ let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``empty analyzer paths still creates working handler`` () =
-    let handler = create [] None None
+    let handler = create [] None None DiagnosticSeverity.Hint
     test <@ handler.Init.LoadedCount = 0 @>
     test <@ handler.Init.DiagnosticsByFile = Map.empty @>
     test <@ handler.Subscriptions.Contains(FsHotWatch.PluginFramework.SubscribeFileChecked) @>
@@ -178,7 +182,7 @@ let ``empty analyzer paths still creates working handler`` () =
 let ``AnalysisFailed custom message sets status to Completed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create [] None None
+    let handler = create [] None None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
 
     host.EmitFileChecked(fakeResult "/tmp/test/FailAnalysis.fs")
@@ -199,9 +203,9 @@ let ``AnalysisFailed custom message sets status to Completed`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``cache key is provided regardless of getCommitId`` () =
-    let h1 = create [] None None
-    let h2 = create [] (Some(fun () -> None)) None
-    let h3 = create [] (Some(fun () -> Some "abc123")) None
+    let h1 = create [] None None DiagnosticSeverity.Hint
+    let h2 = create [] (Some(fun () -> None)) None DiagnosticSeverity.Hint
+    let h3 = create [] (Some(fun () -> Some "abc123")) None DiagnosticSeverity.Hint
     test <@ h1.CacheKey.IsSome @>
     test <@ h2.CacheKey.IsSome @>
     test <@ h3.CacheKey.IsSome @>
@@ -209,7 +213,7 @@ let ``cache key is provided regardless of getCommitId`` () =
 [<Fact(Timeout = 5000)>]
 let ``cache key reflects file content when getCommitId is unavailable`` () =
     // §2a: even with no jj commit, identical source bytes produce identical keys.
-    let handler = create [] (Some(fun () -> None)) None
+    let handler = create [] (Some(fun () -> None)) None DiagnosticSeverity.Hint
     let cacheKeyFn = handler.CacheKey.Value
 
     let r1 =
@@ -233,7 +237,7 @@ let ``cache key reflects file content when getCommitId is unavailable`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``cache key for Custom event returns None`` () =
-    let handler = create [] None None
+    let handler = create [] None None DiagnosticSeverity.Hint
     let cacheKeyFn = handler.CacheKey.Value
 
     let customKey = cacheKeyFn (Custom(AnalysisComplete("/tmp/Fake.fs", [])))
@@ -243,7 +247,7 @@ let ``cache key for Custom event returns None`` () =
 let ``cache key for non-FileChecked event returns None`` () =
     // §2a: only FileChecked produces a cache key; other events aren't
     // cached at all (the plugin only subscribes to SubscribeFileChecked anyway).
-    let handler = create [] None None
+    let handler = create [] None None DiagnosticSeverity.Hint
     let cacheKeyFn = handler.CacheKey.Value
 
     let buildKey = cacheKeyFn (BuildCompleted BuildSucceeded)
@@ -262,7 +266,7 @@ let ``regression: FileChecked replays from cache on second emission with same co
     let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
 
-    let handler = create [] None None
+    let handler = create [] None None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
 
     // First run — cold cache, analyzer crashes (terminal Failed), cache write.
@@ -296,7 +300,7 @@ let ``regression: FileChecked with TaskCache writes a cache entry on terminal st
     let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
 
-    let handler = create [] None None
+    let handler = create [] None None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
 
     // Use a fake result; analyzer will crash (Unchecked.defaultof ParseResults),
@@ -322,7 +326,7 @@ let ``regression: FileChecked with TaskCache writes a cache entry on terminal st
 let ``multiple concurrent FileChecked events are bounded by semaphore`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create [] None None
+    let handler = create [] None None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
 
     let events =
@@ -342,7 +346,7 @@ let ``multiple concurrent FileChecked events are bounded by semaphore`` () =
 let ``teardown cancels CTS and disposes resources`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create [] None None
+    let handler = create [] None None DiagnosticSeverity.Hint
     host.RegisterHandler(handler)
 
     host.Teardown()
@@ -363,7 +367,10 @@ let ``analyzers handler times out when work exceeds TimeoutSec`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     // slowHook sleeps longer than the 1s timeout, forcing a TimedOut outcome
     let slowHook () = System.Threading.Thread.Sleep 3000
-    let handler = createWithSlowHook [] None (Some 1) (Some slowHook)
+
+    let handler =
+        createWithSlowHook [] None (Some 1) DiagnosticSeverity.Hint (Some slowHook)
+
     host.RegisterHandler(handler)
     host.EmitFileChecked(fakeResult "/tmp/slow/File.fs")
     waitForTerminalStatus host "analyzers" 5000
@@ -426,3 +433,68 @@ let ``buildAnalyzerProjectOptions returns null when ctor invocation throws`` () 
     let ctor = typeof<FailingCtorTarget>.GetConstructors().[0]
     let result = buildAnalyzerProjectOptions (Some ctor) (FakeProjectOptions() :> obj)
     test <@ isNull result @>
+
+[<Fact>]
+let ``promoteIfFailing promotes hint to error with prefix when threshold is hint`` () =
+    let entry =
+        { Message = "some hint"
+          Severity = DiagnosticSeverity.Hint
+          Line = 1
+          Column = 0
+          Detail = None }
+
+    let result = promoteIfFailing DiagnosticSeverity.Hint entry
+    test <@ result.Severity = DiagnosticSeverity.Error @>
+    test <@ result.Message = "[hint] some hint" @>
+
+[<Fact>]
+let ``promoteIfFailing promotes info to error with prefix when threshold is info`` () =
+    let entry =
+        { Message = "some info"
+          Severity = DiagnosticSeverity.Info
+          Line = 1
+          Column = 0
+          Detail = None }
+
+    let result = promoteIfFailing DiagnosticSeverity.Info entry
+    test <@ result.Severity = DiagnosticSeverity.Error @>
+    test <@ result.Message = "[info] some info" @>
+
+[<Fact>]
+let ``promoteIfFailing leaves hint untouched when threshold is info`` () =
+    let entry =
+        { Message = "some hint"
+          Severity = DiagnosticSeverity.Hint
+          Line = 1
+          Column = 0
+          Detail = None }
+
+    let result = promoteIfFailing DiagnosticSeverity.Info entry
+    test <@ result.Severity = DiagnosticSeverity.Hint @>
+    test <@ result.Message = "some hint" @>
+
+[<Fact>]
+let ``promoteIfFailing leaves error untouched regardless of threshold`` () =
+    let entry =
+        { Message = "an error"
+          Severity = DiagnosticSeverity.Error
+          Line = 1
+          Column = 0
+          Detail = None }
+
+    let result = promoteIfFailing DiagnosticSeverity.Hint entry
+    test <@ result.Severity = DiagnosticSeverity.Error @>
+    test <@ result.Message = "an error" @>
+
+[<Fact>]
+let ``promoteIfFailing leaves warning untouched when threshold is error`` () =
+    let entry =
+        { Message = "a warning"
+          Severity = DiagnosticSeverity.Warning
+          Line = 1
+          Column = 0
+          Detail = None }
+
+    let result = promoteIfFailing DiagnosticSeverity.Error entry
+    test <@ result.Severity = DiagnosticSeverity.Warning @>
+    test <@ result.Message = "a warning" @>
