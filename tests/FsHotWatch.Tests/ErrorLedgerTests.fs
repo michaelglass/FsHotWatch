@@ -327,3 +327,9 @@ let ``ErrorLedger does not notify reporters on stale version`` () =
     ledger.Report("fcs", "/tmp/Lib.fs", [ entry "stale" DiagnosticSeverity.Error 1 ], version = 1L)
     ledger.GetAll() |> ignore
     test <@ reportCount = 1 @>
+
+[<Fact>]
+let ``DiagnosticSeverity order is hint lt info lt warning lt error`` () =
+    test <@ DiagnosticSeverity.order Hint < DiagnosticSeverity.order Info @>
+    test <@ DiagnosticSeverity.order Info < DiagnosticSeverity.order Warning @>
+    test <@ DiagnosticSeverity.order Warning < DiagnosticSeverity.order Error @>
