@@ -41,6 +41,13 @@ module DiagnosticSeverity =
         | "hint" -> Hint
         | _ -> Error
 
+    let order (severity: DiagnosticSeverity) =
+        match severity with
+        | Hint -> 0
+        | Info -> 1
+        | Warning -> 2
+        | Error -> 3
+
 module ErrorEntry =
     /// True if the entry counts as a failure given the warningsAreFailures flag.
     let isFailing (warningsAreFailures: bool) (e: ErrorEntry) : bool =
