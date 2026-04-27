@@ -856,6 +856,61 @@ let ``BuildPlugin clears dirty after build when DLL is newer than sources`` () =
 
         test <@ not (tracker.IsDirty "MyLib") @>)
 
+[<Fact(Timeout = 15000)>]
+let ``integration: stale DLL keeps project dirty across full FileChanged + BuildDone cycle, then clears when DLL freshens``
+    ()
+    =
+    withTempDir "build-stale-dll-integration" (fun tmpDir ->
+        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+        let tracker = ProjectDirtyTracker()
+
+        let projDir = System.IO.Path.Combine(tmpDir, "Foo")
+        let projPath = System.IO.Path.Combine(projDir, "Foo.fsproj")
+        let srcPath = System.IO.Path.Combine(projDir, "Foo.fs")
+        let dllDir = System.IO.Path.Combine(projDir, "bin", "Debug", "net10.0")
+        let dllPath = System.IO.Path.Combine(dllDir, "Foo.dll")
+
+        System.IO.Directory.CreateDirectory(dllDir) |> ignore
+        System.IO.File.WriteAllText(projPath, "<Project></Project>")
+        System.IO.File.WriteAllText(srcPath, "module Foo")
+        System.IO.File.WriteAllText(dllPath, "fake-dll")
+
+        // DLL older than source → STALE.
+        let now = DateTime.UtcNow
+        System.IO.File.SetLastWriteTimeUtc(dllPath, now.AddMinutes(-10.0))
+        System.IO.File.SetLastWriteTimeUtc(srcPath, now.AddMinutes(-5.0))
+
+        let graph = ProjectGraph()
+        graph.RegisterProject(AbsProjectPath.create projPath, [ AbsFilePath.create srcPath ], [])
+
+        // `echo` emits the "Foo -> <dllPath>" arrow line that parseDllPaths recognizes,
+        // but does NOT actually rewrite the DLL — so the on-disk mtime stays stale.
+        let echoArgs = $"Foo -> {dllPath}"
+
+        let handler =
+            BuildPlugin.create "echo" echoArgs [] graph [] None [] None None (Some tracker)
+
+        host.RegisterHandler(handler)
+
+        // Step 1: FileChanged dispatched — BuildPlugin marks Foo dirty before the build runs.
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+        waitUntil (fun () -> tracker.IsDirty "Foo") 2000
+        test <@ tracker.IsDirty "Foo" @>
+
+        // Step 2: build completes (BuildDone fires); stale DLL mtime keeps Foo dirty.
+        waitForTerminalStatus host "build" 5000
+        test <@ tracker.IsDirty "Foo" @>
+
+        // Step 3: freshen the DLL (newer than source) and trigger another build.
+        let beforeCount = (host.GetHistory("build")).Length
+        System.IO.File.SetLastWriteTimeUtc(dllPath, DateTime.UtcNow.AddMinutes(1.0))
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+
+        waitUntil (fun () -> (host.GetHistory("build")).Length > beforeCount) 5000
+
+        waitUntil (fun () -> not (tracker.IsDirty "Foo")) 2000
+        test <@ not (tracker.IsDirty "Foo") @>)
+
 [<Fact(Timeout = 5000)>]
 let ``BuildPlugin leaves dirty after build when DLL is older than sources`` () =
     withTempDir "build-dirty-leave-stale" (fun tmpDir ->
