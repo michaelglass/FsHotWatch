@@ -292,6 +292,17 @@ let private staleBinaryEntry (project: string) : ErrorLedger.ErrorEntry =
       Column = 0
       Detail = None }
 
+// Belt-and-suspenders: checks both the dirty tracker and the independent mtime
+// staleness check. The mtime check catches stale projects that MSBuild's incremental
+// cache omitted from the last build output (e.g. cold start or run-tests command).
+let private isStaleProject
+    (dirtyTracker: FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker option)
+    (stalenessCheck: (string -> bool) option)
+    (project: string)
+    =
+    dirtyTracker |> Option.exists (fun t -> t.IsDirty project)
+    || stalenessCheck |> Option.exists (fun f -> f project)
+
 let private executeTests
     (ctx: PluginCtx<'msg> option)
     (repoRoot: string)
@@ -362,17 +373,7 @@ let private executeTests
                         // Collect extra args (filter + coverage) to append
                         let extraArgs = ResizeArray<string>()
 
-                        let staleProject =
-                            match dirtyTracker with
-                            | Some t when t.IsDirty config.Project -> true
-                            | _ ->
-                                // Belt-and-suspenders: independently verify mtime even when the
-                                // dirty tracker has no record (e.g. cold start or run-tests
-                                // command). Catches stale projects that MSBuild's incremental
-                                // cache omitted from the last build output.
-                                match stalenessCheck with
-                                | Some check -> check config.Project
-                                | None -> false
+                        let staleProject = isStaleProject dirtyTracker stalenessCheck config.Project
 
                         // Template-based class filter (from impact analysis).
                         // When the map is non-empty but has no classes for this project,
@@ -1176,11 +1177,7 @@ let create
                     match testConfigs with
                     | Some configs ->
                         for c in configs do
-                            let dirtyTrackerStale = dirtyTracker |> Option.exists (fun t -> t.IsDirty c.Project)
-
-                            let stalenessCheckStale = stalenessCheck |> Option.exists (fun f -> f c.Project)
-
-                            if dirtyTrackerStale || stalenessCheckStale then
+                            if isStaleProject dirtyTracker stalenessCheck c.Project then
                                 ctx.ReportErrors c.Project [ staleBinaryEntry c.Project ]
                     | None -> ()
 
