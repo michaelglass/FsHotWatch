@@ -209,23 +209,17 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                     "task-cache"
                                     $"plugin=%s{pluginName} hit=%b{lookupResult.IsSome}"
 
-                                // Always-on event log shared across daemons; analyse offline
-                                // to compute hit-rate trends. Disabled later if signal is absent.
-                                let triggerFile =
-                                    match event with
-                                    | FileChecked r -> r.File
-                                    | FileChanged(SourceChanged files)
-                                    | FileChanged(ProjectChanged files) ->
-                                        match files with
-                                        | [ f ] -> f
-                                        | _ -> String.concat "," files
-                                    | _ -> ""
+                                // Always-on event log shared across daemons; analyse offline.
+                                if lookupResult.IsNone then
+                                    let triggerFile =
+                                        match event with
+                                        | FileChecked r -> r.File
+                                        | FileChanged(SourceChanged files)
+                                        | FileChanged(ProjectChanged files) -> List.head files
+                                        | FileChanged(SolutionChanged file) -> file
+                                        | _ -> ""
 
-                                FsHotWatch.CacheEventLog.record
-                                    pluginName
-                                    lookupResult.IsSome
-                                    services.RepoRoot
-                                    triggerFile
+                                    FsHotWatch.CacheEventLog.recordMiss pluginName services.RepoRoot triggerFile
 
                                 match lookupResult with
                                 | Some result ->
