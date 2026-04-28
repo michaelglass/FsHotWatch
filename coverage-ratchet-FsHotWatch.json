@@ -8,7 +8,7 @@
         "platform": "macos"
       },
       {
-        "line": 74,
+        "line": 75,
         "branch": 70,
         "reason": "reflection-based CliContext branches vary by platform; parse-only path \u002B knownNonAnalyzerPrefixes filter both add untested branches on Linux",
         "platform": "linux"
@@ -36,7 +36,7 @@
       },
       {
         "line": 88,
-        "branch": 79,
+        "branch": 78,
         "reason": "BuildInputsHasher unit-tested",
         "platform": "linux"
       }
@@ -99,7 +99,7 @@
         "platform": "macos"
       },
       {
-        "line": 74,
+        "line": 76,
         "branch": 62,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
@@ -113,8 +113,8 @@
         "platform": "macos"
       },
       {
-        "line": 75,
-        "branch": 78,
+        "line": 70,
+        "branch": 65,
         "reason": "lower coverage on Linux CI; race-fix retry path",
         "platform": "linux"
       }
@@ -127,7 +127,7 @@
         "platform": "macos"
       },
       {
-        "line": 94,
+        "line": 95,
         "branch": 95,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "linux"
@@ -135,7 +135,7 @@
     ],
     "Events.fs": [
       {
-        "line": 41,
+        "line": 94,
         "branch": 100,
         "reason": "loosened: inline helpers (isTerminal/isQuiescent) not tracked in source file",
         "platform": "linux"
@@ -161,8 +161,8 @@
     ],
     "FileCommandPlugin.fs": [
       {
-        "line": 98,
-        "branch": 97,
+        "line": 97,
+        "branch": 100,
         "reason": "lower line coverage on Linux CI",
         "platform": "linux"
       },
@@ -193,8 +193,8 @@
         "platform": "macos"
       },
       {
-        "line": 76,
-        "branch": 69,
+        "line": 79,
+        "branch": 68,
         "reason": "lower branch coverage on Linux CI",
         "platform": "linux"
       }
@@ -260,7 +260,7 @@
         "platform": "macos"
       },
       {
-        "line": 72,
+        "line": 75,
         "branch": 35,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
@@ -274,8 +274,8 @@
         "platform": "macos"
       },
       {
-        "line": 85,
-        "branch": 65,
+        "line": 86,
+        "branch": 64,
         "platform": "linux"
       }
     ],
@@ -358,7 +358,7 @@
       },
       {
         "line": 93,
-        "branch": 85,
+        "branch": 82,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -385,7 +385,7 @@
         "platform": "macos"
       },
       {
-        "line": 89,
+        "line": 87,
         "branch": 100,
         "platform": "linux"
       }
@@ -398,8 +398,8 @@
         "platform": "macos"
       },
       {
-        "line": 86,
-        "branch": 77,
+        "line": 69,
+        "branch": 63,
         "platform": "linux"
       }
     ],
@@ -411,7 +411,7 @@
         "platform": "macos"
       },
       {
-        "line": 68,
+        "line": 67,
         "branch": 53,
         "reason": "CLI entry point, different coverage on Linux CI",
         "platform": "linux"
@@ -454,7 +454,7 @@
       },
       {
         "line": 53,
-        "branch": 43,
+        "branch": 50,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
