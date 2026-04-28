@@ -592,11 +592,6 @@ let ``run-tests with only-failed reruns failed projects`` () =
         test <@ result.Value.Contains("Fails") @>
         test <@ not (result.Value.Contains("Passes")) @>)
 
-// `TestPrune honors per-project TimeoutSec and records TimedOut` moved to
-// FsHotWatch.IntegrationTests — uses a real `sleep 10` subprocess + 1s
-// timeout, exercising the kill-on-timeout drain race in ProcessHelper which
-// causes line-coverage drift on TestPrunePlugin.fs and ProcessHelper.fs.
-
 [<Fact(Timeout = 5000)>]
 let ``run-tests not registered when no testConfigs`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"

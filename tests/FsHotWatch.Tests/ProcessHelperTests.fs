@@ -4,11 +4,6 @@ open System
 open Xunit
 open FsHotWatch.ProcessHelper
 
-// Tests that exercise process kill-on-timeout drain races have been moved to
-// FsHotWatch.IntegrationTests.IntegrationTests (no coverage). The drain race
-// hits ProcessHelper.fs coverage between 89-92% across runs; keeping these in
-// the deterministic suite would defeat the auto-ratchet.
-
 [<Fact(Timeout = 10000)>]
 let ``runProcessWithTimeout returns Succeeded when fast`` () =
     match runProcessWithTimeout "echo" "hi" "." [] (TimeSpan.FromSeconds 5.0) with
@@ -46,10 +41,6 @@ let ``runProcess reports nonzero exit as Failed`` () =
     | Failed(code, _) -> Assert.Equal(3, code)
     | other -> Assert.Fail $"expected Failed, got %A{other}"
 
-// `runProcessWithTimeout reports TimedOut on kill` and
-// `ProcessRegistry.killAll terminates tracked live processes` moved to
-// IntegrationTests — both depend on kill timing.
-
 [<Fact(Timeout = 15000)>]
 let ``runProcessWithTimeout registers the child while running and unregisters on exit`` () =
     use _ = FsHotWatch.ProcessRegistry.install (FsHotWatch.ProcessRegistry.Registry())
@@ -61,9 +52,6 @@ let ``runProcessWithTimeout registers the child while running and unregisters on
     // Post-exit, the registry has unregistered — exited PIDs the OS could later
     // recycle must not linger.
     Assert.Empty(FsHotWatch.ProcessRegistry.snapshot ())
-
-// `ProcessRegistry.killAll kills a child started via runProcessWithTimeout
-// from another thread` moved to IntegrationTests — cross-thread kill timing.
 
 [<Fact(Timeout = 5000)>]
 let ``isDotnetCommand matches dotnet basename`` () =
