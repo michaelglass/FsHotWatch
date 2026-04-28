@@ -74,13 +74,20 @@ let private subtaskKey (nameStr: string) (reason: TriggerReason) : string =
     | FileMatched file -> $"{nameStr}:{System.IO.Path.GetFileName file}"
     | TestsCompleted -> $"{nameStr}:tests-completed"
 
-let private tryHashFile (path: string) : string option =
+/// Hash file content via an injectable reader. Exposed so unit tests can
+/// substitute a reader that throws (covers the None branch deterministically)
+/// or returns canned bytes (covers the hex-formatting branch). A separate
+/// integration test confirms the production reader's failure mode (e.g.
+/// chmod-000) really does throw.
+let internal hashFileWith (read: string -> byte[]) (path: string) : string option =
     try
-        let bytes = System.IO.File.ReadAllBytes(path)
+        let bytes = read path
         let hash = System.Security.Cryptography.SHA256.HashData(bytes)
         Some(System.Convert.ToHexString(hash).ToLowerInvariant())
     with _ ->
         None
+
+let private tryHashFile = hashFileWith System.IO.File.ReadAllBytes
 
 let private resolveArgPath (repoRoot: string) (token: string) : string =
     if System.IO.Path.IsPathRooted token then
@@ -128,20 +135,33 @@ let argsStalerThan (repoRoot: string) (args: string) (referenceTime: System.Date
             None)
     |> Array.toList
 
+/// Salt computation with an injectable hash function. Exposed so unit tests
+/// can deterministically exercise the None branch — the case where a path
+/// passes File.Exists during collectArgFiles but the subsequent read fails
+/// (e.g. file deleted in between, or permissions changed). An integration
+/// test confirms the production reader's failure mode is realistic.
+let internal computeArgsSaltWith
+    (hashFile: string -> string option)
+    (repoRoot: string)
+    (command: string)
+    (args: string)
+    : string =
+    let fileHashes =
+        collectArgFiles repoRoot args
+        |> List.choose (fun path -> hashFile path |> Option.map (fun h -> $"file:%s{path}", h))
+
+    let inputs = [ "command", command; "args", args ] @ fileHashes
+
+    FsHotWatch.TaskCache.merkleCacheKey inputs
+    |> FsHotWatch.Events.ContentHash.value
+
 /// Build the salt for this plugin's cache key. Includes the command, the args
 /// string, and a content hash of every whitespace-separated token in args
 /// that resolves to an existing file (relative to repoRoot or absolute).
 /// This means editing a config file referenced in args invalidates the cache
 /// even when commit_id hasn't changed.
 let internal computeArgsSalt (repoRoot: string) (command: string) (args: string) : string =
-    let fileHashes =
-        collectArgFiles repoRoot args
-        |> List.choose (fun path -> tryHashFile path |> Option.map (fun h -> $"file:%s{path}", h))
-
-    let inputs = [ "command", command; "args", args ] @ fileHashes
-
-    FsHotWatch.TaskCache.merkleCacheKey inputs
-    |> FsHotWatch.Events.ContentHash.value
+    computeArgsSaltWith tryHashFile repoRoot command args
 
 /// Creates a framework plugin handler that runs a command in response to the configured trigger(s).
 let create
