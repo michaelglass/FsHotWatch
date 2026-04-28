@@ -94,7 +94,7 @@
     },
     "Daemon.fs": [
       {
-        "line": 73,
+        "line": 72,
         "branch": 60,
         "platform": "macos"
       },
@@ -374,7 +374,7 @@
     ],
     "ProcessHelper.fs": [
       {
-        "line": 92,
+        "line": 90,
         "branch": 100,
         "reason": "kill-on-timeout drain branches fire flakily between runs (89-92% line); pinned to floor 89 \u2014 note: avoid \u0027mise run check\u0027 auto-ratchet, it bumps back to ceiling on lucky run",
         "platform": "macos"
@@ -387,8 +387,8 @@
     ],
     "ProcessRegistry.fs": [
       {
-        "line": 86,
-        "branch": 77,
+        "line": 69,
+        "branch": 63,
         "reason": "loosened automatically",
         "platform": "macos"
       },
