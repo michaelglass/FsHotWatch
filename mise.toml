@@ -109,8 +109,13 @@ description = "Auto-correct coverage thresholds: tighten on rise, shrink on drif
 run = """sh -c '
   dotnet tool run coverageratchet ratchet coverage-ratchet-FsHotWatch.json
   c=$?
+  # 0 = tightened, 1 = nothing to tighten — both fine.
+  # 2 = below threshold (drift) — fall back to loosen.
+  # Any other code = tool crash; propagate so we do not silently rewrite
+  # thresholds when the tool itself misbehaved.
   [ $c -eq 0 ] && exit 0
   [ $c -eq 1 ] && exit 0
+  [ $c -ne 2 ] && exit $c
   dotnet tool run coverageratchet loosen coverage-ratchet-FsHotWatch.json
 '"""
 depends = ["test-direct"]
