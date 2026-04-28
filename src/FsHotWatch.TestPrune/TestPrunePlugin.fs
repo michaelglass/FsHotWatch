@@ -710,7 +710,7 @@ let create
 
     // False until the first TestsFinished in this session. BuildCompleted returns
     // None (non-cacheable) while this is false so the full-suite cold-start path
-    // in runTestsWithImpact always runs on daemon restart, even when the on-disk
+    // in runTestsWithImpact always runs on daemon restart even when the on-disk
     // task cache holds a matching entry from a prior session.
     let mutable hadPriorResultsRef: bool = false
 
