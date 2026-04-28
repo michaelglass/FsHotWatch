@@ -671,13 +671,25 @@ let ``regression: BuildPlugin writes a cache entry on terminal Custom BuildDone`
     // plugins (TestPrune, Coverage).
     test <@ not result.Value.EmittedEvents.IsEmpty @>
 
+// Drive a real build through the host so the plugin's cold-start guard flips
+// before we inspect the cache key. Returns the (warmed) handler.
+let private warmedHandler (command: string) (args: string) (dependsOn: string list) =
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
+
+    let handler =
+        BuildPlugin.create command args [] (ProjectGraph()) [] None dependsOn None None None
+
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+    waitForTerminalStatus host "build" 5000
+    handler
+
 [<Fact(Timeout = 5000)>]
 let ``BuildPlugin cache key matches between FileChanged and Custom BuildDone`` () =
     // The cache stores a result on the synchronous Custom BuildDone handler;
     // future FileChanged events look up by the same merkle key. Both must
     // compute identical keys for the cache to hit.
-    let handler =
-        BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None None None
+    let handler = warmedHandler "echo" "ok" []
 
     let cacheKeyFn = handler.CacheKey.Value
     let fileEvt = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
@@ -702,33 +714,18 @@ let ``BuildPlugin cache key returns None for FileChecked events`` () =
 [<Fact(Timeout = 5000)>]
 let ``BuildPlugin cache key reflects build command`` () =
     // §2a: changing the build command/args should invalidate the cache.
-    let h1 =
-        BuildPlugin.create "dotnet" "build" [] (ProjectGraph()) [] None [] None None None
-
-    let h2 =
-        BuildPlugin.create "dotnet" "test" [] (ProjectGraph()) [] None [] None None None
-
-    let evt = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
-    let k1 = h1.CacheKey.Value evt
-    let k2 = h2.CacheKey.Value evt
-    test <@ k1.IsSome @>
+    // Tests the pure merkle directly, bypassing the cold-start guard.
+    let inputs = "stub-inputs-hash"
+    let k1 = BuildPlugin.computeBuildCacheKey "dotnet" "build" [] inputs
+    let k2 = BuildPlugin.computeBuildCacheKey "dotnet" "test" [] inputs
     test <@ k1 <> k2 @>
 
 [<Fact(Timeout = 5000)>]
 let ``BuildPlugin cache key reflects dependsOn ordering and content`` () =
-    let h1 =
-        BuildPlugin.create "dotnet" "build" [] (ProjectGraph()) [] None [ "a"; "b" ] None None None
-
-    let h2 =
-        BuildPlugin.create "dotnet" "build" [] (ProjectGraph()) [] None [ "b"; "a" ] None None None
-
-    let h3 =
-        BuildPlugin.create "dotnet" "build" [] (ProjectGraph()) [] None [ "a"; "c" ] None None None
-
-    let evt = FileChanged(SourceChanged [ "/tmp/Foo.fs" ])
-    let k1 = h1.CacheKey.Value evt
-    let k2 = h2.CacheKey.Value evt
-    let k3 = h3.CacheKey.Value evt
+    let inputs = "stub-inputs-hash"
+    let k1 = BuildPlugin.computeBuildCacheKey "dotnet" "build" [ "a"; "b" ] inputs
+    let k2 = BuildPlugin.computeBuildCacheKey "dotnet" "build" [ "b"; "a" ] inputs
+    let k3 = BuildPlugin.computeBuildCacheKey "dotnet" "build" [ "a"; "c" ] inputs
     test <@ k1 = k2 @> // sorted internally
     test <@ k1 <> k3 @>
 
