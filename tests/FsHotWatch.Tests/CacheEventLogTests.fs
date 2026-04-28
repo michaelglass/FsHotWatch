@@ -8,36 +8,37 @@ open FsHotWatch.CacheEventLog
 open FsHotWatch.Tests.TestHelpers
 
 [<Fact(Timeout = 2000)>]
-let ``formatMiss produces tab-separated line ending in newline`` () =
+let ``formatEvent produces 5-column tab-separated line ending in newline`` () =
     let timestamp = DateTime(2026, 4, 26, 12, 0, 0, DateTimeKind.Utc)
-    let line = formatMiss timestamp "lint" "/repo" "/repo/Foo.fs"
+    let line = formatEvent timestamp "lint" true "/repo" "/repo/Foo.fs"
 
     test <@ line.EndsWith("\n") @>
 
     let parts = line.TrimEnd('\n').Split('\t')
-    test <@ parts.Length = 4 @>
+    test <@ parts.Length = 5 @>
     test <@ parts.[1] = "lint" @>
-    test <@ parts.[2] = "/repo" @>
-    test <@ parts.[3] = "/repo/Foo.fs" @>
+    test <@ parts.[2] = "hit" @>
+    test <@ parts.[3] = "/repo" @>
+    test <@ parts.[4] = "/repo/Foo.fs" @>
 
 [<Fact(Timeout = 2000)>]
-let ``formatMiss includes triggerFile as last field`` () =
+let ``formatEvent encodes hit=false as 'miss'`` () =
     let t = DateTime(2026, 4, 26, 12, 0, 0, DateTimeKind.Utc)
-    let line = formatMiss t "lint" "/repo" "/repo/Foo.fs"
+    let line = formatEvent t "lint" false "/repo" "/repo/Foo.fs"
     let parts = line.TrimEnd('\n').Split('\t')
-    test <@ parts.[3] = "/repo/Foo.fs" @>
+    test <@ parts.[2] = "miss" @>
 
 [<Fact(Timeout = 2000)>]
-let ``formatMiss allows empty triggerFile for non-file events`` () =
+let ``formatEvent allows empty triggerFile for non-file events`` () =
     let t = DateTime(2026, 4, 26, 12, 0, 0, DateTimeKind.Utc)
-    let line = formatMiss t "build" "/repo" ""
+    let line = formatEvent t "build" false "/repo" ""
     let parts = line.TrimEnd('\n').Split('\t')
-    test <@ parts.[3] = "" @>
+    test <@ parts.[4] = "" @>
 
 [<Fact(Timeout = 2000)>]
-let ``formatMiss timestamp is ISO 8601 round-trip`` () =
+let ``formatEvent timestamp is ISO 8601 round-trip`` () =
     let t = DateTime(2026, 4, 26, 12, 30, 45, DateTimeKind.Utc)
-    let line = formatMiss t "p" "r" ""
+    let line = formatEvent t "p" true "r" ""
     let timestampField = line.Split('\t').[0]
 
     let roundTripped =
@@ -49,7 +50,7 @@ let ``formatMiss timestamp is ISO 8601 round-trip`` () =
 let ``appendTo creates file and writes line`` () =
     withTempDir "cacheeventlog-create" (fun tmpDir ->
         let path = Path.Combine(tmpDir, "events.log")
-        let line = formatMiss DateTime.UtcNow "lint" "/repo" "/repo/Foo.fs"
+        let line = formatEvent DateTime.UtcNow "lint" true "/repo" "/repo/Foo.fs"
 
         appendTo path line
 
@@ -63,15 +64,15 @@ let ``appendTo appends across multiple calls`` () =
         let path = Path.Combine(tmpDir, "events.log")
         let t = DateTime.UtcNow
 
-        appendTo path (formatMiss t "lint" "/repo" "/repo/A.fs")
-        appendTo path (formatMiss t "build" "/repo" "/repo/B.fs")
-        appendTo path (formatMiss t "test-prune" "/repo" "")
+        appendTo path (formatEvent t "lint" true "/repo" "/repo/A.fs")
+        appendTo path (formatEvent t "build" false "/repo" "/repo/B.fs")
+        appendTo path (formatEvent t "test-prune" true "/repo" "")
 
         let lines = File.ReadAllLines(path)
         test <@ lines.Length = 3 @>
-        test <@ lines.[0].Contains("\tlint\t") @>
-        test <@ lines.[1].Contains("\tbuild\t") @>
-        test <@ lines.[2].Contains("\ttest-prune\t") @>)
+        test <@ lines.[0].Contains("\tlint\thit\t") @>
+        test <@ lines.[1].Contains("\tbuild\tmiss\t") @>
+        test <@ lines.[2].Contains("\ttest-prune\thit\t") @>)
 
 [<Fact(Timeout = 5000)>]
 let ``appendTo silently swallows failures (does not throw)`` () =
