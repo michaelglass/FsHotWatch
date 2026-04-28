@@ -934,6 +934,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                 trigger
                 fc.Command
                 fc.Args
+                repoRoot
                 getCommitId
                 fcTimeout
         )
