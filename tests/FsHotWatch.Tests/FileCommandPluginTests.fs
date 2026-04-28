@@ -1093,6 +1093,96 @@ let ``argsStalerThan flags files modified after the reference time`` () =
         with _ ->
             ()
 
+// --- DI-injected error paths ---
+// hashFileWith and Update's defensive arms are exercised through dependency
+// injection / direct invocation rather than relying on real OS errors. A
+// separate integration suite (no coverage) confirms the injected behaviors
+// match real-world failure modes (e.g. unreadable files).
+
+[<Fact(Timeout = 5000)>]
+let ``computeArgsSaltWith differs when an arg-file's hash returns None vs Some`` () =
+    // The Option.map None branch of computeArgsSalt is reached when a path
+    // passes File.Exists in collectArgFiles but tryHashFile returns None.
+    // Inject the hash function so we can exercise both branches deterministically.
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    System.IO.Directory.CreateDirectory(tmpDir) |> ignore
+    let p = System.IO.Path.Combine(tmpDir, "config.json")
+
+    try
+        System.IO.File.WriteAllText(p, "x")
+
+        let saltWithSome =
+            computeArgsSaltWith (fun _ -> Some "abc") tmpDir "echo" "config.json"
+
+        let saltWithNone = computeArgsSaltWith (fun _ -> None) tmpDir "echo" "config.json"
+
+        // When hash returns None, the file contributes no salt entry — distinct
+        // from when hash returns Some.
+        test <@ saltWithSome <> saltWithNone @>
+    finally
+        try
+            System.IO.Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 5000)>]
+let ``hashFileWith returns None when reader throws`` () =
+    let throwing _ =
+        raise (System.IO.IOException("simulated read failure"))
+
+    let result = hashFileWith throwing "/any/path"
+    test <@ result = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``hashFileWith returns Some hex for successful read`` () =
+    let constReader (_: string) =
+        System.Text.Encoding.UTF8.GetBytes("hello")
+
+    let result = hashFileWith constReader "/any/path"
+    // sha256("hello") = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+    test <@ result = Some "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" @>
+
+[<Fact(Timeout = 5000)>]
+let ``Update is a no-op for FileChanged when trigger has no FilePattern`` () =
+    // Defensive arm: the framework filters by Subscriptions before dispatching,
+    // so an afterTests-only handler shouldn't receive FileChanged. Direct-invoke
+    // Update to assert the safety net behaves correctly anyway.
+    let trigger =
+        { FilePattern = None
+          AfterTests = Some AnyTest }
+
+    let handler =
+        create (FsHotWatch.PluginFramework.PluginName.create "no-pattern") trigger "echo" "hi" "/tmp" None None
+
+    let ctx: FsHotWatch.PluginFramework.PluginCtx<unit> =
+        { ReportStatus = fun _ -> ()
+          ReportErrors = fun _ _ -> ()
+          ClearErrors = fun _ -> ()
+          ClearAllErrors = fun () -> ()
+          EmitBuildCompleted = fun _ -> ()
+          EmitTestRunStarted = fun _ -> ()
+          EmitTestProgress = fun _ -> ()
+          EmitTestRunCompleted = fun _ -> ()
+          EmitCommandCompleted = fun _ -> ()
+          Checker = Unchecked.defaultof<_>
+          RepoRoot = "/tmp"
+          Post = fun _ -> ()
+          StartSubtask = fun _ _ -> ()
+          UpdateSubtask = fun _ _ -> ()
+          EndSubtask = fun _ -> ()
+          Log = fun _ -> ()
+          CompleteWithSummary = fun _ -> ()
+          CompleteWithTimeout = fun _ -> () }
+
+    let initialState = handler.Init
+    let event = FileChanged(SourceChanged [ "anything.fs" ])
+
+    let nextState = handler.Update ctx initialState event |> Async.RunSynchronously
+
+    test <@ nextState = initialState @>
+
 [<Fact(Timeout = 5000)>]
 let ``argsStalerThan returns empty when files are older than reference`` () =
     let tmpDir =
