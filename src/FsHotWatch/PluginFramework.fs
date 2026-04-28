@@ -97,8 +97,9 @@ type PluginHandler<'State, 'Msg> =
         Commands: (string * ('State -> string array -> Async<string>)) list
         /// Which events the plugin subscribes to.
         Subscriptions: PluginSubscriptions
-        /// Optional cache key function. When provided, the framework checks the task cache
-        /// before calling Update. Returns Some(key) for cacheable events, None to skip cache.
+        /// Optional cache key function. `Some hash` → look up the cache and replay on hit.
+        /// `None` → skip cache and run Update — overloaded across "uncacheable event",
+        /// "cold-start bypass", and "outputs missing"; plugins document which at the call site.
         CacheKey: (PluginEvent<'Msg> -> ContentHash option) option
         /// Optional teardown function called when the plugin host is disposed.
         Teardown: (unit -> unit) option
@@ -237,8 +238,22 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                         else
                                             services.ReportErrors handler.Name file entries
 
-                                    // Replay status
-                                    services.ReportStatus handler.Name result.Status
+                                    // Replay status. Rewrite the timestamp to now: the cached
+                                    // status carries the ORIGINAL run's terminal time (often a
+                                    // prior session). If a `Running since=now` had been set in
+                                    // this session, the activity log's RecordTerminal would
+                                    // compute `elapsed = cached_at - now` and produce nonsense
+                                    // (negative) elapsed. From this session's POV, the work
+                                    // "completed" instantly via cache replay.
+                                    let nowAt = System.DateTime.UtcNow
+
+                                    let replayStatus =
+                                        match result.Status with
+                                        | Completed _ -> Completed nowAt
+                                        | Failed(err, _) -> Failed(err, nowAt)
+                                        | s -> s
+
+                                    services.ReportStatus handler.Name replayStatus
 
                                     // Replay emitted events. Cached test-lifecycle events carry the
                                     // ORIGINAL run's RunId, which would cause RunId-based dedup (e.g.
