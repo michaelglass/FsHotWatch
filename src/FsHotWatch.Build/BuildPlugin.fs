@@ -3,6 +3,7 @@ module FsHotWatch.Build.BuildPlugin
 open System
 open System.IO
 open System.Text.Json
+open System.Threading
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Logging
@@ -66,6 +67,23 @@ let decideBuildOutcome (success: bool) (output: string) : BuildOutcome * ErrorEn
 
         BuildOutputFailed [ output ], entries
 
+/// §2a: stable merkle key for the build cache, independent of the cold-start
+/// guard. Pure function — exposed `internal` so unit tests can assert the key
+/// responds to its inputs without driving a full plugin lifecycle to flip the
+/// guard. Production use goes through the closure in `create` below.
+let internal computeBuildCacheKey
+    (buildCommand: string)
+    (buildArgs: string)
+    (dependsOn: string list)
+    (inputsHash: string)
+    : ContentHash =
+    FsHotWatch.TaskCache.merkleCacheKey
+        [ "plugin-version", "build-merkle-v1"
+          "command", buildCommand
+          "args", buildArgs
+          "depends-on", String.concat "," (List.sort dependsOn)
+          "inputs", inputsHash ]
+
 /// §2a: build all-inputs merkle. Hashes content of every source file the
 /// project graph knows about, plus every .fsproj. mtime-cached for amortized
 /// O(changed) cost after the first call.
@@ -124,6 +142,14 @@ let create
     let buildCommand = command
     let buildArgs = args
     ignore getCommitId
+
+    // Cold-start guard: until a build has actually run in this session, CacheKey
+    // returns None so a prior-session entry can't replay BuildSucceeded over a
+    // possibly-cleaned bin/obj. Flipped in applyBuildOutcome (and the crash
+    // fallbacks) BEFORE ctx.Post(BuildDone(...)) so the framework's pre-Update
+    // CacheKey check on the resulting Custom(BuildDone) returns Some and the
+    // run's result actually gets stored.
+    let mutable hasBuiltInSessionRef = false
 
     let testProjectNameSet = testProjectNames |> Set.ofList
 
@@ -263,6 +289,10 @@ let create
 
             ctx.CompleteWithSummary $"build failed: %d{errCount} errors"
 
+        // Flip BEFORE Post so the Custom(BuildDone) message's CacheKey lookup
+        // (computed pre-Update by the framework) returns Some(merkle) and the
+        // run's result actually gets stored.
+        Volatile.Write(&hasBuiltInSessionRef, true)
         ctx.Post(BuildDone(outcome, entries))
 
     let startBuild (ctx: PluginCtx<BuildMsg>) (idle: Lifecycle<Idle, BuildOutcome option>) =
@@ -308,6 +338,7 @@ let create
                     // ReportErrors / EmitBuildCompleted moved into the synchronous
                     // BuildDone handler (see applyBuildOutcome doc) so they're captured
                     // for cache replay.
+                    Volatile.Write(&hasBuiltInSessionRef, true)
                     ctx.Post(BuildDone(BuildOutputFailed [ ex.Message ], [ crashEntry ]))
             })
         |> Async.Start
@@ -401,6 +432,7 @@ let create
                     with ex ->
                         error "build" $"Unexpected error: %s{ex.Message}"
 
+                        Volatile.Write(&hasBuiltInSessionRef, true)
                         ctx.Post(BuildDone(BuildOutputFailed [ ex.Message ], [ ErrorEntry.error ex.Message ]))
                 })
             |> Async.Start
@@ -605,15 +637,10 @@ let create
         let cacheKey (event: PluginEvent<BuildMsg>) : ContentHash option =
             match event with
             | FileChecked _ -> None
-            | _ ->
-                Some(
-                    FsHotWatch.TaskCache.merkleCacheKey
-                        [ "plugin-version", "build-merkle-v1"
-                          "command", buildCommand
-                          "args", buildArgs
-                          "depends-on", String.concat "," (List.sort dependsOn)
-                          "inputs", inputsHasher.Value.Compute() ]
-                )
+            // Cold-start bypass: replaying BuildSucceeded would lie if bin/obj was
+            // cleaned between sessions; downstream `dotnet ... --no-build` then fails.
+            | _ when not (Volatile.Read(&hasBuiltInSessionRef)) -> None
+            | _ -> Some(computeBuildCacheKey buildCommand buildArgs dependsOn (inputsHasher.Value.Compute()))
 
         Some cacheKey
       Teardown = None }
