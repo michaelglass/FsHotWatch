@@ -1700,3 +1700,55 @@ let ``ProcessRegistry.killAll kills a child started via runProcessWithTimeout fr
 
     let completed = task.Wait(5000)
     Assert.True(completed, "runProcessWithTimeout did not return after killAll")
+
+// ===========================================================================
+// TestPrune timeout test — moved from FsHotWatch.Tests because it spawns a
+// real `sleep 10` subprocess with a 1s timeout, exercising the kill-on-timeout
+// drain race that causes line-coverage drift on TestPrunePlugin.fs (Aborted
+// catch arm) and ProcessHelper.fs (drain branches).
+// ===========================================================================
+
+[<Fact(Timeout = 15000)>]
+let ``TestPrune honors per-project TimeoutSec and records TimedOut`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-tp-timeout-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let configs =
+            [ { TestPrunePlugin.TestConfig.Project = "Slow"
+                Command = "sleep"
+                Args = "10"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = Some 1 } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+        let handler =
+            TestPrunePlugin.create ":memory:" tmpDir (Some configs) None None None None None None None
+
+        host.RegisterHandler(handler)
+
+        let sw = System.Diagnostics.Stopwatch.StartNew()
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForTerminalStatus host "test-prune" 8000
+        sw.Stop()
+
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds 8.0, $"took {sw.Elapsed}")
+        let history = host.GetHistory("test-prune")
+        test <@ not history.IsEmpty @>
+        let last = List.last history
+
+        test
+            <@
+                match last.Outcome with
+                | RunOutcome.TimedOut _ -> true
+                | _ -> false
+            @>
+    finally
+        try
+            Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
