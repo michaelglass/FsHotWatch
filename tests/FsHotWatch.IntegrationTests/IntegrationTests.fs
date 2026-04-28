@@ -1598,23 +1598,23 @@ let ``hashFileWith: real File.ReadAllBytes throws on unreadable file`` () =
             System.Runtime.InteropServices.OSPlatform.Windows
         )
     then
-        () // Unix file modes don't apply on Windows; skip
-    else
-        withTempDir "fshw-hash-deny" (fun tmpDir ->
-            let p = Path.Combine(tmpDir, "denied")
-            File.WriteAllText(p, "secret")
+        Assert.Skip("Unix file modes don't apply on Windows")
 
+    withTempDir "fshw-hash-deny" (fun tmpDir ->
+        let p = Path.Combine(tmpDir, "denied")
+        File.WriteAllText(p, "secret")
+
+        try
+            File.SetUnixFileMode(p, UnixFileMode.None)
+
+            let result = hashFileWith System.IO.File.ReadAllBytes p
+            test <@ result = None @>
+        finally
+            // Restore so cleanup can delete the file.
             try
-                File.SetUnixFileMode(p, UnixFileMode.None)
-
-                let result = hashFileWith System.IO.File.ReadAllBytes p
-                test <@ result = None @>
-            finally
-                // Restore so cleanup can delete the file.
-                try
-                    File.SetUnixFileMode(p, UnixFileMode.UserRead ||| UnixFileMode.UserWrite)
-                with _ ->
-                    ())
+                File.SetUnixFileMode(p, UnixFileMode.UserRead ||| UnixFileMode.UserWrite)
+            with _ ->
+                ())
 
 // ===========================================================================
 // ProcessHelper kill-on-timeout tests — moved from FsHotWatch.Tests because
