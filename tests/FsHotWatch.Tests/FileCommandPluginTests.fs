@@ -917,13 +917,7 @@ let private cacheKeyFnFor (command: string) (args: string) =
             (Some(fun () -> Some "commit-A"))
             None
 
-    // The plugin gates CacheKey on hasFiredInSessionRef via Volatile flag —
-    // for cache-key shape tests we only care about salt composition, not the
-    // cold-start guard. Force a fire by emitting a no-op-ish event path is
-    // overkill; instead, test the salt by comparing two handlers' keys at
-    // the same point in the gating lifecycle (both are pre-fire, so both
-    // return None — useless). Workaround: drive the plugin once so the
-    // guard flips, then read the key.
+    // Drive one run so the cold-start guard flips; CacheKey returns None until then.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "trigger.txt" ])
@@ -967,6 +961,35 @@ let ``cache key changes when content of a path-arg file changes`` () =
             ()
 
 [<Fact(Timeout = 10000)>]
+let ``single handler: cache key reflects current file content per event`` () =
+    // Regression: salt must be re-evaluated per event so that mid-session
+    // edits to a config file invalidate the cache. A "compute once at create"
+    // optimization would freeze the salt and reintroduce the original bug.
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    System.IO.Directory.CreateDirectory(tmpDir) |> ignore
+    let configPath = System.IO.Path.Combine(tmpDir, "config.json")
+
+    try
+        System.IO.File.WriteAllText(configPath, """{"threshold": 80}""")
+        let keyFn = cacheKeyFnFor "echo" configPath
+        let event = FileChanged(SourceChanged [ "trigger.txt" ])
+        let k1 = keyFn event
+
+        System.IO.File.WriteAllText(configPath, """{"threshold": 70}""")
+        let k2 = keyFn event
+
+        test <@ k1.IsSome @>
+        test <@ k2.IsSome @>
+        test <@ k1 <> k2 @>
+    finally
+        try
+            System.IO.Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 10000)>]
 let ``cache key changes when args change`` () =
     let keyFn1 = cacheKeyFnFor "echo" "alpha"
     let keyFn2 = cacheKeyFnFor "echo" "beta"
@@ -985,3 +1008,108 @@ let ``cache key changes when command changes`` () =
     let k2 = keyFn2 event
     test <@ k1.IsSome @>
     test <@ k1 <> k2 @>
+
+// --- collectArgFiles helper (used by observer staleness warning) ---
+// Returns absolute paths of args tokens that resolve to existing files.
+// Used by run-once reporters to flag inputs that were modified after a
+// plugin's last run, hinting that cached output may be stale.
+
+[<Fact(Timeout = 5000)>]
+let ``collectArgFiles returns absolute path of an existing relative arg`` () =
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    System.IO.Directory.CreateDirectory(tmpDir) |> ignore
+    let cfgPath = System.IO.Path.Combine(tmpDir, "cfg.json")
+
+    try
+        System.IO.File.WriteAllText(cfgPath, "{}")
+        let result = collectArgFiles tmpDir "--check cfg.json"
+        test <@ List.contains cfgPath result @>
+    finally
+        try
+            System.IO.Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 5000)>]
+let ``collectArgFiles ignores non-file tokens`` () =
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    System.IO.Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        // None of these args reference an existing file.
+        let result = collectArgFiles tmpDir "--flag value --another"
+        test <@ List.isEmpty result @>
+    finally
+        try
+            System.IO.Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 5000)>]
+let ``collectArgFiles accepts absolute paths`` () =
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    System.IO.Directory.CreateDirectory(tmpDir) |> ignore
+    let cfgPath = System.IO.Path.Combine(tmpDir, "cfg.json")
+
+    try
+        System.IO.File.WriteAllText(cfgPath, "{}")
+        // Pass an unrelated repoRoot — absolute path should still resolve.
+        let result = collectArgFiles "/elsewhere" $"check {cfgPath}"
+        test <@ List.contains cfgPath result @>
+    finally
+        try
+            System.IO.Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+// --- argsStalerThan: compare arg-file mtimes to a reference time ---
+// Returns the subset of arg-file paths whose mtime exceeds `referenceTime`.
+// If any are returned, a cached run from before `referenceTime` may not
+// reflect current input.
+
+[<Fact(Timeout = 5000)>]
+let ``argsStalerThan flags files modified after the reference time`` () =
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    System.IO.Directory.CreateDirectory(tmpDir) |> ignore
+    let cfgPath = System.IO.Path.Combine(tmpDir, "cfg.json")
+
+    try
+        System.IO.File.WriteAllText(cfgPath, "{}")
+        let oldMtime = System.DateTime.UtcNow.AddMinutes(-1.0)
+        System.IO.File.SetLastWriteTimeUtc(cfgPath, System.DateTime.UtcNow)
+        let result = argsStalerThan tmpDir "--check cfg.json" oldMtime
+        test <@ List.contains cfgPath result @>
+    finally
+        try
+            System.IO.Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 5000)>]
+let ``argsStalerThan returns empty when files are older than reference`` () =
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    System.IO.Directory.CreateDirectory(tmpDir) |> ignore
+    let cfgPath = System.IO.Path.Combine(tmpDir, "cfg.json")
+
+    try
+        System.IO.File.WriteAllText(cfgPath, "{}")
+        let pastMtime = System.DateTime.UtcNow.AddMinutes(-5.0)
+        System.IO.File.SetLastWriteTimeUtc(cfgPath, pastMtime)
+        let referenceTime = System.DateTime.UtcNow
+        let result = argsStalerThan tmpDir "--check cfg.json" referenceTime
+        test <@ List.isEmpty result @>
+    finally
+        try
+            System.IO.Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
