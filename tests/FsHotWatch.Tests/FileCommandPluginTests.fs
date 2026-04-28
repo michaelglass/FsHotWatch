@@ -37,6 +37,7 @@ let ``plugin has correct name`` () =
             (fileTrigger (fun f -> f.EndsWith(".fsx")))
             "echo"
             "hello"
+            "/tmp"
             None
             None
 
@@ -52,6 +53,7 @@ let ``command runs when matching files change`` () =
             (fileTrigger (fun f -> f.EndsWith(".fsx")))
             "echo"
             "hello"
+            "/tmp"
             None
             None
 
@@ -86,6 +88,7 @@ let ``command does not run for non-matching files`` () =
             (fileTrigger (fun f -> f.EndsWith(".fsx")))
             "echo"
             "hello"
+            "/tmp"
             None
             None
 
@@ -117,6 +120,7 @@ let ``command captures stdout output`` () =
             (fileTrigger (fun _ -> true))
             "echo"
             "captured-output"
+            "/tmp"
             None
             None
 
@@ -146,6 +150,7 @@ let ``command with environment variables`` () =
             (fileTrigger (fun _ -> true))
             "echo"
             "env-test-output"
+            "/tmp"
             None
             None
 
@@ -180,6 +185,7 @@ let ``command runs on ProjectChanged with matching files`` () =
             (fileTrigger (fun f -> f.EndsWith(".fsproj")))
             "echo"
             "project changed"
+            "/tmp"
             None
             None
 
@@ -214,6 +220,7 @@ let ``command ignores SolutionChanged`` () =
             (fileTrigger (fun _ -> true))
             "echo"
             "hello"
+            "/tmp"
             None
             None
 
@@ -244,6 +251,7 @@ let ``command reports Failed status on command failure`` () =
             (fileTrigger (fun _ -> true))
             "false"
             ""
+            "/tmp"
             None
             None
 
@@ -278,6 +286,7 @@ let ``FileCommandPlugin honors timeoutSec and records TimedOut`` () =
             (fileTrigger (fun _ -> true))
             "sleep"
             "10"
+            "/tmp"
             None
             (Some 1)
 
@@ -314,6 +323,7 @@ let ``command reports Failed status on exception`` () =
             (fileTrigger (fun _ -> true))
             "this-command-does-not-exist-xyz"
             ""
+            "/tmp"
             None
             None
 
@@ -350,6 +360,7 @@ let ``status command returns not run when no files matched`` () =
             (fileTrigger (fun _ -> false))
             "echo"
             "hello"
+            "/tmp"
             None
             None
 
@@ -381,6 +392,7 @@ let ``status command returns false when command failed`` () =
             (fileTrigger (fun _ -> true))
             "false"
             ""
+            "/tmp"
             None
             None
 
@@ -411,6 +423,7 @@ let ``emits CommandCompleted on success`` () =
             (fileTrigger (fun _ -> true))
             "echo"
             "hello"
+            "/tmp"
             None
             None
 
@@ -448,6 +461,7 @@ let ``emits CommandCompleted on failure`` () =
             (fileTrigger (fun _ -> true))
             "false"
             ""
+            "/tmp"
             None
             None
 
@@ -482,7 +496,7 @@ let ``afterTests TestProjects fires when ALL listed projects have results`` () =
           AfterTests = Some(TestProjects(Set.ofList [ "A"; "B" ])) }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-listed") trigger "echo" "ran" None None
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-listed") trigger "echo" "ran" "/tmp" None None
 
     host.RegisterHandler(handler)
 
@@ -518,7 +532,7 @@ let ``afterTests TestProjects does not fire when only some listed projects have 
           AfterTests = Some(TestProjects(Set.ofList [ "A"; "B" ])) }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-partial") trigger "echo" "ran" None None
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-partial") trigger "echo" "ran" "/tmp" None None
 
     host.RegisterHandler(handler)
 
@@ -547,7 +561,7 @@ let ``afterTests TestProjects does not fire when no listed project matches`` () 
           AfterTests = Some(TestProjects(Set.ofList [ "Intelligence.Tests.Unit" ])) }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-miss") trigger "echo" "ran" None None
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-miss") trigger "echo" "ran" "/tmp" None None
 
     host.RegisterHandler(handler)
 
@@ -577,7 +591,7 @@ let ``afterTests TestProjects fires exactly once across progressive deltas`` () 
           AfterTests = Some(TestProjects(Set.ofList [ "A"; "B" ])) }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-once") trigger "echo" "ran" None None
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-once") trigger "echo" "ran" "/tmp" None None
 
     host.RegisterHandler(handler)
 
@@ -610,7 +624,7 @@ let ``afterTests TestProjects fires again on a fresh batch`` () =
           AfterTests = Some(TestProjects(Set.ofList [ "A"; "B" ])) }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-rebatch") trigger "echo" "ran" None None
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-rebatch") trigger "echo" "ran" "/tmp" None None
 
     host.RegisterHandler(handler)
 
@@ -672,7 +686,7 @@ let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style
           AfterTests = fc.AfterTests }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create fc.PluginName) trigger fc.Command fc.Args None None
+        create (FsHotWatch.PluginFramework.PluginName.create fc.PluginName) trigger fc.Command fc.Args "/tmp" None None
 
     // The plugin must subscribe to TestProgress + TestRunCompleted — if this
     // assertion fails, dispatch will never route events to Update.
@@ -737,7 +751,7 @@ let ``afterTests AnyTest fires on TestRunCompleted regardless of projects`` () =
           AfterTests = Some AnyTest }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-any") trigger "echo" "ran" None None
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-any") trigger "echo" "ran" "/tmp" None None
 
     host.RegisterHandler(handler)
 
@@ -771,7 +785,7 @@ let ``plugin with both pattern and afterTests fires on file change`` () =
           AfterTests = Some AnyTest }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "combined-a") trigger "echo" "hi" None None
+        create (FsHotWatch.PluginFramework.PluginName.create "combined-a") trigger "echo" "hi" "/tmp" None None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "coverage.ratchet.json" ])
@@ -793,7 +807,7 @@ let ``plugin with both pattern and afterTests fires on test completion`` () =
           AfterTests = Some AnyTest }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "combined-b") trigger "echo" "hi" None None
+        create (FsHotWatch.PluginFramework.PluginName.create "combined-b") trigger "echo" "hi" "/tmp" None None
 
     host.RegisterHandler(handler)
     emitRunCompleted host [ "proj-a", TestsPassed("ok", false) ]
@@ -853,7 +867,7 @@ let private runEnvProbe (pluginName: string) (ranFullSuite: bool) : string =
         let script = writeEnvProbeScript tmpDir outFile
 
         let handler =
-            create (FsHotWatch.PluginFramework.PluginName.create pluginName) trigger script "" None None
+            create (FsHotWatch.PluginFramework.PluginName.create pluginName) trigger script "" tmpDir None None
 
         host.RegisterHandler(handler)
 
@@ -883,3 +897,91 @@ let ``afterTests command receives FSHW_RAN_FULL_SUITE=true on a full run`` () =
 let ``afterTests command receives FSHW_RAN_FULL_SUITE=false on a partial run`` () =
     let contents = runEnvProbe "env-partial" false
     test <@ contents = "false" @>
+
+// --- Cache-key salt regression tests ---
+// Bug: editing a config file referenced in args (e.g. coverage-ratchet.json
+// thresholds) didn't invalidate the FileCommandPlugin cache because the key
+// was just the jj commit_id. The salt must include command, args, and the
+// content of any path-like arg that exists on disk.
+
+/// Build a handler and pull its CacheKey function. Tests then evaluate it
+/// against synthetic events and assert how the key responds to input changes.
+let private cacheKeyFnFor (command: string) (args: string) =
+    let handler =
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "ck-test")
+            (fileTrigger (fun _ -> true))
+            command
+            args
+            "/tmp"
+            (Some(fun () -> Some "commit-A"))
+            None
+
+    // The plugin gates CacheKey on hasFiredInSessionRef via Volatile flag —
+    // for cache-key shape tests we only care about salt composition, not the
+    // cold-start guard. Force a fire by emitting a no-op-ish event path is
+    // overkill; instead, test the salt by comparing two handlers' keys at
+    // the same point in the gating lifecycle (both are pre-fire, so both
+    // return None — useless). Workaround: drive the plugin once so the
+    // guard flips, then read the key.
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "trigger.txt" ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("ck-test") with
+            | Some(Completed _)
+            | Some(Failed _) -> true
+            | _ -> false)
+        5000
+    |> ignore
+
+    handler.CacheKey.Value
+
+[<Fact(Timeout = 10000)>]
+let ``cache key changes when content of a path-arg file changes`` () =
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    System.IO.Directory.CreateDirectory(tmpDir) |> ignore
+    let configPath = System.IO.Path.Combine(tmpDir, "config.json")
+
+    try
+        System.IO.File.WriteAllText(configPath, """{"threshold": 80}""")
+        let keyFn1 = cacheKeyFnFor "echo" configPath
+        let event = FileChanged(SourceChanged [ "trigger.txt" ])
+        let k1 = keyFn1 event
+
+        System.IO.File.WriteAllText(configPath, """{"threshold": 70}""")
+        let keyFn2 = cacheKeyFnFor "echo" configPath
+        let k2 = keyFn2 event
+
+        test <@ k1.IsSome @>
+        test <@ k2.IsSome @>
+        test <@ k1 <> k2 @>
+    finally
+        try
+            System.IO.Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 10000)>]
+let ``cache key changes when args change`` () =
+    let keyFn1 = cacheKeyFnFor "echo" "alpha"
+    let keyFn2 = cacheKeyFnFor "echo" "beta"
+    let event = FileChanged(SourceChanged [ "trigger.txt" ])
+    let k1 = keyFn1 event
+    let k2 = keyFn2 event
+    test <@ k1.IsSome @>
+    test <@ k1 <> k2 @>
+
+[<Fact(Timeout = 10000)>]
+let ``cache key changes when command changes`` () =
+    let keyFn1 = cacheKeyFnFor "echo" "x"
+    let keyFn2 = cacheKeyFnFor "true" "x"
+    let event = FileChanged(SourceChanged [ "trigger.txt" ])
+    let k1 = keyFn1 event
+    let k2 = keyFn2 event
+    test <@ k1.IsSome @>
+    test <@ k1 <> k2 @>
