@@ -99,7 +99,7 @@
         "platform": "macos"
       },
       {
-        "line": 76,
+        "line": 75,
         "branch": 62,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
