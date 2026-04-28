@@ -106,7 +106,13 @@ description = "Auto-correct coverage thresholds: tighten on rise, shrink on drif
 # real regressions. Coverage drift on borderline files is a test-suite bug
 # (move flaky tests to FsHotWatch.IntegrationTests, no coverage); this
 # wrapper exists so dev velocity isn't blocked while flakes get cleaned up.
-run = "sh -c 'dotnet tool run coverageratchet ratchet coverage-ratchet-FsHotWatch.json || dotnet tool run coverageratchet loosen coverage-ratchet-FsHotWatch.json'"
+run = """sh -c '
+  dotnet tool run coverageratchet ratchet coverage-ratchet-FsHotWatch.json
+  c=$?
+  [ $c -eq 0 ] && exit 0
+  [ $c -eq 1 ] && exit 0
+  dotnet tool run coverageratchet loosen coverage-ratchet-FsHotWatch.json
+'"""
 depends = ["test-direct"]
 
 [tasks.coverage-loosen]
