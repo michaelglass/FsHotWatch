@@ -74,19 +74,59 @@ let private subtaskKey (nameStr: string) (reason: TriggerReason) : string =
     | FileMatched file -> $"{nameStr}:{System.IO.Path.GetFileName file}"
     | TestsCompleted -> $"{nameStr}:tests-completed"
 
-/// Hash file content if the path resolves to an existing file. Used to salt
-/// the cache key so config-file edits that don't change commit_id still
-/// invalidate cached output.
 let private tryHashFile (path: string) : string option =
     try
-        if System.IO.File.Exists(path) then
-            let bytes = System.IO.File.ReadAllBytes(path)
-            let hash = System.Security.Cryptography.SHA256.HashData(bytes)
-            Some(System.Convert.ToHexString(hash).ToLowerInvariant())
-        else
-            None
+        let bytes = System.IO.File.ReadAllBytes(path)
+        let hash = System.Security.Cryptography.SHA256.HashData(bytes)
+        Some(System.Convert.ToHexString(hash).ToLowerInvariant())
     with _ ->
         None
+
+let private resolveArgPath (repoRoot: string) (token: string) : string =
+    if System.IO.Path.IsPathRooted token then
+        token
+    else
+        System.IO.Path.Combine(repoRoot, token)
+
+let private tokenizeArgs (args: string) : string array =
+    args.Split(
+        [| ' '; '\t' |],
+        System.StringSplitOptions.RemoveEmptyEntries
+        ||| System.StringSplitOptions.TrimEntries
+    )
+
+/// Returns the absolute paths of arg tokens that resolve to an existing file
+/// (relative to repoRoot or absolute). Used by reporters to detect when a
+/// plugin's input has been edited after its last successful run.
+let collectArgFiles (repoRoot: string) (args: string) : string list =
+    tokenizeArgs args
+    |> Array.choose (fun tok ->
+        let resolved = resolveArgPath repoRoot tok
+
+        if System.IO.File.Exists(resolved) then
+            Some resolved
+        else
+            None)
+    |> Array.toList
+
+/// Returns the absolute paths of arg-file tokens whose mtime exceeds
+/// `referenceTime`. A non-empty result hints that a cached plugin run from
+/// before `referenceTime` may not reflect current input.
+let argsStalerThan (repoRoot: string) (args: string) (referenceTime: System.DateTime) : string list =
+    let ref = referenceTime.ToUniversalTime()
+
+    tokenizeArgs args
+    |> Array.choose (fun tok ->
+        let path = resolveArgPath repoRoot tok
+
+        try
+            if System.IO.File.GetLastWriteTimeUtc(path) > ref then
+                Some path
+            else
+                None
+        with _ ->
+            None)
+    |> Array.toList
 
 /// Build the salt for this plugin's cache key. Includes the command, the args
 /// string, and a content hash of every whitespace-separated token in args
@@ -94,24 +134,9 @@ let private tryHashFile (path: string) : string option =
 /// This means editing a config file referenced in args invalidates the cache
 /// even when commit_id hasn't changed.
 let internal computeArgsSalt (repoRoot: string) (command: string) (args: string) : string =
-    let tokens =
-        args.Split(
-            [| ' '; '\t' |],
-            System.StringSplitOptions.RemoveEmptyEntries
-            ||| System.StringSplitOptions.TrimEntries
-        )
-
     let fileHashes =
-        tokens
-        |> Array.choose (fun tok ->
-            let resolved =
-                if System.IO.Path.IsPathRooted tok then
-                    tok
-                else
-                    System.IO.Path.Combine(repoRoot, tok)
-
-            tryHashFile resolved |> Option.map (fun h -> $"file:%s{tok}", h))
-        |> Array.toList
+        collectArgFiles repoRoot args
+        |> List.choose (fun path -> tryHashFile path |> Option.map (fun h -> $"file:%s{path}", h))
 
     let inputs = [ "command", command; "args", args ] @ fileHashes
 
@@ -307,8 +332,8 @@ let create
         // command never executes despite its trigger firing.
         //
         // Salt: command + args + content hash of every arg token that exists
-        // on disk. Editing a config file referenced in args invalidates the
-        // cache even when commit_id hasn't changed.
+        // on disk. Recomputed per event so mid-session edits to a referenced
+        // config file invalidate the cache even when commit_id hasn't changed.
         let getSalt _ = computeArgsSalt repoRoot command args
 
         match FsHotWatch.TaskCache.optionalSaltedCacheKey getSalt getCommitId with
