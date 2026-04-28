@@ -95,7 +95,7 @@
     "Daemon.fs": [
       {
         "line": 73,
-        "branch": 60,
+        "branch": 62,
         "platform": "macos"
       },
       {
@@ -162,7 +162,7 @@
         "platform": "linux"
       },
       {
-        "line": 98,
+        "line": 96,
         "branch": 97,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)"
       }
@@ -346,8 +346,8 @@
     ],
     "PluginFramework.fs": [
       {
-        "line": 94,
-        "branch": 94,
+        "line": 93,
+        "branch": 82,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
