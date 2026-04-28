@@ -1578,3 +1578,54 @@ let ``cached check returns None because partial FCS results are unusable by plug
     finally
         if Directory.Exists(cacheDir) then
             Directory.Delete(cacheDir, true)
+
+// ===========================================================================
+// Real-world validation: confirms the DI seams in unit tests reflect
+// actual production behavior. Excluded from coverage on purpose — these
+// exercise OS-level error modes (permission denied, file deletion races)
+// that are flaky enough to make the coverage ratchet jitter.
+// ===========================================================================
+
+[<Fact(Timeout = 10000)>]
+let ``hashFileWith: real File.ReadAllBytes throws on unreadable file`` () =
+    // Validates that hashFileWith's None branch — exercised in unit tests via
+    // an injected throwing reader — actually fires in production when a file
+    // exists but cannot be read (permission denied). If macOS ever stops
+    // throwing here, the unit test's mock would no longer represent reality.
+    if
+        System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+            System.Runtime.InteropServices.OSPlatform.Windows
+        )
+    then
+        () // chmod semantics differ on Windows; skip
+    else
+        let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-hash-deny-{Guid.NewGuid():N}")
+        Directory.CreateDirectory(tmpDir) |> ignore
+        let p = Path.Combine(tmpDir, "denied")
+
+        try
+            File.WriteAllText(p, "secret")
+
+            // Strip read permissions from the owner. On macOS/Linux this makes
+            // File.ReadAllBytes throw UnauthorizedAccessException.
+            let psi = System.Diagnostics.ProcessStartInfo("chmod", $"000 \"{p}\"")
+            psi.UseShellExecute <- false
+            let proc = System.Diagnostics.Process.Start(psi)
+            proc.WaitForExit()
+            test <@ proc.ExitCode = 0 @>
+
+            let result = hashFileWith System.IO.File.ReadAllBytes p
+            test <@ result = None @>
+        finally
+            // Restore permissions so cleanup can delete the file.
+            try
+                let restore = System.Diagnostics.ProcessStartInfo("chmod", $"600 \"{p}\"")
+                restore.UseShellExecute <- false
+                System.Diagnostics.Process.Start(restore).WaitForExit()
+            with _ ->
+                ()
+
+            try
+                Directory.Delete(tmpDir, true)
+            with _ ->
+                ()
