@@ -42,9 +42,14 @@ depends = ["build"]
 [tasks.check]
 description = "Run all checks via daemon (auto-starts daemon if needed)"
 run = "dotnet run --project src/FsHotWatch.Cli --no-build -- check"
-depends = ["build", "lint-project", "coverage-ratchet"]
+depends = ["build", "lint-project", "coverage-check"]
 # Note: depends on build to ensure CLI binary is compiled.
 # The daemon handles its own build/test/lint cycle internally.
+# Uses coverage-check (verify) rather than coverage-ratchet (tighten);
+# tightening on every run flakes on borderline files (Program.fs,
+# ProcessHelper.fs) whose coverage drifts ±1pp run-to-run — a lucky run
+# raises the floor, the next normal-luck run fails.
+# Run `mise run coverage-ratchet` explicitly to lock in coverage gains.
 
 [tasks.cache-clear]
 description = "Clear the check result cache"
