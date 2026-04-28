@@ -592,43 +592,10 @@ let ``run-tests with only-failed reruns failed projects`` () =
         test <@ result.Value.Contains("Fails") @>
         test <@ not (result.Value.Contains("Passes")) @>)
 
-[<Fact(Timeout = 15000)>]
-let ``TestPrune honors per-project TimeoutSec and records TimedOut`` () =
-    withTempDir "tp-timeout" (fun tmpDir ->
-        let configs =
-            [ { Project = "Slow"
-                Command = "sleep"
-                Args = "10"
-                Group = "default"
-                Environment = []
-                FilterTemplate = None
-                ClassJoin = " "
-                TimeoutSec = Some 1 } ]
-
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-
-        let handler =
-            create ":memory:" tmpDir (Some configs) None None None None None None None
-
-        host.RegisterHandler(handler)
-
-        // Trigger a test run via BuildCompleted (the runTestsWithImpact path).
-        let sw = System.Diagnostics.Stopwatch.StartNew()
-        host.EmitBuildCompleted(BuildSucceeded)
-        waitForPluginTerminal host "test-prune" 8.0
-        sw.Stop()
-
-        Assert.True(sw.Elapsed < TimeSpan.FromSeconds 8.0, $"took {sw.Elapsed}")
-        let history = host.GetHistory("test-prune")
-        test <@ not history.IsEmpty @>
-        let last = List.last history
-
-        test
-            <@
-                match last.Outcome with
-                | TimedOut _ -> true
-                | _ -> false
-            @>)
+// `TestPrune honors per-project TimeoutSec and records TimedOut` moved to
+// FsHotWatch.IntegrationTests — uses a real `sleep 10` subprocess + 1s
+// timeout, exercising the kill-on-timeout drain race in ProcessHelper which
+// causes line-coverage drift on TestPrunePlugin.fs and ProcessHelper.fs.
 
 [<Fact(Timeout = 5000)>]
 let ``run-tests not registered when no testConfigs`` () =
