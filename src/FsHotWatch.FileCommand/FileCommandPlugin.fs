@@ -74,12 +74,57 @@ let private subtaskKey (nameStr: string) (reason: TriggerReason) : string =
     | FileMatched file -> $"{nameStr}:{System.IO.Path.GetFileName file}"
     | TestsCompleted -> $"{nameStr}:tests-completed"
 
+/// Hash file content if the path resolves to an existing file. Used to salt
+/// the cache key so config-file edits that don't change commit_id still
+/// invalidate cached output.
+let private tryHashFile (path: string) : string option =
+    try
+        if System.IO.File.Exists(path) then
+            let bytes = System.IO.File.ReadAllBytes(path)
+            let hash = System.Security.Cryptography.SHA256.HashData(bytes)
+            Some(System.Convert.ToHexString(hash).ToLowerInvariant())
+        else
+            None
+    with _ ->
+        None
+
+/// Build the salt for this plugin's cache key. Includes the command, the args
+/// string, and a content hash of every whitespace-separated token in args
+/// that resolves to an existing file (relative to repoRoot or absolute).
+/// This means editing a config file referenced in args invalidates the cache
+/// even when commit_id hasn't changed.
+let internal computeArgsSalt (repoRoot: string) (command: string) (args: string) : string =
+    let tokens =
+        args.Split(
+            [| ' '; '\t' |],
+            System.StringSplitOptions.RemoveEmptyEntries
+            ||| System.StringSplitOptions.TrimEntries
+        )
+
+    let fileHashes =
+        tokens
+        |> Array.choose (fun tok ->
+            let resolved =
+                if System.IO.Path.IsPathRooted tok then
+                    tok
+                else
+                    System.IO.Path.Combine(repoRoot, tok)
+
+            tryHashFile resolved |> Option.map (fun h -> $"file:%s{tok}", h))
+        |> Array.toList
+
+    let inputs = [ "command", command; "args", args ] @ fileHashes
+
+    FsHotWatch.TaskCache.merkleCacheKey inputs
+    |> FsHotWatch.Events.ContentHash.value
+
 /// Creates a framework plugin handler that runs a command in response to the configured trigger(s).
 let create
     (name: PluginName)
     (trigger: CommandTrigger)
     (command: string)
     (args: string)
+    (repoRoot: string)
     (getCommitId: (unit -> string option) option)
     (timeoutSec: int option)
     : PluginHandler<FileCommandState, unit> =
@@ -260,7 +305,13 @@ let create
         // session at the same commit pre-empts the first replay-emitted event
         // (e.g. TestRunCompleted from TestPrune's cold-start re-run) and the
         // command never executes despite its trigger firing.
-        match FsHotWatch.TaskCache.optionalCacheKey getCommitId with
+        //
+        // Salt: command + args + content hash of every arg token that exists
+        // on disk. Editing a config file referenced in args invalidates the
+        // cache even when commit_id hasn't changed.
+        let getSalt _ = computeArgsSalt repoRoot command args
+
+        match FsHotWatch.TaskCache.optionalSaltedCacheKey getSalt getCommitId with
         | None -> None
         | Some inner ->
             Some(fun event ->
