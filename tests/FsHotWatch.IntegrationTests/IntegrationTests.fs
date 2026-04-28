@@ -34,6 +34,7 @@ open FsHotWatch.CheckCache
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.FileCheckCache
 open FsHotWatch.Tests.TestHelpers
+open FsHotWatch.ProcessHelper
 
 let private findRepoRoot () =
     let assemblyDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)
@@ -1597,38 +1598,23 @@ let ``hashFileWith: real File.ReadAllBytes throws on unreadable file`` () =
             System.Runtime.InteropServices.OSPlatform.Windows
         )
     then
-        () // chmod semantics differ on Windows; skip
+        () // Unix file modes don't apply on Windows; skip
     else
-        let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-hash-deny-{Guid.NewGuid():N}")
-        Directory.CreateDirectory(tmpDir) |> ignore
-        let p = Path.Combine(tmpDir, "denied")
-
-        try
+        withTempDir "fshw-hash-deny" (fun tmpDir ->
+            let p = Path.Combine(tmpDir, "denied")
             File.WriteAllText(p, "secret")
 
-            // Strip read permissions from the owner. On macOS/Linux this makes
-            // File.ReadAllBytes throw UnauthorizedAccessException.
-            let psi = System.Diagnostics.ProcessStartInfo("chmod", $"000 \"{p}\"")
-            psi.UseShellExecute <- false
-            let proc = System.Diagnostics.Process.Start(psi)
-            proc.WaitForExit()
-            test <@ proc.ExitCode = 0 @>
-
-            let result = hashFileWith System.IO.File.ReadAllBytes p
-            test <@ result = None @>
-        finally
-            // Restore permissions so cleanup can delete the file.
             try
-                let restore = System.Diagnostics.ProcessStartInfo("chmod", $"600 \"{p}\"")
-                restore.UseShellExecute <- false
-                System.Diagnostics.Process.Start(restore).WaitForExit()
-            with _ ->
-                ()
+                File.SetUnixFileMode(p, UnixFileMode.None)
 
-            try
-                Directory.Delete(tmpDir, true)
-            with _ ->
-                ()
+                let result = hashFileWith System.IO.File.ReadAllBytes p
+                test <@ result = None @>
+            finally
+                // Restore so cleanup can delete the file.
+                try
+                    File.SetUnixFileMode(p, UnixFileMode.UserRead ||| UnixFileMode.UserWrite)
+                with _ ->
+                    ())
 
 // ===========================================================================
 // ProcessHelper kill-on-timeout tests — moved from FsHotWatch.Tests because
@@ -1636,8 +1622,6 @@ let ``hashFileWith: real File.ReadAllBytes throws on unreadable file`` () =
 // ProcessHelper.fs (drifts 89-92%). Excluded from coverage on purpose so the
 // auto-ratchet in `mise run check` stays stable.
 // ===========================================================================
-
-open FsHotWatch.ProcessHelper
 
 [<Fact(Timeout = 10000)>]
 let ``runProcessWithTimeout kills child when exceeded`` () =
@@ -1675,7 +1659,10 @@ let ``ProcessRegistry.killAll terminates tracked live processes`` () =
         proc.WaitForExit(5000) |> ignore
         Assert.True(proc.HasExited))
 
-[<Fact(Timeout = 15000)>]
+// Outer timeout 20s leaves headroom over the internal ceiling (8s registration
+// deadline + 5s task.Wait = 13s) so a real failure surfaces as an assertion
+// rather than a silent xUnit timeout.
+[<Fact(Timeout = 20000)>]
 let ``ProcessRegistry.killAll kills a child started via runProcessWithTimeout from another thread`` () =
     let registry = FsHotWatch.ProcessRegistry.Registry()
     use _ = FsHotWatch.ProcessRegistry.install registry
@@ -1710,10 +1697,7 @@ let ``ProcessRegistry.killAll kills a child started via runProcessWithTimeout fr
 
 [<Fact(Timeout = 15000)>]
 let ``TestPrune honors per-project TimeoutSec and records TimedOut`` () =
-    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-tp-timeout-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmpDir) |> ignore
-
-    try
+    withTempDir "fshw-tp-timeout" (fun tmpDir ->
         let configs =
             [ { TestPrunePlugin.TestConfig.Project = "Slow"
                 Command = "sleep"
@@ -1746,9 +1730,4 @@ let ``TestPrune honors per-project TimeoutSec and records TimedOut`` () =
                 match last.Outcome with
                 | RunOutcome.TimedOut _ -> true
                 | _ -> false
-            @>
-    finally
-        try
-            Directory.Delete(tmpDir, true)
-        with _ ->
-            ()
+            @>)
