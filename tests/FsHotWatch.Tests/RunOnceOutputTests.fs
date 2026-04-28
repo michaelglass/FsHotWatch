@@ -8,6 +8,79 @@ open FsHotWatch.ErrorLedger
 open FsHotWatch.Cli.RunOnceOutput
 
 
+// --- Staleness warning: detect FileCommand plugin inputs newer than last run ---
+
+[<Fact(Timeout = 5000)>]
+let ``detectStalePluginInputs flags plugins whose args are newer than last run`` () =
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    System.IO.Directory.CreateDirectory(tmpDir) |> ignore
+    let cfg = System.IO.Path.Combine(tmpDir, "cfg.json")
+
+    try
+        System.IO.File.WriteAllText(cfg, "{}")
+        let lastRun = DateTime.UtcNow.AddMinutes(-5.0)
+        // ensure mtime is after lastRun
+        System.IO.File.SetLastWriteTimeUtc(cfg, DateTime.UtcNow)
+
+        let plugins =
+            [ { Name = "ratchet"
+                LastRunStarted = lastRun
+                RepoRoot = tmpDir
+                Args = "--check cfg.json" } ]
+
+        let result = detectStalePluginInputs plugins
+
+        test
+            <@
+                result
+                |> List.exists (fun (n, files) -> n = "ratchet" && List.contains cfg files)
+            @>
+    finally
+        try
+            System.IO.Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 5000)>]
+let ``detectStalePluginInputs omits plugins with no stale files`` () =
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
+
+    System.IO.Directory.CreateDirectory(tmpDir) |> ignore
+    let cfg = System.IO.Path.Combine(tmpDir, "cfg.json")
+
+    try
+        System.IO.File.WriteAllText(cfg, "{}")
+        System.IO.File.SetLastWriteTimeUtc(cfg, DateTime.UtcNow.AddMinutes(-10.0))
+        let lastRun = DateTime.UtcNow
+
+        let plugins =
+            [ { Name = "ratchet"
+                LastRunStarted = lastRun
+                RepoRoot = tmpDir
+                Args = "--check cfg.json" } ]
+
+        let result = detectStalePluginInputs plugins
+        test <@ List.isEmpty result @>
+    finally
+        try
+            System.IO.Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 5000)>]
+let ``formatStalenessWarning is empty for no stale plugins`` () =
+    test <@ formatStalenessWarning [] = "" @>
+
+[<Fact(Timeout = 5000)>]
+let ``formatStalenessWarning names the plugin, file, and rerun hint`` () =
+    let warning = formatStalenessWarning [ "ratchet", [ "/tmp/cfg.json" ] ]
+    test <@ warning.Contains("ratchet") @>
+    test <@ warning.Contains("/tmp/cfg.json") @>
+    test <@ warning.Contains("rerun") @>
+
 [<Fact(Timeout = 5000)>]
 let ``formatErrors groups by file with plugin prefix`` () =
     let errors =
