@@ -162,8 +162,8 @@
         "platform": "linux"
       },
       {
-        "line": 96,
-        "branch": 95,
+        "line": 97,
+        "branch": 100,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)"
       }
     ],
@@ -374,7 +374,7 @@
     ],
     "ProcessHelper.fs": [
       {
-        "line": 89,
+        "line": 92,
         "branch": 100,
         "reason": "kill-on-timeout drain branches fire flakily between runs (89-92% line); pinned to floor 89 \u2014 note: avoid \u0027mise run check\u0027 auto-ratchet, it bumps back to ceiling on lucky run",
         "platform": "macos"
