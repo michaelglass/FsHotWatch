@@ -2,6 +2,7 @@ module FsHotWatch.FileCommand.FileCommandPlugin
 
 open System
 open System.Text.Json
+open System.Threading
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.PluginFramework
@@ -89,6 +90,12 @@ let create
         | Some s -> TimeSpan.FromSeconds(float s)
         | None -> System.Threading.Timeout.InfiniteTimeSpan
 
+    // Cold-start guard: until the command has actually executed once in this
+    // daemon session, CacheKey returns None so a stale on-disk cache entry from
+    // a prior session can't pre-empt the first fire. Mirrors TestPrunePlugin's
+    // hadPriorResultsRef pattern. Flipped to true inside runCommand below.
+    let mutable hasFiredInSessionRef = false
+
     /// Run the command and return the resulting CommandResult. Callers merge
     /// this into the full plugin state so runCommand stays agnostic of
     /// trigger-specific fields.
@@ -101,6 +108,10 @@ let create
 
         async {
             ctx.ReportStatus(Running(since = DateTime.UtcNow))
+            // Mark before the subtask so CacheKey starts returning Some as soon as
+            // the command begins; in-session re-triggers at the same commit cache-hit
+            // and skip re-running. Cold-start (false) bypasses any prior-session entry.
+            Volatile.Write(&hasFiredInSessionRef, true)
 
             return!
                 PluginCtxHelpers.withSubtask
@@ -243,5 +254,18 @@ let create
                   | NeverRun -> return JsonSerializer.Serialize({| status = "not run" |})
               } ]
       Subscriptions = CommandTrigger.subscriptions trigger
-      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId
+      CacheKey =
+        // Cold-start bypass: return None until the command has actually run once
+        // in this daemon session. Without this, an on-disk entry from a prior
+        // session at the same commit pre-empts the first replay-emitted event
+        // (e.g. TestRunCompleted from TestPrune's cold-start re-run) and the
+        // command never executes despite its trigger firing.
+        match FsHotWatch.TaskCache.optionalCacheKey getCommitId with
+        | None -> None
+        | Some inner ->
+            Some(fun event ->
+                if Volatile.Read(&hasFiredInSessionRef) then
+                    inner event
+                else
+                    None)
       Teardown = None }
