@@ -59,7 +59,6 @@ type FormatCheckState = { Unformatted: Set<string> }
 /// timeout-guarded region before formatting runs so tests can force the
 /// timeout branch. The public `createFormatCheck` passes `None`.
 let internal createFormatCheckWithSlowHook
-    (getCommitId: (unit -> string option) option)
     (timeoutSec: int option)
     (slowHook: (unit -> unit) option)
     : PluginHandler<FormatCheckState, unit> =
@@ -168,7 +167,30 @@ let internal createFormatCheckWithSlowHook
                   return $"{{\"count\": %d{state.Unformatted.Count}, \"files\": \"%s{files}\"}}"
               } ]
       Subscriptions = Set.ofList [ SubscribeFileChanged ]
-      CacheKey = FsHotWatch.TaskCache.optionalCacheKey getCommitId
+      CacheKey =
+        // Pure-content key: merkle of (file path, file source) for each file
+        // in the FileChanged event. Fantomas formatting is content-deterministic
+        // — same source bytes always produce the same formatted output, so two
+        // daemons agree on the cache value regardless of working-copy state.
+        let cacheKey (event: PluginEvent<unit>) : ContentHash option =
+            match event with
+            | FileChanged(SourceChanged files) when not (List.isEmpty files) ->
+                let fileInputs =
+                    files
+                    |> List.sort
+                    |> List.collect (fun f ->
+                        let source =
+                            try
+                                File.ReadAllText(f)
+                            with _ ->
+                                ""
+
+                        [ $"file:{f}", f; $"source:{f}", source ])
+
+                Some(FsHotWatch.TaskCache.merkleCacheKey ([ "plugin-version", "format-check-merkle-v1" ] @ fileInputs))
+            | _ -> None
+
+        Some cacheKey
       Teardown = None }
 
 /// Read-only format check plugin (reports unformatted files without modifying them).
@@ -177,8 +199,5 @@ let internal createFormatCheckWithSlowHook
 /// Per-file format work is wrapped in `runWithTimeout`; on expiry the run is
 /// recorded as `TimedOut` and the orphan work continues running (result
 /// discarded).
-let createFormatCheck
-    (getCommitId: (unit -> string option) option)
-    (timeoutSec: int option)
-    : PluginHandler<FormatCheckState, unit> =
-    createFormatCheckWithSlowHook getCommitId timeoutSec None
+let createFormatCheck (timeoutSec: int option) : PluginHandler<FormatCheckState, unit> =
+    createFormatCheckWithSlowHook timeoutSec None
