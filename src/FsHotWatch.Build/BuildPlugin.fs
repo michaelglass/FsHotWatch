@@ -12,8 +12,24 @@ open FsHotWatch.Lifecycle
 open FsHotWatch.PluginFramework
 open FsHotWatch.StringHelpers
 
+/// Why a project's compiled artifact is considered stale after a "successful"
+/// build. Detected by post-build verification — either the DLL never appeared
+/// on disk, or the DLL's mtime is older than the newest source file.
+type StaleReason =
+    | DllMissing of dllPath: string
+    | DllOlderThanSources of dllTime: DateTime * srcTime: DateTime
+
+type StaleArtifact =
+    { Project: string; Reason: StaleReason }
+
 type BuildOutcome =
     | BuildPassed of output: string
+    /// Build subprocess returned success but post-build verification found one
+    /// or more stale DLLs (MSBuild's incremental cache likely lied). Demoted
+    /// here so downstream plugins receive BuildFailed and never run against
+    /// stale artifacts. Carries the structured stale-artifact list so cache
+    /// replay reproduces the same diagnostic deterministically.
+    | BuildArtifactsStale of stale: StaleArtifact list * output: string
     | BuildOutputFailed of outputs: string list
 
 type BuildPhase =
@@ -136,7 +152,6 @@ let create
     (buildTemplate: string option)
     (dependsOn: string list)
     (timeoutSec: int option)
-    (dirtyTracker: FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker option)
     =
     let buildCommand = command
     let buildArgs = args
@@ -172,95 +187,32 @@ let create
     let projectStem (p: AbsProjectPath) =
         Path.GetFileNameWithoutExtension(AbsProjectPath.value p)
 
-    let markDirty (files: string list) =
-        match dirtyTracker with
-        | None -> ()
-        | Some tracker ->
-            let nonTestFiles = files |> List.filter (fun f -> not (isTestFile f))
+    /// Post-build contract enforcement. For every project the graph knows
+    /// about, compare the canonical DLL's mtime against the max source mtime.
+    /// Returns the stale projects so the worker can demote BuildPassed to
+    /// BuildArtifactsStale and downstream plugins (TestPrune) receive a
+    /// BuildFailed signal instead of running against artifacts MSBuild's
+    /// incremental cache silently failed to update.
+    let verifyArtifactsFresh () : StaleArtifact list =
+        [ for proj in graph.GetAllProjects() do
+              match graph.GetCanonicalDllPath(proj) with
+              | None -> () // no TFM — nothing to verify
+              | Some dllPath ->
+                  let stem = projectStem proj
 
-            if not nonTestFiles.IsEmpty then
-                let affected =
-                    graph.GetAffectedProjects(nonTestFiles |> List.map AbsFilePath.create)
+                  if not (File.Exists dllPath) then
+                      yield
+                          { Project = stem
+                            Reason = DllMissing dllPath }
+                  else
+                      let dllTime = File.GetLastWriteTimeUtc dllPath
 
-                tracker.MarkDirty(affected |> List.map projectStem)
-
-    let clearFreshProjects (output: string) =
-        match dirtyTracker with
-        | None -> ()
-        | Some tracker ->
-            let dllPaths = BuildDiagnostics.parseDllPaths output
-            let allProjects = graph.GetAllProjects()
-
-            let projectByStem =
-                allProjects |> List.map (fun p -> projectStem p, p) |> Map.ofList
-
-            for KeyValue(stem, dllPath) in dllPaths do
-                match Map.tryFind stem projectByStem with
-                | None -> ()
-                | Some proj ->
-                    let sources = graph.GetSourceFiles(proj)
-
-                    let maxSourceTime =
-                        sources
-                        |> List.choose (fun f ->
-                            let path = AbsFilePath.value f
-
-                            if File.Exists path then
-                                Some(File.GetLastWriteTimeUtc path)
-                            else
-                                None)
-                        |> (function
-                        | [] -> None
-                        | times -> Some(List.max times))
-
-                    let dllTime =
-                        if File.Exists dllPath then
-                            Some(File.GetLastWriteTimeUtc dllPath)
-                        else
-                            None
-
-                    match maxSourceTime, dllTime with
-                    | Some srcTime, Some dllT when dllT >= srcTime ->
-                        tracker.ClearDirty stem
-                        debug "build" $"DLL fresh for %s{stem} — cleared dirty bit"
-                    | Some srcTime, Some dllT ->
-                        warn
-                            "build"
-                            (sprintf
-                                "Stale binary detected: %s DLL is %O but sources are as new as %O. MSBuild incremental cache may be lying — tests for this project will be blocked."
-                                stem
-                                dllT
-                                srcTime)
-                    | _ -> tracker.ClearDirty stem // can't check → optimistically clear
-
-            // Clear test-project dirty bits whose source-project deps are now all clean.
-            // Single snapshot so both passes see the same post-DLL-freshness state.
-            let allDirtyNow = tracker.AllDirty
-
-            let remainingDirtySourceStems =
-                allDirtyNow
-                |> List.filter (fun s ->
-                    match Map.tryFind s projectByStem with
-                    | Some p -> not (isTestProject p)
-                    | None -> false)
-                |> Set.ofList
-
-            let stillAffectedByDirtySource =
-                remainingDirtySourceStems
-                |> Set.toList
-                |> List.choose (fun s -> Map.tryFind s projectByStem)
-                |> List.collect (fun p -> graph.GetDependents(p))
-                |> List.map projectStem
-                |> Set.ofList
-
-            for testStem in
-                allDirtyNow
-                |> List.filter (fun s ->
-                    match Map.tryFind s projectByStem with
-                    | Some p -> isTestProject p
-                    | None -> false) do
-                if not (stillAffectedByDirtySource.Contains testStem) then
-                    tracker.ClearDirty testStem
+                      match graph.GetMaxSourceMtime(proj) with
+                      | Some srcTime when dllTime < srcTime ->
+                          yield
+                              { Project = stem
+                                Reason = DllOlderThanSources(dllTime, srcTime) }
+                      | _ -> () ]
 
     let depNames = dependsOn |> Set.ofList
     let allDepsSatisfied deps = Set.isSubset depNames deps
@@ -279,6 +231,11 @@ let create
             let summary = if n > 0 then $"built {n} projects" else "build succeeded"
             ctx.Log summary
             ctx.CompleteWithSummary summary
+        | BuildArtifactsStale(stale, _) ->
+            let summary = $"build failed: %d{stale.Length} stale artifacts"
+            ctx.Log summary
+            error "build" summary
+            ctx.CompleteWithSummary summary
         | BuildOutputFailed _ ->
             let errCount =
                 entries
@@ -292,6 +249,35 @@ let create
         // run's result actually gets stored.
         Volatile.Write(&hasBuiltInSessionRef, true)
         ctx.Post(BuildDone(outcome, entries))
+
+    /// Phrase a single stale-artifact case for human-readable diagnostics.
+    /// Worker-side so cache replay reproduces the same message verbatim.
+    let formatStaleArtifact (s: StaleArtifact) : string =
+        match s.Reason with
+        | DllMissing path -> $"%s{s.Project}: DLL missing at %s{path}"
+        | DllOlderThanSources(dllTime, srcTime) ->
+            sprintf "%s: DLL %O older than newest source %O" s.Project dllTime srcTime
+
+    /// Wrap a stale-artifact list in a "MSBuild lied" diagnostic suitable for
+    /// the error ledger / BuildFailed payload.
+    let staleDiagnostic (stale: StaleArtifact list) : string =
+        "Build subprocess reported success but post-build verification\n"
+        + "found stale artifacts (MSBuild incremental cache likely lied).\n"
+        + "Re-run with `dotnet build --no-incremental` (or delete bin/ and obj/).\n\n"
+        + (stale |> List.map formatStaleArtifact |> String.concat "\n")
+
+    /// Run verifyArtifactsFresh on a BuildPassed outcome and demote to
+    /// BuildArtifactsStale if any project's DLL is stale. Other outcomes
+    /// pass through. Worker-side: keeps the per-project mtime stat calls off
+    /// the synchronous handler's capture window and lets cache replay re-emit
+    /// the identical structured stale list.
+    let verifyAndDemote (outcome: BuildOutcome) : BuildOutcome =
+        match outcome with
+        | BuildPassed out ->
+            match verifyArtifactsFresh () with
+            | [] -> outcome
+            | stale -> BuildArtifactsStale(stale, out)
+        | _ -> outcome
 
     let startBuild (ctx: PluginCtx<BuildMsg>) (idle: Lifecycle<Idle, BuildOutcome option>) =
         ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
@@ -307,7 +293,10 @@ let create
                     let result =
                         runProcessWithTimeout buildCommand buildArgs ctx.RepoRoot environment buildTimeout
 
-                    let (outcome, entries) = decideBuildOutcome (isSucceeded result) (outputOf result)
+                    let (rawOutcome, entries) =
+                        decideBuildOutcome (isSucceeded result) (outputOf result)
+
+                    let outcome = verifyAndDemote rawOutcome
 
                     match outcome, result with
                     | BuildOutputFailed _, TimedOut(after, _) ->
@@ -410,7 +399,7 @@ let create
 
                         let failedOutputs = failures |> List.rev
 
-                        let (outcome, entries) =
+                        let (rawOutcome, entries) =
                             if failures.IsEmpty then
                                 let combinedOutput = outputs |> List.rev |> String.concat "\n"
                                 decideBuildOutcome true combinedOutput
@@ -426,7 +415,7 @@ let create
 
                                 BuildOutputFailed failedOutputs, entries
 
-                        applyBuildOutcome ctx outcome entries
+                        applyBuildOutcome ctx (verifyAndDemote rawOutcome) entries
                     with ex ->
                         error "build" $"Unexpected error: %s{ex.Message}"
 
@@ -444,7 +433,6 @@ let create
         (idle: Lifecycle<Idle, BuildOutcome option>)
         (files: string list)
         =
-        markDirty files
         let allTestFiles = not files.IsEmpty && files |> List.forall isTestFile
 
         if allTestFiles then
@@ -538,16 +526,25 @@ let create
                     // the framework's §2a cache-write window records them. Replay
                     // of a cached BuildDone re-fires these via EmittedEvents +
                     // captured Errors.
+                    // Contract: BuildSucceeded means every project's DLL is up-to-date
+                    // with its sources. The async worker already demoted BuildPassed to
+                    // BuildArtifactsStale when verifyArtifactsFresh found anything
+                    // wrong, so this handler just dispatches the three terminal cases.
                     match outcome with
-                    | BuildPassed out ->
+                    | BuildPassed _ ->
                         if entries.IsEmpty then
                             ctx.ClearErrors "<build>"
                         else
                             ctx.ReportErrors "<build>" entries
 
-                        clearFreshProjects out
                         ctx.EmitBuildCompleted(BuildSucceeded)
                         ctx.ReportStatus(Completed(DateTime.UtcNow))
+                    | BuildArtifactsStale(stale, _) ->
+                        let detail = staleDiagnostic stale
+                        let entry = ErrorEntry.error detail
+                        ctx.ReportErrors "<build>" (entry :: entries)
+                        ctx.EmitBuildCompleted(BuildFailed [ detail ])
+                        ctx.ReportStatus(PluginStatus.Failed("Build artifact verification failed", DateTime.UtcNow))
                     | BuildOutputFailed outputs ->
                         ctx.ReportErrors "<build>" entries
                         ctx.EmitBuildCompleted(BuildFailed outputs)
@@ -608,6 +605,12 @@ let create
                           JsonSerializer.Serialize(
                               {| status = "passed"
                                  output = truncateOutput 200 output |}
+                          )
+                  | Some(BuildArtifactsStale(stale, _)) ->
+                      return
+                          JsonSerializer.Serialize(
+                              {| status = "failed"
+                                 output = staleDiagnostic stale |> truncateOutput 200 |}
                           )
                   | Some(BuildOutputFailed outputs) ->
                       return

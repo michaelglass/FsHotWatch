@@ -11,7 +11,6 @@ open FsHotWatch.PluginHost
 open FsHotWatch.Build
 open FsHotWatch.Build.BuildPlugin
 open FsHotWatch.ProjectGraph
-open FsHotWatch.ProjectDirtyTracker
 open FsHotWatch.Tests.TestHelpers
 
 // --- decideBuildOutcome: pure parse/decide logic ---
@@ -75,13 +74,13 @@ let ``decideBuildOutcome failure with mixed stderr and MSBuild lines prefers par
 [<Fact(Timeout = 5000)>]
 let ``create accepts graph and test project names`` () =
     let graph = FsHotWatch.ProjectGraph.ProjectGraph()
-    let handler = BuildPlugin.create "echo" "build" [] graph [] None [] None None
+    let handler = BuildPlugin.create "echo" "build" [] graph [] None [] None
     test <@ handler.Name = PluginName.create "build" @>
 
 [<Fact(Timeout = 5000)>]
 let ``plugin has correct name`` () =
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None
 
     test <@ handler.Name = PluginName.create "build" @>
 
@@ -90,7 +89,7 @@ let ``build-status command returns not run initially`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None
 
     host.RegisterHandler(handler)
 
@@ -128,7 +127,7 @@ let ``build plugin emits BuildCompleted on successful build`` () =
     let (getBuild, recorder) = buildRecorder ()
 
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -155,7 +154,7 @@ let ``build-status command returns passed true after successful build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None
 
     host.RegisterHandler(handler)
 
@@ -172,8 +171,7 @@ let ``build-status command returns passed true after successful build`` () =
 let ``build-status command returns failed after failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None None
-
+    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -190,7 +188,7 @@ let ``build plugin honors timeoutSec and records TimedOut outcome`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        BuildPlugin.create "sleep" "10" [] (ProjectGraph()) [] None [] (Some 1) None
+        BuildPlugin.create "sleep" "10" [] (ProjectGraph()) [] None [] (Some 1)
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -212,8 +210,7 @@ let ``build plugin honors timeoutSec and records TimedOut outcome`` () =
 let ``build plugin reports Failed status on failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None None
-
+    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -235,8 +232,7 @@ let ``build plugin emits BuildFailed on failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
 
-    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None None
-
+    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
@@ -257,8 +253,7 @@ let ``build plugin emits BuildFailed on failed build`` () =
 let ``build plugin reports errors on failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None None
-
+    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -272,7 +267,7 @@ let ``build plugin handles exception from runProcess`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        BuildPlugin.create "this-command-does-not-exist-xyz" "" [] (ProjectGraph()) [] None [] None None
+        BuildPlugin.create "this-command-does-not-exist-xyz" "" [] (ProjectGraph()) [] None [] None
 
     host.RegisterHandler(handler)
 
@@ -298,7 +293,7 @@ let ``build plugin ignores SolutionChanged events`` () =
     let (getBuild, recorder) = buildRecorder ()
 
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -316,7 +311,7 @@ let ``build plugin triggers on ProjectChanged`` () =
     let (getBuild, recorder) = buildRecorder ()
 
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -341,8 +336,7 @@ let ``build is skipped when only test files change, after FCS confirms the file`
         []
     )
 
-    let handler = BuildPlugin.create "false" "" [] graph [ "MyTests" ] None [] None None
-
+    let handler = BuildPlugin.create "false" "" [] graph [ "MyTests" ] None [] None
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
@@ -374,8 +368,7 @@ let ``build skip waits for FileChecked of all changed test files before emitting
         []
     )
 
-    let handler = BuildPlugin.create "false" "" [] graph [ "MyTests" ] None [] None None
-
+    let handler = BuildPlugin.create "false" "" [] graph [ "MyTests" ] None [] None
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
@@ -405,7 +398,7 @@ let ``build uses template for affected project`` () =
     )
 
     let handler =
-        BuildPlugin.create "false" "should-not-run" [] graph [] (Some "echo {project}") [] None None
+        BuildPlugin.create "false" "should-not-run" [] graph [] (Some "echo {project}") [] None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -430,9 +423,7 @@ let ``build falls back to original command when no template`` () =
         []
     )
 
-    let handler =
-        BuildPlugin.create "echo" "fallback-build" [] graph [] None [] None None
-
+    let handler = BuildPlugin.create "echo" "fallback-build" [] graph [] None [] None
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
@@ -451,7 +442,7 @@ let ``build falls back when file not in graph`` () =
     let graph = ProjectGraph()
 
     let handler =
-        BuildPlugin.create "echo" "fallback-for-unknown" [] graph [] (Some "false {project}") [] None None
+        BuildPlugin.create "echo" "fallback-for-unknown" [] graph [] (Some "false {project}") [] None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -471,7 +462,7 @@ let ``ProjectChanged always uses fallback command`` () =
     let graph = ProjectGraph()
 
     let handler =
-        BuildPlugin.create "echo" "fallback ok" [] graph [] (Some "false {project}") [] None None
+        BuildPlugin.create "echo" "fallback ok" [] graph [] (Some "false {project}") [] None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -491,7 +482,7 @@ let ``build with dependsOn buffers FileChanged until dependency satisfied`` () =
     let (getBuild, recorder) = buildRecorder ()
 
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [ "setup" ] None None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [ "setup" ] None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -519,7 +510,7 @@ let ``build with dependsOn proceeds immediately when deps already satisfied`` ()
     let (getBuild, recorder) = buildRecorder ()
 
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [ "setup" ] None None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [ "setup" ] None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -542,7 +533,7 @@ let ``build with dependsOn reports Failed when dependency fails`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [ "setup" ] None None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [ "setup" ] None
 
     host.RegisterHandler(handler)
 
@@ -571,7 +562,7 @@ let ``build with empty dependsOn works normally`` () =
     let (getBuild, recorder) = buildRecorder ()
 
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -588,7 +579,7 @@ let ``build with multiple dependsOn waits for all`` () =
     let (getBuild, recorder) = buildRecorder ()
 
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [ "setup"; "codegen" ] None None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [ "setup"; "codegen" ] None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -619,10 +610,8 @@ let ``build with multiple dependsOn waits for all`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``BuildPlugin cache key is provided regardless of getCommitId`` () =
-    let h1 = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None None
-
-    let h2 = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None None
-
+    let h1 = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None
+    let h2 = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None
     test <@ h1.CacheKey.IsSome @>
     test <@ h2.CacheKey.IsSome @>
 
@@ -639,7 +628,7 @@ let ``regression: BuildPlugin writes a cache entry on terminal Custom BuildDone`
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp", taskCache = cacheIface)
 
     let handler =
-        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None None
+        BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None
 
     host.RegisterHandler(handler)
 
@@ -669,7 +658,7 @@ let private warmedHandler (command: string) (args: string) (dependsOn: string li
     let host = PluginHost(Unchecked.defaultof<_>, "/tmp")
 
     let handler =
-        BuildPlugin.create command args [] (ProjectGraph()) [] None dependsOn None None
+        BuildPlugin.create command args [] (ProjectGraph()) [] None dependsOn None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -696,9 +685,7 @@ let ``BuildPlugin cache key matches between FileChanged and Custom BuildDone`` (
 let ``BuildPlugin cache key returns None for FileChecked events`` () =
     // FileChecked events use a different composite key (File = Some x) so they
     // would always miss if looked up; returning None skips the cache entirely.
-    let handler =
-        BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None None
-
+    let handler = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None
     let cacheKeyFn = handler.CacheKey.Value
     let checkedEvt = FileChecked(fakeFileCheckResult "/tmp/Foo.fs")
     test <@ cacheKeyFn checkedEvt = None @>
@@ -735,7 +722,9 @@ let private stubGraph (sources: string list) (projects: string list) =
             projects |> List.map AbsProjectPath.create
 
         member _.GetAllFiles() = sources |> List.map AbsFilePath.create
-        member _.GetTargetFramework _ = None }
+        member _.GetTargetFramework _ = None
+        member _.GetCanonicalDllPath _ = None
+        member _.GetMaxSourceMtime _ = None }
 
 [<Fact(Timeout = 5000)>]
 let ``BuildInputsHasher produces stable hash for unchanged files`` () =
@@ -809,147 +798,68 @@ let ``BuildInputsHasher includes project files in the merkle`` () =
         let empty = BuildInputsHasher(stubGraph [] []).Compute()
         test <@ withProj <> empty @>)
 
-// --- ProjectDirtyTracker integration ---
+// --- Post-build artifact verification (the BuildSucceeded contract) ---
 
-[<Fact(Timeout = 5000)>]
-let ``BuildPlugin marks affected projects dirty when source files change`` () =
-    withTempDir "build-dirty-mark" (fun tmpDir ->
+/// Build a single-project fixture (`MyLib.fsproj` + `Lib.fs` + a fake DLL at
+/// the canonical path) and run the plugin against it. The caller controls the
+/// relative source/DLL mtimes via `srcOffset`/`dllOffset` (offsets from "now").
+/// Returns the recorded `getBuild` so the test can assert the final outcome.
+let private runVerifyHarness
+    (label: string)
+    (srcOffset: TimeSpan)
+    (dllOffset: TimeSpan)
+    : (unit -> BuildResult option) =
+    let mutable captured = ignore
+    let mutable result: (unit -> BuildResult option) = fun () -> None
+
+    withTempDir label (fun tmpDir ->
         let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-        let tracker = ProjectDirtyTracker()
-
-        let projPath = System.IO.Path.Combine(tmpDir, "MyLib.fsproj")
-        let srcPath = System.IO.Path.Combine(tmpDir, "Lib.fs")
-        System.IO.File.WriteAllText(projPath, "<Project></Project>")
-        System.IO.File.WriteAllText(srcPath, "let x = 1")
-
-        let graph = ProjectGraph()
-        graph.RegisterProject(AbsProjectPath.create projPath, [ AbsFilePath.create srcPath ], [])
-
-        // Use `false` so the build "fails" without producing any " -> " arrows;
-        // this leaves the dirty bit set even after BuildDone fires.
-        let handler = BuildPlugin.create "false" "" [] graph [] None [] None (Some tracker)
-
-        host.RegisterHandler(handler)
-        host.EmitFileChanged(SourceChanged [ srcPath ])
-
-        waitForTerminalStatus host "build" 5000
-
-        test <@ tracker.IsDirty "MyLib" @>)
-
-[<Fact(Timeout = 5000)>]
-let ``BuildPlugin clears dirty after build when DLL is newer than sources`` () =
-    withTempDir "build-dirty-clear-fresh" (fun tmpDir ->
-        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-        let tracker = ProjectDirtyTracker()
-
-        let projPath = System.IO.Path.Combine(tmpDir, "MyLib.fsproj")
-        let srcPath = System.IO.Path.Combine(tmpDir, "Lib.fs")
-        let dllPath = System.IO.Path.Combine(tmpDir, "MyLib.dll")
-
-        System.IO.File.WriteAllText(projPath, "<Project></Project>")
-        System.IO.File.WriteAllText(srcPath, "let x = 1")
-        // Make source older, then DLL newer
-        System.IO.File.SetLastWriteTimeUtc(srcPath, DateTime.UtcNow.AddSeconds(-60.0))
-        System.IO.File.WriteAllText(dllPath, "fake dll")
-
-        let graph = ProjectGraph()
-        graph.RegisterProject(AbsProjectPath.create projPath, [ AbsFilePath.create srcPath ], [])
-
-        // Echo a build-output line that parseDllPaths can recognize: "MyLib -> /path/MyLib.dll".
-        let echoArgs = $"MyLib -> {dllPath}"
-
-        let handler =
-            BuildPlugin.create "echo" echoArgs [] graph [] None [] None (Some tracker)
-
-        host.RegisterHandler(handler)
-        host.EmitFileChanged(SourceChanged [ srcPath ])
-
-        waitForTerminalStatus host "build" 5000
-
-        test <@ not (tracker.IsDirty "MyLib") @>)
-
-[<Fact(Timeout = 15000)>]
-let ``integration: stale DLL keeps project dirty across full FileChanged + BuildDone cycle, then clears when DLL freshens``
-    ()
-    =
-    withTempDir "build-stale-dll-integration" (fun tmpDir ->
-        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-        let tracker = ProjectDirtyTracker()
-
-        let projDir = System.IO.Path.Combine(tmpDir, "Foo")
-        let projPath = System.IO.Path.Combine(projDir, "Foo.fsproj")
-        let srcPath = System.IO.Path.Combine(projDir, "Foo.fs")
+        let (getBuild, recorder) = buildRecorder ()
+        let projDir = System.IO.Path.Combine(tmpDir, "MyLib")
+        let projPath = System.IO.Path.Combine(projDir, "MyLib.fsproj")
+        let srcPath = System.IO.Path.Combine(projDir, "Lib.fs")
         let dllDir = System.IO.Path.Combine(projDir, "bin", "Debug", "net10.0")
-        let dllPath = System.IO.Path.Combine(dllDir, "Foo.dll")
-
+        let dllPath = System.IO.Path.Combine(dllDir, "MyLib.dll")
         System.IO.Directory.CreateDirectory(dllDir) |> ignore
-        System.IO.File.WriteAllText(projPath, "<Project></Project>")
-        System.IO.File.WriteAllText(srcPath, "module Foo")
-        System.IO.File.WriteAllText(dllPath, "fake-dll")
 
-        // DLL older than source → STALE.
+        writeMinimalFsproj projPath "net10.0" [ "Lib.fs" ]
+        System.IO.File.WriteAllText(srcPath, "let x = 1")
+        System.IO.File.WriteAllText(dllPath, "fake-dll")
         let now = DateTime.UtcNow
-        System.IO.File.SetLastWriteTimeUtc(dllPath, now.AddMinutes(-10.0))
-        System.IO.File.SetLastWriteTimeUtc(srcPath, now.AddMinutes(-5.0))
+        System.IO.File.SetLastWriteTimeUtc(srcPath, now + srcOffset)
+        System.IO.File.SetLastWriteTimeUtc(dllPath, now + dllOffset)
 
         let graph = ProjectGraph()
-        graph.RegisterProject(AbsProjectPath.create projPath, [ AbsFilePath.create srcPath ], [])
+        graph.RegisterFromFsproj(projPath) |> ignore
 
-        // `echo` emits the "Foo -> <dllPath>" arrow line that parseDllPaths recognizes,
-        // but does NOT actually rewrite the DLL — so the on-disk mtime stays stale.
-        let echoArgs = $"Foo -> {dllPath}"
-
-        let handler =
-            BuildPlugin.create "echo" echoArgs [] graph [] None [] None (Some tracker)
-
+        // `true` succeeds with empty output — the "MSBuild silently skipped"
+        // condition that mtime verification has to disambiguate.
+        let handler = BuildPlugin.create "true" "" [] graph [] None [] None
+        host.RegisterHandler(recorder)
         host.RegisterHandler(handler)
-
-        // Step 1: FileChanged dispatched — BuildPlugin marks Foo dirty before the build runs.
         host.EmitFileChanged(SourceChanged [ srcPath ])
-        waitUntil (fun () -> tracker.IsDirty "Foo") 2000
-        test <@ tracker.IsDirty "Foo" @>
 
-        // Step 2: build completes (BuildDone fires); stale DLL mtime keeps Foo dirty.
         waitForTerminalStatus host "build" 5000
-        test <@ tracker.IsDirty "Foo" @>
+        waitUntil (fun () -> (getBuild ()).IsSome) 5000
+        result <- getBuild)
 
-        // Step 3: freshen the DLL (newer than source) and trigger another build.
-        let beforeCount = (host.GetHistory("build")).Length
-        System.IO.File.SetLastWriteTimeUtc(dllPath, DateTime.UtcNow.AddMinutes(1.0))
-        host.EmitFileChanged(SourceChanged [ srcPath ])
-
-        waitUntil (fun () -> (host.GetHistory("build")).Length > beforeCount) 5000
-
-        waitUntil (fun () -> not (tracker.IsDirty "Foo")) 2000
-        test <@ not (tracker.IsDirty "Foo") @>)
+    result
 
 [<Fact(Timeout = 5000)>]
-let ``BuildPlugin leaves dirty after build when DLL is older than sources`` () =
-    withTempDir "build-dirty-leave-stale" (fun tmpDir ->
-        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-        let tracker = ProjectDirtyTracker()
+let ``BuildPlugin demotes BuildPassed to BuildFailed when canonical DLL is older than sources`` () =
+    let getBuild =
+        runVerifyHarness "build-verify-stale-demotion" (TimeSpan.Zero) (TimeSpan.FromMinutes(-10.0))
 
-        let projPath = System.IO.Path.Combine(tmpDir, "MyLib.fsproj")
-        let srcPath = System.IO.Path.Combine(tmpDir, "Lib.fs")
-        let dllPath = System.IO.Path.Combine(tmpDir, "MyLib.dll")
+    test
+        <@
+            match getBuild () with
+            | Some(BuildFailed _) -> true
+            | _ -> false
+        @>
 
-        System.IO.File.WriteAllText(projPath, "<Project></Project>")
-        // DLL first (older), then source (newer)
-        System.IO.File.WriteAllText(dllPath, "fake dll")
-        System.IO.File.SetLastWriteTimeUtc(dllPath, DateTime.UtcNow.AddSeconds(-60.0))
-        System.IO.File.WriteAllText(srcPath, "let x = 1")
+[<Fact(Timeout = 5000)>]
+let ``BuildPlugin emits BuildSucceeded when canonical DLL is newer than sources`` () =
+    let getBuild =
+        runVerifyHarness "build-verify-fresh" (TimeSpan.FromMinutes(-5.0)) (TimeSpan.Zero)
 
-        let graph = ProjectGraph()
-        graph.RegisterProject(AbsProjectPath.create projPath, [ AbsFilePath.create srcPath ], [])
-
-        let echoArgs = $"MyLib -> {dllPath}"
-
-        let handler =
-            BuildPlugin.create "echo" echoArgs [] graph [] None [] None (Some tracker)
-
-        host.RegisterHandler(handler)
-        host.EmitFileChanged(SourceChanged [ srcPath ])
-
-        waitForTerminalStatus host "build" 5000
-
-        test <@ tracker.IsDirty "MyLib" @>)
+    test <@ getBuild () = Some BuildSucceeded @>
