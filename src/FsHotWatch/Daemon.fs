@@ -692,7 +692,6 @@ type Daemon
         cancellationTokenRef: CancellationToken ref,
         ready: ManualResetEventSlim,
         scanSignal: ScanSignal,
-        _jjGuard: JjHelper.JjScanGuard option,
         _fcsSuppressedCodes: Set<int>,
         lifetime: CancellationTokenSource,
         formatAllFn: (unit -> Async<string>) option,
@@ -704,7 +703,7 @@ type Daemon
     // Per-daemon process registry. Installed as AsyncLocal current on construction
     // so plugin-spawned children (test runners, playwright drivers, etc.) register
     // against this daemon's registry. Dispose kills everything still tracked —
-    // that's how `dotnet fs-hot-watch stop` reaps in-flight test runners.
+    // that's how `dotnet fshw stop` reaps in-flight test runners.
     // The install IDisposable is intentionally discarded: the daemon owns this
     // registry for its full lifetime.
     let processRegistry = ProcessRegistry.Registry()
@@ -892,10 +891,9 @@ type Daemon
 /// Execute the full scan logic, returning the updated agent state.
 let private performScan
     (ctx: BatchContext)
-    (jjGuard: JjHelper.JjScanGuard option)
     (scanSignal: ScanSignal)
     (state: ScanAgentState)
-    (force: bool)
+    (_force: bool)
     (ct: CancellationToken)
     =
     async {
@@ -926,99 +924,60 @@ let private performScan
         let mutable scanState: ScanState = Scanning(total, 0, System.DateTime.UtcNow)
 
         if not files.IsEmpty then
-            // jj guard: determine which files actually need checking (bypassed when force=true)
-            let scanDecision =
-                match jjGuard with
-                | Some guard ->
-                    // Always call BeginScan to snapshot currentCommitId for CommitScanSuccess
-                    let decision = guard.BeginScan()
+            let filesToCheck = files
 
-                    if force then
-                        Logging.info "scan" "force scan: bypassing jj guard"
-                        JjHelper.CheckAll
-                    else
-                        decision
-                | None -> JjHelper.CheckAll
+            // Run preprocessors (e.g., formatter) before dispatching
+            let modified = host.RunPreprocessors(files)
 
-            match scanDecision with
-            | JjHelper.SkipAll -> Logging.info "scan" "jj guard: skipping all checks (commit unchanged)"
-            | _ ->
+            if modified.Length > 0 then
+                Logging.info "scan" $"Preprocessors modified %d{modified.Length} files (watcher may re-trigger)"
 
-                let filesToCheck =
-                    match scanDecision with
-                    | JjHelper.CheckSubset changedFiles ->
-                        let directlyChanged = files |> List.filter (fun f -> changedFiles.Contains(f))
+            host.EmitFileChanged(SourceChanged files)
+            let mutable completed = 0
 
-                        let dependentFiles =
-                            directlyChanged
-                            |> List.map AbsFilePath.create
-                            |> List.collect (fun f -> graph.GetProjectsForFile(f))
-                            |> List.distinct
-                            |> List.collect (fun p -> graph.GetTransitiveDependents(p))
-                            |> List.distinct
-                            |> List.collect (fun proj -> graph.GetSourceFiles(proj))
-                            |> List.map AbsFilePath.value
+            let mutable checkedCount = 0
+            let mutable skippedCount = 0
 
-                        (directlyChanged @ dependentFiles) |> List.distinct
-                    | _ -> files
+            let filesToCheckSet = Set.ofList filesToCheck
 
-                // Run preprocessors (e.g., formatter) before dispatching
-                let modified = host.RunPreprocessors(files)
+            // Check files in parallel tiers based on project dependency graph
+            let tiers = graph.GetParallelTiers()
 
-                if modified.Length > 0 then
-                    Logging.info "scan" $"Preprocessors modified %d{modified.Length} files (watcher may re-trigger)"
+            for tier in tiers do
+                let tierChecks = ResizeArray<Async<FileCheckResult option>>()
 
-                host.EmitFileChanged(SourceChanged files)
-                let mutable completed = 0
+                for proj in tier do
+                    let projPath = AbsProjectPath.value proj
 
-                let mutable checkedCount = 0
-                let mutable skippedCount = 0
+                    let projFiles =
+                        graph.GetSourceFiles(proj)
+                        |> List.map AbsFilePath.value
+                        |> List.filter filesToCheckSet.Contains
 
-                let filesToCheckSet = Set.ofList filesToCheck
+                    skippedCount <- skippedCount + ((graph.GetSourceFiles(proj) |> List.length) - projFiles.Length)
 
-                // Check files in parallel tiers based on project dependency graph
-                let tiers = graph.GetParallelTiers()
+                    match pipeline.GetProjectOptions(projPath) with
+                    | Some options ->
+                        for file in projFiles do
+                            tierChecks.Add(pipeline.CheckFileWithOptions(file, options, ct))
+                    | None ->
+                        for file in projFiles do
+                            tierChecks.Add(pipeline.CheckFile(file, ct))
 
-                for tier in tiers do
-                    let tierChecks = ResizeArray<Async<FileCheckResult option>>()
+                let! results = tierChecks |> Seq.toList |> Async.Parallel
 
-                    for proj in tier do
-                        let projPath = AbsProjectPath.value proj
+                for result in results do
+                    match result with
+                    | Some checkResult ->
+                        checkedCount <- checkedCount + 1
+                        host.EmitFileChecked(checkResult)
+                        reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
+                    | None -> ()
 
-                        let projFiles =
-                            graph.GetSourceFiles(proj)
-                            |> List.map AbsFilePath.value
-                            |> List.filter filesToCheckSet.Contains
+                    completed <- completed + 1
+                    scanState <- Scanning(total, completed, System.DateTime.UtcNow)
 
-                        skippedCount <- skippedCount + ((graph.GetSourceFiles(proj) |> List.length) - projFiles.Length)
-
-                        match pipeline.GetProjectOptions(projPath) with
-                        | Some options ->
-                            for file in projFiles do
-                                tierChecks.Add(pipeline.CheckFileWithOptions(file, options, ct))
-                        | None ->
-                            for file in projFiles do
-                                tierChecks.Add(pipeline.CheckFile(file, ct))
-
-                    let! results = tierChecks |> Seq.toList |> Async.Parallel
-
-                    for result in results do
-                        match result with
-                        | Some checkResult ->
-                            checkedCount <- checkedCount + 1
-                            host.EmitFileChecked(checkResult)
-                            reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
-                        | None -> ()
-
-                        completed <- completed + 1
-                        scanState <- Scanning(total, completed, System.DateTime.UtcNow)
-
-                Logging.info "scan" $"Checked %d{checkedCount} files (%d{tiers.Length} tiers), skipped %d{skippedCount}"
-
-            // Commit jj guard after successful scan
-            match jjGuard with
-            | Some guard -> guard.CommitScanSuccess()
-            | None -> ()
+            Logging.info "scan" $"Checked %d{checkedCount} files (%d{tiers.Length} tiers), skipped %d{skippedCount}"
 
         sw.Stop()
         let finalScanState = ScanComplete(total, sw.Elapsed)
@@ -1043,10 +1002,6 @@ module Daemon =
         {
             CacheBackend: ICheckCacheBackend option
             CacheKeyProvider: ICacheKeyProvider option
-            /// When true, install a `JjHelper.JjScanGuard` to skip scanning when
-            /// the working-copy commit_id is unchanged. Independent of the cache
-            /// key provider — config-driven, no runtime type-test required.
-            EnableJjScanGuard: bool
             /// FCS diagnostic codes to suppress. `None` means the default suppression set.
             FcsSuppressedCodes: int list option
             /// `PathFilter.isExcludedPath` patterns applied during project discovery.
@@ -1060,7 +1015,6 @@ module Daemon =
         let defaults: DaemonOptions =
             { CacheBackend = None
               CacheKeyProvider = None
-              EnableJjScanGuard = false
               FcsSuppressedCodes = None
               ExcludePatterns = []
               ExtraWatchPatterns = [] }
@@ -1194,12 +1148,6 @@ module Daemon =
 
             let watcher = FileWatcher.create repoRoot onChange None extraWatchPatterns
 
-            let jjGuard =
-                if opts.EnableJjScanGuard then
-                    Some(JjHelper.JjScanGuard(repoRoot))
-                else
-                    None
-
             let scanSignal = ScanSignal(cancellationToken = lifetime.Token)
 
             // Mutable ref allows the agent loop (which starts immediately) to
@@ -1216,7 +1164,7 @@ module Daemon =
                                 match msg with
                                 | RequestScan(force, ct, reply) ->
                                     try
-                                        let! newState = performScan batchCtx jjGuard scanSignal state force ct
+                                        let! newState = performScan batchCtx scanSignal state force ct
 
                                         match scanAgentRef.Value with
                                         | Some sa ->
@@ -1256,7 +1204,6 @@ module Daemon =
                 daemonCtRef,
                 new ManualResetEventSlim(false),
                 scanSignal,
-                jjGuard,
                 fcsSuppressedCodes,
                 lifetime,
                 Some formatAllViaAgent,

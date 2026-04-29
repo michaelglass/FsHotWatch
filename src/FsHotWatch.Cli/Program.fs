@@ -45,7 +45,7 @@ module WaitMode =
         | true, Some s when s <= 0 -> Error "--timeout must be a positive number of seconds"
         | true, Some s -> Ok(WaitMode.WaitFor(TimeSpan.FromSeconds(float s)))
 
-type ConfigCommand = | [<Cmd("Validate .fs-hot-watch.json without starting the daemon")>] Check
+type ConfigCommand = | [<Cmd("Validate .fshw.json without starting the daemon")>] Check
 
 type CoverageCommand =
     | [<Cmd("Delete coverage baseline + partial JSON so the next full run rebuilds from scratch",
@@ -89,7 +89,7 @@ let globalSpec =
 
 let commandTree = globalSpec.Tree
 
-let cliName = "fs-hot-watch"
+let cliName = "fshw"
 
 let private isRunOnce = List.contains RunOnce
 
@@ -136,7 +136,7 @@ let findRepoRoot (startDir: string) =
 let computePipeName (repoRoot: string) =
     let hash = SHA256.HashData(Encoding.UTF8.GetBytes(repoRoot))
     let short = Convert.ToHexStringLower(hash).Substring(0, 12)
-    $"fs-hot-watch-{short}"
+    $"fshw-{short}"
 
 /// Injectable file system operations for testability.
 type FileOps =
@@ -241,7 +241,7 @@ let private withIpc (action: unit -> int) : int =
                 Some
                     "The IPC pipe returned a corrupted message — usually caused by another \
                      daemon (possibly an older version) writing to the same pipe. Try: \
-                     `pkill -f FsHotWatch.Cli.dll` then `dotnet fs-hot-watch start`."
+                     `pkill -f FsHotWatch.Cli.dll` then `dotnet fshw start`."
             | :? TimeoutException ->
                 Some "Daemon did not respond in time. It may be busy or hung — check `logs/daemon.log`."
             | _ -> None
@@ -278,7 +278,7 @@ let private ensureAndQueryErrors
 
 /// Compute a hash of the config file + CLI binary for staleness detection (injectable).
 let computeConfigHashWith (fileOps: FileOps) (repoRoot: string) (exePath: string) =
-    let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
+    let configPath = Path.Combine(repoRoot, ".fshw.json")
 
     let configContent =
         if fileOps.FileExists configPath then
@@ -316,7 +316,7 @@ let decideDaemonAction (isRunning: bool) (storedHash: string) (currentHash: stri
 
 /// Kill a stale daemon process by PID file (injectable).
 let killStaleDaemonWith (fileOps: FileOps) (processOps: ProcessOps) (repoRoot: string) =
-    let pidPath = Path.Combine(repoRoot, ".fs-hot-watch", "daemon.pid")
+    let pidPath = Path.Combine(repoRoot, ".fshw", "daemon.pid")
 
     if fileOps.FileExists pidPath then
         try
@@ -349,7 +349,7 @@ let startFreshDaemonWith
     (logDirName: string)
     (startupTimeoutSeconds: float)
     : bool =
-    let stateDir = Path.Combine(repoRoot, ".fs-hot-watch")
+    let stateDir = Path.Combine(repoRoot, ".fshw")
 
     let logDir =
         if Path.IsPathRooted(logDirName) then
@@ -391,7 +391,7 @@ let private ensureDaemon
     (logDirName: string)
     (startupTimeoutSeconds: float)
     : bool =
-    let stateDir = Path.Combine(repoRoot, ".fs-hot-watch")
+    let stateDir = Path.Combine(repoRoot, ".fshw")
     let hashPath = Path.Combine(stateDir, "config.hash")
     let currentHash = computeConfigHash repoRoot
     let isRunning = ipc.IsRunning pipeName
@@ -492,7 +492,7 @@ let executeCommand
 
     match command with
     | Start ->
-        let stateDir = Path.Combine(repoRoot, ".fs-hot-watch")
+        let stateDir = Path.Combine(repoRoot, ".fshw")
         let pidFile = Path.Combine(stateDir, "daemon.pid")
         let lockFile = Path.Combine(stateDir, "daemon.lock")
         Directory.CreateDirectory(stateDir) |> ignore
@@ -534,7 +534,7 @@ let executeCommand
                 e.Cancel <- true
                 cts.Cancel())
 
-            // Stop the daemon cleanly if `.fs-hot-watch.json` is edited. The
+            // Stop the daemon cleanly if `.fshw.json` is edited. The
             // user then runs the daemon again to pick up the new config (or
             // sees the error if the edit was invalid). No hot-reload.
             use _configWatcher =
@@ -746,7 +746,7 @@ let executeCommand
 
         match WaitMode.fromFlags flags with
         | Error msg ->
-            eprintfn "fs-hot-watch errors: %s" msg
+            eprintfn "fshw errors: %s" msg
             2
         | Ok waitMode ->
             withDaemonAndIpc (fun () ->
@@ -766,7 +766,7 @@ let executeCommand
 
                 match waitResult with
                 | Error msg ->
-                    eprintfn "fs-hot-watch errors --wait: %s" msg
+                    eprintfn "fshw errors --wait: %s" msg
                     2
                 | Ok() ->
                     let errorsJson = ipc.GetDiagnostics pipeName "" |> Async.RunSynchronously
@@ -787,10 +787,9 @@ let executeCommand
 
             IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
     | Init ->
-        let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
+        let configPath = Path.Combine(repoRoot, ".fshw.json")
         let projects = InitConfig.discoverProjects repoRoot None
-        let hasJj = detectDefaultCacheBackend repoRoot = JjFileBackend
-        let config = InitConfig.generateConfig projects hasJj
+        let config = InitConfig.generateConfig projects
         let json = InitConfig.serializeConfig config
 
         try
@@ -924,13 +923,11 @@ let main args =
                     try
                         loadConfig repoRoot
                     with ConfigError msg ->
-                        eprintfn $"fs-hot-watch: config error: %s{msg}"
+                        eprintfn $"fshw: config error: %s{msg}"
                         exit 2
 
                 let cacheConfig = if opts.NoCache then DaemonConfig.NoCache else config.Cache
-
-                let (backend, keyProvider, enableJjScanGuard) =
-                    DaemonConfig.createCacheComponents repoRoot cacheConfig
+                let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
 
                 let fileCommandPatterns =
                     config.FileCommands
@@ -943,7 +940,6 @@ let main args =
                         { Daemon.DaemonOptions.defaults with
                             CacheBackend = backend
                             CacheKeyProvider = keyProvider
-                            EnableJjScanGuard = enableJjScanGuard
                             ExcludePatterns = config.Exclude
                             ExtraWatchPatterns = fileCommandPatterns }
 

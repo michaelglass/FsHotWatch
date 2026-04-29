@@ -51,7 +51,7 @@ let formatStalenessWarning (stale: (string * string list) list) : string =
             for file in files do
                 sb.AppendLine($"  [%s{plugin}] %s{file} modified after last run") |> ignore
 
-            sb.AppendLine($"  → run `fs-hot-watch rerun %s{plugin}` to refresh") |> ignore
+            sb.AppendLine($"  → run `fshw rerun %s{plugin}` to refresh") |> ignore
 
         sb.ToString().TrimEnd('\n', '\r')
 

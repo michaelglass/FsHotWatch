@@ -209,9 +209,12 @@ let ``parseConfig cache false bool returns NoCache`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``parseConfig cache true bool returns defaults cache`` () =
-    let defaultsWithJj = { defaults with Cache = JjFileBackend }
-    let config = parseConfig """{"cache": true}""" defaultsWithJj
-    test <@ config.Cache = JjFileBackend @>
+    let defaultsWithMem =
+        { defaults with
+            Cache = InMemoryOnly 200 }
+
+    let config = parseConfig """{"cache": true}""" defaultsWithMem
+    test <@ config.Cache = InMemoryOnly 200 @>
 
 [<Fact(Timeout = 5000)>]
 let ``parseConfig cache memory returns InMemoryOnly 500`` () =
@@ -224,9 +227,9 @@ let ``parseConfig cache file returns FileBackend`` () =
     test <@ config.Cache = FileBackend @>
 
 [<Fact(Timeout = 5000)>]
-let ``parseConfig cache jj returns JjFileBackend`` () =
+let ``parseConfig cache jj is treated as file (legacy alias)`` () =
     let config = parseConfig """{"cache": "jj"}""" defaults
-    test <@ config.Cache = JjFileBackend @>
+    test <@ config.Cache = FileBackend @>
 
 [<Fact(Timeout = 5000)>]
 let ``parseConfig cache unknown string returns defaults cache`` () =
@@ -502,7 +505,7 @@ let ``parseConfig with full configuration`` () =
         "build": {"command": "make", "args": "all"},
         "format": false,
         "lint": false,
-        "cache": "jj",
+        "cache": "file",
         "analyzers": {"paths": ["/analyzers"]},
         "tests": {
             "beforeRun": "make build",
@@ -525,7 +528,7 @@ let ``parseConfig with full configuration`` () =
 
     test <@ config.Format = Off @>
     test <@ config.Lint = false @>
-    test <@ config.Cache = JjFileBackend @>
+    test <@ config.Cache = FileBackend @>
 
     test
         <@
@@ -540,11 +543,11 @@ let ``parseConfig with full configuration`` () =
 // --- detectDefaultCacheBackend ---
 
 [<Fact(Timeout = 5000)>]
-let ``detectDefaultCacheBackend returns JjFileBackend when .jj exists`` () =
+let ``detectDefaultCacheBackend returns FileBackend regardless of .jj presence`` () =
     withTempDir "cfg-jj" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
         let result = detectDefaultCacheBackend tmpDir
-        test <@ result = JjFileBackend @>)
+        test <@ result = FileBackend @>)
 
 [<Fact(Timeout = 5000)>]
 let ``detectDefaultCacheBackend returns FileBackend when no .jj`` () =
@@ -555,42 +558,25 @@ let ``detectDefaultCacheBackend returns FileBackend when no .jj`` () =
 // --- createCacheComponents ---
 
 [<Fact(Timeout = 5000)>]
-let ``createCacheComponents NoCache returns None None false`` () =
+let ``createCacheComponents NoCache returns None None`` () =
     withTempDir "cfg-cc" (fun tmpDir ->
-        let (backend, keyProvider, enableJjScanGuard) = createCacheComponents tmpDir NoCache
+        let (backend, keyProvider) = createCacheComponents tmpDir NoCache
         test <@ backend = None @>
-        test <@ keyProvider = None @>
-        test <@ enableJjScanGuard = false @>)
+        test <@ keyProvider = None @>)
 
 [<Fact(Timeout = 5000)>]
-let ``createCacheComponents InMemoryOnly returns Some backend, Some keyProvider, scan-guard off`` () =
+let ``createCacheComponents InMemoryOnly returns Some backend and Some keyProvider`` () =
     withTempDir "cfg-cc-mem" (fun tmpDir ->
-        let (backend, keyProvider, enableJjScanGuard) =
-            createCacheComponents tmpDir (InMemoryOnly 100)
-
+        let (backend, keyProvider) = createCacheComponents tmpDir (InMemoryOnly 100)
         test <@ backend.IsSome @>
-        test <@ keyProvider.IsSome @>
-        test <@ enableJjScanGuard = false @>)
+        test <@ keyProvider.IsSome @>)
 
 [<Fact(Timeout = 5000)>]
-let ``createCacheComponents FileBackend returns Some backend, Some keyProvider, scan-guard off`` () =
+let ``createCacheComponents FileBackend returns Some backend and Some keyProvider`` () =
     withTempDir "cfg-cc-file" (fun tmpDir ->
-        let (backend, keyProvider, enableJjScanGuard) =
-            createCacheComponents tmpDir FileBackend
-
+        let (backend, keyProvider) = createCacheComponents tmpDir FileBackend
         test <@ backend.IsSome @>
-        test <@ keyProvider.IsSome @>
-        test <@ enableJjScanGuard = false @>)
-
-[<Fact(Timeout = 5000)>]
-let ``createCacheComponents JjFileBackend returns Some backend, Some keyProvider, scan-guard on`` () =
-    withTempDir "cfg-cc-jj" (fun tmpDir ->
-        let (backend, keyProvider, enableJjScanGuard) =
-            createCacheComponents tmpDir JjFileBackend
-
-        test <@ backend.IsSome @>
-        test <@ keyProvider.IsSome @>
-        test <@ enableJjScanGuard = true @>)
+        test <@ keyProvider.IsSome @>)
 
 // --- defaultConfigFor ---
 
@@ -763,11 +749,11 @@ let ``parseConfig tests without extensions defaults to empty`` () =
     test <@ config.Tests.Value.Extensions |> List.isEmpty @>
 
 [<Fact(Timeout = 5000)>]
-let ``loadConfig with jj repo defaults to JjFileBackend`` () =
+let ``loadConfig defaults to FileBackend regardless of .jj presence`` () =
     withTempDir "cfg-def-jj" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
         let config = loadConfig tmpDir
-        test <@ config.Cache = JjFileBackend @>)
+        test <@ config.Cache = FileBackend @>)
 
 // --- parseConfig: build dependsOn ---
 
@@ -907,9 +893,9 @@ let ``registerPlugins with afterTests-only plugin does not register pattern`` ()
 [<Fact(Timeout = 5000)>]
 let ``loadConfig throws ConfigError on malformed JSON`` () =
     withTempDir "cfg-malformed" (fun tmpDir ->
-        File.WriteAllText(Path.Combine(tmpDir, ".fs-hot-watch.json"), "{not valid json")
+        File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), "{not valid json")
         let ex = Assert.Throws<ConfigError>(fun () -> loadConfig tmpDir |> ignore)
-        Assert.Contains(".fs-hot-watch.json", ex.Message))
+        Assert.Contains(".fshw.json", ex.Message))
 
 [<Fact(Timeout = 5000)>]
 let ``parseConfig raises ConfigError when fileCommands entry lacks pattern and afterTests`` () =
@@ -968,9 +954,9 @@ let ``countPlugins returns 0 for stripped config`` () =
 // --- watchConfigFile ---
 
 [<Fact(Timeout = 10000)>]
-let ``watchConfigFile invokes callback when .fs-hot-watch.json is written`` () =
+let ``watchConfigFile invokes callback when .fshw.json is written`` () =
     withTempDir "cfg-watch-write" (fun tmpDir ->
-        let configPath = Path.Combine(tmpDir, ".fs-hot-watch.json")
+        let configPath = Path.Combine(tmpDir, ".fshw.json")
         File.WriteAllText(configPath, "{}")
 
         use signal = new System.Threading.ManualResetEventSlim(false)
@@ -1000,17 +986,17 @@ let ``watchRepoConfigFile returns no-op disposable when no config file exists`` 
 [<Fact(Timeout = 10000)>]
 let ``watchRepoConfigFile watches existing config file`` () =
     withTempDir "cfg-watch-existing" (fun tmpDir ->
-        File.WriteAllText(Path.Combine(tmpDir, ".fs-hot-watch.json"), "{}")
+        File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), "{}")
         use signal = new System.Threading.ManualResetEventSlim(false)
         use _w = watchRepoConfigFile tmpDir (fun _ -> signal.Set())
         System.Threading.Thread.Sleep(100)
-        File.WriteAllText(Path.Combine(tmpDir, ".fs-hot-watch.json"), """{"lint": false}""")
+        File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), """{"lint": false}""")
         Assert.True(signal.Wait(5000), "expected callback within 5s"))
 
 [<Fact(Timeout = 10000)>]
 let ``watchConfigFile reports invalid reason when new contents fail to parse`` () =
     withTempDir "cfg-watch-invalid" (fun tmpDir ->
-        let configPath = Path.Combine(tmpDir, ".fs-hot-watch.json")
+        let configPath = Path.Combine(tmpDir, ".fshw.json")
         File.WriteAllText(configPath, "{}")
 
         use signal = new System.Threading.ManualResetEventSlim(false)
