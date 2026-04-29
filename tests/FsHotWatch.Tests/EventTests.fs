@@ -1,5 +1,6 @@
 module FsHotWatch.Tests.EventTests
 
+open System
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
@@ -89,19 +90,19 @@ let ``isQuiescent is true for Idle, Completed and Failed, false for Running`` ()
 
 [<Fact(Timeout = 5000)>]
 let ``TestResult.output returns the output string for both cases`` () =
-    test <@ TestResult.output (TestsPassed("ok", false)) = "ok" @>
-    test <@ TestResult.output (TestsFailed("bad", true)) = "bad" @>
+    test <@ TestResult.output (TestsPassed("ok", false, TimeSpan.Zero)) = "ok" @>
+    test <@ TestResult.output (TestsFailed("bad", true, TimeSpan.Zero)) = "bad" @>
 
 [<Fact(Timeout = 5000)>]
 let ``TestResult.wasFiltered reflects the filter flag`` () =
-    test <@ not (TestResult.wasFiltered (TestsPassed("ok", false))) @>
-    test <@ TestResult.wasFiltered (TestsPassed("ok", true)) @>
-    test <@ TestResult.wasFiltered (TestsFailed("bad", true)) @>
+    test <@ not (TestResult.wasFiltered (TestsPassed("ok", false, TimeSpan.Zero))) @>
+    test <@ TestResult.wasFiltered (TestsPassed("ok", true, TimeSpan.Zero)) @>
+    test <@ TestResult.wasFiltered (TestsFailed("bad", true, TimeSpan.Zero)) @>
 
 [<Fact(Timeout = 5000)>]
 let ``TestResult.isPassed distinguishes Passed and Failed`` () =
-    test <@ TestResult.isPassed (TestsPassed("ok", false)) @>
-    test <@ not (TestResult.isPassed (TestsFailed("bad", false))) @>
+    test <@ TestResult.isPassed (TestsPassed("ok", false, TimeSpan.Zero)) @>
+    test <@ not (TestResult.isPassed (TestsFailed("bad", false, TimeSpan.Zero))) @>
 
 [<Fact(Timeout = 5000)>]
 let ``TestResult.ranFullSuite is true for empty map`` () =
@@ -110,13 +111,17 @@ let ``TestResult.ranFullSuite is true for empty map`` () =
 [<Fact(Timeout = 5000)>]
 let ``TestResult.ranFullSuite is true when every project ran unfiltered`` () =
     let results =
-        Map.ofList [ "A", TestsPassed("ok", false); "B", TestsFailed("fail", false) ]
+        Map.ofList
+            [ "A", TestsPassed("ok", false, TimeSpan.Zero)
+              "B", TestsFailed("fail", false, TimeSpan.Zero) ]
 
     test <@ TestResult.ranFullSuite results @>
 
 [<Fact(Timeout = 5000)>]
 let ``TestResult.ranFullSuite is false if any project was filtered`` () =
     let results =
-        Map.ofList [ "A", TestsPassed("ok", false); "B", TestsPassed("ok", true) ]
+        Map.ofList
+            [ "A", TestsPassed("ok", false, TimeSpan.Zero)
+              "B", TestsPassed("ok", true, TimeSpan.Zero) ]
 
     test <@ not (TestResult.ranFullSuite results) @>

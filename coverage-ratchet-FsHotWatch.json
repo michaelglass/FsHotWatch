@@ -94,7 +94,7 @@
     },
     "Daemon.fs": [
       {
-        "line": 74,
+        "line": 75,
         "branch": 67,
         "platform": "macos"
       },
@@ -141,7 +141,7 @@
         "platform": "linux"
       },
       {
-        "line": 94,
+        "line": 95,
         "branch": 100,
         "reason": "loosened automatically"
       }
@@ -188,7 +188,7 @@
     "FileTaskCache.fs": [
       {
         "line": 79,
-        "branch": 68,
+        "branch": 67,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
