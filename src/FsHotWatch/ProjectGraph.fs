@@ -14,6 +14,25 @@ type IProjectGraphReader =
     abstract GetAffectedProjects: changedFiles: AbsFilePath list -> AbsProjectPath list
     abstract GetAllProjects: unit -> AbsProjectPath list
     abstract GetAllFiles: unit -> AbsFilePath list
+    /// First <TargetFramework> (or first entry of <TargetFrameworks>) parsed at
+    /// fsproj registration time. None if the .fsproj declared neither.
+    abstract GetTargetFramework: projectPath: AbsProjectPath -> string option
+
+/// Extract the first <TargetFramework> or first entry of <TargetFrameworks>
+/// from a loaded .fsproj XDocument. Public for unit testing.
+let extractTargetFramework (doc: System.Xml.Linq.XDocument) : string option =
+    let tryDescendant name =
+        doc.Descendants() |> Seq.tryFind (fun e -> e.Name.LocalName = name)
+
+    match tryDescendant "TargetFramework" with
+    | Some e when not (System.String.IsNullOrWhiteSpace e.Value) -> Some(e.Value.Trim())
+    | _ ->
+        match tryDescendant "TargetFrameworks" with
+        | Some e ->
+            e.Value.Split(';')
+            |> Array.map (fun s -> s.Trim())
+            |> Array.tryFind (System.String.IsNullOrEmpty >> not)
+        | None -> None
 
 /// Tracks project structure: which files belong to which project,
 /// which projects reference which, and dependency ordering.
@@ -22,6 +41,7 @@ type ProjectGraph() as this =
     let projectFiles = ConcurrentDictionary<AbsProjectPath, AbsFilePath list>()
     let projectReferences = ConcurrentDictionary<AbsProjectPath, AbsProjectPath list>()
     let projectDependents = ConcurrentDictionary<AbsProjectPath, AbsProjectPath list>()
+    let targetFrameworks = ConcurrentDictionary<AbsProjectPath, string>()
 
     let appendIfAbsent (dict: ConcurrentDictionary<'K, 'V list>) (key: 'K) (value: 'V) =
         dict.AddOrUpdate(
@@ -43,6 +63,7 @@ type ProjectGraph() as this =
         projectFiles.Clear()
         projectReferences.Clear()
         projectDependents.Clear()
+        targetFrameworks.Clear()
 
     /// Register a project with its source files and references.
     member _.RegisterProject
@@ -87,8 +108,18 @@ type ProjectGraph() as this =
                     None)
             |> Seq.toList
 
+        match extractTargetFramework doc with
+        | Some tfm -> targetFrameworks[absPath] <- tfm
+        | None -> ()
+
         this.RegisterProject(absPath, sourceFiles, references)
         (sourceFiles, references)
+
+    /// Get the parsed <TargetFramework> for a project, or None if not registered.
+    member _.GetTargetFramework(projectPath: AbsProjectPath) : string option =
+        match targetFrameworks.TryGetValue(projectPath) with
+        | true, tfm -> Some tfm
+        | false, _ -> None
 
     /// Get the project that owns a file, or None.
     /// For shared files, returns the first registered project.
@@ -205,3 +236,4 @@ type ProjectGraph() as this =
         member _.GetAffectedProjects(changedFiles) = this.GetAffectedProjects(changedFiles)
         member _.GetAllProjects() = this.GetAllProjects()
         member _.GetAllFiles() = this.GetAllFiles()
+        member _.GetTargetFramework(projectPath) = this.GetTargetFramework(projectPath)
