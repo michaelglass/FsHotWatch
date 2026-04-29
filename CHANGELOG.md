@@ -4,6 +4,65 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### BuildPlugin owns artifact-freshness; remove ProjectDirtyTracker
+
+#### Added
+- `FsHotWatch.Build.BuildOutcome.BuildArtifactsStale of stale: StaleArtifact list * output: string` — new variant emitted when MSBuild's incremental cache reports success but per-project canonical DLLs are missing or older than their newest source file. Post-build verification runs in the async worker after `decideBuildOutcome` returns `BuildPassed`. Downstream plugins (TestPrune, etc.) can therefore trust `BuildSucceeded` as a guarantee of artifact freshness.
+- `FsHotWatch.Build.StaleArtifact` / `StaleReason` types carry the structured diagnostic so cache replay reproduces the same per-project messages deterministically.
+- Core `IProjectGraphReader` gained `GetTargetFramework`, `GetCanonicalDllPath`, and `GetMaxSourceMtime` accessors so `BuildPlugin.verifyArtifactsFresh` (and other consumers) can probe canonical paths without re-opening .fsproj files.
+
+#### Removed
+- **BREAKING:** `FsHotWatch.ProjectDirtyTracker` module — the dirty-bit handoff between BuildPlugin and TestPrunePlugin is gone. With staleness enforced inline by post-build verification, the heuristic dirty tracker has no consumers (`markDirty` / `clearFreshProjects` / `isStaleProject` removed).
+- **BREAKING:** `BuildPlugin.create` no longer takes `dirtyTracker` (drops the 9th positional argument). `TestPrunePlugin.create` no longer takes `dirtyTracker` or `stalenessCheck` (drops the 8th and 9th arguments).
+- TestPrune skip-on-stale code path, stale-binary warning re-emit, and the manual-run-tests deadlock workaround. With the freshness contract upstream, TestPrune dispatches every project on `BuildSucceeded`.
+- `adaptiveTimeout` helper and `lastSuccessfulElapsed` map (only meaningful for stale-manual recovery, which no longer exists).
+- `FsHotWatch.Cli.DaemonConfig.canonicalDllPath` — moved to `IProjectGraphReader.GetCanonicalDllPath` in the core lib.
+
+### Naming normalized to `fshw`
+
+#### Changed
+- **BREAKING:** CLI command renamed from `fs-hot-watch` to `fshw` (`ToolCommandName` + IPC pipe-name prefix).
+- **BREAKING:** Config file renamed from `.fs-hot-watch.json` to `.fshw.json`. Existing repos must rename.
+- **BREAKING:** State directory consolidated from `.fs-hot-watch/` to `.fshw/` — pid, lock, and config-hash now live alongside the existing `cache/`, `errors/`, `logs/`, `test-runs/`, and `test-impact.db`. One directory for everything fshw writes. Existing daemons must be stopped and the legacy `.fs-hot-watch/` directory deleted.
+
+### Drop jj reliance from plugin cache keys; content-hash FCS cache keys
+
+#### Added
+- `FsHotWatch.CheckCache.DiagnosticSignature` record (`StartLine/StartColumn/ErrorNumber/Severity/Message`) and `hashDiagnosticSignatures` — extracted from `fcsCheckSignature` so the hashing/sorting logic is unit-testable without a live `FSharpCheckFileResults`.
+
+#### Changed
+- `TimestampCacheKeyProvider.GetFileHash` now hashes file **content** (SHA-256) instead of metadata (path + size + mtime). Closes a correctness gap where two files with the same size + mtime but different bytes would collide. Class name preserved for backward compatibility; behavior matches the original "ls-tree merkle hash" design intent.
+- `FileCommandPlugin` cache key migrated from `optionalSaltedCacheKey getCommitId` to a pure `merkleCacheKey` over `(command, args, arg-file SHA-256s)`. Editing a config file referenced in `args` (e.g. `coverage-ratchet.json`) now invalidates cached output even when the working-copy commit_id is unchanged.
+- `FsHotWatch.Fantomas` `FormatCheckPlugin` cache key migrated from `optionalCacheKey getCommitId` to a content-merkle of `(file path, file source)` per `FileChanged` event.
+
+#### Removed
+- **BREAKING:** `getCommitId` parameter dropped from all six plugin `create` signatures (`BuildPlugin`, `TestPrunePlugin`, `AnalyzersPlugin`, `LintPlugin`, `FormatCheckPlugin.createFormatCheck`, `FileCommandPlugin`). New positional orders are documented in each package README.
+- **BREAKING:** `FsHotWatch.JjHelper` module (`JjScanGuard`, `JjScanDecision`, `getWorkingCopyCommitId`, `getChangedFiles`) — the scan-skip-when-commit-unchanged optimization saved <5ms on a no-op trigger and was the only runtime jj reliance.
+- **BREAKING:** `FsHotWatch.CheckCache.JjCacheKeyProvider` — was a stub that delegated to `TimestampCacheKeyProvider`; only role was as a marker for `Daemon.fs` runtime type-test.
+- **BREAKING:** `Daemon.DaemonOptions.EnableJjScanGuard` field.
+- **BREAKING:** `DaemonConfig.JjFileBackend` variant. The string `"jj"` is still accepted as a legacy alias and falls back to `FileBackend`.
+- **BREAKING:** `force` parameter removed from the Scan API: `Daemon.ScanAll(?force)` → `ScanAll()`, `DaemonRpcConfig.RequestScan: bool -> unit` → `unit -> unit`, `IpcClient.scan pipeName force` → `IpcClient.scan pipeName`. The CLI `scan --force` flag is gone (had been a no-op since the scan-guard was deleted).
+
+### TestPrune: per-test flakiness + per-project elapsed
+
+#### Added
+- `FsHotWatch.TestPrune.Flakiness` module: parses CTRF (Common Test Report Format) JSON from Microsoft Testing Platform runners (xUnit v3, MSTest v3+), persists per-test rolling history to `.fshw/test-history.json` (capped at 20 runs per test), and computes a `transitions / (n - 1)` flakiness score with skipped runs filtered out.
+- `flaky-tests` IPC command — returns the top-K flakiest tests with name, score, and run count. CTRF generation is opt-in via a `dotnet`-vs-non-dotnet command discriminator so non-MTP runners (echo/sleep stubs in unit tests) are unaffected.
+- **BREAKING:** Core `TestResult` DU widened with `elapsed: TimeSpan` on all three constructors (`TestsPassed`, `TestsFailed`, `TestsTimedOut`). Round-tripped via a new `elapsedSeconds` field in `FileTaskCache`; older cached entries deserialize as `TimeSpan.Zero`. New `TestResult.elapsed` accessor; `elapsedMs` field on per-project `test-results` JSON output.
+- TestPrune run summary now names the slowest project when 2+ projects ran (e.g. `"3 passed, 0 failed in 3 projects (selected: no, slowest: ProjA 1.2s)"`) so a bottlenecked project surfaces from the plugin status line without querying JSON.
+
+### CLI: warn when FileCommand plugin inputs go stale
+
+#### Added
+- Run-once output now scans each `FileCommand` plugin's args for files modified after the plugin's last successful run and emits `cached output may be stale → run fshw rerun <plugin>`. Defense-in-depth alongside the FileCommand cache-key salt fix. New helpers: `FsHotWatch.Cli.RunOnceOutput.PluginRunInfo`, `detectStalePluginInputs`, `formatStalenessWarning`; `FsHotWatch.FileCommand.collectArgFiles`, `argsStalerThan`.
+- Cold-start cache bypass for `BuildPlugin`, `TestPrunePlugin`, and `FileCommandPlugin` — `CacheKey` returns `None` until each plugin's first work completes in the daemon session, so a stale on-disk entry from a prior session can't pre-empt the cold-start replay.
+
+### Analyzers: failOnSeverity threshold
+
+#### Added
+- `failOnSeverity` parameter on `AnalyzersPlugin.create` — promotes analyzer diagnostics at or above the given severity to error. Default `Hint` (everything is fail-worthy). Configurable via `analyzers.failOnSeverity` in `.fshw.json`; unknown strings are warned and ignored.
+- `FsHotWatch.ErrorLedger.DiagnosticSeverity.order` — total order on `Error/Warning/Info/Hint` for severity-threshold comparisons. `fromString` now returns `DiagnosticSeverity option` instead of throwing on unknown strings.
+
 ### MSBuild orphan workers fixed at the ProcessHelper layer
 
 #### Added
