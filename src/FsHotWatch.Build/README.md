@@ -24,7 +24,7 @@ if only test files changed (and emits `BuildSucceeded` directly).
 
 ## Configuration
 
-In `.fs-hot-watch.json`:
+In `.fshw.json`:
 
 ```json
 {
@@ -48,10 +48,10 @@ Set `"build": false` to disable the build plugin entirely.
 
 ```bash
 # Trigger a build and wait for it
-fs-hot-watch build
+fshw build
 
 # Check build status
-fs-hot-watch build-status
+fshw build-status
 ```
 
 ## Programmatic usage

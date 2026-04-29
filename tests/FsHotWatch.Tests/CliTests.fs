@@ -389,7 +389,7 @@ let ``computePipeName is deterministic`` () =
 [<Fact(Timeout = 5000)>]
 let ``computePipeName starts with prefix`` () =
     let name = computePipeName "/any/path"
-    test <@ name.StartsWith("fs-hot-watch-") @>
+    test <@ name.StartsWith("fshw-") @>
 
 [<Fact(Timeout = 5000)>]
 let ``computePipeName differs for different paths`` () =
@@ -400,8 +400,8 @@ let ``computePipeName differs for different paths`` () =
 [<Fact(Timeout = 5000)>]
 let ``computePipeName has expected length`` () =
     let name = computePipeName "/test"
-    // "fs-hot-watch-" is 13 chars + 12 hex chars = 25
-    test <@ name.Length = 25 @>
+    // "fshw-" is 5 chars + 12 hex chars = 17
+    test <@ name.Length = 17 @>
 
 // --- CLI integration tests (real daemon + IPC) ---
 
@@ -714,7 +714,7 @@ let ``executeCommand Status with plugin name queries GetDiagnostics for that plu
 
 [<Fact(Timeout = 5000)>]
 let ``executeCommand Start with fake daemon throws on null daemon`` () =
-    // Use a unique temp dir to avoid writing the test process PID to /tmp/.fs-hot-watch/daemon.pid
+    // Use a unique temp dir to avoid writing the test process PID to /tmp/.fshw/daemon.pid
     // where killStaleDaemon from other tests would read it and kill the test process.
     withTempDir "cli-start" (fun tmpDir ->
         let mutable createCalled = false
@@ -961,7 +961,7 @@ let ``executeCommand Errors --wait returns exit code 2 when daemon dies mid-wait
     // Simulates the daemon being gracefully stopped (or crashing) while a client
     // is blocked in WaitForComplete: the RPC stream breaks and the StreamJsonRpc
     // call throws an IOException-shaped error. The waiter must surface a non-zero
-    // exit so wait-based scripts (`fs-hot-watch errors --wait`, etc.) don't
+    // exit so wait-based scripts (`fshw errors --wait`, etc.) don't
     // silently succeed when the daemon disappears.
     let ipc =
         { fakeIpc () with
@@ -1360,7 +1360,7 @@ let ``executeCommand Errors returns 1 when daemon startup fails`` () =
 let ``computeLaunchCommand with dotnet process path returns dotnet tool run`` () =
     let (exe, prefix) = computeLaunchCommand "/usr/local/bin/dotnet"
     test <@ exe = "/usr/local/bin/dotnet" @>
-    test <@ prefix.Contains("fs-hot-watch") @>
+    test <@ prefix.Contains("fshw") @>
 
 [<Fact(Timeout = 5000)>]
 let ``computeLaunchCommand with native exe returns exe directly`` () =
@@ -1372,4 +1372,4 @@ let ``computeLaunchCommand with native exe returns exe directly`` () =
 let ``computeLaunchCommand with dotnet.exe on Windows returns dotnet tool run`` () =
     let (exe, prefix) = computeLaunchCommand """C:\Program Files\dotnet\dotnet.exe"""
     test <@ exe = """C:\Program Files\dotnet\dotnet.exe""" @>
-    test <@ prefix.Contains("fs-hot-watch") @>
+    test <@ prefix.Contains("fshw") @>

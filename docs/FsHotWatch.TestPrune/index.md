@@ -22,7 +22,7 @@ depend on which symbols, so it can tell you exactly what to re-run.
 
 ## Configuration
 
-In `.fs-hot-watch.json`:
+In `.fshw.json`:
 
 ```json
 {
@@ -48,7 +48,7 @@ In `.fs-hot-watch.json`:
 | `projects[].project` | `string` | `"unknown"` | Project name (for filtering and display). |
 | `projects[].command` | `string` | `"dotnet"` | Test runner command. |
 | `projects[].args` | `string` | `"test --project <name>"` | Arguments to the test runner. |
-| `projects[].group` | `string` | `"default"` | Group name (for running subsets via `fs-hot-watch test -p`). |
+| `projects[].group` | `string` | `"default"` | Group name (for running subsets via `fshw test -p`). |
 | `projects[].environment` | `object` | `{}` | Extra environment variables as `"KEY": "VALUE"` pairs. |
 | `projects[].filterTemplate` | `string` | -- | Template for class-based filtering. `{classes}` is replaced with affected test class names. |
 | `projects[].classJoin` | `string` | `" "` | Separator for joining class names in the filter. |
@@ -57,19 +57,19 @@ In `.fs-hot-watch.json`:
 
 ```bash
 # Run all affected tests
-fs-hot-watch test
+fshw test
 
 # Run tests for a specific project group
-fs-hot-watch test -p MyApp.Tests
+fshw test -p MyApp.Tests
 
 # Run only previously-failed tests
-fs-hot-watch test --only-failed
+fshw test --only-failed
 
 # Query which tests are affected by recent changes
-fs-hot-watch affected-tests
+fshw affected-tests
 
 # Reset coverage baseline — next full run rebuilds coverage.baseline.json
-fs-hot-watch coverage refresh-baseline
+fshw coverage refresh-baseline
 ```
 
 ## Coverage
@@ -91,7 +91,7 @@ before rewriting the cobertura file. Partial runs **never lower** the reported
 coverage.
 
 **Bootstrap.** If no `coverage.baseline.json` exists and the run was filtered,
-TestPrune skips cobertura emission entirely. Run `fs-hot-watch test` (or any
+TestPrune skips cobertura emission entirely. Run `fshw test` (or any
 full-suite invocation) once to produce a baseline; subsequent filtered runs
 will merge against it.
 

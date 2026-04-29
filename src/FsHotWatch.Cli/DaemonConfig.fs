@@ -18,35 +18,24 @@ type CacheBackendConfig =
     | NoCache
     /// In-memory LRU cache only (lost on restart)
     | InMemoryOnly of maxSize: int
-    /// File-based cache with timestamp key provider
+    /// File-based cache (content-hashed keys)
     | FileBackend
-    /// File-based cache with jj-aware key provider
-    | JjFileBackend
 
-/// Create cache backend, key provider, and scan-guard flag from config. The
-/// flag controls whether `Daemon` installs a `JjHelper.JjScanGuard` to skip
-/// scanning when the working-copy commit_id is unchanged — true only for
-/// `JjFileBackend` since the optimization needs jj.
+/// Create cache backend and key provider from config.
 let createCacheComponents
     (repoRoot: string)
     (config: CacheBackendConfig)
-    : (ICheckCacheBackend option * ICacheKeyProvider option * bool) =
+    : (ICheckCacheBackend option * ICacheKeyProvider option) =
     let cacheDir = Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "cache")
 
     match config with
-    | NoCache -> (None, None, false)
+    | NoCache -> (None, None)
     | InMemoryOnly maxSize ->
         (Some(FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(maxSize) :> ICheckCacheBackend),
-         Some(TimestampCacheKeyProvider() :> ICacheKeyProvider),
-         false)
+         Some(TimestampCacheKeyProvider() :> ICacheKeyProvider))
     | FileBackend ->
         (Some(FsHotWatch.FileCheckCache.FileCheckCache(cacheDir) :> ICheckCacheBackend),
-         Some(TimestampCacheKeyProvider() :> ICacheKeyProvider),
-         false)
-    | JjFileBackend ->
-        (Some(FsHotWatch.FileCheckCache.FileCheckCache(cacheDir) :> ICheckCacheBackend),
-         Some(TimestampCacheKeyProvider() :> ICacheKeyProvider),
-         true)
+         Some(TimestampCacheKeyProvider() :> ICacheKeyProvider))
 
 /// Resolves which paths from `paths` exist, retrying with short backoff to
 /// handle the case where the daemon starts immediately after `jj workspace
@@ -70,12 +59,9 @@ let resolveExistingPathsWithRetry (dirExists: string -> bool) (sleep: int -> uni
 
     resolved
 
-/// Detect the default cache backend: jj if .jj/ exists, otherwise file.
-let detectDefaultCacheBackend (repoRoot: string) : CacheBackendConfig =
-    if Directory.Exists(Path.Combine(repoRoot, ".jj")) then
-        JjFileBackend
-    else
-        FileBackend
+/// Detect the default cache backend. Always file-based now that jj-specific
+/// caching has been removed; kept for API compatibility.
+let detectDefaultCacheBackend (_repoRoot: string) : CacheBackendConfig = FileBackend
 
 /// Configuration for a single test project.
 ///
@@ -117,7 +103,7 @@ type FormatMode =
     /// Register read-only format check (reports errors without modifying)
     | Check
 
-/// Parsed daemon configuration from .fs-hot-watch.json.
+/// Parsed daemon configuration from .fshw.json.
 type DaemonConfiguration =
     {
         Build:
@@ -169,7 +155,7 @@ let private defaultConfigFor (repoRoot: string) =
       LogDir = "logs"
       TimeoutSec = None }
 
-/// Raised when `.fs-hot-watch.json` cannot be read, parsed, or validated.
+/// Raised when `.fshw.json` cannot be read, parsed, or validated.
 /// Carries a user-facing message.
 exception ConfigError of message: string
 
@@ -245,8 +231,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | true, v when v.ValueKind = JsonValueKind.String ->
             match v.GetString().ToLowerInvariant() with
             | "memory" -> InMemoryOnly 500
-            | "file" -> FileBackend
-            | "jj" -> JjFileBackend
+            | "file"
+            | "jj" -> FileBackend // "jj" was an alias for the jj-aware variant; now always file-based
             | "none"
             | "false" -> NoCache
             | other ->
@@ -526,33 +512,33 @@ let stripConfig (config: DaemonConfiguration) : DaemonConfiguration =
         Tests = None
         FileCommands = [] }
 
-/// Load config from .fs-hot-watch.json in repoRoot. Returns defaults if no file exists.
+/// Load config from .fshw.json in repoRoot. Returns defaults if no file exists.
 /// Raises ConfigError on read / parse / validation failure.
 let loadConfig (repoRoot: string) : DaemonConfiguration =
-    let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
+    let configPath = Path.Combine(repoRoot, ".fshw.json")
 
     let defaults = defaultConfigFor repoRoot
 
     if not (File.Exists configPath) then
-        Logging.info "config" "No .fs-hot-watch.json found, using defaults (build + format + lint)"
+        Logging.info "config" "No .fshw.json found, using defaults (build + format + lint)"
         defaults
     else
         let json =
             try
                 File.ReadAllText(configPath)
             with ex ->
-                raise (ConfigError $"Cannot read .fs-hot-watch.json: %s{ex.Message}")
+                raise (ConfigError $"Cannot read .fshw.json: %s{ex.Message}")
 
         try
             let config = parseConfig json defaults
-            Logging.info "config" "Loaded .fs-hot-watch.json"
+            Logging.info "config" "Loaded .fshw.json"
             config
         with
         | ConfigError _ -> reraise ()
-        | ex -> raise (ConfigError $".fs-hot-watch.json: %s{ex.Message}")
+        | ex -> raise (ConfigError $".fshw.json: %s{ex.Message}")
 
 /// Count the plugins that would be registered for a given configuration.
-/// Used by `fs-hot-watch config check` to report how many plugins are configured.
+/// Used by `fshw config check` to report how many plugins are configured.
 let countPlugins (config: DaemonConfiguration) : int =
     let buildCount =
         match config.Build with
@@ -565,7 +551,7 @@ let countPlugins (config: DaemonConfiguration) : int =
     let fcCount = List.length config.FileCommands
     buildCount + lintCount + analyzerCount + testsCount + fcCount
 
-/// Watch `.fs-hot-watch.json` for any write/rename/create and invoke the callback
+/// Watch `.fshw.json` for any write/rename/create and invoke the callback
 /// once with a human-readable reason. Re-parses the file to distinguish
 /// "config changed" from "config invalid, stopping".
 ///
@@ -619,11 +605,11 @@ let watchConfigFile (configPath: string) (onChange: string -> unit) : IDisposabl
     watcher.EnableRaisingEvents <- true
     watcher :> IDisposable
 
-/// Watch `.fs-hot-watch.json` at `repoRoot` if it exists, otherwise return a
+/// Watch `.fshw.json` at `repoRoot` if it exists, otherwise return a
 /// no-op disposable. Keeps the `start` call-site tidy and gives tests a
 /// direct entry point.
 let watchRepoConfigFile (repoRoot: string) (onChange: string -> unit) : IDisposable =
-    let configPath = Path.Combine(repoRoot, ".fs-hot-watch.json")
+    let configPath = Path.Combine(repoRoot, ".fshw.json")
 
     if File.Exists configPath then
         watchConfigFile configPath onChange
@@ -637,7 +623,7 @@ let watchRepoConfigFile (repoRoot: string) (onChange: string -> unit) : IDisposa
 /// Split the (command, args) pair a shell hook should actually invoke.
 /// Runs the user's command string through `/bin/sh -c` so shell features
 /// (`&&`, pipes, globs, env-var interpolation) work as written in
-/// `.fs-hot-watch.json`. Unix-only — Windows isn't a supported platform.
+/// `.fshw.json`. Unix-only — Windows isn't a supported platform.
 /// Exposed for unit-testability.
 let shellInvocation (cmd: string) : string * string =
     // Escape embedded double quotes so the outer `"..."` around the -c

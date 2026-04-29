@@ -50,7 +50,7 @@ let ``classifyProject normalizes backslashes`` () =
 let ``generateConfig with source and test projects`` () =
     let projects = [ "src/MyApp/MyApp.fsproj"; "tests/MyApp.Tests/MyApp.Tests.fsproj" ]
 
-    let config = generateConfig projects false
+    let config = generateConfig projects
 
     test <@ config.Build.IsSome @>
     test <@ config.Build.Value.Length = 1 @>
@@ -64,13 +64,13 @@ let ``generateConfig with source and test projects`` () =
 [<Fact(Timeout = 5000)>]
 let ``generateConfig with no test projects omits tests section`` () =
     let projects = [ "src/MyApp/MyApp.fsproj" ]
-    let config = generateConfig projects false
+    let config = generateConfig projects
     test <@ config.Tests = None @>
 
 [<Fact(Timeout = 5000)>]
 let ``generateConfig test project args use run with project path`` () =
     let projects = [ "tests/MyApp.Tests/MyApp.Tests.fsproj" ]
-    let config = generateConfig projects false
+    let config = generateConfig projects
     let p = config.Tests.Value.Projects.[0]
     test <@ p.Command = "dotnet" @>
     test <@ p.Args = "run --project tests/MyApp.Tests --no-build --" @>
@@ -78,13 +78,8 @@ let ``generateConfig test project args use run with project path`` () =
     test <@ p.ClassJoin = " " @>
 
 [<Fact(Timeout = 5000)>]
-let ``generateConfig with jj sets cache to jj`` () =
-    let config = generateConfig [ "src/App/App.fsproj" ] true
-    test <@ config.Cache = JjFileBackend @>
-
-[<Fact(Timeout = 5000)>]
-let ``generateConfig without jj sets cache to file`` () =
-    let config = generateConfig [ "src/App/App.fsproj" ] false
+let ``generateConfig sets cache to file`` () =
+    let config = generateConfig [ "src/App/App.fsproj" ]
     test <@ config.Cache = FileBackend @>
 
 [<Fact(Timeout = 5000)>]
@@ -93,7 +88,7 @@ let ``generateConfig with multiple test projects groups by default`` () =
         [ "tests/Unit.Tests/Unit.Tests.fsproj"
           "tests/Integration.Tests/Integration.Tests.fsproj" ]
 
-    let config = generateConfig projects false
+    let config = generateConfig projects
     let tests = config.Tests.Value
     test <@ tests.Projects.Length = 2 @>
     test <@ tests.Projects.[0].Project = "Unit.Tests" @>
@@ -101,21 +96,21 @@ let ``generateConfig with multiple test projects groups by default`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``generateConfig with empty project list`` () =
-    let config = generateConfig [] false
+    let config = generateConfig []
     test <@ config.Tests = None @>
     test <@ config.Build.IsSome @>
 
 [<Fact(Timeout = 5000)>]
 let ``generateConfig test project sets coverage to true`` () =
     let projects = [ "tests/MyApp.Tests/MyApp.Tests.fsproj" ]
-    let config = generateConfig projects false
+    let config = generateConfig projects
     let p = config.Tests.Value.Projects.[0]
     test <@ p.Coverage = true @>
 
 [<Fact(Timeout = 5000)>]
 let ``generateConfig test project group is default`` () =
     let projects = [ "tests/MyApp.Tests/MyApp.Tests.fsproj" ]
-    let config = generateConfig projects false
+    let config = generateConfig projects
     let p = config.Tests.Value.Projects.[0]
     test <@ p.Group = "default" @>
 
@@ -125,7 +120,7 @@ let ``generateConfig test project group is default`` () =
 let ``serializeConfig produces valid JSON with build and tests`` () =
     let projects = [ "src/App/App.fsproj"; "tests/App.Tests/App.Tests.fsproj" ]
 
-    let config = generateConfig projects false
+    let config = generateConfig projects
     let json = serializeConfig config
 
     let parsed =

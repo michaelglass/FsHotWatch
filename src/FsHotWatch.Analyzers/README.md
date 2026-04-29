@@ -23,7 +23,7 @@ milliseconds instead of minutes.
 
 ## Configuration
 
-In `.fs-hot-watch.json`:
+In `.fshw.json`:
 
 ```json
 {
@@ -69,7 +69,7 @@ the output directory.
 
 ```bash
 # Query analyzer diagnostics
-fs-hot-watch diagnostics
+fshw diagnostics
 ```
 
 ## Programmatic usage

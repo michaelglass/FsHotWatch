@@ -103,7 +103,7 @@ let ``daemon starts and stops without error`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``daemon Dispose kills tracked child processes`` () =
-    // Regression: `dotnet fs-hot-watch stop` used to leak in-flight test runners.
+    // Regression: `dotnet fshw stop` used to leak in-flight test runners.
     withTrackedSleep 60 (fun proc ->
         withTempDir "daemon-stop" (fun tmpDir ->
             let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
