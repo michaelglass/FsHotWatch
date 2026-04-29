@@ -69,7 +69,6 @@ daemon.RegisterHandler(
         None              // build template
         []                // dependsOn — plugins this one waits for
         None              // timeoutSec (None → no timeout)
-        None              // dirtyTracker (optional)
 )
 ```
 

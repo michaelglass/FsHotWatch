@@ -117,12 +117,10 @@ daemon.RegisterHandler(
               FilterTemplate = Some "--filter-class {classes}"
               ClassJoin = " " }
         ])
-        None                      // symbol snapshot
+        None                      // buildExtensions: Database -> ITestPruneExtension list
         None                      // beforeRun callback
         None                      // afterRun callback
         None                      // coveragePaths: project -> CoveragePaths option
-        None                      // dirtyTracker (optional)
-        None                      // stalenessCheck (optional)
 )
 ```
 

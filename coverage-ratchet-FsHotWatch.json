@@ -62,7 +62,7 @@
     ],
     "CheckPipeline.fs": [
       {
-        "line": 78,
+        "line": 79,
         "branch": 61,
         "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor",
         "platform": "macos"
