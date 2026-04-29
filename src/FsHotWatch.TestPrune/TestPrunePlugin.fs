@@ -179,13 +179,14 @@ let private formatTestResultsJson (results: TestResults) =
         |> List.map (fun (name, result) ->
             let (status, output) =
                 match result with
-                | TestsPassed(o, _) -> ("passed", o)
-                | TestsFailed(o, _) -> ("failed", o)
-                | TestsTimedOut(o, _, _) -> ("timed-out", o)
+                | TestsPassed(o, _, _) -> ("passed", o)
+                | TestsFailed(o, _, _) -> ("failed", o)
+                | TestsTimedOut(o, _, _, _) -> ("timed-out", o)
 
             {| project = name
                status = status
-               output = truncateOutput 200 output |})
+               output = truncateOutput 200 output
+               elapsedMs = (TestResult.elapsed result).TotalMilliseconds |})
 
     JsonSerializer.Serialize(
         {| elapsed = $"%.1f{results.Elapsed.TotalSeconds}s"
@@ -246,8 +247,8 @@ let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<str
         |> Map.toList
         |> List.collect (fun (project, result) ->
             match result with
-            | TestsFailed(output, _)
-            | TestsTimedOut(output, _, _) ->
+            | TestsFailed(output, _, _)
+            | TestsTimedOut(output, _, _, _) ->
                 let parsed = parseFailedTests output
 
                 if parsed.IsEmpty then
@@ -284,6 +285,26 @@ let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<str
 /// events fire; the caller just gets back the final TestResults. ctx=None
 /// also disables the skip-on-stale shortcut so manual runs aren't deadlocked
 /// by a stuck dirty bit — see the staleness branch below.
+/// Compute the timeout for a per-project test run. For stale-manual runs (the
+/// only path where the test command is actually invoked against a known-stale
+/// binary), bound the wait by 2× the project's last successful elapsed — this
+/// prevents a hanging stale assembly from blocking the recovery `fshw test`
+/// indefinitely. The configured timeout still wins when the user has set a
+/// tighter cap than 2× prior.
+let adaptiveTimeout (configured: TimeSpan) (isStaleManual: bool) (lastElapsed: TimeSpan option) : TimeSpan =
+    if not isStaleManual then
+        configured
+    else
+        match lastElapsed with
+        | Some prior when prior > TimeSpan.Zero ->
+            let doubled = TimeSpan.FromTicks(prior.Ticks * 2L)
+
+            if configured = System.Threading.Timeout.InfiniteTimeSpan then
+                doubled
+            else
+                min configured doubled
+        | _ -> configured
+
 let private staleBinaryEntry (project: string) : ErrorLedger.ErrorEntry =
     { Message =
         $"Tests for %s{project} skipped — binary is stale "
@@ -317,6 +338,7 @@ let private executeTests
     (rawFilter: string option)
     (dirtyTracker: FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker option)
     (stalenessCheck: (string -> bool) option)
+    (lastSuccessfulElapsed: string -> TimeSpan option)
     =
     async {
         Logging.info "test-prune" $"executeTests starting with %d{configs.Length} configs"
@@ -400,10 +422,11 @@ let private executeTests
 
                             // Skipped-due-to-impact-analysis is the strongest form of filtering;
                             // its coverage contribution is "nothing new", so mark as filtered.
-                            results <- (config.Project, TestsPassed("", true)) :: results
+                            // Elapsed=Zero since we didn't actually run the test runner.
+                            results <- (config.Project, TestsPassed("", true, TimeSpan.Zero)) :: results
                         elif staleProject && isAutoMode then
                             warnIfStale ()
-                            results <- (config.Project, TestsPassed("", true)) :: results
+                            results <- (config.Project, TestsPassed("", true, TimeSpan.Zero)) :: results
                         else
                             warnIfStale ()
 
@@ -441,10 +464,18 @@ let private executeTests
 
                             let logToCtx msg = ctx |> Option.iter (fun c -> c.Log msg)
 
-                            let timeoutSpan =
+                            let configuredTimeout =
                                 match config.TimeoutSec with
                                 | Some s -> TimeSpan.FromSeconds(float s)
                                 | None -> System.Threading.Timeout.InfiniteTimeSpan
+
+                            let timeoutSpan =
+                                adaptiveTimeout
+                                    configuredTimeout
+                                    (staleProject && not isAutoMode)
+                                    (lastSuccessfulElapsed config.Project)
+
+                            let projectSw = Stopwatch.StartNew()
 
                             let runTest =
                                 async {
@@ -462,6 +493,9 @@ let private executeTests
                                 | Some c ->
                                     PluginCtxHelpers.withSubtask c config.Project $"testing {config.Project}" runTest
                                 | None -> runTest
+
+                            projectSw.Stop()
+                            let projectElapsed = projectSw.Elapsed
 
                             let success = isSucceeded processResult
                             let output = outputOf processResult
@@ -509,9 +543,10 @@ let private executeTests
 
                             let result =
                                 match processResult with
-                                | ProcessOutcome.Succeeded _ -> TestsPassed(output, wasFiltered)
-                                | ProcessOutcome.TimedOut(after, _) -> TestsTimedOut(output, after, wasFiltered)
-                                | ProcessOutcome.Failed _ -> TestsFailed(output, wasFiltered)
+                                | ProcessOutcome.Succeeded _ -> TestsPassed(output, wasFiltered, projectElapsed)
+                                | ProcessOutcome.TimedOut(after, _) ->
+                                    TestsTimedOut(output, after, wasFiltered, projectElapsed)
+                                | ProcessOutcome.Failed _ -> TestsFailed(output, wasFiltered, projectElapsed)
 
                             // Post-test coverage step: merge or convert the coverlet JSON
                             // output into the Cobertura file downstream consumers read.
@@ -725,6 +760,28 @@ let create
     // task cache holds a matching entry from a prior session.
     let mutable hadPriorResultsRef: bool = false
 
+    // Per-project last successful elapsed, fed by TestsFinished. Read by the
+    // executeTests timeout-computation path to bound stale-manual runs at
+    // 2× the project's last good run (the recovery path must terminate even
+    // if the stale binary hangs). Persists across daemon restarts via
+    // FileTaskCache replay — `Custom(TestsFinished)` fires for replayed
+    // results too, repopulating this map before the first new run.
+    let lastSuccessfulElapsed =
+        System.Collections.Concurrent.ConcurrentDictionary<string, TimeSpan>()
+
+    let lookupLastSuccessfulElapsed (project: string) : TimeSpan option =
+        match lastSuccessfulElapsed.TryGetValue(project) with
+        | true, e -> Some e
+        | false, _ -> None
+
+    let recordLastSuccessfulElapsed (results: Map<string, TestResult>) =
+        for KeyValue(project, result) in results do
+            if TestResult.isPassed result then
+                let e = TestResult.elapsed result
+
+                if e > TimeSpan.Zero then
+                    lastSuccessfulElapsed.[project] <- e
+
     let hasTestConfigs =
         testConfigs |> Option.map (List.isEmpty >> not) |> Option.defaultValue false
 
@@ -801,6 +858,7 @@ let create
                             None
                             dirtyTracker
                             stalenessCheck
+                            lookupLastSuccessfulElapsed
 
                     // executeTests still emits per-group TestProgress live; the
                     // synchronous handler emits Started + Completed for the
@@ -948,6 +1006,7 @@ let create
                                                 filter
                                                 dirtyTracker
                                                 stalenessCheck
+                                                lookupLastSuccessfulElapsed
 
                                         return formatTestResultsJson results
                             with ex ->
@@ -1168,6 +1227,7 @@ let create
                     ctx.EmitTestRunStarted started
                     ctx.EmitTestRunCompleted completed
                     Volatile.Write(&hadPriorResultsRef, true)
+                    recordLastSuccessfulElapsed completed.Results
 
                     // Apply error reporting synchronously here too — live emission from
                     // the async wouldn't be captured for cache replay.
