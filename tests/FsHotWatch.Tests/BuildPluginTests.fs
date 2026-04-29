@@ -734,7 +734,8 @@ let private stubGraph (sources: string list) (projects: string list) =
         member _.GetAllProjects() =
             projects |> List.map AbsProjectPath.create
 
-        member _.GetAllFiles() = sources |> List.map AbsFilePath.create }
+        member _.GetAllFiles() = sources |> List.map AbsFilePath.create
+        member _.GetTargetFramework _ = None }
 
 [<Fact(Timeout = 5000)>]
 let ``BuildInputsHasher produces stable hash for unchanged files`` () =
