@@ -11,6 +11,10 @@
 
 ### Changed
 
+- **BREAKING — `TestResult` DU widened with `elapsed: TimeSpan`.** All three constructors (`TestsPassed`, `TestsFailed`, `TestsTimedOut`) now carry a per-project wall-clock duration. `FileTaskCache` round-trips it via a new `elapsedSeconds` JSON field; older cached entries that omit the field deserialize as `TimeSpan.Zero` (no recorded duration). Pattern-match callers must add the new bind position. New `TestResult.elapsed` accessor is the recommended way to read it.
+
+### Changed
+
 - **`FsHotWatch.ErrorLedger.fromString`** now returns `DiagnosticSeverity option` instead of throwing on unknown severity strings. Callers that previously caught the exception should match on `None`.
 - **`FsHotWatch.CheckCache.fcsCheckSignature`** guards `Unchecked.defaultof<FSharpCheckFileResults>` and other null cases — returns `"full-check-null"` / `"full-check-error"` instead of throwing.
 - **`TimestampCacheKeyProvider.GetFileHash`** now hashes file content (SHA-256) instead of metadata (path + size + mtime). Closes a correctness gap where two files with the same size but different bytes (or same bytes with different mtime) would produce the wrong key. The name is preserved for backward compatibility; behavior matches the original "ls-tree merkle hash" design intent that was deferred at module creation.
