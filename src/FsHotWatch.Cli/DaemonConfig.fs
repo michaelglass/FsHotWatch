@@ -655,39 +655,12 @@ let private makeShellHook (label: string) (failOnError: bool) (repoRoot: string)
         if not success && failOnError then
             failwith $"%s{label} failed: %s{cmd}"
 
-let parseTargetFramework (fsprojContent: string) : string option =
-    try
-        let doc = System.Xml.Linq.XDocument.Parse(fsprojContent)
-
-        let descendant (name: string) =
-            doc.Descendants() |> Seq.tryFind (fun e -> e.Name.LocalName = name)
-
-        match descendant "TargetFramework" with
-        | Some e ->
-            let v = e.Value.Trim()
-            if String.IsNullOrEmpty v then None else Some v
-        | None ->
-            match descendant "TargetFrameworks" with
-            | Some e ->
-                e.Value.Split(';')
-                |> Array.map (fun s -> s.Trim())
-                |> Array.tryFind (String.IsNullOrEmpty >> not)
-            | None -> None
-    with _ ->
-        None
-
 /// Avoids the orphaned-TFM-dir false positive of a recursive `bin/**/<dll>` glob
 /// (e.g. a stale `bin/Debug/net9.0/` left behind after upgrading to `net10.0`).
 /// Configuration is hardcoded "Debug" — matches BuildPlugin, which doesn't thread
 /// Configuration through either.
-let findCanonicalDllPath (projDir: string) (projectName: string) : string option =
-    try
-        Path.Combine(projDir, projectName + ".fsproj")
-        |> File.ReadAllText
-        |> parseTargetFramework
-        |> Option.map (fun tfm -> Path.Combine(projDir, "bin", "Debug", tfm, projectName + ".dll"))
-    with _ ->
-        None
+let canonicalDllPath (projDir: string) (projectName: string) (targetFramework: string) : string =
+    Path.Combine(projDir, "bin", "Debug", targetFramework, projectName + ".dll")
 
 /// Register plugins on the daemon based on the loaded configuration.
 let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
@@ -898,8 +871,10 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                             | [] -> None
                             | times -> Some(List.max times)
 
-                    match maxSourceTime, findCanonicalDllPath projDir projectName with
-                    | Some srcTime, Some dllPath when File.Exists dllPath -> File.GetLastWriteTimeUtc dllPath < srcTime
+                    match maxSourceTime, daemon.Graph.GetTargetFramework(proj) with
+                    | Some srcTime, Some tfm ->
+                        let dllPath = canonicalDllPath projDir projectName tfm
+                        File.Exists dllPath && File.GetLastWriteTimeUtc dllPath < srcTime
                     | _ -> false)
 
         Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"
