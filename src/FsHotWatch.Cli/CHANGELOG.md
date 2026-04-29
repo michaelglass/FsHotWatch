@@ -16,6 +16,10 @@ Note: CLI versions release together with the core package under the `core-v` tag
   - **State directory** is now `.fshw/` (was `.fs-hot-watch/`). The pid, lock, and config-hash files live alongside the existing `cache/`, `errors/`, `logs/`, `test-runs/`, and `test-impact.db` — one directory for everything fshw writes. Existing daemons must be stopped and the legacy `.fs-hot-watch/` directory deleted.
 - `mise check`'s coverage step now auto-corrects thresholds: tries `coverageratchet ratchet`, falls back to `loosen` when coverage drifted below threshold. Other tool exit codes (crash/OOM/killed) propagate so the threshold file is not silently rewritten on tool malfunction.
 
+### Removed
+
+- **BREAKING:** `scan --force` flag removed. The flag had been a no-op since the jj scan-guard was deleted; the IPC `Scan` method, `ScanFlag` DU, and CLI `--force` argument are gone.
+
 ## 0.8.0-alpha.11 - 2026-04-26
 
 ### Added
