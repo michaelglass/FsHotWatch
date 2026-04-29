@@ -40,56 +40,51 @@ let private outcomeToString =
     | Skipped -> "skipped"
     | Other -> "other"
 
+let private tryGetString (o: JsonNode) (key: string) : string option =
+    match o.[key] with
+    | null -> None
+    | n ->
+        try
+            Some(n.GetValue<string>())
+        with _ ->
+            None
+
+let private tryGetNumber (o: JsonNode) (key: string) : float option =
+    match o.[key] with
+    | null -> None
+    | n ->
+        try
+            Some(n.GetValue<float>())
+        with _ ->
+            None
+
 /// Parse a CTRF (Common Test Report Format) JSON document and extract per-
 /// test records. Returns [] when the document has no `tests` array or is
 /// unparseable — silent failure is the right behaviour for an opportunistic
 /// post-test step that shouldn't crash the test runner if the report is
-/// missing or malformed.
+/// missing or malformed. Entries missing `name` or `status` are dropped.
 let internal parseCtrfTests (json: string) : TestRunRecord list =
     try
-        let doc = JsonNode.Parse(json)
-
-        match doc with
+        match JsonNode.Parse(json) with
         | null -> []
         | root ->
             match root.["tests"] with
-            | null -> []
-            | tests ->
-                match tests.AsArray() with
-                | null -> []
-                | arr ->
-                    arr
-                    |> Seq.choose (fun node ->
-                        if isNull node then
-                            None
-                        else
-                            try
-                                let nameNode = node.["name"]
-                                let statusNode = node.["status"]
-
-                                if isNull nameNode || isNull statusNode then
-                                    None
-                                else
-                                    let name = nameNode.GetValue<string>()
-                                    let status = statusNode.GetValue<string>()
-
-                                    let duration =
-                                        match node.["duration"] with
-                                        | null -> 0
-                                        | n ->
-                                            try
-                                                n.GetValue<int>()
-                                            with _ ->
-                                                int (n.GetValue<float>())
-
-                                    Some
-                                        { Name = name
-                                          Outcome = parseOutcome status
-                                          DurationMs = duration
-                                          RunStartedAt = DateTime.UtcNow }
-                            with _ ->
-                                None)
-                    |> Seq.toList
+            | :? JsonArray as arr ->
+                arr
+                |> Seq.choose (fun node ->
+                    if isNull node then
+                        None
+                    else
+                        match tryGetString node "name", tryGetString node "status" with
+                        | Some name, Some status ->
+                            Some
+                                { Name = name
+                                  Outcome = parseOutcome status
+                                  DurationMs = tryGetNumber node "duration" |> Option.map int |> Option.defaultValue 0
+                                  RunStartedAt = DateTime.UtcNow }
+                        | _ -> None)
+                |> Seq.toList
+            | _ -> []
     with _ ->
         []
 
@@ -122,14 +117,17 @@ let private serializeRecord (r: TestRunRecord) : JsonObject =
     o
 
 let private deserializeRecord (o: JsonObject) : TestRunRecord option =
-    try
-        Some
-            { Name = o.["name"].GetValue<string>()
-              Outcome = parseOutcome (o.["outcome"].GetValue<string>())
-              DurationMs = o.["durationMs"].GetValue<int>()
-              RunStartedAt = DateTime.Parse(o.["runStartedAt"].GetValue<string>()).ToUniversalTime() }
-    with _ ->
-        None
+    match tryGetString o "name", tryGetString o "outcome", tryGetString o "runStartedAt" with
+    | Some name, Some outcome, Some startedAt ->
+        try
+            Some
+                { Name = name
+                  Outcome = parseOutcome outcome
+                  DurationMs = tryGetNumber o "durationMs" |> Option.map int |> Option.defaultValue 0
+                  RunStartedAt = DateTime.Parse(startedAt).ToUniversalTime() }
+        with _ ->
+            None
+    | _ -> None
 
 /// Read the history file. Returns Map.empty when the file is missing or
 /// unparseable; per-test entries that fail to deserialize individually are
