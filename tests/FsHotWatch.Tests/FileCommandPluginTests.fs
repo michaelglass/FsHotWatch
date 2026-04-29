@@ -39,7 +39,6 @@ let ``plugin has correct name`` () =
             "hello"
             "/tmp"
             None
-            None
 
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "run-scripts" @>
 
@@ -54,7 +53,6 @@ let ``command runs when matching files change`` () =
             "echo"
             "hello"
             "/tmp"
-            None
             None
 
     host.RegisterHandler(handler)
@@ -90,7 +88,6 @@ let ``command does not run for non-matching files`` () =
             "hello"
             "/tmp"
             None
-            None
 
     host.RegisterHandler(handler)
 
@@ -122,7 +119,6 @@ let ``command captures stdout output`` () =
             "captured-output"
             "/tmp"
             None
-            None
 
     host.RegisterHandler(handler)
 
@@ -151,7 +147,6 @@ let ``command with environment variables`` () =
             "echo"
             "env-test-output"
             "/tmp"
-            None
             None
 
     host.RegisterHandler(handler)
@@ -187,7 +182,6 @@ let ``command runs on ProjectChanged with matching files`` () =
             "project changed"
             "/tmp"
             None
-            None
 
     host.RegisterHandler(handler)
 
@@ -222,7 +216,6 @@ let ``command ignores SolutionChanged`` () =
             "hello"
             "/tmp"
             None
-            None
 
     host.RegisterHandler(handler)
 
@@ -252,7 +245,6 @@ let ``command reports Failed status on command failure`` () =
             "false"
             ""
             "/tmp"
-            None
             None
 
     host.RegisterHandler(handler)
@@ -287,7 +279,6 @@ let ``FileCommandPlugin honors timeoutSec and records TimedOut`` () =
             "sleep"
             "10"
             "/tmp"
-            None
             (Some 1)
 
     host.RegisterHandler(handler)
@@ -325,7 +316,6 @@ let ``command reports Failed status on exception`` () =
             ""
             "/tmp"
             None
-            None
 
     host.RegisterHandler(handler)
 
@@ -362,7 +352,6 @@ let ``status command returns not run when no files matched`` () =
             "hello"
             "/tmp"
             None
-            None
 
     host.RegisterHandler(handler)
 
@@ -394,7 +383,6 @@ let ``status command returns false when command failed`` () =
             ""
             "/tmp"
             None
-            None
 
     host.RegisterHandler(handler)
 
@@ -424,7 +412,6 @@ let ``emits CommandCompleted on success`` () =
             "echo"
             "hello"
             "/tmp"
-            None
             None
 
     host.RegisterHandler(handler)
@@ -463,7 +450,6 @@ let ``emits CommandCompleted on failure`` () =
             ""
             "/tmp"
             None
-            None
 
     host.RegisterHandler(handler)
 
@@ -496,7 +482,7 @@ let ``afterTests TestProjects fires when ALL listed projects have results`` () =
           AfterTests = Some(TestProjects(Set.ofList [ "A"; "B" ])) }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-listed") trigger "echo" "ran" "/tmp" None None
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-listed") trigger "echo" "ran" "/tmp" None
 
     host.RegisterHandler(handler)
 
@@ -532,7 +518,7 @@ let ``afterTests TestProjects does not fire when only some listed projects have 
           AfterTests = Some(TestProjects(Set.ofList [ "A"; "B" ])) }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-partial") trigger "echo" "ran" "/tmp" None None
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-partial") trigger "echo" "ran" "/tmp" None
 
     host.RegisterHandler(handler)
 
@@ -561,7 +547,7 @@ let ``afterTests TestProjects does not fire when no listed project matches`` () 
           AfterTests = Some(TestProjects(Set.ofList [ "Intelligence.Tests.Unit" ])) }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-miss") trigger "echo" "ran" "/tmp" None None
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-miss") trigger "echo" "ran" "/tmp" None
 
     host.RegisterHandler(handler)
 
@@ -591,7 +577,7 @@ let ``afterTests TestProjects fires exactly once across progressive deltas`` () 
           AfterTests = Some(TestProjects(Set.ofList [ "A"; "B" ])) }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-once") trigger "echo" "ran" "/tmp" None None
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-once") trigger "echo" "ran" "/tmp" None
 
     host.RegisterHandler(handler)
 
@@ -624,7 +610,7 @@ let ``afterTests TestProjects fires again on a fresh batch`` () =
           AfterTests = Some(TestProjects(Set.ofList [ "A"; "B" ])) }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-rebatch") trigger "echo" "ran" "/tmp" None None
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-rebatch") trigger "echo" "ran" "/tmp" None
 
     host.RegisterHandler(handler)
 
@@ -686,7 +672,7 @@ let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style
           AfterTests = fc.AfterTests }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create fc.PluginName) trigger fc.Command fc.Args "/tmp" None None
+        create (FsHotWatch.PluginFramework.PluginName.create fc.PluginName) trigger fc.Command fc.Args "/tmp" None
 
     // The plugin must subscribe to TestProgress + TestRunCompleted — if this
     // assertion fails, dispatch will never route events to Update.
@@ -751,7 +737,7 @@ let ``afterTests AnyTest fires on TestRunCompleted regardless of projects`` () =
           AfterTests = Some AnyTest }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-any") trigger "echo" "ran" "/tmp" None None
+        create (FsHotWatch.PluginFramework.PluginName.create "afterTests-any") trigger "echo" "ran" "/tmp" None
 
     host.RegisterHandler(handler)
 
@@ -785,7 +771,7 @@ let ``plugin with both pattern and afterTests fires on file change`` () =
           AfterTests = Some AnyTest }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "combined-a") trigger "echo" "hi" "/tmp" None None
+        create (FsHotWatch.PluginFramework.PluginName.create "combined-a") trigger "echo" "hi" "/tmp" None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "coverage.ratchet.json" ])
@@ -807,7 +793,7 @@ let ``plugin with both pattern and afterTests fires on test completion`` () =
           AfterTests = Some AnyTest }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "combined-b") trigger "echo" "hi" "/tmp" None None
+        create (FsHotWatch.PluginFramework.PluginName.create "combined-b") trigger "echo" "hi" "/tmp" None
 
     host.RegisterHandler(handler)
     emitRunCompleted host [ "proj-a", TestsPassed("ok", false) ]
@@ -867,7 +853,7 @@ let private runEnvProbe (pluginName: string) (ranFullSuite: bool) : string =
         let script = writeEnvProbeScript tmpDir outFile
 
         let handler =
-            create (FsHotWatch.PluginFramework.PluginName.create pluginName) trigger script "" tmpDir None None
+            create (FsHotWatch.PluginFramework.PluginName.create pluginName) trigger script "" tmpDir None
 
         host.RegisterHandler(handler)
 
@@ -914,7 +900,6 @@ let private cacheKeyFnFor (command: string) (args: string) =
             command
             args
             "/tmp"
-            (Some(fun () -> Some "commit-A"))
             None
 
     // Drive one run so the cold-start guard flips; CacheKey returns None until then.
@@ -932,6 +917,44 @@ let private cacheKeyFnFor (command: string) (args: string) =
     |> ignore
 
     handler.CacheKey.Value
+
+[<Fact(Timeout = 10000)>]
+let ``cache key is independent of commit_id`` () =
+    // jj reliance dropped: the create signature no longer accepts getCommitId.
+    // This test now degenerates to "two handlers with identical (command, args,
+    // file content) hash the same" — preserved as a structural invariant.
+    let buildKeyFn () =
+        let handler =
+            create
+                (FsHotWatch.PluginFramework.PluginName.create "ck-commit-test")
+                (fileTrigger (fun _ -> true))
+                "echo"
+                "args"
+                "/tmp"
+                None
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+        host.RegisterHandler(handler)
+        host.EmitFileChanged(SourceChanged [ "trigger.txt" ])
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("ck-commit-test") with
+                | Some(Completed _)
+                | Some(Failed _) -> true
+                | _ -> false)
+            5000
+        |> ignore
+
+        handler.CacheKey.Value
+
+    let keyFnA = buildKeyFn ()
+    let keyFnB = buildKeyFn ()
+    let event = FileChanged(SourceChanged [ "trigger.txt" ])
+    let kA = keyFnA event
+    let kB = keyFnB event
+    test <@ kA.IsSome @>
+    test <@ kA = kB @>
 
 [<Fact(Timeout = 10000)>]
 let ``cache key changes when content of a path-arg file changes`` () =
@@ -1154,7 +1177,7 @@ let ``Update is a no-op for FileChanged when trigger has no FilePattern`` () =
           AfterTests = Some AnyTest }
 
     let handler =
-        create (FsHotWatch.PluginFramework.PluginName.create "no-pattern") trigger "echo" "hi" "/tmp" None None
+        create (FsHotWatch.PluginFramework.PluginName.create "no-pattern") trigger "echo" "hi" "/tmp" None
 
     let ctx: FsHotWatch.PluginFramework.PluginCtx<unit> =
         { ReportStatus = fun _ -> ()

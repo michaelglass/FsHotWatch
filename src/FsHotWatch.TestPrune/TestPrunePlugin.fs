@@ -648,7 +648,6 @@ let create
     (beforeRun: (unit -> unit) option)
     (afterRun: (TestResults -> unit) option)
     (coveragePaths: (string -> CoveragePaths option) option)
-    (getCommitId: (unit -> string option) option)
     (dirtyTracker: FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker option)
     (stalenessCheck: (string -> bool) option)
     =
@@ -1294,12 +1293,10 @@ let create
             @ (if hasTestConfigs then [ SubscribeBuildCompleted ] else [])
         )
       CacheKey =
-        // §2a: drop commit_id; key on inputs that actually determine the result.
-        // For BuildCompleted: changed symbols + build outcome — together these
-        // dictate which tests run. For FileChecked: file path + source content
-        // (TestPrune updates internal symbol state from the source bytes).
-        ignore getCommitId
-
+        // §2a: pure-content cache key. For BuildCompleted: changed symbols +
+        // build outcome — together these dictate which tests run. For
+        // FileChecked: file path + source content (TestPrune updates internal
+        // symbol state from the source bytes).
         let cacheKey (event: PluginEvent<TestPruneMsg>) : ContentHash option =
             // Reuses the same merkle for BuildCompleted and Custom TestsFinished
             // so the cache writes on TestsFinished (synchronous handler — captures

@@ -170,7 +170,6 @@ let create
     (command: string)
     (args: string)
     (repoRoot: string)
-    (getCommitId: (unit -> string option) option)
     (timeoutSec: int option)
     : PluginHandler<FileCommandState, unit> =
     let nameStr = PluginName.value name
@@ -345,23 +344,23 @@ let create
               } ]
       Subscriptions = CommandTrigger.subscriptions trigger
       CacheKey =
-        // Cold-start bypass: return None until the command has actually run once
-        // in this daemon session. Without this, an on-disk entry from a prior
-        // session at the same commit pre-empts the first replay-emitted event
-        // (e.g. TestRunCompleted from TestPrune's cold-start re-run) and the
-        // command never executes despite its trigger firing.
-        //
-        // Salt: command + args + content hash of every arg token that exists
-        // on disk. Recomputed per event so mid-session edits to a referenced
-        // config file invalidate the cache even when commit_id hasn't changed.
-        let getSalt _ = computeArgsSalt repoRoot command args
-
-        match FsHotWatch.TaskCache.optionalSaltedCacheKey getSalt getCommitId with
-        | None -> None
-        | Some inner ->
-            Some(fun event ->
+        // Pure-content cache key: merkle of (command, args, content of every
+        // arg-file that exists on disk). No jj commit_id — two daemons on the
+        // same inputs hash the same regardless of working-copy state.
+        // Recomputed per event so mid-session edits to a referenced config
+        // file invalidate the cache.
+        let cacheKey (event: PluginEvent<unit>) : ContentHash option =
+            match event with
+            | Custom _ -> None
+            | _ ->
                 if Volatile.Read(&hasFiredInSessionRef) then
-                    inner event
+                    // Cold-start bypass: return None until the command has actually
+                    // run once in this daemon session. Without this, an on-disk entry
+                    // from a prior session pre-empts the first replay-emitted event
+                    // and the command never executes despite its trigger firing.
+                    Some(ContentHash.create (computeArgsSalt repoRoot command args))
                 else
-                    None)
+                    None
+
+        Some cacheKey
       Teardown = None }

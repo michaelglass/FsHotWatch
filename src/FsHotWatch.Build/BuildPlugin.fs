@@ -135,13 +135,11 @@ let create
     (testProjectNames: string list)
     (buildTemplate: string option)
     (dependsOn: string list)
-    (getCommitId: (unit -> string option) option)
     (timeoutSec: int option)
     (dirtyTracker: FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker option)
     =
     let buildCommand = command
     let buildArgs = args
-    ignore getCommitId
 
     // Cold-start guard: until a build has actually run in this session, CacheKey
     // returns None so a prior-session entry can't replay BuildSucceeded over a

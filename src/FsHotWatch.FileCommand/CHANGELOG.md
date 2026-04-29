@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+- **`FileCommandPlugin.create` now takes `repoRoot: string`** as a new positional parameter (between `args` and `getCommitId`). Used to resolve relative arg-file paths for the cache-key salt.
+- **`hashFileWith`**, **`computeArgsSaltWith`**, **`collectArgFiles`**, **`argsStalerThan`** — `internal` seams (visible to `FsHotWatch.Tests` / `FsHotWatch.IntegrationTests` via `InternalsVisibleTo`) so the cache-key salt and arg-file inspection are deterministically testable.
+
+### Fixed
+
+- **Cache invalidates on config-file edits.** The cache key now salts with the command, the args string, and a SHA-256 content hash of every whitespace-separated arg token that resolves to an existing file (relative to `repoRoot` or absolute). Editing e.g. a `coverage-ratchet.json` referenced in `args` now invalidates cached output even when the jj commit_id is unchanged. Previously the key was just `commit_id`, so config-only edits were silently cached.
+- **Cold-start cache bypass.** Mirrors the BuildPlugin/TestPrunePlugin cold-start guard — `CacheKey` returns `None` until the first command fires in the daemon session, so a stale prior-session entry can't pre-empt the first replay-emitted event.
+
+### Changed
+
+- **BREAKING:** the `create` signature gained `repoRoot` and dropped `getCommitId`. New positional order: `name → trigger → command → args → repoRoot → timeoutSec`. The cache key is now pure-content (merkle of command + args + arg-file SHA-256s), independent of jj working-copy state.
+
 ## 0.7.0-alpha.8 - 2026-04-25
 
 ### Added

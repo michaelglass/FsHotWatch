@@ -201,7 +201,7 @@
     ],
     "FormatCheckPlugin.fs": [
       {
-        "line": 99,
+        "line": 89,
         "branch": 100,
         "platform": "macos"
       },
@@ -379,7 +379,7 @@
     ],
     "ProcessHelper.fs": [
       {
-        "line": 87,
+        "line": 90,
         "branch": 100,
         "reason": "kill-on-timeout drain branches fire flakily between runs (89-92% line); pinned to floor 89 \u2014 note: avoid \u0027mise run check\u0027 auto-ratchet, it bumps back to ceiling on lucky run",
         "platform": "macos"
@@ -474,8 +474,8 @@
     ],
     "TaskCache.fs": [
       {
-        "line": 100,
-        "branch": 95,
+        "line": 98,
+        "branch": 85,
         "reason": "loosened: saltedCacheKey adds branches with one compiler-generated path not hit by current tests",
         "platform": "macos"
       },

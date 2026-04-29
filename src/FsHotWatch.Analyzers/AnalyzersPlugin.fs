@@ -116,7 +116,6 @@ let internal promoteIfFailing (threshold: DiagnosticSeverity) (entry: ErrorEntry
 /// work continues running; only its result is discarded.
 let internal createWithSlowHook
     (analyzerPaths: string list)
-    (getCommitId: (unit -> string option) option)
     (timeoutSec: int option)
     (failOnSeverity: DiagnosticSeverity)
     (slowHook: (unit -> unit) option)
@@ -420,8 +419,7 @@ let internal createWithSlowHook
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey =
         // §2a propagation: content-merkle key (file source + analyzer paths + parse/full flag).
-        // getCommitId is no longer used; the cache is reachable across snapshots when content reverts.
-        ignore getCommitId
+        // §2a: pure-content cache key; jj commit_id was already unused, parameter removed.
 
         let analyzerPathsHash =
             FsHotWatch.CheckCache.sha256Hex (String.concat "|" (List.sort analyzerPaths))
@@ -456,8 +454,7 @@ let internal createWithSlowHook
 /// orphan work continues running in the background (result discarded).
 let create
     (analyzerPaths: string list)
-    (getCommitId: (unit -> string option) option)
     (timeoutSec: int option)
     (failOnSeverity: DiagnosticSeverity)
     : PluginHandler<AnalyzersState, AnalyzersMsg> =
-    createWithSlowHook analyzerPaths getCommitId timeoutSec failOnSeverity None
+    createWithSlowHook analyzerPaths timeoutSec failOnSeverity None

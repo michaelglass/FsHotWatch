@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed
+
+- **BREAKING:** `create` no longer takes `getCommitId`. The parameter was unused under §2a's content-merkle keys; removed. New positional order drops the 8th argument (was: `... dependsOn → getCommitId → timeoutSec → dirtyTracker`; now `... dependsOn → timeoutSec → dirtyTracker`).
+
+### Fixed
+
+- **Cold-start cache bypass.** BuildPlugin's cache key returns `None` until the first build completes in the daemon session, so a stale on-disk entry from a prior session can't pre-empt the cold-start build.
+- **Skip cache for `FileChecked` events.** BuildPlugin no longer reads/writes the task cache for `FileChecked` events — only for `FileChanged`. `FileChecked` doesn't drive the build path and the cache lookup was producing spurious hit/miss noise.
+
 ## 0.7.0-alpha.9 - 2026-04-26
 
 ### Added

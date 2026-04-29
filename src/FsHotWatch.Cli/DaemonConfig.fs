@@ -665,9 +665,6 @@ let private makeShellHook (label: string) (failOnError: bool) (repoRoot: string)
 
 /// Register plugins on the daemon based on the loaded configuration.
 let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
-    let getCommitId =
-        Some(fun () -> FsHotWatch.JjHelper.getWorkingCopyCommitId repoRoot)
-
     // Format plugin
     match config.Format with
     | Auto ->
@@ -675,7 +672,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         daemon.RegisterPreprocessor(FsHotWatch.Fantomas.FormatCheckPlugin.FormatPreprocessor())
     | Check ->
         Logging.info "config" "Registering FormatCheckPlugin (read-only)"
-        daemon.RegisterHandler(FsHotWatch.Fantomas.FormatCheckPlugin.createFormatCheck getCommitId config.TimeoutSec)
+        daemon.RegisterHandler(FsHotWatch.Fantomas.FormatCheckPlugin.createFormatCheck config.TimeoutSec)
     | Off -> ()
 
     // Lint plugin
@@ -688,7 +685,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         | Some path -> Logging.info "config" $"Registering LintPlugin with config: %s{path}"
         | None -> Logging.info "config" "Registering LintPlugin (no fsharplint.json found)"
 
-        daemon.RegisterHandler(FsHotWatch.Lint.LintPlugin.create lintConfigPath getCommitId None config.TimeoutSec)
+        daemon.RegisterHandler(FsHotWatch.Lint.LintPlugin.create lintConfigPath None config.TimeoutSec)
 
     // Analyzers plugin
     match config.Analyzers with
@@ -716,7 +713,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             Logging.info "config" $"Registering AnalyzersPlugin with %d{resolvedPaths.Length} paths"
 
             daemon.RegisterHandler(
-                FsHotWatch.Analyzers.AnalyzersPlugin.create resolvedPaths getCommitId config.TimeoutSec a.FailOnSeverity
+                FsHotWatch.Analyzers.AnalyzersPlugin.create resolvedPaths config.TimeoutSec a.FailOnSeverity
             )
     | None -> ()
 
@@ -750,7 +747,6 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                     testProjectNames
                     b.BuildTemplate
                     b.DependsOn
-                    getCommitId
                     buildTimeout
                     dirtyTracker
             )
@@ -907,7 +903,6 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                 beforeRun
                 None
                 coveragePaths
-                getCommitId
                 dirtyTracker
                 stalenessCheck
 
@@ -935,7 +930,6 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                 fc.Command
                 fc.Args
                 repoRoot
-                getCommitId
                 fcTimeout
         )
 

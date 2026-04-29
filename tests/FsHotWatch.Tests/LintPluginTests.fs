@@ -14,14 +14,14 @@ open FsHotWatch.Tests.TestHelpers
 
 [<Fact(Timeout = 5000)>]
 let ``plugin has correct name`` () =
-    let handler = create None None None None
+    let handler = create None None None
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "lint" @>
 
 [<Fact(Timeout = 5000)>]
 let ``warnings command returns zeroes when no files checked`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create None None None None
+    let handler = create None None None
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
@@ -31,14 +31,14 @@ let ``warnings command returns zeroes when no files checked`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``LintPlugin with configPath sets up lint params`` () =
-    let handler = create (Some "/tmp/nonexistent-config.json") None None None
+    let handler = create (Some "/tmp/nonexistent-config.json") None None
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "lint" @>
 
 [<Fact(Timeout = 10000)>]
 let ``lint error path sets Failed status on null check results`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create None None None None
+    let handler = create None None None
     host.RegisterHandler(handler)
 
     // Explicitly null ParseResults to exercise the lint plugin's null-guard path.
@@ -72,7 +72,7 @@ let ``lint error path sets Failed status on null check results`` () =
 let ``warnings command with args passes through`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create None None None None
+    let handler = create None None None
     host.RegisterHandler(handler)
 
     // The warnings command ignores args, but verify it handles non-empty args
@@ -86,7 +86,7 @@ let ``warnings command with args passes through`` () =
 let ``lint skips file with null ParseResults without crashing`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create None None None None
+    let handler = create None None None
     host.RegisterHandler(handler)
 
     let fakeResult =
@@ -120,7 +120,7 @@ let ``lint handler times out when runner exceeds TimeoutSec`` () =
         System.Threading.Thread.Sleep 3000
         Lint.LintResult.Success []
 
-    let handler = create None None (Some slowRunner) (Some 1)
+    let handler = create None (Some slowRunner) (Some 1)
     host.RegisterHandler(handler)
 
     host.EmitFileChecked(fakeFileCheckResult "/tmp/slow/File.fs")
@@ -142,7 +142,7 @@ let ``lint runner returning Failure reports errors and sets Failed status`` () =
     let runner (_result: FileCheckResult) =
         Lint.LintResult.Failure(Lint.LintFailure.RunTimeConfigError "bad config")
 
-    let handler = create None None (Some runner) None
+    let handler = create None (Some runner) None
     host.RegisterHandler(handler)
 
     host.EmitFileChecked(fakeFileCheckResult "/tmp/test/Bad.fs")
@@ -177,7 +177,7 @@ let ``lint runner returning Success with warnings reports them to error ledger``
 
     let runner (_result: FileCheckResult) = Lint.LintResult.Success [ warning ]
 
-    let handler = create None None (Some runner) None
+    let handler = create None (Some runner) None
     host.RegisterHandler(handler)
 
     host.EmitFileChecked(fakeFileCheckResult "/tmp/test/Warn.fs")
@@ -207,7 +207,7 @@ let ``lint runner returning Success with no warnings clears errors`` () =
 
     let runner (_result: FileCheckResult) = Lint.LintResult.Success []
 
-    let handler = create None None (Some runner) None
+    let handler = create None (Some runner) None
     host.RegisterHandler(handler)
 
     host.EmitFileChecked(fakeFileCheckResult "/tmp/test/Clean.fs")
@@ -250,7 +250,7 @@ let ``warnings command reflects warning count after lint with warnings`` () =
     let runner (_result: FileCheckResult) =
         Lint.LintResult.Success [ mkWarning "warn1"; mkWarning "warn2" ]
 
-    let handler = create None None (Some runner) None
+    let handler = create None (Some runner) None
     host.RegisterHandler(handler)
 
     host.EmitFileChecked(fakeFileCheckResult "/tmp/test/A.fs")
