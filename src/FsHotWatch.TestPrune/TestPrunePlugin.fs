@@ -316,6 +316,12 @@ let private staleBinaryEntry (project: string) : ErrorLedger.ErrorEntry =
       Column = 0
       Detail = None }
 
+let private flakinessHistoryPath (repoRoot: string) =
+    Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-history.json")
+
+let private testRunsDir (repoRoot: string) =
+    Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-runs")
+
 // Belt-and-suspenders: checks both the dirty tracker and the independent mtime
 // staleness check. The mtime check catches stale projects that MSBuild's incremental
 // cache omitted from the last build output (e.g. cold start or run-tests command).
@@ -453,29 +459,24 @@ let private executeTests
                             | Some paths -> extraArgs.Add(buildCoverageArgs paths wasFiltered)
                             | None -> ()
 
-                            // CTRF report — Microsoft Testing Platform (xUnit v3, MTP-
-                            // compatible runners) supports `--report-ctrf` for structured
-                            // per-test output. Only emitted for `dotnet`-style runners
-                            // because non-MTP commands (sleep, echo, etc. used in tests)
-                            // would error on the unknown flag. The downstream flakiness
-                            // tracker silently no-ops when no CTRF file is produced.
-                            let useCtrf = config.Command = "dotnet" || config.Command.EndsWith("/dotnet")
-
+                            // Microsoft Testing Platform (xUnit v3, MTP-compatible
+                            // runners) supports `--report-ctrf` for structured per-test
+                            // output that the flakiness tracker can ingest. Gated on a
+                            // `dotnet` command — non-MTP runners (sleep, echo, etc.)
+                            // would error on the unknown flag.
                             let ctrfPath =
-                                if useCtrf then
-                                    let ctrfDir = Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-runs")
-
+                                if config.Command = "dotnet" || config.Command.EndsWith("/dotnet") then
+                                    let ctrfDir = testRunsDir repoRoot
                                     Directory.CreateDirectory(ctrfDir) |> ignore
-
                                     let ctrfName = $"{config.Project}-{Guid.NewGuid():N}.ctrf.json"
 
                                     extraArgs.Add(
                                         $"--report-ctrf --report-ctrf-filename {ctrfName} --results-directory \"{ctrfDir}\""
                                     )
 
-                                    Path.Combine(ctrfDir, ctrfName)
+                                    Some(Path.Combine(ctrfDir, ctrfName))
                                 else
-                                    ""
+                                    None
 
                             let finalArgs =
                                 if extraArgs.Count > 0 then
@@ -582,20 +583,18 @@ let private executeTests
                             // emitted, append per-test records to the rolling history file
                             // (capped at 20 runs per test). Best-effort — exceptions don't
                             // fail the run.
-                            try
-                                if File.Exists ctrfPath then
-                                    let ctrf = File.ReadAllText ctrfPath
-                                    let records = Flakiness.parseCtrfTests ctrf
+                            match ctrfPath with
+                            | None -> ()
+                            | Some p ->
+                                try
+                                    let records = Flakiness.parseCtrfTests (File.ReadAllText p)
 
                                     if not records.IsEmpty then
-                                        let historyPath =
-                                            Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-history.json")
+                                        Flakiness.appendRecords (flakinessHistoryPath repoRoot) 20 records
 
-                                        Flakiness.appendRecords historyPath 20 records
-
-                                    File.Delete ctrfPath
-                            with ex ->
-                                Logging.warn "test-prune" $"flakiness: failed to record run: {ex.Message}"
+                                    File.Delete p
+                                with ex ->
+                                    Logging.warn "test-prune" $"flakiness: failed to record run: {ex.Message}"
 
                             results <- (config.Project, result) :: results
 
@@ -964,10 +963,7 @@ let create
           "flaky-tests",
           fun (_state: TestPruneState) (_args: string array) ->
               async {
-                  let historyPath =
-                      Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-history.json")
-
-                  let history = Flakiness.loadHistory historyPath
+                  let history = Flakiness.loadHistory (flakinessHistoryPath repoRoot)
                   let top = Flakiness.topFlaky 10 history
 
                   let payload =

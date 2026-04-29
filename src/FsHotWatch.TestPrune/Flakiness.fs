@@ -45,7 +45,7 @@ let private outcomeToString =
 /// unparseable — silent failure is the right behaviour for an opportunistic
 /// post-test step that shouldn't crash the test runner if the report is
 /// missing or malformed.
-let parseCtrfTests (json: string) : TestRunRecord list =
+let internal parseCtrfTests (json: string) : TestRunRecord list =
     try
         let doc = JsonNode.Parse(json)
 
@@ -99,7 +99,7 @@ let parseCtrfTests (json: string) : TestRunRecord list =
 /// formula is `transitions / (n - 1)` over the remaining Pass/Fail/Other
 /// outcomes — alternating P/F scores 1.0; all-pass (or all-fail) scores 0.0.
 /// Returns 0.0 when fewer than 2 effective outcomes are available.
-let computeFlakiness (history: TestOutcome list) : float =
+let internal computeFlakiness (history: TestOutcome list) : float =
     let effective = history |> List.filter (fun o -> o <> Skipped)
 
     if effective.Length < 2 then
@@ -110,12 +110,8 @@ let computeFlakiness (history: TestOutcome list) : float =
 
         float transitions / float (effective.Length - 1)
 
-// --- Persistence: a single JSON file keyed by test name -> records list ---
-//
-// Layout: `{ "<test-name>": [ {record}, ... ], ... }`. Records ordered most-
-// recent-first inside each list. Trimmed to the configured cap on every
-// append. Atomic via write-temp-then-rename to avoid torn reads if the
-// daemon crashes mid-write.
+// Persistence: a single JSON file keyed by test name → records list, with
+// most-recent-first ordering inside each list.
 
 let private serializeRecord (r: TestRunRecord) : JsonObject =
     let o = JsonObject()
@@ -138,7 +134,7 @@ let private deserializeRecord (o: JsonObject) : TestRunRecord option =
 /// Read the history file. Returns Map.empty when the file is missing or
 /// unparseable; per-test entries that fail to deserialize individually are
 /// dropped silently so a single corrupted record can't shadow the rest.
-let loadHistory (path: string) : Map<string, TestRunRecord list> =
+let internal loadHistory (path: string) : Map<string, TestRunRecord list> =
     try
         if not (File.Exists path) then
             Map.empty
@@ -167,15 +163,15 @@ let loadHistory (path: string) : Map<string, TestRunRecord list> =
         Map.empty
 
 /// Append the given records to the history file, then trim each per-test
-/// list to `keepN` most-recent entries. Atomic write (temp + rename).
-let appendRecords (path: string) (keepN: int) (records: TestRunRecord list) : unit =
+/// list to `keepN` most-recent entries. Atomic via temp + rename so a daemon
+/// crash mid-write can't corrupt the on-disk file.
+let internal appendRecords (path: string) (keepN: int) (records: TestRunRecord list) : unit =
     let existing = loadHistory path
 
     let merged =
         (existing, records)
         ||> List.fold (fun acc r ->
             let prior = Map.tryFind r.Name acc |> Option.defaultValue []
-
             let trimmed = (r :: prior) |> List.truncate (max 1 keepN)
             Map.add r.Name trimmed acc)
 
@@ -189,18 +185,11 @@ let appendRecords (path: string) (keepN: int) (records: TestRunRecord list) : un
 
         root.[name] <- arr
 
-    let dir = Path.GetDirectoryName(path)
-
-    if not (String.IsNullOrEmpty dir) then
-        Directory.CreateDirectory(dir) |> ignore
-
-    let tmp = path + ".tmp"
-    File.WriteAllText(tmp, root.ToJsonString())
-    File.Move(tmp, path, overwrite = true)
+    FsHotWatch.FsHwPaths.atomicWriteAllText path (root.ToJsonString())
 
 /// Top-K flakiest tests by score, descending. Tests with score 0.0 are
 /// excluded — a zero-flakiness test is by definition not interesting here.
-let topFlaky (k: int) (history: Map<string, TestRunRecord list>) : (string * float) list =
+let internal topFlaky (k: int) (history: Map<string, TestRunRecord list>) : (string * float) list =
     history
     |> Map.toList
     |> List.map (fun (name, recs) ->

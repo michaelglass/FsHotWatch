@@ -369,10 +369,8 @@ type FileTaskCache(cacheDir: string) =
 
     let set (compositeKey: CompositeKey) (cacheKey: ContentHash) (result: TaskCacheResult) =
         let path = filePath compositeKey cacheKey
-        let tmp = path + ".tmp"
         let json = serializeResult result
-        File.WriteAllText(tmp, json.ToJsonString(jsonWriteOptions))
-        File.Move(tmp, path, overwrite = true)
+        FsHwPaths.atomicWriteAllText path (json.ToJsonString(jsonWriteOptions))
 
     let clear () =
         for f in Directory.EnumerateFiles(cacheDir, "*.json") do
