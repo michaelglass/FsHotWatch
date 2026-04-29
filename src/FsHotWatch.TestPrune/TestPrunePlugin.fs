@@ -453,6 +453,30 @@ let private executeTests
                             | Some paths -> extraArgs.Add(buildCoverageArgs paths wasFiltered)
                             | None -> ()
 
+                            // CTRF report — Microsoft Testing Platform (xUnit v3, MTP-
+                            // compatible runners) supports `--report-ctrf` for structured
+                            // per-test output. Only emitted for `dotnet`-style runners
+                            // because non-MTP commands (sleep, echo, etc. used in tests)
+                            // would error on the unknown flag. The downstream flakiness
+                            // tracker silently no-ops when no CTRF file is produced.
+                            let useCtrf = config.Command = "dotnet" || config.Command.EndsWith("/dotnet")
+
+                            let ctrfPath =
+                                if useCtrf then
+                                    let ctrfDir = Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-runs")
+
+                                    Directory.CreateDirectory(ctrfDir) |> ignore
+
+                                    let ctrfName = $"{config.Project}-{Guid.NewGuid():N}.ctrf.json"
+
+                                    extraArgs.Add(
+                                        $"--report-ctrf --report-ctrf-filename {ctrfName} --results-directory \"{ctrfDir}\""
+                                    )
+
+                                    Path.Combine(ctrfDir, ctrfName)
+                                else
+                                    ""
+
                             let finalArgs =
                                 if extraArgs.Count > 0 then
                                     let extra = String.concat " " extraArgs
@@ -553,6 +577,25 @@ let private executeTests
                             match projectCoveragePaths with
                             | Some paths -> processCoverageOutput paths wasFiltered
                             | None -> ()
+
+                            // Per-test flakiness tracking: parse the CTRF report this run
+                            // emitted, append per-test records to the rolling history file
+                            // (capped at 20 runs per test). Best-effort — exceptions don't
+                            // fail the run.
+                            try
+                                if File.Exists ctrfPath then
+                                    let ctrf = File.ReadAllText ctrfPath
+                                    let records = Flakiness.parseCtrfTests ctrf
+
+                                    if not records.IsEmpty then
+                                        let historyPath =
+                                            Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-history.json")
+
+                                        Flakiness.appendRecords historyPath 20 records
+
+                                    File.Delete ctrfPath
+                            with ex ->
+                                Logging.warn "test-prune" $"flakiness: failed to record run: {ex.Message}"
 
                             results <- (config.Project, result) :: results
 
@@ -916,6 +959,28 @@ let create
                       match Lifecycle.value idle with
                       | Some results -> return formatTestResultsJson results
                       | None -> return JsonSerializer.Serialize({| status = "not run" |})
+              }
+
+          "flaky-tests",
+          fun (_state: TestPruneState) (_args: string array) ->
+              async {
+                  let historyPath =
+                      Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-history.json")
+
+                  let history = Flakiness.loadHistory historyPath
+                  let top = Flakiness.topFlaky 10 history
+
+                  let payload =
+                      top
+                      |> List.map (fun (name, score) ->
+                          let runs =
+                              history |> Map.tryFind name |> Option.map List.length |> Option.defaultValue 0
+
+                          {| name = name
+                             flakiness = score
+                             runs = runs |})
+
+                  return JsonSerializer.Serialize({| tests = payload |})
               } ]
 
     // run-tests command (only if testConfigs are provided)
