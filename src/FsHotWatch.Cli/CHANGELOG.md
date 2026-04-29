@@ -7,6 +7,11 @@ Note: CLI versions release together with the core package under the `core-v` tag
 ### Added
 
 - Run-once output now warns when a `FileCommand` plugin's input files have been modified after the plugin's last successful run. Defense-in-depth against stale cached output. New helpers in `FsHotWatch.Cli.RunOnceOutput`: `PluginRunInfo`, `detectStalePluginInputs`, `formatStalenessWarning`.
+- `FsHotWatch.Cli.DaemonConfig.parseTargetFramework` and `findCanonicalDllPath` — pure helpers exposed for unit testing the staleness probe.
+
+### Fixed
+
+- TestPrune staleness check no longer false-positives when an orphaned TFM directory is left in `bin/` after a `<TargetFramework>` bump. The check now parses the .fsproj and probes the canonical `bin/Debug/<TFM>/<projectName>.dll` instead of recursively globbing every `bin/**/<projectName>.dll` and taking the max mtime (which surfaces stale `bin/Debug/net9.0/` entries even when the current `bin/Debug/net10.0/` DLL is fresh).
 
 ### Changed
 
