@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Changed
+
+- **BREAKING:** `create` no longer takes `getCommitId`. The parameter was unused under §2a's content-merkle keys; removed. New positional order drops the 8th argument (was: `... coveragePaths → getCommitId → dirtyTracker → stalenessCheck`; now `... coveragePaths → dirtyTracker → stalenessCheck`).
+
+### Fixed
+
+- **Cold-start cache bypass.** TestPrunePlugin's `BuildCompleted` cache key now returns `None` until the first `TestsFinished` in the daemon session, so a stale on-disk cache entry from a prior session can't pre-empt the cold-start full-suite run. Mutable plugin-level refs use `Volatile.Read`/`Volatile.Write` for thread safety.
+- **Stale-binary warning re-emit.** The "stale DLL" warning is now produced from `stalenessCheck` rather than only the dirty tracker, so it shows up consistently across run paths.
+
+### Changed
+
+- Internal `isStaleProject` helper extracted; staleness condition inlined for short-circuit evaluation.
+
 ## 0.7.0-alpha.11 - 2026-04-26
 
 ### Fixed

@@ -103,11 +103,11 @@ let ``all plugins receive events when checking a file`` () =
     let dbPath = Path.Combine(Path.GetTempPath(), $"fshw-inttest-{Guid.NewGuid():N}.db")
 
     let testPrune =
-        TestPrunePlugin.create dbPath repoRoot None None None None None None None None
+        TestPrunePlugin.create dbPath repoRoot None None None None None None None
 
-    let lint = LintPlugin.create None None None None
-    let fantomas = createFormatCheck None None
-    let analyzers = AnalyzersPlugin.create [] None None DiagnosticSeverity.Hint
+    let lint = LintPlugin.create None None None
+    let fantomas = createFormatCheck None
+    let analyzers = AnalyzersPlugin.create [] None DiagnosticSeverity.Hint
 
     host.RegisterHandler(testPrune)
     host.RegisterHandler(lint)
@@ -188,8 +188,7 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let analyzerPaths =
         [ gResearchPath; customAnalyzerPath ] |> List.filter Directory.Exists
 
-    let analyzers =
-        AnalyzersPlugin.create analyzerPaths None None DiagnosticSeverity.Hint
+    let analyzers = AnalyzersPlugin.create analyzerPaths None DiagnosticSeverity.Hint
 
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
@@ -236,7 +235,7 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     | other -> Assert.Fail(sprintf "Unexpected status: %A" other)
 
 // ---------------------------------------------------------------------------
-// Helper: create a temp directory with a single .fs file, returning (dir, filePath)
+// Helper: create a temp directory with a single .fs returning (dir, filePath)
 // ---------------------------------------------------------------------------
 let private withTempFsFile (content: string) (action: string -> string -> 'a) =
     let dir = Path.Combine(Path.GetTempPath(), $"fshw-test-{Guid.NewGuid():N}")
@@ -296,8 +295,7 @@ let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> stri
 
         let host = PluginHost.create checker repoRoot
 
-        let analyzers =
-            AnalyzersPlugin.create [ analyzerPath ] None None DiagnosticSeverity.Hint
+        let analyzers = AnalyzersPlugin.create [ analyzerPath ] None DiagnosticSeverity.Hint
 
         host.RegisterHandler(analyzers)
 
@@ -323,7 +321,7 @@ let x = 5
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let lint = LintPlugin.create None None None None
+        let lint = LintPlugin.create None None None
         host.RegisterHandler(lint)
 
         try
@@ -367,7 +365,7 @@ let ``format check plugin detects unformatted code`` () =
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let fantomas = createFormatCheck None None
+        let fantomas = createFormatCheck None
         host.RegisterHandler(fantomas)
 
         host.EmitFileChanged(SourceChanged [ filePath ])
@@ -398,7 +396,7 @@ let ``format check plugin passes on well-formatted code`` () =
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let fantomas = createFormatCheck None None
+        let fantomas = createFormatCheck None
         host.RegisterHandler(fantomas)
 
         host.EmitFileChanged(SourceChanged [ filePath ])
@@ -426,7 +424,7 @@ let ``plugin status reflects running to completed lifecycle`` () =
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let fantomas = createFormatCheck None None
+        let fantomas = createFormatCheck None
         host.RegisterHandler(fantomas)
 
         // Before any event, plugin status is Idle (initialized on register)
@@ -481,7 +479,7 @@ let ``multiple file changes are debounced into one batch by SourceChanged`` () =
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let fantomas = createFormatCheck None None
+        let fantomas = createFormatCheck None
         host.RegisterHandler(fantomas)
 
         // Emit all files as a single batched SourceChanged event
@@ -651,7 +649,7 @@ let ``LintPlugin reports no warnings on clean code`` () =
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let host = PluginHost.create checker repoRoot
-    let lint = LintPlugin.create None None None None
+    let lint = LintPlugin.create None None None
     host.RegisterHandler(lint)
 
     // Events.fs from FsHotWatch itself should be clean
@@ -698,7 +696,7 @@ let ``LintPlugin reports warnings on code with issues`` () =
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let host = PluginHost.create checker repoRoot
-    let lint = LintPlugin.create None None None None
+    let lint = LintPlugin.create None None None
     host.RegisterHandler(lint)
 
     let badCode =
@@ -741,7 +739,7 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let host = PluginHost.create checker repoRoot
-        let analyzers = AnalyzersPlugin.create [] None None DiagnosticSeverity.Hint
+        let analyzers = AnalyzersPlugin.create [] None DiagnosticSeverity.Hint
         host.RegisterHandler(analyzers)
 
         let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
@@ -782,8 +780,7 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
 
         let host = PluginHost.create checker repoRoot
 
-        let analyzers =
-            AnalyzersPlugin.create [ analyzerPath ] None None DiagnosticSeverity.Hint
+        let analyzers = AnalyzersPlugin.create [ analyzerPath ] None DiagnosticSeverity.Hint
 
         host.RegisterHandler(analyzers)
 
@@ -880,7 +877,7 @@ let ``BuildPlugin succeeds with echo command`` () =
           Teardown = None }
 
     let handler =
-        BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None None None
+        BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -924,8 +921,7 @@ let ``BuildPlugin fails with false command`` () =
           CacheKey = None
           Teardown = None }
 
-    let handler =
-        BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None None None
+    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -976,7 +972,7 @@ let ``TestPrunePlugin with testConfigs runs tests after BuildSucceeded`` () =
                 TimeoutSec = None } ]
 
         let handler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None None
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None
 
         host.RegisterHandler(handler)
 
@@ -1031,7 +1027,7 @@ let ``TestPrunePlugin with failing test reports failure`` () =
                 TimeoutSec = None } ]
 
         let handler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None None
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None
 
         host.RegisterHandler(handler)
 
@@ -1082,14 +1078,7 @@ let ``FileCommandPlugin runs command for matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create
-            (PluginName.create "fsx-runner")
-            (fileTrigger (fun f -> f.EndsWith(".fsx")))
-            "echo"
-            "hello"
-            "/tmp"
-            None
-            None
+        create (PluginName.create "fsx-runner") (fileTrigger (fun f -> f.EndsWith(".fsx"))) "echo" "hello" "/tmp" None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "scripts/build.fsx" ])
@@ -1116,14 +1105,7 @@ let ``FileCommandPlugin ignores non-matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create
-            (PluginName.create "fsx-runner")
-            (fileTrigger (fun f -> f.EndsWith(".fsx")))
-            "echo"
-            "hello"
-            "/tmp"
-            None
-            None
+        create (PluginName.create "fsx-runner") (fileTrigger (fun f -> f.EndsWith(".fsx"))) "echo" "hello" "/tmp" None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -1146,7 +1128,7 @@ let ``FileCommandPlugin reports failure on bad command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler =
-        create (PluginName.create "fsx-runner") (fileTrigger (fun f -> f.EndsWith(".fsx"))) "false" "" "/tmp" None None
+        create (PluginName.create "fsx-runner") (fileTrigger (fun f -> f.EndsWith(".fsx"))) "false" "" "/tmp" None
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "scripts/build.fsx" ])
@@ -1206,8 +1188,7 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
             { FilePattern = Some(fun f -> f.EndsWith(".ratchet.json"))
               AfterTests = None }
 
-        let handler =
-            create (PluginName.create pluginName) trigger cmd args "/tmp" (Some getCommitId) None
+        let handler = create (PluginName.create pluginName) trigger cmd args "/tmp" None
 
         let parsedPattern = FsHotWatch.Watcher.FilePattern.parse pattern
         host.RegisterHandler(handler)
@@ -1262,7 +1243,7 @@ let ``Full pipeline: format → build → test`` () =
 
         // Register BuildPlugin (echo for success)
         let buildHandler =
-            BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None None None
+            BuildPlugin.create "echo" "build ok" [] (ProjectGraph()) [] None [] None None
 
         host.RegisterHandler(buildHandler)
 
@@ -1278,7 +1259,7 @@ let ``Full pipeline: format → build → test`` () =
                 TimeoutSec = None } ]
 
         let testPruneHandler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None None
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None
 
         host.RegisterHandler(testPruneHandler)
 
@@ -1363,7 +1344,7 @@ let ``BuildPlugin does not run concurrent builds`` () =
 
     // Use /bin/sleep 1 as a slow build command so the second emit arrives while the first is running
     let handler =
-        BuildPlugin.create "/bin/sleep" "1" [] (ProjectGraph()) [] None [] None None None
+        BuildPlugin.create "/bin/sleep" "1" [] (ProjectGraph()) [] None [] None None
 
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
@@ -1418,7 +1399,7 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
                 TimeoutSec = None } ]
 
         let handler =
-            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None None
+            TestPrunePlugin.create dbPath "/tmp" (Some testConfigs) None None None None None None
 
         host.RegisterHandler(handler)
 
@@ -1711,7 +1692,7 @@ let ``TestPrune honors per-project TimeoutSec and records TimedOut`` () =
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
         let handler =
-            TestPrunePlugin.create ":memory:" tmpDir (Some configs) None None None None None None None
+            TestPrunePlugin.create ":memory:" tmpDir (Some configs) None None None None None None
 
         host.RegisterHandler(handler)
 

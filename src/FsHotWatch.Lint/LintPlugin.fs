@@ -35,18 +35,14 @@ let private fsharpLintVersion =
 let private pluginCacheSalt = "lint-merkle-v1"
 
 /// Creates a framework plugin handler that lints files using pre-parsed AST
-/// and check results from the daemon's warm FSharpChecker.
-///
-/// `getCommitId` is retained for backward compatibility but unused: the cache
-/// key is now content-merkle (file source + tool/config hashes), so the cache
-/// is reachable across commits when file content reverts. See design doc §2a.
+/// and check results from the daemon's warm FSharpChecker. Cache key is
+/// content-merkle (file source + tool/config hashes); jj commit_id is not
+/// consulted. See design doc §2a.
 let create
     (lintConfigPath: string option)
-    (getCommitId: (unit -> string option) option)
     (lintRunner: (FileCheckResult -> Lint.LintResult) option)
     (timeoutSec: int option)
     : PluginHandler<LintState, unit> =
-    ignore getCommitId
 
     let lintTimeout =
         let secs = defaultArg timeoutSec LintTimeoutDefaultSec
