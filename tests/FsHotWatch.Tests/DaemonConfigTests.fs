@@ -1154,53 +1154,9 @@ let ``resolveExistingPathsWithRetry handles empty input without sleeping`` () =
     test <@ List.isEmpty result @>
     test <@ sleepCount = 0 @>
 
-// --- parseTargetFramework / findCanonicalDllPath ---
+// --- canonicalDllPath ---
 
 [<Fact(Timeout = 2000)>]
-let ``parseTargetFramework returns single TargetFramework`` () =
-    let xml =
-        """<Project><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"""
-
-    test <@ parseTargetFramework xml = Some "net10.0" @>
-
-[<Fact(Timeout = 2000)>]
-let ``parseTargetFramework returns first entry of TargetFrameworks`` () =
-    let xml =
-        """<Project><PropertyGroup><TargetFrameworks>net10.0;net9.0</TargetFrameworks></PropertyGroup></Project>"""
-
-    test <@ parseTargetFramework xml = Some "net10.0" @>
-
-[<Fact(Timeout = 2000)>]
-let ``parseTargetFramework returns None when neither tag present`` () =
-    let xml =
-        """<Project><PropertyGroup><AssemblyName>Foo</AssemblyName></PropertyGroup></Project>"""
-
-    test <@ parseTargetFramework xml = None @>
-
-[<Fact(Timeout = 2000)>]
-let ``parseTargetFramework returns None on unparseable content`` () =
-    test <@ parseTargetFramework "not xml at all" = None @>
-
-[<Fact(Timeout = 5000)>]
-let ``findCanonicalDllPath ignores orphaned TFM directories`` () =
-    withTempDir "fshw-tfm" (fun tmp ->
-        let projName = "Foo"
-
-        File.WriteAllText(
-            Path.Combine(tmp, projName + ".fsproj"),
-            """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"""
-        )
-
-        let orphan = Path.Combine(tmp, "bin", "Debug", "net9.0")
-        Directory.CreateDirectory(orphan) |> ignore
-        File.WriteAllText(Path.Combine(orphan, projName + ".dll"), "old")
-
-        let canonical = Path.Combine(tmp, "bin", "Debug", "net10.0")
-        Directory.CreateDirectory(canonical) |> ignore
-        File.WriteAllText(Path.Combine(canonical, projName + ".dll"), "fresh")
-
-        test <@ findCanonicalDllPath tmp projName = Some(Path.Combine(canonical, projName + ".dll")) @>)
-
-[<Fact(Timeout = 5000)>]
-let ``findCanonicalDllPath returns None when fsproj missing`` () =
-    withTempDir "fshw-no-fsproj" (fun tmp -> test <@ findCanonicalDllPath tmp "Missing" = None @>)
+let ``canonicalDllPath builds bin/Debug/<TFM>/<name>.dll`` () =
+    let path = canonicalDllPath "/repo/Foo" "Foo" "net10.0"
+    test <@ path = Path.Combine("/repo/Foo", "bin", "Debug", "net10.0", "Foo.dll") @>
