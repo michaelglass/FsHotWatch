@@ -418,9 +418,7 @@ let internal createWithSlowHook
               } ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey =
-        // §2a propagation: content-merkle key (file source + analyzer paths + parse/full flag).
-        // §2a: pure-content cache key; jj commit_id was already unused, parameter removed.
-
+        // §2a: pure-content cache key (file source + analyzer paths + fcs-signature).
         let analyzerPathsHash =
             FsHotWatch.CheckCache.sha256Hex (String.concat "|" (List.sort analyzerPaths))
 
