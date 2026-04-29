@@ -2158,6 +2158,61 @@ let ``adaptiveTimeout ignores TimeSpan.Zero prior (no recorded data)`` () =
     let configured = TimeSpan.FromSeconds(10.0)
     test <@ adaptiveTimeout configured true (Some TimeSpan.Zero) = configured @>
 
+[<Fact(Timeout = 10000)>]
+let ``run summary names the slowest project when 2+ projects ran`` () =
+    withTempDir "tp-slowest" (fun tmpDir ->
+        let configs =
+            [ { Project = "FastProj"
+                Command = "sh"
+                Args = "-c \"sleep 0.05\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None }
+              { Project = "SlowProj"
+                Command = "sh"
+                Args = "-c \"sleep 0.25\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let tracker = FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker()
+
+        let handler =
+            create ":memory:" tmpDir (Some configs) None None None None (Some tracker) None
+
+        host.RegisterHandler(handler)
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForPluginTerminal host "test-prune" 5.0
+
+        let history = host.GetHistory("test-prune")
+        let lastRun = history |> List.last
+
+        match lastRun.Summary with
+        | Some s ->
+            test <@ s.Contains("slowest: SlowProj") @>
+            test <@ not (s.Contains("slowest: FastProj")) @>
+        | None -> failwith "expected summary on completed run")
+
+[<Fact(Timeout = 5000)>]
+let ``run summary omits slowest when only 1 project ran`` () =
+    withTempDir "tp-no-slowest" (fun tmpDir ->
+        let host, _ = withSingleProjectStaleHarness tmpDir "OnlyProj" (fun _ -> None)
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForPluginTerminal host "test-prune" 5.0
+
+        let history = host.GetHistory("test-prune")
+        let lastRun = history |> List.last
+
+        match lastRun.Summary with
+        | Some s -> test <@ not (s.Contains("slowest")) @>
+        | None -> failwith "expected summary on completed run")
+
 [<Fact(Timeout = 5000)>]
 let ``test-results JSON exposes per-project elapsedMs after a successful run`` () =
     withTempDir "tp-elapsed-capture" (fun tmpDir ->
