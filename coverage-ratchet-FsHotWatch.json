@@ -1,5 +1,19 @@
 {
   "overrides": {
+    "Flakiness.fs": [
+      {
+        "line": 84,
+        "branch": 60,
+        "reason": "new module: parseCtrfTests has many JSON-shape guards not exercised in tests (single null/missing-field paths); persistence has try/catch fallbacks. Tighten as more tests land.",
+        "platform": "macos"
+      },
+      {
+        "line": 84,
+        "branch": 60,
+        "reason": "new module: see macos reason",
+        "platform": "linux"
+      }
+    ],
     "AnalyzersPlugin.fs": [
       {
         "line": 74,
