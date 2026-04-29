@@ -12,6 +12,11 @@
 
 - **`FsHotWatch.ErrorLedger.fromString`** now returns `DiagnosticSeverity option` instead of throwing on unknown severity strings. Callers that previously caught the exception should match on `None`.
 - **`FsHotWatch.CheckCache.fcsCheckSignature`** guards `Unchecked.defaultof<FSharpCheckFileResults>` and other null cases — returns `"full-check-null"` / `"full-check-error"` instead of throwing.
+- **`TimestampCacheKeyProvider.GetFileHash`** now hashes file content (SHA-256) instead of metadata (path + size + mtime). Closes a correctness gap where two files with the same size but different bytes (or same bytes with different mtime) would produce the wrong key. The name is preserved for backward compatibility; behavior matches the original "ls-tree merkle hash" design intent that was deferred at module creation.
+
+### Removed
+
+- **`JjCacheKeyProvider`** — was a stub that delegated to `TimestampCacheKeyProvider`. Its only role was as a marker for `Daemon.fs` to wire up `JjScanGuard` via runtime type-test (`:? JjCacheKeyProvider`). Replaced by an explicit `EnableJjScanGuard: bool` field on `Daemon.DaemonOptions`, threaded from `DaemonConfig.createCacheComponents` (which now returns a triple including the flag).
 
 ## 0.8.0-alpha.11 - 2026-04-26
 
