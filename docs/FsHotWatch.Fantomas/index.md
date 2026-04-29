@@ -33,7 +33,7 @@ event, so format-on-save doesn't re-trigger the entire pipeline.
 
 ## Configuration
 
-In `.fs-hot-watch.json`:
+In `.fshw.json`:
 
 ```json
 {
@@ -48,10 +48,10 @@ The format check plugin always runs alongside the preprocessor.
 
 ```bash
 # Format all files
-fs-hot-watch format
+fshw format
 
 # Query which files are unformatted
-fs-hot-watch unformatted
+fshw unformatted
 ```
 
 ## Programmatic usage

@@ -300,7 +300,7 @@ let private renderVerbose
 /// trailing `next:` hint.
 module private Agent =
     let banner =
-        "# fs-hot-watch agent mode | cmds: check build test lint analyze format format-check errors status"
+        "# fshw agent mode | cmds: check build test lint analyze format format-check errors status"
 
     /// Terminal state for a plugin as seen by an agent consumer. `None` from
     /// `stateToken` means "omit this plugin from output" (idle with no history).
@@ -419,18 +419,17 @@ module private Agent =
             | _ -> false
 
         if Set.contains State.Running activeStates then
-            "next: fs-hot-watch --agent errors --wait"
+            "next: fshw --agent errors --wait"
         elif isFail "build" then
-            "next: fs-hot-watch --agent build"
+            "next: fshw --agent build"
         elif isFail "test" then
-            "next: fs-hot-watch --agent test"
+            "next: fshw --agent test"
         else
             let priority = [ "lint"; "analyze"; "format-check"; "coverage" ]
 
             match priority |> List.tryFind isFail with
-            | Some p -> $"next: fs-hot-watch --agent %s{p}"
-            | None when Set.contains State.Warn activeStates && warningsAreFailures ->
-                "next: fs-hot-watch --agent errors"
+            | Some p -> $"next: fshw --agent %s{p}"
+            | None when Set.contains State.Warn activeStates && warningsAreFailures -> "next: fshw --agent errors"
             | None -> "next: done"
 
     /// Render full Agent-mode output: banner, per-plugin lines, next-step line.

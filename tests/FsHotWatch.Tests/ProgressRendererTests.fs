@@ -387,7 +387,7 @@ open AgentFixtures
 let ``agent renderAll emits banner as first line`` () =
     let lines = agentAll [ "build", okStatus None ]
     test <@ lines.Length >= 1 @>
-    test <@ lines.[0].StartsWith "# fs-hot-watch agent mode" @>
+    test <@ lines.[0].StartsWith "# fshw agent mode" @>
 
 [<Fact(Timeout = 5000)>]
 let ``agent banner lists expected commands`` () =
@@ -513,7 +513,7 @@ let ``agent next is errors --wait when any plugin is running`` () =
     let statuses = [ "build", failStatus "compile error"; "test", runningStatus () ]
 
     let lines = agentAll statuses
-    test <@ List.last lines = "next: fs-hot-watch --agent errors --wait" @>
+    test <@ List.last lines = "next: fshw --agent errors --wait" @>
 
 [<Fact(Timeout = 5000)>]
 let ``agent next is build when build failed even if others also failed`` () =
@@ -523,7 +523,7 @@ let ``agent next is build when build failed even if others also failed`` () =
           "lint", failStatus "warnings" ]
 
     let lines = agentAll statuses
-    test <@ List.last lines = "next: fs-hot-watch --agent build" @>
+    test <@ List.last lines = "next: fshw --agent build" @>
 
 [<Fact(Timeout = 5000)>]
 let ``agent next is test when build ok but test failed`` () =
@@ -533,7 +533,7 @@ let ``agent next is test when build ok but test failed`` () =
           "lint", failStatus "warnings" ]
 
     let lines = agentAll statuses
-    test <@ List.last lines = "next: fs-hot-watch --agent test" @>
+    test <@ List.last lines = "next: fshw --agent test" @>
 
 [<Fact(Timeout = 5000)>]
 let ``agent next picks lint before analyze when both fail`` () =
@@ -543,7 +543,7 @@ let ``agent next picks lint before analyze when both fail`` () =
           "coverage", failStatus "low" ]
 
     let lines = agentAll statuses
-    test <@ List.last lines = "next: fs-hot-watch --agent lint" @>
+    test <@ List.last lines = "next: fshw --agent lint" @>
 
 [<Fact(Timeout = 5000)>]
 let ``agent next picks analyze before format-check and coverage`` () =
@@ -553,7 +553,7 @@ let ``agent next picks analyze before format-check and coverage`` () =
           "analyze", failStatus "bad" ]
 
     let lines = agentAll statuses
-    test <@ List.last lines = "next: fs-hot-watch --agent analyze" @>
+    test <@ List.last lines = "next: fshw --agent analyze" @>
 
 [<Fact(Timeout = 5000)>]
 let ``agent next picks format-check before coverage`` () =
@@ -561,14 +561,14 @@ let ``agent next picks format-check before coverage`` () =
         [ "coverage", failStatus "low"; "format-check", failStatus "unformatted" ]
 
     let lines = agentAll statuses
-    test <@ List.last lines = "next: fs-hot-watch --agent format-check" @>
+    test <@ List.last lines = "next: fshw --agent format-check" @>
 
 [<Fact(Timeout = 5000)>]
 let ``agent next is errors when only warnings and warningsAreFailures=true`` () =
     let statuses = [ "build", okStatus None; "lint", warnStatus () ]
 
     let lines = agentAll statuses
-    test <@ List.last lines = "next: fs-hot-watch --agent errors" @>
+    test <@ List.last lines = "next: fshw --agent errors" @>
 
 [<Fact(Timeout = 5000)>]
 let ``agent next is done when warnings present but warningsAreFailures=false`` () =
