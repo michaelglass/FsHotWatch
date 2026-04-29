@@ -45,7 +45,7 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.202" PrivateAssets="All" />
+        <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.203" PrivateAssets="All" />
         <PackageReference Include="CommandTree" Version="0.5.0" />
         <PackageReference Include="TestPrune.Falco" Version="2.0.1" />
         <PackageReference Update="FSharp.Core" Version="10.1.*" />
