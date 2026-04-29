@@ -25,6 +25,36 @@ let private waitForPluginIdle (host: PluginHost) (pluginName: string) (timeoutSe
 let private waitForPluginTerminal (host: PluginHost) (pluginName: string) (timeoutSecs: float) =
     waitForTerminalStatus host pluginName (int (timeoutSecs * 1000.0))
 
+/// Stand up a test-prune plugin around a single one-project test config whose
+/// command is `sh -c "touch <sentinel>"`. `configureStaleness` runs against
+/// the constructed `ProjectDirtyTracker` and returns the staleness-check
+/// closure (or `None`) — gives each test its own way to mark the project
+/// stale (tracker.MarkDirty, a stalenessCheck closure, both, or neither).
+/// Returns `(host, sentinel)`.
+let private withSingleProjectStaleHarness (tmpDir: string) (projectName: string) configureStaleness =
+    let sentinel = Path.Combine(tmpDir, "ran")
+
+    let configs =
+        [ { Project = projectName
+            Command = "sh"
+            Args = $"-c \"touch {sentinel}\""
+            Group = "default"
+            Environment = []
+            FilterTemplate = None
+            ClassJoin = " "
+            TimeoutSec = None } ]
+
+    let tracker = FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker()
+    let stalenessCheck = configureStaleness tracker
+
+    let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+    let handler =
+        create ":memory:" tmpDir (Some configs) None None None None (Some tracker) stalenessCheck
+
+    host.RegisterHandler(handler)
+    host, sentinel
+
 [<Fact(Timeout = 5000)>]
 let ``plugin has correct name`` () =
     let handler = create ":memory:" "/tmp" None None None None None None None
@@ -2093,27 +2123,8 @@ let ``run-tests command runs project even when stalenessCheck reports stale`` ()
     // DLL, but the manual `run-tests` command was deadlocked — skip never
     // advanced the dirty tracker so every subsequent run skipped again.
     withTempDir "tp-manual-stale" (fun tmpDir ->
-        let sentinel = Path.Combine(tmpDir, "ran")
-
-        let configs =
-            [ { Project = "StaleProj"
-                Command = "sh"
-                Args = $"-c \"touch {sentinel}\""
-                Group = "default"
-                Environment = []
-                FilterTemplate = None
-                ClassJoin = " "
-                TimeoutSec = None } ]
-
-        let tracker = FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker()
-        let stalenessCheck = Some(fun _ -> true)
-
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-
-        let handler =
-            create ":memory:" tmpDir (Some configs) None None None None (Some tracker) stalenessCheck
-
-        host.RegisterHandler(handler)
+        let host, sentinel =
+            withSingleProjectStaleHarness tmpDir "StaleProj" (fun _ -> Some(fun _ -> true))
 
         // Manual path: invoke run-tests via RunCommand (no BuildCompleted).
         let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
@@ -2125,42 +2136,20 @@ let ``run-tests command runs project even when stalenessCheck reports stale`` ()
 [<Fact(Timeout = 5000)>]
 let ``executeTests skips project when dirty tracker reports stale and emits stale-binary warning`` () =
     withTempDir "tp-dirty-skip" (fun tmpDir ->
-        // sentinel file would be written if the test command actually ran
-        let sentinel = Path.Combine(tmpDir, "ran")
-
-        let configs =
-            [ { Project = "DirtyProj"
-                Command = "sh"
-                Args = $"-c \"touch {sentinel}\""
-                Group = "default"
-                Environment = []
-                FilterTemplate = None
-                ClassJoin = " "
-                TimeoutSec = None } ]
-
-        let tracker = FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker()
-        tracker.MarkDirty [ "DirtyProj" ]
-
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-
-        let handler =
-            create ":memory:" tmpDir (Some configs) None None None None (Some tracker) None
-
-        host.RegisterHandler(handler)
+        let host, sentinel =
+            withSingleProjectStaleHarness tmpDir "DirtyProj" (fun tracker ->
+                tracker.MarkDirty [ "DirtyProj" ]
+                None)
 
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 5.0
 
-        // Test command should NOT have run because the project was marked dirty
         test <@ not (File.Exists sentinel) @>
 
-        // A "stale" warning should be present in the error ledger
-        let errors = host.GetErrorsByPlugin("test-prune")
-
-        let allEntries = errors |> Map.toList |> List.collect snd
-
         let staleWarning =
-            allEntries
+            host.GetErrorsByPlugin("test-prune")
+            |> Map.toList
+            |> List.collect snd
             |> List.exists (fun e -> e.Severity = FsHotWatch.ErrorLedger.Warning && e.Message.Contains("stale"))
 
         test <@ staleWarning @>)
@@ -2208,45 +2197,22 @@ let ``executeTests runs project normally when dirty tracker reports clean`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``executeTests skips project when stalenessCheck reports stale even though dirty tracker is empty`` () =
+    // Dirty tracker has no entry for the project (cold start, or MSBuild
+    // omitted it from the last build output) — the independent mtime check
+    // is what flags staleness.
     withTempDir "tp-staleness-check" (fun tmpDir ->
-        let sentinel = Path.Combine(tmpDir, "ran")
-
-        let configs =
-            [ { Project = "StaleProj"
-                Command = "sh"
-                Args = $"-c \"touch {sentinel}\""
-                Group = "default"
-                Environment = []
-                FilterTemplate = None
-                ClassJoin = " "
-                TimeoutSec = None } ]
-
-        // Dirty tracker has no entry for StaleProj — simulates cold start or
-        // a project MSBuild omitted from the last build output.
-        let tracker = FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker()
-
-        // Independent mtime check says StaleProj is stale.
-        let stalenessCheck = Some(fun (project: string) -> project = "StaleProj")
-
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-
-        let handler =
-            create ":memory:" tmpDir (Some configs) None None None None (Some tracker) stalenessCheck
-
-        host.RegisterHandler(handler)
+        let host, sentinel =
+            withSingleProjectStaleHarness tmpDir "StaleProj" (fun _ -> Some(fun project -> project = "StaleProj"))
 
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 5.0
 
-        // Test command should NOT have run (stalenessCheck flagged it)
         test <@ not (File.Exists sentinel) @>
 
-        // A "stale" warning should appear in the error ledger
-        let allEntries =
-            host.GetErrorsByPlugin("test-prune") |> Map.toList |> List.collect snd
-
         let staleWarning =
-            allEntries
+            host.GetErrorsByPlugin("test-prune")
+            |> Map.toList
+            |> List.collect snd
             |> List.exists (fun e -> e.Severity = FsHotWatch.ErrorLedger.Warning && e.Message.Contains("stale"))
 
         test <@ staleWarning @>)

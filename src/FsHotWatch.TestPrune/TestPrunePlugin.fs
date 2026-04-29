@@ -391,19 +391,21 @@ let private executeTests
                             not affectedClassesByProject.IsEmpty
                             && not (affectedClassesByProject |> Map.containsKey config.Project)
 
-                        if staleProject && isAutoMode then
-                            Logging.warn "test-prune" (staleBinaryEntry config.Project).Message
+                        let warnIfStale () =
+                            if staleProject then
+                                Logging.warn "test-prune" (staleBinaryEntry config.Project).Message
 
-                            results <- (config.Project, TestsPassed("", true)) :: results
-                        elif skipProject then
+                        if skipProject then
                             Logging.info "test-prune" $"Skipping %s{config.Project} — no affected classes"
 
                             // Skipped-due-to-impact-analysis is the strongest form of filtering;
                             // its coverage contribution is "nothing new", so mark as filtered.
                             results <- (config.Project, TestsPassed("", true)) :: results
+                        elif staleProject && isAutoMode then
+                            warnIfStale ()
+                            results <- (config.Project, TestsPassed("", true)) :: results
                         else
-                            if staleProject then
-                                Logging.warn "test-prune" (staleBinaryEntry config.Project).Message
+                            warnIfStale ()
 
                             let filterArgs = buildFilterArgs config affectedClassesByProject
 
