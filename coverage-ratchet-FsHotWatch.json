@@ -62,7 +62,7 @@
     ],
     "CheckPipeline.fs": [
       {
-        "line": 78,
+        "line": 79,
         "branch": 61,
         "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor",
         "platform": "macos"
@@ -107,8 +107,8 @@
     ],
     "DaemonConfig.fs": [
       {
-        "line": 70,
-        "branch": 67,
+        "line": 71,
+        "branch": 75,
         "reason": "loosened 2026-04-24 \u002B 2026-04-26 race-fix retry-resolution path adds untested live-system warning branch",
         "platform": "macos"
       },
@@ -379,7 +379,7 @@
     ],
     "ProcessHelper.fs": [
       {
-        "line": 87,
+        "line": 90,
         "branch": 100,
         "reason": "kill-on-timeout drain branches fire flakily between runs (89-92% line); pinned to floor 89 \u2014 note: avoid \u0027mise run check\u0027 auto-ratchet, it bumps back to ceiling on lucky run",
         "platform": "macos"
