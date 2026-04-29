@@ -2088,11 +2088,10 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
         test <@ hasCompleted @>)
 
 [<Fact(Timeout = 5000)>]
-let ``run-tests (manual) executes stale project — skip-on-stale only applies to auto-watch`` () =
-    // Regression: auto path skips on stale to avoid running against a stale DLL,
-    // but manual `run-tests` was deadlocked — skip never advanced the dirty
-    // tracker so every subsequent run skipped again. Manual must run the test
-    // command and surface whatever runtime error the stale binary produces.
+let ``run-tests command runs project even when stalenessCheck reports stale`` () =
+    // Regression: auto path skips on stale to avoid running against a stale
+    // DLL, but the manual `run-tests` command was deadlocked — skip never
+    // advanced the dirty tracker so every subsequent run skipped again.
     withTempDir "tp-manual-stale" (fun tmpDir ->
         let sentinel = Path.Combine(tmpDir, "ran")
 

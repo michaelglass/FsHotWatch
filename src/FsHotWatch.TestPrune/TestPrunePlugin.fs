@@ -281,7 +281,9 @@ let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<str
 ///      cumulative Results plus an Outcome.
 /// All three share a single RunId generated at the start of the run.
 /// When `ctx` is None (e.g. invoked from a one-off command), no lifecycle
-/// events fire; the caller just gets back the final TestResults.
+/// events fire; the caller just gets back the final TestResults. ctx=None
+/// also disables the skip-on-stale shortcut so manual runs aren't deadlocked
+/// by a stuck dirty bit — see the staleness branch below.
 let private staleBinaryEntry (project: string) : ErrorLedger.ErrorEntry =
     { Message =
         $"Tests for %s{project} skipped — binary is stale "
@@ -376,12 +378,10 @@ let private executeTests
 
                         let staleProject = isStaleProject dirtyTracker stalenessCheck config.Project
 
-                        // ctx is None for manual `run-tests` invocations; Some for the
-                        // auto-watch path driven by BuildCompleted. The skip-on-stale
-                        // shortcut deadlocks the manual path (skipped tests never advance
-                        // the dirty tracker → permanently stale), so manual mode warns
-                        // and runs anyway, surfacing whatever runtime error a stale
-                        // assembly produces.
+                        // ctx is None for manual `run-tests`, Some for auto-watch
+                        // (BuildCompleted-driven). Skip-on-stale only applies to auto:
+                        // a manual skip would deadlock — skipped tests never advance
+                        // the dirty tracker, so the next manual run skips again.
                         let isAutoMode = Option.isSome ctx
 
                         // Template-based class filter (from impact analysis).
