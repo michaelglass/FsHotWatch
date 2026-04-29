@@ -632,7 +632,7 @@ let ``afterTests TestProjects fires again on a fresh batch`` () =
     waitUntil (fun () -> getCount () >= 2) 5000
     test <@ getCount () = 2 @>
 
-// Regression: end-to-end from parseConfig(.fs-hot-watch.json) → daemon registration
+// Regression: end-to-end from parseConfig(.fshw.json) → daemon registration
 // path → lifecycle dispatch. The earlier unit tests built the CommandTrigger
 // inline and hit the plugin the same way the daemon's RegisterHandler path does,
 // but a bug in the config→trigger glue (e.g. parser yielding AfterTests = None

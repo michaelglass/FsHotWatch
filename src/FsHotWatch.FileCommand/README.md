@@ -19,7 +19,7 @@ writing a full plugin.
 
 ## Configuration
 
-In `.fs-hot-watch.json`:
+In `.fshw.json`:
 
 ```json
 {
@@ -82,10 +82,10 @@ The following environment variables are set on every `afterTests` command:
 
 ```bash
 # Force a plugin to re-run, clearing its cached state
-fs-hot-watch rerun coverage-ratchet
+fshw rerun coverage-ratchet
 
 # Query a plugin's last-run status
-fs-hot-watch coverage-ratchet-status
+fshw coverage-ratchet-status
 ```
 
 ## Programmatic usage

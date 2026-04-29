@@ -48,7 +48,7 @@ let discoverProjects
     | :? System.UnauthorizedAccessException -> []
 
 /// Generate a DaemonConfiguration from discovered project paths.
-let generateConfig (projectPaths: string list) (hasJj: bool) : DaemonConfiguration =
+let generateConfig (projectPaths: string list) : DaemonConfiguration =
     let classified = projectPaths |> List.map (fun p -> (p, classifyProject p))
 
     let testProjects =
@@ -80,7 +80,7 @@ let generateConfig (projectPaths: string list) (hasJj: bool) : DaemonConfigurati
                  TimeoutSec = None |} ]
       Format = Auto
       Lint = true
-      Cache = if hasJj then JjFileBackend else FileBackend
+      Cache = FileBackend
       Analyzers = None
       Tests =
         if testProjects.IsEmpty then
@@ -135,7 +135,6 @@ let serializeConfig (config: DaemonConfiguration) : string =
 
     // Cache
     match config.Cache with
-    | JjFileBackend -> writer.WriteString("cache", "jj")
     | FileBackend -> writer.WriteString("cache", "file")
     | InMemoryOnly _ -> writer.WriteString("cache", "memory")
     | NoCache -> writer.WriteBoolean("cache", false)
