@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.10 - 2026-04-29
+
 ### Changed
 
 - **BREAKING:** `create` no longer takes `getCommitId`. The parameter was unused under §2a's content-merkle keys; removed. New positional order: `lintConfigPath → lintRunner → timeoutSec`.

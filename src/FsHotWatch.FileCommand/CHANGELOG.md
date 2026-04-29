@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.9 - 2026-04-29
+
 ### Added
 
 - **`FileCommandPlugin.create` now takes `repoRoot: string`** as a new positional parameter (between `args` and `getCommitId`). Used to resolve relative arg-file paths for the cache-key salt.
