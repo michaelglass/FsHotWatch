@@ -20,7 +20,7 @@ results that are already in memory, so linting takes milliseconds.
 
 ## Configuration
 
-In `.fs-hot-watch.json`:
+In `.fshw.json`:
 
 ```json
 {
@@ -35,13 +35,13 @@ Set `"lint": false` to disable. The plugin automatically loads
 
 ```bash
 # Run linter on all files and show warnings
-fs-hot-watch lint
+fshw lint
 
 # Query lint warning count
-fs-hot-watch warnings
+fshw warnings
 
 # Show all errors (including lint warnings)
-fs-hot-watch errors
+fshw errors
 ```
 
 ## Programmatic usage

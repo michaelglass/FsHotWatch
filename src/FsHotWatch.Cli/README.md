@@ -14,13 +14,13 @@ dotnet tool install -g FsHotWatch.Cli
 
 ```bash
 # Run all checks (scan, build, lint, errors)
-fs-hot-watch check
+fshw check
 
 # Start daemon in foreground (useful for debugging)
-fs-hot-watch start
+fshw start
 
 # Check plugin statuses
-fs-hot-watch status
+fshw status
 ```
 
 ## Commands
@@ -29,7 +29,7 @@ fs-hot-watch status
 |---------|-------------|
 | `start` | Start daemon in foreground (auto-scans on boot, Ctrl+C to stop). |
 | `stop` | Gracefully stop the running daemon. |
-| `scan [--force]` | Re-scan all files. `--force` bypasses the jj fingerprint guard. |
+| `scan [--force]` | Re-scan all files. `--force` is currently a no-op (kept for back-compat). |
 | `scan-status` | Check scan progress without blocking. |
 | `status [plugin]` | Show plugin statuses. Optionally filter to one plugin. |
 | `build` | Trigger a build and wait for completion. |
@@ -38,7 +38,7 @@ fs-hot-watch status
 | `lint` | Run FSharpLint on all files and report warnings. |
 | `errors` | Show current errors from all plugins. |
 | `check` | Full check: scan all files, wait for plugins, then report errors. |
-| `config check` | Validate `.fs-hot-watch.json` without starting the daemon. Exits `0` on valid config, `2` on parse/validation error. |
+| `config check` | Validate `.fshw.json` without starting the daemon. Exits `0` on valid config, `2` on parse/validation error. |
 | `invalidate-cache <file>` | Clear cache for a file and re-check it. |
 | `<command> [args]` | Run any plugin-registered command (e.g. `diagnostics`). |
 
@@ -54,28 +54,28 @@ fs-hot-watch status
 
 ```bash
 # Run tests for a specific project
-fs-hot-watch test -p MyApp.Tests
+fshw test -p MyApp.Tests
 
 # Run only previously-failed tests
-fs-hot-watch test --only-failed
+fshw test --only-failed
 
 # Show just the lint plugin's status
-fs-hot-watch status lint
+fshw status lint
 
 # Query a plugin command directly
-fs-hot-watch diagnostics
-fs-hot-watch coverage
-fs-hot-watch warnings
+fshw diagnostics
+fshw coverage
+fshw warnings
 ```
 
 ## Config validation
 
-`.fs-hot-watch.json` is parsed strictly: any parse or validation error
+`.fshw.json` is parsed strictly: any parse or validation error
 aborts startup with exit code `2` and a message naming the offending
-field. Use `fs-hot-watch config check` to validate without starting
+field. Use `fshw config check` to validate without starting
 the daemon (handy for editor integration and CI).
 
-While the daemon is running, any write to `.fs-hot-watch.json` causes
+While the daemon is running, any write to `.fshw.json` causes
 it to stop cleanly, logging the reason:
 
 - Valid edit: `config changed, stopping (restart to apply)`
