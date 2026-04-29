@@ -2161,6 +2161,8 @@ let ``adaptiveTimeout ignores TimeSpan.Zero prior (no recorded data)`` () =
 [<Fact(Timeout = 10000)>]
 let ``run summary names the slowest project when 2+ projects ran`` () =
     withTempDir "tp-slowest" (fun tmpDir ->
+        // 20× differential — wide enough that Linux CI's fork-exec / first-time
+        // JIT overhead on FastProj can't overtake SlowProj's actual wall time.
         let configs =
             [ { Project = "FastProj"
                 Command = "sh"
@@ -2172,7 +2174,7 @@ let ``run summary names the slowest project when 2+ projects ran`` () =
                 TimeoutSec = None }
               { Project = "SlowProj"
                 Command = "sh"
-                Args = "-c \"sleep 0.25\""
+                Args = "-c \"sleep 1.0\""
                 Group = "default"
                 Environment = []
                 FilterTemplate = None
