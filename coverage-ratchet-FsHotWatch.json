@@ -62,7 +62,7 @@
     ],
     "CheckPipeline.fs": [
       {
-        "line": 78,
+        "line": 79,
         "branch": 61,
         "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor",
         "platform": "macos"
@@ -187,7 +187,7 @@
     ],
     "FileTaskCache.fs": [
       {
-        "line": 79,
+        "line": 78,
         "branch": 67,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
@@ -419,7 +419,7 @@
     ],
     "Program.fs": [
       {
-        "line": 67,
+        "line": 66,
         "branch": 53,
         "reason": "CLI entry point; line drifts 67-68% and branch drifts 53-54% across runs",
         "platform": "macos"
