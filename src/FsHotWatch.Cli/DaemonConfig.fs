@@ -655,17 +655,12 @@ let private makeShellHook (label: string) (failOnError: bool) (repoRoot: string)
         if not success && failOnError then
             failwith $"%s{label} failed: %s{cmd}"
 
-/// Parse the first <TargetFramework> (or first entry of <TargetFrameworks>)
-/// from .fsproj XML content. Returns None when neither tag is present or the
-/// content is unparseable.
 let parseTargetFramework (fsprojContent: string) : string option =
     try
         let doc = System.Xml.Linq.XDocument.Parse(fsprojContent)
 
-        let local (name: string) (e: System.Xml.Linq.XElement) = e.Name.LocalName = name
-
         let descendant (name: string) =
-            doc.Descendants() |> Seq.tryFind (local name)
+            doc.Descendants() |> Seq.tryFind (fun e -> e.Name.LocalName = name)
 
         match descendant "TargetFramework" with
         | Some e ->
@@ -681,23 +676,18 @@ let parseTargetFramework (fsprojContent: string) : string option =
     with _ ->
         None
 
-/// Resolve the canonical compiled-DLL path for a project: parses TargetFramework
-/// from the .fsproj and returns `<projDir>/bin/Debug/<TFM>/<projectName>.dll`.
-/// Returns None when the .fsproj cannot be read or the TFM cannot be parsed.
 /// Avoids the orphaned-TFM-dir false positive of a recursive `bin/**/<dll>` glob
 /// (e.g. a stale `bin/Debug/net9.0/` left behind after upgrading to `net10.0`).
+/// Configuration is hardcoded "Debug" — matches BuildPlugin, which doesn't thread
+/// Configuration through either.
 let findCanonicalDllPath (projDir: string) (projectName: string) : string option =
-    let fsproj = Path.Combine(projDir, projectName + ".fsproj")
-
-    if not (File.Exists fsproj) then
+    try
+        Path.Combine(projDir, projectName + ".fsproj")
+        |> File.ReadAllText
+        |> parseTargetFramework
+        |> Option.map (fun tfm -> Path.Combine(projDir, "bin", "Debug", tfm, projectName + ".dll"))
+    with _ ->
         None
-    else
-        try
-            File.ReadAllText fsproj
-            |> parseTargetFramework
-            |> Option.map (fun tfm -> Path.Combine(projDir, "bin", "Debug", tfm, projectName + ".dll"))
-        with _ ->
-            None
 
 /// Register plugins on the daemon based on the loaded configuration.
 let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
@@ -908,16 +898,9 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                             | [] -> None
                             | times -> Some(List.max times)
 
-                    match maxSourceTime with
-                    | None -> false
-                    | Some srcTime ->
-                        match findCanonicalDllPath projDir projectName with
-                        | None -> false
-                        | Some dllPath ->
-                            if not (File.Exists dllPath) then
-                                false
-                            else
-                                File.GetLastWriteTimeUtc dllPath < srcTime)
+                    match maxSourceTime, findCanonicalDllPath projDir projectName with
+                    | Some srcTime, Some dllPath when File.Exists dllPath -> File.GetLastWriteTimeUtc dllPath < srcTime
+                    | _ -> false)
 
         Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"
 
