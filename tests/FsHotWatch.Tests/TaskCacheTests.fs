@@ -618,7 +618,10 @@ let ``FileTaskCache roundtrips cached events`` () =
                       { RunId = System.Guid.NewGuid()
                         TotalElapsed = System.TimeSpan.FromSeconds(3.5)
                         Outcome = Normal
-                        Results = Map.ofList [ "proj1", TestsPassed("ok", false); "proj2", TestsFailed("fail", false) ]
+                        Results =
+                          Map.ofList
+                              [ "proj1", TestsPassed("ok", false, TimeSpan.Zero)
+                                "proj2", TestsFailed("fail", false, TimeSpan.Zero) ]
                         RanFullSuite = true } ] }
 
         c.Set (ck "build" "X.fs") (hash "k") result
@@ -645,7 +648,10 @@ let ``FileTaskCache roundtrips wasFiltered=true and RanFullSuite=false`` () =
                       { RunId = runId
                         TotalElapsed = System.TimeSpan.FromSeconds(1.0)
                         Outcome = Normal
-                        Results = Map.ofList [ "p1", TestsPassed("ok", true); "p2", TestsFailed("bad", true) ]
+                        Results =
+                          Map.ofList
+                              [ "p1", TestsPassed("ok", true, TimeSpan.Zero)
+                                "p2", TestsFailed("bad", true, TimeSpan.Zero) ]
                         RanFullSuite = false } ] }
 
         c.Set (ck "test-prune" "X.fs") (hash "k") result
