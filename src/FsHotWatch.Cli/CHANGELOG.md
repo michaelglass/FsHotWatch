@@ -7,7 +7,7 @@ Note: CLI versions release together with the core package under the `core-v` tag
 ### Added
 
 - Run-once output now warns when a `FileCommand` plugin's input files have been modified after the plugin's last successful run. Defense-in-depth against stale cached output. New helpers in `FsHotWatch.Cli.RunOnceOutput`: `PluginRunInfo`, `detectStalePluginInputs`, `formatStalenessWarning`.
-- `FsHotWatch.Cli.DaemonConfig.parseTargetFramework` and `findCanonicalDllPath` — pure helpers exposed for unit testing the staleness probe.
+- `FsHotWatch.Cli.DaemonConfig.canonicalDllPath` — pure path builder for `bin/Debug/<TFM>/<projectName>.dll`. The TFM lookup itself moved into `ProjectGraph` (single XML parse at registration time, exposed via `IProjectGraphReader.GetTargetFramework`).
 
 ### Fixed
 

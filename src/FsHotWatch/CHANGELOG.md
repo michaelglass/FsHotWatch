@@ -7,6 +7,7 @@
 - **`FsHotWatch.ErrorLedger.DiagnosticSeverity.order`** — total order on `Error/Warning/Info/Hint` for severity-threshold comparisons.
 - **`FsHotWatch.CheckCache.DiagnosticSignature`** record (`StartLine/StartColumn/ErrorNumber/Severity/Message`) and **`hashDiagnosticSignatures`** — extracted from `fcsCheckSignature` so the hashing/sorting logic is unit-testable without a live `FSharpCheckFileResults`.
 - **`FsHotWatch.FileTaskCache`** — atomic on-disk writes (write-temp-then-rename) and startup size telemetry logging total entry count and on-disk bytes.
+- **`IProjectGraphReader.GetTargetFramework`** + **`ProjectGraph.GetTargetFramework`** — exposes the first `<TargetFramework>` (or first entry of `<TargetFrameworks>`) parsed from each .fsproj at registration time. Avoids re-opening + re-parsing the .fsproj from downstream consumers. **`extractTargetFramework`** is the underlying pure XDocument-taking helper.
 
 ### Changed
 

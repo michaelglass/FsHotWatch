@@ -335,3 +335,74 @@ let ``GetAllFiles returns empty after PrepareForRediscovery`` () =
     test <@ graph.GetAllFiles().Length = 1 @>
     graph.PrepareForRediscovery()
     test <@ graph.GetAllFiles().IsEmpty @>
+
+// --- TargetFramework ---
+
+[<Fact(Timeout = 2000)>]
+let ``extractTargetFramework returns single TargetFramework`` () =
+    let doc =
+        System.Xml.Linq.XDocument.Parse(
+            """<Project><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"""
+        )
+
+    test <@ extractTargetFramework doc = Some "net10.0" @>
+
+[<Fact(Timeout = 2000)>]
+let ``extractTargetFramework returns first entry of TargetFrameworks`` () =
+    let doc =
+        System.Xml.Linq.XDocument.Parse(
+            """<Project><PropertyGroup><TargetFrameworks>net10.0;net9.0</TargetFrameworks></PropertyGroup></Project>"""
+        )
+
+    test <@ extractTargetFramework doc = Some "net10.0" @>
+
+[<Fact(Timeout = 2000)>]
+let ``extractTargetFramework returns None when neither tag present`` () =
+    let doc =
+        System.Xml.Linq.XDocument.Parse("""<Project><PropertyGroup /></Project>""")
+
+    test <@ extractTargetFramework doc = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``RegisterFromFsproj captures TargetFramework`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-tfm-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let fsproj = Path.Combine(tmpDir, "Foo.fsproj")
+
+        File.WriteAllText(
+            fsproj,
+            """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"""
+        )
+
+        let graph = ProjectGraph()
+        graph.RegisterFromFsproj(fsproj) |> ignore
+        test <@ graph.GetTargetFramework(AbsProjectPath.create fsproj) = Some "net10.0" @>
+    finally
+        Directory.Delete(tmpDir, true)
+
+[<Fact(Timeout = 2000)>]
+let ``GetTargetFramework returns None for unregistered project`` () =
+    let graph = ProjectGraph()
+    test <@ graph.GetTargetFramework(pp "/nope/Foo.fsproj") = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``PrepareForRediscovery clears TargetFramework`` () =
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"graph-tfm-clear-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let fsproj = Path.Combine(tmpDir, "Foo.fsproj")
+
+        File.WriteAllText(
+            fsproj,
+            """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"""
+        )
+
+        let graph = ProjectGraph()
+        graph.RegisterFromFsproj(fsproj) |> ignore
+        graph.PrepareForRediscovery()
+        test <@ graph.GetTargetFramework(AbsProjectPath.create fsproj) = None @>
+    finally
+        Directory.Delete(tmpDir, true)
