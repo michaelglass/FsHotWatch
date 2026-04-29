@@ -1273,6 +1273,26 @@ let create
                             failedList
                             |> List.choose (fun (name, r) -> if TestResult.isTimedOut r then Some name else None)
 
+                        // When 2+ projects ran and at least one has recorded elapsed,
+                        // surface the slowest in the summary so a bottlenecked project
+                        // is visible without having to query test-results JSON.
+                        let slowestSuffix =
+                            if total < 2 then
+                                ""
+                            else
+                                let withElapsed =
+                                    results.Results
+                                    |> Map.toList
+                                    |> List.choose (fun (name, r) ->
+                                        let e = TestResult.elapsed r
+                                        if e > TimeSpan.Zero then Some(name, e) else None)
+
+                                match withElapsed with
+                                | [] -> ""
+                                | _ ->
+                                    let (n, e) = withElapsed |> List.maxBy snd
+                                    $", slowest: %s{n} %.1f{e.TotalSeconds}s"
+
                         if not timedOutProjects.IsEmpty then
                             let names = timedOutProjects |> String.concat ", "
                             ctx.CompleteWithTimeout $"test project(s): {names}"
@@ -1285,7 +1305,7 @@ let create
                             )
                         else
                             ctx.CompleteWithSummary
-                                $"%d{passed} passed, %d{failed} failed in %d{total} projects (selected: %s{selectedSuffix})"
+                                $"%d{passed} passed, %d{failed} failed in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})"
 
                             if failed = 0 then
                                 ctx.ReportStatus(Completed(DateTime.UtcNow))
