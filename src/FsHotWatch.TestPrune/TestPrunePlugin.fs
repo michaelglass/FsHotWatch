@@ -464,8 +464,12 @@ let private executeTests
                             // output that the flakiness tracker can ingest. Gated on a
                             // `dotnet` command — non-MTP runners (sleep, echo, etc.)
                             // would error on the unknown flag.
+                            let isDotnetCommand (cmd: string) =
+                                let leaf = Path.GetFileNameWithoutExtension(cmd)
+                                leaf = "dotnet"
+
                             let ctrfPath =
-                                if config.Command = "dotnet" || config.Command.EndsWith("/dotnet") then
+                                if isDotnetCommand config.Command then
                                     let ctrfDir = testRunsDir repoRoot
                                     Directory.CreateDirectory(ctrfDir) |> ignore
                                     let ctrfName = $"{config.Project}-{Guid.NewGuid():N}.ctrf.json"
@@ -534,7 +538,7 @@ let private executeTests
 
                             if not success then
                                 try
-                                    let logDir = Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-runs")
+                                    let logDir = testRunsDir repoRoot
                                     Directory.CreateDirectory(logDir) |> ignore
                                     let timestamp = DateTime.UtcNow.ToString("yyyyMMddTHHmmssfffZ")
                                     let logPath = Path.Combine(logDir, $"%s{config.Project}-%s{timestamp}.log")
