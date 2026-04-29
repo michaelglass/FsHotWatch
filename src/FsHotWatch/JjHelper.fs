@@ -7,7 +7,7 @@ open FsHotWatch.Logging
 
 /// Get the jj working copy commit_id (content-addressed hash of entire tree).
 /// This call triggers jj's auto-snapshot, so the returned ID reflects current disk state.
-let getWorkingCopyCommitId (repoRoot: string) : string option =
+let internal getWorkingCopyCommitId (repoRoot: string) : string option =
     try
         match ProcessHelper.runProcess "jj" "log -r @ --no-graph -T commit_id" repoRoot [] with
         | ProcessOutcome.Succeeded output ->
@@ -21,7 +21,7 @@ let getWorkingCopyCommitId (repoRoot: string) : string option =
         None
 
 /// Get files changed between two jj commits. Returns absolute paths.
-let getChangedFiles (repoRoot: string) (fromCommitId: string) : Set<string> =
+let internal getChangedFiles (repoRoot: string) (fromCommitId: string) : Set<string> =
     try
         match ProcessHelper.runProcess "jj" $"diff --name-only --from %s{fromCommitId} --to @" repoRoot [] with
         | ProcessOutcome.Succeeded output ->
