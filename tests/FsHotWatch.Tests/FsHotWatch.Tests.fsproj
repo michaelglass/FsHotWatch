@@ -34,6 +34,7 @@
     <Compile Include="IpcPayloadTests.fs" />
     <Compile Include="CoverageMergeTests.fs" />
     <Compile Include="TestPrunePluginTests.fs" />
+    <Compile Include="FlakinessTests.fs" />
     <Compile Include="AnalyzersPluginTests.fs" />
     <Compile Include="LintPluginTests.fs" />
     <Compile Include="FormatCheckPluginTests.fs" />
