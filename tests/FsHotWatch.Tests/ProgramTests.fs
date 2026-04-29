@@ -25,7 +25,7 @@ let private fakeConfig: DaemonConfiguration =
 
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
-      Scan = fun _ _ -> async { return "scan started" }
+      Scan = fun _ -> async { return "scan started" }
       ScanStatus = fun _ -> async { return "idle" }
       GetStatus =
         fun _ ->
@@ -358,35 +358,6 @@ let ``startFreshDaemonWith passes extra args to launch`` () =
 
         test <@ receivedArgs = "--verbose --no-cache " @>)
 
-// --- Scan with Force flag ---
-
-[<Fact(Timeout = 5000)>]
-let ``executeCommand Scan Force passes true to IPC scan`` () =
-    let mutable forceValue = false
-
-    let ipc =
-        { fakeIpc () with
-            Scan =
-                fun _ force ->
-                    async {
-                        forceValue <- force
-                        return "scan started"
-                    } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Scan [ Force ])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 0 @>
-    test <@ forceValue @>
-
 // --- Completions command ---
 
 [<Fact(Timeout = 5000)>]
@@ -616,15 +587,7 @@ let ``reuse path does not launch daemon when hash matches`` () =
                 IsRunning = fun _ -> true
                 LaunchDaemon = fun _ _ _ -> () }
 
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            tmpDir
-            "pipe"
-            (Scan [])
-            defaultGlobalOptions
-            fakeConfig
-            5.0
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" Scan defaultGlobalOptions fakeConfig 5.0
         |> ignore
 
         let mutable launchCalled = false
@@ -640,7 +603,7 @@ let ``reuse path does not launch daemon when hash matches`` () =
                 ipc2
                 tmpDir
                 "pipe"
-                (Scan [])
+                Scan
                 defaultGlobalOptions
                 fakeConfig
                 5.0
