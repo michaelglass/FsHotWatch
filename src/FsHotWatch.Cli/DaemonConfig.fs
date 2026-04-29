@@ -838,10 +838,19 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                             Logging.warn "config" $"Unknown test extension type: %s{other}"
                             None))
 
-        // Belt-and-suspenders mtime check for stale test DLLs. Used by executeTests
-        // when the dirty tracker has no record for a project (e.g. run-tests command
-        // at cold start, or a project MSBuild's incremental cache omitted from the
-        // last build output). Returns true if sources are newer than the DLL.
+        // mtime ground truth: compare each project's compiled DLL to its source files.
+        // Authoritative for the test-prune skip decision (see isStaleProject).
+        //
+        // Returns true (stale) when:
+        //   - DLL is older than the newest source file, OR
+        //   - DLL doesn't exist on disk (project was never built — running tests
+        //     would fail at assembly-load anyway, so reporting stale is more useful
+        //     than letting test-prune dispatch and fail)
+        // Returns false (fresh) when:
+        //   - DLL is at least as new as every source, OR
+        //   - The graph has no record of the project (unknown — let test-prune dispatch)
+        //   - Sources can't be located on disk (rare; nothing to compare against)
+        //   - TargetFramework can't be determined (can't form a canonical DLL path)
         let stalenessCheck =
             let allProjects = daemon.Graph.GetAllProjects()
 
@@ -874,7 +883,11 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                     match maxSourceTime, daemon.Graph.GetTargetFramework(proj) with
                     | Some srcTime, Some tfm ->
                         let dllPath = canonicalDllPath projDir projectName tfm
-                        File.Exists dllPath && File.GetLastWriteTimeUtc dllPath < srcTime
+
+                        if not (File.Exists dllPath) then
+                            true
+                        else
+                            File.GetLastWriteTimeUtc dllPath < srcTime
                     | _ -> false)
 
         Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"

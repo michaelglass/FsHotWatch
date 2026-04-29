@@ -2350,6 +2350,33 @@ let ``executeTests skips project when stalenessCheck reports stale even though d
 
         test <@ staleWarning @>)
 
+[<Fact(Timeout = 5000)>]
+let ``executeTests runs project when dirty tracker is dirty but stalenessCheck reports fresh`` () =
+    // Regression for the cold-start false-positive: the daemon's initial scan
+    // emits SourceChanged for every file, which marks every project dirty.
+    // MSBuild's incremental cache then silently skips up-to-date projects (no
+    // "Project -> dll" line in output) so clearFreshProjects can't clear those
+    // dirty bits. mtime is authoritative: when the on-disk DLL is genuinely
+    // fresh, isStaleProject must report not-stale and dispatch the test.
+    withTempDir "tp-dirty-but-fresh" (fun tmpDir ->
+        let host, sentinel =
+            withSingleProjectStaleHarness tmpDir "FreshProj" (fun tracker ->
+                tracker.MarkDirty [ "FreshProj" ]
+                Some(fun _ -> false))
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForPluginTerminal host "test-prune" 5.0
+
+        test <@ File.Exists sentinel @>
+
+        let staleWarning =
+            host.GetErrorsByPlugin("test-prune")
+            |> Map.toList
+            |> List.collect snd
+            |> List.exists (fun e -> e.Severity = FsHotWatch.ErrorLedger.Warning && e.Message.Contains("stale"))
+
+        test <@ not staleWarning @>)
+
 [<Fact(Timeout = 25000)>]
 let ``regression: cold-start BuildCompleted bypasses task cache and runs tests`` () =
     // When the daemon restarts, a new plugin instance has hadPriorResults=false.

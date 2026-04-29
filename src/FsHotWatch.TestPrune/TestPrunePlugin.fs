@@ -322,16 +322,24 @@ let private flakinessHistoryPath (repoRoot: string) =
 let private testRunsDir (repoRoot: string) =
     Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-runs")
 
-// Belt-and-suspenders: checks both the dirty tracker and the independent mtime
-// staleness check. The mtime check catches stale projects that MSBuild's incremental
-// cache omitted from the last build output (e.g. cold start or run-tests command).
+// mtime is authoritative when available — it reflects actual on-disk state of the
+// compiled DLL relative to the project's sources, which is what determines whether
+// running tests would exercise stale code. The dirty tracker is a heuristic: it
+// reports "a SourceChanged event flowed through that wasn't matched by a DLL line
+// in clearFreshProjects". On cold-start scans every project gets flagged, and
+// MSBuild's incremental cache silently skips up-to-date projects (no "->" line
+// in output), so the dirty bit can stay stuck-true for projects whose DLLs are in
+// fact already fresh. Falling back to the dirty tracker only when there is no
+// stalenessCheck (e.g. tests using a stub plugin without graph access) preserves
+// behavior for that narrow case.
 let private isStaleProject
     (dirtyTracker: FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker option)
     (stalenessCheck: (string -> bool) option)
     (project: string)
     =
-    dirtyTracker |> Option.exists (fun t -> t.IsDirty project)
-    || stalenessCheck |> Option.exists (fun f -> f project)
+    match stalenessCheck with
+    | Some check -> check project
+    | None -> dirtyTracker |> Option.exists (fun t -> t.IsDirty project)
 
 let private executeTests
     (ctx: PluginCtx<'msg> option)
