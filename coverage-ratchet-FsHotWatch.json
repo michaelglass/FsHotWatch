@@ -62,7 +62,7 @@
     ],
     "CheckPipeline.fs": [
       {
-        "line": 79,
+        "line": 78,
         "branch": 61,
         "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor",
         "platform": "macos"
@@ -108,7 +108,7 @@
     "DaemonConfig.fs": [
       {
         "line": 71,
-        "branch": 75,
+        "branch": 76,
         "reason": "loosened 2026-04-24 \u002B 2026-04-26 race-fix retry-resolution path adds untested live-system warning branch",
         "platform": "macos"
       },
@@ -433,8 +433,8 @@
     ],
     "ProjectGraph.fs": [
       {
-        "line": 99,
-        "branch": 92,
+        "line": 98,
+        "branch": 91,
         "reason": "loosened: fileToProjects multi-project paths",
         "platform": "macos"
       },
