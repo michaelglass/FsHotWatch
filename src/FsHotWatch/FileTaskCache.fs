@@ -73,19 +73,22 @@ let private serializeTestResult (key: string) (result: TestResult) =
     obj["project"] <- key
 
     match result with
-    | TestsPassed(output, wasFiltered) ->
+    | TestsPassed(output, wasFiltered, elapsed) ->
         obj["result"] <- "passed"
         obj["output"] <- output
         obj["wasFiltered"] <- wasFiltered
-    | TestsFailed(output, wasFiltered) ->
+        obj["elapsedSeconds"] <- elapsed.TotalSeconds
+    | TestsFailed(output, wasFiltered, elapsed) ->
         obj["result"] <- "failed"
         obj["output"] <- output
         obj["wasFiltered"] <- wasFiltered
-    | TestsTimedOut(output, after, wasFiltered) ->
+        obj["elapsedSeconds"] <- elapsed.TotalSeconds
+    | TestsTimedOut(output, after, wasFiltered, elapsed) ->
         obj["result"] <- "timed-out"
         obj["output"] <- output
         obj["wasFiltered"] <- wasFiltered
         obj["timeoutSeconds"] <- after.TotalSeconds
+        obj["elapsedSeconds"] <- elapsed.TotalSeconds
 
     obj
 
@@ -104,10 +107,23 @@ let private deserializeTestResult (obj: JsonObject) : string * TestResult =
         else
             false
 
+    // elapsedSeconds is optional for back-compat with caches written before
+    // the field existed; default to TimeSpan.Zero (no recorded duration).
+    let elapsed =
+        if obj.ContainsKey("elapsedSeconds") then
+            let node = obj["elapsedSeconds"]
+
+            if isNull node then
+                TimeSpan.Zero
+            else
+                TimeSpan.FromSeconds(node.GetValue<float>())
+        else
+            TimeSpan.Zero
+
     let result =
         match obj["result"].GetValue<string>() with
-        | "passed" -> TestsPassed(output, wasFiltered)
-        | "failed" -> TestsFailed(output, wasFiltered)
+        | "passed" -> TestsPassed(output, wasFiltered, elapsed)
+        | "failed" -> TestsFailed(output, wasFiltered, elapsed)
         | "timed-out" ->
             let secs =
                 if obj.ContainsKey("timeoutSeconds") then
@@ -115,7 +131,7 @@ let private deserializeTestResult (obj: JsonObject) : string * TestResult =
                 else
                     0.0
 
-            TestsTimedOut(output, TimeSpan.FromSeconds secs, wasFiltered)
+            TestsTimedOut(output, TimeSpan.FromSeconds secs, wasFiltered, elapsed)
         | r -> failwith $"Unknown test result: %s{r}"
 
     project, result

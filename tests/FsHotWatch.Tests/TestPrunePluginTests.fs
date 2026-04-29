@@ -2029,13 +2029,18 @@ let ``ranFullSuite is true for empty results`` () =
 [<Fact>]
 let ``ranFullSuite is true when no project was filtered`` () =
     let results =
-        Map.ofList [ "A", TestsPassed("", false); "B", TestsFailed("", false) ]
+        Map.ofList
+            [ "A", TestsPassed("", false, TimeSpan.Zero)
+              "B", TestsFailed("", false, TimeSpan.Zero) ]
 
     test <@ TestResult.ranFullSuite results @>
 
 [<Fact>]
 let ``ranFullSuite is false when at least one project was filtered`` () =
-    let results = Map.ofList [ "A", TestsPassed("", false); "B", TestsPassed("", true) ]
+    let results =
+        Map.ofList
+            [ "A", TestsPassed("", false, TimeSpan.Zero)
+              "B", TestsPassed("", true, TimeSpan.Zero) ]
 
     test <@ not (TestResult.ranFullSuite results) @>
 
@@ -2116,6 +2121,77 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
                 | _ -> false)
 
         test <@ hasCompleted @>)
+
+// --- adaptiveTimeout pure helper ---
+
+[<Fact(Timeout = 1000)>]
+let ``adaptiveTimeout returns configured when not a stale manual run`` () =
+    let configured = TimeSpan.FromSeconds(10.0)
+    test <@ adaptiveTimeout configured false (Some(TimeSpan.FromSeconds 1.0)) = configured @>
+
+[<Fact(Timeout = 1000)>]
+let ``adaptiveTimeout returns configured when stale-manual but no prior elapsed`` () =
+    let configured = TimeSpan.FromSeconds(10.0)
+    test <@ adaptiveTimeout configured true None = configured @>
+
+[<Fact(Timeout = 1000)>]
+let ``adaptiveTimeout returns 2x prior when stale-manual and configured is Infinite`` () =
+    let prior = TimeSpan.FromSeconds(5.0)
+
+    let result =
+        adaptiveTimeout System.Threading.Timeout.InfiniteTimeSpan true (Some prior)
+
+    test <@ result = TimeSpan.FromSeconds(10.0) @>
+
+[<Fact(Timeout = 1000)>]
+let ``adaptiveTimeout takes the smaller of configured and 2x prior on stale-manual`` () =
+    let prior = TimeSpan.FromSeconds(5.0)
+    test <@ adaptiveTimeout (TimeSpan.FromSeconds 30.0) true (Some prior) = TimeSpan.FromSeconds(10.0) @>
+
+[<Fact(Timeout = 1000)>]
+let ``adaptiveTimeout respects configured upper bound when 2x prior would exceed it`` () =
+    let prior = TimeSpan.FromSeconds(5.0)
+    test <@ adaptiveTimeout (TimeSpan.FromSeconds 7.0) true (Some prior) = TimeSpan.FromSeconds(7.0) @>
+
+[<Fact(Timeout = 1000)>]
+let ``adaptiveTimeout ignores TimeSpan.Zero prior (no recorded data)`` () =
+    let configured = TimeSpan.FromSeconds(10.0)
+    test <@ adaptiveTimeout configured true (Some TimeSpan.Zero) = configured @>
+
+[<Fact(Timeout = 5000)>]
+let ``test-results JSON exposes per-project elapsedMs after a successful run`` () =
+    withTempDir "tp-elapsed-capture" (fun tmpDir ->
+        let configs =
+            [ { Project = "TimedProj"
+                Command = "sh"
+                Args = "-c \"sleep 0.12\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let tracker = FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker()
+
+        let handler =
+            create ":memory:" tmpDir (Some configs) None None None None (Some tracker) None
+
+        host.RegisterHandler(handler)
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForPluginTerminal host "test-prune" 5.0
+
+        let json = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
+        test <@ json.IsSome @>
+
+        let doc = JsonDocument.Parse(json.Value)
+        let projects = doc.RootElement.GetProperty("projects")
+        Assert.Equal(1, projects.GetArrayLength())
+        let proj = projects.[0]
+        Assert.Equal("TimedProj", proj.GetProperty("project").GetString())
+        Assert.Equal("passed", proj.GetProperty("status").GetString())
+        let elapsedMs = proj.GetProperty("elapsedMs").GetDouble()
+        test <@ elapsedMs >= 100.0 @>)
 
 [<Fact(Timeout = 5000)>]
 let ``run-tests command runs project even when stalenessCheck reports stale`` () =

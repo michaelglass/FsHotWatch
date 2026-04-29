@@ -139,26 +139,36 @@ type RunRecord =
 /// whether the run was reduced by impact analysis (true) or covered the full
 /// project suite (false). Downstream coverage merging uses this to decide
 /// baseline vs partial output paths.
+/// `elapsed` is the wall-clock time the runner ran for. Captured even on
+/// failure/timeout so adaptive bounds (e.g. timeout = 2 × last-success) and
+/// timing display can use it. `TimeSpan.Zero` is the conventional "no data"
+/// value (e.g. for cached results from prior versions that didn't carry it).
 type TestResult =
-    | TestsPassed of output: string * wasFiltered: bool
-    | TestsFailed of output: string * wasFiltered: bool
+    | TestsPassed of output: string * wasFiltered: bool * elapsed: System.TimeSpan
+    | TestsFailed of output: string * wasFiltered: bool * elapsed: System.TimeSpan
     /// The runner exceeded its configured `timeoutSec` and was killed. Distinct
     /// from `TestsFailed` so consumers can react to "stuck" runs (e.g. flag the
     /// whole run TimedOut) without grepping the output for a magic prefix.
-    | TestsTimedOut of output: string * after: System.TimeSpan * wasFiltered: bool
+    | TestsTimedOut of output: string * after: System.TimeSpan * wasFiltered: bool * elapsed: System.TimeSpan
 
 module TestResult =
     let output =
         function
-        | TestsPassed(o, _)
-        | TestsFailed(o, _)
-        | TestsTimedOut(o, _, _) -> o
+        | TestsPassed(o, _, _)
+        | TestsFailed(o, _, _)
+        | TestsTimedOut(o, _, _, _) -> o
 
     let wasFiltered =
         function
-        | TestsPassed(_, w)
-        | TestsFailed(_, w)
-        | TestsTimedOut(_, _, w) -> w
+        | TestsPassed(_, w, _)
+        | TestsFailed(_, w, _)
+        | TestsTimedOut(_, _, w, _) -> w
+
+    let elapsed =
+        function
+        | TestsPassed(_, _, e)
+        | TestsFailed(_, _, e)
+        | TestsTimedOut(_, _, _, e) -> e
 
     let isPassed =
         function
