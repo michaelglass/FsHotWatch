@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.11 - 2026-04-29
+
 ### Added
 
 - **`failOnSeverity` parameter** on `AnalyzersPlugin.create` — promotes analyzer diagnostics at or above the given severity to error. Default: `Hint` (everything is fail-worthy). Configurable via `analyzers.failOnSeverity` in `.fshw.json` (parsed via `FsHotWatch.ErrorLedger.DiagnosticSeverity.fromString`); unknown strings are warned and ignored.

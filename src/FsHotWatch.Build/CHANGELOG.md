@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.10 - 2026-04-29
+
 ### Added
 
 - **Post-build artifact verification.** A successful `BuildPassed` outcome now means every project's compiled DLL is fresh relative to its sources. The async worker walks `graph.GetAllProjects()` after `decideBuildOutcome` returns `BuildPassed` and demotes to `BuildArtifactsStale` whenever the canonical DLL is missing or older than the newest source — catching MSBuild's incremental cache silently failing to update artifacts. Downstream plugins (TestPrune, etc.) can therefore trust `BuildSucceeded` as a guarantee of artifact freshness and drop their own staleness logic.
