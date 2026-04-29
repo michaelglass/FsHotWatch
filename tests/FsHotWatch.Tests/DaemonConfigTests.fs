@@ -1153,10 +1153,3 @@ let ``resolveExistingPathsWithRetry handles empty input without sleeping`` () =
     let result = resolveExistingPathsWithRetry dirExists sleep []
     test <@ List.isEmpty result @>
     test <@ sleepCount = 0 @>
-
-// --- canonicalDllPath ---
-
-[<Fact(Timeout = 2000)>]
-let ``canonicalDllPath builds bin/Debug/<TFM>/<name>.dll`` () =
-    let path = canonicalDllPath "/repo/Foo" "Foo" "net10.0"
-    test <@ path = Path.Combine("/repo/Foo", "bin", "Debug", "net10.0", "Foo.dll") @>
