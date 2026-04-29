@@ -29,7 +29,7 @@ fshw status
 |---------|-------------|
 | `start` | Start daemon in foreground (auto-scans on boot, Ctrl+C to stop). |
 | `stop` | Gracefully stop the running daemon. |
-| `scan [--force]` | Re-scan all files. `--force` is currently a no-op (kept for back-compat). |
+| `scan` | Re-scan all files. |
 | `scan-status` | Check scan progress without blocking. |
 | `status [plugin]` | Show plugin statuses. Optionally filter to one plugin. |
 | `build` | Trigger a build and wait for completion. |

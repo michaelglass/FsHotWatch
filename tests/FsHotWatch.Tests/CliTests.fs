@@ -101,14 +101,8 @@ let ``parse status with plugin returns Status Some`` () =
 [<Fact(Timeout = 5000)>]
 let ``parse scan returns Scan`` () =
     match CommandTree.parse tree [| "scan" |] with
-    | Ok(Scan flags) -> test <@ flags |> List.isEmpty @>
-    | other -> failwith $"Expected Ok(Scan []), got %A{other}"
-
-[<Fact(Timeout = 5000)>]
-let ``parse scan --force returns Scan with Force`` () =
-    match CommandTree.parse tree [| "scan"; "--force" |] with
-    | Ok(Scan flags) -> test <@ flags = [ Force ] @>
-    | other -> failwith $"Expected Ok(Scan [Force]), got %A{other}"
+    | Ok Scan -> ()
+    | other -> failwith $"Expected Ok Scan, got %A{other}"
 
 [<Fact(Timeout = 5000)>]
 let ``parse errors returns Errors`` () =
@@ -284,11 +278,9 @@ let ``globalSpec parse with multiple global flags`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``globalSpec parse with no global flags passes through`` () =
-    match spec.Parse [| "scan"; "--force" |] with
-    | Ok(globals, Scan flags) ->
-        test <@ globals |> List.isEmpty @>
-        test <@ flags = [ Force ] @>
-    | other -> failwith $"Expected Ok([], Scan [Force]), got %A{other}"
+    match spec.Parse [| "scan" |] with
+    | Ok(globals, Scan) -> test <@ globals |> List.isEmpty @>
+    | other -> failwith $"Expected Ok([], Scan), got %A{other}"
 
 [<Fact(Timeout = 5000)>]
 let ``globalSpec parse with global flags after command`` () =
@@ -568,7 +560,7 @@ let private completedStatusJson =
 
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
-      Scan = fun _ _ -> async { return "scan started" }
+      Scan = fun _ -> async { return "scan started" }
       ScanStatus = fun _ -> async { return "idle" }
       GetStatus = fun _ -> async { return completedStatusJson }
       GetPluginStatus = fun _ _ -> async { return "{}" }
@@ -663,22 +655,14 @@ let ``executeCommand Scan calls scan IPC`` () =
     let ipc =
         { fakeIpc () with
             Scan =
-                fun _ _ ->
+                fun _ ->
                     async {
                         called <- true
                         return "scan started"
                     } }
 
     let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Scan [])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
+        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Scan defaultGlobalOptions fakeConfig 30.0
 
     test <@ result = 0 @>
     test <@ called @>

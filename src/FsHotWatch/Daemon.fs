@@ -345,7 +345,7 @@ type ScanSignal(?cancellationToken: CancellationToken) =
 
 /// Messages handled by the scan agent.
 [<NoComparison; NoEquality>]
-type private ScanMsg = RequestScan of force: bool * CancellationToken * AsyncReplyChannel<unit>
+type private ScanMsg = RequestScan of CancellationToken * AsyncReplyChannel<unit>
 
 /// Internal state managed by the scan agent.
 type private ScanAgentState =
@@ -371,8 +371,8 @@ let private createScanAgent agent =
       CurrentState = ScanIdle
       CurrentGeneration = 0L }
 
-let private requestScan (sa: ScanAgent) force ct =
-    sa.Agent.PostAndAsyncReply(fun ch -> RequestScan(force, ct, ch))
+let private requestScan (sa: ScanAgent) ct =
+    sa.Agent.PostAndAsyncReply(fun ch -> RequestScan(ct, ch))
 
 let private getScanGeneration (sa: ScanAgent) = sa.GetGeneration()
 
@@ -760,19 +760,18 @@ type Daemon
 
     /// Scan all registered files — check each one and emit events to plugins.
     /// Blocks until complete. If a scan is already running, waits for it to finish.
-    member _.ScanAll(?force: bool) =
+    member _.ScanAll() =
         async {
-            let force = defaultArg force false
             let! ct = Async.CancellationToken
 
-            do! requestScan scanAgent force ct
+            do! requestScan scanAgent ct
         }
 
     /// Run a single full scan in-process without watcher or IPC.
     /// Discovers projects, scans all files, waits for plugins to complete, returns statuses.
     member this.RunOnce() =
         async {
-            do! this.ScanAll(force = true)
+            do! this.ScanAll()
 
             do!
                 waitForAllTerminal host (System.TimeSpan.FromMinutes(30.0)) ()
@@ -817,8 +816,8 @@ type Daemon
     member this.RunWithIpc(pipeName: string, cts: CancellationTokenSource) =
         async {
             try
-                let onScan (force: bool) =
-                    Async.StartAsTask(this.ScanAll(force = force)) |> ignore
+                let onScan () =
+                    Async.StartAsTask(this.ScanAll()) |> ignore
 
                 let triggerBuild () =
                     async {
@@ -866,9 +865,8 @@ type Daemon
                 let tcs = System.Threading.Tasks.TaskCompletionSource<unit>()
                 use _reg = cts.Token.Register(fun () -> tcs.TrySetResult() |> ignore)
 
-                // force bypasses jj guard since plugins have no state from previous daemon runs.
                 // Race against cancellation so a slow scan doesn't block shutdown.
-                let scanTask = Async.StartAsTask(this.ScanAll(force = true))
+                let scanTask = Async.StartAsTask(this.ScanAll())
 
                 do!
                     [| scanTask :> System.Threading.Tasks.Task
@@ -889,13 +887,7 @@ type Daemon
         }
 
 /// Execute the full scan logic, returning the updated agent state.
-let private performScan
-    (ctx: BatchContext)
-    (scanSignal: ScanSignal)
-    (state: ScanAgentState)
-    (_force: bool)
-    (ct: CancellationToken)
-    =
+let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: ScanAgentState) (ct: CancellationToken) =
     async {
         let host = ctx.Host
         let pipeline = ctx.Pipeline
@@ -924,8 +916,6 @@ let private performScan
         let mutable scanState: ScanState = Scanning(total, 0, System.DateTime.UtcNow)
 
         if not files.IsEmpty then
-            let filesToCheck = files
-
             // Run preprocessors (e.g., formatter) before dispatching
             let modified = host.RunPreprocessors(files)
 
@@ -938,7 +928,7 @@ let private performScan
             let mutable checkedCount = 0
             let mutable skippedCount = 0
 
-            let filesToCheckSet = Set.ofList filesToCheck
+            let filesToCheckSet = Set.ofList files
 
             // Check files in parallel tiers based on project dependency graph
             let tiers = graph.GetParallelTiers()
@@ -1162,9 +1152,9 @@ module Daemon =
                                 let! msg = inbox.Receive()
 
                                 match msg with
-                                | RequestScan(force, ct, reply) ->
+                                | RequestScan(ct, reply) ->
                                     try
-                                        let! newState = performScan batchCtx scanSignal state force ct
+                                        let! newState = performScan batchCtx scanSignal state ct
 
                                         match scanAgentRef.Value with
                                         | Some sa ->

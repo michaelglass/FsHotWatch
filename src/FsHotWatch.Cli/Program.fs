@@ -12,8 +12,6 @@ open FsHotWatch.Ipc
 
 type RunFlag = | [<CmdFlag(Short = "r", Description = "Run once without daemon")>] RunOnce
 
-type ScanFlag = | [<CmdFlag(Description = "Force rescan even if no changes detected")>] Force
-
 type ErrorsFlag =
     | [<CmdFlag(Short = "w", Description = "Block until every plugin reaches a terminal state")>] Wait
     | [<CmdFlag(Description = "Timeout in seconds for --wait"); CmdArg("seconds", Default = "600")>] Timeout of int
@@ -64,7 +62,7 @@ type Command =
     | [<CmdArg("plugin name (optional)"); CmdExample("", "build", "test-prune"); Cmd("Show current status")>] Status of
         plugin: string option
     | [<CmdExample("", "--wait", "--wait --timeout 60"); Cmd("Show accumulated errors")>] Errors of ErrorsFlag list
-    | [<Cmd("Scan for file changes")>] Scan of ScanFlag list
+    | [<Cmd("Scan for file changes")>] Scan
     | [<CmdArg("plugin name");
         CmdExample("build", "test-prune", "analyzers");
         Cmd("Force a plugin to re-run, clearing its cached state")>] Rerun of pluginName: string
@@ -171,7 +169,7 @@ let defaultProcessOps: ProcessOps =
 /// Injectable IPC operations for testability.
 type IpcOps =
     { Shutdown: string -> Async<string>
-      Scan: string -> bool -> Async<string>
+      Scan: string -> Async<string>
       ScanStatus: string -> Async<string>
       GetStatus: string -> Async<string>
       GetPluginStatus: string -> string -> Async<string>
@@ -585,11 +583,9 @@ let executeCommand
             | n -> UI.success $"{n} daemons stopped"
 
             0)
-    | Scan flags ->
-        let force = flags |> List.contains Force
-
+    | Scan ->
         withIpc (fun () ->
-            let result = ipc.Scan pipeName force |> Async.RunSynchronously
+            let result = ipc.Scan pipeName |> Async.RunSynchronously
             UI.success $"Scan: %s{result}"
             0)
     | Status pluginName ->
