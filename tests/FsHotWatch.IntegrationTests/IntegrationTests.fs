@@ -1731,3 +1731,64 @@ let ``TestPrune honors per-project TimeoutSec and records TimedOut`` () =
                 | RunOutcome.TimedOut _ -> true
                 | _ -> false
             @>)
+
+// ===========================================================================
+// §1 fcs-signature oracle — regression test
+// ===========================================================================
+// Doc: docs/plans/2026-04-26-build-system-ideas-design.md §8.5 calls for a
+// "synthetic cross-file test for §1": Bar.fs depends on Foo.fs's signature;
+// edit Foo, verify Bar's downstream cache invalidates correctly.
+//
+// The contract under test is `fcsCheckSignature`: when Foo.fs changes in a way
+// that affects Bar.fs's diagnostics (e.g. removes a symbol Bar uses), Bar.fs's
+// signature must differ — even though Bar.fs's own bytes are unchanged. That
+// signature feeds the analyzers/lint merkle cache key, so when this contract
+// holds, downstream caches invalidate correctly.
+
+[<Fact(Timeout = 30000)>]
+let ``§1 regression: Bar's fcsCheckSignature changes when Foo's signature breaks Bar`` () =
+    withTempDir "fshw-fcs-sig-cross-file" (fun tmpDir ->
+        let fooPath = Path.Combine(tmpDir, "Foo.fs")
+        let barPath = Path.Combine(tmpDir, "Bar.fs")
+
+        File.WriteAllText(fooPath, "module Foo\nlet add (x: int) (y: int) = x + y\n")
+        File.WriteAllText(barPath, "module Bar\nlet result = Foo.add 1 2\n")
+
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+
+        // Use Foo as the script-options entry, then override SourceFiles to the
+        // 2-file project view so Bar can resolve Foo.
+        let fooSource = File.ReadAllText(fooPath)
+        let sourceText = SourceText.ofString fooSource
+
+        let projOptions, _ =
+            checker.GetProjectOptionsFromScript(fooPath, sourceText, assumeDotNetFramework = false)
+            |> Async.RunSynchronously
+
+        pipeline.RegisterProject(
+            "test-project",
+            { projOptions with
+                SourceFiles = [| fooPath; barPath |] }
+        )
+
+        let result1 =
+            pipeline.CheckFile(barPath)
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "first CheckFile returned None")
+
+        let sig1 = FsHotWatch.CheckCache.fcsCheckSignature result1.CheckResults
+
+        // Break Foo: remove `add` so Bar.fs's `Foo.add` becomes "value not found".
+        File.WriteAllText(fooPath, "module Foo\nlet unrelated () = 0\n")
+
+        let result2 =
+            pipeline.CheckFile(barPath)
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "second CheckFile returned None")
+
+        let sig2 = FsHotWatch.CheckCache.fcsCheckSignature result2.CheckResults
+
+        // Bar.fs's own bytes are identical — only Foo changed. The signature must
+        // still differ, otherwise downstream caches would replay stale results.
+        test <@ sig1 <> sig2 @>)

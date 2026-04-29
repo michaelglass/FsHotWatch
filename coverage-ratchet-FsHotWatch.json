@@ -42,7 +42,7 @@
       }
     ],
     "CacheEventLog.fs": {
-      "line": 83,
+      "line": 84,
       "branch": 100,
       "reason": "loosened automatically"
     },
@@ -405,7 +405,7 @@
     ],
     "Program.fs": [
       {
-        "line": 66,
+        "line": 67,
         "branch": 53,
         "reason": "CLI entry point; line drifts 67-68% and branch drifts 53-54% across runs",
         "platform": "macos"
