@@ -285,53 +285,11 @@ let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<str
 /// events fire; the caller just gets back the final TestResults. ctx=None
 /// also disables the skip-on-stale shortcut so manual runs aren't deadlocked
 /// by a stuck dirty bit — see the staleness branch below.
-/// Compute the timeout for a per-project test run. For stale-manual runs (the
-/// only path where the test command is actually invoked against a known-stale
-/// binary), bound the wait by 2× the project's last successful elapsed — this
-/// prevents a hanging stale assembly from blocking the recovery `fshw test`
-/// indefinitely. The configured timeout still wins when the user has set a
-/// tighter cap than 2× prior.
-let adaptiveTimeout (configured: TimeSpan) (isStaleManual: bool) (lastElapsed: TimeSpan option) : TimeSpan =
-    if not isStaleManual then
-        configured
-    else
-        match lastElapsed with
-        | Some prior when prior > TimeSpan.Zero ->
-            let doubled = TimeSpan.FromTicks(prior.Ticks * 2L)
-
-            if configured = System.Threading.Timeout.InfiniteTimeSpan then
-                doubled
-            else
-                min configured doubled
-        | _ -> configured
-
-let private staleBinaryEntry (project: string) : ErrorLedger.ErrorEntry =
-    { Message =
-        $"Tests for %s{project} skipped — binary is stale "
-        + "(sources newer than DLL). This usually means MSBuild's incremental "
-        + "cache decided the project was up-to-date when it was not. "
-        + "Run `dotnet build --no-incremental` (or delete bin/ and obj/) to force a real rebuild."
-      Severity = ErrorLedger.Warning
-      Line = 0
-      Column = 0
-      Detail = None }
-
 let private flakinessHistoryPath (repoRoot: string) =
     Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-history.json")
 
 let private testRunsDir (repoRoot: string) =
     Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-runs")
-
-// Belt-and-suspenders: checks both the dirty tracker and the independent mtime
-// staleness check. The mtime check catches stale projects that MSBuild's incremental
-// cache omitted from the last build output (e.g. cold start or run-tests command).
-let private isStaleProject
-    (dirtyTracker: FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker option)
-    (stalenessCheck: (string -> bool) option)
-    (project: string)
-    =
-    dirtyTracker |> Option.exists (fun t -> t.IsDirty project)
-    || stalenessCheck |> Option.exists (fun f -> f project)
 
 let private executeTests
     (ctx: PluginCtx<'msg> option)
@@ -342,9 +300,6 @@ let private executeTests
     (configs: TestConfig list)
     (affectedClassesByProject: Map<string, string list>)
     (rawFilter: string option)
-    (dirtyTracker: FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker option)
-    (stalenessCheck: (string -> bool) option)
-    (lastSuccessfulElapsed: string -> TimeSpan option)
     =
     async {
         Logging.info "test-prune" $"executeTests starting with %d{configs.Length} configs"
@@ -404,24 +359,12 @@ let private executeTests
                         // Collect extra args (filter + coverage) to append
                         let extraArgs = ResizeArray<string>()
 
-                        let staleProject = isStaleProject dirtyTracker stalenessCheck config.Project
-
-                        // ctx is None for manual `run-tests`, Some for auto-watch
-                        // (BuildCompleted-driven). Skip-on-stale only applies to auto:
-                        // a manual skip would deadlock — skipped tests never advance
-                        // the dirty tracker, so the next manual run skips again.
-                        let isAutoMode = Option.isSome ctx
-
                         // Template-based class filter (from impact analysis).
                         // When the map is non-empty but has no classes for this project,
                         // skip the project entirely (impact analysis found no relevant tests).
                         let skipProject =
                             not affectedClassesByProject.IsEmpty
                             && not (affectedClassesByProject |> Map.containsKey config.Project)
-
-                        let warnIfStale () =
-                            if staleProject then
-                                Logging.warn "test-prune" (staleBinaryEntry config.Project).Message
 
                         if skipProject then
                             Logging.info "test-prune" $"Skipping %s{config.Project} — no affected classes"
@@ -430,12 +373,7 @@ let private executeTests
                             // its coverage contribution is "nothing new", so mark as filtered.
                             // Elapsed=Zero since we didn't actually run the test runner.
                             results <- (config.Project, TestsPassed("", true, TimeSpan.Zero)) :: results
-                        elif staleProject && isAutoMode then
-                            warnIfStale ()
-                            results <- (config.Project, TestsPassed("", true, TimeSpan.Zero)) :: results
                         else
-                            warnIfStale ()
-
                             let filterArgs = buildFilterArgs config affectedClassesByProject
 
                             match filterArgs with
@@ -493,16 +431,10 @@ let private executeTests
 
                             let logToCtx msg = ctx |> Option.iter (fun c -> c.Log msg)
 
-                            let configuredTimeout =
+                            let timeoutSpan =
                                 match config.TimeoutSec with
                                 | Some s -> TimeSpan.FromSeconds(float s)
                                 | None -> System.Threading.Timeout.InfiniteTimeSpan
-
-                            let timeoutSpan =
-                                adaptiveTimeout
-                                    configuredTimeout
-                                    (staleProject && not isAutoMode)
-                                    (lastSuccessfulElapsed config.Project)
 
                             let projectSw = Stopwatch.StartNew()
 
@@ -741,8 +673,6 @@ let create
     (beforeRun: (unit -> unit) option)
     (afterRun: (TestResults -> unit) option)
     (coveragePaths: (string -> CoveragePaths option) option)
-    (dirtyTracker: FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker option)
-    (stalenessCheck: (string -> bool) option)
     =
     let db = Database.create dbPath
     let extensions = buildExtensions |> Option.map (fun f -> f db)
@@ -805,28 +735,6 @@ let create
     // in runTestsWithImpact always runs on daemon restart even when the on-disk
     // task cache holds a matching entry from a prior session.
     let mutable hadPriorResultsRef: bool = false
-
-    // Per-project last successful elapsed, fed by TestsFinished. Read by the
-    // executeTests timeout-computation path to bound stale-manual runs at
-    // 2× the project's last good run (the recovery path must terminate even
-    // if the stale binary hangs). Persists across daemon restarts via
-    // FileTaskCache replay — `Custom(TestsFinished)` fires for replayed
-    // results too, repopulating this map before the first new run.
-    let lastSuccessfulElapsed =
-        System.Collections.Concurrent.ConcurrentDictionary<string, TimeSpan>()
-
-    let lookupLastSuccessfulElapsed (project: string) : TimeSpan option =
-        match lastSuccessfulElapsed.TryGetValue(project) with
-        | true, e -> Some e
-        | false, _ -> None
-
-    let recordLastSuccessfulElapsed (results: Map<string, TestResult>) =
-        for KeyValue(project, result) in results do
-            if TestResult.isPassed result then
-                let e = TestResult.elapsed result
-
-                if e > TimeSpan.Zero then
-                    lastSuccessfulElapsed.[project] <- e
 
     let hasTestConfigs =
         testConfigs |> Option.map (List.isEmpty >> not) |> Option.defaultValue false
@@ -893,18 +801,7 @@ let create
                             Logging.info "test-prune" $"Affected classes for %s{proj}: %A{classes}"
 
                     let! results, started, completed =
-                        executeTests
-                            (Some ctx)
-                            repoRoot
-                            beforeRun
-                            coveragePaths
-                            afterRun
-                            configs
-                            affectedByProject
-                            None
-                            dirtyTracker
-                            stalenessCheck
-                            lookupLastSuccessfulElapsed
+                        executeTests (Some ctx) repoRoot beforeRun coveragePaths afterRun configs affectedByProject None
 
                     // executeTests still emits per-group TestProgress live; the
                     // synchronous handler emits Started + Completed for the
@@ -1069,9 +966,6 @@ let create
                                                 configs
                                                 Map.empty
                                                 filter
-                                                dirtyTracker
-                                                stalenessCheck
-                                                lookupLastSuccessfulElapsed
 
                                         return formatTestResultsJson results
                             with ex ->
@@ -1292,7 +1186,6 @@ let create
                     ctx.EmitTestRunStarted started
                     ctx.EmitTestRunCompleted completed
                     Volatile.Write(&hadPriorResultsRef, true)
-                    recordLastSuccessfulElapsed completed.Results
 
                     // Apply error reporting synchronously here too — live emission from
                     // the async wouldn't be captured for cache replay.
@@ -1304,17 +1197,6 @@ let create
                         ctx.ClearAllErrors()
                     else
                         reportTestErrors ctx state.TestClassFiles testResults
-
-                    // Re-emit stale-binary warnings for projects flagged by either the dirty
-                    // tracker or the independent staleness check. Done after the clear/report
-                    // step above so the warnings survive ClearAllErrors when stale-skipped
-                    // projects pass trivially.
-                    match testConfigs with
-                    | Some configs ->
-                        for c in configs do
-                            if isStaleProject dirtyTracker stalenessCheck c.Project then
-                                ctx.ReportErrors c.Project [ staleBinaryEntry c.Project ]
-                    | None -> ()
 
                     // Pushing a terminal Completed/Failed status is what appends the
                     // run to history; both RerunQueued and NoRerun branches must call this.
