@@ -20,6 +20,7 @@
 - **`FsHotWatch.JjHelper` module** — `JjScanGuard`, `JjScanDecision`, `getWorkingCopyCommitId`, and `getChangedFiles`. The scan-skip-when-commit-unchanged optimization is gone. Plugin caches are content-addressed (post-§2a) and the FCS check-result cache now hashes file content directly; together they make the scan-skip path's marginal benefit negligible while removing the only jj runtime reliance.
 - **`Daemon.DaemonOptions.EnableJjScanGuard`** — no longer needed; the option is dropped from the public surface.
 - **`DaemonConfig.JjFileBackend`** variant — `"jj"` cache config string is still accepted as a legacy alias and falls back to `FileBackend`.
+- **BREAKING — `force` parameter removed from scan API:** `Daemon.ScanAll(?force)` → `ScanAll()`, `DaemonRpcConfig.RequestScan: bool -> unit` → `unit -> unit`, `DaemonRpcTarget.Scan(force)` → `Scan()`, `IpcClient.scan pipeName force` → `IpcClient.scan pipeName`. The flag had been a no-op since `JjScanGuard` was deleted.
 
 ### Changed
 
