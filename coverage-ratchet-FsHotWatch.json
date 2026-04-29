@@ -1,19 +1,5 @@
 {
   "overrides": {
-    "Flakiness.fs": [
-      {
-        "line": 84,
-        "branch": 60,
-        "reason": "new module: parseCtrfTests has many JSON-shape guards not exercised in tests (single null/missing-field paths); persistence has try/catch fallbacks. Tighten as more tests land.",
-        "platform": "macos"
-      },
-      {
-        "line": 84,
-        "branch": 60,
-        "reason": "new module: see macos reason",
-        "platform": "linux"
-      }
-    ],
     "AnalyzersPlugin.fs": [
       {
         "line": 74,
@@ -210,6 +196,20 @@
         "line": 79,
         "branch": 67,
         "reason": "lower branch coverage on Linux CI",
+        "platform": "linux"
+      }
+    ],
+    "Flakiness.fs": [
+      {
+        "line": 84,
+        "branch": 60,
+        "reason": "new module: parseCtrfTests has many JSON-shape guards not exercised in tests (single null/missing-field paths); persistence has try/catch fallbacks. Tighten as more tests land.",
+        "platform": "macos"
+      },
+      {
+        "line": 84,
+        "branch": 60,
+        "reason": "new module: see macos reason",
         "platform": "linux"
       }
     ],
@@ -419,7 +419,7 @@
     ],
     "Program.fs": [
       {
-        "line": 66,
+        "line": 67,
         "branch": 53,
         "reason": "CLI entry point; line drifts 67-68% and branch drifts 53-54% across runs",
         "platform": "macos"
