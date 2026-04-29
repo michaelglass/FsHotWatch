@@ -75,7 +75,7 @@
 
   <ItemGroup>
     <PackageReference Include="Ignore" Version="0.2.1" />
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.202" PrivateAssets="All" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.203" PrivateAssets="All" />
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
     <PackageReference Include="FSharp.Data.Adaptive" Version="1.2.26" />
     <PackageReference Include="StreamJsonRpc" Version="2.24.84" />
