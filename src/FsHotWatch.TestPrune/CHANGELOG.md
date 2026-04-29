@@ -10,6 +10,7 @@
 
 - **Cold-start cache bypass.** TestPrunePlugin's `BuildCompleted` cache key now returns `None` until the first `TestsFinished` in the daemon session, so a stale on-disk cache entry from a prior session can't pre-empt the cold-start full-suite run. Mutable plugin-level refs use `Volatile.Read`/`Volatile.Write` for thread safety.
 - **Stale-binary warning re-emit.** The "stale DLL" warning is now produced from `stalenessCheck` rather than only the dirty tracker, so it shows up consistently across run paths.
+- **Stale-binary warning is actionable.** The message now ends with the exact recovery command (`fshw --no-cache build`) rather than just "a full rebuild should fix it".
 
 ### Changed
 
