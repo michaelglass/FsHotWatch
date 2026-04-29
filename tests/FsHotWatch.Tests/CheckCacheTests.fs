@@ -80,6 +80,26 @@ let ``TimestampCacheKeyProvider returns consistent hash for same file`` () =
         File.Delete(tempFile)
 
 [<Fact(Timeout = 10000)>]
+let ``cache key is content-addressed: same bytes + different mtime → same hash`` () =
+    let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
+    let tempFile = Path.GetTempFileName()
+    File.WriteAllText(tempFile, "stable content")
+
+    try
+        let hash1 = provider.GetFileHash(tempFile)
+
+        // Bump mtime by ~2s without touching content. With timestamp-based
+        // hashing this would produce a different hash; with content-addressed
+        // hashing the bytes determine the key, so it must stay the same.
+        System.Threading.Thread.Sleep(1100)
+        File.SetLastWriteTimeUtc(tempFile, DateTime.UtcNow)
+
+        let hash2 = provider.GetFileHash(tempFile)
+        Assert.Equal<string>(hash1, hash2)
+    finally
+        File.Delete(tempFile)
+
+[<Fact(Timeout = 10000)>]
 let ``TimestampCacheKeyProvider returns different hash after file modification`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
     let tempFile = Path.GetTempFileName()
@@ -402,46 +422,6 @@ let ``JjScanGuard second scan returns SkipAll after CommitScanSuccess`` () =
         match guard.BeginScan() with
         | SkipAll -> ()
         | other -> Assert.Fail($"Expected SkipAll on second scan but got %A{other}"))
-
-// --- JjCacheKeyProvider tests ---
-
-[<Fact(Timeout = 5000)>]
-let ``JjCacheKeyProvider delegates to TimestampCacheKeyProvider`` () =
-    let tempFile = Path.GetTempFileName()
-    File.WriteAllText(tempFile, "jj cache key test")
-
-    try
-        let jjProvider = JjCacheKeyProvider("/fake/repo") :> ICacheKeyProvider
-        let tsProvider = TimestampCacheKeyProvider() :> ICacheKeyProvider
-
-        let jjHash = jjProvider.GetFileHash(tempFile)
-        let tsHash = tsProvider.GetFileHash(tempFile)
-
-        Assert.Equal<string>(tsHash, jjHash)
-    finally
-        File.Delete(tempFile)
-
-[<Fact(Timeout = 5000)>]
-let ``JjCacheKeyProvider returns consistent hash for same file`` () =
-    let tempFile = Path.GetTempFileName()
-    File.WriteAllText(tempFile, "consistency test")
-
-    try
-        let provider = JjCacheKeyProvider("/fake/repo") :> ICacheKeyProvider
-        let hash1 = provider.GetFileHash(tempFile)
-        let hash2 = provider.GetFileHash(tempFile)
-        Assert.Equal<string>(hash1, hash2)
-    finally
-        File.Delete(tempFile)
-
-[<Fact(Timeout = 5000)>]
-let ``JjCacheKeyProvider handles nonexistent file`` () =
-    let provider = JjCacheKeyProvider("/fake/repo") :> ICacheKeyProvider
-    let hash = provider.GetFileHash("/nonexistent/file.fs")
-
-    // Should not throw, returns a valid hash (the "unreadable" fallback)
-    Assert.Matches("^[a-f0-9]+$", hash)
-    Assert.True(hash.Length = 64)
 
 // --- JjScanGuard additional coverage ---
 

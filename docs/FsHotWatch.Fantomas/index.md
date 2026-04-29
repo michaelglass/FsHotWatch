@@ -65,7 +65,7 @@ daemon.RegisterPreprocessor(FormatPreprocessor())
 // Read-only format check plugin (reports unformatted files)
 daemon.RegisterHandler(
     FormatCheckPlugin.createFormatCheck
-        None   // getCommitId for caching
+        None   // timeoutSec (None → 60s default)
 )
 ```
 

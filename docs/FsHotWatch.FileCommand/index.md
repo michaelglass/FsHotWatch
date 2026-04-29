@@ -105,7 +105,8 @@ daemon.RegisterHandler(
         trigger                             // CommandTrigger (pattern and/or afterTests)
         "dotnet"                            // command
         "fsi --typecheck-only build.fsx"    // args
-        None                                // getCommitId for caching
+        repoRoot                            // for resolving relative arg-file paths
+        None                                // timeoutSec (None → no timeout)
 )
 ```
 

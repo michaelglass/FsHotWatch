@@ -77,8 +77,9 @@ fs-hot-watch diagnostics
 ```fsharp
 daemon.RegisterHandler(
     AnalyzersPlugin.create
-        [ "/path/to/analyzers" ]   // directories with analyzer DLLs
-        None                        // getCommitId for caching
+        [ "/path/to/analyzers" ]    // directories with analyzer DLLs
+        None                        // timeoutSec (None → no timeout)
+        DiagnosticSeverity.Hint     // failOnSeverity threshold
 )
 ```
 

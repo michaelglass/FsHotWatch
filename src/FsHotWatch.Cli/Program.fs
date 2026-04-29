@@ -928,7 +928,9 @@ let main args =
                         exit 2
 
                 let cacheConfig = if opts.NoCache then DaemonConfig.NoCache else config.Cache
-                let (backend, keyProvider) = DaemonConfig.createCacheComponents repoRoot cacheConfig
+
+                let (backend, keyProvider, enableJjScanGuard) =
+                    DaemonConfig.createCacheComponents repoRoot cacheConfig
 
                 let fileCommandPatterns =
                     config.FileCommands
@@ -941,6 +943,7 @@ let main args =
                         { Daemon.DaemonOptions.defaults with
                             CacheBackend = backend
                             CacheKeyProvider = keyProvider
+                            EnableJjScanGuard = enableJjScanGuard
                             ExcludePatterns = config.Exclude
                             ExtraWatchPatterns = fileCommandPatterns }
 
