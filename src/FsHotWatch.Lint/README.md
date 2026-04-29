@@ -49,8 +49,9 @@ fs-hot-watch errors
 ```fsharp
 daemon.RegisterHandler(
     LintPlugin.create
-        (Some "fsharplint.json")   // config path (or None for defaults)
-        None                        // getCommitId for caching
+        (Some "fsharplint.json")    // config path (or None for defaults)
+        None                        // lintRunner override (None → built-in)
+        None                        // timeoutSec (None → no timeout)
 )
 ```
 
