@@ -419,7 +419,7 @@
     ],
     "Program.fs": [
       {
-        "line": 67,
+        "line": 66,
         "branch": 53,
         "reason": "CLI entry point; line drifts 67-68% and branch drifts 53-54% across runs",
         "platform": "macos"

@@ -194,24 +194,28 @@ let create
             let projectByStem =
                 allProjects |> List.map (fun p -> projectStem p, p) |> Map.ofList
 
+            // Compute max source mtime for a project (None if it has no sources on disk).
+            let maxSourceTimeOf (proj: AbsProjectPath) =
+                graph.GetSourceFiles(proj)
+                |> List.choose (fun f ->
+                    let path = AbsFilePath.value f
+
+                    if File.Exists path then
+                        Some(File.GetLastWriteTimeUtc path)
+                    else
+                        None)
+                |> (function
+                | [] -> None
+                | times -> Some(List.max times))
+
+            // Pass 1: projects MSBuild printed in the build output. The "Stale binary
+            // detected" warn is meaningful here: MSBuild touched the project and yet
+            // the DLL is older than sources, which means the build genuinely lied.
             for KeyValue(stem, dllPath) in dllPaths do
                 match Map.tryFind stem projectByStem with
                 | None -> ()
                 | Some proj ->
-                    let sources = graph.GetSourceFiles(proj)
-
-                    let maxSourceTime =
-                        sources
-                        |> List.choose (fun f ->
-                            let path = AbsFilePath.value f
-
-                            if File.Exists path then
-                                Some(File.GetLastWriteTimeUtc path)
-                            else
-                                None)
-                        |> (function
-                        | [] -> None
-                        | times -> Some(List.max times))
+                    let maxSourceTime = maxSourceTimeOf proj
 
                     let dllTime =
                         if File.Exists dllPath then
@@ -232,6 +236,32 @@ let create
                                 dllT
                                 srcTime)
                     | _ -> tracker.ClearDirty stem // can't check → optimistically clear
+
+            // Pass 2: projects NOT in build output. MSBuild's incremental cache skips
+            // up-to-date projects entirely → no "->" line, so Pass 1 doesn't touch
+            // them. The cold-start scan emits SourceChanged for every file, which
+            // marks every project dirty via markDirty; without this pass those bits
+            // never clear and test-prune wrongly reports the project stale forever.
+            // Reconcile via on-disk mtime: if the canonical DLL is fresh relative to
+            // the project's sources, clear the bit.
+            for KeyValue(stem, proj) in projectByStem do
+                if not (dllPaths.ContainsKey stem) && tracker.IsDirty stem then
+                    match graph.GetTargetFramework(proj) with
+                    | None -> () // no TFM → can't compute canonical path; leave dirty
+                    | Some tfm ->
+                        let projDir = Path.GetDirectoryName(AbsProjectPath.value proj)
+                        let dllPath = Path.Combine(projDir, "bin", "Debug", tfm, stem + ".dll")
+
+                        if File.Exists dllPath then
+                            let dllTime = File.GetLastWriteTimeUtc dllPath
+
+                            match maxSourceTimeOf proj with
+                            | None -> tracker.ClearDirty stem // no sources → can't be stale
+                            | Some srcTime when dllTime >= srcTime ->
+                                tracker.ClearDirty stem
+
+                                debug "build" $"DLL fresh for %s{stem} (MSBuild incremental skip) — cleared dirty bit"
+                            | Some _ -> () // genuinely older than sources, leave dirty
 
             // Clear test-project dirty bits whose source-project deps are now all clean.
             // Single snapshot so both passes see the same post-DLL-freshness state.

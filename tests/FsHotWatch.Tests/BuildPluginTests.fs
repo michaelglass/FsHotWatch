@@ -923,6 +923,87 @@ let ``integration: stale DLL keeps project dirty across full FileChanged + Build
         waitUntil (fun () -> not (tracker.IsDirty "Foo")) 2000
         test <@ not (tracker.IsDirty "Foo") @>)
 
+// MSBuild's incremental cache silently skips up-to-date projects, printing no
+// "Project -> dll" arrow. Without Pass 2 in clearFreshProjects, the dirty bit
+// markDirty set on the cold-start scan would never clear. These two tests pin
+// down both directions: Pass 2 must clear when the canonical DLL is fresh and
+// must NOT clear when it's stale.
+
+/// Build the on-disk fixture (.fsproj + source + canonical DLL location) for
+/// MSBuild-incremental-skip scenarios. The .fsproj must declare TargetFramework
+/// (Pass 2 needs it to compute the canonical DLL path) and list Lib.fs as
+/// Compile so GetAffectedProjects can map a SourceChanged event back to the
+/// project in the dirty-tracker. Returns (host, tracker, srcPath, dllPath).
+let private setupMsbuildIncrementalSkipScenario
+    tmpDir
+    (srcMtime: DateTime)
+    (dllMtime: DateTime)
+    : PluginHost * ProjectDirtyTracker * string * string =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let tracker = ProjectDirtyTracker()
+    let projDir = System.IO.Path.Combine(tmpDir, "MyLib")
+    let projPath = System.IO.Path.Combine(projDir, "MyLib.fsproj")
+    let srcPath = System.IO.Path.Combine(projDir, "Lib.fs")
+    let dllDir = System.IO.Path.Combine(projDir, "bin", "Debug", "net10.0")
+    let dllPath = System.IO.Path.Combine(dllDir, "MyLib.dll")
+    System.IO.Directory.CreateDirectory(dllDir) |> ignore
+
+    System.IO.File.WriteAllText(
+        projPath,
+        "<Project>\n"
+        + "  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>\n"
+        + "  <ItemGroup><Compile Include=\"Lib.fs\" /></ItemGroup>\n"
+        + "</Project>"
+    )
+
+    System.IO.File.WriteAllText(srcPath, "let x = 1")
+    System.IO.File.WriteAllText(dllPath, "fake-dll")
+    System.IO.File.SetLastWriteTimeUtc(srcPath, srcMtime)
+    System.IO.File.SetLastWriteTimeUtc(dllPath, dllMtime)
+
+    let graph = ProjectGraph()
+    graph.RegisterFromFsproj(projPath) |> ignore
+
+    // sh + sleep simulates MSBuild's no-op incremental skip while keeping the
+    // build phase open long enough for `waitUntil` to observe the mid-build
+    // dirty=true state before BuildDone fires Pass 2.
+    let handler =
+        BuildPlugin.create "sh" "-c \"sleep 0.3; true\"" [] graph [] None [] None (Some tracker)
+
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ srcPath ])
+
+    waitUntil (fun () -> tracker.IsDirty "MyLib") 2000
+    test <@ tracker.IsDirty "MyLib" @>
+
+    (host, tracker, srcPath, dllPath)
+
+[<Fact(Timeout = 5000)>]
+let ``BuildPlugin clears dirty when canonical DLL is fresh but absent from build output (MSBuild incremental skip)``
+    ()
+    =
+    withTempDir "build-dirty-clear-msbuild-skip" (fun tmpDir ->
+        let now = DateTime.UtcNow
+
+        let (host, tracker, _, _) =
+            setupMsbuildIncrementalSkipScenario tmpDir (now.AddMinutes(-5.0)) now
+
+        waitForTerminalStatus host "build" 5000
+
+        test <@ not (tracker.IsDirty "MyLib") @>)
+
+[<Fact(Timeout = 5000)>]
+let ``BuildPlugin keeps dirty when canonical DLL is older than sources and absent from build output`` () =
+    withTempDir "build-dirty-keep-msbuild-skip" (fun tmpDir ->
+        let now = DateTime.UtcNow
+
+        let (host, tracker, _, _) =
+            setupMsbuildIncrementalSkipScenario tmpDir now (now.AddMinutes(-10.0))
+
+        waitForTerminalStatus host "build" 5000
+
+        test <@ tracker.IsDirty "MyLib" @>)
+
 [<Fact(Timeout = 5000)>]
 let ``BuildPlugin leaves dirty after build when DLL is older than sources`` () =
     withTempDir "build-dirty-leave-stale" (fun tmpDir ->
