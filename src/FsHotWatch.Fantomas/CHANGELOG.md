@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.10 - 2026-04-29
+
 ### Changed
 
 - **BREAKING:** `createFormatCheck` no longer takes `getCommitId`. New signature: `createFormatCheck (timeoutSec: int option)`. The cache key migrated from jj commit_id to a content-merkle of `(file path, file source)` for each file in the FileChanged event — Fantomas formatting is content-deterministic, so two daemons agree on cache values regardless of working-copy state.
