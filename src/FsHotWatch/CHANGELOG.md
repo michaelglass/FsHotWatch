@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.12 - 2026-04-29
+
 ### Added
 
 - **`FsHotWatch.ErrorLedger.DiagnosticSeverity.order`** — total order on `Error/Warning/Info/Hint` for severity-threshold comparisons.

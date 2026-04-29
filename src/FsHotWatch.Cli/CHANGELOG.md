@@ -4,6 +4,8 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+## 0.8.0-alpha.12 - 2026-04-29
+
 ### Added
 
 - Run-once output now warns when a `FileCommand` plugin's input files have been modified after the plugin's last successful run. Defense-in-depth against stale cached output. New helpers in `FsHotWatch.Cli.RunOnceOutput`: `PluginRunInfo`, `detectStalePluginInputs`, `formatStalenessWarning`.
