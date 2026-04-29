@@ -328,3 +328,23 @@ let withTempDir (prefix: string) (body: string -> 'a) =
     finally
         if Directory.Exists(tmpDir) then
             Directory.Delete(tmpDir, true)
+
+/// Write a minimal `.fsproj` with a `<TargetFramework>` and the given
+/// `<Compile Include="…">` items. Returns nothing — the caller already knows
+/// the path. Useful for tests that need `RegisterFromFsproj` to record both
+/// TFM and source files (e.g. anything exercising canonical-DLL path lookup).
+let writeMinimalFsproj (projPath: string) (tfm: string) (compiles: string list) =
+    let compileItems =
+        compiles
+        |> List.map (fun c -> $"    <Compile Include=\"{c}\" />")
+        |> String.concat "\n"
+
+    let xml =
+        "<Project>\n"
+        + $"  <PropertyGroup><TargetFramework>{tfm}</TargetFramework></PropertyGroup>\n"
+        + "  <ItemGroup>\n"
+        + compileItems
+        + "\n  </ItemGroup>\n"
+        + "</Project>"
+
+    File.WriteAllText(projPath, xml)
