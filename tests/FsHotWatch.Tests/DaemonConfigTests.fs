@@ -555,32 +555,42 @@ let ``detectDefaultCacheBackend returns FileBackend when no .jj`` () =
 // --- createCacheComponents ---
 
 [<Fact(Timeout = 5000)>]
-let ``createCacheComponents NoCache returns None None`` () =
+let ``createCacheComponents NoCache returns None None false`` () =
     withTempDir "cfg-cc" (fun tmpDir ->
-        let (backend, keyProvider) = createCacheComponents tmpDir NoCache
+        let (backend, keyProvider, enableJjScanGuard) = createCacheComponents tmpDir NoCache
         test <@ backend = None @>
-        test <@ keyProvider = None @>)
+        test <@ keyProvider = None @>
+        test <@ enableJjScanGuard = false @>)
 
 [<Fact(Timeout = 5000)>]
-let ``createCacheComponents InMemoryOnly returns Some backend and Some keyProvider`` () =
+let ``createCacheComponents InMemoryOnly returns Some backend, Some keyProvider, scan-guard off`` () =
     withTempDir "cfg-cc-mem" (fun tmpDir ->
-        let (backend, keyProvider) = createCacheComponents tmpDir (InMemoryOnly 100)
+        let (backend, keyProvider, enableJjScanGuard) =
+            createCacheComponents tmpDir (InMemoryOnly 100)
+
         test <@ backend.IsSome @>
-        test <@ keyProvider.IsSome @>)
+        test <@ keyProvider.IsSome @>
+        test <@ enableJjScanGuard = false @>)
 
 [<Fact(Timeout = 5000)>]
-let ``createCacheComponents FileBackend returns Some backend and Some keyProvider`` () =
+let ``createCacheComponents FileBackend returns Some backend, Some keyProvider, scan-guard off`` () =
     withTempDir "cfg-cc-file" (fun tmpDir ->
-        let (backend, keyProvider) = createCacheComponents tmpDir FileBackend
+        let (backend, keyProvider, enableJjScanGuard) =
+            createCacheComponents tmpDir FileBackend
+
         test <@ backend.IsSome @>
-        test <@ keyProvider.IsSome @>)
+        test <@ keyProvider.IsSome @>
+        test <@ enableJjScanGuard = false @>)
 
 [<Fact(Timeout = 5000)>]
-let ``createCacheComponents JjFileBackend returns Some backend and Some keyProvider`` () =
+let ``createCacheComponents JjFileBackend returns Some backend, Some keyProvider, scan-guard on`` () =
     withTempDir "cfg-cc-jj" (fun tmpDir ->
-        let (backend, keyProvider) = createCacheComponents tmpDir JjFileBackend
+        let (backend, keyProvider, enableJjScanGuard) =
+            createCacheComponents tmpDir JjFileBackend
+
         test <@ backend.IsSome @>
-        test <@ keyProvider.IsSome @>)
+        test <@ keyProvider.IsSome @>
+        test <@ enableJjScanGuard = true @>)
 
 // --- defaultConfigFor ---
 

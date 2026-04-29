@@ -67,7 +67,9 @@ daemon.RegisterHandler(
         daemon.Graph      // project graph
         []                // test project names (to skip build-only-test-changes)
         None              // build template
-        None              // getCommitId for caching
+        []                // dependsOn — plugins this one waits for
+        None              // timeoutSec (None → no timeout)
+        None              // dirtyTracker (optional)
 )
 ```
 

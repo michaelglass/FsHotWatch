@@ -23,24 +23,30 @@ type CacheBackendConfig =
     /// File-based cache with jj-aware key provider
     | JjFileBackend
 
-/// Create cache backend and key provider from config.
+/// Create cache backend, key provider, and scan-guard flag from config. The
+/// flag controls whether `Daemon` installs a `JjHelper.JjScanGuard` to skip
+/// scanning when the working-copy commit_id is unchanged — true only for
+/// `JjFileBackend` since the optimization needs jj.
 let createCacheComponents
     (repoRoot: string)
     (config: CacheBackendConfig)
-    : (ICheckCacheBackend option * ICacheKeyProvider option) =
+    : (ICheckCacheBackend option * ICacheKeyProvider option * bool) =
     let cacheDir = Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "cache")
 
     match config with
-    | NoCache -> (None, None)
+    | NoCache -> (None, None, false)
     | InMemoryOnly maxSize ->
         (Some(FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(maxSize) :> ICheckCacheBackend),
-         Some(TimestampCacheKeyProvider() :> ICacheKeyProvider))
+         Some(TimestampCacheKeyProvider() :> ICacheKeyProvider),
+         false)
     | FileBackend ->
         (Some(FsHotWatch.FileCheckCache.FileCheckCache(cacheDir) :> ICheckCacheBackend),
-         Some(TimestampCacheKeyProvider() :> ICacheKeyProvider))
+         Some(TimestampCacheKeyProvider() :> ICacheKeyProvider),
+         false)
     | JjFileBackend ->
         (Some(FsHotWatch.FileCheckCache.FileCheckCache(cacheDir) :> ICheckCacheBackend),
-         Some(JjCacheKeyProvider(repoRoot) :> ICacheKeyProvider))
+         Some(TimestampCacheKeyProvider() :> ICacheKeyProvider),
+         true)
 
 /// Resolves which paths from `paths` exist, retrying with short backoff to
 /// handle the case where the daemon starts immediately after `jj workspace

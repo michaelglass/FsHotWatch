@@ -36,18 +36,24 @@ type ICacheKeyProvider =
     /// Compute a content hash for a file
     abstract member GetFileHash: filePath: string -> string
 
-/// Timestamp-based cache key provider (works everywhere, no VCS dependency).
-/// Uses file size + last-write-time as the cache key.
+/// Content-addressed cache key provider. SHA-256 of the file bytes — two files
+/// with identical content hash the same regardless of mtime, size-only metadata,
+/// or VCS state. This was the original design intent for the FCS cache key
+/// (matching what the plugin task cache already does at the merkle level).
+///
+/// `TimestampCacheKeyProvider` is preserved as a name for backward compatibility;
+/// the implementation now reads and hashes file content.
 type TimestampCacheKeyProvider() =
     interface ICacheKeyProvider with
         member _.GetFileHash(filePath: string) : string =
             let normalizedPath = Path.GetFullPath(filePath)
 
             try
-                let info = FileInfo(normalizedPath)
-                sha256Hex $"%s{normalizedPath}:%d{info.Length}:%d{info.LastWriteTimeUtc.Ticks}"
+                let bytes = File.ReadAllBytes(normalizedPath)
+                let hash = System.Security.Cryptography.SHA256.HashData(bytes)
+                System.Convert.ToHexString(hash).ToLowerInvariant()
             with ex ->
-                Logging.debug "cache" $"Could not stat %s{normalizedPath}: %s{ex.Message}"
+                Logging.debug "cache" $"Could not read %s{normalizedPath}: %s{ex.Message}"
                 sha256Hex $"unreadable:%s{normalizedPath}"
 
 /// Computes ProjectOptionsHash from FSharpProjectOptions
@@ -113,16 +119,6 @@ let fcsCheckSignature (checkResults: FileCheckState) : string =
             |> hashDiagnosticSignatures
         with _ ->
             "full-check-error"
-
-/// jj-based cache key provider. Per-file hashing uses timestamp
-/// (jj commit_id is tree-wide, not per-file).
-/// Preserved as a distinct type so jj-specific optimizations
-/// (e.g., global cache guard via commit_id comparison) can be added later.
-type JjCacheKeyProvider(_repoRoot: string) =
-    let timestampFallback = TimestampCacheKeyProvider() :> ICacheKeyProvider
-
-    interface ICacheKeyProvider with
-        member _.GetFileHash(filePath: string) : string = timestampFallback.GetFileHash(filePath)
 
 /// Compute a CacheKey for a file using the given provider
 let makeCacheKey (provider: ICacheKeyProvider) (filePath: string) (options: FSharpProjectOptions) : CacheKey =

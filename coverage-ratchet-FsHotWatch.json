@@ -48,7 +48,7 @@
     },
     "CheckCache.fs": [
       {
-        "line": 73,
+        "line": 72,
         "branch": 40,
         "reason": "\u00A71 fcsCheckSignature adds branches (FullCheck null guard, try/with around Diagnostics access) not exercised without a real FSharpCheckFileResults; integration tests would cover but live in IntegrationTests (excluded)",
         "platform": "macos"
@@ -324,7 +324,7 @@
     "PathFilter.fs": [
       {
         "line": 96,
-        "branch": 68,
+        "branch": 63,
         "reason": "exception-handling branches \u002B IgnoreFilterCache reload paths that fire inconsistently across runs",
         "platform": "macos"
       },
