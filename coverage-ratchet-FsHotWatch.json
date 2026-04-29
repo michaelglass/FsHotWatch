@@ -453,9 +453,9 @@
         "platform": "macos"
       },
       {
-        "line": 98,
+        "line": 96,
         "branch": 91,
-        "reason": "loosened: fileToProjects multi-project paths",
+        "reason": "loosened 2026-04-29: post artifact-freshness contract removed transitive-invalidation paths from Linux coverage",
         "platform": "linux"
       }
     ],
