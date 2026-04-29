@@ -23,7 +23,7 @@ let ``format check skips files matched by fantomasignore`` () =
         File.WriteAllText(file, "module Bad\nlet   x=1\n")
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = createFormatCheck None None
+        let handler = createFormatCheck None
         host.RegisterHandler(handler)
 
         host.EmitFileChanged(SourceChanged [ file ])
@@ -51,7 +51,7 @@ let ``format check skips files matched by gitignore`` () =
         File.WriteAllText(file, "module Types\nlet   x=1\n")
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = createFormatCheck None None
+        let handler = createFormatCheck None
         host.RegisterHandler(handler)
 
         host.EmitFileChanged(SourceChanged [ file ])
@@ -79,7 +79,7 @@ let ``format check still checks files not in any ignore file`` () =
         File.WriteAllText(file, "module Bad\nlet   x=1\n")
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = createFormatCheck None None
+        let handler = createFormatCheck None
         host.RegisterHandler(handler)
 
         host.EmitFileChanged(SourceChanged [ file ])

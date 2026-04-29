@@ -4,6 +4,14 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+### Added
+
+- Run-once output now warns when a `FileCommand` plugin's input files have been modified after the plugin's last successful run. Defense-in-depth against stale cached output. New helpers in `FsHotWatch.Cli.RunOnceOutput`: `PluginRunInfo`, `detectStalePluginInputs`, `formatStalenessWarning`.
+
+### Changed
+
+- `mise check`'s coverage step now auto-corrects thresholds: tries `coverageratchet ratchet`, falls back to `loosen` when coverage drifted below threshold. Other tool exit codes (crash/OOM/killed) propagate so the threshold file is not silently rewritten on tool malfunction.
+
 ## 0.8.0-alpha.11 - 2026-04-26
 
 ### Added
