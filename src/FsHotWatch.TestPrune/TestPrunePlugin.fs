@@ -287,7 +287,7 @@ let private staleBinaryEntry (project: string) : ErrorLedger.ErrorEntry =
         $"Tests for %s{project} skipped — binary is stale "
         + "(sources newer than DLL). This usually means MSBuild's incremental "
         + "cache decided the project was up-to-date when it was not. "
-        + "A full rebuild should fix it."
+        + "Run `fshw --no-cache build` to force a full rebuild."
       Severity = ErrorLedger.Warning
       Line = 0
       Column = 0
