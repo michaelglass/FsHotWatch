@@ -598,24 +598,20 @@ let ``DaemonRpcTarget.Shutdown calls RequestShutdown and returns message`` () =
     test <@ called @>
 
 [<Fact(Timeout = 5000)>]
-let ``DaemonRpcTarget.Scan returns generation and calls RequestScan with force`` () =
+let ``DaemonRpcTarget.Scan returns generation and calls RequestScan`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let mutable capturedForce = false
+    let mutable called = false
 
     let config =
         { defaultRpcConfig host with
             GetScanGeneration = fun () -> 42L
-            RequestScan = fun force -> capturedForce <- force }
+            RequestScan = fun () -> called <- true }
 
     let target = DaemonRpcTarget(config)
 
-    let result1 = target.Scan(false)
-    test <@ result1 = "scan started:42" @>
-    test <@ capturedForce = false @>
-
-    let result2 = target.Scan(true)
-    test <@ result2 = "scan started:42" @>
-    test <@ capturedForce = true @>
+    let result = target.Scan()
+    test <@ result = "scan started:42" @>
+    test <@ called @>
 
 [<Fact(Timeout = 5000)>]
 let ``DaemonRpcTarget.ScanStatus delegates to GetScanStatus`` () =
@@ -900,8 +896,8 @@ let ``repeated scan force via IPC increments generation each time`` () =
     test <@ gen1 >= 1L @>
 
     try
-        // First force scan
-        let scanResult1 = IpcClient.scan pipeName true |> Async.RunSynchronously
+        // First scan
+        let scanResult1 = IpcClient.scan pipeName |> Async.RunSynchronously
         test <@ scanResult1.Contains("scan started") @>
 
         // Wait for this scan to complete
@@ -909,8 +905,8 @@ let ``repeated scan force via IPC increments generation each time`` () =
         let gen2 = daemon.GetScanGeneration()
         test <@ gen2 > gen1 @>
 
-        // Second force scan — this is the one that was reported as broken
-        let scanResult2 = IpcClient.scan pipeName true |> Async.RunSynchronously
+        // Second scan — this is the one that was reported as broken
+        let scanResult2 = IpcClient.scan pipeName |> Async.RunSynchronously
         test <@ scanResult2.Contains("scan started") @>
 
         // Wait for this scan to complete

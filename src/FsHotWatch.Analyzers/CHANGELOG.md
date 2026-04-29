@@ -4,7 +4,7 @@
 
 ### Added
 
-- **`failOnSeverity` parameter** on `AnalyzersPlugin.create` — promotes analyzer diagnostics at or above the given severity to error. Default: `Hint` (everything is fail-worthy). Configurable via `analyzers.failOnSeverity` in `.fs-hot-watch.json` (parsed via `FsHotWatch.ErrorLedger.DiagnosticSeverity.fromString`); unknown strings are warned and ignored.
+- **`failOnSeverity` parameter** on `AnalyzersPlugin.create` — promotes analyzer diagnostics at or above the given severity to error. Default: `Hint` (everything is fail-worthy). Configurable via `analyzers.failOnSeverity` in `.fshw.json` (parsed via `FsHotWatch.ErrorLedger.DiagnosticSeverity.fromString`); unknown strings are warned and ignored.
 - **`§2a` content-merkle cache key.** AnalyzersPlugin's cache key is now a `merkleCacheKey` of `(plugin-version, analyzer-paths, file, source, fcs-signature)` — fully content-derived, independent of jj commit_id. Cross-file changes invalidate downstream caches via the `fcs-signature` slot (see core's `CheckCache.fcsCheckSignature`).
 - **Synchronous analysis on terminal status.** Analysis now awaits inline so the framework's per-event capture window records `Errors` and `EmittedEvents` for §2a cache replay. Previously a fire-and-forget `Async.Start` race produced empty cache entries.
 
