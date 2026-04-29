@@ -33,11 +33,12 @@ let ``parseCtrfTests treats unknown statuses as Other`` () =
     test <@ records.[0].Outcome = TestOutcome.Other @>
 
 [<Fact(Timeout = 1000)>]
-let ``parseCtrfTests returns empty when no tests array present`` () = test <@ parseCtrfTests "{}" = [] @>
+let ``parseCtrfTests returns empty when no tests array present`` () =
+    test <@ List.isEmpty (parseCtrfTests "{}") @>
 
 [<Fact(Timeout = 1000)>]
 let ``parseCtrfTests returns empty on unparseable JSON`` () =
-    test <@ parseCtrfTests "not json" = [] @>
+    test <@ List.isEmpty (parseCtrfTests "not json") @>
 
 [<Fact(Timeout = 1000)>]
 let ``parseCtrfTests recognises skipped status`` () =
