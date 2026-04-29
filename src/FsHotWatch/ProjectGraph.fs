@@ -17,6 +17,12 @@ type IProjectGraphReader =
     /// First <TargetFramework> (or first entry of <TargetFrameworks>) parsed at
     /// fsproj registration time. None if the .fsproj declared neither.
     abstract GetTargetFramework: projectPath: AbsProjectPath -> string option
+    /// `<projDir>/bin/Debug/<TFM>/<projectName>.dll`. None when the project's
+    /// TargetFramework couldn't be parsed.
+    abstract GetCanonicalDllPath: projectPath: AbsProjectPath -> string option
+    /// Latest `LastWriteTimeUtc` across the project's on-disk source files.
+    /// None when the project has no sources, or every source path is missing.
+    abstract GetMaxSourceMtime: projectPath: AbsProjectPath -> System.DateTime option
 
 /// Extract the first <TargetFramework> or first entry of <TargetFrameworks>
 /// from a loaded .fsproj XDocument. Public for unit testing.
@@ -199,6 +205,34 @@ type ProjectGraph() as this =
     /// Get all registered file paths across all projects.
     member _.GetAllFiles() : AbsFilePath list = fileToProjects.Keys |> Seq.toList
 
+    /// Build the canonical compiled-DLL path for a project:
+    /// `<projDir>/bin/Debug/<TFM>/<projectName>.dll`. Configuration is hardcoded
+    /// "Debug" — matches BuildPlugin, which doesn't thread Configuration through
+    /// either. Returns None when the TFM couldn't be parsed at registration time.
+    member this.GetCanonicalDllPath(projectPath: AbsProjectPath) : string option =
+        match this.GetTargetFramework(projectPath) with
+        | None -> None
+        | Some tfm ->
+            let projPath = AbsProjectPath.value projectPath
+            let projDir = Path.GetDirectoryName(projPath)
+            let projName = Path.GetFileNameWithoutExtension(projPath)
+            Some(Path.Combine(projDir, "bin", "Debug", tfm, projName + ".dll"))
+
+    /// Latest `LastWriteTimeUtc` across the project's on-disk source files.
+    /// None when the project has no sources or every source path is missing.
+    member this.GetMaxSourceMtime(projectPath: AbsProjectPath) : System.DateTime option =
+        this.GetSourceFiles(projectPath)
+        |> List.choose (fun f ->
+            let path = AbsFilePath.value f
+
+            if File.Exists path then
+                Some(File.GetLastWriteTimeUtc path)
+            else
+                None)
+        |> function
+            | [] -> None
+            | times -> Some(List.max times)
+
     /// Group projects into parallel tiers where each tier's projects
     /// have all dependencies satisfied by earlier tiers.
     member this.GetParallelTiers() : AbsProjectPath list list =
@@ -237,3 +271,5 @@ type ProjectGraph() as this =
         member _.GetAllProjects() = this.GetAllProjects()
         member _.GetAllFiles() = this.GetAllFiles()
         member _.GetTargetFramework(projectPath) = this.GetTargetFramework(projectPath)
+        member _.GetCanonicalDllPath(projectPath) = this.GetCanonicalDllPath(projectPath)
+        member _.GetMaxSourceMtime(projectPath) = this.GetMaxSourceMtime(projectPath)

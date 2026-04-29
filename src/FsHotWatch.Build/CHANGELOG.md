@@ -2,9 +2,21 @@
 
 ## Unreleased
 
+### Added
+
+- **Post-build artifact verification.** A successful `BuildPassed` outcome now means every project's compiled DLL is fresh relative to its sources. The async worker walks `graph.GetAllProjects()` after `decideBuildOutcome` returns `BuildPassed` and demotes to `BuildArtifactsStale` whenever the canonical DLL is missing or older than the newest source — catching MSBuild's incremental cache silently failing to update artifacts. Downstream plugins (TestPrune, etc.) can therefore trust `BuildSucceeded` as a guarantee of artifact freshness and drop their own staleness logic.
+- **`StaleArtifact` / `StaleReason` types** carry the structured diagnostic so cache replay reproduces the same per-project messages deterministically.
+- **`formatStaleArtifact` / `staleDiagnostic`** format the typed stale list into the human-readable error-ledger entry.
+
 ### Changed
 
-- **BREAKING:** `create` no longer takes `getCommitId`. The parameter was unused under §2a's content-merkle keys; removed. New positional order drops the 8th argument (was: `... dependsOn → getCommitId → timeoutSec → dirtyTracker`; now `... dependsOn → timeoutSec → dirtyTracker`).
+- **BREAKING:** `BuildOutcome` gained a third case, `BuildArtifactsStale of stale: StaleArtifact list * output: string`. Pattern-match exhaustiveness will fail for callers that previously handled only `BuildPassed | BuildOutputFailed`.
+- **BREAKING:** `create` no longer takes `dirtyTracker`. With staleness enforced inline by post-build verification, the dirty-bit handoff between BuildPlugin and TestPrunePlugin is no longer needed. Drops the 9th positional argument (was: `... dependsOn → timeoutSec → dirtyTracker`; now `... dependsOn → timeoutSec`).
+- **BREAKING:** `create` no longer takes `getCommitId`. The parameter was unused under §2a's content-merkle keys; removed. New positional order drops the 8th argument (was: `... dependsOn → getCommitId → timeoutSec → dirtyTracker`; now `... dependsOn → timeoutSec`).
+
+### Removed
+
+- `markDirty` / `clearFreshProjects` plumbing for the dirty tracker. Replaced by post-build mtime verification.
 
 ### Fixed
 

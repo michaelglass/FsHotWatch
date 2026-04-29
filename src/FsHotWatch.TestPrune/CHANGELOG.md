@@ -4,24 +4,24 @@
 
 ### Changed
 
-- **BREAKING:** `create` no longer takes `getCommitId`. The parameter was unused under §2a's content-merkle keys; removed. New positional order drops the 8th argument (was: `... coveragePaths → getCommitId → dirtyTracker → stalenessCheck`; now `... coveragePaths → dirtyTracker → stalenessCheck`).
+- **BREAKING: TestPrune no longer second-guesses build success.** `BuildSucceeded` is now treated as a contract: artifacts are guaranteed fresh by BuildPlugin's post-build verification. TestPrune dispatches every project on `BuildSucceeded` and drops all skip-on-stale logic. With the dirty-bit handoff gone, `create` no longer takes `dirtyTracker` or `stalenessCheck` — drop the 8th and 9th positional arguments.
+- **BREAKING:** `create` no longer takes `getCommitId`. The parameter was unused under §2a's content-merkle keys; removed.
 
-### Fixed
+### Removed
 
-- **Cold-start cache bypass.** TestPrunePlugin's `BuildCompleted` cache key now returns `None` until the first `TestsFinished` in the daemon session, so a stale on-disk cache entry from a prior session can't pre-empt the cold-start full-suite run. Mutable plugin-level refs use `Volatile.Read`/`Volatile.Write` for thread safety.
-- **Stale-binary warning re-emit.** The "stale DLL" warning is now produced from `stalenessCheck` rather than only the dirty tracker, so it shows up consistently across run paths.
-- **Stale-binary warning is actionable.** The message now names the exact recovery command (`dotnet build --no-incremental`, or deleting `bin/`+`obj/`) rather than just "a full rebuild should fix it". `fshw build` is observational — it doesn't bypass MSBuild's incremental cache, so it's not the right remediation for this case.
-- **Skip-on-stale deadlock.** Manual `run-tests` invocations (where `executeTests` receives `ctx = None`) now warn-and-run instead of skip-and-warn. Previously, a single stale signal short-circuited every subsequent test run because the dirty tracker never advanced — manual `fshw test` could not recover without external DB clearing. Auto-watch (BuildCompleted-driven, `ctx = Some`) keeps the skip-and-warn behavior so stale binaries don't produce confusing automated failures.
+- `isStaleProject` / `staleBinaryEntry` and the skip-on-stale code path.
+- Stale-binary warning re-emit block in the `TestsFinished` handler.
+- `adaptiveTimeout` helper and the `lastSuccessfulElapsed` map (only meaningful for stale-manual recovery, which no longer exists).
+- Manual-run-tests deadlock workaround (no skip → no deadlock).
 
 ### Added
 
 - **Per-project elapsed time** is now captured on every test run and round-tripped through `FileTaskCache`. Surfaced via the new `TestResult.elapsed` accessor and the `elapsedMs` field on `test-results` JSON output (per-project entry). When 2+ projects run, the run summary now also names the slowest (`"3 passed, 0 failed in 3 projects (selected: no, slowest: ProjA 1.2s)"`) so a bottlenecked project is visible from the plugin status line without querying JSON.
-- **Adaptive timeout for stale-manual runs.** A manual `fshw test` against a stale binary now bounds wall time at `2 ×` the project's last successful elapsed (recorded in the cache). Without this bound, a stale assembly that hangs (rather than crashes) defeats the deadlock fix because `fshw test` itself hangs forever. The configured `TimeoutSec` still wins as an upper bound; falls back to the configured value when no prior elapsed is on file. New `adaptiveTimeout` pure helper is exposed for unit testing.
 - **Per-test flakiness tracking.** New `FsHotWatch.TestPrune.Flakiness` module captures individual test pass/fail/duration records from CTRF reports emitted by Microsoft Testing Platform runners (xUnit v3, etc.). Per-run history is persisted to `.fshw/test-history.json` (capped at 20 runs per test). The new `flaky-tests` IPC command returns the top-K tests by flakiness score, computed as `transitions / (n - 1)` over the recent history with skipped runs filtered out. CTRF generation is opt-in via the `dotnet`-vs-non-dotnet command discriminator — non-MTP test runners (echo/sleep stubs in unit tests) are unaffected.
 
-### Changed
+### Fixed
 
-- Internal `isStaleProject` helper extracted; staleness condition inlined for short-circuit evaluation.
+- **Cold-start cache bypass.** TestPrunePlugin's `BuildCompleted` cache key now returns `None` until the first `TestsFinished` in the daemon session, so a stale on-disk cache entry from a prior session can't pre-empt the cold-start full-suite run. Mutable plugin-level refs use `Volatile.Read`/`Volatile.Write` for thread safety.
 
 ## 0.7.0-alpha.11 - 2026-04-26
 

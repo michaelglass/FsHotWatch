@@ -8,6 +8,12 @@
 - **`FsHotWatch.CheckCache.DiagnosticSignature`** record (`StartLine/StartColumn/ErrorNumber/Severity/Message`) and **`hashDiagnosticSignatures`** — extracted from `fcsCheckSignature` so the hashing/sorting logic is unit-testable without a live `FSharpCheckFileResults`.
 - **`FsHotWatch.FileTaskCache`** — atomic on-disk writes (write-temp-then-rename) and startup size telemetry logging total entry count and on-disk bytes.
 - **`IProjectGraphReader.GetTargetFramework`** + **`ProjectGraph.GetTargetFramework`** — exposes the first `<TargetFramework>` (or first entry of `<TargetFrameworks>`) parsed from each .fsproj at registration time. Avoids re-opening + re-parsing the .fsproj from downstream consumers. **`extractTargetFramework`** is the underlying pure XDocument-taking helper.
+- **`IProjectGraphReader.GetCanonicalDllPath`** — returns `<projDir>/bin/Debug/<TFM>/<projectName>.dll` (or `None` when TFM is missing). Centralises the canonical-DLL convention so consumers like `BuildPlugin.verifyArtifactsFresh` don't reinvent the path.
+- **`IProjectGraphReader.GetMaxSourceMtime`** — newest `LastWriteTimeUtc` across a project's on-disk source files. Drives mtime-based artifact-freshness checks.
+
+### Removed
+
+- **`FsHotWatch.ProjectDirtyTracker` module.** The dirty-bit handoff between BuildPlugin and TestPrunePlugin is gone — staleness is enforced inline by BuildPlugin's post-build verification, so the heuristic dirty tracker has no consumers. Files using it: `markDirty`, `clearFreshProjects`, `isStaleProject`, the manual-run-tests deadlock workaround. See FsHotWatch.Build / FsHotWatch.TestPrune CHANGELOGs for downstream impact.
 
 ### Changed
 
