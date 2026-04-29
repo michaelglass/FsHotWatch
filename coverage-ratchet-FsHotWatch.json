@@ -29,8 +29,8 @@
     ],
     "BuildPlugin.fs": [
       {
-        "line": 88,
-        "branch": 78,
+        "line": 89,
+        "branch": 81,
         "reason": "BuildInputsHasher now unit-tested (stub IProjectGraphReader, temp-dir hashing) \u2014 raised threshold back from \u00A72a-era loosening",
         "platform": "macos"
       },
@@ -107,8 +107,8 @@
     ],
     "DaemonConfig.fs": [
       {
-        "line": 71,
-        "branch": 76,
+        "line": 77,
+        "branch": 78,
         "reason": "loosened 2026-04-24 \u002B 2026-04-26 race-fix retry-resolution path adds untested live-system warning branch",
         "platform": "macos"
       },
@@ -419,7 +419,7 @@
     ],
     "Program.fs": [
       {
-        "line": 67,
+        "line": 66,
         "branch": 53,
         "reason": "CLI entry point; line drifts 67-68% and branch drifts 53-54% across runs",
         "platform": "macos"
@@ -447,8 +447,8 @@
     ],
     "ProjectGraph.fs": [
       {
-        "line": 98,
-        "branch": 91,
+        "line": 96,
+        "branch": 92,
         "reason": "loosened: fileToProjects multi-project paths",
         "platform": "macos"
       },

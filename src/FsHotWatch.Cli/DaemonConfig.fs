@@ -655,13 +655,6 @@ let private makeShellHook (label: string) (failOnError: bool) (repoRoot: string)
         if not success && failOnError then
             failwith $"%s{label} failed: %s{cmd}"
 
-/// Avoids the orphaned-TFM-dir false positive of a recursive `bin/**/<dll>` glob
-/// (e.g. a stale `bin/Debug/net9.0/` left behind after upgrading to `net10.0`).
-/// Configuration is hardcoded "Debug" — matches BuildPlugin, which doesn't thread
-/// Configuration through either.
-let canonicalDllPath (projDir: string) (projectName: string) (targetFramework: string) : string =
-    Path.Combine(projDir, "bin", "Debug", targetFramework, projectName + ".dll")
-
 /// Register plugins on the daemon based on the loaded configuration.
 let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =
     // Format plugin
@@ -716,14 +709,6 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             )
     | None -> ()
 
-    // Shared dirty tracker — populated by BuildPlugin (on FileChanged) and queried
-    // by TestPrunePlugin to skip projects whose binaries are stale.
-    let dirtyTracker =
-        if config.Build.IsSome && config.Tests.IsSome then
-            Some(FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker())
-        else
-            None
-
     // Build plugin(s)
     match config.Build with
     | Some builds when not builds.IsEmpty ->
@@ -747,7 +732,6 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                     b.BuildTemplate
                     b.DependsOn
                     buildTimeout
-                    dirtyTracker
             )
     | _ -> ()
 
@@ -838,58 +822,10 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                             Logging.warn "config" $"Unknown test extension type: %s{other}"
                             None))
 
-        // Belt-and-suspenders mtime check for stale test DLLs. Used by executeTests
-        // when the dirty tracker has no record for a project (e.g. run-tests command
-        // at cold start, or a project MSBuild's incremental cache omitted from the
-        // last build output). Returns true if sources are newer than the DLL.
-        let stalenessCheck =
-            let allProjects = daemon.Graph.GetAllProjects()
-
-            let projByName =
-                allProjects
-                |> List.map (fun p -> Path.GetFileNameWithoutExtension(FsHotWatch.Events.AbsProjectPath.value p), p)
-                |> Map.ofList
-
-            Some(fun (projectName: string) ->
-                match Map.tryFind projectName projByName with
-                | None -> false
-                | Some proj ->
-                    let projPath = FsHotWatch.Events.AbsProjectPath.value proj
-                    let projDir = Path.GetDirectoryName(projPath)
-                    let sources = daemon.Graph.GetSourceFiles(proj)
-
-                    let maxSourceTime =
-                        sources
-                        |> List.choose (fun f ->
-                            let path = FsHotWatch.Events.AbsFilePath.value f
-
-                            if File.Exists path then
-                                Some(File.GetLastWriteTimeUtc path)
-                            else
-                                None)
-                        |> function
-                            | [] -> None
-                            | times -> Some(List.max times)
-
-                    match maxSourceTime, daemon.Graph.GetTargetFramework(proj) with
-                    | Some srcTime, Some tfm ->
-                        let dllPath = canonicalDllPath projDir projectName tfm
-                        File.Exists dllPath && File.GetLastWriteTimeUtc dllPath < srcTime
-                    | _ -> false)
-
         Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"
 
         let handler =
-            create
-                dbPath
-                repoRoot
-                (Some testConfigs)
-                buildExtensions
-                beforeRun
-                None
-                coveragePaths
-                dirtyTracker
-                stalenessCheck
+            create dbPath repoRoot (Some testConfigs) buildExtensions beforeRun None coveragePaths
 
         daemon.RegisterHandler(handler)
     | None -> ()
