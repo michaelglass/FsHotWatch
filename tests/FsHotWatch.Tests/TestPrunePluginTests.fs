@@ -2088,6 +2088,42 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
         test <@ hasCompleted @>)
 
 [<Fact(Timeout = 5000)>]
+let ``run-tests (manual) executes stale project — skip-on-stale only applies to auto-watch`` () =
+    // Regression: auto path skips on stale to avoid running against a stale DLL,
+    // but manual `run-tests` was deadlocked — skip never advanced the dirty
+    // tracker so every subsequent run skipped again. Manual must run the test
+    // command and surface whatever runtime error the stale binary produces.
+    withTempDir "tp-manual-stale" (fun tmpDir ->
+        let sentinel = Path.Combine(tmpDir, "ran")
+
+        let configs =
+            [ { Project = "StaleProj"
+                Command = "sh"
+                Args = $"-c \"touch {sentinel}\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let tracker = FsHotWatch.ProjectDirtyTracker.ProjectDirtyTracker()
+        let stalenessCheck = Some(fun _ -> true)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+        let handler =
+            create ":memory:" tmpDir (Some configs) None None None None (Some tracker) stalenessCheck
+
+        host.RegisterHandler(handler)
+
+        // Manual path: invoke run-tests via RunCommand (no BuildCompleted).
+        let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
+        test <@ result.IsSome @>
+
+        // Test command MUST run even though stalenessCheck reports stale.
+        test <@ File.Exists sentinel @>)
+
+[<Fact(Timeout = 5000)>]
 let ``executeTests skips project when dirty tracker reports stale and emits stale-binary warning`` () =
     withTempDir "tp-dirty-skip" (fun tmpDir ->
         // sentinel file would be written if the test command actually ran
