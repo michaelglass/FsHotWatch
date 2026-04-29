@@ -15,7 +15,7 @@
 
 ### Added
 
-- **Per-project elapsed time** is now captured on every test run and round-tripped through `FileTaskCache`. Surfaced via the new `TestResult.elapsed` accessor and the `elapsedMs` field on `test-results` JSON output (per-project entry).
+- **Per-project elapsed time** is now captured on every test run and round-tripped through `FileTaskCache`. Surfaced via the new `TestResult.elapsed` accessor and the `elapsedMs` field on `test-results` JSON output (per-project entry). When 2+ projects run, the run summary now also names the slowest (`"3 passed, 0 failed in 3 projects (selected: no, slowest: ProjA 1.2s)"`) so a bottlenecked project is visible from the plugin status line without querying JSON.
 - **Adaptive timeout for stale-manual runs.** A manual `fshw test` against a stale binary now bounds wall time at `2 ×` the project's last successful elapsed (recorded in the cache). Without this bound, a stale assembly that hangs (rather than crashes) defeats the deadlock fix because `fshw test` itself hangs forever. The configured `TimeoutSec` still wins as an upper bound; falls back to the configured value when no prior elapsed is on file. New `adaptiveTimeout` pure helper is exposed for unit testing.
 
 ### Changed
