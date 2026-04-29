@@ -94,8 +94,9 @@
     },
     "Daemon.fs": [
       {
-        "line": 75,
+        "line": 74,
         "branch": 67,
+        "reason": "drifts 74-76%; pinned to floor",
         "platform": "macos"
       },
       {
@@ -419,9 +420,9 @@
     ],
     "Program.fs": [
       {
-        "line": 67,
+        "line": 66,
         "branch": 53,
-        "reason": "CLI entry point; line drifts 67-68% and branch drifts 53-54% across runs",
+        "reason": "CLI entry point; line drifts 66-68% and branch drifts 53-54% across runs — pin to floor; auto-ratchet bumps to ceiling and breaks CI on the next unlucky run",
         "platform": "macos"
       },
       {
