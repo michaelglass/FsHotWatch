@@ -16,7 +16,16 @@
 
 ### Removed
 
-- **`JjCacheKeyProvider`** — was a stub that delegated to `TimestampCacheKeyProvider`. Its only role was as a marker for `Daemon.fs` to wire up `JjScanGuard` via runtime type-test (`:? JjCacheKeyProvider`). Replaced by an explicit `EnableJjScanGuard: bool` field on `Daemon.DaemonOptions`, threaded from `DaemonConfig.createCacheComponents` (which now returns a triple including the flag).
+- **`JjCacheKeyProvider`** — was a stub that delegated to `TimestampCacheKeyProvider`. Its only role was as a marker for `Daemon.fs` to wire up `JjScanGuard` via runtime type-test.
+- **`FsHotWatch.JjHelper` module** — `JjScanGuard`, `JjScanDecision`, `getWorkingCopyCommitId`, and `getChangedFiles`. The scan-skip-when-commit-unchanged optimization is gone. Plugin caches are content-addressed (post-§2a) and the FCS check-result cache now hashes file content directly; together they make the scan-skip path's marginal benefit negligible while removing the only jj runtime reliance.
+- **`Daemon.DaemonOptions.EnableJjScanGuard`** — no longer needed; the option is dropped from the public surface.
+- **`DaemonConfig.JjFileBackend`** variant — `"jj"` cache config string is still accepted as a legacy alias and falls back to `FileBackend`.
+
+### Changed
+
+- **`DaemonConfig.createCacheComponents`** return type went back from `(backend, provider, enableJjScanGuard)` triple to `(backend, provider)` pair (the third element was always paired with the now-removed `JjFileBackend`).
+- **`DaemonConfig.detectDefaultCacheBackend`** now always returns `FileBackend` (kept for API compatibility; previously returned `JjFileBackend` when a `.jj/` directory existed).
+- **`InitConfig.generateConfig`** signature dropped its `hasJj: bool` parameter.
 
 ## 0.8.0-alpha.11 - 2026-04-26
 

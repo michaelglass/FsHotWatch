@@ -26,7 +26,7 @@ your tools:
    (milliseconds, not minutes)
 3. **Plugins get the results instantly** — your linter, analyzer, and test
    runner all see the updated check results without re-parsing anything
-4. **You query the results** — `fs-hot-watch status` shows what each tool found
+4. **You query the results** — `fshw status` shows what each tool found
 
 Changes are debounced — if you save 10 files in quick succession (like
 a formatter running), FsHotWatch waits for things to settle, then
@@ -39,16 +39,16 @@ processes them all in one batch.
 dotnet tool install -g FsHotWatch.Cli
 
 # Start the daemon in your repo (runs in foreground, Ctrl+C to stop)
-fs-hot-watch start
+fshw start
 
 # From another terminal, check what's happening
-fs-hot-watch status
+fshw status
 
 # Run all checks; verbose by default (per-subtask progress + last-run recap)
-fs-hot-watch check
+fshw check
 
 # Prefer one line per plugin?
-fs-hot-watch check --compact   # or -q
+fshw check --compact   # or -q
 ```
 
 ## Packages
@@ -58,7 +58,7 @@ FsHotWatch is split into small packages so you only install what you need:
 | Package | What it does |
 |---------|-------------|
 | [`FsHotWatch`](src/FsHotWatch/) | Core library — the daemon, file watcher, plugin system, IPC |
-| [`FsHotWatch.Cli`](src/FsHotWatch.Cli/) | CLI tool — `fs-hot-watch start/stop/status` |
+| [`FsHotWatch.Cli`](src/FsHotWatch.Cli/) | CLI tool — `fshw start/stop/status` |
 | [`FsHotWatch.TestPrune`](src/FsHotWatch.TestPrune/) | Plugin: figures out which tests to run when code changes |
 | [`FsHotWatch.Analyzers`](src/FsHotWatch.Analyzers/) | Plugin: runs F# analyzers (like [G-Research](https://github.com/G-Research/fsharp-analyzers) or your own) |
 | [`FsHotWatch.Lint`](src/FsHotWatch.Lint/) | Plugin: runs FSharpLint using the warm compiler's results |
@@ -120,7 +120,7 @@ daemon.RegisterHandler(myPlugin)
 - `ctx.EmitBuildCompleted(result)` — emit events to other plugins
 - `ctx.Post(msg)` — send a custom message back to your own agent
 - `ctx.StartSubtask(key, label)` / `ctx.EndSubtask(key)` — surface named concurrent work
-  with live per-subtask elapsed in `fs-hot-watch check` output
+  with live per-subtask elapsed in `fshw check` output
 - `ctx.Log(msg)` — preferred logging path; appends to the activity tail shown under
   your plugin in `check`, and also routes to `Logging.info`
 - `ctx.CompleteWithSummary(summary)` — override the auto-derived summary captured
@@ -133,7 +133,7 @@ history (per plugin), visible under the `check` verbose output as
 
 ## Configuration
 
-Create `.fs-hot-watch.json` in your repo root. All fields are optional — sensible defaults are used when omitted.
+Create `.fshw.json` in your repo root. All fields are optional — sensible defaults are used when omitted.
 
 ```json
 {
@@ -143,7 +143,7 @@ Create `.fs-hot-watch.json` in your repo root. All fields are optional — sensi
   },
   "format": true,
   "lint": true,
-  "cache": "jj",
+  "cache": "file",
   "tests": {
     "beforeRun": "dotnet build",
     "projects": [
@@ -177,7 +177,7 @@ Create `.fs-hot-watch.json` in your repo root. All fields are optional — sensi
 | `build` | `object \| bool` | `{"command": "dotnet", "args": "build"}` | Build command. `false` disables. |
 | `format` | `bool` | `true` | Enable Fantomas format-on-save preprocessor. |
 | `lint` | `bool` | `true` | Enable FSharpLint plugin. Uses `fsharplint.json` if found. |
-| `cache` | `string \| bool` | auto (`"jj"` if `.jj/` exists, else `"file"`) | Cache strategy: `"none"`, `"memory"`, `"file"`, or `"jj"`. |
+| `cache` | `string \| bool` | `"file"` | Cache strategy: `"none"`, `"memory"`, or `"file"`. (`"jj"` is accepted as a legacy alias for `"file"`.) |
 | `tests` | `object` | — | Test runner config. See below. |
 | `coverage` | `object` | — | Coverage threshold checking. |
 | `analyzers` | `object` | — | F# Analyzers SDK integration. |
