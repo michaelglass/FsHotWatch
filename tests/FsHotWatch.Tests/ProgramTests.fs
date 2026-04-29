@@ -72,7 +72,7 @@ let ``computeConfigHashWith changes when config content changes`` () =
 
     let fileOps =
         { defaultFileOps with
-            FileExists = fun path -> path.EndsWith(".fs-hot-watch.json")
+            FileExists = fun path -> path.EndsWith(".fshw.json")
             ReadAllText = fun _ -> configContent
             GetLastWriteTimeUtc = fun _ -> DateTime(2026, 1, 1) }
 
@@ -109,7 +109,7 @@ let ``computeConfigHashWith with no files uses empty strings`` () =
 let ``computeConfigHashWith with config but no exe`` () =
     let fileOps =
         { defaultFileOps with
-            FileExists = fun path -> path.EndsWith(".fs-hot-watch.json")
+            FileExists = fun path -> path.EndsWith(".fshw.json")
             ReadAllText = fun _ -> """{"build": {}}""" }
 
     let result = computeConfigHashWith fileOps "/tmp/repo" "/nonexistent/exe"
@@ -280,7 +280,7 @@ let ``restart flow handles shutdown failure gracefully`` () =
 [<Fact(Timeout = 5000)>]
 let ``killStaleDaemonWith cleans up stale PID file`` () =
     withTempDir "prog-kill-stale" (fun tmpDir ->
-        let stateDir = Path.Combine(tmpDir, ".fs-hot-watch")
+        let stateDir = Path.Combine(tmpDir, ".fshw")
         Directory.CreateDirectory(stateDir) |> ignore
         File.WriteAllText(Path.Combine(stateDir, "daemon.pid"), "999999999")
 
@@ -308,7 +308,7 @@ let ``startFreshDaemonWith writes config hash file`` () =
             startFreshDaemonWith defaultFileOps ipc tmpDir "pipe" "abcd1234abcd1234" "" "logs" 5.0
 
         test <@ result @>
-        let hashPath = Path.Combine(tmpDir, ".fs-hot-watch", "config.hash")
+        let hashPath = Path.Combine(tmpDir, ".fshw", "config.hash")
         test <@ File.Exists hashPath @>
         let hash = File.ReadAllText(hashPath).Trim()
         test <@ hash = "abcd1234abcd1234" @>)
@@ -410,7 +410,7 @@ let ``executeCommand Completions returns 0`` () =
 /// `.fs-hot-watch/daemon.lock` within `tmpDir`, the same handle `Start`
 /// uses to enforce singleton. Returns a disposable that releases the lock.
 let private holdDaemonLock (tmpDir: string) (pid: int) : IDisposable =
-    let stateDir = Path.Combine(tmpDir, ".fs-hot-watch")
+    let stateDir = Path.Combine(tmpDir, ".fshw")
     Directory.CreateDirectory(stateDir) |> ignore
     File.WriteAllText(Path.Combine(stateDir, "daemon.pid"), string pid)
     let lockPath = Path.Combine(stateDir, "daemon.lock")
@@ -540,13 +540,13 @@ let ``executeCommand Init creates config in empty dir`` () =
                 30.0
 
         test <@ result = 0 @>
-        test <@ File.Exists(Path.Combine(tmpDir, ".fs-hot-watch.json")) @>)
+        test <@ File.Exists(Path.Combine(tmpDir, ".fshw.json")) @>)
 
 [<Fact(Timeout = 5000)>]
 let ``executeCommand Init returns 1 when config already exists`` () =
     withTempDir "prog-init-dup" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
-        File.WriteAllText(Path.Combine(tmpDir, ".fs-hot-watch.json"), "{}")
+        File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), "{}")
 
         let result =
             executeCommand
@@ -601,7 +601,7 @@ let ``config hash changes when config file is added`` () =
     withTempDir "prog-hash-change" (fun tmpDir ->
         let hash1 = computeConfigHashWith defaultFileOps tmpDir "/tmp/exe"
 
-        File.WriteAllText(Path.Combine(tmpDir, ".fs-hot-watch.json"), """{"build": {}}""")
+        File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), """{"build": {}}""")
 
         let hash2 = computeConfigHashWith defaultFileOps tmpDir "/tmp/exe"
         test <@ hash1 <> hash2 @>)

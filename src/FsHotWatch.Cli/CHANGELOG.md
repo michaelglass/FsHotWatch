@@ -10,6 +10,10 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ### Changed
 
+- **BREAKING — naming normalized to `fshw`:**
+  - **CLI command** is now `fshw` (was `fs-hot-watch`). The `ToolCommandName` in the package and the pipe-name prefix both use `fshw`.
+  - **Config file** is now `.fshw.json` (was `.fs-hot-watch.json`). Existing repos must rename.
+  - **State directory** is now `.fshw/` (was `.fs-hot-watch/`). The pid, lock, and config-hash files live alongside the existing `cache/`, `errors/`, `logs/`, `test-runs/`, and `test-impact.db` — one directory for everything fshw writes. Existing daemons must be stopped and the legacy `.fs-hot-watch/` directory deleted.
 - `mise check`'s coverage step now auto-corrects thresholds: tries `coverageratchet ratchet`, falls back to `loosen` when coverage drifted below threshold. Other tool exit codes (crash/OOM/killed) propagate so the threshold file is not silently rewritten on tool malfunction.
 
 ## 0.8.0-alpha.11 - 2026-04-26

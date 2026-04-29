@@ -8,7 +8,7 @@ Not a benchmark suite for marketing — just enough to know when things get slow
 ## Key metrics to track
 
 ### Cold start (no cache)
-- Time from `fs-hot-watch start` to `ScanComplete` for N files
+- Time from `fshw start` to `ScanComplete` for N files
 - Baseline projects: FsHotWatch itself (~50 files), a larger repo (500+ files)
 
 ### Warm re-check (single file change)
