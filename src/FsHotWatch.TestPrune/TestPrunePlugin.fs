@@ -376,6 +376,14 @@ let private executeTests
 
                         let staleProject = isStaleProject dirtyTracker stalenessCheck config.Project
 
+                        // ctx is None for manual `run-tests` invocations; Some for the
+                        // auto-watch path driven by BuildCompleted. The skip-on-stale
+                        // shortcut deadlocks the manual path (skipped tests never advance
+                        // the dirty tracker → permanently stale), so manual mode warns
+                        // and runs anyway, surfacing whatever runtime error a stale
+                        // assembly produces.
+                        let isAutoMode = Option.isSome ctx
+
                         // Template-based class filter (from impact analysis).
                         // When the map is non-empty but has no classes for this project,
                         // skip the project entirely (impact analysis found no relevant tests).
@@ -383,7 +391,7 @@ let private executeTests
                             not affectedClassesByProject.IsEmpty
                             && not (affectedClassesByProject |> Map.containsKey config.Project)
 
-                        if staleProject then
+                        if staleProject && isAutoMode then
                             Logging.warn "test-prune" (staleBinaryEntry config.Project).Message
 
                             results <- (config.Project, TestsPassed("", true)) :: results
@@ -394,6 +402,8 @@ let private executeTests
                             // its coverage contribution is "nothing new", so mark as filtered.
                             results <- (config.Project, TestsPassed("", true)) :: results
                         else
+                            if staleProject then
+                                Logging.warn "test-prune" (staleBinaryEntry config.Project).Message
 
                             let filterArgs = buildFilterArgs config affectedClassesByProject
 

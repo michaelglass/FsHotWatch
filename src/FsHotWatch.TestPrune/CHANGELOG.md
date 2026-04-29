@@ -11,6 +11,7 @@
 - **Cold-start cache bypass.** TestPrunePlugin's `BuildCompleted` cache key now returns `None` until the first `TestsFinished` in the daemon session, so a stale on-disk cache entry from a prior session can't pre-empt the cold-start full-suite run. Mutable plugin-level refs use `Volatile.Read`/`Volatile.Write` for thread safety.
 - **Stale-binary warning re-emit.** The "stale DLL" warning is now produced from `stalenessCheck` rather than only the dirty tracker, so it shows up consistently across run paths.
 - **Stale-binary warning is actionable.** The message now names the exact recovery command (`dotnet build --no-incremental`, or deleting `bin/`+`obj/`) rather than just "a full rebuild should fix it". `fshw build` is observational — it doesn't bypass MSBuild's incremental cache, so it's not the right remediation for this case.
+- **Skip-on-stale deadlock.** Manual `run-tests` invocations (where `executeTests` receives `ctx = None`) now warn-and-run instead of skip-and-warn. Previously, a single stale signal short-circuited every subsequent test run because the dirty tracker never advanced — manual `fshw test` could not recover without external DB clearing. Auto-watch (BuildCompleted-driven, `ctx = Some`) keeps the skip-and-warn behavior so stale binaries don't produce confusing automated failures.
 
 ### Changed
 
