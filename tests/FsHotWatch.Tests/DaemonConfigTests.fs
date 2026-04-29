@@ -1,6 +1,5 @@
 module FsHotWatch.Tests.DaemonConfigTests
 
-open System
 open System.IO
 open System.Text.Json
 open Xunit
@@ -1184,45 +1183,24 @@ let ``parseTargetFramework returns None on unparseable content`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``findCanonicalDllPath ignores orphaned TFM directories`` () =
-    let tmp = Path.Combine(Path.GetTempPath(), $"fshw-tfm-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmp) |> ignore
-
-    try
+    withTempDir "fshw-tfm" (fun tmp ->
         let projName = "Foo"
-        let fsproj = Path.Combine(tmp, projName + ".fsproj")
 
         File.WriteAllText(
-            fsproj,
+            Path.Combine(tmp, projName + ".fsproj"),
             """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"""
         )
 
-        // Orphaned directory from a prior TFM bump — recursive glob would match this.
         let orphan = Path.Combine(tmp, "bin", "Debug", "net9.0")
         Directory.CreateDirectory(orphan) |> ignore
         File.WriteAllText(Path.Combine(orphan, projName + ".dll"), "old")
 
-        // Canonical path
         let canonical = Path.Combine(tmp, "bin", "Debug", "net10.0")
         Directory.CreateDirectory(canonical) |> ignore
         File.WriteAllText(Path.Combine(canonical, projName + ".dll"), "fresh")
 
-        let path = findCanonicalDllPath tmp projName
-        test <@ path = Some(Path.Combine(tmp, "bin", "Debug", "net10.0", projName + ".dll")) @>
-    finally
-        try
-            Directory.Delete(tmp, true)
-        with _ ->
-            ()
+        test <@ findCanonicalDllPath tmp projName = Some(Path.Combine(canonical, projName + ".dll")) @>)
 
 [<Fact(Timeout = 5000)>]
 let ``findCanonicalDllPath returns None when fsproj missing`` () =
-    let tmp = Path.Combine(Path.GetTempPath(), $"fshw-no-fsproj-{Guid.NewGuid():N}")
-    Directory.CreateDirectory(tmp) |> ignore
-
-    try
-        test <@ findCanonicalDllPath tmp "Missing" = None @>
-    finally
-        try
-            Directory.Delete(tmp, true)
-        with _ ->
-            ()
+    withTempDir "fshw-no-fsproj" (fun tmp -> test <@ findCanonicalDllPath tmp "Missing" = None @>)
