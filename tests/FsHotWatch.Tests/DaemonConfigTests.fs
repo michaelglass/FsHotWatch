@@ -1,5 +1,6 @@
 module FsHotWatch.Tests.DaemonConfigTests
 
+open System
 open System.IO
 open System.Text.Json
 open Xunit
@@ -1153,3 +1154,75 @@ let ``resolveExistingPathsWithRetry handles empty input without sleeping`` () =
     let result = resolveExistingPathsWithRetry dirExists sleep []
     test <@ List.isEmpty result @>
     test <@ sleepCount = 0 @>
+
+// --- parseTargetFramework / findCanonicalDllPath ---
+
+[<Fact(Timeout = 2000)>]
+let ``parseTargetFramework returns single TargetFramework`` () =
+    let xml =
+        """<Project><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"""
+
+    test <@ parseTargetFramework xml = Some "net10.0" @>
+
+[<Fact(Timeout = 2000)>]
+let ``parseTargetFramework returns first entry of TargetFrameworks`` () =
+    let xml =
+        """<Project><PropertyGroup><TargetFrameworks>net10.0;net9.0</TargetFrameworks></PropertyGroup></Project>"""
+
+    test <@ parseTargetFramework xml = Some "net10.0" @>
+
+[<Fact(Timeout = 2000)>]
+let ``parseTargetFramework returns None when neither tag present`` () =
+    let xml =
+        """<Project><PropertyGroup><AssemblyName>Foo</AssemblyName></PropertyGroup></Project>"""
+
+    test <@ parseTargetFramework xml = None @>
+
+[<Fact(Timeout = 2000)>]
+let ``parseTargetFramework returns None on unparseable content`` () =
+    test <@ parseTargetFramework "not xml at all" = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``findCanonicalDllPath ignores orphaned TFM directories`` () =
+    let tmp = Path.Combine(Path.GetTempPath(), $"fshw-tfm-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmp) |> ignore
+
+    try
+        let projName = "Foo"
+        let fsproj = Path.Combine(tmp, projName + ".fsproj")
+
+        File.WriteAllText(
+            fsproj,
+            """<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>"""
+        )
+
+        // Orphaned directory from a prior TFM bump — recursive glob would match this.
+        let orphan = Path.Combine(tmp, "bin", "Debug", "net9.0")
+        Directory.CreateDirectory(orphan) |> ignore
+        File.WriteAllText(Path.Combine(orphan, projName + ".dll"), "old")
+
+        // Canonical path
+        let canonical = Path.Combine(tmp, "bin", "Debug", "net10.0")
+        Directory.CreateDirectory(canonical) |> ignore
+        File.WriteAllText(Path.Combine(canonical, projName + ".dll"), "fresh")
+
+        let path = findCanonicalDllPath tmp projName
+        test <@ path = Some(Path.Combine(tmp, "bin", "Debug", "net10.0", projName + ".dll")) @>
+    finally
+        try
+            Directory.Delete(tmp, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 5000)>]
+let ``findCanonicalDllPath returns None when fsproj missing`` () =
+    let tmp = Path.Combine(Path.GetTempPath(), $"fshw-no-fsproj-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmp) |> ignore
+
+    try
+        test <@ findCanonicalDllPath tmp "Missing" = None @>
+    finally
+        try
+            Directory.Delete(tmp, true)
+        with _ ->
+            ()
