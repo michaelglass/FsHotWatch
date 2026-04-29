@@ -121,7 +121,8 @@ daemon.RegisterHandler(
         None                      // beforeRun callback
         None                      // afterRun callback
         None                      // coveragePaths: project -> CoveragePaths option
-        None                      // getCommitId for caching
+        None                      // dirtyTracker (optional)
+        None                      // stalenessCheck (optional)
 )
 ```
 

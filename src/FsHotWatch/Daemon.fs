@@ -1043,6 +1043,10 @@ module Daemon =
         {
             CacheBackend: ICheckCacheBackend option
             CacheKeyProvider: ICacheKeyProvider option
+            /// When true, install a `JjHelper.JjScanGuard` to skip scanning when
+            /// the working-copy commit_id is unchanged. Independent of the cache
+            /// key provider — config-driven, no runtime type-test required.
+            EnableJjScanGuard: bool
             /// FCS diagnostic codes to suppress. `None` means the default suppression set.
             FcsSuppressedCodes: int list option
             /// `PathFilter.isExcludedPath` patterns applied during project discovery.
@@ -1056,6 +1060,7 @@ module Daemon =
         let defaults: DaemonOptions =
             { CacheBackend = None
               CacheKeyProvider = None
+              EnableJjScanGuard = false
               FcsSuppressedCodes = None
               ExcludePatterns = []
               ExtraWatchPatterns = [] }
@@ -1190,9 +1195,10 @@ module Daemon =
             let watcher = FileWatcher.create repoRoot onChange None extraWatchPatterns
 
             let jjGuard =
-                match cacheKeyProvider with
-                | Some(:? JjCacheKeyProvider) -> Some(JjHelper.JjScanGuard(repoRoot))
-                | _ -> None
+                if opts.EnableJjScanGuard then
+                    Some(JjHelper.JjScanGuard(repoRoot))
+                else
+                    None
 
             let scanSignal = ScanSignal(cancellationToken = lifetime.Token)
 

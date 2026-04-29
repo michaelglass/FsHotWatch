@@ -31,7 +31,7 @@ module ContentHash =
 /// Identifies a check result in the cache
 type CacheKey =
     {
-        /// Content hash of the file being checked (from jj or file metadata)
+        /// Content hash of the file being checked (from file size + mtime).
         FileHash: ContentHash
         /// Hash of project options (dependencies, compiler flags)
         ProjectOptionsHash: ContentHash
