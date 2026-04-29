@@ -269,7 +269,7 @@ let ``LintPlugin cache key is stable across runs for same file content`` () =
     // §2a hypothesis: editing Foo.fs and reverting it should hit the cache.
     // The cache key for a FileChecked event should depend on file content,
     // not on jj commit_id (which would change on every save).
-    let handler = FsHotWatch.Lint.LintPlugin.create None None None None
+    let handler = FsHotWatch.Lint.LintPlugin.create None None None
 
     let mkResult (file: string) (source: string) : FileCheckResult =
         { File = file
@@ -290,7 +290,7 @@ let ``LintPlugin cache key is stable across runs for same file content`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``LintPlugin cache key is None for non-FileChecked events`` () =
-    let handler = FsHotWatch.Lint.LintPlugin.create None None None None
+    let handler = FsHotWatch.Lint.LintPlugin.create None None None
 
     match handler.CacheKey with
     | None -> failwith "expected LintPlugin to provide a CacheKey"
@@ -304,7 +304,7 @@ let ``LintPlugin cache key reflects config file content`` () =
     withTempDir "lint-config" (fun tmpDir ->
         let configPath = System.IO.Path.Combine(tmpDir, "fsharplint.json")
         System.IO.File.WriteAllText(configPath, "{\"rules\":\"v1\"}")
-        let handler1 = FsHotWatch.Lint.LintPlugin.create (Some configPath) None None None
+        let handler1 = FsHotWatch.Lint.LintPlugin.create (Some configPath) None None
 
         let mkResult source : FileCheckResult =
             { File = "/src/Foo.fs"
@@ -320,7 +320,7 @@ let ``LintPlugin cache key reflects config file content`` () =
             let key1 = k1 (FileChecked(mkResult "let x = 1"))
             // Edit config, rebuild handler.
             System.IO.File.WriteAllText(configPath, "{\"rules\":\"v2\"}")
-            let handler2 = FsHotWatch.Lint.LintPlugin.create (Some configPath) None None None
+            let handler2 = FsHotWatch.Lint.LintPlugin.create (Some configPath) None None
 
             match handler2.CacheKey with
             | None -> failwith "expected CacheKey"
@@ -333,7 +333,7 @@ let ``§1: LintPlugin cache key reflects FCS check signature for ParseOnly vs Fu
     // §1 oracle: the cache key must distinguish ParseOnly from FullCheck even
     // when source bytes are identical — they may produce different lint
     // results because Lint inspects type info from check results when available.
-    let handler = FsHotWatch.Lint.LintPlugin.create None None None None
+    let handler = FsHotWatch.Lint.LintPlugin.create None None None
 
     let mkResult (file: string) (source: string) (state: FileCheckState) : FileCheckResult =
         { File = file
@@ -360,9 +360,9 @@ let ``LintPlugin cache key uses missing-config marker when config path doesn't e
     // Covers the `Some path` branch where the file is not on disk — should
     // produce a stable key (no exception) distinct from the `None` case.
     let h1 =
-        FsHotWatch.Lint.LintPlugin.create (Some "/nonexistent/fsharplint.json") None None None
+        FsHotWatch.Lint.LintPlugin.create (Some "/nonexistent/fsharplint.json") None None
 
-    let h2 = FsHotWatch.Lint.LintPlugin.create None None None None
+    let h2 = FsHotWatch.Lint.LintPlugin.create None None None
 
     let mkResult () : FileCheckResult =
         { File = "/src/Foo.fs"
