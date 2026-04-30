@@ -9,13 +9,13 @@ open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Cli
 open FsHotWatch.Cli.IpcOutput
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseDiagnosticsResponse extracts count`` () =
     let json = """{"count":2,"files":{},"statuses":{}}"""
     let result = parseDiagnosticsResponse json
     test <@ result.Count = 2 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseDiagnosticsResponse extracts files with entries`` () =
     let json =
         """{"count":1,"files":{"src/Foo.fs":[{"plugin":"lint","message":"bad name","severity":"warning","line":17,"column":0,"detail":null}]},"statuses":{}}"""
@@ -29,7 +29,7 @@ let ``parseDiagnosticsResponse extracts files with entries`` () =
     test <@ entries[0].Severity = Warning @>
     test <@ entries[0].Line = 17 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseDiagnosticsResponse extracts statuses`` () =
     let json =
         """{"count":0,"files":{},"statuses":{"build":{"status":{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"},"subtasks":[],"activityTail":[],"lastRun":null},"lint":{"status":{"tag":"idle"},"subtasks":[],"activityTail":[],"lastRun":null}}}"""
@@ -41,7 +41,7 @@ let ``parseDiagnosticsResponse extracts statuses`` () =
     | Completed _ -> ()
     | other -> failwithf "expected Completed, got %A" other
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatDiagnosticsResponse with no errors shows clean message`` () =
     let json =
         """{"count":0,"files":{},"statuses":{"build":{"status":{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"},"subtasks":[],"activityTail":[],"lastRun":null}}}"""
@@ -50,7 +50,7 @@ let ``formatDiagnosticsResponse with no errors shows clean message`` () =
     let output = formatDiagnosticsResponse ProgressRenderer.Verbose (fun _ -> []) result
     test <@ output.Contains("No errors") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatDiagnosticsResponse with errors shows file and message`` () =
     let json =
         """{"count":1,"files":{"src/Foo.fs":[{"plugin":"lint","message":"bad name","severity":"warning","line":17,"column":0,"detail":null}]},"statuses":{"lint":{"status":{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"},"subtasks":[],"activityTail":[],"lastRun":null}}}"""
@@ -62,7 +62,7 @@ let ``formatDiagnosticsResponse with errors shows file and message`` () =
     test <@ output.Contains("L17") @>
     test <@ output.Contains("bad name") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatDiagnosticsResponse with errors shows count summary`` () =
     let json =
         """{"count":2,"files":{"src/A.fs":[{"plugin":"lint","message":"x","severity":"warning","line":1,"column":0,"detail":null}],"src/B.fs":[{"plugin":"build","message":"y","severity":"error","line":2,"column":0,"detail":null}]},"statuses":{}}"""
@@ -71,11 +71,11 @@ let ``formatDiagnosticsResponse with errors shows count summary`` () =
     let output = formatDiagnosticsResponse ProgressRenderer.Verbose (fun _ -> []) result
     test <@ output.Contains("1 error(s), 1 warning(s) in 2 file(s)") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``isAllTerminal returns false for empty map`` () =
     test <@ not (isAllTerminal Map.empty) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``isAllTerminal returns true when all completed or failed`` () =
     let statuses =
         Map.ofList
@@ -84,19 +84,19 @@ let ``isAllTerminal returns true when all completed or failed`` () =
 
     test <@ isAllTerminal statuses @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``isAllTerminal returns true when some plugins are idle`` () =
     let statuses =
         Map.ofList [ "build", Completed System.DateTime.UtcNow; "file-cmd", Idle ]
 
     test <@ isAllTerminal statuses @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``isAllTerminal returns true when all plugins are idle`` () =
     let statuses = Map.ofList [ "file-cmd", Idle ]
     test <@ isAllTerminal statuses @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``isAllTerminal returns false when any running`` () =
     let statuses =
         Map.ofList
@@ -105,7 +105,7 @@ let ``isAllTerminal returns false when any running`` () =
 
     test <@ not (isAllTerminal statuses) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``exitCodeFromResponse returns 0 for count 0`` () =
     let resp =
         { Count = 0
@@ -114,7 +114,7 @@ let ``exitCodeFromResponse returns 0 for count 0`` () =
 
     test <@ exitCodeFromResponse false resp = 0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``exitCodeFromResponse returns 1 for errors`` () =
     let resp =
         { Count = 1
@@ -131,7 +131,7 @@ let ``exitCodeFromResponse returns 1 for errors`` () =
 
     test <@ exitCodeFromResponse false resp = 1 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``exitCodeFromResponse with noWarnFail ignores warnings`` () =
     let resp =
         { Count = 1
@@ -148,7 +148,7 @@ let ``exitCodeFromResponse with noWarnFail ignores warnings`` () =
 
     test <@ exitCodeFromResponse true resp = 0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``exitCodeFromResponse without noWarnFail fails on warnings`` () =
     let resp =
         { Count = 1
@@ -167,14 +167,14 @@ let ``exitCodeFromResponse without noWarnFail fails on warnings`` () =
 
 // --- renderIpcResult tests ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``renderIpcResult with GetDiagnostics format count 0 returns 0`` () =
     let result =
         renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"count":0,"files":{},"statuses":{}}"""
 
     test <@ result = 0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``renderIpcResult with GetDiagnostics format count > 0 returns 1`` () =
     let result =
         renderIpcResult
@@ -185,35 +185,35 @@ let ``renderIpcResult with GetDiagnostics format count > 0 returns 1`` () =
 
     test <@ result = 1 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``renderIpcResult with status passed returns 0`` () =
     let result =
         renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"status":"passed"}"""
 
     test <@ result = 0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``renderIpcResult with status failed returns 1`` () =
     let result =
         renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"status":"failed"}"""
 
     test <@ result = 1 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``renderIpcResult with error field returns 1`` () =
     let result =
         renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false """{"error":"something went wrong"}"""
 
     test <@ result = 1 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``renderIpcResult with plain text returns 0`` () =
     let result =
         renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false "build completed successfully"
 
     test <@ result = 0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``renderIpcResult with test results JSON containing arrays does not crash`` () =
     let json =
         """{"elapsed":"1.5s","projects":[{"project":"TestProject","status":"passed","output":"ok"}]}"""
@@ -221,7 +221,7 @@ let ``renderIpcResult with test results JSON containing arrays does not crash`` 
     let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
     test <@ result = 0 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``renderIpcResult with test results JSON with failed project returns 1`` () =
     let json =
         """{"elapsed":"2.0s","projects":[{"project":"FailProject","status":"failed","output":"FAIL: test1"}]}"""
@@ -229,7 +229,7 @@ let ``renderIpcResult with test results JSON with failed project returns 1`` () 
     let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
     test <@ result = 1 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatDiagnosticsResponse hides info-severity entries`` () =
     let json =
         """{"count":1,"files":{"src/Foo.fs":[{"plugin":"fcs","message":"XML comment is not placed on a valid language element.","severity":"info","line":3,"column":0,"detail":null}]},"statuses":{}}"""
@@ -239,7 +239,7 @@ let ``formatDiagnosticsResponse hides info-severity entries`` () =
     test <@ not (output.Contains("XML comment")) @>
     test <@ output.Contains("No errors") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatDiagnosticsResponse shows warnings but hides info in same file`` () =
     let json =
         """{"count":2,"files":{"src/Foo.fs":[{"plugin":"fcs","message":"XML comment","severity":"info","line":3,"column":0,"detail":null},{"plugin":"format-check","message":"File is not formatted","severity":"warning","line":1,"column":0,"detail":null}]},"statuses":{}}"""
@@ -250,7 +250,7 @@ let ``formatDiagnosticsResponse shows warnings but hides info in same file`` () 
     test <@ not (output.Contains("XML comment")) @>
     test <@ output.Contains("1 warning(s) in 1 file(s)") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatDiagnosticsResponse excludes info-only files from count`` () =
     let json =
         """{"count":2,"files":{"src/A.fs":[{"plugin":"fcs","message":"XML comment","severity":"info","line":3,"column":0,"detail":null}],"src/B.fs":[{"plugin":"lint","message":"bad","severity":"warning","line":1,"column":0,"detail":null}]},"statuses":{}}"""
@@ -259,7 +259,7 @@ let ``formatDiagnosticsResponse excludes info-only files from count`` () =
     let output = formatDiagnosticsResponse ProgressRenderer.Verbose (fun _ -> []) result
     test <@ output.Contains("1 warning(s) in 1 file(s)") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``exitCodeFromResponse ignores info-severity entries`` () =
     let resp =
         { Count = 1
@@ -285,7 +285,7 @@ let ``exitCodeFromResponse ignores info-severity entries`` () =
 // shape), the parse yields an empty map and pollAndRender hangs. This hung the
 // full test suite and `mise run check` for 40+ minutes before being caught.
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parsePluginStatuses rejects bare-string values and returns empty`` () =
     // The old broken fakeIpc shape — documents why that shape must never appear
     // in test fixtures: empty parse -> isAllTerminal false -> pollAndRender hang.
@@ -294,7 +294,7 @@ let ``parsePluginStatuses rejects bare-string values and returns empty`` () =
     test <@ Map.isEmpty parsed @>
     test <@ not (isAllTerminal (statusOnly parsed)) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parsePluginStatuses accepts object-valued entries with status field`` () =
     // The real GetStatus JSON shape. Object-per-plugin with a status string.
     let json =

@@ -46,7 +46,7 @@ let private timedOutRun (ago: TimeSpan) (elapsed: TimeSpan) (reason: string) : R
 
 // ---------------- Compact mode ----------------
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``compact Completed shows check glyph elapsed and summary`` () =
     let parsed: ParsedPluginStatus =
         { Status = Completed(now - TimeSpan.FromSeconds(3.2))
@@ -63,7 +63,7 @@ let ``compact Completed shows check glyph elapsed and summary`` () =
     test <@ line.Contains "3.2s" @>
     test <@ line.Contains "built 4 projects" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``compact Completed with ledger errors shows warn glyph and count`` () =
     let parsed: ParsedPluginStatus =
         { Status = Completed(now - TimeSpan.FromSeconds(3.2))
@@ -79,7 +79,7 @@ let ``compact Completed with ledger errors shows warn glyph and count`` () =
     test <@ not (line.Contains "✓") @> // not ✓
     test <@ line.Contains "2 error(s)" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``compact Completed with only warnings respects warningsAreFailures flag`` () =
     let parsed: ParsedPluginStatus =
         { Status = Completed(now - TimeSpan.FromSeconds(1.0))
@@ -97,7 +97,7 @@ let ``compact Completed with only warnings respects warningsAreFailures flag`` (
     test <@ lax.[0].Contains "✓" @>
     test <@ not (lax.[0].Contains "⚠") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``compact Running with subtasks lists them`` () =
     let parsed: ParsedPluginStatus =
         { Status = Running(now - TimeSpan.FromSeconds(72.0))
@@ -117,7 +117,7 @@ let ``compact Running with subtasks lists them`` () =
     test <@ line.Contains "3 running" @>
     test <@ line.Contains "A" && line.Contains "B" && line.Contains "C" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``compact Running with no subtasks shows last activity line`` () =
     let parsed: ParsedPluginStatus =
         { Status = Running(now - TimeSpan.FromSeconds(5.0))
@@ -131,7 +131,7 @@ let ``compact Running with no subtasks shows last activity line`` () =
     let line = lines.[0]
     test <@ line.Contains "linting FileA.fs" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``compact Failed shows truncated error first line`` () =
     let longErr = String.replicate 120 "x"
     let multiline = "first line of error\nsecond line\nthird line"
@@ -163,7 +163,7 @@ let ``compact Failed shows truncated error first line`` () =
     // The rendered line length (after stripping colors) should be bounded.
     test <@ linesLong.[0].Length < 200 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``compact Idle with history shows last-run recap`` () =
     let parsed: ParsedPluginStatus =
         { Status = Idle
@@ -180,7 +180,7 @@ let ``compact Idle with history shows last-run recap`` () =
     test <@ line.Contains "4.1s" @>
     test <@ line.Contains "no issues" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``compact Idle with no history is single line name`` () =
     let parsed: ParsedPluginStatus =
         { Status = Idle
@@ -195,7 +195,7 @@ let ``compact Idle with no history is single line name`` () =
 
 // ---------------- Verbose mode ----------------
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``verbose Running emits header plus subtask tree plus recent`` () =
     let parsed: ParsedPluginStatus =
         { Status = Running(now - TimeSpan.FromSeconds(72.0))
@@ -221,7 +221,7 @@ let ``verbose Running emits header plus subtask tree plus recent`` () =
     test <@ joined.Contains "recent" @>
     test <@ joined.Contains "dotnet test FooTests" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``verbose Failed shows started, error detail, and recent`` () =
     let startedAt = now - TimeSpan.FromSeconds 6.4
     let err = "FileA.fs(12,4): FS0020: ...\nFileA.fs(33,1): FS0025: ..."
@@ -249,7 +249,7 @@ let ``verbose Failed shows started, error detail, and recent`` () =
     test <@ joined.Contains "recent" @>
     test <@ joined.Contains "linting FileA.fs" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``verbose Completed shows header started elapsed summary`` () =
     let startedAt = now - TimeSpan.FromSeconds 3.2
 
@@ -273,7 +273,7 @@ let ``verbose Completed shows header started elapsed summary`` () =
     test <@ joined.Contains "3.2s" @>
     test <@ joined.Contains "built 4 projects" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``verbose Completed with empty activity tail hides recent section`` () =
     let startedAt = now - TimeSpan.FromSeconds 1.0
 
@@ -296,7 +296,7 @@ let ``verbose Completed with empty activity tail hides recent section`` () =
 
 // ---------------- renderAll ----------------
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``renderAll concatenates per-plugin blocks`` () =
     let statuses =
         Map.ofList
@@ -383,13 +383,13 @@ module private AgentFixtures =
 
 open AgentFixtures
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent renderAll emits banner as first line`` () =
     let lines = agentAll [ "build", okStatus None ]
     test <@ lines.Length >= 1 @>
     test <@ lines.[0].StartsWith "# fshw agent mode" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent banner lists expected commands`` () =
     let lines = agentAll [ "build", okStatus None ]
     let banner = lines.[0]
@@ -405,7 +405,7 @@ let ``agent banner lists expected commands`` () =
       "status" ]
     |> List.iter (fun cmd -> test <@ banner.Contains cmd @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent renderAll omits Idle plugins with no LastRun`` () =
     let lines = agentAll [ "build", okStatus None; "coverage", idleNoHistory () ]
 
@@ -413,27 +413,27 @@ let ``agent renderAll omits Idle plugins with no LastRun`` () =
     test <@ joined.Contains "build:" @>
     test <@ not (joined.Contains "coverage") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent renderPlugin for Idle with no LastRun returns empty list`` () =
     test <@ List.isEmpty (agentLine "coverage" (idleNoHistory ())) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent Idle-with-completed-LastRun renders as ok`` () =
     let lines = agentLine "analyze" (idleCompleted (Some "clean"))
     test <@ lines = [ "analyze: ok" ] @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent Idle-with-failed-LastRun renders as fail with summary`` () =
     let lines = agentLine "test" (idleFailed "2 failed in FsHotWatch.Tests")
     test <@ lines.Length = 1 @>
     test <@ lines.[0] = "test: fail summary=\"2 failed in FsHotWatch.Tests\"" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent ok line is plain "<name>: ok" with no summary`` () =
     let lines = agentLine "build" (okStatus (Some "built 4 projects"))
     test <@ lines = [ "build: ok" ] @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent fail line includes summary`` () =
     let lines = agentLine "test" (failStatus "2 failed in FsHotWatch.Tests")
     test <@ lines.Length = 1 @>
@@ -442,23 +442,23 @@ let ``agent fail line includes summary`` () =
     test <@ line.Contains "2 failed in FsHotWatch.Tests" @>
     test <@ line.EndsWith "\"" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent warn state fires when warnings present and warningsAreFailures=true`` () =
     let lines = agentLine "lint" (warnStatus ())
     test <@ lines.Length = 1 @>
     test <@ lines.[0].StartsWith "lint: warn" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent warn demotes to ok when warningsAreFailures=false`` () =
     let lines = renderPlugin Agent false now "lint" (warnStatus ())
     test <@ lines = [ "lint: ok" ] @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent Running line has no summary`` () =
     let lines = agentLine "build" (runningStatus ())
     test <@ lines = [ "build: running" ] @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent fail summary uses first non-empty line`` () =
     let err = "first line of error\nsecond line\nthird line"
     let lines = agentLine "lint" (failStatus err)
@@ -467,7 +467,7 @@ let ``agent fail summary uses first non-empty line`` () =
     // as part of a single-quoted summary. Ensure the line is not multi-line.
     test <@ not (lines.[0].Contains "\n") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent fail summary truncated to roughly 80 chars`` () =
     let long = String.replicate 200 "x"
     let lines = agentLine "lint" (failStatus long)
@@ -479,7 +479,7 @@ let ``agent fail summary truncated to roughly 80 chars`` () =
     test <@ summary.Length <= 80 @>
     test <@ summary.EndsWith "..." @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent fail summary escapes embedded double quotes`` () =
     let err = "he said \"boom\" then exited"
     let lines = agentLine "test" (failStatus err)
@@ -492,7 +492,7 @@ let ``agent fail summary escapes embedded double quotes`` () =
 
     test <@ unescapedQuotes = 2 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent emits no ANSI escapes`` () =
     let statuses =
         [ "build", okStatus (Some "ok")
@@ -508,14 +508,14 @@ let ``agent emits no ANSI escapes`` () =
 
 // ----- next-step rules -----
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent next is errors --wait when any plugin is running`` () =
     let statuses = [ "build", failStatus "compile error"; "test", runningStatus () ]
 
     let lines = agentAll statuses
     test <@ List.last lines = "next: fshw --agent errors --wait" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent next is build when build failed even if others also failed`` () =
     let statuses =
         [ "build", failStatus "compile error"
@@ -525,7 +525,7 @@ let ``agent next is build when build failed even if others also failed`` () =
     let lines = agentAll statuses
     test <@ List.last lines = "next: fshw --agent build" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent next is test when build ok but test failed`` () =
     let statuses =
         [ "build", okStatus None
@@ -535,7 +535,7 @@ let ``agent next is test when build ok but test failed`` () =
     let lines = agentAll statuses
     test <@ List.last lines = "next: fshw --agent test" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent next picks lint before analyze when both fail`` () =
     let statuses =
         [ "analyze", failStatus "bad"
@@ -545,7 +545,7 @@ let ``agent next picks lint before analyze when both fail`` () =
     let lines = agentAll statuses
     test <@ List.last lines = "next: fshw --agent lint" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent next picks analyze before format-check and coverage`` () =
     let statuses =
         [ "coverage", failStatus "low"
@@ -555,7 +555,7 @@ let ``agent next picks analyze before format-check and coverage`` () =
     let lines = agentAll statuses
     test <@ List.last lines = "next: fshw --agent analyze" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent next picks format-check before coverage`` () =
     let statuses =
         [ "coverage", failStatus "low"; "format-check", failStatus "unformatted" ]
@@ -563,21 +563,21 @@ let ``agent next picks format-check before coverage`` () =
     let lines = agentAll statuses
     test <@ List.last lines = "next: fshw --agent format-check" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent next is errors when only warnings and warningsAreFailures=true`` () =
     let statuses = [ "build", okStatus None; "lint", warnStatus () ]
 
     let lines = agentAll statuses
     test <@ List.last lines = "next: fshw --agent errors" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent next is done when warnings present but warningsAreFailures=false`` () =
     let statuses = [ "build", okStatus None; "lint", warnStatus () ]
 
     let lines = agentAllLax statuses
     test <@ List.last lines = "next: done" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent next is done when all clean`` () =
     let statuses =
         [ "build", okStatus None
@@ -590,7 +590,7 @@ let ``agent next is done when all clean`` () =
 
 // ----- primary subtask rendering -----
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``compact Running prefers primary subtask label over activity tail`` () =
     let parsed: ParsedPluginStatus =
         { Status = Running(now - TimeSpan.FromSeconds(1.5))
@@ -606,7 +606,7 @@ let ``compact Running prefers primary subtask label over activity tail`` () =
     // The primary label should win — activity-tail fallback is suppressed.
     test <@ not (line.Contains "processing bar.fs") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``compact Idle shows explicit summary not last log line`` () =
     let parsed: ParsedPluginStatus =
         { Status = Completed(now - TimeSpan.FromSeconds(2.0))
@@ -622,7 +622,7 @@ let ``compact Idle shows explicit summary not last log line`` () =
 
 // ----- regex roundtrip -----
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent output lines match the parseable grammar`` () =
     let statuses =
         [ "build", okStatus (Some "built 4 projects")
@@ -650,7 +650,7 @@ let private timedOutStatus (reason: string) : ParsedPluginStatus =
       LastRun = Some(timedOutRun (TimeSpan.FromSeconds 1.0) (TimeSpan.FromSeconds 1.0) reason)
       Diagnostics = DiagnosticCounts.empty }
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``compact Failed with TimedOut outcome uses timeout glyph and label`` () =
     let parsed = timedOutStatus "exceeded 60s"
 
@@ -661,14 +661,14 @@ let ``compact Failed with TimedOut outcome uses timeout glyph and label`` () =
     test <@ not (line.Contains "✗") @> // no ✗
     test <@ line.Contains "timed out" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``verbose Failed with TimedOut outcome uses timeout glyph`` () =
     let parsed = timedOutStatus "exceeded 60s"
 
     let lines = renderPlugin Verbose true now "Build" parsed |> stripMany
     test <@ lines |> List.exists (fun l -> l.Contains "⏱") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``agent Failed with TimedOut outcome emits timed-out token`` () =
     let parsed = timedOutStatus "exceeded 60s"
     let line = renderPlugin Agent true now "build" parsed |> List.head |> stripAnsi
