@@ -356,7 +356,7 @@ let ``build plugin ignores SolutionChanged events`` () =
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
-    host.EmitFileChanged(SolutionChanged "test.sln")
+    host.EmitFileChanged(SolutionChanged)
 
     // SolutionChanged is ignored — poll briefly; will time out (expected)
     waitUntil (fun () -> (getBuild ()).IsSome) 200
