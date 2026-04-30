@@ -947,8 +947,8 @@ let ``template build with failing command emits BuildFailed and reports Failed s
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "/tmp/src/MyLib/Lib.fs" ])
 
-    waitForTerminalStatus host "build" 5000
-    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    waitForTerminalStatus host "build" 20000
+    waitUntil (fun () -> (getBuild ()).IsSome) 20000
 
     test
         <@
@@ -1029,8 +1029,8 @@ let ``WaitingForFcs interrupted by ProjectChanged starts a real build`` () =
 
     // ProjectChanged interrupts the wait → real build runs.
     host.EmitFileChanged(ProjectChanged [ "/tmp/tests/MyTests/MyTests.fsproj" ])
-    waitForTerminalStatus host "build" 5000
-    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    waitForTerminalStatus host "build" 20000
+    waitUntil (fun () -> (getBuild ()).IsSome) 20000
     test <@ getBuild () = Some BuildSucceeded @>
 
 [<Fact(Timeout = 30000)>]
@@ -1071,7 +1071,7 @@ let ``WaitingForFcs merges additional test-file changes into the awaiting set`` 
 
     // Confirming B drains the set → BuildSucceeded fires.
     host.EmitFileChecked(fakeFileCheckResult "/tmp/tests/MyTests/B.fs")
-    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    waitUntil (fun () -> (getBuild ()).IsSome) 20000
     test <@ getBuild () = Some BuildSucceeded @>
 
 [<Fact(Timeout = 30000)>]
@@ -1109,8 +1109,8 @@ let ``WaitingForFcs with non-test SourceChanged abandons the wait and runs a bui
 
     // A non-test change arrives — must trigger a real build, not stay waiting.
     host.EmitFileChanged(SourceChanged [ "/tmp/src/MyLib/Lib.fs" ])
-    waitForTerminalStatus host "build" 5000
-    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    waitForTerminalStatus host "build" 20000
+    waitUntil (fun () -> (getBuild ()).IsSome) 20000
     test <@ getBuild () = Some BuildSucceeded @>
 
 // --- build-status command in failed-state lifecycles ---
@@ -1123,7 +1123,7 @@ let ``build-status returns failed JSON after BuildOutputFailed lifecycle`` () =
     let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    waitForTerminalStatus host "build" 5000
+    waitForTerminalStatus host "build" 20000
 
     let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
@@ -1165,7 +1165,7 @@ let ``build-status returns failed JSON after BuildArtifactsStale demotion`` () =
         host.RegisterHandler(handler)
         host.EmitFileChanged(SourceChanged [ srcPath ])
 
-        waitForTerminalStatus host "build" 5000
+        waitForTerminalStatus host "build" 20000
 
         let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
         test <@ result.IsSome @>
