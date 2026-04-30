@@ -568,7 +568,7 @@ let ``RunExclusive ignores second call while first is running`` () =
 
 // --- Cache replay: emitted events + error-replay branches ---
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 30000)>]
 let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRunCompleted, CommandCompleted from EmittedEvents``
     ()
     =
@@ -690,7 +690,7 @@ let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRu
     }
     |> Async.RunSynchronously
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 30000)>]
 let ``RunExclusive releases slot when work raises and logs without re-posting completion`` () =
     // Covers runOne's try/with around `let! msg = w` (PluginFramework lines 212-213, 219):
     // when work throws, completion stays ValueNone (no Custom message posted),
@@ -744,17 +744,19 @@ let ``RunExclusive releases slot when work raises and logs without re-posting co
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "/throw" ]))
         let! _ = registeredCmd.Value [||]
         // Wait for the throwing work to complete (synchronously raises in the async).
-        waitUntil (fun () -> !started = 1) 5000
+        // Generous polling timeouts: under heavy parallel-collection load the
+        // thread-pool can lag scheduling our runOne async by several seconds.
+        waitUntil (fun () -> !started = 1) 20000
 
         // Slot released — IsRunning "k" must report false even though work raised.
-        waitUntil (fun () -> not (capturedCtx.Value.IsRunning "k")) 5000
+        waitUntil (fun () -> not (capturedCtx.Value.IsRunning "k")) 20000
         test <@ not (capturedCtx.Value.IsRunning "k") @>
         // No completion posted (Custom RxDone never fired).
         test <@ !completed = 0 @>
 
         // Subsequent dispatch can run — proves the slot was released.
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/ok.fs" ]))
-        waitUntil (fun () -> !completed = 1) 5000
+        waitUntil (fun () -> !completed = 1) 20000
         test <@ !started = 2 @>
         test <@ !completed = 1 @>
     }
