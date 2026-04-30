@@ -84,11 +84,11 @@ let ``classifyChange maps .props to ProjectChanged`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``classifyChange maps .sln to SolutionChanged`` () =
-    test <@ classifyChange "/repo/App.sln" = SolutionChanged "/repo/App.sln" @>
+    test <@ classifyChange "/repo/App.sln" = SolutionChanged @>
 
 [<Fact(Timeout = 5000)>]
 let ``classifyChange maps .slnx to SolutionChanged`` () =
-    test <@ classifyChange "/repo/App.slnx" = SolutionChanged "/repo/App.slnx" @>
+    test <@ classifyChange "/repo/App.slnx" = SolutionChanged @>
 
 // === Unit tests for hasContentChanged ===
 
