@@ -220,7 +220,7 @@ let ``command ignores SolutionChanged`` () =
 
     host.RegisterHandler(handler)
 
-    host.EmitFileChanged(SolutionChanged "test.sln")
+    host.EmitFileChanged(SolutionChanged)
 
     // SolutionChanged is ignored — poll briefly; will time out at Idle (expected)
     waitUntil

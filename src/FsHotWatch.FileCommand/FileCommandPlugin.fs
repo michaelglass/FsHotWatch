@@ -297,7 +297,7 @@ let create
                             match change with
                             | SourceChanged f -> f
                             | ProjectChanged f -> f
-                            | SolutionChanged _ -> []
+                            | SolutionChanged -> []
 
                         let matching = files |> List.filter fileFilter
 
