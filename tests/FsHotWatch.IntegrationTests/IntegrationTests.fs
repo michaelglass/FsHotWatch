@@ -1973,7 +1973,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
     host.RegisterHandler(makeStatusHandler "c" (fun ctx -> ctx.ReportStatus(Completed(System.DateTime(2025, 6, 16)))))
 
     host.RegisterHandler(
-        makeStatusHandler "d" (fun ctx -> ctx.ReportStatus(Failed("oops", System.DateTime(2025, 6, 17))))
+        makeStatusHandler "d" (fun ctx -> ctx.ReportStatus(PluginStatus.Failed("oops", System.DateTime(2025, 6, 17))))
     )
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -1981,7 +1981,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
     waitUntil
         (fun () ->
             match host.GetStatus("d") with
-            | Some(Failed _) -> true
+            | Some(PluginStatus.Failed _) -> true
             | _ -> false)
         20000
 
@@ -2001,5 +2001,5 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
     | other -> failwithf "expected Idle, got %A" other
 
     match parsed.["d"].Status with
-    | Failed(msg, _) -> test <@ msg = "oops" @>
+    | PluginStatus.Failed(msg, _) -> test <@ msg = "oops" @>
     | other -> failwithf "expected Failed, got %A" other
