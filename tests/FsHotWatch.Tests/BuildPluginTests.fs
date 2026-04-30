@@ -77,7 +77,7 @@ let ``create accepts graph and test project names`` () =
     let handler = BuildPlugin.create "echo" "build" [] graph [] None [] None
     test <@ handler.Name = PluginName.create "build" @>
 
-// Drop semantics under RunExclusive "build" Drop: while a build is in flight,
+// Drop semantics under RunExclusive "build": while a build is in flight,
 // additional FileChanged events must NOT spawn a second concurrent build.
 // Counts BuildCompleted emissions across rapid back-to-back triggers and asserts
 // exactly one fired.
@@ -94,8 +94,7 @@ let ``concurrent FileChanged events do not start two builds`` () =
             fun _ctx state event ->
                 async {
                     match event with
-                    | BuildCompleted _ ->
-                        System.Threading.Interlocked.Increment(buildCompletedCount) |> ignore
+                    | BuildCompleted _ -> System.Threading.Interlocked.Increment(buildCompletedCount) |> ignore
                     | _ -> ()
 
                     return state
