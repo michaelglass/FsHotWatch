@@ -1903,7 +1903,10 @@ let ``run summary names the slowest project when 2+ projects ran`` () =
                 TimeoutSec = None } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = TestPrunePlugin.create ":memory:" tmpDir (Some configs) None None None None
+
+        let handler =
+            TestPrunePlugin.create ":memory:" tmpDir (Some configs) None None None None
+
         host.RegisterHandler(handler)
         host.EmitBuildCompleted(BuildSucceeded)
         waitForTerminalStatus host "test-prune" 15000

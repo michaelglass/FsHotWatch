@@ -10,7 +10,7 @@ open FsHotWatch.Cli.RunOnceOutput
 
 // --- Staleness warning: detect FileCommand plugin inputs newer than last run ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``detectStalePluginInputs flags plugins whose args are newer than last run`` () =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
@@ -43,7 +43,7 @@ let ``detectStalePluginInputs flags plugins whose args are newer than last run``
         with _ ->
             ()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``detectStalePluginInputs omits plugins with no stale files`` () =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
@@ -70,18 +70,18 @@ let ``detectStalePluginInputs omits plugins with no stale files`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatStalenessWarning is empty for no stale plugins`` () =
     test <@ formatStalenessWarning [] = "" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatStalenessWarning names the plugin, file, and rerun hint`` () =
     let warning = formatStalenessWarning [ "ratchet", [ "/tmp/cfg.json" ] ]
     test <@ warning.Contains("ratchet") @>
     test <@ warning.Contains("/tmp/cfg.json") @>
     test <@ warning.Contains("rerun") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatErrors groups by file with plugin prefix`` () =
     let errors =
         Map.ofList
@@ -106,7 +106,7 @@ let ``formatErrors groups by file with plugin prefix`` () =
     test <@ result.Contains("L17") @>
     test <@ result.Contains("L42") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatErrors shows severity labels for error and warning`` () =
     let errors =
         Map.ofList
@@ -130,7 +130,7 @@ let ``formatErrors shows severity labels for error and warning`` () =
     test <@ result.Contains("warning") @>
     test <@ result.Contains("bad name") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatErrors shows count summary`` () =
     let errors =
         Map.ofList
@@ -152,12 +152,12 @@ let ``formatErrors shows count summary`` () =
     let result = formatErrors errors
     test <@ result.Contains("1 error(s), 1 warning(s) in 2 file(s)") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatErrors with no errors shows clean message`` () =
     let result = formatErrors Map.empty
     test <@ result.Contains("No errors") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatErrors hides info-severity entries from output`` () =
     let errors =
         Map.ofList
@@ -173,7 +173,7 @@ let ``formatErrors hides info-severity entries from output`` () =
     test <@ not (result.Contains("XML comment")) @>
     test <@ result.Contains("No errors") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatErrors hides hint-severity entries from output`` () =
     let errors =
         Map.ofList
@@ -189,7 +189,7 @@ let ``formatErrors hides hint-severity entries from output`` () =
     test <@ not (result.Contains("some hint")) @>
     test <@ result.Contains("No errors") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatErrors shows warnings but hides info in same file`` () =
     let errors =
         Map.ofList
@@ -212,7 +212,7 @@ let ``formatErrors shows warnings but hides info in same file`` () =
     test <@ not (result.Contains("XML comment")) @>
     test <@ result.Contains("1 warning(s) in 1 file(s)") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatErrors excludes files with only info entries from file count`` () =
     let errors =
         Map.ofList

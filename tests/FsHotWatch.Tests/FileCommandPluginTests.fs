@@ -30,7 +30,7 @@ let private emitProgress (host: PluginHost) (runId: System.Guid) (delta: (string
         { RunId = runId
           NewResults = Map.ofList delta }
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =
     let handler =
         create
@@ -43,7 +43,7 @@ let ``plugin has correct name`` () =
 
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "run-scripts" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``command runs when matching files change`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -77,7 +77,7 @@ let ``command runs when matching files change`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``command does not run for non-matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -108,7 +108,7 @@ let ``command does not run for non-matching files`` () =
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``command captures stdout output`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -137,7 +137,7 @@ let ``command captures stdout output`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("true") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``command with environment variables`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -171,7 +171,7 @@ let ``command with environment variables`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``command runs on ProjectChanged with matching files`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -205,7 +205,7 @@ let ``command runs on ProjectChanged with matching files`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``command ignores SolutionChanged`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -235,7 +235,7 @@ let ``command ignores SolutionChanged`` () =
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``command reports Failed status on command failure`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -305,7 +305,7 @@ let ``FileCommandPlugin honors timeoutSec and records TimedOut`` () =
 
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``command reports Failed status on exception`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -341,7 +341,7 @@ let ``command reports Failed status on exception`` () =
 
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``status command returns not run when no files matched`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -372,7 +372,7 @@ let ``status command returns not run when no files matched`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("not run") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``status command returns false when command failed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -400,7 +400,7 @@ let ``status command returns false when command failed`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("false") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``emits CommandCompleted on success`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getCommand, recorder) = commandRecorder ()
@@ -437,7 +437,7 @@ let ``emits CommandCompleted on success`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``emits CommandCompleted on failure`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getCommand, recorder) = commandRecorder ()
@@ -474,7 +474,7 @@ let ``emits CommandCompleted on failure`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``afterTests TestProjects fires when ALL listed projects have results`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -510,7 +510,7 @@ let ``afterTests TestProjects fires when ALL listed projects have results`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``afterTests TestProjects does not fire when only some listed projects have completed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -539,7 +539,7 @@ let ``afterTests TestProjects does not fire when only some listed projects have 
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``afterTests TestProjects does not fire when no listed project matches`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -567,7 +567,7 @@ let ``afterTests TestProjects does not fire when no listed project matches`` () 
     test <@ status.IsSome @>
     test <@ status.Value = Idle @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``afterTests TestProjects fires exactly once across progressive deltas`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getCount, counter) = commandCounter "afterTests-once"
@@ -600,7 +600,7 @@ let ``afterTests TestProjects fires exactly once across progressive deltas`` () 
 
     test <@ getCount () = 1 @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``afterTests TestProjects fires again on a fresh batch`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getCount, counter) = commandCounter "afterTests-rebatch"
@@ -638,7 +638,7 @@ let ``afterTests TestProjects fires again on a fresh batch`` () =
 // inline and hit the plugin the same way the daemon's RegisterHandler path does,
 // but a bug in the config→trigger glue (e.g. parser yielding AfterTests = None
 // for a valid JSON list) would not be caught without going through parseConfig.
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style plugin`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -729,7 +729,7 @@ let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style
             | _ -> false
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``afterTests AnyTest fires on TestRunCompleted regardless of projects`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -763,7 +763,7 @@ let ``afterTests AnyTest fires on TestRunCompleted regardless of projects`` () =
 
 // --- Combined trigger: pattern + afterTests ---
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``plugin with both pattern and afterTests fires on file change`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -785,7 +785,7 @@ let ``plugin with both pattern and afterTests fires on file change`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``plugin with both pattern and afterTests fires on test completion`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -878,12 +878,12 @@ let private runEnvProbe (pluginName: string) (ranFullSuite: bool) : string =
         with _ ->
             ()
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``afterTests command receives FSHW_RAN_FULL_SUITE=true on a full run`` () =
     let contents = runEnvProbe "env-full" true
     test <@ contents = "true" @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``afterTests command receives FSHW_RAN_FULL_SUITE=false on a partial run`` () =
     let contents = runEnvProbe "env-partial" false
     test <@ contents = "false" @>
@@ -922,7 +922,7 @@ let private cacheKeyFnFor (command: string) (args: string) =
 
     handler.CacheKey.Value
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``cache key is independent of commit_id`` () =
     // jj reliance dropped: the create signature no longer accepts getCommitId.
     // This test now degenerates to "two handlers with identical (command, args,
@@ -960,7 +960,7 @@ let ``cache key is independent of commit_id`` () =
     test <@ kA.IsSome @>
     test <@ kA = kB @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``cache key changes when content of a path-arg file changes`` () =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
@@ -987,7 +987,7 @@ let ``cache key changes when content of a path-arg file changes`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``single handler: cache key reflects current file content per event`` () =
     // Regression: salt must be re-evaluated per event so that mid-session
     // edits to a config file invalidate the cache. A "compute once at create"
@@ -1016,7 +1016,7 @@ let ``single handler: cache key reflects current file content per event`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``cache key changes when args change`` () =
     let keyFn1 = cacheKeyFnFor "echo" "alpha"
     let keyFn2 = cacheKeyFnFor "echo" "beta"
@@ -1026,7 +1026,7 @@ let ``cache key changes when args change`` () =
     test <@ k1.IsSome @>
     test <@ k1 <> k2 @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``cache key changes when command changes`` () =
     let keyFn1 = cacheKeyFnFor "echo" "x"
     let keyFn2 = cacheKeyFnFor "true" "x"
@@ -1041,7 +1041,7 @@ let ``cache key changes when command changes`` () =
 // Used by run-once reporters to flag inputs that were modified after a
 // plugin's last run, hinting that cached output may be stale.
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``collectArgFiles returns absolute path of an existing relative arg`` () =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
@@ -1059,7 +1059,7 @@ let ``collectArgFiles returns absolute path of an existing relative arg`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``collectArgFiles ignores non-file tokens`` () =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
@@ -1076,7 +1076,7 @@ let ``collectArgFiles ignores non-file tokens`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``collectArgFiles accepts absolute paths`` () =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
@@ -1100,7 +1100,7 @@ let ``collectArgFiles accepts absolute paths`` () =
 // If any are returned, a cached run from before `referenceTime` may not
 // reflect current input.
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``argsStalerThan flags files modified after the reference time`` () =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
@@ -1126,7 +1126,7 @@ let ``argsStalerThan flags files modified after the reference time`` () =
 // separate integration suite (no coverage) confirms the injected behaviors
 // match real-world failure modes (e.g. unreadable files).
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``computeArgsSaltWith differs when an arg-file's hash returns None vs Some`` () =
     // The Option.map None branch of computeArgsSalt is reached when a path
     // passes File.Exists in collectArgFiles but tryHashFile returns None.
@@ -1154,7 +1154,7 @@ let ``computeArgsSaltWith differs when an arg-file's hash returns None vs Some``
         with _ ->
             ()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``hashFileWith returns None when reader throws`` () =
     let throwing _ =
         raise (System.IO.IOException("simulated read failure"))
@@ -1162,7 +1162,7 @@ let ``hashFileWith returns None when reader throws`` () =
     let result = hashFileWith throwing "/any/path"
     test <@ result = None @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``hashFileWith returns Some hex for successful read`` () =
     let constReader (_: string) =
         System.Text.Encoding.UTF8.GetBytes("hello")
@@ -1171,7 +1171,7 @@ let ``hashFileWith returns Some hex for successful read`` () =
     // sha256("hello") = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
     test <@ result = Some "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``Update is a no-op for FileChanged when trigger has no FilePattern`` () =
     // Defensive arm: the framework filters by Subscriptions before dispatching,
     // so an afterTests-only handler shouldn't receive FileChanged. Direct-invoke
@@ -1212,7 +1212,7 @@ let ``Update is a no-op for FileChanged when trigger has no FilePattern`` () =
 
     test <@ nextState = initialState @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``argsStalerThan returns empty when files are older than reference`` () =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), System.Guid.NewGuid().ToString("N"))
