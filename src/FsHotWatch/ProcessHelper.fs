@@ -54,9 +54,7 @@ let isDotnetCommand (command: string) =
 /// no-op for non-dotnet children, and any later dotnet invocation
 /// re-resolves correctly from its own argv[0].
 let dotnetArchRootKeys =
-    [ "DOTNET_ROOT_ARM64"
-      "DOTNET_ROOT_X64"
-      "DOTNET_ROOT_X86" ]
+    [ "DOTNET_ROOT_ARM64"; "DOTNET_ROOT_X64"; "DOTNET_ROOT_X86" ]
 
 /// Merge `MSBUILDDISABLENODEREUSE=1` into the env when the command is `dotnet`
 /// and the caller hasn't already set the key. See docs/msbuild-node-reuse-bug.md.
@@ -87,6 +85,7 @@ let runProcessWithTimeout
     psi.UseShellExecute <- false
     psi.WorkingDirectory <- workDir
 
+    // Strip before overlay so a caller-supplied entry in `env` survives.
     for key in dotnetArchRootKeys do
         psi.Environment.Remove(key) |> ignore
 
