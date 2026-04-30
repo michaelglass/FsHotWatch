@@ -270,12 +270,11 @@ let create
         ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
         ctx.Log $"Running: %s{buildCommand} %s{buildArgs}"
 
-        // RunExclusive "build" Drop: the framework guarantees only one build runs
+        // RunExclusive "build": the framework guarantees only one build runs
         // at a time. Concurrent FileChanged-while-building triggers are dropped by
         // the framework, replacing the old per-plugin RunningPhase guard.
         ctx.RunExclusive
             "build"
-            Drop
             (PluginCtxHelpers.withSubtask
                 ctx
                 "build"
@@ -355,7 +354,6 @@ let create
 
             ctx.RunExclusive
                 "build"
-                Drop
                 (PluginCtxHelpers.withSubtask
                     ctx
                     "build"
@@ -517,7 +515,7 @@ let create
                     return handleSourceChanged ctx state idle files
                 | FileChanged(ProjectChanged _), IdlePhase(idle, _) -> return handleProjectChanged ctx state idle
                 | Custom(BuildDone(outcome, entries)), _ ->
-                    // Build single-flight is owned by the framework (RunExclusive "build" Drop).
+                    // Build single-flight is owned by the framework (RunExclusive "build").
                     // The completion message arrives at whatever phase we're in (typically
                     // IdlePhase carrying the pre-build idle lifecycle); we advance the
                     // lifecycle through Running ▸ Completed for activity-log bookkeeping.

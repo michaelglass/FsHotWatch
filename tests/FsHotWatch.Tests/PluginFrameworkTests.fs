@@ -490,10 +490,10 @@ let ``RequireWarmStart=false replays pre-populated cache on session start`` () =
     }
     |> Async.RunSynchronously
 
-// --- RunExclusive primitive: per-handler single-flight with Drop / CoalesceLatest ---
+// --- RunExclusive primitive: per-handler single-flight (always-Drop) ---
 
 /// Drive RunExclusive end-to-end via the agent: each FileChanged dispatch invokes
-/// `ctx.RunExclusive "k" policy work`, where `work` waits on `gate` and then
+/// `ctx.RunExclusive "k" work`, where `work` waits on `gate` and then
 /// returns a synthetic completion BuildMsg. We track:
 ///   - `started`: increments at the top of `work`, observed before gate release.
 ///   - `completed`: increments inside the agent when the framework posts the
@@ -501,7 +501,7 @@ let ``RequireWarmStart=false replays pre-populated cache on session start`` () =
 type private RxMsg = RxDone of int
 
 [<Fact(Timeout = 10000)>]
-let ``RunExclusive Drop ignores second call while first is running`` () =
+let ``RunExclusive ignores second call while first is running`` () =
     async {
         let started = ref 0
         let completed = ref 0
@@ -518,7 +518,6 @@ let ``RunExclusive Drop ignores second call while first is running`` () =
                         | FileChanged _ ->
                             ctx.RunExclusive
                                 "k"
-                                Drop
                                 (async {
                                     System.Threading.Interlocked.Increment(started) |> ignore
                                     gate.Wait()
@@ -537,15 +536,14 @@ let ``RunExclusive Drop ignores second call while first is running`` () =
               RequireWarmStart = false
               Teardown = None }
 
-        let reg =
-            registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
+        let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
 
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/a.fs" ]))
         // Wait for first work to enter (gate-blocked).
         waitUntil (fun () -> !started = 1) 5000
         test <@ !started = 1 @>
 
-        // Second dispatch while running: Drop policy must ignore.
+        // Second dispatch while running: must be dropped.
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/b.fs" ]))
         // Drain the agent so we know the second FileChanged was processed.
         let! _ = registeredCmd.Value [||]
@@ -556,7 +554,7 @@ let ``RunExclusive Drop ignores second call while first is running`` () =
         waitUntil (fun () -> !completed = 1) 5000
         test <@ !completed = 1 @>
 
-        // After completion, a fresh dispatch must run (no stashed follower for Drop).
+        // After completion, a fresh dispatch must run.
         gate.Reset()
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/c.fs" ]))
         waitUntil (fun () -> !started = 2) 5000
@@ -564,79 +562,6 @@ let ``RunExclusive Drop ignores second call while first is running`` () =
         waitUntil (fun () -> !completed = 2) 5000
         test <@ !started = 2 @>
         test <@ !completed = 2 @>
-    }
-    |> Async.RunSynchronously
-
-[<Fact(Timeout = 10000)>]
-let ``RunExclusive CoalesceLatest stashes follower, replacing prior follower`` () =
-    async {
-        let started = ref 0
-        let completed = ref 0
-        // Each work captures a tag; we check that only the LATEST follower runs.
-        let lastTag = ref ""
-        let gate = new System.Threading.ManualResetEventSlim(false)
-        let followerGate = new System.Threading.ManualResetEventSlim(false)
-        let mutable registeredCmd: CommandHandler option = None
-
-        let makeWork (tag: string) (gateToWait: System.Threading.ManualResetEventSlim) =
-            async {
-                System.Threading.Interlocked.Increment(started) |> ignore
-                lastTag.Value <- tag
-                gateToWait.Wait()
-                return RxDone 1
-            }
-
-        let handler: PluginHandler<int, RxMsg> =
-            { Name = PluginName.create "rx-coalesce"
-              Init = 0
-              Update =
-                fun ctx state event ->
-                    async {
-                        match event with
-                        | FileChanged(SourceChanged [ tag ]) ->
-                            let g = if tag = "first" then gate else followerGate
-                            ctx.RunExclusive "k" CoalesceLatest (makeWork tag g)
-                            return state
-                        | Custom(RxDone n) ->
-                            System.Threading.Interlocked.Increment(completed) |> ignore
-                            return state + n
-                        | _ -> return state
-                    }
-              Commands = [ "get", fun s _ -> async { return string s } ]
-              Subscriptions = Set.singleton SubscribeFileChanged
-              CacheKey = None
-              RequireWarmStart = false
-              Teardown = None }
-
-        let reg =
-            registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
-
-        // First call: enters work, blocks on `gate`.
-        reg.Dispatch(DispatchFileChanged(SourceChanged [ "first" ]))
-        waitUntil (fun () -> !started = 1) 5000
-
-        // Second call while first running: stashes "stale" as follower.
-        reg.Dispatch(DispatchFileChanged(SourceChanged [ "stale" ]))
-        let! _ = registeredCmd.Value [||]
-        test <@ !started = 1 @> // follower not started yet
-
-        // Third call: replaces "stale" with "latest" as follower (CoalesceLatest).
-        reg.Dispatch(DispatchFileChanged(SourceChanged [ "latest" ]))
-        let! _ = registeredCmd.Value [||]
-        test <@ !started = 1 @>
-
-        // Release first work. Framework posts completion AND starts the
-        // single follower ("latest") — "stale" must NOT run.
-        gate.Set()
-        waitUntil (fun () -> !started = 2) 5000
-        test <@ !started = 2 @>
-        test <@ lastTag.Value = "latest" @>
-
-        // Release follower; one more completion arrives.
-        followerGate.Set()
-        waitUntil (fun () -> !completed = 2) 5000
-        test <@ !completed = 2 @>
-        test <@ !started = 2 @> // never ran "stale"
     }
     |> Async.RunSynchronously
 
@@ -660,7 +585,6 @@ let ``IsRunning reports true while work in flight, false after completion`` () =
                         | FileChanged _ ->
                             ctx.RunExclusive
                                 "k"
-                                Drop
                                 (async {
                                     gate.Wait()
                                     return RxDone 1
@@ -676,8 +600,7 @@ let ``IsRunning reports true while work in flight, false after completion`` () =
               RequireWarmStart = false
               Teardown = None }
 
-        let reg =
-            registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
+        let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
 
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "x" ]))
         // Drain to ensure ctx captured + RunExclusive called.
