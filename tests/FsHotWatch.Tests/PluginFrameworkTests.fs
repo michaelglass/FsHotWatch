@@ -57,7 +57,7 @@ let ``registered plugin dispatches FileChanged`` () =
                     | FileChanged _ -> return true
                     | _ -> return _state
                 }
-          Commands = [ "was-called", fun state _args -> async { return $"%b{state}" } ]
+          Commands = [ "was-called", fun _ctx state _args -> async { return $"%b{state}" } ]
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
           RequireWarmStart = false
@@ -80,7 +80,7 @@ let ``registered plugin skips unsubscribed events`` () =
         { Name = PluginName.create "test-skip"
           Init = 0
           Update = fun _ctx state _event -> async { return state + 1 }
-          Commands = [ "get-count", fun state _args -> async { return $"%d{state}" } ]
+          Commands = [ "get-count", fun _ctx state _args -> async { return $"%d{state}" } ]
           Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeTestRunCompleted ]
           CacheKey = None
           RequireWarmStart = false
@@ -130,7 +130,7 @@ let ``commands query agent state`` () =
                         | FileChanged _ -> return state + 1
                         | _ -> return state
                     }
-              Commands = [ "get-count", fun state _args -> async { return $"%d{state}" } ]
+              Commands = [ "get-count", fun _ctx state _args -> async { return $"%d{state}" } ]
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
               RequireWarmStart = false
@@ -170,7 +170,7 @@ let ``Custom messages work for self-posting`` () =
                             return true
                         | _ -> return state
                     }
-              Commands = [ "got-custom", fun state _args -> async { return $"%b{state}" } ]
+              Commands = [ "got-custom", fun _ctx state _args -> async { return $"%b{state}" } ]
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
               RequireWarmStart = false
@@ -212,7 +212,7 @@ let ``handler errors are recovered`` () =
                         | FileChanged _ -> return state + 1
                         | _ -> return state
                     }
-              Commands = [ "get-state", fun state _args -> async { return $"%d{state}" } ]
+              Commands = [ "get-state", fun _ctx state _args -> async { return $"%d{state}" } ]
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
               RequireWarmStart = false
@@ -251,7 +251,7 @@ let ``plugin subscribing to CommandCompleted receives event`` () =
                     | CommandCompleted _ -> return true
                     | _ -> return _state
                 }
-          Commands = [ "was-called", fun state _args -> async { return $"%b{state}" } ]
+          Commands = [ "was-called", fun _ctx state _args -> async { return $"%b{state}" } ]
           Subscriptions = Set.ofList [ SubscribeCommandCompleted ]
           CacheKey = None
           RequireWarmStart = false
@@ -294,7 +294,7 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
                         return state
                     | _ -> return state
                 }
-          Commands = [ "noop", fun _state _args -> async { return "ok" } ]
+          Commands = [ "noop", fun _ctx _state _args -> async { return "ok" } ]
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
           RequireWarmStart = false
@@ -416,7 +416,7 @@ let ``RequireWarmStart bypasses pre-populated cache on session start, replays af
 
                         return state
                     }
-              Commands = [ "drain", fun _state _args -> async { return "ok" } ]
+              Commands = [ "drain", fun _ctx _state _args -> async { return "ok" } ]
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey = Some(fun _ -> Some cacheKey)
               RequireWarmStart = true
@@ -475,7 +475,7 @@ let ``RequireWarmStart=false replays pre-populated cache on session start`` () =
 
                         return state
                     }
-              Commands = [ "drain", fun _state _args -> async { return "ok" } ]
+              Commands = [ "drain", fun _ctx _state _args -> async { return "ok" } ]
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey = Some(fun _ -> Some cacheKey)
               RequireWarmStart = false
@@ -530,7 +530,7 @@ let ``RunExclusive ignores second call while first is running`` () =
                             return state + n
                         | _ -> return state
                     }
-              Commands = [ "get", fun s _ -> async { return string s } ]
+              Commands = [ "get", fun _ctx s _ -> async { return string s } ]
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey = None
               RequireWarmStart = false
@@ -594,7 +594,7 @@ let ``IsRunning reports true while work in flight, false after completion`` () =
                         | Custom(RxDone _) -> return state + 1
                         | _ -> return state
                     }
-              Commands = [ "get", fun s _ -> async { return string s } ]
+              Commands = [ "get", fun _ctx s _ -> async { return string s } ]
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey = None
               RequireWarmStart = false
