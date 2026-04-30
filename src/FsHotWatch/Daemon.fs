@@ -407,15 +407,13 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
     async {
         let mutable sourceFiles = []
         let mutable projFiles = []
-        let mutable solutionFile = None
+        let mutable hasSolution = false
 
         for c in changes do
             match c with
             | SourceChanged files -> sourceFiles <- files @ sourceFiles
             | ProjectChanged files -> projFiles <- files @ projFiles
-            | SolutionChanged f -> solutionFile <- Some f
-
-        let hasSolution = solutionFile.IsSome
+            | SolutionChanged -> hasSolution <- true
 
         Logging.debug
             "daemon"
@@ -463,7 +461,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 changed)
 
         if hasSolution then
-            ctx.Host.EmitFileChanged(SolutionChanged solutionFile.Value)
+            ctx.Host.EmitFileChanged(SolutionChanged)
 
         if not projFilesChanged.IsEmpty || hasSolution then
             Logging.info "daemon" "Project/solution change detected — re-discovering projects"
@@ -1057,7 +1055,7 @@ module Daemon =
             let delayForChange change =
                 match change with
                 | ProjectChanged _
-                | SolutionChanged _ -> projectDebounceMs
+                | SolutionChanged -> projectDebounceMs
                 | SourceChanged _ -> sourceDebounceMs
 
             let batchCtx: BatchContext =
