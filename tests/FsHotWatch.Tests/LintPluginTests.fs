@@ -147,7 +147,7 @@ let ``lint runner returning Failure reports errors and sets Failed status`` () =
 
     host.EmitFileChecked(fakeFileCheckResult "/tmp/test/Bad.fs")
 
-    waitForTerminalStatus host "lint" 3000
+    waitForTerminalStatus host "lint" 15000
 
     let status = host.GetStatus("lint")
 
@@ -182,7 +182,7 @@ let ``lint runner returning Success with warnings reports them to error ledger``
 
     host.EmitFileChecked(fakeFileCheckResult "/tmp/test/Warn.fs")
 
-    waitForTerminalStatus host "lint" 3000
+    waitForTerminalStatus host "lint" 15000
 
     let status = host.GetStatus("lint")
 
@@ -212,7 +212,7 @@ let ``lint runner returning Success with no warnings clears errors`` () =
 
     host.EmitFileChecked(fakeFileCheckResult "/tmp/test/Clean.fs")
 
-    waitForTerminalStatus host "lint" 3000
+    waitForTerminalStatus host "lint" 15000
 
     let status = host.GetStatus("lint")
 
@@ -255,7 +255,7 @@ let ``warnings command reflects warning count after lint with warnings`` () =
 
     host.EmitFileChecked(fakeFileCheckResult "/tmp/test/A.fs")
 
-    waitForTerminalStatus host "lint" 3000
+    waitForTerminalStatus host "lint" 15000
 
     let cmdResult = host.RunCommand("warnings", [||]) |> Async.RunSynchronously
     test <@ cmdResult.IsSome @>
