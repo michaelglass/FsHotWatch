@@ -414,6 +414,7 @@ let ``CLI status query works against running daemon`` () =
           Commands = []
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     daemon.RegisterHandler(handler)
@@ -460,6 +461,7 @@ let ``CLI plugin status query works against running daemon`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     daemon.RegisterHandler(handler)
@@ -516,6 +518,7 @@ let ``CLI command proxying works against running daemon`` () =
                   } ]
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     daemon.RegisterHandler(handler)
