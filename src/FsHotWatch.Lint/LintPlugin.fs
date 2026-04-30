@@ -183,7 +183,7 @@ let create
             }
       Commands =
         [ "warnings",
-          fun state _args ->
+          fun _ctx state _args ->
               async {
                   let current = state.WarningsByFile
                   let count = current |> Map.toList |> List.sumBy (fun (_, w) -> w.Length)

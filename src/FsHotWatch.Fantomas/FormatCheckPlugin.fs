@@ -161,7 +161,7 @@ let internal createFormatCheckWithSlowHook
             }
       Commands =
         [ "unformatted",
-          fun state _args ->
+          fun _ctx state _args ->
               async {
                   let files = state.Unformatted |> Set.toList |> String.concat ", "
                   return $"{{\"count\": %d{state.Unformatted.Count}, \"files\": \"%s{files}\"}}"

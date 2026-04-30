@@ -592,7 +592,7 @@ let create
             }
       Commands =
         [ "build-status",
-          fun state _args ->
+          fun _ctx state _args ->
               async {
                   let lastResult =
                       match state.Phase with
