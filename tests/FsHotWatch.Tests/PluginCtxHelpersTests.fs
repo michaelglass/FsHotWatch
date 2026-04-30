@@ -29,7 +29,7 @@ let private makeRecordingCtx () =
           Log = fun _ -> ()
           CompleteWithSummary = fun s -> calls.Add(sprintf "Summary %s" s)
           CompleteWithTimeout = fun r -> calls.Add(sprintf "Timeout %s" r)
-          RunExclusive = fun _ _ _ -> ()
+          RunExclusive = fun _ _ -> ()
           IsRunning = fun _ -> false }
 
     ctx, calls
