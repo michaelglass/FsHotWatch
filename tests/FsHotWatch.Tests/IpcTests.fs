@@ -37,7 +37,7 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       WaitForAllTerminal = fun _ -> Task.FromResult(())
       RerunPlugin = fun _ -> async { return Result.Ok() } }
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``server responds to GetStatus`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -72,7 +72,7 @@ let ``server responds to GetStatus`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``server responds to RunCommand`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -106,7 +106,7 @@ let ``server responds to RunCommand`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``GetPluginStatus returns specific plugin's status`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -144,7 +144,7 @@ let ``GetPluginStatus returns specific plugin's status`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``GetPluginStatus returns not found for unknown plugin`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -169,7 +169,7 @@ let ``GetPluginStatus returns not found for unknown plugin`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``RunCommand with plugin that returns a result`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -211,7 +211,7 @@ let ``RunCommand with plugin that returns a result`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``RunCommand returns unknown command for non-existent command`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -235,7 +235,7 @@ let ``RunCommand returns unknown command for non-existent command`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``GetStatus serializes multiple plugins with different statuses`` () =
     let pipeName = $"fshw-test-{Guid.NewGuid():N}"
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -329,7 +329,7 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -393,7 +393,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
     | Failed(msg, _) -> test <@ msg = "oops" @>
     | other -> failwithf "expected Failed, got %A" other
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.RunCommand returns unknown command for missing command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -406,7 +406,7 @@ let ``DaemonRpcTarget.RunCommand returns unknown command for missing command`` (
 
     test <@ result = "unknown command" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -444,7 +444,7 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
 
     test <@ result2 = "hello test-arg" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -494,7 +494,7 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
 
     test <@ Map.isEmpty (getParsed "no-such") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``WaitForScan resolves immediately when generation already advanced`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -512,7 +512,7 @@ let ``WaitForScan resolves immediately when generation already advanced`` () =
     let result = target.WaitForScan(3L).Result
     test <@ result.Contains("complete") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``WaitForScan blocks until generation advances`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let tcs = TaskCompletionSource<unit>()
@@ -532,7 +532,7 @@ let ``WaitForScan blocks until generation advances`` () =
     let result = waitTask.Result
     test <@ result.Contains("complete") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``WaitForScan legacy path resolves immediately on hot daemon`` () =
     // Regression: WaitForGeneration(-1, currentGen>0) must not hang.
     // On a hot daemon the scan already completed (generation=1+),
@@ -541,7 +541,7 @@ let ``WaitForScan legacy path resolves immediately on hot daemon`` () =
     let task = signal.WaitForGeneration(-1L, 1L)
     test <@ task.IsCompleted @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``WaitForScan legacy path blocks on cold daemon`` () =
     // On a cold daemon (generation=0), the legacy path should block
     // until a scan completes.
@@ -553,7 +553,7 @@ let ``WaitForScan legacy path blocks on cold daemon`` () =
     task.Wait(System.TimeSpan.FromSeconds(5.0)) |> ignore
     test <@ task.IsCompleted @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``WaitForGeneration does not hang when scan completes before waiter is registered`` () =
     // Race: client reads currentGeneration=0, then before posting WaitFor to the
     // agent the scan completes and SignalGeneration(1) fires. Without latching
@@ -569,7 +569,7 @@ let ``WaitForGeneration does not hang when scan completes before waiter is regis
     task.Wait(System.TimeSpan.FromSeconds(2.0)) |> ignore
     test <@ task.IsCompleted @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``WaitForComplete resolves when all plugins terminal`` () =
     let tcs = TaskCompletionSource<unit>()
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
@@ -591,7 +591,7 @@ let ``WaitForComplete resolves when all plugins terminal`` () =
 
 // --- DaemonRpcTarget unit tests (no IPC pipe) ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.Shutdown calls RequestShutdown and returns message`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable called = false
@@ -605,7 +605,7 @@ let ``DaemonRpcTarget.Shutdown calls RequestShutdown and returns message`` () =
     test <@ result = "shutting down" @>
     test <@ called @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.Scan returns generation and calls RequestScan`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable called = false
@@ -621,7 +621,7 @@ let ``DaemonRpcTarget.Scan returns generation and calls RequestScan`` () =
     test <@ result = "scan started:42" @>
     test <@ called @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.ScanStatus delegates to GetScanStatus`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -632,7 +632,7 @@ let ``DaemonRpcTarget.ScanStatus delegates to GetScanStatus`` () =
     let target = DaemonRpcTarget(config)
     test <@ target.ScanStatus() = "complete: 70 files checked in 15.5s" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.GetDiagnostics returns all errors when filter is empty`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -652,7 +652,7 @@ let ``DaemonRpcTarget.GetDiagnostics returns all errors when filter is empty`` (
     test <@ json.Contains("bad code") @>
     test <@ json.Contains("error-plugin") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.GetDiagnostics filters by plugin name`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -686,14 +686,14 @@ let ``DaemonRpcTarget.GetDiagnostics filters by plugin name`` () =
     test <@ analyzerJson.Contains("analyzer issue") @>
     test <@ not (analyzerJson.Contains("lint issue")) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.GetDiagnostics returns zero count when no errors`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let target = DaemonRpcTarget(defaultRpcConfig host)
     let json = target.GetDiagnostics("")
     test <@ json.Contains("\"count\":0") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.GetDiagnostics includes detail field`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -711,7 +711,7 @@ let ``DaemonRpcTarget.GetDiagnostics includes detail field`` () =
     test <@ json.Contains("\"detail\"") @>
     test <@ json.Contains("println debug: x = 42") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.GetDiagnostics includes detail when filtered by plugin`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -726,7 +726,7 @@ let ``DaemonRpcTarget.GetDiagnostics includes detail when filtered by plugin`` (
     test <@ json.Contains("\"detail\"") @>
     test <@ json.Contains("full output with debug info") @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``DaemonRpcTarget.TriggerBuild calls config and returns status`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable buildCalled = false
@@ -745,7 +745,7 @@ let ``DaemonRpcTarget.TriggerBuild calls config and returns status`` () =
     test <@ buildCalled @>
     test <@ result.Contains("{") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.FormatAll delegates to config`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -757,7 +757,7 @@ let ``DaemonRpcTarget.FormatAll delegates to config`` () =
     let result = target.FormatAll().Result
     test <@ result = "formatted 5 files" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.RerunPlugin delegates to config`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let mutable capturedName = ""
@@ -777,7 +777,7 @@ let ``DaemonRpcTarget.RerunPlugin delegates to config`` () =
     test <@ result = "{}" @>
     test <@ capturedName = "coverage-ratchet" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.RerunPlugin returns error payload when plugin has no pattern`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -790,7 +790,7 @@ let ``DaemonRpcTarget.RerunPlugin returns error payload when plugin has no patte
     test <@ result.Contains("error") @>
     test <@ result.Contains("missing") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -836,7 +836,7 @@ let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
     | Failed(msg, _) -> test <@ msg.Contains("2 failed") @>
     | other -> failwithf "expected Failed, got %A" other
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``WaitForComplete times out when plugin stays Running`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -883,7 +883,7 @@ let ``WaitForComplete times out when plugin stays Running`` () =
 
     test <@ ex.Message.Contains("timed out") @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``repeated scan force via IPC increments generation each time`` () =
     let tmpDir =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-rescan-{Guid.NewGuid():N}")

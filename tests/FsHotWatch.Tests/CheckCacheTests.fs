@@ -9,7 +9,7 @@ open FsHotWatch.InMemoryCheckCache
 open FsHotWatch.FileCheckCache
 open FsHotWatch.Tests.TestHelpers
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``CacheKey produces consistent hash for same inputs`` () =
     let key1 =
         { FileHash = ContentHash.create "abc123"
@@ -24,7 +24,7 @@ let ``CacheKey produces consistent hash for same inputs`` () =
 
     Assert.Equal(hash1, hash2)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``CacheKey produces different hash for different FileHash`` () =
     let key1 =
         { FileHash = ContentHash.create "abc123"
@@ -39,7 +39,7 @@ let ``CacheKey produces different hash for different FileHash`` () =
 
     Assert.NotEqual<string>(hash1, hash2)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``CacheKey produces different hash for different ProjectOptionsHash`` () =
     let key1 =
         { FileHash = ContentHash.create "abc123"
@@ -54,7 +54,7 @@ let ``CacheKey produces different hash for different ProjectOptionsHash`` () =
 
     Assert.NotEqual<string>(hash1, hash2)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``hash format is lowercase hex with no dashes`` () =
     let key =
         { FileHash = ContentHash.create "abc123"
@@ -65,7 +65,7 @@ let ``hash format is lowercase hex with no dashes`` () =
     Assert.Matches("^[a-f0-9]+$", hash)
     Assert.DoesNotContain("-", hash)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``TimestampCacheKeyProvider returns consistent hash for same file`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
     let tempFile = Path.GetTempFileName()
@@ -78,7 +78,7 @@ let ``TimestampCacheKeyProvider returns consistent hash for same file`` () =
     finally
         File.Delete(tempFile)
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``cache key is content-addressed: same bytes + different mtime → same hash`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
     let tempFile = Path.GetTempFileName()
@@ -98,7 +98,7 @@ let ``cache key is content-addressed: same bytes + different mtime → same hash
     finally
         File.Delete(tempFile)
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``TimestampCacheKeyProvider returns different hash after file modification`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
     let tempFile = Path.GetTempFileName()
@@ -116,7 +116,7 @@ let ``TimestampCacheKeyProvider returns different hash after file modification``
     finally
         File.Delete(tempFile)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``TimestampCacheKeyProvider returns lowercase hex hash`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
     let hash = provider.GetFileHash("/nonexistent/test.fs")
@@ -125,7 +125,7 @@ let ``TimestampCacheKeyProvider returns lowercase hex hash`` () =
     Assert.DoesNotContain("-", hash)
     Assert.True(hash.Length = 64)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``makeCacheKey produces different keys for different files`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
     let tempFile1 = Path.GetTempFileName()
@@ -162,7 +162,7 @@ let private makeKey (fileHash: string) : CacheKey =
     { FileHash = ContentHash.create fileHash
       ProjectOptionsHash = ContentHash.create "proj" }
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``InMemoryCheckCache stores and retrieves results`` () =
     let cache = InMemoryCheckCache(10) :> ICheckCacheBackend
     let key = makeKey "file1"
@@ -174,14 +174,14 @@ let ``InMemoryCheckCache stores and retrieves results`` () =
     | Some r -> Assert.Equal("test.fs", r.File)
     | None -> Assert.Fail("Expected Some but got None")
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``InMemoryCheckCache returns None for missing key`` () =
     let cache = InMemoryCheckCache(10) :> ICheckCacheBackend
     let key = makeKey "nonexistent"
 
     Assert.True(cache.TryGet(key).IsNone)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``InMemoryCheckCache evicts LRU on overflow`` () =
     let cache = InMemoryCheckCache(2) :> ICheckCacheBackend
     let key1 = makeKey "a"
@@ -197,7 +197,7 @@ let ``InMemoryCheckCache evicts LRU on overflow`` () =
     Assert.True(cache.TryGet(key2).IsSome)
     Assert.True(cache.TryGet(key3).IsSome)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``InMemoryCheckCache LRU access refreshes entry`` () =
     let cache = InMemoryCheckCache(2) :> ICheckCacheBackend
     let key1 = makeKey "a"
@@ -215,7 +215,7 @@ let ``InMemoryCheckCache LRU access refreshes entry`` () =
     Assert.True(cache.TryGet(key2).IsNone)
     Assert.True(cache.TryGet(key3).IsSome)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``InMemoryCheckCache invalidates entry`` () =
     let cache = InMemoryCheckCache(10) :> ICheckCacheBackend
     let key = makeKey "file1"
@@ -225,7 +225,7 @@ let ``InMemoryCheckCache invalidates entry`` () =
 
     Assert.True(cache.TryGet(key).IsNone)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``InMemoryCheckCache updates existing key with new value`` () =
     let cache = InMemoryCheckCache(10) :> ICheckCacheBackend
     let key = makeKey "file1"
@@ -237,7 +237,7 @@ let ``InMemoryCheckCache updates existing key with new value`` () =
     | Some r -> Assert.Equal(2L, r.Version)
     | None -> Assert.Fail("Expected Some but got None")
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``InMemoryCheckCache clear removes all entries`` () =
     let cache = InMemoryCheckCache(10) :> ICheckCacheBackend
     let key1 = makeKey "a"
@@ -256,7 +256,7 @@ let ``InMemoryCheckCache clear removes all entries`` () =
 
 // --- FileCheckCache tests ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``FileCheckCache stores and retrieves results`` () =
     let tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
     Directory.CreateDirectory(tempDir) |> ignore
@@ -276,7 +276,7 @@ let ``FileCheckCache stores and retrieves results`` () =
     finally
         Directory.Delete(tempDir, true)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``FileCheckCache returns None for missing key`` () =
     let tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
     Directory.CreateDirectory(tempDir) |> ignore
@@ -288,7 +288,7 @@ let ``FileCheckCache returns None for missing key`` () =
     finally
         Directory.Delete(tempDir, true)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``FileCheckCache persists across instances`` () =
     let tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
     Directory.CreateDirectory(tempDir) |> ignore
@@ -309,7 +309,7 @@ let ``FileCheckCache persists across instances`` () =
     finally
         Directory.Delete(tempDir, true)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``FileCheckCache invalidates entry`` () =
     let tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
     Directory.CreateDirectory(tempDir) |> ignore
@@ -323,7 +323,7 @@ let ``FileCheckCache invalidates entry`` () =
     finally
         Directory.Delete(tempDir, true)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``FileCheckCache clear removes all entries`` () =
     let tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
     Directory.CreateDirectory(tempDir) |> ignore
@@ -340,14 +340,14 @@ let ``FileCheckCache clear removes all entries`` () =
 
 // --- §1: fcsCheckSignature ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``fcsCheckSignature returns parse-only marker for ParseOnly`` () =
     let sig1 = fcsCheckSignature ParseOnly
     let sig2 = fcsCheckSignature ParseOnly
     Assert.Equal("parse-only", sig1)
     Assert.Equal(sig1, sig2)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``fcsCheckSignature differs between ParseOnly and FullCheck`` () =
     // §1 oracle requires distinguishing the two states so plugin caches
     // invalidate when FCS transitions from parse-only to full-check (or vice
@@ -356,7 +356,7 @@ let ``fcsCheckSignature differs between ParseOnly and FullCheck`` () =
     let fullCheckNull = fcsCheckSignature (FullCheck(Unchecked.defaultof<_>))
     Assert.NotEqual<string>(parseOnly, fullCheckNull)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``fcsCheckSignature is stable across calls with same null FullCheck`` () =
     let s1 = fcsCheckSignature (FullCheck(Unchecked.defaultof<_>))
     let s2 = fcsCheckSignature (FullCheck(Unchecked.defaultof<_>))

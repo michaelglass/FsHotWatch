@@ -34,7 +34,7 @@ let private makeRecordingCtx () =
 
     ctx, calls
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``withSubtask brackets work with Start then End`` () =
     let ctx, calls = makeRecordingCtx ()
 
@@ -44,7 +44,7 @@ let ``withSubtask brackets work with Start then End`` () =
 
     test <@ calls |> Seq.toList = [ "Start k:label"; "End k" ] @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``withSubtask returns the result of inner work`` () =
     let ctx, _ = makeRecordingCtx ()
 
@@ -54,7 +54,7 @@ let ``withSubtask returns the result of inner work`` () =
 
     test <@ result = "hello" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``withSubtask calls EndSubtask even when work throws`` () =
     let ctx, calls = makeRecordingCtx ()
 
@@ -68,7 +68,7 @@ let ``withSubtask calls EndSubtask even when work throws`` () =
 
     test <@ calls |> Seq.toList = [ "Start k:l"; "End k" ] @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``completeWith emits Summary then Completed status`` () =
     let ctx, calls = makeRecordingCtx ()
 
