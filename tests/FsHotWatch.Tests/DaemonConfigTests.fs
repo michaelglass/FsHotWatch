@@ -278,6 +278,36 @@ let ``analyzers config parses explicit failOnSeverity`` () =
         @>
 
 [<Fact(Timeout = 5000)>]
+let ``parseConfig analyzers unknown failOnSeverity falls back to Hint`` () =
+    let config =
+        parseConfig """{"analyzers":{"paths":["p1"],"failOnSeverity":"bogus"}}""" defaults
+
+    test
+        <@
+            config.Analyzers = Some
+                {| Paths = [ "p1" ]
+                   FailOnSeverity = DiagnosticSeverity.Hint |}
+        @>
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig format string variants land deterministically`` () =
+    test <@ (parseConfig """{"format":"auto"}""" defaults).Format = Auto @>
+    test <@ (parseConfig """{"format":"check"}""" defaults).Format = Check @>
+    test <@ (parseConfig """{"format":"off"}""" defaults).Format = Off @>
+    test <@ (parseConfig """{"format":"false"}""" defaults).Format = Off @>
+    // Unknown format value falls through to Auto with a warning.
+    test <@ (parseConfig """{"format":"weird"}""" defaults).Format = Auto @>
+
+[<Fact(Timeout = 5000)>]
+let ``parseConfig build entry parses buildTemplate`` () =
+    let config =
+        parseConfig """{"build": {"command": "dotnet", "args": "build", "buildTemplate": "$cmd $args"}}""" defaults
+
+    match config.Build with
+    | Some [ entry ] -> test <@ entry.BuildTemplate = Some "$cmd $args" @>
+    | _ -> failwith "expected single build entry with buildTemplate"
+
+[<Fact(Timeout = 5000)>]
 let ``parseConfig analyzers with empty paths returns None`` () =
     let config = parseConfig """{"analyzers": {"paths": []}}""" defaults
 
