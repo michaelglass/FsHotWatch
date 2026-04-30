@@ -402,7 +402,7 @@ let internal createWithSlowHook
             }
       Commands =
         [ "diagnostics",
-          fun state _args ->
+          fun _ctx state _args ->
               async {
                   let totalDiags =
                       state.DiagnosticsByFile

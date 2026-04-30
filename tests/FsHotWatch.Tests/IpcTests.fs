@@ -82,7 +82,7 @@ let ``server responds to RunCommand`` () =
         { Name = PluginName.create "greeter"
           Init = ()
           Update = fun _ctx state _event -> async { return state }
-          Commands = [ "greet", fun _state _args -> async { return "hello world" } ]
+          Commands = [ "greet", fun _ctx _state _args -> async { return "hello world" } ]
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
           RequireWarmStart = false
@@ -181,7 +181,7 @@ let ``RunCommand with plugin that returns a result`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands =
             [ "echo",
-              fun _state args ->
+              fun _ctx _state args ->
                   async {
                       let msg = if args.Length > 0 then args.[0] else "empty"
                       return $"echoed: {msg}"
@@ -416,7 +416,7 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands =
             [ "hello",
-              fun _state args ->
+              fun _ctx _state args ->
                   async {
                       let arg = if args.Length > 0 then args.[0] else "world"
                       return $"hello {arg}"
