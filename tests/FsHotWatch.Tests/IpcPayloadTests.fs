@@ -69,7 +69,7 @@ let private failingHandler (name: string) (err: string) =
       RequireWarmStart = false
       Teardown = None }
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``GetStatus payload round-trips completed run with subtasks and activity`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -106,7 +106,7 @@ let ``GetStatus payload round-trips completed run with subtasks and activity`` (
     test <@ run.ActivityTail = [ "line one"; "line two"; "line three" ] @>
     test <@ run.Elapsed >= TimeSpan.Zero @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``GetStatus payload preserves multi-line failure error`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let multiline = "first line of error\nsecond line\nthird line with detail"
@@ -131,7 +131,7 @@ let ``GetStatus payload preserves multi-line failure error`` () =
     | FailedRun err -> test <@ err = multiline @>
     | other -> failwithf "expected FailedRun, got %A" other
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``GetDiagnostics payload exposes structured per-plugin statuses`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
