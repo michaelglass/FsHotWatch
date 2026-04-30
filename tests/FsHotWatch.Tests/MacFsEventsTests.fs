@@ -172,6 +172,21 @@ type MacFsEventsTests() =
     let isMacOS = RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
 
     [<Fact(Timeout = 5000)>]
+    member _.``FsEventStream constructor rejects empty directory list``() =
+        if not isMacOS then
+            Assert.Skip("macOS only")
+        else
+            // Deterministic guard branch in the constructor — does not exercise
+            // FSEvents callbacks, so it stabilises module-level coverage without
+            // adding flake from fseventsd timing.
+            let ex =
+                Assert.Throws<System.ArgumentException>(fun () ->
+                    use _stream = FsHotWatch.MacFsEvents.create [] ignore
+                    ())
+
+            test <@ ex.Message.Contains("At least one directory") @>
+
+    [<Fact(Timeout = 5000)>]
     member _.``FsEventStream create and dispose without crash``() =
         if not isMacOS then
             Assert.Skip("macOS only")
