@@ -3,7 +3,6 @@ module FsHotWatch.Build.BuildPlugin
 open System
 open System.IO
 open System.Text.Json
-open System.Threading
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Logging
@@ -156,14 +155,6 @@ let create
     let buildCommand = command
     let buildArgs = args
 
-    // Cold-start guard: until a build has actually run in this session, CacheKey
-    // returns None so a prior-session entry can't replay BuildSucceeded over a
-    // possibly-cleaned bin/obj. Flipped in applyBuildOutcome (and the crash
-    // fallbacks) BEFORE ctx.Post(BuildDone(...)) so the framework's pre-Update
-    // CacheKey check on the resulting Custom(BuildDone) returns Some and the
-    // run's result actually gets stored.
-    let mutable hasBuiltInSessionRef = false
-
     let testProjectNameSet = testProjectNames |> Set.ofList
 
     let buildTimeout =
@@ -244,10 +235,6 @@ let create
 
             ctx.CompleteWithSummary $"build failed: %d{errCount} errors"
 
-        // Flip BEFORE Post so the Custom(BuildDone) message's CacheKey lookup
-        // (computed pre-Update by the framework) returns Some(merkle) and the
-        // run's result actually gets stored.
-        Volatile.Write(&hasBuiltInSessionRef, true)
         ctx.Post(BuildDone(outcome, entries))
 
     /// Phrase a single stale-artifact case for human-readable diagnostics.
@@ -325,7 +312,6 @@ let create
                     // ReportErrors / EmitBuildCompleted moved into the synchronous
                     // BuildDone handler (see applyBuildOutcome doc) so they're captured
                     // for cache replay.
-                    Volatile.Write(&hasBuiltInSessionRef, true)
                     ctx.Post(BuildDone(BuildOutputFailed [ ex.Message ], [ crashEntry ]))
             })
         |> Async.Start
@@ -418,8 +404,6 @@ let create
                         applyBuildOutcome ctx (verifyAndDemote rawOutcome) entries
                     with ex ->
                         error "build" $"Unexpected error: %s{ex.Message}"
-
-                        Volatile.Write(&hasBuiltInSessionRef, true)
                         ctx.Post(BuildDone(BuildOutputFailed [ ex.Message ], [ ErrorEntry.error ex.Message ]))
                 })
             |> Async.Start
@@ -638,10 +622,11 @@ let create
         let cacheKey (event: PluginEvent<BuildMsg>) : ContentHash option =
             match event with
             | FileChecked _ -> None
-            // Cold-start bypass: replaying BuildSucceeded would lie if bin/obj was
-            // cleaned between sessions; downstream `dotnet ... --no-build` then fails.
-            | _ when not (Volatile.Read(&hasBuiltInSessionRef)) -> None
             | _ -> Some(computeBuildCacheKey buildCommand buildArgs dependsOn (inputsHasher.Value.Compute()))
 
         Some cacheKey
+      // Framework gate: suppresses cache replay until this plugin completes once
+      // in-session. Replacing the local hasBuiltInSessionRef flag — same semantics,
+      // but framework-owned so all plugins share one cold-start contract.
+      RequireWarmStart = true
       Teardown = None }

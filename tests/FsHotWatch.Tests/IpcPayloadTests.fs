@@ -45,6 +45,7 @@ let private completedHandler (name: string) (action: PluginCtx<unit> -> Async<un
       Commands = []
       Subscriptions = Set.ofList [ SubscribeFileChanged ]
       CacheKey = None
+      RequireWarmStart = false
       Teardown = None }
 
 let private failingHandler (name: string) (err: string) =
@@ -65,6 +66,7 @@ let private failingHandler (name: string) (err: string) =
       Commands = []
       Subscriptions = Set.ofList [ SubscribeFileChanged ]
       CacheKey = None
+      RequireWarmStart = false
       Teardown = None }
 
 [<Fact(Timeout = 5000)>]

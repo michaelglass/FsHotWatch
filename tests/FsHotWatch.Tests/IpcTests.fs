@@ -51,6 +51,7 @@ let ``server responds to GetStatus`` () =
           Commands = []
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -84,6 +85,7 @@ let ``server responds to RunCommand`` () =
           Commands = [ "greet", fun _state _args -> async { return "hello world" } ]
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -117,6 +119,7 @@ let ``GetPluginStatus returns specific plugin's status`` () =
           Commands = []
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -185,6 +188,7 @@ let ``RunCommand with plugin that returns a result`` () =
                   } ]
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -252,6 +256,7 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(makeStatusHandler "idle-p" (fun ctx -> ctx.ReportStatus(Idle)))
@@ -343,6 +348,7 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(makeStatusHandler "a" (fun ctx -> ctx.ReportStatus(Idle)))
@@ -417,6 +423,7 @@ let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
                   } ]
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -456,6 +463,7 @@ let ``DaemonRpcTarget.GetPluginStatus returns status strings for each variant`` 
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(makeStatusHandler "idle-test" (fun ctx -> ctx.ReportStatus(Idle)))
@@ -802,6 +810,7 @@ let ``DaemonRpcTarget.GetDiagnostics includes plugin statuses in response`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -846,6 +855,7 @@ let ``WaitForComplete times out when plugin stays Running`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)

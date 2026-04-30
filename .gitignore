@@ -2,6 +2,9 @@
 .claude/settings.local.json
 CLAUDE.md
 
+# jj workspaces — destination for parallel agent workspaces (see CLAUDE.md)
+.workspaces/
+
 # Build results
 [Bb]in/
 [Oo]bj/
@@ -75,3 +78,4 @@ docs/plans/
 
 # Cache event log (always-on telemetry; planned to disable after observation)
 cache-events.log
+.claude/scheduled_tasks.lock
