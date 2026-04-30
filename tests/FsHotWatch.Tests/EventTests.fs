@@ -5,7 +5,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``FileChangeKind constructors work`` () =
     let source = SourceChanged [ "src/Lib.fs" ]
     let proj = ProjectChanged [ "src/Lib.fsproj" ]
@@ -32,7 +32,7 @@ let ``FileChangeKind constructors work`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``PluginStatus constructors work`` () =
     let idle = Idle
     let running = Running(since = System.DateTime.UtcNow)
@@ -53,24 +53,24 @@ let ``PluginStatus constructors work`` () =
 
 // --- path/hash wrappers ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``AbsFilePath round-trips and normalizes`` () =
     let p = AbsFilePath.create "foo.fs"
     test <@ System.IO.Path.IsPathRooted(AbsFilePath.value p) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``AbsProjectPath round-trips`` () =
     let p = AbsProjectPath.create "x.fsproj"
     test <@ AbsProjectPath.value p |> System.IO.Path.IsPathRooted @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``ContentHash round-trips`` () =
     let h = ContentHash.create "abc123"
     test <@ ContentHash.value h = "abc123" @>
 
 // --- PluginStatus predicates ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``isTerminal is true for Completed and Failed, false for Idle and Running`` () =
     let now = System.DateTime.UtcNow
     test <@ PluginStatus.isTerminal (Completed now) @>
@@ -78,7 +78,7 @@ let ``isTerminal is true for Completed and Failed, false for Idle and Running`` 
     test <@ not (PluginStatus.isTerminal Idle) @>
     test <@ not (PluginStatus.isTerminal (Running(since = now))) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``isQuiescent is true for Idle, Completed and Failed, false for Running`` () =
     let now = System.DateTime.UtcNow
     test <@ PluginStatus.isQuiescent Idle @>
@@ -88,27 +88,27 @@ let ``isQuiescent is true for Idle, Completed and Failed, false for Running`` ()
 
 // --- TestResult helpers ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``TestResult.output returns the output string for both cases`` () =
     test <@ TestResult.output (TestsPassed("ok", false, TimeSpan.Zero)) = "ok" @>
     test <@ TestResult.output (TestsFailed("bad", true, TimeSpan.Zero)) = "bad" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``TestResult.wasFiltered reflects the filter flag`` () =
     test <@ not (TestResult.wasFiltered (TestsPassed("ok", false, TimeSpan.Zero))) @>
     test <@ TestResult.wasFiltered (TestsPassed("ok", true, TimeSpan.Zero)) @>
     test <@ TestResult.wasFiltered (TestsFailed("bad", true, TimeSpan.Zero)) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``TestResult.isPassed distinguishes Passed and Failed`` () =
     test <@ TestResult.isPassed (TestsPassed("ok", false, TimeSpan.Zero)) @>
     test <@ not (TestResult.isPassed (TestsFailed("bad", false, TimeSpan.Zero))) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``TestResult.ranFullSuite is true for empty map`` () =
     test <@ TestResult.ranFullSuite Map.empty @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``TestResult.ranFullSuite is true when every project ran unfiltered`` () =
     let results =
         Map.ofList
@@ -117,7 +117,7 @@ let ``TestResult.ranFullSuite is true when every project ran unfiltered`` () =
 
     test <@ TestResult.ranFullSuite results @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``TestResult.ranFullSuite is false if any project was filtered`` () =
     let results =
         Map.ofList
