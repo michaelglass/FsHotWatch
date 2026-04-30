@@ -644,4 +644,5 @@ let create
             | _ -> Some(computeBuildCacheKey buildCommand buildArgs dependsOn (inputsHasher.Value.Compute()))
 
         Some cacheKey
+      RequireWarmStart = false
       Teardown = None }
