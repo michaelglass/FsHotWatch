@@ -45,31 +45,14 @@ let isDotnetCommand (command: string) =
     let basename = System.IO.Path.GetFileName(command)
     basename = "dotnet" || basename = "dotnet.exe"
 
-let private shellBasenames = Set.ofList [ "sh"; "bash"; "zsh"; "dash" ]
-
-let private dotnetTokenRegex =
-    System.Text.RegularExpressions.Regex(@"\bdotnet\b", System.Text.RegularExpressions.RegexOptions.Compiled)
-
-/// True when the spawn will end up running `dotnet` — either directly, or via
-/// a shell wrapper like `sh -c "dotnet …"` (which is how beforeRun hooks
-/// reach the runtime). Word-boundary match on `dotnet` in the args; substrings
-/// like "mydotnet" don't trigger.
-let invokesDotnet (command: string) (args: string) : bool =
-    if isDotnetCommand command then
-        true
-    else
-        let basename = System.IO.Path.GetFileName(command).ToLowerInvariant()
-
-        if shellBasenames.Contains basename then
-            dotnetTokenRegex.IsMatch(args)
-        else
-            false
-
-/// Arch-specific DOTNET_ROOT keys the .NET host writes into the parent env
-/// from argv[0]'s dir. On Nix-wrapped SDKs that path lacks
-/// shared/Microsoft.NETCore.App, so children spawned later trust the bad
-/// value and fail to find the runtime. The host re-resolves these per-launch
-/// when unset, so dropping them is always safe for dotnet-bound children.
+/// Arch-specific DOTNET_ROOT keys the .NET host writes into its parent's
+/// env from argv[0]'s dir so child apphosts inherit the same runtime. On
+/// Nix-wrapped SDKs (and similar shims) that dir lacks
+/// shared/Microsoft.NETCore.App, so any child dotnet trusts the value and
+/// fails to find the runtime. We strip these unconditionally on every
+/// spawn: they're meaningful only to the .NET host, so dropping them is a
+/// no-op for non-dotnet children, and any later dotnet invocation
+/// re-resolves correctly from its own argv[0].
 let dotnetArchRootKeys =
     [ "DOTNET_ROOT_ARM64"
       "DOTNET_ROOT_X64"
@@ -104,15 +87,11 @@ let runProcessWithTimeout
     psi.UseShellExecute <- false
     psi.WorkingDirectory <- workDir
 
+    for key in dotnetArchRootKeys do
+        psi.Environment.Remove(key) |> ignore
+
     for (key, value) in mergeDotnetEnv command env do
         psi.Environment[key] <- value
-
-    // Strip arch-specific DOTNET_ROOT inherited from the daemon process —
-    // see dotnetArchRootKeys. Only when the child is dotnet-bound; non-dotnet
-    // children get the inherited env unchanged.
-    if invokesDotnet command args then
-        for key in dotnetArchRootKeys do
-            psi.Environment.Remove(key) |> ignore
 
     use proc = Process.Start(psi)
     // Register so a daemon shutdown can tear down in-flight children.
