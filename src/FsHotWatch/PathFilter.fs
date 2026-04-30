@@ -70,6 +70,14 @@ type IgnoreFilterCache() =
     // before rebuilding.
     let mutable cached: CacheEntry option = None
     let syncRoot = obj ()
+    // Test seam: invoked after the outer Volatile.Read miss but before the
+    // lock is acquired. Tests use this to deterministically pin two threads
+    // into the lock-contention path so the inner "isFresh" branch is hit
+    // every run (otherwise its coverage flickers under coverlet).
+    // Defaults to no-op; production overhead is one indirection per cache miss.
+    let mutable testHookAfterOuterMiss: unit -> unit = ignore
+
+    member internal _.SetTestHookAfterOuterMiss(hook: unit -> unit) = testHookAfterOuterMiss <- hook
 
     member _.Get(repoRoot: string) =
         let gitignorePath = Path.Combine(repoRoot, ".gitignore")
@@ -85,6 +93,8 @@ type IgnoreFilterCache() =
         match Volatile.Read(&cached) with
         | Some entry when isFresh entry -> entry.Filter
         | _ ->
+            testHookAfterOuterMiss ()
+
             lock syncRoot (fun () ->
                 match Volatile.Read(&cached) with
                 | Some entry when isFresh entry -> entry.Filter
