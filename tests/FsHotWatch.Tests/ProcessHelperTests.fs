@@ -105,6 +105,95 @@ let ``runProcess inherits the parent process environment (no scrubbing)`` () =
     finally
         Environment.SetEnvironmentVariable(key, null)
 
+// On Nix, the .NET host writes DOTNET_ROOT_<ARCH> into the daemon's env
+// pointing at argv[0]'s dir. With a wrapped SDK, that dir lacks
+// shared/Microsoft.NETCore.App, so any later `dotnet run` spawned from a
+// hook trusts the inherited DOTNET_ROOT_ARM64 and aborts with
+// "App host version: X.Y.Z … .NET location: Not found". Interactive shells
+// dodge this because each dotnet invocation re-resolves; the daemon's
+// long life pins the bad value.
+//
+// Fix: strip DOTNET_ROOT_<ARCH> from the spawn env when the child will
+// invoke dotnet (directly, or via `sh -c "dotnet …"`). The host re-resolves
+// from argv[0], so dropping even valid values is safe.
+
+[<Fact(Timeout = 5000)>]
+let ``invokesDotnet matches dotnet and shell-wrapped dotnet`` () =
+    Assert.True(invokesDotnet "dotnet" "build")
+    Assert.True(invokesDotnet "/usr/local/share/dotnet/dotnet" "--info")
+    Assert.True(invokesDotnet "sh" "-c \"dotnet run --project foo\"")
+    Assert.True(invokesDotnet "/bin/sh" "-c \"cd x && dotnet test\"")
+    Assert.True(invokesDotnet "bash" "-c \"dotnet build\"")
+
+[<Fact(Timeout = 5000)>]
+let ``invokesDotnet rejects non-dotnet commands`` () =
+    Assert.False(invokesDotnet "sh" "-c \"echo hi\"")
+    Assert.False(invokesDotnet "sh" "-c \"make build\"")
+    Assert.False(invokesDotnet "cat" "/etc/hosts")
+    Assert.False(invokesDotnet "echo" "dotnet")
+
+[<Fact(Timeout = 10000)>]
+let ``runProcess strips DOTNET_ROOT_ARM64 when child invokes dotnet via sh -c`` () =
+    Environment.SetEnvironmentVariable("DOTNET_ROOT_ARM64", "/poisoned/wrapped/bin")
+
+    try
+        // sh -c "dotnet --version >/dev/null 2>&1 || true; printf %s \"$DOTNET_ROOT_ARM64\""
+        // We don't care if dotnet actually runs; we only need the predicate to fire on
+        // the args. The `printf` reports what the child received in its env.
+        let args =
+            "-c \"dotnet --version >/dev/null 2>&1 || true; printf %s \\\"$DOTNET_ROOT_ARM64\\\"\""
+
+        match runProcess "sh" args "." [] with
+        | Succeeded out -> Assert.Equal("", out)
+        | other -> Assert.Fail $"expected Succeeded, got %A{other}"
+    finally
+        Environment.SetEnvironmentVariable("DOTNET_ROOT_ARM64", null)
+
+[<Fact(Timeout = 10000)>]
+let ``runProcess strips DOTNET_ROOT_X64 and DOTNET_ROOT_X86 too`` () =
+    Environment.SetEnvironmentVariable("DOTNET_ROOT_X64", "/poisoned/x64")
+    Environment.SetEnvironmentVariable("DOTNET_ROOT_X86", "/poisoned/x86")
+
+    try
+        let args =
+            "-c \"dotnet --version >/dev/null 2>&1 || true; printf %s:%s \\\"$DOTNET_ROOT_X64\\\" \\\"$DOTNET_ROOT_X86\\\"\""
+
+        match runProcess "sh" args "." [] with
+        | Succeeded out -> Assert.Equal(":", out)
+        | other -> Assert.Fail $"expected Succeeded, got %A{other}"
+    finally
+        Environment.SetEnvironmentVariable("DOTNET_ROOT_X64", null)
+        Environment.SetEnvironmentVariable("DOTNET_ROOT_X86", null)
+
+[<Fact(Timeout = 10000)>]
+let ``runProcess preserves plain DOTNET_ROOT (only arch-specific is stripped)`` () =
+    let probe = "/some/intentional/dotnet/root-" + Guid.NewGuid().ToString("N")
+    Environment.SetEnvironmentVariable("DOTNET_ROOT", probe)
+
+    try
+        let args = "-c \"dotnet --version >/dev/null 2>&1 || true; printf %s \\\"$DOTNET_ROOT\\\"\""
+
+        match runProcess "sh" args "." [] with
+        | Succeeded out -> Assert.Equal(probe, out)
+        | other -> Assert.Fail $"expected Succeeded, got %A{other}"
+    finally
+        Environment.SetEnvironmentVariable("DOTNET_ROOT", null)
+
+[<Fact(Timeout = 10000)>]
+let ``runProcess does NOT strip DOTNET_ROOT_ARM64 for non-dotnet children`` () =
+    let probe = "/inherited/arm64-" + Guid.NewGuid().ToString("N")
+    Environment.SetEnvironmentVariable("DOTNET_ROOT_ARM64", probe)
+
+    try
+        // No dotnet token — predicate must not fire.
+        let args = "-c \"printf %s \\\"$DOTNET_ROOT_ARM64\\\"\""
+
+        match runProcess "sh" args "." [] with
+        | Succeeded out -> Assert.Equal(probe, out)
+        | other -> Assert.Fail $"expected Succeeded, got %A{other}"
+    finally
+        Environment.SetEnvironmentVariable("DOTNET_ROOT_ARM64", null)
+
 // Companion: explicit env entries must overlay (not replace) the inherited env.
 // If a future refactor switches to psi.Environment.Clear() + setters, this test
 // fails because the inherited probe disappears.
