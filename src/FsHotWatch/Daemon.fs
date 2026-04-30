@@ -343,9 +343,16 @@ type ScanSignal(?cancellationToken: CancellationToken) =
     /// Signal all waiters whose afterGeneration is now satisfied.
     member _.SignalGeneration(newGeneration: int64) = agent.Post(Signal newGeneration)
 
-/// Messages handled by the scan agent.
+/// Messages handled by the scan agent. The agent owns ScanState + Generation
+/// in its loop's recursion — readers round-trip via PostAndReply so they never
+/// see a stale snapshot. Replaces an earlier wrapper with mutable Volatile
+/// fields and an `option ref` bootstrap cycle.
 [<NoComparison; NoEquality>]
-type private ScanMsg = RequestScan of CancellationToken * AsyncReplyChannel<unit>
+type private ScanMsg =
+    | RequestScan of CancellationToken * AsyncReplyChannel<unit>
+    | GetState of AsyncReplyChannel<ScanState>
+    | GetGeneration of AsyncReplyChannel<int64>
+    | SetState of ScanState * AsyncReplyChannel<unit>
 
 /// Internal state managed by the scan agent.
 type private ScanAgentState =
@@ -353,32 +360,22 @@ type private ScanAgentState =
       Generation: int64
       LastFingerprint: Set<string * int64> }
 
-/// Opaque handle to the scan MailboxProcessor.
-/// Read-only state (ScanState, Generation) is stored in mutable fields updated
-/// via Volatile.Write by the agent handler, readable without mailbox round-trip.
+/// Opaque handle to the scan MailboxProcessor. State (ScanState, Generation)
+/// lives inside the loop body; reads are sub-microsecond mailbox round-trips.
 [<NoComparison; NoEquality>]
-type ScanAgent =
-    private
-        { Agent: MailboxProcessor<ScanMsg>
-          mutable CurrentState: ScanState
-          mutable CurrentGeneration: int64 }
+type ScanAgent = private ScanAgent of MailboxProcessor<ScanMsg>
 
-    member this.GetScanState() = Volatile.Read(&this.CurrentState)
-    member this.GetGeneration() = Volatile.Read(&this.CurrentGeneration)
+let private requestScan (ScanAgent agent) ct =
+    agent.PostAndAsyncReply(fun ch -> RequestScan(ct, ch))
 
-let private createScanAgent agent =
-    { Agent = agent
-      CurrentState = ScanIdle
-      CurrentGeneration = 0L }
+let private getScanGeneration (ScanAgent agent) =
+    agent.PostAndReply(fun ch -> GetGeneration ch)
 
-let private requestScan (sa: ScanAgent) ct =
-    sa.Agent.PostAndAsyncReply(fun ch -> RequestScan(ct, ch))
+let private getScanStatus (ScanAgent agent) =
+    agent.PostAndReply(fun ch -> GetState ch)
 
-let private getScanGeneration (sa: ScanAgent) = sa.GetGeneration()
-
-let private getScanStatus (sa: ScanAgent) = sa.GetScanState()
-
-let private setScanStatus (sa: ScanAgent) state = Volatile.Write(&sa.CurrentState, state)
+let private setScanStatus (ScanAgent agent) state =
+    agent.PostAndReply(fun ch -> SetState(state, ch))
 
 let private isTerminal (s: PluginStatus) =
     match s with
@@ -1138,10 +1135,6 @@ module Daemon =
 
             let scanSignal = ScanSignal(cancellationToken = lifetime.Token)
 
-            // Mutable ref allows the agent loop (which starts immediately) to
-            // update volatile fields on the wrapper created after MailboxProcessor.Start.
-            let scanAgentRef: ScanAgent option ref = ref None
-
             let scanMailbox =
                 MailboxProcessor.Start(
                     (fun inbox ->
@@ -1153,19 +1146,21 @@ module Daemon =
                                 | RequestScan(ct, reply) ->
                                     try
                                         let! newState = performScan batchCtx scanSignal state ct
-
-                                        match scanAgentRef.Value with
-                                        | Some sa ->
-                                            Volatile.Write(&sa.CurrentState, newState.ScanState)
-                                            Volatile.Write(&sa.CurrentGeneration, newState.Generation)
-                                        | None -> ()
-
                                         reply.Reply(())
                                         return! loop newState
                                     with ex ->
                                         Logging.error "scan" $"performScan failed: %s{ex.ToString()}"
                                         reply.Reply(())
                                         return! loop state
+                                | GetState reply ->
+                                    reply.Reply(state.ScanState)
+                                    return! loop state
+                                | GetGeneration reply ->
+                                    reply.Reply(state.Generation)
+                                    return! loop state
+                                | SetState(newScanState, reply) ->
+                                    reply.Reply(())
+                                    return! loop { state with ScanState = newScanState }
                             }
 
                         loop
@@ -1175,8 +1170,7 @@ module Daemon =
                     cancellationToken = lifetime.Token
                 )
 
-            let scanAgentWrapper = createScanAgent scanMailbox
-            scanAgentRef.Value <- Some scanAgentWrapper
+            let scanAgentWrapper = ScanAgent scanMailbox
 
             let formatAllViaAgent () =
                 changeAgent.PostAndAsyncReply(Choice2Of2)
