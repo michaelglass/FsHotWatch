@@ -35,6 +35,9 @@ open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.FileCheckCache
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.ProcessHelper
+open FsHotWatch.Ipc
+open FsHotWatch.Cli
+open FsHotWatch.Daemon
 
 let private findRepoRoot () =
     let assemblyDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)
@@ -1920,3 +1923,83 @@ let ``run summary names the slowest project when 2+ projects ran`` () =
             test <@ s.Contains("slowest: SlowProj") @>
             test <@ not (s.Contains("slowest: FastProj")) @>
         | None -> failwith "expected summary on completed run")
+
+// Moved from FsHotWatch.Tests.IpcTests 2026-04-30: this test registers four
+// plugins, dispatches a FileChanged, and waits up to 5s for handler "d" to
+// reach Failed status. Under contention the 5s wait runs out — observed ~20%
+// flake rate locally under `mise run check` load. Intrinsically it's
+// integration-grade (multi-plugin host + DaemonRpcTarget JSON-serialization
+// roundtrip). Lives here with bumped timeouts.
+[<Fact(Timeout = 30000)>]
+let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
+        { Host = host
+          RequestShutdown = ignore
+          RequestScan = ignore
+          GetScanStatus = fun () -> "idle"
+          GetScanGeneration = fun () -> 0L
+          TriggerBuild = fun () -> async { return () }
+          FormatAll = fun () -> async { return "formatted 0 files" }
+          WaitForScanGeneration = fun _ -> System.Threading.Tasks.Task.FromResult(())
+          WaitForAllTerminal = fun _ -> System.Threading.Tasks.Task.FromResult(())
+          RerunPlugin = fun _ -> async { return Result.Ok() } }
+
+    let makeStatusHandler name (reportFn: PluginCtx<unit> -> unit) =
+        { Name = PluginName.create name
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ -> reportFn ctx
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          RequireWarmStart = false
+          Teardown = None }
+
+    host.RegisterHandler(makeStatusHandler "a" (fun ctx -> ctx.ReportStatus(Idle)))
+
+    host.RegisterHandler(
+        makeStatusHandler "b" (fun ctx -> ctx.ReportStatus(Running(since = System.DateTime(2025, 6, 15))))
+    )
+
+    host.RegisterHandler(makeStatusHandler "c" (fun ctx -> ctx.ReportStatus(Completed(System.DateTime(2025, 6, 16)))))
+
+    host.RegisterHandler(
+        makeStatusHandler "d" (fun ctx -> ctx.ReportStatus(Failed("oops", System.DateTime(2025, 6, 17))))
+    )
+
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("d") with
+            | Some(Failed _) -> true
+            | _ -> false)
+        20000
+
+    let target = DaemonRpcTarget(defaultRpcConfig host)
+
+    let json = target.GetStatus()
+    test <@ json.Contains("\"tag\":\"idle\"") @>
+    test <@ json.Contains("\"tag\":\"running\"") @>
+    test <@ json.Contains("\"tag\":\"completed\"") @>
+    test <@ json.Contains("\"tag\":\"failed\"") @>
+    test <@ json.Contains("oops") @>
+
+    let parsed = FsHotWatch.Cli.IpcParsing.parsePluginStatuses json
+
+    match parsed.["a"].Status with
+    | Idle -> ()
+    | other -> failwithf "expected Idle, got %A" other
+
+    match parsed.["d"].Status with
+    | Failed(msg, _) -> test <@ msg = "oops" @>
+    | other -> failwithf "expected Failed, got %A" other

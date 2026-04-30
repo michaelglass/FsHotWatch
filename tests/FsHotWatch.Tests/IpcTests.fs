@@ -329,69 +329,9 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 15000)>]
-let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let makeStatusHandler name (reportFn: PluginCtx<unit> -> unit) =
-        { Name = PluginName.create name
-          Init = ()
-          Update =
-            fun ctx state event ->
-                async {
-                    match event with
-                    | FileChanged _ -> reportFn ctx
-                    | _ -> ()
-
-                    return state
-                }
-          Commands = []
-          Subscriptions = Set.ofList [ SubscribeFileChanged ]
-          CacheKey = None
-          RequireWarmStart = false
-          Teardown = None }
-
-    host.RegisterHandler(makeStatusHandler "a" (fun ctx -> ctx.ReportStatus(Idle)))
-
-    host.RegisterHandler(
-        makeStatusHandler "b" (fun ctx -> ctx.ReportStatus(Running(since = System.DateTime(2025, 6, 15))))
-    )
-
-    host.RegisterHandler(makeStatusHandler "c" (fun ctx -> ctx.ReportStatus(Completed(System.DateTime(2025, 6, 16)))))
-
-    host.RegisterHandler(
-        makeStatusHandler "d" (fun ctx -> ctx.ReportStatus(Failed("oops", System.DateTime(2025, 6, 17))))
-    )
-
-    // Trigger status updates
-    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-
-    // Wait for all to process
-    waitUntil
-        (fun () ->
-            match host.GetStatus("d") with
-            | Some(Failed _) -> true
-            | _ -> false)
-        5000
-
-    let target = DaemonRpcTarget(defaultRpcConfig host)
-
-    let json = target.GetStatus()
-    test <@ json.Contains("\"tag\":\"idle\"") @>
-    test <@ json.Contains("\"tag\":\"running\"") @>
-    test <@ json.Contains("\"tag\":\"completed\"") @>
-    test <@ json.Contains("\"tag\":\"failed\"") @>
-    test <@ json.Contains("oops") @>
-
-    let parsed = FsHotWatch.Cli.IpcParsing.parsePluginStatuses json
-
-    match parsed.["a"].Status with
-    | Idle -> ()
-    | other -> failwithf "expected Idle, got %A" other
-
-    match parsed.["d"].Status with
-    | Failed(msg, _) -> test <@ msg = "oops" @>
-    | other -> failwithf "expected Failed, got %A" other
+// `DaemonRpcTarget.GetStatus without IPC serializes all status variants`
+// moved to FsHotWatch.IntegrationTests 2026-04-30 — flaked under load
+// (~20% rate locally), 4-handler dispatch is integration-grade.
 
 [<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.RunCommand returns unknown command for missing command`` () =
