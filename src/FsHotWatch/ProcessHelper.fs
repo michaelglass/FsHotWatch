@@ -53,7 +53,7 @@ let isDotnetCommand (command: string) =
 /// spawn: they're meaningful only to the .NET host, so dropping them is a
 /// no-op for non-dotnet children, and any later dotnet invocation
 /// re-resolves correctly from its own argv[0].
-let dotnetArchRootKeys =
+let private dotnetArchRootKeys =
     [ "DOTNET_ROOT_ARM64"; "DOTNET_ROOT_X64"; "DOTNET_ROOT_X86" ]
 
 /// Merge `MSBUILDDISABLENODEREUSE=1` into the env when the command is `dotnet`
