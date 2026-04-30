@@ -28,7 +28,9 @@ let private makeRecordingCtx () =
           EndSubtask = fun k -> calls.Add(sprintf "End %s" k)
           Log = fun _ -> ()
           CompleteWithSummary = fun s -> calls.Add(sprintf "Summary %s" s)
-          CompleteWithTimeout = fun r -> calls.Add(sprintf "Timeout %s" r) }
+          CompleteWithTimeout = fun r -> calls.Add(sprintf "Timeout %s" r)
+          RunExclusive = fun _ _ _ -> ()
+          IsRunning = fun _ -> false }
 
     ctx, calls
 
