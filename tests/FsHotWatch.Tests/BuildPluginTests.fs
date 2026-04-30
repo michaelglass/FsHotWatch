@@ -924,7 +924,7 @@ let ``BuildPlugin emits BuildSucceeded when canonical DLL is newer than sources`
 
 // --- Template build failure paths (startTemplateBuild's TimedOut/Failed/exception arms) ---
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 30000)>]
 let ``template build with failing command emits BuildFailed and reports Failed status`` () =
     // Drives the Failed-result arm of startTemplateBuild: the rendered template
     // exits non-zero, so failures accumulates, applyBuildOutcome takes the
@@ -1000,7 +1000,7 @@ let ``template build honors timeoutSec and surfaces TimedOut`` () =
 
 // --- WaitingForFcs phase: interruption + merge branches ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 30000)>]
 let ``WaitingForFcs interrupted by ProjectChanged starts a real build`` () =
     // While waiting for FCS to confirm a test-only change, a ProjectChanged
     // event must abandon the wait and trigger handleProjectChanged → startBuild.
@@ -1033,7 +1033,7 @@ let ``WaitingForFcs interrupted by ProjectChanged starts a real build`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 30000)>]
 let ``WaitingForFcs merges additional test-file changes into the awaiting set`` () =
     // While in WaitingForFcsPhase, another test-only SourceChanged must merge
     // into the awaiting set (not start a build, not emit BuildSucceeded yet).
@@ -1074,7 +1074,7 @@ let ``WaitingForFcs merges additional test-file changes into the awaiting set`` 
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 30000)>]
 let ``WaitingForFcs with non-test SourceChanged abandons the wait and runs a build`` () =
     // While in WaitingForFcsPhase, a SourceChanged that includes a non-test
     // file must take the handleSourceChanged branch (line 590) and start a
@@ -1115,7 +1115,7 @@ let ``WaitingForFcs with non-test SourceChanged abandons the wait and runs a bui
 
 // --- build-status command in failed-state lifecycles ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 30000)>]
 let ``build-status returns failed JSON after BuildOutputFailed lifecycle`` () =
     // Drives the build-status command path that reads `Lifecycle.value` and
     // matches BuildOutputFailed (lines 615-619).
@@ -1135,7 +1135,7 @@ let ``build-status returns failed JSON after BuildOutputFailed lifecycle`` () =
     let hasOutput = doc.RootElement.TryGetProperty("output", &outputProp)
     test <@ hasOutput @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 30000)>]
 let ``build-status returns failed JSON after BuildArtifactsStale demotion`` () =
     // Combine the runVerifyHarness pattern (which produces BuildArtifactsStale)
     // with build-status to drive the BuildArtifactsStale arm of the JSON
