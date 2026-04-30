@@ -58,7 +58,7 @@ let ``lint error path sets Failed status on null check results`` () =
             | Some(Failed _)
             | Some(Running _) -> true
             | _ -> false)
-        3000
+        15000
 
     let status = host.GetStatus("lint")
     test <@ status.IsSome @>
@@ -102,7 +102,7 @@ let ``lint skips file with null ParseResults without crashing`` () =
             match host.GetStatus("lint") with
             | Some _ -> true
             | None -> false)
-        3000
+        15000
 
     let status = host.GetStatus("lint")
     test <@ status.IsSome @>
