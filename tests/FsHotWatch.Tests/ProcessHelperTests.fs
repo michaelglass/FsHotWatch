@@ -81,3 +81,48 @@ let ``mergeDotnetEnv leaves non-dotnet commands untouched`` () =
 let ``mergeDotnetEnv preserves caller-supplied MSBUILDDISABLENODEREUSE`` () =
     let merged = mergeDotnetEnv "dotnet" [ "MSBUILDDISABLENODEREUSE", "0" ]
     Assert.Equal<(string * string) list>([ "MSBUILDDISABLENODEREUSE", "0" ], merged)
+
+// Regression: a daemon-spawned child must inherit the daemon process's
+// environment. Reported under a Nix toolchain where DOTNET_ROOT and
+// NIX_PROFILES are needed by `dotnet run` invoked from a beforeRun hook.
+// FsHotWatch sets specific keys via psi.Environment[k] <- v on top of the
+// inherited dictionary; it never clears or replaces it. This test pins
+// that contract so a future "scrub the env" change can't silently break
+// Nix users.
+[<Fact(Timeout = 10000)>]
+let ``runProcess inherits the parent process environment (no scrubbing)`` () =
+    let key = "FSHOTWATCH_ENV_PASSTHROUGH_PROBE"
+    let value = "nix-store-path-marker-" + Guid.NewGuid().ToString("N")
+    Environment.SetEnvironmentVariable(key, value)
+
+    try
+        // sh -c "printf %s \"$VAR\"" — printf avoids trailing newline noise.
+        let args = sprintf "-c \"printf %%s \\\"$%s\\\"\"" key
+
+        match runProcess "sh" args "." [] with
+        | Succeeded out -> Assert.Equal(value, out)
+        | other -> Assert.Fail $"expected Succeeded, got %A{other}"
+    finally
+        Environment.SetEnvironmentVariable(key, null)
+
+// Companion: explicit env entries must overlay (not replace) the inherited env.
+// If a future refactor switches to psi.Environment.Clear() + setters, this test
+// fails because the inherited probe disappears.
+[<Fact(Timeout = 10000)>]
+let ``runProcess overlays explicit env on top of inherited env`` () =
+    let inheritedKey = "FSHOTWATCH_ENV_PASSTHROUGH_INHERITED"
+    let inheritedValue = "inherited-" + Guid.NewGuid().ToString("N")
+    let explicitKey = "FSHOTWATCH_ENV_PASSTHROUGH_EXPLICIT"
+    let explicitValue = "explicit-" + Guid.NewGuid().ToString("N")
+
+    Environment.SetEnvironmentVariable(inheritedKey, inheritedValue)
+
+    try
+        let args =
+            sprintf "-c \"printf %%s:%%s \\\"$%s\\\" \\\"$%s\\\"\"" inheritedKey explicitKey
+
+        match runProcess "sh" args "." [ explicitKey, explicitValue ] with
+        | Succeeded out -> Assert.Equal(inheritedValue + ":" + explicitValue, out)
+        | other -> Assert.Fail $"expected Succeeded, got %A{other}"
+    finally
+        Environment.SetEnvironmentVariable(inheritedKey, null)
