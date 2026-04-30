@@ -45,6 +45,17 @@ let isDotnetCommand (command: string) =
     let basename = System.IO.Path.GetFileName(command)
     basename = "dotnet" || basename = "dotnet.exe"
 
+/// Arch-specific DOTNET_ROOT keys the .NET host writes into its parent's
+/// env from argv[0]'s dir so child apphosts inherit the same runtime. On
+/// Nix-wrapped SDKs (and similar shims) that dir lacks
+/// shared/Microsoft.NETCore.App, so any child dotnet trusts the value and
+/// fails to find the runtime. We strip these unconditionally on every
+/// spawn: they're meaningful only to the .NET host, so dropping them is a
+/// no-op for non-dotnet children, and any later dotnet invocation
+/// re-resolves correctly from its own argv[0].
+let private dotnetArchRootKeys =
+    [ "DOTNET_ROOT_ARM64"; "DOTNET_ROOT_X64"; "DOTNET_ROOT_X86" ]
+
 /// Merge `MSBUILDDISABLENODEREUSE=1` into the env when the command is `dotnet`
 /// and the caller hasn't already set the key. See docs/msbuild-node-reuse-bug.md.
 let mergeDotnetEnv (command: string) (env: (string * string) list) : (string * string) list =
@@ -73,6 +84,10 @@ let runProcessWithTimeout
     psi.RedirectStandardError <- true
     psi.UseShellExecute <- false
     psi.WorkingDirectory <- workDir
+
+    // Strip before overlay so a caller-supplied entry in `env` survives.
+    for key in dotnetArchRootKeys do
+        psi.Environment.Remove(key) |> ignore
 
     for (key, value) in mergeDotnetEnv command env do
         psi.Environment[key] <- value

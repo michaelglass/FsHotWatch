@@ -319,6 +319,18 @@ let makeProjectOptions (projectFile: string) (sourceFiles: string list) (otherOp
       OriginalLoadReferences = []
       Stamp = None }
 
+/// Set an environment variable for the duration of `body`, restoring the
+/// prior value (or unset state) afterward. `Some ""` sets to empty;
+/// `None` unsets.
+let withEnv (name: string) (value: string option) (body: unit -> unit) =
+    let prior = Environment.GetEnvironmentVariable(name)
+
+    try
+        Environment.SetEnvironmentVariable(name, Option.toObj value)
+        body ()
+    finally
+        Environment.SetEnvironmentVariable(name, prior)
+
 let withTempDir (prefix: string) (body: string -> 'a) =
     // Canonicalize so /var/folders/... and /private/var/folders/... don't diverge
     // across test+plugin views of the same path (macOS temp dir is a symlink).

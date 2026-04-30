@@ -3,6 +3,7 @@ module FsHotWatch.Tests.ProcessHelperTests
 open System
 open Xunit
 open FsHotWatch.ProcessHelper
+open FsHotWatch.Tests.TestHelpers
 
 [<Fact(Timeout = 10000)>]
 let ``runProcessWithTimeout returns Succeeded when fast`` () =
@@ -81,3 +82,61 @@ let ``mergeDotnetEnv leaves non-dotnet commands untouched`` () =
 let ``mergeDotnetEnv preserves caller-supplied MSBUILDDISABLENODEREUSE`` () =
     let merged = mergeDotnetEnv "dotnet" [ "MSBUILDDISABLENODEREUSE", "0" ]
     Assert.Equal<(string * string) list>([ "MSBUILDDISABLENODEREUSE", "0" ], merged)
+
+// Spawn-env contract — see the strip in ProcessHelper.runProcessWithTimeout
+// for the Nix scenario that motivated it.
+
+let private echoEnv (var: string) =
+    sprintf "-c \"printf %%s \\\"$%s\\\"\"" var
+
+let private expectStdout (expected: string) (outcome: ProcessOutcome) =
+    match outcome with
+    | Succeeded out -> Assert.Equal(expected, out)
+    | other -> Assert.Fail $"expected Succeeded, got %A{other}"
+
+[<Fact(Timeout = 10000)>]
+let ``runProcess inherits the parent process environment (no scrubbing)`` () =
+    let key = "FSHOTWATCH_ENV_PASSTHROUGH_PROBE"
+    let value = "nix-store-path-marker-" + Guid.NewGuid().ToString("N")
+
+    withEnv key (Some value) (fun () -> runProcess "sh" (echoEnv key) "." [] |> expectStdout value)
+
+[<Fact(Timeout = 10000)>]
+let ``runProcess strips DOTNET_ROOT_ARM64 unconditionally`` () =
+    withEnv "DOTNET_ROOT_ARM64" (Some "/poisoned/wrapped/bin") (fun () ->
+        runProcess "sh" (echoEnv "DOTNET_ROOT_ARM64") "." [] |> expectStdout "")
+
+[<Fact(Timeout = 10000)>]
+let ``runProcess strips DOTNET_ROOT_X64 and DOTNET_ROOT_X86 too`` () =
+    withEnv "DOTNET_ROOT_X64" (Some "/poisoned/x64") (fun () ->
+        withEnv "DOTNET_ROOT_X86" (Some "/poisoned/x86") (fun () ->
+            let args = "-c \"printf %s:%s \\\"$DOTNET_ROOT_X64\\\" \\\"$DOTNET_ROOT_X86\\\"\""
+            runProcess "sh" args "." [] |> expectStdout ":"))
+
+[<Fact(Timeout = 10000)>]
+let ``runProcess preserves plain DOTNET_ROOT (only arch-specific is stripped)`` () =
+    let probe = "/some/intentional/dotnet/root-" + Guid.NewGuid().ToString("N")
+
+    withEnv "DOTNET_ROOT" (Some probe) (fun () -> runProcess "sh" (echoEnv "DOTNET_ROOT") "." [] |> expectStdout probe)
+
+[<Fact(Timeout = 10000)>]
+let ``runProcess strip respects caller-supplied DOTNET_ROOT_ARM64 override`` () =
+    let explicitValue = "/explicit/correct-" + Guid.NewGuid().ToString("N")
+
+    withEnv "DOTNET_ROOT_ARM64" (Some "/inherited/poisoned") (fun () ->
+        runProcess "sh" (echoEnv "DOTNET_ROOT_ARM64") "." [ "DOTNET_ROOT_ARM64", explicitValue ]
+        |> expectStdout explicitValue)
+
+[<Fact(Timeout = 10000)>]
+let ``runProcess overlays explicit env on top of inherited env`` () =
+    let inheritedKey = "FSHOTWATCH_ENV_PASSTHROUGH_INHERITED"
+    let inheritedValue = "inherited-" + Guid.NewGuid().ToString("N")
+    let explicitKey = "FSHOTWATCH_ENV_PASSTHROUGH_EXPLICIT"
+    let explicitValue = "explicit-" + Guid.NewGuid().ToString("N")
+
+    withEnv inheritedKey (Some inheritedValue) (fun () ->
+        let args =
+            sprintf "-c \"printf %%s:%%s \\\"$%s\\\" \\\"$%s\\\"\"" inheritedKey explicitKey
+
+        runProcess "sh" args "." [ explicitKey, explicitValue ]
+        |> expectStdout (inheritedValue + ":" + explicitValue))
