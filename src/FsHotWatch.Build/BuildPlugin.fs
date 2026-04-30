@@ -33,7 +33,6 @@ type BuildOutcome =
 
 type BuildPhase =
     | IdlePhase of Lifecycle<Idle, BuildOutcome option> * pendingFiles: FileChangeKind list
-    | RunningPhase of Lifecycle<Running, BuildOutcome option>
     /// Test-files-only change — build is logically a no-op but we wait for FCS to finish
     /// checking the changed files before emitting BuildSucceeded. Otherwise downstream
     /// test-prune dispatch would race FCS and read stale AffectedTests.
@@ -214,7 +213,8 @@ let create
     /// Run from the async build worker. Logs+summary happens here (live UI),
     /// but the *captured* operations (ReportErrors / ClearErrors / EmitBuildCompleted)
     /// are deferred to the synchronous Custom BuildDone handler so the framework's
-    /// per-event capture window records them for the §2a cache.
+    /// per-event capture window records them for the §2a cache. Returns the
+    /// completion message; the framework posts it back via RunExclusive.
     let applyBuildOutcome (ctx: PluginCtx<BuildMsg>) (outcome: BuildOutcome) (entries: ErrorEntry list) =
         match outcome with
         | BuildPassed out ->
@@ -235,7 +235,7 @@ let create
 
             ctx.CompleteWithSummary $"build failed: %d{errCount} errors"
 
-        ctx.Post(BuildDone(outcome, entries))
+        BuildDone(outcome, entries)
 
     /// Phrase a single stale-artifact case for human-readable diagnostics.
     /// Worker-side so cache replay reproduces the same message verbatim.
@@ -268,55 +268,63 @@ let create
 
     let startBuild (ctx: PluginCtx<BuildMsg>) (idle: Lifecycle<Idle, BuildOutcome option>) =
         ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
-        let running = Lifecycle.start idle
         ctx.Log $"Running: %s{buildCommand} %s{buildArgs}"
 
-        PluginCtxHelpers.withSubtask
-            ctx
+        // RunExclusive "build" Drop: the framework guarantees only one build runs
+        // at a time. Concurrent FileChanged-while-building triggers are dropped by
+        // the framework, replacing the old per-plugin RunningPhase guard.
+        ctx.RunExclusive
             "build"
-            "dotnet build"
-            (async {
-                try
-                    let result =
-                        runProcessWithTimeout buildCommand buildArgs ctx.RepoRoot environment buildTimeout
+            Drop
+            (PluginCtxHelpers.withSubtask
+                ctx
+                "build"
+                "dotnet build"
+                (async {
+                    try
+                        let result =
+                            runProcessWithTimeout buildCommand buildArgs ctx.RepoRoot environment buildTimeout
 
-                    let (rawOutcome, entries) =
-                        decideBuildOutcome (isSucceeded result) (outputOf result)
+                        let (rawOutcome, entries) =
+                            decideBuildOutcome (isSucceeded result) (outputOf result)
 
-                    let outcome = verifyAndDemote rawOutcome
+                        let outcome = verifyAndDemote rawOutcome
 
-                    match outcome, result with
-                    | BuildOutputFailed _, TimedOut(after, _) ->
-                        let summary = $"timed out after %d{int after.TotalSeconds}s"
-                        ctx.Log "Build TIMED OUT"
-                        error "build" "Build TIMED OUT"
-                        ctx.CompleteWithTimeout summary
-                    | BuildOutputFailed _, Failed(exitCode, output) ->
-                        ctx.Log "Build FAILED"
-                        error "build" "Build FAILED"
+                        match outcome, result with
+                        | BuildOutputFailed _, TimedOut(after, _) ->
+                            let summary = $"timed out after %d{int after.TotalSeconds}s"
+                            ctx.Log "Build TIMED OUT"
+                            error "build" "Build TIMED OUT"
+                            ctx.CompleteWithTimeout summary
+                        | BuildOutputFailed _, Failed(exitCode, output) ->
+                            ctx.Log "Build FAILED"
+                            error "build" "Build FAILED"
 
-                        let parsedCount = BuildDiagnostics.parseMSBuildDiagnostics output |> List.length
+                            let parsedCount = BuildDiagnostics.parseMSBuildDiagnostics output |> List.length
 
-                        if parsedCount = 0 then
-                            let detail = formatSilentFailureDiagnostic exitCode output
-                            ctx.Log detail
-                            error "build" detail
-                    | BuildOutputFailed _, _ ->
-                        ctx.Log "Build FAILED"
-                        error "build" "Build FAILED"
-                    | _ -> ()
+                            if parsedCount = 0 then
+                                let detail = formatSilentFailureDiagnostic exitCode output
+                                ctx.Log detail
+                                error "build" detail
+                        | BuildOutputFailed _, _ ->
+                            ctx.Log "Build FAILED"
+                            error "build" "Build FAILED"
+                        | _ -> ()
 
-                    applyBuildOutcome ctx outcome entries
-                with ex ->
-                    let crashEntry = ErrorEntry.error ex.Message
-                    // ReportErrors / EmitBuildCompleted moved into the synchronous
-                    // BuildDone handler (see applyBuildOutcome doc) so they're captured
-                    // for cache replay.
-                    ctx.Post(BuildDone(BuildOutputFailed [ ex.Message ], [ crashEntry ]))
-            })
-        |> Async.Start
+                        return applyBuildOutcome ctx outcome entries
+                    with ex ->
+                        let crashEntry = ErrorEntry.error ex.Message
+                        // ReportErrors / EmitBuildCompleted moved into the synchronous
+                        // BuildDone handler (see applyBuildOutcome doc) so they're captured
+                        // for cache replay.
+                        return BuildDone(BuildOutputFailed [ ex.Message ], [ crashEntry ])
+                }))
 
-        { Phase = RunningPhase running
+        // State stays at IdlePhase carrying the prior idle lifecycle. The
+        // synchronous BuildDone handler advances Lifecycle.start ▸ complete
+        // when the framework posts the completion message back. Phase-based
+        // "is the build running" is replaced by ctx.IsRunning "build".
+        { Phase = IdlePhase(idle, [])
           SatisfiedDeps = Set.empty }
 
     let startTemplateBuild
@@ -344,71 +352,72 @@ let create
                     dependents |> List.exists (fun d -> buildableSet.Contains(d)) |> not)
 
             ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
-            let running = Lifecycle.start idle
 
-            PluginCtxHelpers.withSubtask
-                ctx
+            ctx.RunExclusive
                 "build"
-                $"dotnet build ({roots.Length} roots)"
-                (async {
-                    try
-                        let mutable failures = []
-                        let mutable outputs = []
+                Drop
+                (PluginCtxHelpers.withSubtask
+                    ctx
+                    "build"
+                    $"dotnet build ({roots.Length} roots)"
+                    (async {
+                        try
+                            let mutable failures = []
+                            let mutable outputs = []
 
-                        for root in roots do
-                            let rootStr = AbsProjectPath.value root
-                            let rendered = template.Replace("{project}", rootStr)
-                            let (cmd, cmdArgs) = splitCommand rendered
-                            ctx.Log $"Running template: %s{cmd} %s{cmdArgs}"
+                            for root in roots do
+                                let rootStr = AbsProjectPath.value root
+                                let rendered = template.Replace("{project}", rootStr)
+                                let (cmd, cmdArgs) = splitCommand rendered
+                                ctx.Log $"Running template: %s{cmd} %s{cmdArgs}"
 
-                            try
-                                let result = runProcessWithTimeout cmd cmdArgs ctx.RepoRoot environment buildTimeout
-                                let output = outputOf result
-                                outputs <- output :: outputs
+                                try
+                                    let result = runProcessWithTimeout cmd cmdArgs ctx.RepoRoot environment buildTimeout
+                                    let output = outputOf result
+                                    outputs <- output :: outputs
 
-                                match result with
-                                | Succeeded _ -> ()
-                                | TimedOut(after, _) ->
-                                    let summary = $"timed out after %d{int after.TotalSeconds}s"
-                                    ctx.Log $"Template build TIMED OUT for %s{rootStr}"
-                                    error "build" $"Template build TIMED OUT for %s{rootStr}"
-                                    ctx.CompleteWithTimeout summary
-                                    failures <- output :: failures
-                                | Failed _ ->
-                                    ctx.Log $"Template build FAILED for %s{rootStr}"
-                                    error "build" $"Template build FAILED for %s{rootStr}"
-                                    failures <- output :: failures
-                            with ex ->
-                                ctx.Log $"Template build exception for %s{rootStr}: %s{ex.Message}"
-                                error "build" $"Template build exception for %s{rootStr}: %s{ex.Message}"
-                                failures <- ex.Message :: failures
+                                    match result with
+                                    | Succeeded _ -> ()
+                                    | TimedOut(after, _) ->
+                                        let summary = $"timed out after %d{int after.TotalSeconds}s"
+                                        ctx.Log $"Template build TIMED OUT for %s{rootStr}"
+                                        error "build" $"Template build TIMED OUT for %s{rootStr}"
+                                        ctx.CompleteWithTimeout summary
+                                        failures <- output :: failures
+                                    | Failed _ ->
+                                        ctx.Log $"Template build FAILED for %s{rootStr}"
+                                        error "build" $"Template build FAILED for %s{rootStr}"
+                                        failures <- output :: failures
+                                with ex ->
+                                    ctx.Log $"Template build exception for %s{rootStr}: %s{ex.Message}"
+                                    error "build" $"Template build exception for %s{rootStr}: %s{ex.Message}"
+                                    failures <- ex.Message :: failures
 
-                        let failedOutputs = failures |> List.rev
+                            let failedOutputs = failures |> List.rev
 
-                        let (rawOutcome, entries) =
-                            if failures.IsEmpty then
-                                let combinedOutput = outputs |> List.rev |> String.concat "\n"
-                                decideBuildOutcome true combinedOutput
-                            else
-                                let failedText = failedOutputs |> String.concat "\n"
-                                let parsed = BuildDiagnostics.parseMSBuildDiagnostics failedText
+                            let (rawOutcome, entries) =
+                                if failures.IsEmpty then
+                                    let combinedOutput = outputs |> List.rev |> String.concat "\n"
+                                    decideBuildOutcome true combinedOutput
+                                else
+                                    let failedText = failedOutputs |> String.concat "\n"
+                                    let parsed = BuildDiagnostics.parseMSBuildDiagnostics failedText
 
-                                let entries =
-                                    if parsed.IsEmpty then
-                                        failedOutputs |> List.map ErrorEntry.error
-                                    else
-                                        parsed
+                                    let entries =
+                                        if parsed.IsEmpty then
+                                            failedOutputs |> List.map ErrorEntry.error
+                                        else
+                                            parsed
 
-                                BuildOutputFailed failedOutputs, entries
+                                    BuildOutputFailed failedOutputs, entries
 
-                        applyBuildOutcome ctx (verifyAndDemote rawOutcome) entries
-                    with ex ->
-                        error "build" $"Unexpected error: %s{ex.Message}"
-                        ctx.Post(BuildDone(BuildOutputFailed [ ex.Message ], [ ErrorEntry.error ex.Message ]))
-                })
-            |> Async.Start
+                            return applyBuildOutcome ctx (verifyAndDemote rawOutcome) entries
+                        with ex ->
+                            error "build" $"Unexpected error: %s{ex.Message}"
+                            return BuildDone(BuildOutputFailed [ ex.Message ], [ ErrorEntry.error ex.Message ])
+                    }))
 
-            { Phase = RunningPhase running
+            { Phase = IdlePhase(idle, [])
               SatisfiedDeps = Set.empty }
 
     let handleSourceChanged
@@ -463,7 +472,6 @@ let create
                             let pendingFiles =
                                 match state.Phase with
                                 | IdlePhase(_, pending) -> pending
-                                | RunningPhase _
                                 | WaitingForFcsPhase _ -> []
 
                             let updatedState = { state with SatisfiedDeps = newDeps }
@@ -499,12 +507,26 @@ let create
                         { state with
                             Phase = IdlePhase(idle, pending @ [ change ]) }
 
+                // --- FileChanged: drop while a build is in flight (framework single-flight) ---
+                | FileChanged _, _ when ctx.IsRunning "build" ->
+                    info "build" "Skipping: build already in progress"
+                    return state
+
                 // --- FileChanged: normal handling (no deps or all satisfied) ---
                 | FileChanged(SourceChanged files), IdlePhase(idle, _) ->
                     return handleSourceChanged ctx state idle files
                 | FileChanged(ProjectChanged _), IdlePhase(idle, _) -> return handleProjectChanged ctx state idle
-                | Custom(BuildDone(outcome, entries)), RunningPhase running ->
-                    let idle = Lifecycle.complete (Some outcome) running
+                | Custom(BuildDone(outcome, entries)), _ ->
+                    // Build single-flight is owned by the framework (RunExclusive "build" Drop).
+                    // The completion message arrives at whatever phase we're in (typically
+                    // IdlePhase carrying the pre-build idle lifecycle); we advance the
+                    // lifecycle through Running ▸ Completed for activity-log bookkeeping.
+                    let prevIdle =
+                        match state.Phase with
+                        | IdlePhase(idle, _) -> idle
+                        | WaitingForFcsPhase(_, idle) -> idle
+
+                    let idle = Lifecycle.complete (Some outcome) (Lifecycle.start prevIdle)
 
                     // Apply captured operations within this synchronous handler so
                     // the framework's §2a cache-write window records them. Replay
@@ -539,9 +561,6 @@ let create
                         { state with
                             Phase = IdlePhase(idle, [])
                             SatisfiedDeps = Set.empty }
-                | FileChanged _, RunningPhase _ ->
-                    info "build" "Skipping: build already in progress"
-                    return state
 
                 | FileChecked result, WaitingForFcsPhase(awaiting, idle) ->
                     let remaining = Set.remove (normalizePath result.File) awaiting
@@ -580,7 +599,6 @@ let create
                   let lastResult =
                       match state.Phase with
                       | IdlePhase(idle, _) -> Lifecycle.value idle
-                      | RunningPhase running -> Lifecycle.value running
                       | WaitingForFcsPhase(_, idle) -> Lifecycle.value idle
 
                   match lastResult with
