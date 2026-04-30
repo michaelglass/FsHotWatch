@@ -825,7 +825,7 @@ let create
 
     let commands =
         [ "affected-tests",
-          fun (state: TestPruneState) (_args: string array) ->
+          fun (_ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
               async {
                   match state.AffectedTests with
                   | NotYetAnalyzed -> return JsonSerializer.Serialize({| status = "not analyzed" |})
@@ -841,11 +841,11 @@ let create
               }
 
           "changed-files",
-          fun (state: TestPruneState) (_args: string array) ->
+          fun (_ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
               async { return JsonSerializer.Serialize(state.ChangedFiles) }
 
           "test-results",
-          fun (state: TestPruneState) (_args: string array) ->
+          fun (_ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
               async {
                   match state.TestPhase with
                   | TestsRunning _ -> return JsonSerializer.Serialize({| status = "running" |})
@@ -856,7 +856,7 @@ let create
               }
 
           "flaky-tests",
-          fun (_state: TestPruneState) (_args: string array) ->
+          fun (_ctx: PluginCtx<TestPruneMsg>) (_state: TestPruneState) (_args: string array) ->
               async {
                   let history = Flakiness.loadHistory (flakinessHistoryPath repoRoot)
                   let top = Flakiness.topFlaky 10 history
@@ -880,7 +880,7 @@ let create
         | Some allConfigs when not allConfigs.IsEmpty ->
             commands
             @ [ "run-tests",
-                fun (state: TestPruneState) (args: string array) ->
+                fun (_ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (args: string array) ->
                     async {
                         match state.TestPhase with
                         | TestsRunning _ -> return JsonSerializer.Serialize({| error = "tests already running" |})

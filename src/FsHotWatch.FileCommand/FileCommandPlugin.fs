@@ -335,7 +335,7 @@ let create
             }
       Commands =
         [ $"%s{nameStr}-status",
-          fun state _args ->
+          fun _ctx state _args ->
               async {
                   match state.LastResult with
                   | Succeeded _ -> return JsonSerializer.Serialize({| passed = true |})

@@ -511,7 +511,7 @@ let ``CLI command proxying works against running daemon`` () =
           Update = fun _ctx state _event -> async { return state }
           Commands =
             [ "greet",
-              fun _state args ->
+              fun _ctx _state args ->
                   async {
                       let name = if args.Length > 0 then args.[0] else "world"
                       return $"hello {name}"
