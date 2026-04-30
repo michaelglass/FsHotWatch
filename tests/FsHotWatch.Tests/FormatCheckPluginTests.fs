@@ -65,7 +65,7 @@ let ``format check handles non-source change events without crashing`` () =
 
     // ProjectChanged and SolutionChanged should not crash the plugin
     host.EmitFileChanged(ProjectChanged [ "/tmp/Test.fsproj" ])
-    host.EmitFileChanged(SolutionChanged "test.sln")
+    host.EmitFileChanged(SolutionChanged)
 
     // 9s (just under the Fact timeout of 10s) so we fail as Fact-timeout
     // rather than a silently-expired poll, and so we give slow Linux CI

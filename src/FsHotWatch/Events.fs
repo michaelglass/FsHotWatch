@@ -44,7 +44,7 @@ type FileChangeKind =
     /// Project files (.fsproj, .props, project.assets.json) changed.
     | ProjectChanged of files: string list
     /// Solution file (.sln, .slnx) changed.
-    | SolutionChanged of file: string
+    | SolutionChanged
 
 /// Result of a build operation.
 type BuildResult =

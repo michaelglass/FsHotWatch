@@ -387,7 +387,7 @@ let ``daemon handles SolutionChanged events`` () =
                 receivedChanges
                 |> List.exists (fun c ->
                     match c with
-                    | SolutionChanged _ -> true
+                    | SolutionChanged -> true
                     | _ -> false))
             60000
 
@@ -402,7 +402,7 @@ let ``daemon handles SolutionChanged events`` () =
             receivedChanges
             |> List.exists (fun c ->
                 match c with
-                | SolutionChanged _ -> true
+                | SolutionChanged -> true
                 | _ -> false)
 
         test <@ solutionChanges @>)
