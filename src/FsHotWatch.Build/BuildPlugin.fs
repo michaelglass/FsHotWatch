@@ -106,21 +106,18 @@ type internal BuildInputsHasher(graph: FsHotWatch.ProjectGraph.IProjectGraphRead
     let cache =
         System.Collections.Concurrent.ConcurrentDictionary<string * int64, string>()
 
-    let hashFile (path: string) =
-        let mtime =
-            try
-                File.GetLastWriteTimeUtc(path).Ticks
-            with _ ->
-                0L
+    // Honest "missing" sentinel for non-existent files; let real IO exceptions
+    // (UnauthorizedAccessException, IOException for locked files, etc.) propagate
+    // up to decideBuildOutcome instead of folding "read-error" into the merkle.
+    // The old swallow could collapse same-path entries to (path, 0L) → "read-error",
+    // producing a stable-looking but poisoned cache key that silently under-builds.
+    let hashFile (path: string) : string option =
+        if not (File.Exists path) then
+            None
+        else
+            let mtime = File.GetLastWriteTimeUtc(path).Ticks // let real exns propagate
 
-        cache.GetOrAdd(
-            (path, mtime),
-            fun _ ->
-                try
-                    FsHotWatch.CheckCache.sha256Hex (File.ReadAllText path)
-                with _ ->
-                    "read-error"
-        )
+            Some(cache.GetOrAdd((path, mtime), fun _ -> FsHotWatch.CheckCache.sha256Hex (File.ReadAllText path)))
 
     member _.Compute() : string =
         let sourceFiles = graph.GetAllFiles() |> List.map AbsFilePath.value
@@ -131,7 +128,11 @@ type internal BuildInputsHasher(graph: FsHotWatch.ProjectGraph.IProjectGraphRead
         let sb = System.Text.StringBuilder()
 
         for path in allInputs do
-            let h = hashFile path
+            let h =
+                match hashFile path with
+                | Some h -> h
+                | None -> "missing" // distinct from any real sha256 hash
+
             sb.Append(path.Length) |> ignore
             sb.Append(':') |> ignore
             sb.Append(path) |> ignore
