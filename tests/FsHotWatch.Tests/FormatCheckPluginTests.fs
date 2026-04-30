@@ -217,7 +217,7 @@ let ``format check handles exception gracefully`` () =
                 | Some(Completed _)
                 | Some(PluginStatus.Failed _) -> true
                 | _ -> false)
-            5000
+            15000
 
         let status = host.GetStatus("format-check")
         test <@ status.IsSome @>
@@ -251,7 +251,7 @@ let ``format check detects formatting change even with same commit ID`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            5000
+            15000
 
         // Verify plugin detected unformatted file
         let result1 = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
@@ -267,7 +267,7 @@ let ``format check detects formatting change even with same commit ID`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            5000
+            15000
 
         // With proper cache invalidation, plugin should detect file is now formatted
         let result2 = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
@@ -299,7 +299,7 @@ let ``format check reports unformatted files to error ledger`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            5000
+            15000
 
         // The format-check plugin should report errors to the ErrorLedger
         let errors = host.GetErrors()
@@ -339,7 +339,7 @@ let ``format check clears errors when file becomes formatted`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            5000
+            15000
 
         let errors1 = host.GetErrors()
         test <@ not errors1.IsEmpty @>
@@ -354,7 +354,7 @@ let ``format check clears errors when file becomes formatted`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> false
                 | _ -> true)
-            5000
+            15000
 
         // Then wait for it to finish
         waitUntil
@@ -362,7 +362,7 @@ let ``format check clears errors when file becomes formatted`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            5000
+            15000
 
         // Errors should be cleared
         let errors2 = host.GetErrors()

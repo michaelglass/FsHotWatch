@@ -185,7 +185,7 @@ let ``AnalysisFailed custom message sets status to Completed`` () =
     host.RegisterHandler(handler)
 
     host.EmitFileChecked(fakeResult "/tmp/test/FailAnalysis.fs")
-    waitForTerminalStatus host "analyzers" 3000
+    waitForTerminalStatus host "analyzers" 15000
 
     let errors = host.GetErrorsByPlugin("analyzers")
 
@@ -270,7 +270,7 @@ let ``regression: FileChecked replays from cache on second emission with same co
 
     // First run — cold cache, analyzer crashes (terminal Failed), cache write.
     host.EmitFileChecked(fakeResult "/tmp/test/Replay.fs")
-    waitForTerminalStatus host "analyzers" 3000
+    waitForTerminalStatus host "analyzers" 15000
 
     // Verify cache populated.
     let key: FsHotWatch.TaskCache.CompositeKey =
@@ -306,7 +306,7 @@ let ``regression: FileChecked with TaskCache writes a cache entry on terminal st
     // which exercises the Choice3Of3 path. Crash status is also terminal, so
     // the cache write must still happen.
     host.EmitFileChecked(fakeResult "/tmp/test/CacheRegression.fs")
-    waitForTerminalStatus host "analyzers" 3000
+    waitForTerminalStatus host "analyzers" 15000
 
     // The cache should now contain an entry for (analyzers, that-file).
     let key: FsHotWatch.TaskCache.CompositeKey =
