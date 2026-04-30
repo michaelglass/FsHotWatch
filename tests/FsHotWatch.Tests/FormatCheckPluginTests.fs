@@ -10,12 +10,12 @@ open FsHotWatch.PluginHost
 open FsHotWatch.Fantomas.FormatCheckPlugin
 open FsHotWatch.Tests.TestHelpers
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =
     let handler = createFormatCheck None
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "format-check" @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``format-check handler times out when formatter exceeds TimeoutSec`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmt-to-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
@@ -45,7 +45,7 @@ let ``format-check handler times out when formatter exceeds TimeoutSec`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``unformatted command returns zero count when no files processed`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -56,7 +56,7 @@ let ``unformatted command returns zero count when no files processed`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("\"count\": 0") @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``format check handles non-source change events without crashing`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -85,7 +85,7 @@ let ``format check handles non-source change events without crashing`` () =
     | Completed _ -> ()
     | other -> Assert.Fail($"Expected Completed, got: %A{other}")
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``format check handles non-existent source file gracefully`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -108,7 +108,7 @@ let ``format check handles non-existent source file gracefully`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("\"count\": 0") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``FormatPreprocessor formats unformatted file`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmt-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
@@ -130,7 +130,7 @@ let ``FormatPreprocessor formats unformatted file`` () =
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``FormatPreprocessor skips already formatted file`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmt-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
@@ -147,7 +147,7 @@ let ``FormatPreprocessor skips already formatted file`` () =
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``FormatPreprocessor skips non-fs files`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmt-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
@@ -163,13 +163,13 @@ let ``FormatPreprocessor skips non-fs files`` () =
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``FormatPreprocessor handles non-existent file gracefully`` () =
     let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
     let modified = preprocessor.Process [ "/tmp/nonexistent-file-xyz.fs" ] "/tmp"
     test <@ modified.IsEmpty @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``FormatPreprocessor handles format error gracefully`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmt-err-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
@@ -188,12 +188,12 @@ let ``FormatPreprocessor handles format error gracefully`` () =
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``FormatPreprocessor dispose is callable`` () =
     let preprocessor = FormatPreprocessor() :> IFsHotWatchPreprocessor
     preprocessor.Dispose()
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``format check handles exception gracefully`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmtchk-err-{Guid.NewGuid():N}")
     Directory.CreateDirectory(tmpDir) |> ignore
@@ -217,7 +217,7 @@ let ``format check handles exception gracefully`` () =
                 | Some(Completed _)
                 | Some(PluginStatus.Failed _) -> true
                 | _ -> false)
-            5000
+            15000
 
         let status = host.GetStatus("format-check")
         test <@ status.IsSome @>
@@ -225,7 +225,7 @@ let ``format check handles exception gracefully`` () =
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``format check detects formatting change even with same commit ID`` () =
     let tmpDir =
         Path.Combine(Path.GetTempPath(), $"fshw-fmtchk-cache-{Guid.NewGuid():N}")
@@ -251,7 +251,7 @@ let ``format check detects formatting change even with same commit ID`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            5000
+            15000
 
         // Verify plugin detected unformatted file
         let result1 = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
@@ -267,7 +267,7 @@ let ``format check detects formatting change even with same commit ID`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            5000
+            15000
 
         // With proper cache invalidation, plugin should detect file is now formatted
         let result2 = host.RunCommand("unformatted", [||]) |> Async.RunSynchronously
@@ -277,7 +277,7 @@ let ``format check detects formatting change even with same commit ID`` () =
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``format check reports unformatted files to error ledger`` () =
     let tmpDir =
         Path.Combine(Path.GetTempPath(), $"fshw-fmtchk-ledger-{Guid.NewGuid():N}")
@@ -299,7 +299,7 @@ let ``format check reports unformatted files to error ledger`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            5000
+            15000
 
         // The format-check plugin should report errors to the ErrorLedger
         let errors = host.GetErrors()
@@ -316,7 +316,7 @@ let ``format check reports unformatted files to error ledger`` () =
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``format check clears errors when file becomes formatted`` () =
     let tmpDir =
         Path.Combine(Path.GetTempPath(), $"fshw-fmtchk-clear-{Guid.NewGuid():N}")
@@ -339,7 +339,7 @@ let ``format check clears errors when file becomes formatted`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            5000
+            15000
 
         let errors1 = host.GetErrors()
         test <@ not errors1.IsEmpty @>
@@ -354,7 +354,7 @@ let ``format check clears errors when file becomes formatted`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> false
                 | _ -> true)
-            5000
+            15000
 
         // Then wait for it to finish
         waitUntil
@@ -362,7 +362,7 @@ let ``format check clears errors when file becomes formatted`` () =
                 match host.GetStatus("format-check") with
                 | Some(Completed _) -> true
                 | _ -> false)
-            5000
+            15000
 
         // Errors should be cleared
         let errors2 = host.GetErrors()

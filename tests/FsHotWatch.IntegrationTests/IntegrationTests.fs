@@ -1822,3 +1822,101 @@ let ``IgnoreFilterCache is safe under concurrent Get`` () =
             t.Join()
 
         test <@ errors.Count = 0 @>)
+
+// ---------------------------------------------------------------------------
+// Moved from FsHotWatch.Tests due to subprocess-timing flakiness under the
+// parallel xUnit collection runner. These tests spawn real `sleep` subprocesses
+// and assert on cross-thread timing windows that are starved by the unit-test
+// suite's parallel scheduler. They live here (where xunit runs less parallel
+// content) and are excluded from coverage.
+// ---------------------------------------------------------------------------
+
+// Drop semantics under RunExclusive "build": while a build is in flight,
+// additional FileChanged events must NOT spawn a second concurrent build.
+// Counts BuildCompleted emissions across rapid back-to-back triggers and asserts
+// exactly one fired.
+[<Fact(Timeout = 30000)>]
+let ``concurrent FileChanged events do not start two builds`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let buildCompletedCount = ref 0
+
+    let counter: PluginHandler<unit, obj> =
+        { Name = PluginName.create "build-counter"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted _ -> System.Threading.Interlocked.Increment(buildCompletedCount) |> ignore
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+          CacheKey = None
+          RequireWarmStart = false
+          Teardown = None }
+
+    // Slow build (sleep 1) so the second FileChanged certainly arrives mid-build.
+    let handler =
+        FsHotWatch.Build.BuildPlugin.create "sleep" "1" [] (ProjectGraph()) [] None [] None
+
+    host.RegisterHandler(counter)
+    host.RegisterHandler(handler)
+
+    host.EmitFileChanged(SourceChanged [ "src/A.fs" ])
+    // Tiny delay to ensure RunExclusive has marked the slot Running before the
+    // second dispatch evaluates the policy.
+    System.Threading.Thread.Sleep(100)
+    host.EmitFileChanged(SourceChanged [ "src/B.fs" ])
+
+    waitForTerminalStatus host "build" 15000
+    // Settle window: any erroneously-spawned second build would also fire its
+    // BuildCompleted within ~1.5s of the first; wait long enough to catch it.
+    System.Threading.Thread.Sleep(2000)
+
+    test <@ !buildCompletedCount = 1 @>
+
+[<Fact(Timeout = 30000)>]
+let ``run summary names the slowest project when 2+ projects ran`` () =
+    withTempDir "tp-slowest" (fun tmpDir ->
+        // 20× differential — wide enough that fork-exec / first-time JIT overhead
+        // on FastProj can't overtake SlowProj's actual wall time.
+        let configs =
+            [ { TestPrunePlugin.TestConfig.Project = "FastProj"
+                Command = "sh"
+                Args = "-c \"sleep 0.05\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None }
+              { TestPrunePlugin.TestConfig.Project = "SlowProj"
+                Command = "sh"
+                Args = "-c \"sleep 1.0\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+        let handler =
+            TestPrunePlugin.create ":memory:" tmpDir (Some configs) None None None None
+
+        host.RegisterHandler(handler)
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForTerminalStatus host "test-prune" 15000
+
+        let history = host.GetHistory("test-prune")
+        test <@ not history.IsEmpty @>
+        let lastRun = history |> List.last
+
+        match lastRun.Summary with
+        | Some s ->
+            test <@ s.Contains("slowest: SlowProj") @>
+            test <@ not (s.Contains("slowest: FastProj")) @>
+        | None -> failwith "expected summary on completed run")
