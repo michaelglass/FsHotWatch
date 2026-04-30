@@ -873,6 +873,7 @@ let ``BuildPlugin succeeds with echo command`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     let handler =
@@ -918,6 +919,7 @@ let ``BuildPlugin fails with false command`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None
@@ -1339,6 +1341,7 @@ let ``BuildPlugin does not run concurrent builds`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     // Use /bin/sleep 1 as a slow build command so the second emit arrives while the first is running
