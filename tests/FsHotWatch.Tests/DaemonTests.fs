@@ -557,6 +557,33 @@ let ``FormatScanStatus returns complete for ScanComplete`` () =
         test <@ status.Contains("70 files") @>
         test <@ status.Contains("15.5s") @>)
 
+// Pins the invariant the agent migration must preserve: once ScanAll's
+// reply lands, the scan state is observable as ScanComplete (not stale ScanIdle)
+// and the generation has advanced. With the wrapper-with-volatile-fields
+// design this was happenstance ordering of Volatile.Write before reply.Reply;
+// after collapsing to a single agent that owns its state in the loop's
+// recursion, it's inherent — the state lives in the next loop iteration so
+// any subsequent GetState round-trip observes it.
+[<Fact(Timeout = 20000)>]
+let ``GetScanState returns ScanComplete and generation advances after ScanAll`` () =
+    withTempDir "daemon" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        let gen0 = daemon.GetScanGeneration()
+        daemon.ScanAll() |> Async.RunSynchronously
+        let gen1 = daemon.GetScanGeneration()
+        let state1 = daemon.GetScanState()
+
+        test <@ gen1 = gen0 + 1L @>
+
+        match state1 with
+        | ScanComplete _ -> ()
+        | other -> failwithf "Expected ScanComplete after ScanAll, got %A" other
+
+        daemon.ScanAll() |> Async.RunSynchronously
+        let gen2 = daemon.GetScanGeneration()
+        test <@ gen2 = gen1 + 1L @>)
+
 [<Fact(Timeout = 20000)>]
 let ``RunOnce completes and returns plugin statuses`` () =
     withTempDir "daemon" (fun tmpDir ->
