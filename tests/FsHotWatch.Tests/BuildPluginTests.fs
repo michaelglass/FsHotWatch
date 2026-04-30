@@ -78,6 +78,16 @@ let ``create accepts graph and test project names`` () =
     test <@ handler.Name = PluginName.create "build" @>
 
 [<Fact(Timeout = 5000)>]
+let ``BuildPlugin opts in to framework warm-start gate`` () =
+    // Cold-start safety is enforced by the PluginFramework gate (RequireWarmStart);
+    // BuildPlugin must opt in so its cache key is suppressed until a real build
+    // has completed in this session.
+    let handler =
+        BuildPlugin.create "echo" "ok" [] (FsHotWatch.ProjectGraph.ProjectGraph()) [] None [] None
+
+    test <@ handler.RequireWarmStart = true @>
+
+[<Fact(Timeout = 5000)>]
 let ``plugin has correct name`` () =
     let handler =
         BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None
