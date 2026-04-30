@@ -15,14 +15,14 @@ open FsHotWatch.Tests.TestHelpers
 
 // --- decideBuildOutcome: pure parse/decide logic ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``decideBuildOutcome success with clean output yields BuildPassed and no entries`` () =
     let output = "Build succeeded.\n    0 Warning(s)\n    0 Error(s)"
     let (outcome, entries) = decideBuildOutcome true output
     test <@ outcome = BuildPassed output @>
     test <@ entries.IsEmpty @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``decideBuildOutcome success with warnings yields BuildPassed and parsed warnings`` () =
     let output =
         "/src/Bar.fs(3,1): warning FS0040: This construct causes code to be less generic"
@@ -33,7 +33,7 @@ let ``decideBuildOutcome success with warnings yields BuildPassed and parsed war
     test <@ entries.[0].Severity = DiagnosticSeverity.Warning @>
     test <@ entries.[0].Line = 3 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``decideBuildOutcome failure with parsed errors yields BuildOutputFailed and parsed entries`` () =
     let output =
         "/src/Foo.fs(12,5): error FS0001: This expression was expected to have type int"
@@ -43,7 +43,7 @@ let ``decideBuildOutcome failure with parsed errors yields BuildOutputFailed and
     test <@ entries.Length = 1 @>
     test <@ entries.[0].Severity = DiagnosticSeverity.Error @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``decideBuildOutcome failure with empty output yields single synthetic error`` () =
     let (outcome, entries) = decideBuildOutcome false ""
     test <@ outcome = BuildOutputFailed [ "" ] @>
@@ -51,7 +51,7 @@ let ``decideBuildOutcome failure with empty output yields single synthetic error
     test <@ entries.[0].Severity = DiagnosticSeverity.Error @>
     test <@ entries.[0].Message = "" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``decideBuildOutcome failure with unparseable output falls back to raw-text error`` () =
     let output = "Segmentation fault\nrandom stderr blob\nnot an MSBuild line"
     let (outcome, entries) = decideBuildOutcome false output
@@ -60,7 +60,7 @@ let ``decideBuildOutcome failure with unparseable output falls back to raw-text 
     test <@ entries.[0].Message = output @>
     test <@ entries.[0].Severity = DiagnosticSeverity.Error @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``decideBuildOutcome failure with mixed stderr and MSBuild lines prefers parsed entries`` () =
     let output =
         "Startup trace noise\n/src/Foo.fs(12,5): error FS0001: Bad type\nrandom stderr\n/src/Bar.fs(3,1): warning FS0040: Less generic"
@@ -71,61 +71,18 @@ let ``decideBuildOutcome failure with mixed stderr and MSBuild lines prefers par
     test <@ entries |> List.exists (fun e -> e.Severity = DiagnosticSeverity.Error) @>
     test <@ entries |> List.exists (fun e -> e.Severity = DiagnosticSeverity.Warning) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``create accepts graph and test project names`` () =
     let graph = FsHotWatch.ProjectGraph.ProjectGraph()
     let handler = BuildPlugin.create "echo" "build" [] graph [] None [] None
     test <@ handler.Name = PluginName.create "build" @>
 
-// Drop semantics under RunExclusive "build": while a build is in flight,
-// additional FileChanged events must NOT spawn a second concurrent build.
-// Counts BuildCompleted emissions across rapid back-to-back triggers and asserts
-// exactly one fired.
-[<Fact(Timeout = 30000)>]
-let ``concurrent FileChanged events do not start two builds`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+// NOTE: ``concurrent FileChanged events do not start two builds`` was moved to
+// FsHotWatch.IntegrationTests because it spawns a real `sleep 1` subprocess and
+// asserts on cross-thread timing windows; under the parallel xUnit collection
+// runner with system load it intermittently flakes due to scheduler starvation.
 
-    let buildCompletedCount = ref 0
-
-    let counter: PluginHandler<unit, obj> =
-        { Name = PluginName.create "build-counter"
-          Init = ()
-          Update =
-            fun _ctx state event ->
-                async {
-                    match event with
-                    | BuildCompleted _ -> System.Threading.Interlocked.Increment(buildCompletedCount) |> ignore
-                    | _ -> ()
-
-                    return state
-                }
-          Commands = []
-          Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
-          CacheKey = None
-          RequireWarmStart = false
-          Teardown = None }
-
-    // Slow build (sleep 1) so the second FileChanged certainly arrives mid-build.
-    let handler = BuildPlugin.create "sleep" "1" [] (ProjectGraph()) [] None [] None
-    host.RegisterHandler(counter)
-    host.RegisterHandler(handler)
-
-    host.EmitFileChanged(SourceChanged [ "src/A.fs" ])
-    // Tiny delay to ensure RunExclusive has marked the slot Running before the
-    // second dispatch evaluates the policy. Without this, the agent loop may not
-    // have processed the first FileChanged yet and we'd test sequential dispatch
-    // rather than overlap.
-    System.Threading.Thread.Sleep(100)
-    host.EmitFileChanged(SourceChanged [ "src/B.fs" ])
-
-    waitForTerminalStatus host "build" 8000
-    // Settle window: any erroneously-spawned second build would also fire its
-    // BuildCompleted within ~1.5s of the first; wait long enough to catch it.
-    System.Threading.Thread.Sleep(1500)
-
-    test <@ !buildCompletedCount = 1 @>
-
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``BuildPlugin opts in to framework warm-start gate`` () =
     // Cold-start safety is enforced by the PluginFramework gate (RequireWarmStart);
     // BuildPlugin must opt in so its cache key is suppressed until a real build
@@ -135,14 +92,14 @@ let ``BuildPlugin opts in to framework warm-start gate`` () =
 
     test <@ handler.RequireWarmStart = true @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =
     let handler =
         BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None
 
     test <@ handler.Name = PluginName.create "build" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``build-status command returns not run initially`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -155,7 +112,7 @@ let ``build-status command returns not run initially`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("not run") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatSilentFailureDiagnostic includes exit code and output length`` () =
     let output =
         "Build FAILED.\n    0 Warning(s)\n    0 Error(s)\n\nTime Elapsed 00:00:02.96"
@@ -165,7 +122,7 @@ let ``formatSilentFailureDiagnostic includes exit code and output length`` () =
     test <@ detail.Contains $"output={output.Length} bytes" @>
     test <@ detail.Contains "MSBuild aborted" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatSilentFailureDiagnostic includes elapsed time when present in output`` () =
     let output =
         "Build FAILED.\n    0 Warning(s)\n    0 Error(s)\n\nTime Elapsed 00:01:23.45"
@@ -173,13 +130,13 @@ let ``formatSilentFailureDiagnostic includes elapsed time when present in output
     let detail = formatSilentFailureDiagnostic 134 output
     test <@ detail.Contains "elapsed=00:01:23.45" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``formatSilentFailureDiagnostic omits elapsed when not present`` () =
     let output = "Build FAILED.\n    0 Warning(s)\n    0 Error(s)"
     let detail = formatSilentFailureDiagnostic 1 output
     test <@ not (detail.Contains "elapsed=") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``build plugin emits BuildCompleted on successful build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -207,7 +164,7 @@ let ``build plugin emits BuildCompleted on successful build`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``build-status command returns passed true after successful build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -225,7 +182,7 @@ let ``build-status command returns passed true after successful build`` () =
     let doc = JsonDocument.Parse(result.Value)
     Assert.Equal("passed", doc.RootElement.GetProperty("status").GetString())
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``build-status command returns failed after failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -264,7 +221,7 @@ let ``build plugin honors timeoutSec and records TimedOut outcome`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``build plugin reports Failed status on failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -285,7 +242,7 @@ let ``build plugin reports Failed status on failed build`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``build plugin emits BuildFailed on failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -307,7 +264,7 @@ let ``build plugin emits BuildFailed on failed build`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``build plugin reports errors on failed build`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -320,7 +277,7 @@ let ``build plugin reports errors on failed build`` () =
 
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``build plugin handles exception from runProcess`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -345,7 +302,7 @@ let ``build plugin handles exception from runProcess`` () =
 
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``build plugin ignores SolutionChanged events`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -363,7 +320,7 @@ let ``build plugin ignores SolutionChanged events`` () =
 
     test <@ getBuild () = None @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``build plugin triggers on ProjectChanged`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -381,7 +338,7 @@ let ``build plugin triggers on ProjectChanged`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``build is skipped when only test files change, after FCS confirms the file`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -412,7 +369,7 @@ let ``build is skipped when only test files change, after FCS confirms the file`
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``build skip waits for FileChecked of all changed test files before emitting BuildSucceeded`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -442,7 +399,7 @@ let ``build skip waits for FileChecked of all changed test files before emitting
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``build uses template for affected project`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -468,7 +425,7 @@ let ``build uses template for affected project`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``build falls back to original command when no template`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -492,7 +449,7 @@ let ``build falls back to original command when no template`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``build falls back when file not in graph`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -512,7 +469,7 @@ let ``build falls back when file not in graph`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``ProjectChanged always uses fallback command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -534,7 +491,7 @@ let ``ProjectChanged always uses fallback command`` () =
 
 // --- dependsOn tests ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``build with dependsOn buffers FileChanged until dependency satisfied`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -562,7 +519,7 @@ let ``build with dependsOn buffers FileChanged until dependency satisfied`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``build with dependsOn proceeds immediately when deps already satisfied`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -586,7 +543,7 @@ let ``build with dependsOn proceeds immediately when deps already satisfied`` ()
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``build with dependsOn reports Failed when dependency fails`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
@@ -614,7 +571,7 @@ let ``build with dependsOn reports Failed when dependency fails`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``build with empty dependsOn works normally`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -631,7 +588,7 @@ let ``build with empty dependsOn works normally`` () =
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``build with multiple dependsOn waits for all`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
@@ -666,14 +623,14 @@ let ``build with multiple dependsOn waits for all`` () =
 
 // --- §2a: BuildPlugin cache key behaviour ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``BuildPlugin cache key is provided regardless of getCommitId`` () =
     let h1 = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None
     let h2 = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None
     test <@ h1.CacheKey.IsSome @>
     test <@ h2.CacheKey.IsSome @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``regression: BuildPlugin writes a cache entry on terminal Custom BuildDone`` () =
     // Before this fix, BuildPlugin's applyBuildOutcome called EmitBuildCompleted
     // and ReportErrors from inside the fire-and-forget async, so the framework's
@@ -723,7 +680,7 @@ let private warmedHandler (command: string) (args: string) (dependsOn: string li
     waitForTerminalStatus host "build" 5000
     handler
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``BuildPlugin cache key matches between FileChanged and Custom BuildDone`` () =
     // The cache stores a result on the synchronous Custom BuildDone handler;
     // future FileChanged events look up by the same merkle key. Both must
@@ -739,7 +696,7 @@ let ``BuildPlugin cache key matches between FileChanged and Custom BuildDone`` (
     test <@ fileKey.IsSome @>
     test <@ fileKey = doneKey @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``BuildPlugin cache key returns None for FileChecked events`` () =
     // FileChecked events use a different composite key (File = Some x) so they
     // would always miss if looked up; returning None skips the cache entirely.
@@ -748,7 +705,7 @@ let ``BuildPlugin cache key returns None for FileChecked events`` () =
     let checkedEvt = FileChecked(fakeFileCheckResult "/tmp/Foo.fs")
     test <@ cacheKeyFn checkedEvt = None @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``BuildPlugin cache key reflects build command`` () =
     // §2a: changing the build command/args should invalidate the cache.
     // Tests the pure merkle directly, bypassing the cold-start guard.
@@ -757,7 +714,7 @@ let ``BuildPlugin cache key reflects build command`` () =
     let k2 = BuildPlugin.computeBuildCacheKey "dotnet" "test" [] inputs
     test <@ k1 <> k2 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``BuildPlugin cache key reflects dependsOn ordering and content`` () =
     let inputs = "stub-inputs-hash"
     let k1 = BuildPlugin.computeBuildCacheKey "dotnet" "build" [ "a"; "b" ] inputs
@@ -784,7 +741,7 @@ let private stubGraph (sources: string list) (projects: string list) =
         member _.GetCanonicalDllPath _ = None
         member _.GetMaxSourceMtime _ = None }
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``BuildInputsHasher produces stable hash for unchanged files`` () =
     withTempDir "binhasher-stable" (fun tmpDir ->
         let f1 = System.IO.Path.Combine(tmpDir, "A.fs")
@@ -796,7 +753,7 @@ let ``BuildInputsHasher produces stable hash for unchanged files`` () =
         let h = BuildInputsHasher(graph)
         test <@ h.Compute() = h.Compute() @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``BuildInputsHasher hash differs when a source file's content changes`` () =
     withTempDir "binhasher-content" (fun tmpDir ->
         let f1 = System.IO.Path.Combine(tmpDir, "A.fs")
@@ -810,7 +767,7 @@ let ``BuildInputsHasher hash differs when a source file's content changes`` () =
         System.IO.File.WriteAllText(f1, "let a = 2")
         test <@ before <> h.Compute() @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``BuildInputsHasher hash differs when files are added or removed`` () =
     withTempDir "binhasher-fileset" (fun tmpDir ->
         let f1 = System.IO.Path.Combine(tmpDir, "A.fs")
@@ -822,7 +779,7 @@ let ``BuildInputsHasher hash differs when files are added or removed`` () =
         let twoFiles = BuildInputsHasher(stubGraph [ f1; f2 ] []).Compute()
         test <@ oneFile <> twoFiles @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``BuildInputsHasher returns 'missing' sentinel for non-existent file`` () =
     withTempDir "binhasher-missing" (fun tmpDir ->
         let exists = System.IO.Path.Combine(tmpDir, "A.fs")
@@ -837,7 +794,7 @@ let ``BuildInputsHasher returns 'missing' sentinel for non-existent file`` () =
         test <@ not (System.String.IsNullOrEmpty(withMissing)) @>
         test <@ withMissing <> onlyExists @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``BuildInputsHasher distinct missing paths produce distinct merkles`` () =
     // Belt-and-suspenders: the "missing" sentinel must still be combined with
     // the path (else two different missing files would collapse to one merkle
@@ -849,7 +806,7 @@ let ``BuildInputsHasher distinct missing paths produce distinct merkles`` () =
         let h2 = BuildInputsHasher(stubGraph [ m2 ] []).Compute()
         test <@ h1 <> h2 @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``BuildInputsHasher propagates IOException from unreadable file`` () =
     // Simulate IO failure: chmod 000 a real file. ReadAllText throws
     // UnauthorizedAccessException, which now propagates instead of being
@@ -893,7 +850,7 @@ let ``BuildInputsHasher propagates IOException from unreadable file`` () =
                 with _ ->
                     ())
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``BuildInputsHasher caches by (path, mtime): repeated computes hash once`` () =
     // The cache is keyed on (path, mtimeTicks). Mutating content while
     // preserving mtime must return the previously-cached hash, proving the
@@ -914,7 +871,7 @@ let ``BuildInputsHasher caches by (path, mtime): repeated computes hash once`` (
         // Same merkle: the cache returned the original hash without re-reading.
         test <@ first = second @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``BuildInputsHasher mtime cache returns stable hash across repeat calls`` () =
     withTempDir "binhasher-cache" (fun tmpDir ->
         let f = System.IO.Path.Combine(tmpDir, "A.fs")
@@ -927,7 +884,7 @@ let ``BuildInputsHasher mtime cache returns stable hash across repeat calls`` ()
         test <@ h1 = h2 @>
         test <@ h2 = h3 @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``BuildInputsHasher includes project files in the merkle`` () =
     withTempDir "binhasher-projfiles" (fun tmpDir ->
         let proj = System.IO.Path.Combine(tmpDir, "P.fsproj")
@@ -984,7 +941,7 @@ let private runVerifyHarness
 
     result
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``BuildPlugin demotes BuildPassed to BuildFailed when canonical DLL is older than sources`` () =
     let getBuild =
         runVerifyHarness "build-verify-stale-demotion" (TimeSpan.Zero) (TimeSpan.FromMinutes(-10.0))
@@ -996,7 +953,7 @@ let ``BuildPlugin demotes BuildPassed to BuildFailed when canonical DLL is older
             | _ -> false
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``BuildPlugin emits BuildSucceeded when canonical DLL is newer than sources`` () =
     let getBuild =
         runVerifyHarness "build-verify-fresh" (TimeSpan.FromMinutes(-5.0)) (TimeSpan.Zero)

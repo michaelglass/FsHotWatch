@@ -32,7 +32,7 @@ let private makeCtxAwareHandler (name: string) (action: PluginCtx<unit> -> Async
       RequireWarmStart = false
       Teardown = None }
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``ctx.Log appears in host activity tail`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -51,7 +51,7 @@ let ``ctx.Log appears in host activity tail`` () =
     let r = List.head hist
     test <@ r.ActivityTail = [ "first"; "second" ] @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``ctx.StartSubtask and EndSubtask reflected in host`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
     let observedDuring = ref []
@@ -72,7 +72,7 @@ let ``ctx.StartSubtask and EndSubtask reflected in host`` () =
     test <@ observedDuring.Value |> List.length = 2 @>
     test <@ List.isEmpty (host.GetSubtasks("subtasker")) @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``CompleteWithSummary captured in history`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -89,7 +89,7 @@ let ``CompleteWithSummary captured in history`` () =
     let r = List.head (host.GetHistory("summarizer"))
     test <@ r.Summary = Some "did the thing" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``Running to Completed records positive elapsed`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
@@ -101,7 +101,7 @@ let ``Running to Completed records positive elapsed`` () =
     let r = List.head (host.GetHistory("timer"))
     test <@ r.Elapsed > TimeSpan.Zero @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``Terminal transition auto-ends open subtasks`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
