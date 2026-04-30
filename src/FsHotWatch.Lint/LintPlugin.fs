@@ -191,4 +191,5 @@ let create
               } ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey = Some cacheKey
+      RequireWarmStart = false
       Teardown = None }

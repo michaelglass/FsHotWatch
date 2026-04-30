@@ -2,6 +2,7 @@ module FsHotWatch.Tests.PluginFrameworkTests
 
 open Xunit
 open Swensen.Unquote
+open FsHotWatch
 open FsHotWatch.Events
 open FsHotWatch.Plugin
 open FsHotWatch.PluginFramework
@@ -59,6 +60,7 @@ let ``registered plugin dispatches FileChanged`` () =
           Commands = [ "was-called", fun state _args -> async { return $"%b{state}" } ]
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -81,6 +83,7 @@ let ``registered plugin skips unsubscribed events`` () =
           Commands = [ "get-count", fun state _args -> async { return $"%d{state}" } ]
           Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeTestRunCompleted ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -130,6 +133,7 @@ let ``commands query agent state`` () =
               Commands = [ "get-count", fun state _args -> async { return $"%d{state}" } ]
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              RequireWarmStart = false
               Teardown = None }
 
         let _reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -169,6 +173,7 @@ let ``Custom messages work for self-posting`` () =
               Commands = [ "got-custom", fun state _args -> async { return $"%b{state}" } ]
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              RequireWarmStart = false
               Teardown = None }
 
         let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -210,6 +215,7 @@ let ``handler errors are recovered`` () =
               Commands = [ "get-state", fun state _args -> async { return $"%d{state}" } ]
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              RequireWarmStart = false
               Teardown = None }
 
         let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
@@ -248,6 +254,7 @@ let ``plugin subscribing to CommandCompleted receives event`` () =
           Commands = [ "was-called", fun state _args -> async { return $"%b{state}" } ]
           Subscriptions = Set.ofList [ SubscribeCommandCompleted ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -290,6 +297,7 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
           Commands = [ "noop", fun _state _args -> async { return "ok" } ]
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     let reg =
@@ -349,3 +357,135 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
             | Completed _ -> true
             | _ -> false
         @>
+
+// --- RequireWarmStart gate: skip cache replay until first terminal status this session ---
+
+/// Build host services with a provided TaskCache for these tests.
+let private servicesWithCache (cache: TaskCache.ITaskCache) (registerCommand: string * CommandHandler -> unit) =
+    { Checker = checker
+      RepoRoot = "/tmp/repo"
+      ReportStatus = fun _ _ -> ()
+      ReportErrors = fun _ _ _ -> ()
+      ClearErrors = fun _ _ -> ()
+      ClearPlugin = fun _ -> ()
+      EmitBuildCompleted = fun _ -> ()
+      EmitTestRunStarted = fun _ -> ()
+      EmitTestProgress = fun _ -> ()
+      EmitTestRunCompleted = fun _ -> ()
+      EmitCommandCompleted = fun _ -> ()
+      RegisterCommand = registerCommand
+      TaskCache = Some cache
+      StartSubtask = fun _ _ _ -> ()
+      UpdateSubtask = fun _ _ _ -> ()
+      EndSubtask = fun _ _ -> ()
+      Log = fun _ _ -> ()
+      SetSummary = fun _ _ -> ()
+      SetNextTerminalOutcome = fun _ _ -> () }
+
+[<Fact(Timeout = 10000)>]
+let ``RequireWarmStart bypasses pre-populated cache on session start, replays after first terminal`` () =
+    async {
+        let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+        let cacheKey = ContentHash.create "k"
+        let pluginNameStr = "warm-pre"
+        let compKey: TaskCache.CompositeKey = { Plugin = pluginNameStr; File = None }
+
+        // Pre-populate cache as if a prior session had completed.
+        cache.Set
+            compKey
+            cacheKey
+            { CacheKey = cacheKey
+              Errors = []
+              Status = Completed System.DateTime.UtcNow
+              EmittedEvents = [] }
+
+        let updateCalls = ref 0
+        let mutable registeredCmd: CommandHandler option = None
+
+        let handler: PluginHandler<unit, unit> =
+            { Name = PluginName.create pluginNameStr
+              Init = ()
+              Update =
+                fun ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged _ ->
+                            System.Threading.Interlocked.Increment(updateCalls) |> ignore
+                            ctx.ReportStatus(Completed System.DateTime.UtcNow)
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = [ "drain", fun _state _args -> async { return "ok" } ]
+              Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey = Some(fun _ -> Some cacheKey)
+              RequireWarmStart = true
+              Teardown = None }
+
+        let reg =
+            registerHandler (servicesWithCache cache (fun (_, cmd) -> registeredCmd <- Some cmd)) handler
+
+        // Dispatch 1: cache is hot from a prior session, but RequireWarmStart says
+        // skip replay — Update must run.
+        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
+        // Drain by querying via the registered command (queues behind the FileChanged).
+        let! _ = registeredCmd.Value [||]
+        test <@ !updateCalls = 1 @>
+
+        // Dispatch 2: terminal status fired during dispatch 1, so the session is
+        // now warm — replay should fire and Update must NOT run again.
+        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
+        let! _ = registeredCmd.Value [||]
+        test <@ !updateCalls = 1 @>
+    }
+    |> Async.RunSynchronously
+
+[<Fact(Timeout = 10000)>]
+let ``RequireWarmStart=false replays pre-populated cache on session start`` () =
+    // Control: with the gate disabled, the same pre-populated cache replays
+    // on the very first dispatch, so Update must NOT run.
+    async {
+        let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+        let cacheKey = ContentHash.create "k"
+        let pluginNameStr = "warm-off"
+        let compKey: TaskCache.CompositeKey = { Plugin = pluginNameStr; File = None }
+
+        cache.Set
+            compKey
+            cacheKey
+            { CacheKey = cacheKey
+              Errors = []
+              Status = Completed System.DateTime.UtcNow
+              EmittedEvents = [] }
+
+        let updateCalls = ref 0
+        let mutable registeredCmd: CommandHandler option = None
+
+        let handler: PluginHandler<unit, unit> =
+            { Name = PluginName.create pluginNameStr
+              Init = ()
+              Update =
+                fun ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged _ ->
+                            System.Threading.Interlocked.Increment(updateCalls) |> ignore
+                            ctx.ReportStatus(Completed System.DateTime.UtcNow)
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = [ "drain", fun _state _args -> async { return "ok" } ]
+              Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey = Some(fun _ -> Some cacheKey)
+              RequireWarmStart = false
+              Teardown = None }
+
+        let reg =
+            registerHandler (servicesWithCache cache (fun (_, cmd) -> registeredCmd <- Some cmd)) handler
+
+        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
+        let! _ = registeredCmd.Value [||]
+        test <@ !updateCalls = 0 @>
+    }
+    |> Async.RunSynchronously

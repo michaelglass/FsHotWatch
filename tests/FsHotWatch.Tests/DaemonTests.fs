@@ -150,6 +150,7 @@ let ``daemon suppresses watcher events for preprocessor-modified files`` () =
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              RequireWarmStart = false
               Teardown = None }
 
         daemon.RegisterHandler(handler)
@@ -187,6 +188,7 @@ let ``daemon dispatches file change events to plugins`` () =
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              RequireWarmStart = false
               Teardown = None }
 
         daemon.RegisterHandler(handler)
@@ -236,6 +238,7 @@ let ``daemon debounces rapid file changes into one batch`` () =
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              RequireWarmStart = false
               Teardown = None }
 
         daemon.RegisterHandler(handler)
@@ -307,6 +310,7 @@ let ``daemon handles ProjectChanged events`` () =
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              RequireWarmStart = false
               Teardown = None }
 
         daemon.RegisterHandler(handler)
@@ -366,6 +370,7 @@ let ``daemon handles SolutionChanged events`` () =
               Commands = []
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
+              RequireWarmStart = false
               Teardown = None }
 
         daemon.RegisterHandler(handler)
@@ -469,6 +474,7 @@ let ``daemon RunWithIpc responds to IPC queries`` () =
               Commands = []
               Subscriptions = PluginSubscriptions.none
               CacheKey = None
+              RequireWarmStart = false
               Teardown = None }
 
         daemon.RegisterHandler(handler)
@@ -564,6 +570,7 @@ let ``RunOnce completes and returns plugin statuses`` () =
               Commands = []
               Subscriptions = PluginSubscriptions.none
               CacheKey = None
+              RequireWarmStart = false
               Teardown = None }
 
         daemon.RegisterHandler(handler)

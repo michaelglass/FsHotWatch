@@ -440,6 +440,7 @@ let internal createWithSlowHook
             | _ -> None
 
         Some cacheKey
+      RequireWarmStart = false
       Teardown =
         Some(fun () ->
             cts.Cancel()

@@ -51,6 +51,11 @@ let ``plugin has correct name`` () =
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "test-prune" @>
 
 [<Fact(Timeout = 5000)>]
+let ``testprune handler opts into RequireWarmStart`` () =
+    let handler = create ":memory:" "/tmp" None None None None None
+    test <@ handler.RequireWarmStart = true @>
+
+[<Fact(Timeout = 5000)>]
 let ``affected-tests command returns not-analyzed when no files checked`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
