@@ -796,3 +796,156 @@ let ``FileTaskCache.ParseFailureCount increments on malformed cache file`` () =
         let result = (cache :> ITaskCache).TryGet key cacheKey
         test <@ result = None @>
         test <@ cache.ParseFailureCount = before + 1 @>)
+
+// --- Coverage-floor tests for FileTaskCache JSON variants -----------
+// These exercise serialise/deserialise paths for the rarer EmittedEvents
+// shapes (TestsTimedOut, CachedTestProgress, CachedCommandCompleted,
+// Aborted outcome, CompositeKey-without-file). Without them
+// FileTaskCache.fs sits at ~77.7 % line coverage and the ratchet's 78 %
+// threshold drifts in/out of fail across runs (deterministic shortfall,
+// not flake — see coverage_ratchet_lucky_ceiling memory).
+
+[<Fact(Timeout = 5000)>]
+let ``FileTaskCache roundtrips TestsTimedOut variant`` () =
+    withTempDir "ftc-timed-out" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+
+        let runId = System.Guid.NewGuid()
+
+        let result =
+            { CacheKey = hash "k"
+              Errors = []
+              Status = Completed(at = fixedTime)
+              EmittedEvents =
+                [ CachedTestRunCompleted
+                      { RunId = runId
+                        TotalElapsed = TimeSpan.FromSeconds(7.5)
+                        Outcome = Aborted "user-cancel"
+                        Results =
+                          Map.ofList
+                              [ "p1",
+                                TestsTimedOut("output", TimeSpan.FromSeconds(30.0), false, TimeSpan.FromSeconds(30.0)) ]
+                        RanFullSuite = false } ] }
+
+        c.Set (ck "test-prune" "X.fs") (hash "k") result
+
+        let cache2 = FileTaskCache(tmpDir)
+        let r = (cache2 :> ITaskCache).TryGet (ck "test-prune" "X.fs") (hash "k")
+        test <@ r.IsSome @>
+
+        let evt =
+            r.Value.EmittedEvents
+            |> List.tryPick (function
+                | CachedTestRunCompleted e -> Some e
+                | _ -> None)
+
+        test <@ evt.IsSome @>
+
+        match evt.Value.Outcome with
+        | Aborted reason -> test <@ reason = "user-cancel" @>
+        | _ -> failwith "expected Aborted outcome"
+
+        match evt.Value.Results.["p1"] with
+        | TestsTimedOut(_, after, _, elapsed) ->
+            test <@ after = TimeSpan.FromSeconds(30.0) @>
+            test <@ elapsed = TimeSpan.FromSeconds(30.0) @>
+        | _ -> failwith "expected TestsTimedOut")
+
+[<Fact(Timeout = 5000)>]
+let ``FileTaskCache roundtrips CachedTestProgress and CachedCommandCompleted`` () =
+    withTempDir "ftc-progress-cmd" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+
+        let runId = System.Guid.NewGuid()
+        let startedAt = fixedTime
+
+        let progress: TestProgress =
+            { RunId = runId
+              NewResults =
+                Map.ofList
+                    [ "proj-a", TestsPassed("ok", false, TimeSpan.FromSeconds 1.0)
+                      "proj-b", TestsFailed("nope", true, TimeSpan.FromSeconds 0.5) ] }
+
+        let started: TestRunStarted = { RunId = runId; StartedAt = startedAt }
+
+        let cmdOk: CommandCompletedResult =
+            { Name = "echo"
+              Outcome = CommandSucceeded "hi" }
+
+        let cmdBad: CommandCompletedResult =
+            { Name = "false"
+              Outcome = CommandFailed "boom" }
+
+        let result =
+            { CacheKey = hash "k"
+              Errors = []
+              Status = Completed(at = fixedTime)
+              EmittedEvents =
+                [ CachedTestRunStarted started
+                  CachedTestProgress progress
+                  CachedCommandCompleted cmdOk
+                  CachedCommandCompleted cmdBad ] }
+
+        // Use a CompositeKey *without* a file to also cover that branch
+        // of compositeKeyToString.
+        c.Set (ckPlugin "filecmd") (hash "k") result
+
+        let cache2 = FileTaskCache(tmpDir)
+        let r = (cache2 :> ITaskCache).TryGet (ckPlugin "filecmd") (hash "k")
+        test <@ r.IsSome @>
+        test <@ r.Value.EmittedEvents.Length = 4 @>
+
+        let progressEvt =
+            r.Value.EmittedEvents
+            |> List.tryPick (function
+                | CachedTestProgress p -> Some p
+                | _ -> None)
+
+        test <@ progressEvt.IsSome @>
+        test <@ progressEvt.Value.RunId = runId @>
+        test <@ progressEvt.Value.NewResults.Count = 2 @>
+
+        let startedEvt =
+            r.Value.EmittedEvents
+            |> List.tryPick (function
+                | CachedTestRunStarted s -> Some s
+                | _ -> None)
+
+        test <@ startedEvt.IsSome @>
+        test <@ startedEvt.Value.RunId = runId @>
+
+        let cmds =
+            r.Value.EmittedEvents
+            |> List.choose (function
+                | CachedCommandCompleted c -> Some c
+                | _ -> None)
+
+        test <@ cmds.Length = 2 @>
+
+        let cmdOutcomes = cmds |> List.map (fun c -> c.Outcome)
+
+        test
+            <@
+                cmdOutcomes
+                |> List.exists (function
+                    | CommandSucceeded "hi" -> true
+                    | _ -> false)
+            @>
+
+        test
+            <@
+                cmdOutcomes
+                |> List.exists (function
+                    | CommandFailed "boom" -> true
+                    | _ -> false)
+            @>)
+
+[<Fact(Timeout = 5000)>]
+let ``FileTaskCache TryGet on missing file returns None`` () =
+    withTempDir "ftc-miss" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+        let result = c.TryGet (ck "build" "Nonexistent.fs") (hash "k")
+        test <@ result = None @>)
