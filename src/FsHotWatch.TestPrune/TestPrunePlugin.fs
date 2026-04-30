@@ -9,7 +9,6 @@ open FsHotWatch.Events
 open FsHotWatch
 open FsHotWatch.Logging
 open FsHotWatch.ProcessHelper
-open FsHotWatch.Lifecycle
 open FsHotWatch.PluginActivity
 open FsHotWatch.PluginFramework
 open FsHotWatch.StringHelpers
@@ -136,14 +135,6 @@ type TestConfig =
         TimeoutSec: int option
     }
 
-type RerunIntent =
-    | NoRerun
-    | RerunQueued
-
-type TestRunPhase =
-    | TestsIdle of Lifecycle<Idle, TestResults option>
-    | TestsRunning of Lifecycle<Running, TestResults option> * RerunIntent
-
 type AffectedTestsState =
     | NotYetAnalyzed
     | Analyzed of TestMethodInfo list
@@ -155,7 +146,18 @@ type TestPruneState =
         AffectedTests: AffectedTestsState
         ChangedSymbols: string list
         ChangedFiles: string list
-        TestPhase: TestRunPhase
+        /// Last completed test run's results, if any. Replaces the prior
+        /// `Lifecycle.value`-encoded last results — `ctx.IsRunning "tests"`
+        /// is the source of truth for "currently running", so we no longer
+        /// need a phantom-typed Idle/Running phase to wrap this value.
+        LastResults: TestResults option
+        /// True if a BuildCompleted arrived while a test run was in flight.
+        /// The synchronous `Custom(TestsFinished)` handler reads this AFTER
+        /// the run completes — at which point `state.ChangedSymbols` reflects
+        /// every FileChecked that landed during the run, including ones that
+        /// arrived between the queueing BuildCompleted and TestsFinished.
+        /// Cleared when the rerun is dispatched.
+        PendingRerun: bool
         /// Maps test class name → absolute source file path (built during FileChecked analysis).
         TestClassFiles: Map<string, string>
     }
@@ -739,15 +741,23 @@ let create
           AffectedTests = NotYetAnalyzed
           ChangedSymbols = []
           ChangedFiles = []
-          TestPhase = TestsIdle(Lifecycle.create None)
+          LastResults = None
+          PendingRerun = false
           TestClassFiles = Map.empty }
 
+    /// Returns the `TestsFinished` message that the framework's RunExclusive
+    /// will post back to the agent. The synchronous `Custom(TestsFinished)`
+    /// handler emits the `TestRunStarted`/`TestRunCompleted` events inside
+    /// the §2a cache-write capture window. Catches its own exceptions to
+    /// produce an `Aborted` lifecycle rather than letting RunExclusive eat
+    /// the message (which would leave the slot freed but no completion
+    /// posted, stranding `LastResults`/`PendingRerun` in a Schrödinger state).
     let runTestsWithImpact
         (ctx: PluginCtx<TestPruneMsg>)
         (configs: TestConfig list)
         (state: TestPruneState)
         (hasCachedResults: bool)
-        =
+        : Async<TestPruneMsg> =
         async {
             try
                 // Extension-contributed edges were already written to the DB by
@@ -770,9 +780,9 @@ let create
                     Logging.info "test-prune" "No affected classes — skipping tests (not cold start)"
 
                     // Build a degenerate lifecycle (Started → Completed with empty
-                    // Results) and post it. The synchronous Custom handler emits
-                    // both events inside the cache-write capture window so they
-                    // replay correctly on cache hit.
+                    // Results). The synchronous Custom handler emits both events
+                    // inside the cache-write capture window so they replay
+                    // correctly on cache hit.
                     let runId = Guid.NewGuid()
 
                     let started: TestRunStarted =
@@ -786,7 +796,7 @@ let create
                           Results = Map.empty
                           RanFullSuite = true }
 
-                    ctx.Post(TestsFinished(started, completed))
+                    return TestsFinished(started, completed)
                 else
                     if totalClasses = 0 then
                         Logging.info "test-prune" "No affected classes (cold start) — running all tests"
@@ -801,7 +811,7 @@ let create
                     // synchronous handler emits Started + Completed for the
                     // §2a cache-write capture window.
                     ignore results
-                    ctx.Post(TestsFinished(started, completed))
+                    return TestsFinished(started, completed)
             with ex ->
                 Logging.error "test-prune" $"runTests failed: %s{ex.Message}"
 
@@ -820,12 +830,12 @@ let create
                       Results = Map.empty
                       RanFullSuite = true }
 
-                ctx.Post(TestsFinished(started, completed))
+                return TestsFinished(started, completed)
         }
 
     let commands =
         [ "affected-tests",
-          fun (state: TestPruneState) (_args: string array) ->
+          fun (_ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
               async {
                   match state.AffectedTests with
                   | NotYetAnalyzed -> return JsonSerializer.Serialize({| status = "not analyzed" |})
@@ -841,22 +851,22 @@ let create
               }
 
           "changed-files",
-          fun (state: TestPruneState) (_args: string array) ->
+          fun (_ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
               async { return JsonSerializer.Serialize(state.ChangedFiles) }
 
           "test-results",
-          fun (state: TestPruneState) (_args: string array) ->
+          fun (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
               async {
-                  match state.TestPhase with
-                  | TestsRunning _ -> return JsonSerializer.Serialize({| status = "running" |})
-                  | TestsIdle idle ->
-                      match Lifecycle.value idle with
+                  if ctx.IsRunning "tests" then
+                      return JsonSerializer.Serialize({| status = "running" |})
+                  else
+                      match state.LastResults with
                       | Some results -> return formatTestResultsJson results
                       | None -> return JsonSerializer.Serialize({| status = "not run" |})
               }
 
           "flaky-tests",
-          fun (_state: TestPruneState) (_args: string array) ->
+          fun (_ctx: PluginCtx<TestPruneMsg>) (_state: TestPruneState) (_args: string array) ->
               async {
                   let history = Flakiness.loadHistory (flakinessHistoryPath repoRoot)
                   let top = Flakiness.topFlaky 10 history
@@ -880,11 +890,11 @@ let create
         | Some allConfigs when not allConfigs.IsEmpty ->
             commands
             @ [ "run-tests",
-                fun (state: TestPruneState) (args: string array) ->
+                fun (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (args: string array) ->
                     async {
-                        match state.TestPhase with
-                        | TestsRunning _ -> return JsonSerializer.Serialize({| error = "tests already running" |})
-                        | TestsIdle _ ->
+                        if ctx.IsRunning "tests" then
+                            return JsonSerializer.Serialize({| error = "tests already running" |})
+                        else
                             try
                                 let argStr = if args.Length > 0 then args.[0].Trim() else "{}"
 
@@ -918,10 +928,7 @@ let create
                                         | false, _ -> None
 
                                     // Resolve configs or produce an error
-                                    let lastResults =
-                                        match state.TestPhase with
-                                        | TestsIdle idle -> Lifecycle.value idle
-                                        | TestsRunning _ -> None
+                                    let lastResults = state.LastResults
 
                                     let configsResult =
                                         if onlyFailed then
@@ -975,10 +982,7 @@ let create
             async {
                 match event with
                 | PluginEvent.FileChecked result ->
-                    let isIdle =
-                        match state.TestPhase with
-                        | TestsIdle _ -> true
-                        | TestsRunning _ -> false
+                    let isIdle = not (ctx.IsRunning "tests")
 
                     try
                         let relPath = Path.GetRelativePath(repoRoot, result.File).Replace('\\', '/')
@@ -1115,25 +1119,22 @@ let create
                 | PluginEvent.BuildCompleted buildResult ->
                     match buildResult with
                     | BuildSucceeded ->
-                        match state.TestPhase with
-                        | TestsRunning(running, _) ->
+                        if ctx.IsRunning "tests" then
                             ctx.Log "queued re-run (tests already running)"
 
                             Logging.info
                                 "test-prune"
                                 "BuildSucceeded received but tests already running — will re-run after"
 
-                            return
-                                { state with
-                                    TestPhase = TestsRunning(running, RerunQueued) }
-                        | TestsIdle idle ->
+                            return { state with PendingRerun = true }
+                        else
                             Logging.info "test-prune" "BuildSucceeded: starting test run"
 
                             // Flush/query before announcing Running so the reported status never
                             // lies (the old order would flash Running even on schema-drifted DBs).
                             // The framework catches uncaught throws and forces Failed as a
                             // defense-in-depth net; we still trap locally here so we can run
-                            // the schema-drift self-heal and preserve the TestsIdle transition.
+                            // the schema-drift self-heal and preserve the idle transition.
                             match
                                 (try
                                     Ok(flushAndQueryAffected state)
@@ -1146,29 +1147,19 @@ let create
                                 ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
                                 return state
                             | Ok stateWithAffected ->
-                                ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
-                                let running = Lifecycle.start idle
-
-                                let newState =
-                                    { stateWithAffected with
-                                        TestPhase = TestsRunning(running, NoRerun) }
-
-                                // Dispatch tests to thread pool
-                                let hasCachedResults = (Lifecycle.value idle).IsSome
-
                                 match testConfigs with
                                 | Some configs when not configs.IsEmpty ->
-                                    async { do! runTestsWithImpact ctx configs newState hasCachedResults }
-                                    |> Async.Start
+                                    ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
+                                    let hasCachedResults = state.LastResults.IsSome
 
-                                    return newState
+                                    ctx.RunExclusive
+                                        "tests"
+                                        (runTestsWithImpact ctx configs stateWithAffected hasCachedResults)
+
+                                    return stateWithAffected
                                 | _ ->
-                                    // No test configs — flush only, transition back to idle
-                                    let idleAgain = Lifecycle.complete None running
-
-                                    return
-                                        { newState with
-                                            TestPhase = TestsIdle idleAgain }
+                                    // No test configs — flush only; nothing to run.
+                                    return stateWithAffected
                     | BuildFailed _ -> return state
 
                 | Custom(TestsFinished(started, completed)) ->
@@ -1192,7 +1183,7 @@ let create
                         reportTestErrors ctx state.TestClassFiles testResults
 
                     // Pushing a terminal Completed/Failed status is what appends the
-                    // run to history; both RerunQueued and NoRerun branches must call this.
+                    // run to history; both rerun and final-idle branches must call this.
                     let recordRunOutcome (results: TestResults) =
                         let total = results.Results.Count
 
@@ -1254,20 +1245,17 @@ let create
 
                                 ctx.ReportStatus(PluginStatus.Failed($"%d{failed} failed: %s{names}", DateTime.UtcNow))
 
-                    match state.TestPhase with
-                    | TestsRunning(running, RerunQueued) ->
+                    if state.PendingRerun then
                         Logging.info "test-prune" "Re-running tests (queued during previous run)"
 
-                        // Flush any new pending analysis. If the DB errors out here the rerun
-                        // never happens, so we must bail to TestsIdle (capturing the just-
-                        // completed testResults) instead of leaving the phase stuck in Running.
+                        // Flush any new pending analysis against CURRENT state — picking up any
+                        // FileChecked symbols that landed between the queueing BuildCompleted
+                        // and now. If the DB errors out here the rerun never happens, so we
+                        // must bail back to idle (capturing testResults) instead of leaving
+                        // PendingRerun stuck and the slot already freed.
                         match
                             (try
-                                Ok(
-                                    flushAndQueryAffected
-                                        { state with
-                                            TestPhase = TestsRunning(running, NoRerun) }
-                                )
+                                Ok(flushAndQueryAffected { state with PendingRerun = false })
                              with ex ->
                                  Error ex)
                         with
@@ -1275,11 +1263,11 @@ let create
                             Logging.error "test-prune" $"flushAndQueryAffected (rerun) failed: %s{ex.Message}"
                             tryRepairSchemaDrift ex
                             ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
-                            let completed = Lifecycle.complete (Some testResults) running
 
                             return
                                 { state with
-                                    TestPhase = TestsIdle completed
+                                    LastResults = Some testResults
+                                    PendingRerun = false
                                     ChangedFiles = []
                                     ChangedSymbols = []
                                     AffectedTests = Analyzed [] }
@@ -1287,34 +1275,29 @@ let create
                             recordRunOutcome testResults
                             Volatile.Write(&changedSymbolsRef, [])
 
-                            let rerunRunning = Lifecycle.complete (Some testResults) running |> Lifecycle.start
-
                             ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
 
                             let rerunState =
                                 { rerunState with
-                                    TestPhase = TestsRunning(rerunRunning, NoRerun) }
+                                    LastResults = Some testResults
+                                    PendingRerun = false }
 
                             match testConfigs with
                             | Some configs when not configs.IsEmpty ->
-                                async { do! runTestsWithImpact ctx configs rerunState true } |> Async.Start
+                                ctx.RunExclusive "tests" (runTestsWithImpact ctx configs rerunState true)
                             | _ -> ()
 
                             return rerunState
-                    | TestsRunning(running, NoRerun) ->
-                        let completed = Lifecycle.complete (Some testResults) running
+                    else
                         Volatile.Write(&changedSymbolsRef, [])
                         recordRunOutcome testResults
 
                         return
                             { state with
-                                TestPhase = TestsIdle completed
+                                LastResults = Some testResults
                                 ChangedFiles = []
                                 ChangedSymbols = []
                                 AffectedTests = Analyzed [] }
-                    | TestsIdle _ ->
-                        // Unexpected but handle gracefully
-                        return state
 
                 | _ -> return state
             }

@@ -4,6 +4,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch
 open FsHotWatch.Events
+open FsHotWatch.ErrorLedger
 open FsHotWatch.Plugin
 open FsHotWatch.PluginFramework
 open FsHotWatch.Tests.TestHelpers
@@ -57,7 +58,7 @@ let ``registered plugin dispatches FileChanged`` () =
                     | FileChanged _ -> return true
                     | _ -> return _state
                 }
-          Commands = [ "was-called", fun state _args -> async { return $"%b{state}" } ]
+          Commands = [ "was-called", fun _ctx state _args -> async { return $"%b{state}" } ]
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
           RequireWarmStart = false
@@ -80,7 +81,7 @@ let ``registered plugin skips unsubscribed events`` () =
         { Name = PluginName.create "test-skip"
           Init = 0
           Update = fun _ctx state _event -> async { return state + 1 }
-          Commands = [ "get-count", fun state _args -> async { return $"%d{state}" } ]
+          Commands = [ "get-count", fun _ctx state _args -> async { return $"%d{state}" } ]
           Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeTestRunCompleted ]
           CacheKey = None
           RequireWarmStart = false
@@ -130,7 +131,7 @@ let ``commands query agent state`` () =
                         | FileChanged _ -> return state + 1
                         | _ -> return state
                     }
-              Commands = [ "get-count", fun state _args -> async { return $"%d{state}" } ]
+              Commands = [ "get-count", fun _ctx state _args -> async { return $"%d{state}" } ]
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
               RequireWarmStart = false
@@ -170,7 +171,7 @@ let ``Custom messages work for self-posting`` () =
                             return true
                         | _ -> return state
                     }
-              Commands = [ "got-custom", fun state _args -> async { return $"%b{state}" } ]
+              Commands = [ "got-custom", fun _ctx state _args -> async { return $"%b{state}" } ]
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
               RequireWarmStart = false
@@ -212,7 +213,7 @@ let ``handler errors are recovered`` () =
                         | FileChanged _ -> return state + 1
                         | _ -> return state
                     }
-              Commands = [ "get-state", fun state _args -> async { return $"%d{state}" } ]
+              Commands = [ "get-state", fun _ctx state _args -> async { return $"%d{state}" } ]
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
               RequireWarmStart = false
@@ -251,7 +252,7 @@ let ``plugin subscribing to CommandCompleted receives event`` () =
                     | CommandCompleted _ -> return true
                     | _ -> return _state
                 }
-          Commands = [ "was-called", fun state _args -> async { return $"%b{state}" } ]
+          Commands = [ "was-called", fun _ctx state _args -> async { return $"%b{state}" } ]
           Subscriptions = Set.ofList [ SubscribeCommandCompleted ]
           CacheKey = None
           RequireWarmStart = false
@@ -294,7 +295,7 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
                         return state
                     | _ -> return state
                 }
-          Commands = [ "noop", fun _state _args -> async { return "ok" } ]
+          Commands = [ "noop", fun _ctx _state _args -> async { return "ok" } ]
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
           RequireWarmStart = false
@@ -416,7 +417,7 @@ let ``RequireWarmStart bypasses pre-populated cache on session start, replays af
 
                         return state
                     }
-              Commands = [ "drain", fun _state _args -> async { return "ok" } ]
+              Commands = [ "drain", fun _ctx _state _args -> async { return "ok" } ]
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey = Some(fun _ -> Some cacheKey)
               RequireWarmStart = true
@@ -475,7 +476,7 @@ let ``RequireWarmStart=false replays pre-populated cache on session start`` () =
 
                         return state
                     }
-              Commands = [ "drain", fun _state _args -> async { return "ok" } ]
+              Commands = [ "drain", fun _ctx _state _args -> async { return "ok" } ]
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey = Some(fun _ -> Some cacheKey)
               RequireWarmStart = false
@@ -530,7 +531,7 @@ let ``RunExclusive ignores second call while first is running`` () =
                             return state + n
                         | _ -> return state
                     }
-              Commands = [ "get", fun s _ -> async { return string s } ]
+              Commands = [ "get", fun _ctx s _ -> async { return string s } ]
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey = None
               RequireWarmStart = false
@@ -565,6 +566,202 @@ let ``RunExclusive ignores second call while first is running`` () =
     }
     |> Async.RunSynchronously
 
+// --- Cache replay: emitted events + error-replay branches ---
+
+[<Fact(Timeout = 30000)>]
+let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRunCompleted, CommandCompleted from EmittedEvents``
+    ()
+    =
+    async {
+        // Pre-populate the cache with a result whose EmittedEvents list contains
+        // every CachedEvent variant the framework knows how to replay. On
+        // dispatch (RequireWarmStart=false), the framework must re-fire each
+        // one through the corresponding host service. Covers the replay arm in
+        // PluginFramework that walks `result.EmittedEvents` (lines 347-356).
+        let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+        let cacheKey = ContentHash.create "k"
+        let pluginNameStr = "replay-emit"
+        let compKey: TaskCache.CompositeKey = { Plugin = pluginNameStr; File = None }
+
+        let runId = System.Guid.NewGuid()
+        let startedAt = System.DateTime.UtcNow
+        let testResults = Map.empty
+
+        let emitted: TaskCache.CachedEvent list =
+            [ TaskCache.CachedBuildCompleted BuildSucceeded
+              TaskCache.CachedTestRunStarted { RunId = runId; StartedAt = startedAt }
+              TaskCache.CachedTestProgress
+                  { RunId = runId
+                    NewResults = testResults }
+              TaskCache.CachedTestRunCompleted
+                  { RunId = runId
+                    TotalElapsed = System.TimeSpan.Zero
+                    Outcome = TestRunOutcome.Normal
+                    Results = testResults
+                    RanFullSuite = true }
+              TaskCache.CachedCommandCompleted
+                  { Name = "noop"
+                    Outcome = CommandSucceeded "ok" } ]
+
+        cache.Set
+            compKey
+            cacheKey
+            { CacheKey = cacheKey
+              // Errors uses three forms: file="*" (ClearPlugin), entries=[] for a real
+              // file (ClearErrors), and a real entry list (ReportErrors). Covers all
+              // three branches in the replay error loop.
+              Errors =
+                [ ("*", [])
+                  ("/tmp/clear-me.fs", [])
+                  ("/tmp/has-errors.fs", [ ErrorEntry.error "x" ]) ]
+              Status = Completed System.DateTime.UtcNow
+              EmittedEvents = emitted }
+
+        let buildSeen = ref 0
+        let trsSeen = ref 0
+        let tpSeen = ref 0
+        let trcSeen = ref 0
+        let ccSeen = ref 0
+        let clearedPlugin = ref 0
+        let clearedFiles = System.Collections.Generic.List<string>()
+        let reportedFiles = System.Collections.Generic.List<string>()
+        let mutable registeredCmd: CommandHandler option = None
+
+        let services =
+            { Checker = checker
+              RepoRoot = "/tmp/repo"
+              ReportStatus = fun _ _ -> ()
+              ReportErrors = fun _ file _ -> lock reportedFiles (fun () -> reportedFiles.Add(file))
+              ClearErrors = fun _ file -> lock clearedFiles (fun () -> clearedFiles.Add(file))
+              ClearPlugin = fun _ -> System.Threading.Interlocked.Increment(clearedPlugin) |> ignore
+              EmitBuildCompleted = fun _ -> System.Threading.Interlocked.Increment(buildSeen) |> ignore
+              EmitTestRunStarted = fun _ -> System.Threading.Interlocked.Increment(trsSeen) |> ignore
+              EmitTestProgress = fun _ -> System.Threading.Interlocked.Increment(tpSeen) |> ignore
+              EmitTestRunCompleted = fun _ -> System.Threading.Interlocked.Increment(trcSeen) |> ignore
+              EmitCommandCompleted = fun _ -> System.Threading.Interlocked.Increment(ccSeen) |> ignore
+              RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd
+              TaskCache = Some cache
+              StartSubtask = fun _ _ _ -> ()
+              UpdateSubtask = fun _ _ _ -> ()
+              EndSubtask = fun _ _ -> ()
+              Log = fun _ _ -> ()
+              SetSummary = fun _ _ -> ()
+              SetNextTerminalOutcome = fun _ _ -> () }
+
+        let updateCalls = ref 0
+
+        let handler: PluginHandler<unit, unit> =
+            { Name = PluginName.create pluginNameStr
+              Init = ()
+              Update =
+                fun _ctx state _event ->
+                    async {
+                        System.Threading.Interlocked.Increment(updateCalls) |> ignore
+                        return state
+                    }
+              Commands = [ "drain", fun _ _ _ -> async { return "ok" } ]
+              Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey = Some(fun _ -> Some cacheKey)
+              RequireWarmStart = false
+              Teardown = None }
+
+        let reg = registerHandler services handler
+        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
+        // Drain past dispatch.
+        let! _ = registeredCmd.Value [||]
+
+        // Cache replayed → Update must NOT have been called.
+        test <@ !updateCalls = 0 @>
+
+        // Each emitted-event variant fired exactly once.
+        test <@ !buildSeen = 1 @>
+        test <@ !trsSeen = 1 @>
+        test <@ !tpSeen = 1 @>
+        test <@ !trcSeen = 1 @>
+        test <@ !ccSeen = 1 @>
+
+        // Error-replay branches all exercised.
+        // The replay loop emits ClearPlugin (for "*"), ClearErrors (for empty entries
+        // on a real file), ReportErrors (for non-empty entries). The pre-replay
+        // ClearPlugin (FileChanged event with File=None) also fires once.
+        test <@ !clearedPlugin >= 1 @>
+        test <@ clearedFiles |> Seq.contains "/tmp/clear-me.fs" @>
+        test <@ reportedFiles |> Seq.contains "/tmp/has-errors.fs" @>
+    }
+    |> Async.RunSynchronously
+
+[<Fact(Timeout = 30000)>]
+let ``RunExclusive releases slot when work raises and logs without re-posting completion`` () =
+    // Covers runOne's try/with around `let! msg = w` (PluginFramework lines 212-213, 219):
+    // when work throws, completion stays ValueNone (no Custom message posted),
+    // and the slot is released so a subsequent RunExclusive can run.
+    async {
+        let started = ref 0
+        let completed = ref 0
+        let mutable registeredCmd: CommandHandler option = None
+        let mutable capturedCtx: PluginCtx<RxMsg> option = None
+
+        let handler: PluginHandler<int, RxMsg> =
+            { Name = PluginName.create "rx-throw"
+              Init = 0
+              Update =
+                fun ctx state event ->
+                    async {
+                        capturedCtx <- Some ctx
+
+                        match event with
+                        | FileChanged(SourceChanged [ "/throw" ]) ->
+                            ctx.RunExclusive
+                                "k"
+                                (async {
+                                    System.Threading.Interlocked.Increment(started) |> ignore
+                                    return failwith "boom"
+                                })
+
+                            return state
+                        | FileChanged _ ->
+                            ctx.RunExclusive
+                                "k"
+                                (async {
+                                    System.Threading.Interlocked.Increment(started) |> ignore
+                                    return RxDone 1
+                                })
+
+                            return state
+                        | Custom(RxDone n) ->
+                            System.Threading.Interlocked.Increment(completed) |> ignore
+                            return state + n
+                        | _ -> return state
+                    }
+              Commands = [ "get", fun _ s _ -> async { return string s } ]
+              Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey = None
+              RequireWarmStart = false
+              Teardown = None }
+
+        let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
+
+        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/throw" ]))
+        let! _ = registeredCmd.Value [||]
+        // Wait for the throwing work to complete (synchronously raises in the async).
+        // Generous polling timeouts: under heavy parallel-collection load the
+        // thread-pool can lag scheduling our runOne async by several seconds.
+        waitUntil (fun () -> !started = 1) 20000
+
+        // Slot released — IsRunning "k" must report false even though work raised.
+        waitUntil (fun () -> not (capturedCtx.Value.IsRunning "k")) 20000
+        test <@ not (capturedCtx.Value.IsRunning "k") @>
+        // No completion posted (Custom RxDone never fired).
+        test <@ !completed = 0 @>
+
+        // Subsequent dispatch can run — proves the slot was released.
+        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/ok.fs" ]))
+        waitUntil (fun () -> !completed = 1) 20000
+        test <@ !started = 2 @>
+        test <@ !completed = 1 @>
+    }
+    |> Async.RunSynchronously
+
 [<Fact(Timeout = 10000)>]
 let ``IsRunning reports true while work in flight, false after completion`` () =
     async {
@@ -594,7 +791,7 @@ let ``IsRunning reports true while work in flight, false after completion`` () =
                         | Custom(RxDone _) -> return state + 1
                         | _ -> return state
                     }
-              Commands = [ "get", fun s _ -> async { return string s } ]
+              Commands = [ "get", fun _ctx s _ -> async { return string s } ]
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey = None
               RequireWarmStart = false

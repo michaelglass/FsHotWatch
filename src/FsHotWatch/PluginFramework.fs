@@ -107,8 +107,10 @@ type PluginHandler<'State, 'Msg> =
         Init: 'State
         /// Pure-ish update function: given context, current state, and event, produce next state.
         Update: PluginCtx<'Msg> -> 'State -> PluginEvent<'Msg> -> Async<'State>
-        /// Named commands that can be invoked via IPC. Each command receives current state and args.
-        Commands: (string * ('State -> string array -> Async<string>)) list
+        /// Named commands that can be invoked via IPC. Each command receives the
+        /// plugin context (for `IsRunning`, `Log`, etc.), current state, and args.
+        /// `ctx` is typically `_ctx` for commands that don't need it.
+        Commands: (string * (PluginCtx<'Msg> -> 'State -> string array -> Async<string>)) list
         /// Which events the plugin subscribes to.
         Subscriptions: PluginSubscriptions
         /// Optional cache key function. `Some hash` → look up the cache and replay on hit.
@@ -187,74 +189,85 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
 
     let runSlotsLock = obj ()
 
+    // Forward reference to the agent so `post` and `runOne` can route completion
+    // messages back without an inbox closure. Set immediately after Start returns;
+    // any access before then is impossible by construction (no caller can invoke
+    // ctx until registerHandler returns the RegisteredPlugin).
+    let mutable agentRef: MailboxProcessor<Choice<PluginEvent<'Msg>, AsyncReplyChannel<'State>>> option =
+        None
+
+    let post (msg: 'Msg) =
+        match agentRef with
+        | Some a -> a.Post(Choice1Of2(Custom msg))
+        | None -> ()
+
+    let runOne (key: string) (w: Async<'Msg>) =
+        async {
+            let mutable completion: 'Msg voption = ValueNone
+
+            try
+                try
+                    let! msg = w
+                    completion <- ValueSome msg
+                with ex ->
+                    error (PluginName.value handler.Name) $"RunExclusive '%s{key}' work failed: %s{ex.ToString()}"
+            finally
+                lock runSlotsLock (fun () -> runSlots.[key] <- false)
+
+                match completion with
+                | ValueSome m -> post m
+                | ValueNone -> ()
+        }
+
+    let runExclusive (key: string) (work: Async<'Msg>) =
+        let shouldStart =
+            lock runSlotsLock (fun () ->
+                match runSlots.TryGetValue(key) with
+                | true, true -> false
+                | _ ->
+                    runSlots.[key] <- true
+                    true)
+
+        if shouldStart then
+            Async.Start(runOne key work)
+
+    let isRunning (key: string) =
+        lock runSlotsLock (fun () ->
+            match runSlots.TryGetValue(key) with
+            | true, running -> running
+            | _ -> false)
+
+    // Standard ctx — used both inside the agent loop (via Update) and from
+    // IPC command handlers (via the wrapper in `services.RegisterCommand`).
+    let ctx: PluginCtx<'Msg> =
+        { ReportStatus = fun s -> services.ReportStatus handler.Name s
+          ReportErrors = fun file entries -> services.ReportErrors handler.Name file entries
+          ClearErrors = fun file -> services.ClearErrors handler.Name file
+          ClearAllErrors = fun () -> services.ClearPlugin handler.Name
+          EmitBuildCompleted = services.EmitBuildCompleted
+          EmitTestRunStarted = services.EmitTestRunStarted
+          EmitTestProgress = services.EmitTestProgress
+          EmitTestRunCompleted = services.EmitTestRunCompleted
+          EmitCommandCompleted = services.EmitCommandCompleted
+          Checker = services.Checker
+          RepoRoot = services.RepoRoot
+          Post = post
+          StartSubtask = fun key label -> services.StartSubtask handler.Name key label
+          UpdateSubtask = fun key label -> services.UpdateSubtask handler.Name key label
+          EndSubtask = fun key -> services.EndSubtask handler.Name key
+          Log = fun msg -> services.Log handler.Name msg
+          CompleteWithSummary = fun s -> services.SetSummary handler.Name s
+          CompleteWithTimeout =
+            fun reason ->
+                services.SetSummary handler.Name $"timed out after {reason}"
+                services.SetNextTerminalOutcome handler.Name (TimedOut reason)
+          RunExclusive = runExclusive
+          IsRunning = isRunning }
+
     let agent =
         MailboxProcessor<Choice<PluginEvent<'Msg>, AsyncReplyChannel<'State>>>
             .Start(
                 (fun inbox ->
-                    // RunExclusive implementation, closes over `inbox` so completion
-                    // messages route back to this agent's mailbox.
-                    let runOne (key: string) (w: Async<'Msg>) =
-                        async {
-                            let mutable completion: 'Msg voption = ValueNone
-
-                            try
-                                try
-                                    let! msg = w
-                                    completion <- ValueSome msg
-                                with ex ->
-                                    error
-                                        (PluginName.value handler.Name)
-                                        $"RunExclusive '%s{key}' work failed: %s{ex.ToString()}"
-                            finally
-                                lock runSlotsLock (fun () -> runSlots.[key] <- false)
-
-                                match completion with
-                                | ValueSome m -> inbox.Post(Choice1Of2(Custom m))
-                                | ValueNone -> ()
-                        }
-
-                    let runExclusive (key: string) (work: Async<'Msg>) =
-                        let shouldStart =
-                            lock runSlotsLock (fun () ->
-                                match runSlots.TryGetValue(key) with
-                                | true, true -> false
-                                | _ ->
-                                    runSlots.[key] <- true
-                                    true)
-
-                        if shouldStart then
-                            Async.Start(runOne key work)
-
-                    let isRunning (key: string) =
-                        lock runSlotsLock (fun () ->
-                            match runSlots.TryGetValue(key) with
-                            | true, running -> running
-                            | _ -> false)
-
-                    let ctx =
-                        { ReportStatus = fun s -> services.ReportStatus handler.Name s
-                          ReportErrors = fun file entries -> services.ReportErrors handler.Name file entries
-                          ClearErrors = fun file -> services.ClearErrors handler.Name file
-                          ClearAllErrors = fun () -> services.ClearPlugin handler.Name
-                          EmitBuildCompleted = services.EmitBuildCompleted
-                          EmitTestRunStarted = services.EmitTestRunStarted
-                          EmitTestProgress = services.EmitTestProgress
-                          EmitTestRunCompleted = services.EmitTestRunCompleted
-                          EmitCommandCompleted = services.EmitCommandCompleted
-                          Checker = services.Checker
-                          RepoRoot = services.RepoRoot
-                          Post = fun msg -> inbox.Post(Choice1Of2(Custom msg))
-                          StartSubtask = fun key label -> services.StartSubtask handler.Name key label
-                          UpdateSubtask = fun key label -> services.UpdateSubtask handler.Name key label
-                          EndSubtask = fun key -> services.EndSubtask handler.Name key
-                          Log = fun msg -> services.Log handler.Name msg
-                          CompleteWithSummary = fun s -> services.SetSummary handler.Name s
-                          CompleteWithTimeout =
-                            fun reason ->
-                                services.SetSummary handler.Name $"timed out after {reason}"
-                                services.SetNextTerminalOutcome handler.Name (TimedOut reason)
-                          RunExclusive = runExclusive
-                          IsRunning = isRunning }
 
                     /// Compute the composite key for a given event.
                     let compositeKey (event: PluginEvent<'Msg>) : TaskCache.CompositeKey =
@@ -413,7 +426,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                                 services.EmitCommandCompleted r
                                           Checker = services.Checker
                                           RepoRoot = services.RepoRoot
-                                          Post = fun msg -> inbox.Post(Choice1Of2(Custom msg))
+                                          Post = post
                                           StartSubtask = fun key label -> services.StartSubtask handler.Name key label
                                           UpdateSubtask =
                                             fun key label -> services.UpdateSubtask handler.Name key label
@@ -471,6 +484,8 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                     loop handler.Init)
             )
 
+    agentRef <- Some agent
+
     // Register commands
     for (cmdName, cmdHandler) in handler.Commands do
         services.RegisterCommand(
@@ -478,7 +493,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
             fun args ->
                 async {
                     let! state = agent.PostAndAsyncReply(Choice2Of2)
-                    return! cmdHandler state args
+                    return! cmdHandler ctx state args
                 }
         )
 
