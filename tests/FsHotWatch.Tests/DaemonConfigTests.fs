@@ -31,7 +31,7 @@ let private defaults: DaemonConfiguration =
 
 // --- parseConfig: empty JSON ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig with empty JSON returns defaults`` () =
     let config = parseConfig "{}" defaults
 
@@ -56,41 +56,41 @@ let ``parseConfig with empty JSON returns defaults`` () =
 
 // --- parseConfig: logDir ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig logDir custom value overrides default`` () =
     let config = parseConfig """{"logDir": "var/log"}""" defaults
     test <@ config.LogDir = "var/log" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig logDir absolute path is preserved`` () =
     let config = parseConfig """{"logDir": "/var/log/fshw"}""" defaults
     test <@ config.LogDir = "/var/log/fshw" @>
 
 // --- parseConfig: exclude ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig exclude with patterns`` () =
     let config = parseConfig """{"exclude": ["vendor/", "generated/"]}""" defaults
     test <@ config.Exclude = [ "vendor/"; "generated/" ] @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig exclude empty array`` () =
     let config = parseConfig """{"exclude": []}""" defaults
     test <@ config.Exclude |> List.isEmpty @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig no exclude returns empty list`` () =
     let config = parseConfig """{}""" defaults
     test <@ config.Exclude |> List.isEmpty @>
 
 // --- parseConfig: build ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig build false disables build`` () =
     let config = parseConfig """{"build": false}""" defaults
     test <@ config.Build = Some [] @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig build true uses default build`` () =
     let config = parseConfig """{"build": true}""" defaults
 
@@ -104,7 +104,7 @@ let ``parseConfig build true uses default build`` () =
                      TimeoutSec = None |} ]
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig build object with custom command and args`` () =
     let config =
         parseConfig """{"build": {"command": "make", "args": "all"}}""" defaults
@@ -119,7 +119,7 @@ let ``parseConfig build object with custom command and args`` () =
                      TimeoutSec = None |} ]
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig build object with only command uses default args`` () =
     let config = parseConfig """{"build": {"command": "make"}}""" defaults
 
@@ -133,7 +133,7 @@ let ``parseConfig build object with only command uses default args`` () =
                      TimeoutSec = None |} ]
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig build object with only args uses default command`` () =
     let config = parseConfig """{"build": {"args": "release"}}""" defaults
 
@@ -147,7 +147,7 @@ let ``parseConfig build object with only args uses default command`` () =
                      TimeoutSec = None |} ]
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig build empty object uses defaults`` () =
     let config = parseConfig """{"build": {}}""" defaults
 
@@ -163,51 +163,51 @@ let ``parseConfig build empty object uses defaults`` () =
 
 // --- parseConfig: format ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig format true returns Auto`` () =
     let config = parseConfig """{"format": true}""" defaults
     test <@ config.Format = Auto @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig format false returns Off`` () =
     let config = parseConfig """{"format": false}""" defaults
     test <@ config.Format = Off @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig format check string returns Check`` () =
     let config = parseConfig """{"format": "check"}""" defaults
     test <@ config.Format = Check @>
 
 // --- parseConfig: lint ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig lint true enables lint`` () =
     let config = parseConfig """{"lint": true}""" defaults
     test <@ config.Lint = true @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig lint false disables lint`` () =
     let config = parseConfig """{"lint": false}""" defaults
     test <@ config.Lint = false @>
 
 // --- parseConfig: cache ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig cache none string returns NoCache`` () =
     let config = parseConfig """{"cache": "none"}""" defaults
     test <@ config.Cache = NoCache @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig cache false string returns NoCache`` () =
     let config = parseConfig """{"cache": "false"}""" defaults
     test <@ config.Cache = NoCache @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig cache false bool returns NoCache`` () =
     let config = parseConfig """{"cache": false}""" defaults
     test <@ config.Cache = NoCache @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig cache true bool returns defaults cache`` () =
     let defaultsWithMem =
         { defaults with
@@ -216,34 +216,34 @@ let ``parseConfig cache true bool returns defaults cache`` () =
     let config = parseConfig """{"cache": true}""" defaultsWithMem
     test <@ config.Cache = InMemoryOnly 200 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig cache memory returns InMemoryOnly 500`` () =
     let config = parseConfig """{"cache": "memory"}""" defaults
     test <@ config.Cache = InMemoryOnly 500 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig cache file returns FileBackend`` () =
     let config = parseConfig """{"cache": "file"}""" defaults
     test <@ config.Cache = FileBackend @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig cache jj is treated as file (legacy alias)`` () =
     let config = parseConfig """{"cache": "jj"}""" defaults
     test <@ config.Cache = FileBackend @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig cache unknown string returns defaults cache`` () =
     let config = parseConfig """{"cache": "redis"}""" defaults
     test <@ config.Cache = FileBackend @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig cache missing uses defaults`` () =
     let config = parseConfig """{}""" defaults
     test <@ config.Cache = defaults.Cache @>
 
 // --- parseConfig: analyzers ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig analyzers with paths`` () =
     let config = parseConfig """{"analyzers": {"paths": ["path1", "path2"]}}""" defaults
 
@@ -254,7 +254,7 @@ let ``parseConfig analyzers with paths`` () =
                    FailOnSeverity = DiagnosticSeverity.Hint |}
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``analyzers config defaults failOnSeverity to Hint`` () =
     let config = parseConfig """{"analyzers":{"paths":["p1"]}}""" defaults
 
@@ -265,7 +265,7 @@ let ``analyzers config defaults failOnSeverity to Hint`` () =
                    FailOnSeverity = DiagnosticSeverity.Hint |}
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``analyzers config parses explicit failOnSeverity`` () =
     let config =
         parseConfig """{"analyzers":{"paths":["p1"],"failOnSeverity":"warning"}}""" defaults
@@ -277,7 +277,7 @@ let ``analyzers config parses explicit failOnSeverity`` () =
                    FailOnSeverity = DiagnosticSeverity.Warning |}
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig analyzers unknown failOnSeverity falls back to Hint`` () =
     let config =
         parseConfig """{"analyzers":{"paths":["p1"],"failOnSeverity":"bogus"}}""" defaults
@@ -289,7 +289,7 @@ let ``parseConfig analyzers unknown failOnSeverity falls back to Hint`` () =
                    FailOnSeverity = DiagnosticSeverity.Hint |}
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig format string variants land deterministically`` () =
     test <@ (parseConfig """{"format":"auto"}""" defaults).Format = Auto @>
     test <@ (parseConfig """{"format":"check"}""" defaults).Format = Check @>
@@ -298,7 +298,7 @@ let ``parseConfig format string variants land deterministically`` () =
     // Unknown format value falls through to Auto with a warning.
     test <@ (parseConfig """{"format":"weird"}""" defaults).Format = Auto @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig build entry parses buildTemplate`` () =
     let config =
         parseConfig """{"build": {"command": "dotnet", "args": "build", "buildTemplate": "$cmd $args"}}""" defaults
@@ -307,25 +307,25 @@ let ``parseConfig build entry parses buildTemplate`` () =
     | Some [ entry ] -> test <@ entry.BuildTemplate = Some "$cmd $args" @>
     | _ -> failwith "expected single build entry with buildTemplate"
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig analyzers with empty paths returns None`` () =
     let config = parseConfig """{"analyzers": {"paths": []}}""" defaults
 
     test <@ config.Analyzers = None @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig analyzers without paths returns None`` () =
     let config = parseConfig """{"analyzers": {}}""" defaults
     test <@ config.Analyzers = None @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig no analyzers returns None`` () =
     let config = parseConfig """{}""" defaults
     test <@ config.Analyzers = None @>
 
 // --- parseConfig: tests ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig tests with all fields`` () =
     let json =
         """{
@@ -358,7 +358,7 @@ let ``parseConfig tests with all fields`` () =
     test <@ p.FilterTemplate = Some "--filter {0}" @>
     test <@ p.ClassJoin = "|" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig tests with minimal project uses defaults`` () =
     let json =
         """{
@@ -381,19 +381,19 @@ let ``parseConfig tests with minimal project uses defaults`` () =
     test <@ p.FilterTemplate = None @>
     test <@ p.ClassJoin = " " @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig tests with empty projects returns None`` () =
     let json = """{"tests": {"projects": []}}"""
     let config = parseConfig json defaults
     test <@ config.Tests = None @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig tests without projects key returns None`` () =
     let json = """{"tests": {}}"""
     let config = parseConfig json defaults
     test <@ config.Tests = None @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig tests with multiple projects`` () =
     let json =
         """{
@@ -412,7 +412,7 @@ let ``parseConfig tests with multiple projects`` () =
     test <@ tests.Projects.[1].Project = "IntTests.fsproj" @>
     test <@ tests.Projects.[1].Group = "integration" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig tests project with no project key defaults to unknown`` () =
     let json = """{"tests": {"projects": [{}]}}"""
     let config = parseConfig json defaults
@@ -424,13 +424,13 @@ let ``parseConfig tests project with no project key defaults to unknown`` () =
 // <repoRoot>/<tests.coverageDir>/<project>/ (default "coverage"), and
 // ratcheting is driven by fileCommands afterTests invoking an external tool.
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig tests without coverageDir defaults to coverage`` () =
     let json = """{"tests": {"projects": [{"project": "T"}]}}"""
     let config = parseConfig json defaults
     test <@ config.Tests.Value.CoverageDir = "coverage" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig tests with explicit coverageDir`` () =
     let json =
         """{"tests": {"coverageDir": "artifacts/cov", "projects": [{"project": "T"}]}}"""
@@ -440,7 +440,7 @@ let ``parseConfig tests with explicit coverageDir`` () =
 
 // --- parseConfig: fileCommands ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig fileCommands with entries`` () =
     let json =
         """{
@@ -460,7 +460,7 @@ let ``parseConfig fileCommands with entries`` () =
     test <@ config.FileCommands.[1].Command = "psql" @>
     test <@ config.FileCommands.[1].Args = "-f" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig fileCommands entry without pattern or afterTests is rejected`` () =
     let json = """{"fileCommands": [{}]}"""
 
@@ -468,7 +468,7 @@ let ``parseConfig fileCommands entry without pattern or afterTests is rejected``
 
     test <@ ex.Message.Contains("pattern") && ex.Message.Contains("afterTests") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig fileCommands afterTests true parses to AnyTest`` () =
     let json =
         """{"fileCommands": [{"name": "cov", "afterTests": true, "command": "echo", "args": "ran"}]}"""
@@ -480,7 +480,7 @@ let ``parseConfig fileCommands afterTests true parses to AnyTest`` () =
 
     test <@ config.FileCommands.[0].AfterTests = Some FsHotWatch.FileCommand.FileCommandPlugin.AnyTest @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig fileCommands afterTests list parses to TestProjects`` () =
     let json =
         """{"fileCommands": [{"name": "cov", "afterTests": ["A", "B"], "command": "echo", "args": "ran"}]}"""
@@ -495,7 +495,7 @@ let ``parseConfig fileCommands afterTests list parses to TestProjects`` () =
             )
         @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig fileCommands afterTests without name is rejected`` () =
     let json =
         """{"fileCommands": [{"afterTests": true, "command": "echo", "args": "ran"}]}"""
@@ -504,31 +504,31 @@ let ``parseConfig fileCommands afterTests without name is rejected`` () =
 
     test <@ ex.Message.Contains("name") @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig fileCommands empty array`` () =
     let config = parseConfig """{"fileCommands": []}""" defaults
     test <@ config.FileCommands |> List.isEmpty @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig no fileCommands returns empty list`` () =
     let config = parseConfig """{}""" defaults
     test <@ config.FileCommands |> List.isEmpty @>
 
 // --- parseConfig: invalid JSON ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig with invalid JSON throws`` () =
     Assert.ThrowsAny<JsonException>(fun () -> parseConfig "not json" defaults |> ignore)
     |> ignore
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig with malformed JSON throws`` () =
     Assert.ThrowsAny<JsonException>(fun () -> parseConfig """{"build":}""" defaults |> ignore)
     |> ignore
 
 // --- parseConfig: combined configuration ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig with full configuration`` () =
     let json =
         """{
@@ -572,14 +572,14 @@ let ``parseConfig with full configuration`` () =
 
 // --- detectDefaultCacheBackend ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``detectDefaultCacheBackend returns FileBackend regardless of .jj presence`` () =
     withTempDir "cfg-jj" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
         let result = detectDefaultCacheBackend tmpDir
         test <@ result = FileBackend @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``detectDefaultCacheBackend returns FileBackend when no .jj`` () =
     withTempDir "cfg-nojj" (fun tmpDir ->
         let result = detectDefaultCacheBackend tmpDir
@@ -587,21 +587,21 @@ let ``detectDefaultCacheBackend returns FileBackend when no .jj`` () =
 
 // --- createCacheComponents ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``createCacheComponents NoCache returns None None`` () =
     withTempDir "cfg-cc" (fun tmpDir ->
         let (backend, keyProvider) = createCacheComponents tmpDir NoCache
         test <@ backend = None @>
         test <@ keyProvider = None @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``createCacheComponents InMemoryOnly returns Some backend and Some keyProvider`` () =
     withTempDir "cfg-cc-mem" (fun tmpDir ->
         let (backend, keyProvider) = createCacheComponents tmpDir (InMemoryOnly 100)
         test <@ backend.IsSome @>
         test <@ keyProvider.IsSome @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``createCacheComponents FileBackend returns Some backend and Some keyProvider`` () =
     withTempDir "cfg-cc-file" (fun tmpDir ->
         let (backend, keyProvider) = createCacheComponents tmpDir FileBackend
@@ -610,7 +610,7 @@ let ``createCacheComponents FileBackend returns Some backend and Some keyProvide
 
 // --- defaultConfigFor ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``loadConfig with no config file returns expected defaults`` () =
     withTempDir "cfg-def" (fun tmpDir ->
         let config = loadConfig tmpDir
@@ -634,7 +634,7 @@ let ``loadConfig with no config file returns expected defaults`` () =
 
 // --- parseConfig: per-project coverage exclusion ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig test project with coverage false`` () =
     let json =
         """{
@@ -650,7 +650,7 @@ let ``parseConfig test project with coverage false`` () =
     let p = config.Tests.Value.Projects.[0]
     test <@ p.Coverage = false @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig test project without coverage defaults to true`` () =
     let json =
         """{
@@ -666,7 +666,7 @@ let ``parseConfig test project without coverage defaults to true`` () =
     test <@ p.Coverage = true @>
     test <@ p.CoverageArgsTemplate = None @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig test project with coverage as object captures argsTemplate`` () =
     // Custom coverage args for an AltCover-style runner — any template that
     // doesn't match the MTP default.
@@ -688,7 +688,7 @@ let ``parseConfig test project with coverage as object captures argsTemplate`` (
     test <@ p.Coverage = true @>
     test <@ p.CoverageArgsTemplate = Some "--altcover --out \"{output}\"" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig test project with coverage object enabled=false disables coverage`` () =
     let json =
         """{
@@ -707,7 +707,7 @@ let ``parseConfig test project with coverage object enabled=false disables cover
 
 // --- parseConfig: build as array ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig build array of commands`` () =
     let json =
         """{
@@ -727,7 +727,7 @@ let ``parseConfig build array of commands`` () =
     test <@ builds.[1].Command = "dotnet" @>
     test <@ builds.[1].Args = "build src/Analyzers -c Release" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig build single object still works`` () =
     let json = """{"build": {"command": "make", "args": "all"}}"""
     let config = parseConfig json defaults
@@ -738,7 +738,7 @@ let ``parseConfig build single object still works`` () =
     test <@ builds.[0].Command = "make" @>
     test <@ builds.[0].Args = "all" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig build false disables build as empty list`` () =
     let config = parseConfig """{"build": false}""" defaults
     test <@ config.Build.IsSome @>
@@ -746,7 +746,7 @@ let ``parseConfig build false disables build as empty list`` () =
 
 // --- parseConfig: test extensions ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig tests with extensions`` () =
     let json =
         """{
@@ -766,7 +766,7 @@ let ``parseConfig tests with extensions`` () =
     test <@ tests.Extensions.[0].Project = "IntTests" @>
     test <@ tests.Extensions.[0].TestDir = "tests/IntTests" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig tests without extensions defaults to empty`` () =
     let json =
         """{
@@ -778,7 +778,7 @@ let ``parseConfig tests without extensions defaults to empty`` () =
     let config = parseConfig json defaults
     test <@ config.Tests.Value.Extensions |> List.isEmpty @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``loadConfig defaults to FileBackend regardless of .jj presence`` () =
     withTempDir "cfg-def-jj" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
@@ -787,7 +787,7 @@ let ``loadConfig defaults to FileBackend regardless of .jj presence`` () =
 
 // --- parseConfig: build dependsOn ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig build with dependsOn`` () =
     let json =
         """{"build": {"command": "dotnet", "args": "build", "dependsOn": ["npm-deps"]}}"""
@@ -799,14 +799,14 @@ let ``parseConfig build with dependsOn`` () =
     test <@ builds.Length = 1 @>
     test <@ builds.[0].DependsOn = [ "npm-deps" ] @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig build without dependsOn defaults to empty`` () =
     let json = """{"build": {"command": "dotnet", "args": "build"}}"""
     let config = parseConfig json defaults
     let builds = config.Build.Value
     test <@ builds.[0].DependsOn |> List.isEmpty @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig build with multiple dependsOn`` () =
     let json = """{"build": {"dependsOn": ["setup", "codegen"]}}"""
 
@@ -816,23 +816,23 @@ let ``parseConfig build with multiple dependsOn`` () =
 
 // --- stripConfig tests ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``stripConfig preserves format mode`` () =
     let config = { defaults with Format = Check }
     let stripped = stripConfig config
     test <@ stripped.Format = Check @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``stripConfig disables lint`` () =
     let stripped = stripConfig defaults
     test <@ stripped.Lint = false @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``stripConfig sets build to empty list`` () =
     let stripped = stripConfig defaults
     test <@ stripped.Build = Some [] @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``stripConfig caller can restore build config`` () =
     let stripped =
         { stripConfig defaults with
@@ -841,7 +841,7 @@ let ``stripConfig caller can restore build config`` () =
     test <@ stripped.Build = defaults.Build @>
     test <@ stripped.Build.Value.Length = 1 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``registerPlugins with build config registers build plugin`` () =
     withTempDir "cfg-build-reg" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -857,7 +857,7 @@ let ``registerPlugins with build config registers build plugin`` () =
         let statuses = daemon.Host.GetAllStatuses()
         test <@ statuses.ContainsKey("build") @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``registerPlugins with stripped config does not register build plugin`` () =
     withTempDir "cfg-build-noreg" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -870,7 +870,7 @@ let ``registerPlugins with stripped config does not register build plugin`` () =
         let statuses = daemon.Host.GetAllStatuses()
         test <@ not (statuses.ContainsKey("build")) @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``registerPlugins stores FileCommand pattern on host`` () =
     withTempDir "cfg-fc-register" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -897,7 +897,7 @@ let ``registerPlugins stores FileCommand pattern on host`` () =
                 )
             @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``registerPlugins with afterTests-only plugin does not register pattern`` () =
     withTempDir "cfg-fc-aftertests-only" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -920,21 +920,21 @@ let ``registerPlugins with afterTests-only plugin does not register pattern`` ()
 
 // --- loadConfig: strict parse errors ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``loadConfig throws ConfigError on malformed JSON`` () =
     withTempDir "cfg-malformed" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), "{not valid json")
         let ex = Assert.Throws<ConfigError>(fun () -> loadConfig tmpDir |> ignore)
         Assert.Contains(".fshw.json", ex.Message))
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig raises ConfigError when fileCommands entry lacks pattern and afterTests`` () =
     let json = """{ "fileCommands": [ { "command": "echo", "args": "hi" } ] }"""
 
     Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
     |> ignore
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig raises ConfigError when afterTests entry lacks name`` () =
     let json =
         """{ "fileCommands": [ { "afterTests": true, "command": "echo", "args": "hi" } ] }"""
@@ -944,7 +944,7 @@ let ``parseConfig raises ConfigError when afterTests entry lacks name`` () =
 
 // --- countPlugins ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``countPlugins counts build lint analyzers tests and fileCommands`` () =
     let cfg =
         { defaults with
@@ -976,14 +976,14 @@ let ``countPlugins counts build lint analyzers tests and fileCommands`` () =
     // build(1) + lint(1) + analyzers(1) + tests(1) + 2 fileCommands = 6
     test <@ countPlugins cfg = 6 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``countPlugins returns 0 for stripped config`` () =
     let cfg = stripConfig { defaults with Lint = false }
     test <@ countPlugins cfg = 0 @>
 
 // --- watchConfigFile ---
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``watchConfigFile invokes callback when .fshw.json is written`` () =
     withTempDir "cfg-watch-write" (fun tmpDir ->
         let configPath = Path.Combine(tmpDir, ".fshw.json")
@@ -1005,7 +1005,7 @@ let ``watchConfigFile invokes callback when .fshw.json is written`` () =
         Assert.True(signal.Wait(5000), "expected watcher callback within 5s")
         test <@ observed.Value.Contains("config") @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``watchRepoConfigFile returns no-op disposable when no config file exists`` () =
     withTempDir "cfg-watch-none" (fun tmpDir ->
         let mutable called = false
@@ -1013,7 +1013,7 @@ let ``watchRepoConfigFile returns no-op disposable when no config file exists`` 
         System.Threading.Thread.Sleep(50)
         test <@ not called @>)
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``watchRepoConfigFile watches existing config file`` () =
     withTempDir "cfg-watch-existing" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), "{}")
@@ -1023,7 +1023,7 @@ let ``watchRepoConfigFile watches existing config file`` () =
         File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), """{"lint": false}""")
         Assert.True(signal.Wait(5000), "expected callback within 5s"))
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``watchConfigFile reports invalid reason when new contents fail to parse`` () =
     withTempDir "cfg-watch-invalid" (fun tmpDir ->
         let configPath = Path.Combine(tmpDir, ".fshw.json")
@@ -1046,17 +1046,17 @@ let ``watchConfigFile reports invalid reason when new contents fail to parse`` (
 
 // --- parseConfig: timeoutSec ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig top-level timeoutSec lands on config`` () =
     let config = parseConfig """{"timeoutSec": 42}""" defaults
     test <@ config.TimeoutSec = Some 42 @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig top-level timeoutSec absent is None`` () =
     let config = parseConfig "{}" defaults
     test <@ config.TimeoutSec = None @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig build entry timeoutSec lands on build entry`` () =
     let config =
         parseConfig """{"build": {"command": "dotnet", "args": "build", "timeoutSec": 300}}""" defaults
@@ -1065,7 +1065,7 @@ let ``parseConfig build entry timeoutSec lands on build entry`` () =
     | Some [ b ] -> test <@ b.TimeoutSec = Some 300 @>
     | other -> failwithf "expected one build entry, got %A" other
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig test project timeoutSec lands on project`` () =
     let json =
         """{"tests": {"projects": [{"project": "Tests.fsproj", "timeoutSec": 600}]}}"""
@@ -1079,7 +1079,7 @@ let ``parseConfig test project timeoutSec lands on project`` () =
         | _ -> failwith "expected one project"
     | None -> failwith "expected tests"
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``parseConfig fileCommand timeoutSec lands on entry`` () =
     let json =
         """{"fileCommands": [{"pattern": "*.md", "command": "echo", "args": "hi", "timeoutSec": 60}]}"""

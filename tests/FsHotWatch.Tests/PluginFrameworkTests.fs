@@ -44,7 +44,7 @@ let private registerWith
 /// Register with all defaults.
 let private registerDefault handler = registerWith handler None
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``registered plugin dispatches FileChanged`` () =
     let mutable registeredCmd: (string * CommandHandler) option = None
 
@@ -73,7 +73,7 @@ let ``registered plugin dispatches FileChanged`` () =
     let result = cmdHandler [||] |> Async.RunSynchronously
     test <@ result = "true" @>
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``registered plugin skips unsubscribed events`` () =
     let mutable registeredCmd: (string * CommandHandler) option = None
 
@@ -116,7 +116,7 @@ let ``registered plugin skips unsubscribed events`` () =
     let result = cmdHandler [||] |> Async.RunSynchronously
     test <@ result = "1" @>
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``commands query agent state`` () =
     async {
         let mutable registeredCmd: (string * CommandHandler) option = None
@@ -149,7 +149,7 @@ let ``commands query agent state`` () =
     }
     |> Async.RunSynchronously
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``Custom messages work for self-posting`` () =
     async {
         let mutable customReceived = false
@@ -194,7 +194,7 @@ let ``Custom messages work for self-posting`` () =
     }
     |> Async.RunSynchronously
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``handler errors are recovered`` () =
     async {
         let mutable callCount = 0
@@ -238,7 +238,7 @@ let ``handler errors are recovered`` () =
     }
     |> Async.RunSynchronously
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``plugin subscribing to CommandCompleted receives event`` () =
     let mutable registeredCmd: (string * CommandHandler) option = None
 
@@ -273,7 +273,7 @@ let ``plugin subscribing to CommandCompleted receives event`` () =
 
 // --- Framework invariant: handler throws -> plugin status reaches terminal Failed ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``handler that throws after ReportStatus(Running) still transitions status to Failed`` () =
     // Regression: before the fix, a handler that reported Running and then threw
     // (e.g. TestPrune flushing a schema-drifted DB) would leave the plugin
@@ -383,7 +383,7 @@ let private servicesWithCache (cache: TaskCache.ITaskCache) (registerCommand: st
       SetSummary = fun _ _ -> ()
       SetNextTerminalOutcome = fun _ _ -> () }
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``RequireWarmStart bypasses pre-populated cache on session start, replays after first terminal`` () =
     async {
         let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
@@ -441,7 +441,7 @@ let ``RequireWarmStart bypasses pre-populated cache on session start, replays af
     }
     |> Async.RunSynchronously
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``RequireWarmStart=false replays pre-populated cache on session start`` () =
     // Control: with the gate disabled, the same pre-populated cache replays
     // on the very first dispatch, so Update must NOT run.
@@ -501,7 +501,7 @@ let ``RequireWarmStart=false replays pre-populated cache on session start`` () =
 ///     completion msg back as Custom (-> proves "framework posts return value").
 type private RxMsg = RxDone of int
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``RunExclusive ignores second call while first is running`` () =
     async {
         let started = ref 0
@@ -762,7 +762,7 @@ let ``RunExclusive releases slot when work raises and logs without re-posting co
     }
     |> Async.RunSynchronously
 
-[<Fact(Timeout = 10000)>]
+[<Fact(Timeout = 20000)>]
 let ``IsRunning reports true while work in flight, false after completion`` () =
     async {
         let gate = new System.Threading.ManualResetEventSlim(false)

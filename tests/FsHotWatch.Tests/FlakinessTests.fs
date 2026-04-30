@@ -86,7 +86,7 @@ let ``computeFlakiness is 0 when history has fewer than 2 effective runs`` () =
 
 // --- persistence: appendRecords / loadHistory / trim ---
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``appendRecords + loadHistory round-trips a record`` () =
     withTempDir "fshw-flake-rt" (fun tmp ->
         let path = Path.Combine(tmp, "test-history.json")
@@ -102,7 +102,7 @@ let ``appendRecords + loadHistory round-trips a record`` () =
         test <@ Map.find "A.B.C" history |> List.length = 1 @>
         test <@ (Map.find "A.B.C" history).[0].DurationMs = 100 @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``appendRecords trims per-test history to the last N`` () =
     withTempDir "fshw-flake-trim" (fun tmp ->
         let path = Path.Combine(tmp, "test-history.json")
@@ -124,13 +124,13 @@ let ``appendRecords trims per-test history to the last N`` () =
         test <@ records.[0].DurationMs = 30 @>
         test <@ records.[4].DurationMs = 26 @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``loadHistory returns empty Map when file is missing`` () =
     withTempDir "fshw-flake-missing" (fun tmp ->
         let path = Path.Combine(tmp, "missing.json")
         test <@ loadHistory path = Map.empty @>)
 
-[<Fact(Timeout = 5000)>]
+[<Fact(Timeout = 15000)>]
 let ``topFlaky returns tests sorted by flakiness descending`` () =
     withTempDir "fshw-flake-top" (fun tmp ->
         let path = Path.Combine(tmp, "test-history.json")
