@@ -489,3 +489,131 @@ let ``RequireWarmStart=false replays pre-populated cache on session start`` () =
         test <@ !updateCalls = 0 @>
     }
     |> Async.RunSynchronously
+
+// --- RunExclusive primitive: per-handler single-flight (always-Drop) ---
+
+/// Drive RunExclusive end-to-end via the agent: each FileChanged dispatch invokes
+/// `ctx.RunExclusive "k" work`, where `work` waits on `gate` and then
+/// returns a synthetic completion BuildMsg. We track:
+///   - `started`: increments at the top of `work`, observed before gate release.
+///   - `completed`: increments inside the agent when the framework posts the
+///     completion msg back as Custom (-> proves "framework posts return value").
+type private RxMsg = RxDone of int
+
+[<Fact(Timeout = 10000)>]
+let ``RunExclusive ignores second call while first is running`` () =
+    async {
+        let started = ref 0
+        let completed = ref 0
+        let gate = new System.Threading.ManualResetEventSlim(false)
+        let mutable registeredCmd: CommandHandler option = None
+
+        let handler: PluginHandler<int, RxMsg> =
+            { Name = PluginName.create "rx-drop"
+              Init = 0
+              Update =
+                fun ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged _ ->
+                            ctx.RunExclusive
+                                "k"
+                                (async {
+                                    System.Threading.Interlocked.Increment(started) |> ignore
+                                    gate.Wait()
+                                    return RxDone 1
+                                })
+
+                            return state
+                        | Custom(RxDone n) ->
+                            System.Threading.Interlocked.Increment(completed) |> ignore
+                            return state + n
+                        | _ -> return state
+                    }
+              Commands = [ "get", fun s _ -> async { return string s } ]
+              Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey = None
+              RequireWarmStart = false
+              Teardown = None }
+
+        let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
+
+        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/a.fs" ]))
+        // Wait for first work to enter (gate-blocked).
+        waitUntil (fun () -> !started = 1) 5000
+        test <@ !started = 1 @>
+
+        // Second dispatch while running: must be dropped.
+        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/b.fs" ]))
+        // Drain the agent so we know the second FileChanged was processed.
+        let! _ = registeredCmd.Value [||]
+        test <@ !started = 1 @>
+
+        // Release first work -> completion msg posts back to mailbox.
+        gate.Set()
+        waitUntil (fun () -> !completed = 1) 5000
+        test <@ !completed = 1 @>
+
+        // After completion, a fresh dispatch must run.
+        gate.Reset()
+        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/c.fs" ]))
+        waitUntil (fun () -> !started = 2) 5000
+        gate.Set()
+        waitUntil (fun () -> !completed = 2) 5000
+        test <@ !started = 2 @>
+        test <@ !completed = 2 @>
+    }
+    |> Async.RunSynchronously
+
+[<Fact(Timeout = 10000)>]
+let ``IsRunning reports true while work in flight, false after completion`` () =
+    async {
+        let gate = new System.Threading.ManualResetEventSlim(false)
+        let observedRunning = ref false
+        let mutable registeredCmd: CommandHandler option = None
+        let mutable capturedCtx: PluginCtx<RxMsg> option = None
+
+        let handler: PluginHandler<int, RxMsg> =
+            { Name = PluginName.create "rx-isrunning"
+              Init = 0
+              Update =
+                fun ctx state event ->
+                    async {
+                        capturedCtx <- Some ctx
+
+                        match event with
+                        | FileChanged _ ->
+                            ctx.RunExclusive
+                                "k"
+                                (async {
+                                    gate.Wait()
+                                    return RxDone 1
+                                })
+
+                            return state
+                        | Custom(RxDone _) -> return state + 1
+                        | _ -> return state
+                    }
+              Commands = [ "get", fun s _ -> async { return string s } ]
+              Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey = None
+              RequireWarmStart = false
+              Teardown = None }
+
+        let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
+
+        reg.Dispatch(DispatchFileChanged(SourceChanged [ "x" ]))
+        // Drain to ensure ctx captured + RunExclusive called.
+        let! _ = registeredCmd.Value [||]
+        // While work blocked on gate, IsRunning must report true.
+        waitUntil (fun () -> capturedCtx.Value.IsRunning "k") 5000
+        observedRunning.Value <- capturedCtx.Value.IsRunning "k"
+        test <@ !observedRunning @>
+        test <@ not (capturedCtx.Value.IsRunning "other") @>
+
+        gate.Set()
+        // After completion msg posts back, drain again.
+        waitUntil (fun () -> not (capturedCtx.Value.IsRunning "k")) 5000
+        test <@ not (capturedCtx.Value.IsRunning "k") @>
+    }
+    |> Async.RunSynchronously
