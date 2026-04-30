@@ -921,3 +921,256 @@ let ``BuildPlugin emits BuildSucceeded when canonical DLL is newer than sources`
         runVerifyHarness "build-verify-fresh" (TimeSpan.FromMinutes(-5.0)) (TimeSpan.Zero)
 
     test <@ getBuild () = Some BuildSucceeded @>
+
+// --- Template build failure paths (startTemplateBuild's TimedOut/Failed/exception arms) ---
+
+[<Fact(Timeout = 30000)>]
+let ``template build with failing command emits BuildFailed and reports Failed status`` () =
+    // Drives the Failed-result arm of startTemplateBuild: the rendered template
+    // exits non-zero, so failures accumulates, applyBuildOutcome takes the
+    // BuildOutputFailed arm, and Custom(BuildDone) reports Failed status.
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let (getBuild, recorder) = buildRecorder ()
+
+    let graph = ProjectGraph()
+
+    graph.RegisterProject(
+        AbsProjectPath.create "/tmp/src/MyLib/MyLib.fsproj",
+        [ AbsFilePath.create "/tmp/src/MyLib/Lib.fs" ],
+        []
+    )
+
+    let handler =
+        BuildPlugin.create "should-not-run" "" [] graph [] (Some "false {project}") [] None
+
+    host.RegisterHandler(recorder)
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "/tmp/src/MyLib/Lib.fs" ])
+
+    waitForTerminalStatus host "build" 20000
+    waitUntil (fun () -> (getBuild ()).IsSome) 20000
+
+    test
+        <@
+            match getBuild () with
+            | Some(BuildFailed _) -> true
+            | _ -> false
+        @>
+
+    let status = host.GetStatus("build")
+
+    test
+        <@
+            match status with
+            | Some(FsHotWatch.Events.Failed _) -> true
+            | _ -> false
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``template build honors timeoutSec and surfaces TimedOut`` () =
+    // Drives the TimedOut arm of startTemplateBuild (lines 380-384): the rendered
+    // template runs `sleep 10` against a 1-second timeout.
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let (getBuild, recorder) = buildRecorder ()
+
+    let graph = ProjectGraph()
+
+    graph.RegisterProject(
+        AbsProjectPath.create "/tmp/src/MyLib/MyLib.fsproj",
+        [ AbsFilePath.create "/tmp/src/MyLib/Lib.fs" ],
+        []
+    )
+
+    let handler =
+        BuildPlugin.create "should-not-run" "" [] graph [] (Some "sleep 10") [] (Some 1)
+
+    host.RegisterHandler(recorder)
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "/tmp/src/MyLib/Lib.fs" ])
+
+    waitForTerminalStatus host "build" 8000
+    waitUntil (fun () -> (getBuild ()).IsSome) 8000
+
+    test
+        <@
+            match getBuild () with
+            | Some(BuildFailed _) -> true
+            | _ -> false
+        @>
+
+// --- WaitingForFcs phase: interruption + merge branches ---
+
+[<Fact(Timeout = 30000)>]
+let ``WaitingForFcs interrupted by ProjectChanged starts a real build`` () =
+    // While waiting for FCS to confirm a test-only change, a ProjectChanged
+    // event must abandon the wait and trigger handleProjectChanged → startBuild.
+    // Covers BuildPlugin line 578-579 (ProjectChanged inside WaitingForFcsPhase).
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let (getBuild, recorder) = buildRecorder ()
+
+    let graph = ProjectGraph()
+
+    graph.RegisterProject(
+        AbsProjectPath.create "/tmp/tests/MyTests/MyTests.fsproj",
+        [ AbsFilePath.create "/tmp/tests/MyTests/Tests.fs" ],
+        []
+    )
+
+    let handler =
+        BuildPlugin.create "echo" "rebuilt" [] graph [ "MyTests" ] None [] None
+
+    host.RegisterHandler(recorder)
+    host.RegisterHandler(handler)
+
+    // Test-files-only → enters WaitingForFcsPhase.
+    host.EmitFileChanged(SourceChanged [ "/tmp/tests/MyTests/Tests.fs" ])
+    Threading.Thread.Sleep(150)
+    test <@ getBuild () = None @>
+
+    // ProjectChanged interrupts the wait → real build runs.
+    host.EmitFileChanged(ProjectChanged [ "/tmp/tests/MyTests/MyTests.fsproj" ])
+    waitForTerminalStatus host "build" 20000
+    waitUntil (fun () -> (getBuild ()).IsSome) 20000
+    test <@ getBuild () = Some BuildSucceeded @>
+
+[<Fact(Timeout = 30000)>]
+let ``WaitingForFcs merges additional test-file changes into the awaiting set`` () =
+    // While in WaitingForFcsPhase, another test-only SourceChanged must merge
+    // into the awaiting set (not start a build, not emit BuildSucceeded yet).
+    // Covers BuildPlugin lines 580-588 (test-only branch of FileChanged
+    // SourceChanged within WaitingForFcsPhase).
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let (getBuild, recorder) = buildRecorder ()
+
+    let graph = ProjectGraph()
+
+    graph.RegisterProject(
+        AbsProjectPath.create "/tmp/tests/MyTests/MyTests.fsproj",
+        [ AbsFilePath.create "/tmp/tests/MyTests/A.fs"
+          AbsFilePath.create "/tmp/tests/MyTests/B.fs" ],
+        []
+    )
+
+    let handler = BuildPlugin.create "false" "" [] graph [ "MyTests" ] None [] None
+    host.RegisterHandler(recorder)
+    host.RegisterHandler(handler)
+
+    host.EmitFileChanged(SourceChanged [ "/tmp/tests/MyTests/A.fs" ])
+    Threading.Thread.Sleep(100)
+    test <@ getBuild () = None @>
+
+    // Second test-only change merges into awaiting set.
+    host.EmitFileChanged(SourceChanged [ "/tmp/tests/MyTests/B.fs" ])
+    Threading.Thread.Sleep(100)
+    test <@ getBuild () = None @>
+
+    // FCS confirming A alone is not enough — B is still awaited.
+    host.EmitFileChecked(fakeFileCheckResult "/tmp/tests/MyTests/A.fs")
+    Threading.Thread.Sleep(150)
+    test <@ getBuild () = None @>
+
+    // Confirming B drains the set → BuildSucceeded fires.
+    host.EmitFileChecked(fakeFileCheckResult "/tmp/tests/MyTests/B.fs")
+    waitUntil (fun () -> (getBuild ()).IsSome) 20000
+    test <@ getBuild () = Some BuildSucceeded @>
+
+[<Fact(Timeout = 30000)>]
+let ``WaitingForFcs with non-test SourceChanged abandons the wait and runs a build`` () =
+    // While in WaitingForFcsPhase, a SourceChanged that includes a non-test
+    // file must take the handleSourceChanged branch (line 590) and start a
+    // real build instead of merging into the awaiting set.
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let (getBuild, recorder) = buildRecorder ()
+
+    let graph = ProjectGraph()
+
+    graph.RegisterProject(
+        AbsProjectPath.create "/tmp/tests/MyTests/MyTests.fsproj",
+        [ AbsFilePath.create "/tmp/tests/MyTests/A.fs" ],
+        []
+    )
+
+    graph.RegisterProject(
+        AbsProjectPath.create "/tmp/src/MyLib/MyLib.fsproj",
+        [ AbsFilePath.create "/tmp/src/MyLib/Lib.fs" ],
+        []
+    )
+
+    let handler =
+        BuildPlugin.create "echo" "non-test rebuild" [] graph [ "MyTests" ] None [] None
+
+    host.RegisterHandler(recorder)
+    host.RegisterHandler(handler)
+
+    // Test-files-only → WaitingForFcsPhase.
+    host.EmitFileChanged(SourceChanged [ "/tmp/tests/MyTests/A.fs" ])
+    Threading.Thread.Sleep(100)
+    test <@ getBuild () = None @>
+
+    // A non-test change arrives — must trigger a real build, not stay waiting.
+    host.EmitFileChanged(SourceChanged [ "/tmp/src/MyLib/Lib.fs" ])
+    waitForTerminalStatus host "build" 20000
+    waitUntil (fun () -> (getBuild ()).IsSome) 20000
+    test <@ getBuild () = Some BuildSucceeded @>
+
+// --- build-status command in failed-state lifecycles ---
+
+[<Fact(Timeout = 30000)>]
+let ``build-status returns failed JSON after BuildOutputFailed lifecycle`` () =
+    // Drives the build-status command path that reads `Lifecycle.value` and
+    // matches BuildOutputFailed (lines 615-619).
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+    waitForTerminalStatus host "build" 20000
+
+    let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
+    test <@ result.IsSome @>
+    let doc = JsonDocument.Parse(result.Value)
+    Assert.Equal("failed", doc.RootElement.GetProperty("status").GetString())
+    // The "output" field exists even when stdout was empty (false produces no
+    // bytes); having the JSON shape proves the BuildOutputFailed serializer arm.
+    let mutable outputProp = Unchecked.defaultof<JsonElement>
+    let hasOutput = doc.RootElement.TryGetProperty("output", &outputProp)
+    test <@ hasOutput @>
+
+[<Fact(Timeout = 30000)>]
+let ``build-status returns failed JSON after BuildArtifactsStale demotion`` () =
+    // Combine the runVerifyHarness pattern (which produces BuildArtifactsStale)
+    // with build-status to drive the BuildArtifactsStale arm of the JSON
+    // serializer (lines 609-614).
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    withTempDir "build-status-stale" (fun tmpDir ->
+        let projDir = System.IO.Path.Combine(tmpDir, "MyLib")
+        let projPath = System.IO.Path.Combine(projDir, "MyLib.fsproj")
+        let srcPath = System.IO.Path.Combine(projDir, "Lib.fs")
+        let dllDir = System.IO.Path.Combine(projDir, "bin", "Debug", "net10.0")
+        let dllPath = System.IO.Path.Combine(dllDir, "MyLib.dll")
+        System.IO.Directory.CreateDirectory(dllDir) |> ignore
+
+        writeMinimalFsproj projPath "net10.0" [ "Lib.fs" ]
+        System.IO.File.WriteAllText(srcPath, "let x = 1")
+        System.IO.File.WriteAllText(dllPath, "fake-dll")
+        let now = DateTime.UtcNow
+        System.IO.File.SetLastWriteTimeUtc(srcPath, now)
+        // DLL older than source → demotion to BuildArtifactsStale.
+        System.IO.File.SetLastWriteTimeUtc(dllPath, now - TimeSpan.FromMinutes(10.0))
+
+        let graph = ProjectGraph()
+        graph.RegisterFromFsproj(projPath) |> ignore
+
+        let handler = BuildPlugin.create "true" "" [] graph [] None [] None
+        host.RegisterHandler(handler)
+        host.EmitFileChanged(SourceChanged [ srcPath ])
+
+        waitForTerminalStatus host "build" 20000
+
+        let result = host.RunCommand("build-status", [||]) |> Async.RunSynchronously
+        test <@ result.IsSome @>
+        let doc = JsonDocument.Parse(result.Value)
+        Assert.Equal("failed", doc.RootElement.GetProperty("status").GetString())
+        // The stale-diagnostic body must surface the "MSBuild lied" prefix.
+        let output = doc.RootElement.GetProperty("output").GetString()
+        test <@ output.Contains("stale") || output.Contains("MSBuild") @>)
