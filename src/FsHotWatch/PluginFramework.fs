@@ -16,18 +16,6 @@ module PluginName =
     let create (name: string) = PluginName name
     let value (PluginName n) = n
 
-/// Coalescing policy for a `RunExclusive` call made while another call is
-/// already in flight under the same key.
-type CoalescePolicy =
-    /// Ignore the new call. Use for "drop overlapping triggers" — e.g. file
-    /// changes during a build.
-    | Drop
-    /// Stash the new `work` as the single follower; if a follower was already
-    /// stashed, replace it. After the in-flight work finishes, the stashed
-    /// follower runs. Use for "always re-run with the latest input" — e.g.
-    /// test-impact analysis whose input is the latest change set.
-    | CoalesceLatest
-
 /// Side-effect context provided to plugin handlers.
 [<NoComparison; NoEquality>]
 type PluginCtx<'Msg> =
@@ -76,15 +64,15 @@ type PluginCtx<'Msg> =
         /// to a terminal state — the override is consumed when that fires.
         CompleteWithTimeout: string -> unit
         /// Run `work` exclusively under `key`. While running, additional calls
-        /// with the same key are governed by `policy`. On completion, the
+        /// with the same key are dropped (ignored). On completion, the
         /// framework posts the returned `'Msg` back to the agent's mailbox as
         /// a `Custom` event (mirroring the existing self-post pattern).
         ///
         /// If `work` throws, the exception is logged and no completion message
-        /// is posted (the slot is freed; any stashed follower still runs).
-        /// Plugins that need failure to flow back to Update should `try/with`
-        /// inside `work` and return a sentinel `'Msg`.
-        RunExclusive: string -> CoalescePolicy -> Async<'Msg> -> unit
+        /// is posted (the slot is freed). Plugins that need failure to flow
+        /// back to Update should `try/with` inside `work` and return a
+        /// sentinel `'Msg`.
+        RunExclusive: string -> Async<'Msg> -> unit
         /// Whether `key` is currently running under `RunExclusive`. Plugins
         /// use this for IPC-facing status without maintaining their own
         /// "is running" bit.
@@ -192,11 +180,10 @@ type PluginHostServices =
 let registerHandler (services: PluginHostServices) (handler: PluginHandler<'State, 'Msg>) : RegisteredPlugin =
 
     // Per-handler run-slot state for ctx.RunExclusive. Keyed by the user-supplied
-    // string. `Running=true` means a call is in flight; `Pending` is the single
-    // stashed follower (CoalesceLatest replaces the prior follower; Drop never
-    // sets Pending). Mutated only inside `runSlotsLock`.
-    let runSlots =
-        System.Collections.Generic.Dictionary<string, struct (bool * Async<'Msg> option)>()
+    // string. `true` means a call is in flight; absent or `false` means idle.
+    // While running, additional calls under the same key are dropped. Mutated
+    // only inside `runSlotsLock`.
+    let runSlots = System.Collections.Generic.Dictionary<string, bool>()
 
     let runSlotsLock = obj ()
 
@@ -206,7 +193,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                 (fun inbox ->
                     // RunExclusive implementation, closes over `inbox` so completion
                     // messages route back to this agent's mailbox.
-                    let rec runOne (key: string) (w: Async<'Msg>) =
+                    let runOne (key: string) (w: Async<'Msg>) =
                         async {
                             let mutable completion: 'Msg voption = ValueNone
 
@@ -219,39 +206,20 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                         (PluginName.value handler.Name)
                                         $"RunExclusive '%s{key}' work failed: %s{ex.ToString()}"
                             finally
-                                // Atomically: if a follower is stashed, keep Running=true
-                                // and clear it; otherwise mark idle.
-                                let next =
-                                    lock runSlotsLock (fun () ->
-                                        match runSlots.TryGetValue(key) with
-                                        | true, struct (_, Some pending) ->
-                                            runSlots.[key] <- struct (true, None)
-                                            Some pending
-                                        | _ ->
-                                            runSlots.[key] <- struct (false, None)
-                                            None)
+                                lock runSlotsLock (fun () -> runSlots.[key] <- false)
 
                                 match completion with
                                 | ValueSome m -> inbox.Post(Choice1Of2(Custom m))
                                 | ValueNone -> ()
-
-                                match next with
-                                | Some n -> Async.Start(runOne key n)
-                                | None -> ()
                         }
 
-                    let runExclusive (key: string) (policy: CoalescePolicy) (work: Async<'Msg>) =
+                    let runExclusive (key: string) (work: Async<'Msg>) =
                         let shouldStart =
                             lock runSlotsLock (fun () ->
                                 match runSlots.TryGetValue(key) with
-                                | true, struct (true, _) ->
-                                    match policy with
-                                    | Drop -> false
-                                    | CoalesceLatest ->
-                                        runSlots.[key] <- struct (true, Some work)
-                                        false
+                                | true, true -> false
                                 | _ ->
-                                    runSlots.[key] <- struct (true, None)
+                                    runSlots.[key] <- true
                                     true)
 
                         if shouldStart then
@@ -260,7 +228,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                     let isRunning (key: string) =
                         lock runSlotsLock (fun () ->
                             match runSlots.TryGetValue(key) with
-                            | true, struct (running, _) -> running
+                            | true, running -> running
                             | _ -> false)
 
                     let ctx =

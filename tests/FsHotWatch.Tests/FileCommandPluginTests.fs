@@ -1202,7 +1202,7 @@ let ``Update is a no-op for FileChanged when trigger has no FilePattern`` () =
           Log = fun _ -> ()
           CompleteWithSummary = fun _ -> ()
           CompleteWithTimeout = fun _ -> ()
-          RunExclusive = fun _ _ _ -> ()
+          RunExclusive = fun _ _ -> ()
           IsRunning = fun _ -> false }
 
     let initialState = handler.Init
