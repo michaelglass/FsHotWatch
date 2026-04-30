@@ -3,6 +3,7 @@ module FsHotWatch.Tests.ProcessHelperTests
 open System
 open Xunit
 open FsHotWatch.ProcessHelper
+open FsHotWatch.Tests.TestHelpers
 
 [<Fact(Timeout = 10000)>]
 let ``runProcessWithTimeout returns Succeeded when fast`` () =
@@ -82,120 +83,62 @@ let ``mergeDotnetEnv preserves caller-supplied MSBUILDDISABLENODEREUSE`` () =
     let merged = mergeDotnetEnv "dotnet" [ "MSBUILDDISABLENODEREUSE", "0" ]
     Assert.Equal<(string * string) list>([ "MSBUILDDISABLENODEREUSE", "0" ], merged)
 
-// Regression: a daemon-spawned child must inherit the daemon process's
-// environment. Reported under a Nix toolchain where DOTNET_ROOT and
-// NIX_PROFILES are needed by `dotnet run` invoked from a beforeRun hook.
-// FsHotWatch sets specific keys via psi.Environment[k] <- v on top of the
-// inherited dictionary; it never clears or replaces it. This test pins
-// that contract so a future "scrub the env" change can't silently break
-// Nix users.
+// Spawn-env contract — see ProcessHelper.dotnetArchRootKeys for the Nix
+// scenario that motivated the strip.
+
 [<Fact(Timeout = 10000)>]
 let ``runProcess inherits the parent process environment (no scrubbing)`` () =
     let key = "FSHOTWATCH_ENV_PASSTHROUGH_PROBE"
     let value = "nix-store-path-marker-" + Guid.NewGuid().ToString("N")
-    Environment.SetEnvironmentVariable(key, value)
 
-    try
-        // sh -c "printf %s \"$VAR\"" — printf avoids trailing newline noise.
+    withEnv key (Some value) (fun () ->
         let args = sprintf "-c \"printf %%s \\\"$%s\\\"\"" key
 
         match runProcess "sh" args "." [] with
         | Succeeded out -> Assert.Equal(value, out)
-        | other -> Assert.Fail $"expected Succeeded, got %A{other}"
-    finally
-        Environment.SetEnvironmentVariable(key, null)
-
-// On Nix, the .NET host writes DOTNET_ROOT_<ARCH> into the daemon's env
-// pointing at argv[0]'s dir. With a wrapped SDK, that dir lacks
-// shared/Microsoft.NETCore.App, so any later `dotnet run` spawned from a
-// hook trusts the inherited DOTNET_ROOT_ARM64 and aborts with
-// "App host version: X.Y.Z … .NET location: Not found". Interactive shells
-// dodge this because each dotnet invocation re-resolves; the daemon's
-// long life pins the bad value.
-//
-// Fix: strip DOTNET_ROOT_<ARCH> from every child's spawn env. The vars are
-// meaningful only to the .NET host, so dropping them is a no-op for
-// non-dotnet children, and any later dotnet invocation re-resolves
-// correctly from its own argv[0]. Unconditional strip avoids the whole
-// "did the caller route through `make`/`npm`/etc. that internally invokes
-// dotnet?" detection problem.
+        | other -> Assert.Fail $"expected Succeeded, got %A{other}")
 
 [<Fact(Timeout = 10000)>]
 let ``runProcess strips DOTNET_ROOT_ARM64 unconditionally`` () =
-    Environment.SetEnvironmentVariable("DOTNET_ROOT_ARM64", "/poisoned/wrapped/bin")
-
-    try
+    withEnv "DOTNET_ROOT_ARM64" (Some "/poisoned/wrapped/bin") (fun () ->
         let args = "-c \"printf %s \\\"$DOTNET_ROOT_ARM64\\\"\""
 
         match runProcess "sh" args "." [] with
         | Succeeded out -> Assert.Equal("", out)
-        | other -> Assert.Fail $"expected Succeeded, got %A{other}"
-    finally
-        Environment.SetEnvironmentVariable("DOTNET_ROOT_ARM64", null)
+        | other -> Assert.Fail $"expected Succeeded, got %A{other}")
 
 [<Fact(Timeout = 10000)>]
 let ``runProcess strips DOTNET_ROOT_X64 and DOTNET_ROOT_X86 too`` () =
-    Environment.SetEnvironmentVariable("DOTNET_ROOT_X64", "/poisoned/x64")
-    Environment.SetEnvironmentVariable("DOTNET_ROOT_X86", "/poisoned/x86")
+    withEnv "DOTNET_ROOT_X64" (Some "/poisoned/x64") (fun () ->
+        withEnv "DOTNET_ROOT_X86" (Some "/poisoned/x86") (fun () ->
+            let args = "-c \"printf %s:%s \\\"$DOTNET_ROOT_X64\\\" \\\"$DOTNET_ROOT_X86\\\"\""
 
-    try
-        let args = "-c \"printf %s:%s \\\"$DOTNET_ROOT_X64\\\" \\\"$DOTNET_ROOT_X86\\\"\""
-
-        match runProcess "sh" args "." [] with
-        | Succeeded out -> Assert.Equal(":", out)
-        | other -> Assert.Fail $"expected Succeeded, got %A{other}"
-    finally
-        Environment.SetEnvironmentVariable("DOTNET_ROOT_X64", null)
-        Environment.SetEnvironmentVariable("DOTNET_ROOT_X86", null)
+            match runProcess "sh" args "." [] with
+            | Succeeded out -> Assert.Equal(":", out)
+            | other -> Assert.Fail $"expected Succeeded, got %A{other}"))
 
 [<Fact(Timeout = 10000)>]
 let ``runProcess preserves plain DOTNET_ROOT (only arch-specific is stripped)`` () =
     let probe = "/some/intentional/dotnet/root-" + Guid.NewGuid().ToString("N")
-    Environment.SetEnvironmentVariable("DOTNET_ROOT", probe)
 
-    try
+    withEnv "DOTNET_ROOT" (Some probe) (fun () ->
         let args = "-c \"printf %s \\\"$DOTNET_ROOT\\\"\""
 
         match runProcess "sh" args "." [] with
         | Succeeded out -> Assert.Equal(probe, out)
-        | other -> Assert.Fail $"expected Succeeded, got %A{other}"
-    finally
-        Environment.SetEnvironmentVariable("DOTNET_ROOT", null)
-
-[<Fact(Timeout = 10000)>]
-let ``runProcess strips arch roots even for non-dotnet children (no detection needed)`` () =
-    // A `make` or `npm` child can internally shell out to dotnet; predicate-based
-    // detection on the immediate command misses that path. Unconditional strip
-    // means every transitive dotnet descendant gets a clean slate.
-    Environment.SetEnvironmentVariable("DOTNET_ROOT_ARM64", "/poisoned/wrapped/bin")
-
-    try
-        let args = "-c \"printf %s \\\"$DOTNET_ROOT_ARM64\\\"\""
-
-        match runProcess "sh" args "." [] with
-        | Succeeded out -> Assert.Equal("", out)
-        | other -> Assert.Fail $"expected Succeeded, got %A{other}"
-    finally
-        Environment.SetEnvironmentVariable("DOTNET_ROOT_ARM64", null)
+        | other -> Assert.Fail $"expected Succeeded, got %A{other}")
 
 [<Fact(Timeout = 10000)>]
 let ``runProcess strip respects caller-supplied DOTNET_ROOT_ARM64 override`` () =
-    // If a caller knows what it's doing and explicitly passes a value, we honor it.
-    Environment.SetEnvironmentVariable("DOTNET_ROOT_ARM64", "/inherited/poisoned")
     let explicitValue = "/explicit/correct-" + Guid.NewGuid().ToString("N")
 
-    try
+    withEnv "DOTNET_ROOT_ARM64" (Some "/inherited/poisoned") (fun () ->
         let args = "-c \"printf %s \\\"$DOTNET_ROOT_ARM64\\\"\""
 
         match runProcess "sh" args "." [ "DOTNET_ROOT_ARM64", explicitValue ] with
         | Succeeded out -> Assert.Equal(explicitValue, out)
-        | other -> Assert.Fail $"expected Succeeded, got %A{other}"
-    finally
-        Environment.SetEnvironmentVariable("DOTNET_ROOT_ARM64", null)
+        | other -> Assert.Fail $"expected Succeeded, got %A{other}")
 
-// Companion: explicit env entries must overlay (not replace) the inherited env.
-// If a future refactor switches to psi.Environment.Clear() + setters, this test
-// fails because the inherited probe disappears.
 [<Fact(Timeout = 10000)>]
 let ``runProcess overlays explicit env on top of inherited env`` () =
     let inheritedKey = "FSHOTWATCH_ENV_PASSTHROUGH_INHERITED"
@@ -203,14 +146,10 @@ let ``runProcess overlays explicit env on top of inherited env`` () =
     let explicitKey = "FSHOTWATCH_ENV_PASSTHROUGH_EXPLICIT"
     let explicitValue = "explicit-" + Guid.NewGuid().ToString("N")
 
-    Environment.SetEnvironmentVariable(inheritedKey, inheritedValue)
-
-    try
+    withEnv inheritedKey (Some inheritedValue) (fun () ->
         let args =
             sprintf "-c \"printf %%s:%%s \\\"$%s\\\" \\\"$%s\\\"\"" inheritedKey explicitKey
 
         match runProcess "sh" args "." [ explicitKey, explicitValue ] with
         | Succeeded out -> Assert.Equal(inheritedValue + ":" + explicitValue, out)
-        | other -> Assert.Fail $"expected Succeeded, got %A{other}"
-    finally
-        Environment.SetEnvironmentVariable(inheritedKey, null)
+        | other -> Assert.Fail $"expected Succeeded, got %A{other}")

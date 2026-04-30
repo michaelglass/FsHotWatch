@@ -582,15 +582,6 @@ let ``RunOnce completes and returns plugin statuses`` () =
 // isTruthyEnv tests
 // ============================================================================
 
-let private withEnv (name: string) (value: string option) (body: unit -> unit) =
-    let prior = Environment.GetEnvironmentVariable(name)
-
-    try
-        Environment.SetEnvironmentVariable(name, Option.toObj value)
-        body ()
-    finally
-        Environment.SetEnvironmentVariable(name, prior)
-
 [<Fact(Timeout = 1000)>]
 let ``isTruthyEnv returns false when unset`` () =
     let var = "FSHW_TEST_TRUTHY_" + string (Guid.NewGuid())
