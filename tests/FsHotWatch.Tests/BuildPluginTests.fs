@@ -77,53 +77,10 @@ let ``create accepts graph and test project names`` () =
     let handler = BuildPlugin.create "echo" "build" [] graph [] None [] None
     test <@ handler.Name = PluginName.create "build" @>
 
-// Drop semantics under RunExclusive "build": while a build is in flight,
-// additional FileChanged events must NOT spawn a second concurrent build.
-// Counts BuildCompleted emissions across rapid back-to-back triggers and asserts
-// exactly one fired.
-[<Fact(Timeout = 30000)>]
-let ``concurrent FileChanged events do not start two builds`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let buildCompletedCount = ref 0
-
-    let counter: PluginHandler<unit, obj> =
-        { Name = PluginName.create "build-counter"
-          Init = ()
-          Update =
-            fun _ctx state event ->
-                async {
-                    match event with
-                    | BuildCompleted _ -> System.Threading.Interlocked.Increment(buildCompletedCount) |> ignore
-                    | _ -> ()
-
-                    return state
-                }
-          Commands = []
-          Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
-          CacheKey = None
-          RequireWarmStart = false
-          Teardown = None }
-
-    // Slow build (sleep 1) so the second FileChanged certainly arrives mid-build.
-    let handler = BuildPlugin.create "sleep" "1" [] (ProjectGraph()) [] None [] None
-    host.RegisterHandler(counter)
-    host.RegisterHandler(handler)
-
-    host.EmitFileChanged(SourceChanged [ "src/A.fs" ])
-    // Tiny delay to ensure RunExclusive has marked the slot Running before the
-    // second dispatch evaluates the policy. Without this, the agent loop may not
-    // have processed the first FileChanged yet and we'd test sequential dispatch
-    // rather than overlap.
-    System.Threading.Thread.Sleep(100)
-    host.EmitFileChanged(SourceChanged [ "src/B.fs" ])
-
-    waitForTerminalStatus host "build" 8000
-    // Settle window: any erroneously-spawned second build would also fire its
-    // BuildCompleted within ~1.5s of the first; wait long enough to catch it.
-    System.Threading.Thread.Sleep(1500)
-
-    test <@ !buildCompletedCount = 1 @>
+// NOTE: ``concurrent FileChanged events do not start two builds`` was moved to
+// FsHotWatch.IntegrationTests because it spawns a real `sleep 1` subprocess and
+// asserts on cross-thread timing windows; under the parallel xUnit collection
+// runner with system load it intermittently flakes due to scheduler starvation.
 
 [<Fact(Timeout = 5000)>]
 let ``BuildPlugin opts in to framework warm-start gate`` () =
