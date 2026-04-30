@@ -823,15 +823,96 @@ let ``BuildInputsHasher hash differs when files are added or removed`` () =
         test <@ oneFile <> twoFiles @>)
 
 [<Fact(Timeout = 5000)>]
-let ``BuildInputsHasher does not crash when a listed file is missing`` () =
+let ``BuildInputsHasher returns 'missing' sentinel for non-existent file`` () =
     withTempDir "binhasher-missing" (fun tmpDir ->
         let exists = System.IO.Path.Combine(tmpDir, "A.fs")
         let missing = System.IO.Path.Combine(tmpDir, "MissingNeverWritten.fs")
         System.IO.File.WriteAllText(exists, "let a = 1")
 
-        let h = BuildInputsHasher(stubGraph [ exists; missing ] [])
-        // Missing file is hashed via the read-error sentinel; no exception.
-        test <@ not (System.String.IsNullOrEmpty(h.Compute())) @>)
+        // Missing file is hashed via the explicit "missing" sentinel; no exception,
+        // and the merkle distinguishes a file-set with a missing entry from one
+        // without it (the old read-error swallow could collapse keys to (path,0L)).
+        let withMissing = BuildInputsHasher(stubGraph [ exists; missing ] []).Compute()
+        let onlyExists = BuildInputsHasher(stubGraph [ exists ] []).Compute()
+        test <@ not (System.String.IsNullOrEmpty(withMissing)) @>
+        test <@ withMissing <> onlyExists @>)
+
+[<Fact(Timeout = 5000)>]
+let ``BuildInputsHasher distinct missing paths produce distinct merkles`` () =
+    // Belt-and-suspenders: the "missing" sentinel must still be combined with
+    // the path (else two different missing files would collapse to one merkle
+    // entry — exactly the silent under-build the old (path,0L) swallow caused).
+    withTempDir "binhasher-missing-distinct" (fun tmpDir ->
+        let m1 = System.IO.Path.Combine(tmpDir, "M1.fs")
+        let m2 = System.IO.Path.Combine(tmpDir, "M2.fs")
+        let h1 = BuildInputsHasher(stubGraph [ m1 ] []).Compute()
+        let h2 = BuildInputsHasher(stubGraph [ m2 ] []).Compute()
+        test <@ h1 <> h2 @>)
+
+[<Fact(Timeout = 5000)>]
+let ``BuildInputsHasher propagates IOException from unreadable file`` () =
+    // Simulate IO failure: chmod 000 a real file. ReadAllText throws
+    // UnauthorizedAccessException, which now propagates instead of being
+    // swallowed as a "read-error" cache entry that would poison the merkle.
+    withTempDir "binhasher-unreadable" (fun tmpDir ->
+        let f = System.IO.Path.Combine(tmpDir, "Locked.fs")
+        System.IO.File.WriteAllText(f, "let a = 1")
+
+        let canSimulate =
+            try
+                System.IO.File.SetUnixFileMode(f, System.IO.UnixFileMode.None)
+
+                try
+                    System.IO.File.ReadAllText f |> ignore
+                    false // running as root or filesystem ignores perms
+                with _ ->
+                    true
+            with _ ->
+                false
+
+        if canSimulate then
+            try
+                let h = BuildInputsHasher(stubGraph [ f ] [])
+
+                let raised =
+                    try
+                        h.Compute() |> ignore
+                        false
+                    with
+                    | :? System.UnauthorizedAccessException
+                    | :? System.IO.IOException -> true
+
+                test <@ raised @>
+            finally
+                // restore perms so the temp-dir cleanup can delete the file
+                try
+                    System.IO.File.SetUnixFileMode(
+                        f,
+                        System.IO.UnixFileMode.UserRead ||| System.IO.UnixFileMode.UserWrite
+                    )
+                with _ ->
+                    ())
+
+[<Fact(Timeout = 5000)>]
+let ``BuildInputsHasher caches by (path, mtime): repeated computes hash once`` () =
+    // The cache is keyed on (path, mtimeTicks). Mutating content while
+    // preserving mtime must return the previously-cached hash, proving the
+    // factory ran exactly once for that (path, mtime) tuple.
+    withTempDir "binhasher-cache-hit" (fun tmpDir ->
+        let f = System.IO.Path.Combine(tmpDir, "A.fs")
+        System.IO.File.WriteAllText(f, "let a = 1")
+        let mtime = System.IO.File.GetLastWriteTimeUtc(f)
+
+        let h = BuildInputsHasher(stubGraph [ f ] [])
+        let first = h.Compute()
+
+        // Overwrite content but pin mtime to the original value.
+        System.IO.File.WriteAllText(f, "let a = 999_completely_different")
+        System.IO.File.SetLastWriteTimeUtc(f, mtime)
+
+        let second = h.Compute()
+        // Same merkle: the cache returned the original hash without re-reading.
+        test <@ first = second @>)
 
 [<Fact(Timeout = 5000)>]
 let ``BuildInputsHasher mtime cache returns stable hash across repeat calls`` () =
