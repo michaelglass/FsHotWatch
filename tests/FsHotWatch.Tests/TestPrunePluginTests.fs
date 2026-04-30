@@ -56,7 +56,10 @@ let ``testprune handler opts into RequireWarmStart`` () =
     test <@ handler.RequireWarmStart = true @>
 
 [<Fact(Timeout = 15000)>]
-let ``affected-tests command returns not-analyzed when no files checked`` () =
+let ``affected-tests command returns empty array when no files checked`` () =
+    // After the lazy-compute migration, the IPC always returns a JSON array,
+    // computed on demand from state.ChangedSymbols. With no FileChecked events,
+    // ChangedSymbols is empty so the SQL query is skipped and "[]" is returned.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
     let handler = create ":memory:" "/tmp" None None None None None
@@ -64,7 +67,7 @@ let ``affected-tests command returns not-analyzed when no files checked`` () =
 
     let result = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
     test <@ result.IsSome @>
-    test <@ result.Value.Contains("not analyzed") @>
+    test <@ result.Value = "[]" @>
 
 [<Fact(Timeout = 15000)>]
 let ``changed-files command returns empty list when no files checked`` () =
@@ -1345,11 +1348,11 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
         test <@ completed @>)
 
 [<Fact(Timeout = 15000)>]
-let ``FileChecked does not query DB for affected tests`` () =
-    // Bug 2: FileChecked should accumulate changed symbols, not query the DB.
-    // The query should happen after flush in BuildCompleted.
-    // We verify indirectly: after FileChecked but before BuildCompleted,
-    // affected-tests should return empty (not yet queried).
+let ``FileChecked with no detected symbol changes leaves ChangedSymbols empty`` () =
+    // After the lazy-compute migration, FileChecked accumulates ChangedSymbols
+    // (it does not eagerly query DB or populate AffectedTests). Because this
+    // test uses a fake CheckResults=ParseOnly, analyzeSource yields no symbols
+    // and ChangedSymbols stays []; affected-tests therefore returns "[]".
     withTempDir "tp-no-query" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
         let db = Database.create dbPath
@@ -1404,11 +1407,115 @@ let ``FileChecked does not query DB for affected tests`` () =
 
         waitForPluginTerminal host "test-prune" 5.0
 
-        // After FileChecked (no BuildCompleted), affected-tests should be empty
-        // because the query now happens after flush (on BuildCompleted)
+        // After FileChecked with no real analysis results, ChangedSymbols stays
+        // empty so the lazy IPC returns "[]" without hitting the DB.
         let result = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
         test <@ result.IsSome @>
+        test <@ result.Value = "[]" @>
         test <@ not (result.Value.Contains("myTest")) @>)
+
+[<Fact(Timeout = 20000)>]
+let ``affected-tests computes lazily on demand from ChangedSymbols`` () =
+    // Locks in the post-migration contract: FileChecked accumulates
+    // state.ChangedSymbols but does NOT eagerly QueryAffectedTests; the IPC
+    // command runs the SQL on demand against the current DB state. After
+    // an initial FileChecked + BuildCompleted populates the DB, a second
+    // FileChecked that mutates a symbol should make affected-tests return
+    // the dependent test BEFORE another BuildCompleted fires.
+    withTempDir "tp-lazy-affected" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let libFile = Path.Combine(tmpDir, "Lib.fsx")
+        let testsFile = Path.Combine(tmpDir, "Tests.fsx")
+
+        let libSource1 =
+            """module Lib
+let compute (x: int) = x + 1
+"""
+
+        let testsSource =
+            """module Tests
+open Lib
+
+type FactAttribute() = inherit System.Attribute()
+
+[<Fact>]
+let lazyComputeTest () =
+    let result = compute 1
+    assert (result = 2)
+"""
+
+        File.WriteAllText(libFile, libSource1)
+        File.WriteAllText(testsFile, testsSource)
+
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+        let host = PluginHost.create checker tmpDir
+
+        let testConfigs =
+            [ { Project = "Lib"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None
+        host.RegisterHandler(handler)
+
+        let libOptions =
+            getScriptOptions checker libFile libSource1 |> Async.RunSynchronously
+
+        let projOptions =
+            { libOptions with
+                SourceFiles = [| libFile; testsFile |] }
+
+        pipeline.RegisterProject(libFile, projOptions)
+
+        // Seed the DB with the initial baseline by running a FileChecked +
+        // BuildCompleted cycle (this is the only path that flushes pending
+        // analysis to the DB).
+        match pipeline.CheckFile(libFile) |> Async.RunSynchronously with
+        | Some r -> host.EmitFileChecked(r)
+        | None -> failwith "lib CheckFile failed"
+
+        match pipeline.CheckFile(testsFile) |> Async.RunSynchronously with
+        | Some r -> host.EmitFileChecked(r)
+        | None -> failwith "tests CheckFile failed"
+
+        waitForPluginIdle host "test-prune" 10.0
+
+        let firstBuild = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        firstBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
+        // Now mutate the symbol and emit a single FileChecked. We do NOT
+        // emit BuildCompleted afterward — affected-tests must be answered
+        // by the lazy on-demand SQL, not by an eager populate from FileChecked.
+        let libSource2 =
+            """module Lib
+let compute (x: int) = x + 2
+"""
+
+        File.WriteAllText(libFile, libSource2)
+
+        match pipeline.CheckFile(libFile) |> Async.RunSynchronously with
+        | Some r -> host.EmitFileChecked(r)
+        | None -> failwith "lib CheckFile 2 failed"
+
+        let mutable affectedTests = ""
+
+        waitUntil
+            (fun () ->
+                match host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously with
+                | Some v -> affectedTests <- v
+                | None -> ()
+
+                affectedTests.Contains("lazyComputeTest"))
+            5000
+
+        test <@ affectedTests.Contains("lazyComputeTest") @>)
 
 [<Fact(Timeout = 15000)>]
 let ``BuildCompleted queries affected tests after flush`` () =
