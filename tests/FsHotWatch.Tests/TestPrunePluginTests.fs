@@ -2117,43 +2117,11 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
 
         test <@ hasCompleted @>)
 
-[<Fact(Timeout = 10000)>]
-let ``run summary names the slowest project when 2+ projects ran`` () =
-    withTempDir "tp-slowest" (fun tmpDir ->
-        // 20× differential — wide enough that Linux CI's fork-exec / first-time
-        // JIT overhead on FastProj can't overtake SlowProj's actual wall time.
-        let configs =
-            [ { Project = "FastProj"
-                Command = "sh"
-                Args = "-c \"sleep 0.05\""
-                Group = "default"
-                Environment = []
-                FilterTemplate = None
-                ClassJoin = " "
-                TimeoutSec = None }
-              { Project = "SlowProj"
-                Command = "sh"
-                Args = "-c \"sleep 1.0\""
-                Group = "default"
-                Environment = []
-                FilterTemplate = None
-                ClassJoin = " "
-                TimeoutSec = None } ]
-
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = create ":memory:" tmpDir (Some configs) None None None None
-        host.RegisterHandler(handler)
-        host.EmitBuildCompleted(BuildSucceeded)
-        waitForPluginTerminal host "test-prune" 5.0
-
-        let history = host.GetHistory("test-prune")
-        let lastRun = history |> List.last
-
-        match lastRun.Summary with
-        | Some s ->
-            test <@ s.Contains("slowest: SlowProj") @>
-            test <@ not (s.Contains("slowest: FastProj")) @>
-        | None -> failwith "expected summary on completed run")
+// NOTE: ``run summary names the slowest project when 2+ projects ran`` was moved
+// to FsHotWatch.IntegrationTests — it spawns two real sh subprocesses with a
+// 1-second sleep dependency to assert "slowest" ordering, and the 5-second
+// terminal-wait window starves under heavy parallel test load (manifesting as
+// `List.last` ArgumentException when history is empty after timeout).
 
 [<Fact(Timeout = 5000)>]
 let ``run summary omits slowest when only 1 project ran`` () =
