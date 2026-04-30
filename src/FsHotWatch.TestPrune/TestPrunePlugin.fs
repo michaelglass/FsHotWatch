@@ -837,17 +837,25 @@ let create
         [ "affected-tests",
           fun (_ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
               async {
-                  match state.AffectedTests with
-                  | NotYetAnalyzed -> return JsonSerializer.Serialize({| status = "not analyzed" |})
-                  | Analyzed tests ->
-                      let testsData =
-                          tests
-                          |> List.map (fun t ->
-                              {| project = t.TestProject
-                                 ``class`` = t.TestClass
-                                 ``method`` = t.TestMethod |})
+                  // Compute on demand from state.ChangedSymbols against current DB
+                  // state. ChangedSymbols accumulates across FileChecked events and
+                  // is reset by flushAndQueryAffected on BuildCompleted.
+                  let symbols = state.ChangedSymbols |> List.distinct
 
-                      return JsonSerializer.Serialize(testsData)
+                  let tests =
+                      if symbols.IsEmpty then
+                          []
+                      else
+                          db.QueryAffectedTests(symbols)
+
+                  let testsData =
+                      tests
+                      |> List.map (fun t ->
+                          {| project = t.TestProject
+                             ``class`` = t.TestClass
+                             ``method`` = t.TestMethod |})
+
+                  return JsonSerializer.Serialize(testsData)
               }
 
           "changed-files",
@@ -1069,32 +1077,17 @@ let create
                                 fileAnalysis.TestMethods
                                 |> List.fold (fun acc t -> Map.add t.TestClass result.File acc) state.TestClassFiles
 
-                            // Query affected tests against currently-persisted DB state so
-                            // `affected-tests` reflects the latest change without waiting for
-                            // BuildCompleted. Skip when this FileChecked contributed no new
-                            // changed symbols — the prior AffectedTests is still current,
-                            // and hitting SQLite on every unchanged save is wasteful under
-                            // rapid-save storms.
-                            let queriedAffected =
-                                if changedNames.IsEmpty then
-                                    match state.AffectedTests with
-                                    | Analyzed t -> t
-                                    | NotYetAnalyzed -> []
-                                else
-                                    let distinct = newChangedSymbols |> List.distinct
-
-                                    if distinct.IsEmpty then
-                                        []
-                                    else
-                                        db.QueryAffectedTests(distinct)
-
+                            // AffectedTests is no longer eagerly populated here. The
+                            // `affected-tests` IPC command computes it on demand from
+                            // state.ChangedSymbols against the current DB. AffectedTests
+                            // is set exclusively by flushAndQueryAffected on BuildCompleted
+                            // and consumed by runTestsWithImpact.
                             let newState =
                                 { state with
                                     ChangedFiles = newChangedFiles
                                     PendingAnalysis = newPending
                                     ChangedSymbols = newChangedSymbols
-                                    TestClassFiles = newClassFiles
-                                    AffectedTests = Analyzed queriedAffected }
+                                    TestClassFiles = newClassFiles }
 
                             // Keep the mutable snapshot in sync for the cache key function
                             Volatile.Write(&changedSymbolsRef, newState.ChangedSymbols)
