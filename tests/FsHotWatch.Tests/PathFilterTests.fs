@@ -179,38 +179,59 @@ let ``IgnoreFilterCache returns cached result when files unchanged`` () =
         // Same object reference — cache hit, not reloaded
         test <@ obj.ReferenceEquals(filter1, filter2) @>)
 
-[<Fact(Timeout = 15000)>]
-let ``IgnoreFilterCache is safe under concurrent Get`` () =
-    withTempDir "cache-concurrent" (fun tmpDir ->
+// Note: a 16-thread "is safe under concurrent Get" stress test lives in
+// FsHotWatch.IntegrationTests (excluded from coverage). It validates the
+// double-checked-lock contention path under high contention. Keeping it here
+// caused PathFilter.fs branch coverage to flicker run-to-run because the
+// inner-lock-fresh branch (line 90) was recorded inconsistently under
+// coverlet instrumentation when threads happened to serialize.
+//
+// The deterministic cousin below (`IgnoreFilterCache double-checked lock
+// returns cached entry on contended populate`) drives the same inner branch
+// from a barrier-coordinated 2-thread setup using the internal test hook,
+// so coverage stays stable.
+[<Fact(Timeout = 5000)>]
+let ``IgnoreFilterCache double-checked lock returns cached entry on contended populate`` () =
+    withTempDir "cache-double-check" (fun tmpDir ->
         File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.log\n")
         let cache = IgnoreFilterCache()
-        let logPath = Path.Combine(tmpDir, "x.log")
-        let fsPath = Path.Combine(tmpDir, "y.fs")
 
-        let threadCount = 16
-        let iterations = 500
-        use ready = new Barrier(threadCount)
+        // Both worker threads should miss the outer Volatile.Read, then block at
+        // this barrier so the lock-acquire ordering is forced: one thread enters
+        // the lock and populates while the other waits, exercising the
+        // "Some entry when isFresh entry" branch on the second thread.
+        use barrier = new Barrier(2)
+        cache.SetTestHookAfterOuterMiss(fun () -> barrier.SignalAndWait())
+
+        let logPath = Path.Combine(tmpDir, "a.log")
+        let fsPath = Path.Combine(tmpDir, "b.fs")
+
         let errors = ResizeArray<exn>()
         let errLock = obj ()
+        let results = ResizeArray<string -> bool>()
+        let resLock = obj ()
 
         let work () =
             try
-                ready.SignalAndWait()
-
-                for _ in 1..iterations do
-                    let f = cache.Get(tmpDir)
-
-                    if not (f logPath) || f fsPath then
-                        failwith "unexpected filter result"
+                let f = cache.Get(tmpDir)
+                lock resLock (fun () -> results.Add(f))
             with ex ->
                 lock errLock (fun () -> errors.Add(ex))
 
-        let threads = [| for _ in 1..threadCount -> Thread(ThreadStart(work)) |]
+        let t1 = Thread(ThreadStart(work))
+        let t2 = Thread(ThreadStart(work))
+        t1.Start()
+        t2.Start()
+        t1.Join()
+        t2.Join()
 
-        for t in threads do
-            t.Start()
-
-        for t in threads do
-            t.Join()
-
-        test <@ errors.Count = 0 @>)
+        test <@ errors.Count = 0 @>
+        test <@ results.Count = 2 @>
+        // Both threads should observe the same correct filter behaviour.
+        for f in results do
+            test <@ f logPath @>
+            test <@ not (f fsPath) @>
+        // Both threads must have received the same Filter instance from the
+        // cache — i.e. the second thread's inner-lock check returned the
+        // entry the first thread populated, rather than rebuilding.
+        test <@ obj.ReferenceEquals(results.[0], results.[1]) @>)

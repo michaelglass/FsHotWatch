@@ -1775,3 +1775,50 @@ let ``§1 regression: Bar's fcsCheckSignature changes when Foo's signature break
         // Bar.fs's own bytes are identical — only Foo changed. The signature must
         // still differ, otherwise downstream caches would replay stale results.
         test <@ sig1 <> sig2 @>)
+
+// --- IgnoreFilterCache concurrency stress (moved from FsHotWatch.Tests) ---
+//
+// This 16-thread stress test asserts that IgnoreFilterCache is correct under
+// high concurrent contention. It was originally a unit test in PathFilterTests
+// but contributed to flaky branch coverage on src/FsHotWatch/PathFilter.fs:
+// the inner double-checked-lock branch (Some entry when isFresh entry inside
+// the lock) was recorded inconsistently by coverlet under high contention,
+// so the file's branch percentage would flicker between 68.2% and 63.6%.
+// Coverage stability is more important than this test's specific contribution
+// to coverage; the concurrency-correctness assertion still runs as part of
+// `mise run test-integration`.
+[<Fact(Timeout = 15000)>]
+let ``IgnoreFilterCache is safe under concurrent Get`` () =
+    withTempDir "cache-concurrent" (fun tmpDir ->
+        File.WriteAllText(Path.Combine(tmpDir, ".gitignore"), "*.log\n")
+        let cache = FsHotWatch.PathFilter.IgnoreFilterCache()
+        let logPath = Path.Combine(tmpDir, "x.log")
+        let fsPath = Path.Combine(tmpDir, "y.fs")
+
+        let threadCount = 16
+        let iterations = 500
+        use ready = new Barrier(threadCount)
+        let errors = ResizeArray<exn>()
+        let errLock = obj ()
+
+        let work () =
+            try
+                ready.SignalAndWait()
+
+                for _ in 1..iterations do
+                    let f = cache.Get(tmpDir)
+
+                    if not (f logPath) || f fsPath then
+                        failwith "unexpected filter result"
+            with ex ->
+                lock errLock (fun () -> errors.Add(ex))
+
+        let threads = [| for _ in 1..threadCount -> Thread(ThreadStart(work)) |]
+
+        for t in threads do
+            t.Start()
+
+        for t in threads do
+            t.Join()
+
+        test <@ errors.Count = 0 @>)
