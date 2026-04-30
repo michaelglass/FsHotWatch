@@ -730,12 +730,6 @@ let create
     // before Update) sees the symbols accumulated from prior FileChecked events.
     let mutable changedSymbolsRef: string list = []
 
-    // False until the first TestsFinished in this session. BuildCompleted returns
-    // None (non-cacheable) while this is false so the full-suite cold-start path
-    // in runTestsWithImpact always runs on daemon restart even when the on-disk
-    // task cache holds a matching entry from a prior session.
-    let mutable hadPriorResultsRef: bool = false
-
     let hasTestConfigs =
         testConfigs |> Option.map (List.isEmpty >> not) |> Option.defaultValue false
 
@@ -1185,7 +1179,6 @@ let create
                     // TestRunCompleted (e.g. FileCommandPlugin) must see it on cache hit.
                     ctx.EmitTestRunStarted started
                     ctx.EmitTestRunCompleted completed
-                    Volatile.Write(&hadPriorResultsRef, true)
 
                     // Apply error reporting synchronously here too — live emission from
                     // the async wouldn't be captured for cache replay.
@@ -1357,12 +1350,7 @@ let create
                       "build-outcome", "succeeded" ]
 
             match event with
-            | BuildCompleted BuildSucceeded ->
-                // hadPriorResultsRef is set in Custom(TestsFinished) after the first run completes.
-                if not (Volatile.Read(&hadPriorResultsRef)) then
-                    None
-                else
-                    Some(buildCompletedKey ())
+            | BuildCompleted BuildSucceeded -> Some(buildCompletedKey ())
             | BuildCompleted(BuildFailed errs) ->
                 let symbolsHash =
                     Volatile.Read(&changedSymbolsRef)
@@ -1395,5 +1383,5 @@ let create
             | _ -> None
 
         Some cacheKey
-      RequireWarmStart = false
+      RequireWarmStart = true
       Teardown = None }
