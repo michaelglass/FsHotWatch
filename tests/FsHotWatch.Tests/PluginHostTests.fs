@@ -36,6 +36,7 @@ let ``plugin receives file change events`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -54,6 +55,7 @@ let ``plugin registers command`` () =
           Commands = [ "greet", fun _state _args -> async { return "hello" } ]
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -85,6 +87,7 @@ let ``plugin reports status`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -112,6 +115,7 @@ let ``GetAllStatuses returns all plugin statuses`` () =
           Commands = []
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(makeHandler "a")
@@ -141,6 +145,7 @@ let ``EmitBuildCompleted reaches plugins`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -168,6 +173,7 @@ let ``EmitBuildCompleted with failure reaches plugins`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -269,6 +275,7 @@ let ``multiple plugins receive the same event`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(makeHandler "p1" (fun () -> received1 <- true))
@@ -308,6 +315,7 @@ let ``plugin can report and query errors via host`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -354,6 +362,7 @@ let ``plugin ClearErrors removes errors from ledger`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -422,6 +431,7 @@ let ``EmitFileChecked dispatches to framework plugin handlers`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChecked ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(makeHandler "p1" ref1)
@@ -553,6 +563,7 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -605,6 +616,7 @@ let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -644,6 +656,7 @@ let ``waitForAllTerminal with TimeSpan.MaxValue does not overflow deadline arith
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
+          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
