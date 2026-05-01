@@ -392,15 +392,23 @@ let private allTerminal (statuses: Map<string, PluginStatus>) =
 /// Dependencies for processBatch, bundled to avoid a long closure capture list.
 [<NoComparison; NoEquality>]
 type internal BatchContext =
-    { Host: PluginHost
-      InvalidateFcs: (unit -> unit) option
-      RepoRoot: string
-      Loader: IWorkspaceLoader
-      Graph: ProjectGraph.ProjectGraph
-      Pipeline: CheckPipeline
-      DaemonCt: CancellationToken ref
-      FcsSuppressedCodes: Set<int>
-      ExcludePatterns: string list }
+    {
+        Host: PluginHost
+        InvalidateFcs: (unit -> unit) option
+        RepoRoot: string
+        Loader: IWorkspaceLoader
+        Graph: ProjectGraph.ProjectGraph
+        Pipeline: CheckPipeline
+        DaemonCt: CancellationToken ref
+        FcsSuppressedCodes: Set<int>
+        ExcludePatterns: string list
+        /// Monotonic counter bumped per `InSessionBatch` `BatchChecked` emitted
+        /// from `processBatch`. Per-trigger generation lets subscribers dedup
+        /// "latest in-session cohort" without colliding with scan generations
+        /// (which use the scan agent's own counter). Boxed `ref` so the
+        /// long-lived BatchContext shares state across batches.
+        InSessionBatchGen: int64 ref
+    }
 
 /// Process a batch of debounced file changes: filter, re-discover projects if needed,
 /// run preprocessors, emit events, and check files.
@@ -486,6 +494,9 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
             if not projFilesChanged.IsEmpty then
                 ctx.Host.EmitFileChanged(ProjectChanged projFilesChanged)
 
+        let batchStartedAt = System.DateTime.UtcNow
+        let dispatchedFiles = ResizeArray<AbsFilePath>()
+
         if not allSourceFiles.IsEmpty then
             let modifiedByPreprocessors = ctx.Host.RunPreprocessors(allSourceFiles)
 
@@ -529,6 +540,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                             "daemon"
                             $"EmitFileChecked: %s{Path.GetFileName(AbsFilePath.value checkResult.File)}"
 
+                        dispatchedFiles.Add(checkResult.File)
                         ctx.Host.EmitFileChecked(checkResult)
                         reportFcsDiagnostics ctx.FcsSuppressedCodes ctx.Host checkResult
                     | None -> ()
@@ -565,6 +577,20 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                     |> Async.Parallel
 
                 emitResults results
+
+            // Empty cohorts (every file filtered as content-unchanged or no
+            // results from the pipeline) skip the emit — there's nothing to
+            // "flush and decide" against.
+            if dispatchedFiles.Count > 0 then
+                let nextGen =
+                    System.Threading.Interlocked.Increment(&ctx.InSessionBatchGen.contents)
+
+                ctx.Host.EmitBatchChecked
+                    { Trigger = InSessionBatch changes
+                      Files = dispatchedFiles |> List.ofSeq
+                      Generation = nextGen
+                      StartedAt = batchStartedAt
+                      CompletedAt = System.DateTime.UtcNow }
 
             return newSuppressed
         else
@@ -916,7 +942,9 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
         let total = files.Length
         Logging.info "scan" $"%d{registeredProjects.Length} projects, %d{total} files registered"
         let sw = System.Diagnostics.Stopwatch.StartNew()
-        let mutable scanState: ScanState = Scanning(total, 0, System.DateTime.UtcNow)
+        let scanStartedAt = System.DateTime.UtcNow
+        let mutable scanState: ScanState = Scanning(total, 0, scanStartedAt)
+        let dispatchedFiles = ResizeArray<AbsFilePath>()
 
         if not files.IsEmpty then
             // Run preprocessors (e.g., formatter) before dispatching
@@ -963,6 +991,7 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
                     match result with
                     | Some checkResult ->
                         checkedCount <- checkedCount + 1
+                        dispatchedFiles.Add(checkResult.File)
                         host.EmitFileChecked(checkResult)
                         reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
                     | None -> ()
@@ -975,6 +1004,19 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
         sw.Stop()
         let finalScanState = ScanComplete(total, sw.Elapsed)
         let newGeneration = state.Generation + 1L
+
+        // Emit BatchChecked *before* SignalGeneration so WaitForScanGeneration
+        // callers (IPC) safely assume BatchChecked has already been dispatched
+        // by the time `fshw scan --wait` returns. Empty cohorts (no registered
+        // files) skip — there's nothing to "flush and decide" against.
+        if dispatchedFiles.Count > 0 then
+            host.EmitBatchChecked
+                { Trigger = BootScan
+                  Files = dispatchedFiles |> List.ofSeq
+                  Generation = newGeneration
+                  StartedAt = scanStartedAt
+                  CompletedAt = System.DateTime.UtcNow }
+
         scanSignal.SignalGeneration(newGeneration)
 
         return
@@ -1078,7 +1120,8 @@ module Daemon =
                   Pipeline = pipeline
                   DaemonCt = daemonCtRef
                   FcsSuppressedCodes = fcsSuppressedCodes
-                  ExcludePatterns = excludePatterns }
+                  ExcludePatterns = excludePatterns
+                  InSessionBatchGen = ref 0L }
 
             let formatAllAndSuppress (suppressed: Set<string>) (replyChannel: AsyncReplyChannel<string>) =
                 let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value

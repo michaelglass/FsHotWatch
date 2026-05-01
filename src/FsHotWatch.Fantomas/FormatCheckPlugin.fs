@@ -191,7 +191,6 @@ let internal createFormatCheckWithSlowHook
             | _ -> None
 
         Some cacheKey
-      RequireWarmStart = false
       Teardown = None }
 
 /// Read-only format check plugin (reports unformatted files without modifying them).
