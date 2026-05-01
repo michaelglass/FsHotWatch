@@ -635,6 +635,13 @@ let ``reuse path does not launch daemon when hash matches`` () =
 
 let private assertFailsWhenDaemonDown (cmd: Command) =
     withTempDir "prog-daemon-down" (fun tmpDir ->
+        // Stage a fake .fsproj so executeCommand's no-projects pre-check
+        // (which now exits 2) doesn't preempt the daemon-launch failure
+        // path this helper is exercising.
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        File.WriteAllText(Path.Combine(srcDir, "Stub.fsproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+
         let ipc =
             { fakeIpc () with
                 IsRunning = fun _ -> false }
