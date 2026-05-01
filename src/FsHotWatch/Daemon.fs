@@ -439,7 +439,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
             filteredSourceFiles
             |> List.rev
             |> List.filter (fun f ->
-                let changed = Watcher.hasContentChanged f
+                let changed = ContentDedup.hasContentChanged f
 
                 if not changed then
                     Logging.debug "daemon" $"content unchanged: %s{f}"
@@ -450,7 +450,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
             projFiles
             |> List.distinct
             |> List.filter (fun f ->
-                let changed = Watcher.hasContentChanged f
+                let changed = ContentDedup.hasContentChanged f
 
                 if not changed then
                     Logging.debug "daemon" $"content unchanged: %s{f}"
@@ -621,11 +621,8 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
             match s with
             | Running since ->
                 let subtasks =
-                    try
-                        host.GetActivitySnapshot(name).Subtasks
-                        |> List.map (fun t -> t.Key, t.StartedAt)
-                    with _ ->
-                        []
+                    host.GetActivitySnapshot(name).Subtasks
+                    |> List.map (fun t -> t.Key, t.StartedAt)
 
                 Some(formatPluginWait now name since subtasks)
             | _ -> None)
