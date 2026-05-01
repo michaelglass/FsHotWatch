@@ -274,7 +274,9 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                         let nameStr = PluginName.value handler.Name
 
                         match event with
-                        | FileChecked r -> { Plugin = nameStr; File = Some r.File }
+                        | FileChecked r ->
+                            { Plugin = nameStr
+                              File = Some(AbsFilePath.value r.File) }
                         | _ -> { Plugin = nameStr; File = None }
 
                     /// Per-handler session flag: has this plugin reached a terminal
@@ -308,7 +310,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                     | Some result ->
                                         // Clear stale errors before replay
                                         match event with
-                                        | FileChecked r -> services.ClearErrors handler.Name r.File
+                                        | FileChecked r -> services.ClearErrors handler.Name (AbsFilePath.value r.File)
                                         | _ -> services.ClearPlugin handler.Name
 
                                         // Replay errors
