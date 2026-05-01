@@ -64,6 +64,62 @@ let ``compact Completed shows check glyph elapsed and summary`` () =
     test <@ line.Contains "built 4 projects" @>
 
 [<Fact(Timeout = 15000)>]
+let ``compact Completed with no LastRun does not display 0ms timing`` () =
+    // When a plugin reports Completed but the activity ledger has no
+    // RunRecord (e.g. a cache-replay path that bypassed the Running phase
+    // and produced a synthetic 0-elapsed terminal record), the renderer
+    // must not display a misleading "(0ms)" timing — it should omit the
+    // timing portion instead.
+    let parsed: ParsedPluginStatus =
+        { Status = Completed(now - TimeSpan.FromSeconds(2.0))
+          Subtasks = []
+          ActivityTail = []
+          LastRun = None
+          Diagnostics = DiagnosticCounts.empty }
+
+    let lines = renderPlugin Compact true now "build" parsed |> stripMany
+    test <@ lines.Length = 1 @>
+    let line = lines.[0]
+    test <@ line.Contains "build" @>
+    test <@ not (line.Contains "0ms") @>
+    test <@ not (line.Contains "(0") @>
+
+[<Fact(Timeout = 15000)>]
+let ``compact Completed with zero-elapsed LastRun does not display 0ms timing`` () =
+    // Same defensive contract: a LastRun whose Elapsed is exactly zero is
+    // almost always the cache-replay synthetic record (real builds take
+    // milliseconds, not zero). Treat zero as "elapsed unknown" so the UI
+    // doesn't claim a 30-second build took 0ms.
+    let parsed: ParsedPluginStatus =
+        { Status = Completed(now - TimeSpan.FromSeconds(2.0))
+          Subtasks = []
+          ActivityTail = []
+          LastRun = Some(completedRun (TimeSpan.FromSeconds 0.0) TimeSpan.Zero (Some "built 19 projects"))
+          Diagnostics = { Errors = 0; Warnings = 1 } }
+
+    let lines = renderPlugin Compact true now "build" parsed |> stripMany
+    test <@ lines.Length = 1 @>
+    let line = lines.[0]
+    test <@ line.Contains "build" @>
+    test <@ not (line.Contains "0ms") @>
+    test <@ not (line.Contains "(0") @>
+
+[<Fact(Timeout = 15000)>]
+let ``verbose Completed with zero-elapsed LastRun does not display 0ms timing`` () =
+    let parsed: ParsedPluginStatus =
+        { Status = Completed(now - TimeSpan.FromSeconds(2.0))
+          Subtasks = []
+          ActivityTail = []
+          LastRun = Some(completedRun (TimeSpan.FromSeconds 0.0) TimeSpan.Zero None)
+          Diagnostics = DiagnosticCounts.empty }
+
+    let lines = renderPlugin Verbose true now "build" parsed |> stripMany
+    let header = lines.[0]
+    test <@ header.Contains "build" @>
+    test <@ not (header.Contains "0ms") @>
+    test <@ not (header.Contains "(0") @>
+
+[<Fact(Timeout = 15000)>]
 let ``compact Completed with ledger errors shows warn glyph and count`` () =
     let parsed: ParsedPluginStatus =
         { Status = Completed(now - TimeSpan.FromSeconds(3.2))
