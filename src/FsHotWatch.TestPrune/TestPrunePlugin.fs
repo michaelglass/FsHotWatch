@@ -1115,6 +1115,25 @@ let create
 
                         return state
 
+                | PluginEvent.BatchChecked _ ->
+                    // Cohort-complete flush. Per-file accumulation already
+                    // happened in the FileChecked handler; by the time we get
+                    // here every FileChecked from this cohort has been folded
+                    // into state.ChangedSymbols (mailbox is FIFO and the daemon
+                    // emits BatchChecked strictly after the last FileChecked).
+                    //
+                    // Re-publish state.ChangedSymbols into changedSymbolsRef as
+                    // an explicit seal — redundant with the per-file Volatile
+                    // write today, but it makes the invariant "by the time the
+                    // next event (e.g. BuildCompleted) hits, the cache key is
+                    // well-formed" load-bearing on the BatchChecked dispatch
+                    // ordering rather than on every FileChecked happening to
+                    // arrive before the racing BuildCompleted. That's the
+                    // window the old `RequireWarmStart` gate existed to guard.
+                    // With this seal in place, the gate is gone (commit 4).
+                    Volatile.Write(&changedSymbolsRef, state.ChangedSymbols)
+                    return state
+
                 | PluginEvent.BuildCompleted buildResult ->
                     match buildResult with
                     | BuildSucceeded ->
@@ -1309,7 +1328,16 @@ let create
       Commands = allCommands
       Subscriptions =
         Set.ofList (
-            [ SubscribeFileChecked ]
+            // FileChecked: per-file analysis fold into PendingAnalysis /
+            // changedSymbolsRef (unchanged from the pre-BatchChecked design).
+            // BatchChecked: cohort-complete flush signal — fires after the
+            // last FileChecked of a batch, before any subsequent BuildCompleted
+            // racing the same change. By the time the agent processes
+            // BatchChecked, every FileChecked update has been folded in, so
+            // changedSymbolsRef is consistent with state.ChangedSymbols and
+            // any cache key derived from it is well-formed. This is the seal
+            // point that let the old `RequireWarmStart` gate retire (commit 4).
+            [ SubscribeFileChecked; SubscribeBatchChecked ]
             @ (if hasTestConfigs then [ SubscribeBuildCompleted ] else [])
         )
       CacheKey =
@@ -1371,5 +1399,4 @@ let create
             | _ -> None
 
         Some cacheKey
-      RequireWarmStart = true
       Teardown = None }

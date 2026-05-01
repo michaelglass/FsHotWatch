@@ -28,6 +28,18 @@ let fakeFileCheckResult (file: string) : FileCheckResult =
       ProjectOptions = Unchecked.defaultof<_>
       Version = 0L }
 
+/// Build a `BatchChecked` payload covering `files`, with deterministic
+/// timestamps + Generation = 1 — sufficient for unit tests that only care
+/// about the `Files` set the cohort signal carries.
+let fakeBatchChecked (files: string list) : BatchChecked =
+    let now = DateTime.UtcNow
+
+    { Trigger = BootScan
+      Files = files |> List.map AbsFilePath.create
+      Generation = 1L
+      StartedAt = now
+      CompletedAt = now }
+
 /// Spawn a redirected `sleep N` child for tests that need a long-lived but
 /// inert process (registry kill paths, daemon teardown checks).
 let startSleep (seconds: int) : Process =
@@ -183,7 +195,6 @@ let buildRecorder () =
           Commands = []
           Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeBuildCompleted ]
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     ((fun () -> receivedBuild), handler)
@@ -208,7 +219,6 @@ let commandRecorder () =
           Commands = []
           Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeCommandCompleted ]
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     ((fun () -> receivedCommand), handler)
@@ -234,7 +244,6 @@ let commandCounter (pluginName: string) =
           Commands = []
           Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeCommandCompleted ]
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     ((fun () -> count.Value), handler)
@@ -261,7 +270,6 @@ let testProgressRecorder () =
           Commands = []
           Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeTestProgress ]
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     ((fun () -> received |> Seq.toList), handler)
@@ -289,7 +297,6 @@ let testRunCompletedRecorder () =
           Commands = []
           Subscriptions = Set.ofList [ FsHotWatch.PluginFramework.SubscribeTestRunCompleted ]
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     ((fun () -> received |> Seq.toList), handler)
