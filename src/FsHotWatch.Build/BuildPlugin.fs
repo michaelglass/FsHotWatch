@@ -648,5 +648,4 @@ let create
       // Framework gate: suppresses cache replay until this plugin completes once
       // in-session. Replacing the local hasBuiltInSessionRef flag — same semantics,
       // but framework-owned so all plugins share one cold-start contract.
-      RequireWarmStart = true
       Teardown = None }

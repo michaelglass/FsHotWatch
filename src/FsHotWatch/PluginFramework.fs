@@ -118,11 +118,6 @@ type PluginHandler<'State, 'Msg> =
         /// `None` → skip cache and run Update — overloaded across "uncacheable event",
         /// "cold-start bypass", and "outputs missing"; plugins document which at the call site.
         CacheKey: (PluginEvent<'Msg> -> ContentHash option) option
-        /// When true, the framework skips cache replay until this plugin reaches
-        /// a terminal state (Completed or Failed) at least once this session.
-        /// Use for plugins whose cached output may not reflect current disk state
-        /// across daemon restarts (e.g. a build whose bin/obj may have been cleaned).
-        RequireWarmStart: bool
         /// Optional teardown function called when the plugin host is disposed.
         Teardown: (unit -> unit) option
     }
@@ -281,88 +276,86 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                               File = Some(AbsFilePath.value r.File) }
                         | _ -> { Plugin = nameStr; File = None }
 
-                    /// Per-handler session flag: has this plugin reached a terminal
-                    /// status (Completed or Failed) at least once since the daemon
-                    /// started? Single-threaded — only the agent loop touches it,
-                    /// so plain mutable is fine (no Volatile required).
-                    let mutable hasCompletedThisSession = false
-
                     /// Try to replay a cached result. Returns true if cache hit.
+                    /// The pre-BatchChecked design used a `RequireWarmStart`
+                    /// gate here to suppress replay until the plugin reached a
+                    /// terminal state once per session — needed because the
+                    /// per-`FileChecked` accumulation that fed plugin cache
+                    /// keys (TestPrune's `changedSymbolsRef`, BuildPlugin's
+                    /// `BuildInputsHasher`) wasn't fully populated when the
+                    /// very first dispatch hit. Now that cohort completion is
+                    /// signalled by `BatchChecked`, every subsequent
+                    /// cacheable event (`BuildCompleted`, etc.) sees a fully
+                    /// populated key and the gate is gone.
                     let tryReplayCache (event: PluginEvent<'Msg>) =
-                        if handler.RequireWarmStart && not hasCompletedThisSession then
-                            // Cold-start gate: cached output may not reflect current
-                            // disk state across daemon restarts. Skip replay until
-                            // the plugin has produced a fresh terminal status.
-                            false
-                        else
-                            match services.TaskCache, handler.CacheKey with
-                            | Some cache, Some cacheKeyFn ->
-                                match cacheKeyFn event with
-                                | Some cacheKey ->
-                                    let compKey = compositeKey event
-                                    let lookupResult = cache.TryGet compKey cacheKey
-                                    // §2a measurement A: per-plugin hit/miss counts. Filter post-hoc.
-                                    let pluginName = PluginName.value handler.Name
+                        match services.TaskCache, handler.CacheKey with
+                        | Some cache, Some cacheKeyFn ->
+                            match cacheKeyFn event with
+                            | Some cacheKey ->
+                                let compKey = compositeKey event
+                                let lookupResult = cache.TryGet compKey cacheKey
+                                // §2a measurement A: per-plugin hit/miss counts. Filter post-hoc.
+                                let pluginName = PluginName.value handler.Name
 
-                                    FsHotWatch.Logging.debug
-                                        "task-cache"
-                                        $"plugin=%s{pluginName} hit=%b{lookupResult.IsSome}"
+                                FsHotWatch.Logging.debug
+                                    "task-cache"
+                                    $"plugin=%s{pluginName} hit=%b{lookupResult.IsSome}"
 
-                                    match lookupResult with
-                                    | Some result ->
-                                        // Clear stale errors before replay
-                                        match event with
-                                        | FileChecked r -> services.ClearErrors handler.Name (AbsFilePath.value r.File)
-                                        | _ -> services.ClearPlugin handler.Name
+                                match lookupResult with
+                                | Some result ->
+                                    // Clear stale errors before replay
+                                    match event with
+                                    | FileChecked r -> services.ClearErrors handler.Name (AbsFilePath.value r.File)
+                                    | _ -> services.ClearPlugin handler.Name
 
-                                        // Replay errors
-                                        for (file, entries) in result.Errors do
-                                            if file = "*" then
-                                                services.ClearPlugin handler.Name
-                                            elif entries.IsEmpty then
-                                                services.ClearErrors handler.Name file
-                                            else
-                                                services.ReportErrors handler.Name file entries
+                                    // Replay errors
+                                    for (file, entries) in result.Errors do
+                                        if file = "*" then
+                                            services.ClearPlugin handler.Name
+                                        elif entries.IsEmpty then
+                                            services.ClearErrors handler.Name file
+                                        else
+                                            services.ReportErrors handler.Name file entries
 
-                                        // Replay status. Rewrite the timestamp to now: the cached
-                                        // status carries the ORIGINAL run's terminal time (often a
-                                        // prior session). If a `Running since=now` had been set in
-                                        // this session, the activity log's RecordTerminal would
-                                        // compute `elapsed = cached_at - now` and produce nonsense
-                                        // (negative) elapsed. From this session's POV, the work
-                                        // "completed" instantly via cache replay.
-                                        let nowAt = System.DateTime.UtcNow
+                                    // Replay status. Rewrite the timestamp to now: the cached
+                                    // status carries the ORIGINAL run's terminal time (often a
+                                    // prior session). If a `Running since=now` had been set in
+                                    // this session, the activity log's RecordTerminal would
+                                    // compute `elapsed = cached_at - now` and produce nonsense
+                                    // (negative) elapsed. From this session's POV, the work
+                                    // "completed" instantly via cache replay.
+                                    let nowAt = System.DateTime.UtcNow
 
-                                        let replayStatus =
-                                            match result.Status with
-                                            | Completed _ -> Completed nowAt
-                                            | Failed(err, _) -> Failed(err, nowAt)
-                                            | s -> s
+                                    let replayStatus =
+                                        match result.Status with
+                                        | Completed _ -> Completed nowAt
+                                        | Failed(err, _) -> Failed(err, nowAt)
+                                        | s -> s
 
-                                        services.ReportStatus handler.Name replayStatus
+                                    services.ReportStatus handler.Name replayStatus
 
-                                        // Replay emitted events. Cached test-lifecycle events carry the
-                                        // ORIGINAL run's RunId, which would cause RunId-based dedup (e.g.
-                                        // FileCommand) to skip the replay as if it were the same run. Swap
-                                        // in a single fresh RunId shared across the three test events so
-                                        // the cache hit looks like a distinct run.
-                                        let freshRunId = System.Lazy<System.Guid>(System.Guid.NewGuid)
+                                    // Replay emitted events. Cached test-lifecycle events carry the
+                                    // ORIGINAL run's RunId, which would cause RunId-based dedup (e.g.
+                                    // FileCommand) to skip the replay as if it were the same run. Swap
+                                    // in a single fresh RunId shared across the three test events so
+                                    // the cache hit looks like a distinct run.
+                                    let freshRunId = System.Lazy<System.Guid>(System.Guid.NewGuid)
 
-                                        for emitted in result.EmittedEvents do
-                                            match emitted with
-                                            | TaskCache.CachedBuildCompleted r -> services.EmitBuildCompleted r
-                                            | TaskCache.CachedTestRunStarted r ->
-                                                services.EmitTestRunStarted { r with RunId = freshRunId.Value }
-                                            | TaskCache.CachedTestProgress r ->
-                                                services.EmitTestProgress { r with RunId = freshRunId.Value }
-                                            | TaskCache.CachedTestRunCompleted r ->
-                                                services.EmitTestRunCompleted { r with RunId = freshRunId.Value }
-                                            | TaskCache.CachedCommandCompleted r -> services.EmitCommandCompleted r
+                                    for emitted in result.EmittedEvents do
+                                        match emitted with
+                                        | TaskCache.CachedBuildCompleted r -> services.EmitBuildCompleted r
+                                        | TaskCache.CachedTestRunStarted r ->
+                                            services.EmitTestRunStarted { r with RunId = freshRunId.Value }
+                                        | TaskCache.CachedTestProgress r ->
+                                            services.EmitTestProgress { r with RunId = freshRunId.Value }
+                                        | TaskCache.CachedTestRunCompleted r ->
+                                            services.EmitTestRunCompleted { r with RunId = freshRunId.Value }
+                                        | TaskCache.CachedCommandCompleted r -> services.EmitCommandCompleted r
 
-                                        true
-                                    | None -> false
+                                    true
                                 | None -> false
-                            | _ -> false
+                            | None -> false
+                        | _ -> false
 
                     /// Invariant: a handler that throws out of `Update` must never leave the
                     /// plugin stuck in whatever transient status it reported before the throw
@@ -450,9 +443,6 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                     match capturedStatus with
                                     | Some(Completed _ as s)
                                     | Some(Failed _ as s) ->
-                                        // Mark the session warm so subsequent dispatches
-                                        // can replay the cache (gated by RequireWarmStart).
-                                        hasCompletedThisSession <- true
                                         let compKey = compositeKey event
 
                                         let result: TaskCache.TaskCacheResult =
