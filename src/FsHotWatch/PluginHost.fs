@@ -31,6 +31,31 @@ type PluginHost
     let fileCommandPatterns = ConcurrentDictionary<string, Watcher.FilePattern>()
     let activity = PluginActivity.State()
 
+    // Quiescence tracking for `WaitForComplete`. `lastActivityAtTicks` is the
+    // UTC ticks of the most recent host-level activity (event dispatch, plugin
+    // status change, preprocessor run). `pluginGenerations` is a per-plugin
+    // counter that increments on every Idle->Running transition; this lets a
+    // waiter detect the "transitioned through Idle between cycles" race in
+    // which a plugin happens to be Idle at the snapshot moment but is about to
+    // start a new cycle. See `waitForAllTerminal` in Daemon.fs.
+    let mutable lastActivityAtTicks = System.DateTime.UtcNow.Ticks
+    let pluginGenerations = ConcurrentDictionary<string, int64>()
+
+    let touchActivity () =
+        System.Threading.Volatile.Write(&lastActivityAtTicks, System.DateTime.UtcNow.Ticks)
+
+    let bumpGenerationIfStarting (name: string) (prev: PluginStatus option) (next: PluginStatus) =
+        match next with
+        | Running _ ->
+            let wasNotRunning =
+                match prev with
+                | Some(Running _) -> false
+                | _ -> true
+
+            if wasNotRunning then
+                pluginGenerations.AddOrUpdate(name, 1L, (fun _ g -> g + 1L)) |> ignore
+        | _ -> ()
+
     // Status tracking is owned by a MailboxProcessor: the loop's recursion holds
     // (Statuses, RunStartedAt) and serializes mutations. statusChanged.Trigger
     // fires OUTSIDE the agent's loop (in the public setStatus wrapper, after
@@ -46,6 +71,8 @@ type PluginHost
                     match msg with
                     | SetStatus(name, status, tcs) ->
                         let prev = Map.tryFind name state.Statuses
+                        bumpGenerationIfStarting name prev status
+                        touchActivity ()
                         let statuses' = Map.add name status state.Statuses
 
                         let runStartedAt' =
@@ -109,6 +136,11 @@ type PluginHost
 
     /// Dispatch an event to all registered plugins (filtering is built into each plugin's Dispatch).
     let dispatchToAll (event: PluginFramework.PluginDispatchEvent) =
+        // Mark host activity so quiescence-based waiters don't return prematurely
+        // between an event being emitted and its downstream plugin handlers
+        // actually processing the event from their mailboxes.
+        touchActivity ()
+
         for p in registeredPlugins do
             p.Dispatch event
 
@@ -244,6 +276,29 @@ type PluginHost
     /// Get all plugin statuses as an immutable map.
     member _.GetAllStatuses() : Map<string, PluginStatus> =
         statusAgent.PostAndReply(fun ch -> GetAllStatuses ch)
+
+    /// UTC timestamp of the most recent host activity: an event dispatch or a
+    /// plugin status transition. Used by `WaitForComplete` to enforce a
+    /// quiescence window so a plugin that's about to start a new cycle isn't
+    /// missed when its predecessor's event has been emitted but not yet
+    /// processed from the plugin's mailbox.
+    member _.LastActivityAt() : System.DateTime =
+        System.DateTime(System.Threading.Volatile.Read(&lastActivityAtTicks), System.DateTimeKind.Utc)
+
+    /// Per-plugin work-cycle generation counter. Incremented every time a
+    /// plugin transitions from a non-Running status (Idle / Completed / Failed)
+    /// into Running. A waiter can snapshot the generations at call time and
+    /// detect "the plugin started a new cycle since I started waiting".
+    /// Plugins that have never run report generation 0.
+    member _.WorkCycleGenerations() : Map<string, int64> =
+        pluginGenerations |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+
+    /// True if any registered plugin still has events queued in its mailbox or
+    /// is actively processing one. The status agent reflects only what handlers
+    /// have explicitly reported; this catches the gap between "event posted to
+    /// mailbox" and "handler called ReportStatus(Running)".
+    member _.AnyPluginBusy() : bool =
+        registeredPlugins |> Seq.exists (fun p -> p.IsBusy())
 
     member _.StartSubtask(pluginName: string, key: string, label: string) =
         activity.StartSubtask(pluginName, key, label)

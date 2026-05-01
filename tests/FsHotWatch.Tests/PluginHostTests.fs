@@ -701,6 +701,252 @@ let ``waitForAllTerminal with TimeSpan.MaxValue does not overflow deadline arith
     let completed = waitTask.Wait(TimeSpan.FromSeconds(5.0))
     test <@ completed @>
 
+[<Fact(Timeout = 30000)>]
+let ``waitForAllTerminal waits for downstream plugin that hasn't yet picked up its event`` () =
+    // Repro: plugin A is subscribed to FileChanged, emits BuildCompleted then
+    // transitions Completed. Plugin B is subscribed to BuildCompleted but
+    // delays its Idle->Running transition by longer than the legacy 1s
+    // stability window, so there is a wide window where:
+    //   - A is Completed (terminal)
+    //   - B is still Idle (mailbox not yet processed BuildCompleted)
+    //   - allTerminal=true, but B is about to start work
+    // Today's wait returns prematurely; the fix must wait until B is terminal.
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let bDelay = TimeSpan.FromMilliseconds(1500.0)
+    let mutable bReachedRunning = false
+    let mutable bReachedCompleted = false
+
+    let aHandler =
+        { Name = PluginName.create "plugin-a"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                        ctx.EmitBuildCompleted(BuildSucceeded)
+                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
+
+    let bHandler =
+        { Name = PluginName.create "plugin-b"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted _ ->
+                        // Simulate slow handler entry: wait long enough that any
+                        // sub-1s stability window in the waiter would expire while
+                        // B is still Idle.
+                        do! Async.Sleep(int bDelay.TotalMilliseconds)
+                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                        bReachedRunning <- true
+                        do! Async.Sleep(50)
+                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                        bReachedCompleted <- true
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+          CacheKey = None
+          Teardown = None }
+
+    host.RegisterHandler(aHandler)
+    host.RegisterHandler(bHandler)
+
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+    let waitTask = waitForAllTerminal host (TimeSpan.FromSeconds(15.0)) ()
+
+    let completed = waitTask.Wait(TimeSpan.FromSeconds(20.0))
+    test <@ completed @>
+    // Both plugins must have completed their actual work cycle. The bug:
+    // waitForAllTerminal returns before B even started.
+    test <@ bReachedRunning @>
+    test <@ bReachedCompleted @>
+
+    let final = host.GetAllStatuses()
+
+    let isCompleted s =
+        match s with
+        | Completed _ -> true
+        | _ -> false
+
+    test <@ final |> Map.forall (fun _ s -> isCompleted s) @>
+
+[<Fact(Timeout = 30000)>]
+let ``waitForAllTerminal waits for full cascade A -> B -> C`` () =
+    // Cascade: A (FileChanged -> emits BuildCompleted), B (BuildCompleted ->
+    // emits TestRunCompleted), C (TestRunCompleted -> terminal). Calling
+    // waitForAllTerminal at the start must wait for the full chain even though
+    // each downstream plugin starts in Idle.
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let aHandler =
+        { Name = PluginName.create "cascade-a"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                        do! Async.Sleep(20)
+                        ctx.EmitBuildCompleted(BuildSucceeded)
+                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
+
+    let bHandler =
+        { Name = PluginName.create "cascade-b"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | BuildCompleted _ ->
+                        do! Async.Sleep(300)
+                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                        do! Async.Sleep(20)
+
+                        ctx.EmitTestRunCompleted
+                            { RunId = Guid.NewGuid()
+                              TotalElapsed = TimeSpan.Zero
+                              Outcome = Normal
+                              Results = Map.empty
+                              RanFullSuite = true }
+
+                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
+          CacheKey = None
+          Teardown = None }
+
+    let mutable cCompleted = false
+
+    let cHandler =
+        { Name = PluginName.create "cascade-c"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | TestRunCompleted _ ->
+                        do! Async.Sleep(300)
+                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                        do! Async.Sleep(20)
+                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                        cCompleted <- true
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeTestRunCompleted ]
+          CacheKey = None
+          Teardown = None }
+
+    host.RegisterHandler(aHandler)
+    host.RegisterHandler(bHandler)
+    host.RegisterHandler(cHandler)
+
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+    let waitTask = waitForAllTerminal host (TimeSpan.FromSeconds(10.0)) ()
+
+    let completed = waitTask.Wait(TimeSpan.FromSeconds(15.0))
+    test <@ completed @>
+    test <@ cCompleted @>
+
+[<Fact(Timeout = 20000)>]
+let ``waitForAllTerminal completes when plugin fails mid-cycle`` () =
+    // Crash recovery: a plugin that throws/reports Failed must still satisfy
+    // the wait — Failed is a terminal status.
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let handler =
+        { Name = PluginName.create "crasher"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                        do! Async.Sleep(20)
+                        ctx.ReportStatus(Failed("boom", DateTime.UtcNow))
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+    let waitTask = waitForAllTerminal host (TimeSpan.FromSeconds(5.0)) ()
+
+    let completed = waitTask.Wait(TimeSpan.FromSeconds(8.0))
+    test <@ completed @>
+
+    let final = host.GetAllStatuses()
+
+    let isFailed s =
+        match s with
+        | Failed _ -> true
+        | _ -> false
+
+    test <@ final |> Map.forall (fun _ s -> isFailed s) @>
+
+[<Fact(Timeout = 20000)>]
+let ``waitForAllTerminal returns within quiescence window when no work is pending`` () =
+    // Edge case: a plugin that is Idle and stays Idle (never receives an event)
+    // must not cause WaitForComplete to hang forever. With nothing happening,
+    // the quiescence window should fire and the wait should return.
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let handler =
+        { Name = PluginName.create "never-fires"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+
+    let started = DateTime.UtcNow
+    let waitTask = waitForAllTerminal host (TimeSpan.FromSeconds(5.0)) ()
+    let completed = waitTask.Wait(TimeSpan.FromSeconds(10.0))
+    let elapsed = DateTime.UtcNow - started
+    test <@ completed @>
+    // Should be much faster than the 5s wait timeout — quiescence should fire
+    // within about a second of the call when nothing is happening.
+    test <@ elapsed < TimeSpan.FromSeconds(3.0) @>
+
 [<Fact(Timeout = 20000)>]
 let ``HasFailingReasons distinguishes warnings from errors`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
