@@ -57,6 +57,16 @@ let ``testprune handler opts into RequireWarmStart`` () =
     test <@ handler.RequireWarmStart = true @>
 
 [<Fact(Timeout = 15000)>]
+let ``testprune subscribes to BatchChecked`` () =
+    // Item 3 (corrected): TestPrune retains FileChecked for per-file
+    // accumulation AND adds BatchChecked as the cohort-complete flush
+    // signal. Both subscriptions must be present.
+    let handler = create ":memory:" "/tmp" None None None None None
+
+    test <@ handler.Subscriptions.Contains(FsHotWatch.PluginFramework.SubscribeFileChecked) @>
+    test <@ handler.Subscriptions.Contains(FsHotWatch.PluginFramework.SubscribeBatchChecked) @>
+
+[<Fact(Timeout = 15000)>]
 let ``affected-tests command returns empty array when no files checked`` () =
     // After the lazy-compute migration, the IPC always returns a JSON array,
     // computed on demand from state.ChangedSymbols. With no FileChecked events,
