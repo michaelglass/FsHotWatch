@@ -721,3 +721,40 @@ let ``unwrapIpcException stops at multi-inner AggregateException`` () =
     let agg = AggregateException(a, b)
     let unwrapped = unwrapIpcException agg
     test <@ obj.ReferenceEquals(unwrapped, a) @>
+
+// --- ipcErrorHint: classify exceptions to user-actionable hints ---
+
+[<Fact(Timeout = 15000)>]
+let ``ipcErrorHint maps OutOfMemoryException to pipe-corruption hint`` () =
+    // StreamJsonRpc allocates a buffer of Content-Length size; a corrupted header
+    // (e.g. two daemons sharing the same pipe) trips OOM on the buffer alloc.
+    let ex = OutOfMemoryException("Insufficient memory") :> exn
+    let hint = ipcErrorHint ex
+    test <@ hint.IsSome @>
+    test <@ hint.Value.Contains("corrupted") @>
+
+[<Fact(Timeout = 15000)>]
+let ``ipcErrorHint maps OverflowException to pipe-corruption hint`` () =
+    // Same root cause as the OOM case, but a different exception path: when the
+    // Content-Length parses to a value that overflows Int32 during downstream
+    // arithmetic (or when stream-position bookkeeping overflows on a long-lived
+    // socket carrying massive payloads), StreamJsonRpc surfaces an
+    // `OverflowException: Arithmetic operation resulted in an overflow.` to the
+    // CLI. Without a hint, the user sees a cryptic error and no recovery path.
+    // Observed in production during Intelligence stress test (fshw 0.10.0-stresstest4).
+    let ex = OverflowException("Arithmetic operation resulted in an overflow.") :> exn
+    let hint = ipcErrorHint ex
+    test <@ hint.IsSome @>
+    test <@ hint.Value.Contains("corrupted") @>
+
+[<Fact(Timeout = 15000)>]
+let ``ipcErrorHint maps TimeoutException to busy-or-hung hint`` () =
+    let ex = TimeoutException("daemon unresponsive") :> exn
+    let hint = ipcErrorHint ex
+    test <@ hint.IsSome @>
+    test <@ hint.Value.Contains("hung") || hint.Value.Contains("busy") @>
+
+[<Fact(Timeout = 15000)>]
+let ``ipcErrorHint returns None for unrecognized exceptions`` () =
+    let ex = InvalidOperationException("something else") :> exn
+    test <@ ipcErrorHint ex = None @>
