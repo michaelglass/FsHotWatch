@@ -610,6 +610,32 @@ let ``RunOnce completes and returns plugin statuses`` () =
         let statuses = Async.RunSynchronously(daemon.RunOnce(), timeout = 30000)
         test <@ statuses.ContainsKey("runonce-test") @>)
 
+[<Fact(Timeout = 30000)>]
+let ``DiscoverAndRegisterProjects warns when no projects are discovered`` () =
+    withTempDir "daemon-zero-projects" (fun tmpDir ->
+        // Empty src/ directory — no .fsproj files anywhere.
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+
+        let originalLevel = FsHotWatch.Logging.logLevel
+        let sb = System.Text.StringBuilder()
+        let writer = new System.IO.StringWriter(sb)
+        let prevErr = System.Console.Error
+
+        try
+            System.Console.SetError(writer)
+            FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Warning
+            Async.RunSynchronously(daemon.DiscoverAndRegisterProjects(), timeout = 25000)
+            writer.Flush()
+            let output = sb.ToString()
+
+            test <@ output.Contains("No .fsproj files discovered") @>
+            test <@ output.Contains("[discover]") @>
+        finally
+            System.Console.SetError(prevErr)
+            FsHotWatch.Logging.setLogLevel originalLevel)
+
 // ============================================================================
 // isTruthyEnv tests
 // ============================================================================
