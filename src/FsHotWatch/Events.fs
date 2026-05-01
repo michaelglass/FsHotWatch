@@ -254,11 +254,46 @@ type CommandCompletedResult =
     { Name: string
       Outcome: CommandOutcome }
 
+/// What triggered a `BatchChecked` event — the boot scan or an in-session
+/// debounce-batch from the watcher. Subscribers that need to distinguish
+/// (e.g. for warm-up logic specific to boot scan) match on this; most just
+/// treat both uniformly as "the cohort is done; flush and decide."
+type BatchCheckedTrigger =
+    /// The boot-scan cohort over every registered file.
+    | BootScan
+    /// A debounce-batch cohort from `processBatch` — typically a small set
+    /// after a save. `originating` is the union of FileChangeKind values the
+    /// watcher reported in this debounce window.
+    | InSessionBatch of originating: FileChangeKind list
+
+/// Emitted once after a defined cohort of `FileChecked` events has finished —
+/// strictly *after* the last `FileChecked` for the cohort, and before any
+/// subsequent event that depends on the cohort being complete (e.g. a
+/// `BuildCompleted` derived from the same change). Subscribers consume this
+/// instead of bookkeeping per-`FileChecked` state to know when a batch is done.
+type BatchChecked =
+    {
+        Trigger: BatchCheckedTrigger
+        /// Files actually dispatched into `pipeline.CheckFile` for this batch.
+        /// May be smaller than the project graph (in-session batch) or equal to
+        /// it (boot scan).
+        Files: AbsFilePath list
+        /// Monotonic generation counter — same as `Daemon.GetScanGeneration` for
+        /// `BootScan`-triggered events; bumped per `InSessionBatch` as well so
+        /// subscribers can identify "the latest cohort."
+        Generation: int64
+        /// Wall-clock start of the cohort (first `CheckFile` dispatched).
+        StartedAt: System.DateTime
+        /// Wall-clock end (last `FileChecked` emitted before this `BatchChecked`).
+        CompletedAt: System.DateTime
+    }
+
 /// Events routed to plugins by the framework.
 [<NoComparison; NoEquality>]
 type PluginEvent<'Msg> =
     | FileChanged of FileChangeKind
     | FileChecked of FileCheckResult
+    | BatchChecked of BatchChecked
     | BuildCompleted of BuildResult
     | TestRunStarted of TestRunStarted
     | TestProgress of TestProgress
