@@ -363,5 +363,4 @@ let create
                     None
 
         Some cacheKey
-      RequireWarmStart = false
       Teardown = None }

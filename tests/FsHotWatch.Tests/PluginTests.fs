@@ -13,7 +13,6 @@ let ``plugin has a name`` () =
           Commands = []
           Subscriptions = PluginSubscriptions.none
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     Assert.Equal(PluginName.create "fake", handler.Name)
