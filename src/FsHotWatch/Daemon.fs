@@ -439,7 +439,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
             filteredSourceFiles
             |> List.rev
             |> List.filter (fun f ->
-                let changed = Watcher.hasContentChanged f
+                let changed = ContentDedup.hasContentChanged f
 
                 if not changed then
                     Logging.debug "daemon" $"content unchanged: %s{f}"
@@ -450,7 +450,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
             projFiles
             |> List.distinct
             |> List.filter (fun f ->
-                let changed = Watcher.hasContentChanged f
+                let changed = ContentDedup.hasContentChanged f
 
                 if not changed then
                     Logging.debug "daemon" $"content unchanged: %s{f}"
