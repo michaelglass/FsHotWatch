@@ -222,6 +222,34 @@ let ``verbose Running emits header plus subtask tree plus recent`` () =
     test <@ joined.Contains "dotnet test FooTests" @>
 
 [<Fact(Timeout = 15000)>]
+let ``verbose Running preserves leading whitespace in activity tail entries (queued re-run nesting)`` () =
+    // TestPrunePlugin emits "queued re-run (tests already running)" with a
+    // leading "  ↳ " so the renderer's per-line 8-space indent compounds to
+    // 10 spaces, visually nesting the entry under the in-flight test result
+    // lines rather than rendering as a sibling. Renderer must NOT strip or
+    // collapse the embedded leading whitespace.
+    let parsed: ParsedPluginStatus =
+        { Status = Running(now - TimeSpan.FromSeconds 30.0)
+          Subtasks = []
+          ActivityTail =
+            [ "Intelligence.Build.Dev.Tests: failed"
+              "  ↳ queued re-run (tests already running)"
+              "Intelligence.Tests.Database: passed" ]
+          LastRun = None
+          Diagnostics = DiagnosticCounts.empty }
+
+    let lines = renderPlugin Verbose true now "test-prune" parsed |> stripMany
+    let joined = String.concat "\n" lines
+    // Sibling test-result lines render with exactly 8 spaces of indent.
+    test <@ lines |> List.exists (fun l -> l = "        Intelligence.Build.Dev.Tests: failed") @>
+    test <@ lines |> List.exists (fun l -> l = "        Intelligence.Tests.Database: passed") @>
+    // The queued-re-run line carries 2 extra leading spaces of caller-supplied
+    // indent → 10 spaces total → visually nests under the test-result lines.
+    test <@ lines |> List.exists (fun l -> l = "          ↳ queued re-run (tests already running)") @>
+    // Sanity: the nested arrow glyph appears in the joined output.
+    test <@ joined.Contains "↳ queued re-run" @>
+
+[<Fact(Timeout = 15000)>]
 let ``verbose Failed shows started, error detail, and recent`` () =
     let startedAt = now - TimeSpan.FromSeconds 6.4
     let err = "FileA.fs(12,4): FS0020: ...\nFileA.fs(33,1): FS0025: ..."
