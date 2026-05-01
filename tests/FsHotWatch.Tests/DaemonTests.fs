@@ -59,6 +59,45 @@ module Foo"""
 
     test <@ parseNowarnCodes source = Set.ofList [ 1182; 3536 ] @>
 
+// ============================================================================
+// looksLikeFcsSelfMismatch tests
+// FCS cold-scan can emit "type X does not match type X" with literally
+// identical type names on both sides of a mismatch — a cross-project
+// identity race. We filter those at display time. See Daemon.fs for
+// rationale + workaround context.
+// ============================================================================
+
+[<Fact(Timeout = 15000)>]
+let ``looksLikeFcsSelfMismatch matches 'does not match the type' with identical type names`` () =
+    let msg =
+        "The type 'Intelligence.Lib.LlmClient.LlmResult' does not match the type 'Intelligence.Lib.LlmClient.LlmResult'"
+
+    test <@ looksLikeFcsSelfMismatch msg @>
+
+[<Fact(Timeout = 15000)>]
+let ``looksLikeFcsSelfMismatch matches 'expected to have type ... but here has type' with identical type names`` () =
+    let msg =
+        "This expression was expected to have type    'Intelligence.Domain.Types.InboundEmailId'    but here has type    'Intelligence.Domain.Types.InboundEmailId'"
+
+    test <@ looksLikeFcsSelfMismatch msg @>
+
+[<Fact(Timeout = 15000)>]
+let ``looksLikeFcsSelfMismatch does not match genuine cross-type mismatch`` () =
+    let msg = "The type 'string' does not match the type 'int'"
+    test <@ not (looksLikeFcsSelfMismatch msg) @>
+
+[<Fact(Timeout = 15000)>]
+let ``looksLikeFcsSelfMismatch does not match expected/actual genuine mismatch`` () =
+    let msg =
+        "This expression was expected to have type    'string'    but here has type    'int'"
+
+    test <@ not (looksLikeFcsSelfMismatch msg) @>
+
+[<Fact(Timeout = 15000)>]
+let ``looksLikeFcsSelfMismatch does not match unrelated diagnostic`` () =
+    let msg = "The value or constructor 'foo' is not defined."
+    test <@ not (looksLikeFcsSelfMismatch msg) @>
+
 /// A null checker is fine for tests that don't perform actual compilation.
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
