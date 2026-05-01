@@ -33,10 +33,11 @@ type BuildOutcome =
 
 type BuildPhase =
     | IdlePhase of Lifecycle<Idle, BuildOutcome option> * pendingFiles: FileChangeKind list
-    /// Test-files-only change — build is logically a no-op but we wait for FCS to finish
-    /// checking the changed files before emitting BuildSucceeded. Otherwise downstream
-    /// test-prune dispatch would race FCS and read stale AffectedTests.
-    | WaitingForFcsPhase of awaiting: Set<AbsFilePath> * Lifecycle<Idle, BuildOutcome option>
+    /// Test-files-only change — build is logically a no-op but we wait for the
+    /// next BatchChecked covering the expecting set before emitting
+    /// BuildSucceeded. Otherwise downstream test-prune dispatch would race FCS
+    /// and read stale AffectedTests.
+    | WaitingForBatchPhase of expecting: Set<AbsFilePath> * Lifecycle<Idle, BuildOutcome option>
 
 type BuildState =
     { Phase: BuildPhase
@@ -163,8 +164,8 @@ let create
         | None -> System.Threading.Timeout.InfiniteTimeSpan
 
     // Path normalization happens once at the SourceChanged → AbsFilePath boundary
-    // (callers inject `AbsFilePath.create` per file). FileCheckResult.File is already
-    // an AbsFilePath, so the WaitingForFcsPhase drain is a direct Set.remove.
+    // (callers inject `AbsFilePath.create` per file). BatchChecked.Files is already
+    // a list of AbsFilePath, so the subset check against `expecting` is direct.
     let isTestFile (file: AbsFilePath) =
         graph.GetProjectsForFile(file)
         |> List.exists (fun proj ->
@@ -425,11 +426,11 @@ let create
         let allTestFiles = not files.IsEmpty && files |> List.forall isTestFile
 
         if allTestFiles then
-            info "build" "Skipping build — only test files changed; waiting for FCS to confirm"
+            info "build" "Skipping build — only test files changed; waiting for BatchChecked"
             ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
 
             { state with
-                Phase = WaitingForFcsPhase(Set.ofList files, idle) }
+                Phase = WaitingForBatchPhase(Set.ofList files, idle) }
         else
             match buildTemplate with
             | Some template ->
@@ -468,7 +469,7 @@ let create
                             let pendingFiles =
                                 match state.Phase with
                                 | IdlePhase(_, pending) -> pending
-                                | WaitingForFcsPhase _ -> []
+                                | WaitingForBatchPhase _ -> []
 
                             let updatedState = { state with SatisfiedDeps = newDeps }
 
@@ -521,7 +522,7 @@ let create
                     let prevIdle =
                         match state.Phase with
                         | IdlePhase(idle, _) -> idle
-                        | WaitingForFcsPhase(_, idle) -> idle
+                        | WaitingForBatchPhase(_, idle) -> idle
 
                     let idle = Lifecycle.complete (Some outcome) (Lifecycle.start prevIdle)
 
@@ -559,10 +560,15 @@ let create
                             Phase = IdlePhase(idle, [])
                             SatisfiedDeps = Set.empty }
 
-                | FileChecked result, WaitingForFcsPhase(awaiting, idle) ->
-                    let remaining = Set.remove result.File awaiting
+                | PluginEvent.BatchChecked batch, WaitingForBatchPhase(expecting, idle) ->
+                    // Per design Item 7: subset check, not exact-match. If the
+                    // cohort doesn't yet cover everything we're expecting, hold
+                    // the wait — late `SourceChanged` files merge into
+                    // `expecting` via the merge arm below, and a subsequent
+                    // BatchChecked will cover them.
+                    let coveredFiles = Set.ofList batch.Files
 
-                    if remaining.IsEmpty then
+                    if Set.isSubset expecting coveredFiles then
                         ctx.EmitBuildCompleted(BuildSucceeded)
                         ctx.ReportStatus(Completed(DateTime.UtcNow))
 
@@ -570,22 +576,20 @@ let create
                             { state with
                                 Phase = IdlePhase(idle, []) }
                     else
-                        return
-                            { state with
-                                Phase = WaitingForFcsPhase(remaining, idle) }
+                        return state
 
-                | FileChanged(ProjectChanged _), WaitingForFcsPhase(_, idle) ->
+                | FileChanged(ProjectChanged _), WaitingForBatchPhase(_, idle) ->
                     return handleProjectChanged ctx state idle
-                | FileChanged(SourceChanged files), WaitingForFcsPhase(awaiting, idle) ->
+                | FileChanged(SourceChanged files), WaitingForBatchPhase(expecting, idle) ->
                     let typed = files |> List.map AbsFilePath.create
                     let nonTest = typed |> List.filter (fun f -> not (isTestFile f))
 
                     if nonTest.IsEmpty then
-                        let merged = typed |> List.fold (fun s f -> Set.add f s) awaiting
+                        let merged = typed |> List.fold (fun s f -> Set.add f s) expecting
 
                         return
                             { state with
-                                Phase = WaitingForFcsPhase(merged, idle) }
+                                Phase = WaitingForBatchPhase(merged, idle) }
                     else
                         return handleSourceChanged ctx state idle typed
                 | _ -> return state
@@ -597,7 +601,7 @@ let create
                   let lastResult =
                       match state.Phase with
                       | IdlePhase(idle, _) -> Lifecycle.value idle
-                      | WaitingForFcsPhase(_, idle) -> Lifecycle.value idle
+                      | WaitingForBatchPhase(_, idle) -> Lifecycle.value idle
 
                   match lastResult with
                   | Some(BuildPassed output) ->
@@ -622,7 +626,7 @@ let create
               } ]
       Subscriptions =
         Set.ofList (
-            [ SubscribeFileChanged; SubscribeFileChecked ]
+            [ SubscribeFileChanged; SubscribeBatchChecked ]
             @ (if dependsOn.IsEmpty then
                    []
                else
@@ -631,13 +635,13 @@ let create
       CacheKey =
         // §2a: content-merkle key over all build-relevant files in the project graph.
         // FileChanged and Custom BuildDone share the same key so a stored result
-        // is found on the next matching FileChanged. FileChecked events return None
-        // to skip the cache — they're handled by WaitingForFcsPhase state, not triggers.
+        // is found on the next matching FileChanged. BatchChecked events return None
+        // to skip the cache — they're handled by WaitingForBatchPhase state, not triggers.
         let inputsHasher = lazy BuildInputsHasher(graph)
 
         let cacheKey (event: PluginEvent<BuildMsg>) : ContentHash option =
             match event with
-            | FileChecked _ -> None
+            | PluginEvent.BatchChecked _ -> None
             | _ -> Some(computeBuildCacheKey buildCommand buildArgs dependsOn (inputsHasher.Value.Compute()))
 
         Some cacheKey
