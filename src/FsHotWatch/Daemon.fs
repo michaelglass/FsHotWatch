@@ -621,11 +621,8 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
             match s with
             | Running since ->
                 let subtasks =
-                    try
-                        host.GetActivitySnapshot(name).Subtasks
-                        |> List.map (fun t -> t.Key, t.StartedAt)
-                    with _ ->
-                        []
+                    host.GetActivitySnapshot(name).Subtasks
+                    |> List.map (fun t -> t.Key, t.StartedAt)
 
                 Some(formatPluginWait now name since subtasks)
             | _ -> None)
