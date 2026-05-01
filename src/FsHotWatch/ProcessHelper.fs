@@ -89,6 +89,24 @@ let runProcessWithTimeout
     for key in dotnetArchRootKeys do
         psi.Environment.Remove(key) |> ignore
 
+    // Realpath DOTNET_HOST_PATH so dirname(DOTNET_HOST_PATH) lands on the
+    // directory containing shared/Microsoft.NETCore.App. On normal installs
+    // this is a no-op (already canonical). On Nix-wrapped SDKs, the wrapper
+    // bin/ has no shared/ sibling but the unwrapped target does — without
+    // this, child apphosts die with "apphost_version not found" because the
+    // muxer reads DOTNET_HOST_PATH literally. See
+    // memory/dotnet_tool_launcher_truncates_nix_profiles.md.
+    match psi.Environment.TryGetValue "DOTNET_HOST_PATH" with
+    | true, hostPath when not (String.IsNullOrEmpty hostPath) ->
+        try
+            let resolved = System.IO.File.ResolveLinkTarget(hostPath, returnFinalTarget = true)
+
+            if not (isNull resolved) then
+                psi.Environment["DOTNET_HOST_PATH"] <- resolved.FullName
+        with _ ->
+            () // path missing or not a symlink — leave the original value alone
+    | _ -> ()
+
     for (key, value) in mergeDotnetEnv command env do
         psi.Environment[key] <- value
 
