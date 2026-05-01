@@ -3,6 +3,7 @@ module FsHotWatch.Tests.TestPrunePluginTests
 open System
 open System.IO
 open System.Text.Json
+open System.Threading
 open Xunit
 open Swensen.Unquote
 open FSharp.Compiler.CodeAnalysis
@@ -773,6 +774,60 @@ let ``RerunQueued path records previous run outcome to history before starting r
         // The first run definitely failed (script always exits 1). Whether the
         // rerun produces its own entry is incidental.
         test <@ firstFailed @>)
+
+[<Fact(Timeout = 30000)>]
+let ``PendingRerun storm: plugin reaches terminal state after BuildCompleted hammering subsides`` () =
+    withTempDir "tp-rerun-storm" (fun tmpDir ->
+        // Stress the PendingRerun loop: while a test run is in flight, fire
+        // additional BuildCompleted events so the plugin sets PendingRerun on
+        // each one. After we stop emitting builds, the plugin must eventually
+        // drain its queued reruns and settle on a terminal status.
+        //
+        // Reproduces the user-reported "stuck Running" symptom against a
+        // continuous BuildCompleted storm: if any code path leaves
+        // PendingRerun set but never schedules a rerun, or schedules a rerun
+        // whose TestsFinished never fires terminal, the plugin sits in
+        // Running indefinitely.
+        let configs =
+            [ { Project = "FastTests"
+                Command = "sh"
+                Args = "-c \"sleep 0.3; exit 0\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        host.RegisterHandler(handler)
+
+        // Fire many BuildCompleteds in quick succession. The first transitions
+        // Idle → Running and starts the test run. Subsequent ones land mid-run
+        // and set PendingRerun (each new one re-sets it, idempotent). After the
+        // initial run finishes the rerun branch fires; another batch of builds
+        // will re-arm PendingRerun, and so on.
+        for _ in 1..6 do
+            host.EmitBuildCompleted(BuildSucceeded)
+            // Tiny sleep so they don't all coalesce into the inbox before the
+            // first one transitions to Running. Without this the first 6 land
+            // before any RunExclusive starts, which trivially passes.
+            Thread.Sleep(80)
+
+        // Allow the rerun loop to keep cycling, then stop emitting. Within a
+        // reasonable settle window (test run = 0.3s, leaving generous slack),
+        // the plugin must reach a terminal status.
+        waitForPluginTerminal host "test-prune" 20.0
+
+        let finalStatus = host.GetStatus("test-prune")
+
+        let isTerminal =
+            match finalStatus with
+            | Some(Completed _)
+            | Some(Failed _) -> true
+            | _ -> false
+
+        test <@ isTerminal @>)
 
 // Inline FactAttribute so test detection works without xUnit assemblies in script options.
 // Uses module-level [<Fact>] functions — the pattern that analyzeSource reliably detects
