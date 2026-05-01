@@ -391,6 +391,16 @@ let private holdDaemonLock (tmpDir: string) (pid: int) : IDisposable =
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Start refuses to spawn a duplicate when lock is held`` () =
     withTempDir "prog-start-dup" (fun tmpDir ->
+        // Stage a discoverable .fsproj so the failIfNoProjects pre-check
+        // passes and execution actually reaches the lock-acquisition code.
+        let srcDir = System.IO.Path.Combine(tmpDir, "src")
+        System.IO.Directory.CreateDirectory(srcDir) |> ignore
+
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(srcDir, "Stub.fsproj"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\" />"
+        )
+
         use _held = holdDaemonLock tmpDir 99999
         let mutable createDaemonCalled = false
 
@@ -410,6 +420,16 @@ let ``executeCommand Start — second concurrent invocation cannot claim the loc
     // createDaemon. The file lock is OS-enforced, so concurrent holders are
     // impossible regardless of probe-timing races.
     withTempDir "prog-start-concurrent" (fun tmpDir ->
+        // Stage a discoverable .fsproj so the failIfNoProjects pre-check
+        // passes and execution actually reaches the lock-acquisition code.
+        let srcDir = System.IO.Path.Combine(tmpDir, "src")
+        System.IO.Directory.CreateDirectory(srcDir) |> ignore
+
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(srcDir, "Stub.fsproj"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\" />"
+        )
+
         use _held = holdDaemonLock tmpDir 12345
         let mutable createDaemonCalls = 0
 
