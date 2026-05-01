@@ -15,7 +15,7 @@ open FSharpLint.Application
 let LintTimeoutDefaultSec = 120
 
 type LintState =
-    { WarningsByFile: Map<string, string list> }
+    { WarningsByFile: Map<AbsFilePath, string list> }
 
 // TODO: lintParsedSource misses hint-based rules (e.g. FL0065 "x = [] ===> List.isEmpty x")
 // that the solution-level linter (dotnet fsharplint lint) catches. Investigate using
@@ -69,7 +69,7 @@ let create
                     [ "plugin-version", pluginCacheSalt
                       "tool", fsharpLintVersion
                       "config", configHash
-                      "file", r.File
+                      "file", AbsFilePath.value r.File
                       "source", r.Source
                       "fcs-signature", fcsSignature ]
             )
@@ -113,23 +113,24 @@ let create
             async {
                 match event with
                 | FileChecked result ->
-                    Logging.debug "lint" $"FileChecked received: %s{result.File}"
+                    let fileStr = AbsFilePath.value result.File
+                    Logging.debug "lint" $"FileChecked received: %s{fileStr}"
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
                     return!
                         PluginCtxHelpers.withSubtask
                             ctx
-                            result.File
-                            $"linting {System.IO.Path.GetFileName result.File}"
+                            fileStr
+                            $"linting {System.IO.Path.GetFileName fileStr}"
                             (async {
                                 if isNull (box result.ParseResults) then
-                                    Logging.warn "lint" $"Skipping %s{result.File} — no parse results"
+                                    Logging.warn "lint" $"Skipping %s{fileStr} — no parse results"
                                     return state
                                 else
                                     match runWithTimeout lintTimeout (fun () -> runLint result) with
                                     | WorkTimedOut after ->
                                         let reason = $"timed out after %d{int after.TotalSeconds}s"
-                                        Logging.error "lint" $"Lint TIMED OUT for %s{result.File}: %s{reason}"
+                                        Logging.error "lint" $"Lint TIMED OUT for %s{fileStr}: %s{reason}"
 
                                         ctx.CompleteWithTimeout reason
 
@@ -141,7 +142,7 @@ let create
                                     | WorkCompleted(Lint.LintResult.Success warnings) ->
                                         Logging.debug
                                             "lint"
-                                            $"Linted %s{System.IO.Path.GetFileName result.File}: %d{warnings.Length} warnings"
+                                            $"Linted %s{System.IO.Path.GetFileName fileStr}: %d{warnings.Length} warnings"
 
                                         let msgs = warnings |> List.map (fun w -> w.Details.Message)
 
@@ -156,7 +157,7 @@ let create
                                                   Column = w.Details.Range.StartColumn
                                                   Detail = None })
 
-                                        PluginCtxHelpers.reportOrClearFile ctx result.File entries
+                                        PluginCtxHelpers.reportOrClearFile ctx fileStr entries
 
                                         let newState = { WarningsByFile = newWarnings }
 
@@ -169,12 +170,11 @@ let create
 
                                         return newState
                                     | WorkCompleted(Lint.LintResult.Failure failure) ->
-                                        let msg = $"Lint failed for %s{result.File}: %A{failure}"
+                                        let msg = $"Lint failed for %s{fileStr}: %A{failure}"
 
-                                        ctx.ReportErrors result.File [ ErrorEntry.error msg ]
+                                        ctx.ReportErrors fileStr [ ErrorEntry.error msg ]
 
-                                        ctx.CompleteWithSummary
-                                            $"lint failed on {System.IO.Path.GetFileName result.File}"
+                                        ctx.CompleteWithSummary $"lint failed on {System.IO.Path.GetFileName fileStr}"
 
                                         ctx.ReportStatus(PluginStatus.Failed(msg, DateTime.UtcNow))
                                         return state

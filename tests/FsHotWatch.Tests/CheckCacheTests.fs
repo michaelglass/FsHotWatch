@@ -151,7 +151,7 @@ let ``makeCacheKey produces different keys for different files`` () =
 // --- InMemoryCheckCache tests ---
 
 let private makeTestResult (file: string) (version: int64) : FileCheckResult =
-    { File = file
+    { File = AbsFilePath.create file
       Source = "test"
       ParseResults = Unchecked.defaultof<_>
       CheckResults = ParseOnly
@@ -171,7 +171,7 @@ let ``InMemoryCheckCache stores and retrieves results`` () =
     cache.Set key result
 
     match cache.TryGet key with
-    | Some r -> Assert.Equal("test.fs", r.File)
+    | Some r -> Assert.Equal(AbsFilePath.create "test.fs", r.File)
     | None -> Assert.Fail("Expected Some but got None")
 
 [<Fact(Timeout = 15000)>]
@@ -270,7 +270,7 @@ let ``FileCheckCache stores and retrieves results`` () =
 
         match cache.TryGet key with
         | Some r ->
-            Assert.Equal("test.fs", r.File)
+            Assert.Equal(AbsFilePath.create "test.fs", r.File)
             Assert.Equal(42L, r.Version)
         | None -> Assert.Fail("Expected Some but got None")
     finally
@@ -303,7 +303,7 @@ let ``FileCheckCache persists across instances`` () =
 
         match cache2.TryGet key with
         | Some r ->
-            Assert.Equal("test.fs", r.File)
+            Assert.Equal(AbsFilePath.create "test.fs", r.File)
             Assert.Equal(99L, r.Version)
         | None -> Assert.Fail("Expected cached result to persist across instances")
     finally
