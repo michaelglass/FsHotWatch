@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-01
 **Author:** fcs-cache-poisoning agent
-**Status:** Research complete; recommending **deferral** of the fix.
+**Status:** ~~Research complete; recommending **deferral** of the fix.~~ **Shipped 2026-05-01** as jj rev `rlzutnxv` (commit `2b8485ed`) by the `fcs-poisoning-fix` agent — the prior "defer" recommendation is superseded; team-lead greenlighted ship-it. The implementation is the simpler severity-only gate at `FileChecked` time (no first-boot tentative flag, no schema migration); cold-boot cost is deferred to the first real change after boot. See `src/FsHotWatch.TestPrune/TestPrunePlugin.fs`'s `hasFcsErrors` helper + the `FileChecked` short-circuit, plus the new poisoning tests at the end of `tests/FsHotWatch.Tests/TestPrunePluginTests.fs`.
 **Symptom source:** Intelligence stress test, fshw 0.10.0-stresstest2 / Phase B.
 
 ---
