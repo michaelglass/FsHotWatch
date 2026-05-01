@@ -205,6 +205,12 @@ type PluginHost
     member _.EmitFileChecked(result: FileCheckResult) =
         dispatchToAll (PluginFramework.DispatchFileChecked result)
 
+    /// Emit a batch-checked event to all registered plugins. Fired by the
+    /// daemon once after a defined cohort of `FileChecked` events has finished
+    /// (boot scan or in-session debounce batch).
+    member _.EmitBatchChecked(batch: BatchChecked) =
+        dispatchToAll (PluginFramework.DispatchBatchChecked batch)
+
     /// Emit the start of a test run to all registered plugins.
     member _.EmitTestRunStarted(started: TestRunStarted) =
         dispatchToAll (PluginFramework.DispatchTestRunStarted started)

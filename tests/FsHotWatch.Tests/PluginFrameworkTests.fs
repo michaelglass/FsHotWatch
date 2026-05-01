@@ -814,3 +814,99 @@ let ``IsRunning reports true while work in flight, false after completion`` () =
         test <@ not (capturedCtx.Value.IsRunning "k") @>
     }
     |> Async.RunSynchronously
+
+// --- BatchChecked dispatch (commit 1: framework adds the event) ---
+
+[<Fact(Timeout = 15000)>]
+let ``plugin subscribing to BatchChecked receives event`` () =
+    let mutable registeredCmd: (string * CommandHandler) option = None
+    let received = System.Collections.Concurrent.ConcurrentQueue<BatchChecked>()
+
+    let handler =
+        { Name = PluginName.create "test-bc"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | PluginEvent.BatchChecked b ->
+                        received.Enqueue(b)
+                        return state
+                    | _ -> return state
+                }
+          Commands = [ "drain", fun _ctx _state _args -> async { return "ok" } ]
+          Subscriptions = Set.ofList [ SubscribeBatchChecked ]
+          CacheKey = None
+          RequireWarmStart = false
+          Teardown = None }
+
+    let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
+
+    let now = System.DateTime.UtcNow
+
+    let batch =
+        { Trigger = BootScan
+          Files = [ AbsFilePath.create "/tmp/repo/Foo.fs" ]
+          Generation = 7L
+          StartedAt = now
+          CompletedAt = now.AddMilliseconds(50.0) }
+
+    reg.Dispatch(DispatchBatchChecked batch)
+
+    // Drain agent — `drain` queues behind the BatchChecked dispatch.
+    let (_, cmdHandler) = registeredCmd.Value
+    cmdHandler [||] |> Async.RunSynchronously |> ignore
+
+    test <@ received.Count = 1 @>
+    let observed = received.ToArray().[0]
+    test <@ observed.Generation = 7L @>
+    test <@ observed.Files.Length = 1 @>
+
+    match observed.Trigger with
+    | BootScan -> ()
+    | _ -> failwith "expected BootScan trigger"
+
+[<Fact(Timeout = 15000)>]
+let ``plugin not subscribing to BatchChecked does not receive event`` () =
+    let mutable registeredCmd: (string * CommandHandler) option = None
+    let mutable batchSeen = false
+
+    let handler =
+        { Name = PluginName.create "test-bc-skip"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | PluginEvent.BatchChecked _ ->
+                        batchSeen <- true
+                        return state
+                    | _ -> return state
+                }
+          Commands = [ "drain", fun _ctx _state _args -> async { return "ok" } ]
+          // Subscribed to FileChanged only — must NOT see BatchChecked.
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          RequireWarmStart = false
+          Teardown = None }
+
+    let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
+
+    let now = System.DateTime.UtcNow
+
+    reg.Dispatch(
+        DispatchBatchChecked
+            { Trigger = BootScan
+              Files = []
+              Generation = 1L
+              StartedAt = now
+              CompletedAt = now }
+    )
+
+    // Dispatch a subscribed event after, so we can drain the mailbox.
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/Foo.fs" ]))
+
+    let (_, cmdHandler) = registeredCmd.Value
+    cmdHandler [||] |> Async.RunSynchronously |> ignore
+
+    test <@ not batchSeen @>
