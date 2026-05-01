@@ -241,11 +241,24 @@ let ``verbose Running preserves leading whitespace in activity tail entries (que
     let lines = renderPlugin Verbose true now "test-prune" parsed |> stripMany
     let joined = String.concat "\n" lines
     // Sibling test-result lines render with exactly 8 spaces of indent.
-    test <@ lines |> List.exists (fun l -> l = "        Intelligence.Build.Dev.Tests: failed") @>
-    test <@ lines |> List.exists (fun l -> l = "        Intelligence.Tests.Database: passed") @>
+    test
+        <@
+            lines
+            |> List.exists (fun l -> l = "        Intelligence.Build.Dev.Tests: failed")
+        @>
+
+    test
+        <@
+            lines
+            |> List.exists (fun l -> l = "        Intelligence.Tests.Database: passed")
+        @>
     // The queued-re-run line carries 2 extra leading spaces of caller-supplied
     // indent → 10 spaces total → visually nests under the test-result lines.
-    test <@ lines |> List.exists (fun l -> l = "          ↳ queued re-run (tests already running)") @>
+    test
+        <@
+            lines
+            |> List.exists (fun l -> l = "          ↳ queued re-run (tests already running)")
+        @>
     // Sanity: the nested arrow glyph appears in the joined output.
     test <@ joined.Contains "↳ queued re-run" @>
 
