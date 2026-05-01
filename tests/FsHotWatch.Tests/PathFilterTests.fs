@@ -25,28 +25,65 @@ let ``isGeneratedPath returns false for normal source file`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``isExcludedPath matches glob pattern with wildcard`` () =
-    test <@ isExcludedPath [ "vendor/" ] "/repo/vendor/sqlhydra/src/Lib.fs" @>
+    test <@ isExcludedPath "/repo" [ "vendor/" ] "/repo/vendor/sqlhydra/src/Lib.fs" @>
 
 [<Fact(Timeout = 15000)>]
 let ``isExcludedPath does not match unrelated path`` () =
-    test <@ not (isExcludedPath [ "vendor/" ] "/repo/src/MyProject/Lib.fs") @>
+    test <@ not (isExcludedPath "/repo" [ "vendor/" ] "/repo/src/MyProject/Lib.fs") @>
 
 [<Fact(Timeout = 15000)>]
 let ``isExcludedPath matches directory glob`` () =
-    test <@ isExcludedPath [ "generated/" ] "/repo/src/generated/Types.fs" @>
+    test <@ isExcludedPath "/repo" [ "generated/" ] "/repo/src/generated/Types.fs" @>
 
 [<Fact(Timeout = 15000)>]
 let ``isExcludedPath matches file extension glob`` () =
-    test <@ isExcludedPath [ "*.fsx" ] "/repo/build.fsx" @>
+    test <@ isExcludedPath "/repo" [ "*.fsx" ] "/repo/build.fsx" @>
 
 [<Fact(Timeout = 15000)>]
 let ``isExcludedPath matches nested glob pattern`` () =
-    test <@ isExcludedPath [ "**/temp/" ] "/repo/src/deep/temp/file.fs" @>
+    test <@ isExcludedPath "/repo" [ "**/temp/" ] "/repo/src/deep/temp/file.fs" @>
 
 [<Fact(Timeout = 15000)>]
 let ``isExcludedPath always excludes obj and bin`` () =
-    test <@ isExcludedPath [] "/repo/src/obj/Debug/net10.0/Info.fs" @>
-    test <@ isExcludedPath [] "/repo/src/bin/Release/net10.0/Thing.fs" @>
+    test <@ isExcludedPath "/repo" [] "/repo/src/obj/Debug/net10.0/Info.fs" @>
+    test <@ isExcludedPath "/repo" [] "/repo/src/bin/Release/net10.0/Thing.fs" @>
+
+// --- isExcludedPath: gitignore patterns must be matched against repo-relative paths ---
+// Regression: previously matched against absolute paths, so a pattern like
+// `.workspaces/` would match every absolute path that contains that segment,
+// even when the repo root was inside `.workspaces/` itself.
+
+[<Fact(Timeout = 15000)>]
+let ``isExcludedPath does not match files outside repo root`` () =
+    // File lives at /somewhere/elsewhere/.workspaces/foo/bar.fsproj, but the
+    // repo root is /somewhere/myrepo. Pattern .workspaces/ is repo-relative and
+    // must not match files outside the repo.
+    test
+        <@ not (isExcludedPath "/somewhere/myrepo" [ ".workspaces/" ] "/somewhere/elsewhere/.workspaces/foo/bar.fsproj") @>
+
+[<Fact(Timeout = 15000)>]
+let ``isExcludedPath matches files at repo-root-relative path`` () =
+    test <@ isExcludedPath "/somewhere/myrepo" [ ".workspaces/" ] "/somewhere/myrepo/.workspaces/foo/bar.fsproj" @>
+
+[<Fact(Timeout = 15000)>]
+let ``isExcludedPath does not match the repo-root parent directory`` () =
+    // Path.GetRelativePath("/a/b", "/a") returns "..": confirm that a path
+    // exactly one level above the repo root is treated as outside the repo.
+    test <@ not (isExcludedPath "/a/b" [ "*.fs" ] "/a") @>
+
+[<Fact(Timeout = 15000)>]
+let ``isExcludedPath does not match when repo root is inside the excluded directory`` () =
+    // Stress-test scenario: repo IS the workspace, so paths relative to it
+    // do not contain `.workspaces/`. Pattern must not match anything in here.
+    test
+        <@
+            not (
+                isExcludedPath
+                    "/somewhere/myrepo/.workspaces/sub"
+                    [ ".workspaces/" ]
+                    "/somewhere/myrepo/.workspaces/sub/Project.fsproj"
+            )
+        @>
 
 // --- loadIgnoreFile ---
 
