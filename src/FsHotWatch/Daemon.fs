@@ -144,7 +144,7 @@ let private discoverAndRegisterProjects
     (excludePatterns: string list)
     =
     async {
-        let isExcluded = PathFilter.isExcludedPath excludePatterns
+        let isExcluded = PathFilter.isExcludedPath repoRoot excludePatterns
 
         let searchDirs =
             [ Path.Combine(repoRoot, "src"); Path.Combine(repoRoot, "tests") ]
@@ -155,6 +155,22 @@ let private discoverAndRegisterProjects
             |> List.collect (fun dir ->
                 Directory.GetFiles(dir, "*.fsproj", SearchOption.AllDirectories) |> Array.toList)
             |> List.filter (fun f -> not (isExcluded f))
+
+        if List.isEmpty fsprojFiles then
+            // Surface zero-project discoveries: this is almost always a
+            // misconfiguration (wrong working directory, an over-eager
+            // .fshw.json `exclude` pattern, or an empty repo) and silently
+            // running with no work to do hides the problem from users.
+            let searched =
+                searchDirs
+                |> List.map (fun d -> Path.GetFileName(d.TrimEnd('/')))
+                |> String.concat ", "
+
+            let searched = if searched = "" then "src/, tests/" else searched
+
+            Logging.warn
+                "discover"
+                $"No .fsproj files discovered under %s{searched} of %s{repoRoot}. Check `.fshw.json` exclude patterns or working directory."
 
         graph.PrepareForRediscovery()
         pipeline.PrepareForRediscovery()
