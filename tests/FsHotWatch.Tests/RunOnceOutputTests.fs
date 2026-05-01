@@ -6,6 +6,9 @@ open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Cli.RunOnceOutput
+open FsHotWatch.Cli.DaemonConfig
+open FsHotWatch.Daemon
+open FsHotWatch.Tests.TestHelpers
 
 
 // --- Staleness warning: detect FileCommand plugin inputs newer than last run ---
@@ -233,3 +236,123 @@ let ``formatErrors excludes files with only info entries from file count`` () =
 
     let result = formatErrors errors
     test <@ result.Contains("1 warning(s) in 1 file(s)") @>
+
+// --- failIfNoProjects: shared fail-fast helper used by every entry path ---
+
+[<Fact(Timeout = 15000)>]
+let ``failIfNoProjects returns Some 2 when no fsproj exists`` () =
+    withTempDir "failif-zero-projects" (fun tmpDir ->
+        // Empty src/ — no .fsproj files anywhere.
+        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(tmpDir, "src"))
+        |> ignore
+
+        let result = failIfNoProjects tmpDir []
+        test <@ result = Some 2 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``failIfNoProjects returns None when at least one fsproj exists`` () =
+    withTempDir "failif-has-project" (fun tmpDir ->
+        let srcDir = System.IO.Path.Combine(tmpDir, "src")
+        System.IO.Directory.CreateDirectory(srcDir) |> ignore
+
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(srcDir, "MyProject.fsproj"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\" />"
+        )
+
+        let result = failIfNoProjects tmpDir []
+        test <@ result = None @>)
+
+[<Fact(Timeout = 15000)>]
+let ``failIfNoProjects returns None when fsproj is in tests directory`` () =
+    // Exercises the cross-directory search: src/ exists but is empty; the
+    // sole fsproj lives under tests/. Both directories must be probed
+    // before the helper can declare success.
+    withTempDir "failif-tests-only" (fun tmpDir ->
+        let srcDir = System.IO.Path.Combine(tmpDir, "src")
+        let testsDir = System.IO.Path.Combine(tmpDir, "tests")
+        System.IO.Directory.CreateDirectory(srcDir) |> ignore
+        System.IO.Directory.CreateDirectory(testsDir) |> ignore
+
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(testsDir, "MyTests.fsproj"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\" />"
+        )
+
+        let result = failIfNoProjects tmpDir []
+        test <@ result = None @>)
+
+[<Fact(Timeout = 15000)>]
+let ``failIfNoProjects returns None when some fsprojs excluded but at least one remains`` () =
+    // Drives Array.exists past the first element: the first fsproj matches
+    // the exclude (predicate returns false → keep iterating); the second
+    // does not (predicate returns true → match). Without this case the
+    // "keep iterating" branch is never exercised.
+    withTempDir "failif-mixed-excludes" (fun tmpDir ->
+        let srcDir = System.IO.Path.Combine(tmpDir, "src")
+
+        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(srcDir, "vendor"))
+        |> ignore
+
+        // Excluded by `vendor/`.
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(srcDir, "vendor", "Vendored.fsproj"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\" />"
+        )
+        // Not excluded.
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(srcDir, "MyProject.fsproj"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\" />"
+        )
+
+        let result = failIfNoProjects tmpDir [ "vendor/" ]
+        test <@ result = None @>)
+
+[<Fact(Timeout = 15000)>]
+let ``failIfNoProjects returns Some 2 when every fsproj is excluded`` () =
+    // Stress-test scenario: fsproj exists on disk but the user's exclude
+    // pattern matches it. The pre-check must respect repo-relative
+    // gitignore semantics (per Bug 1) so this exclude only matches files
+    // at repoRoot/.workspaces/...
+    withTempDir "failif-all-excluded" (fun tmpDir ->
+        let srcDir = System.IO.Path.Combine(tmpDir, "src")
+        System.IO.Directory.CreateDirectory(srcDir) |> ignore
+
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(srcDir, "MyProject.fsproj"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\" />"
+        )
+
+        let result = failIfNoProjects tmpDir [ "src/" ]
+        test <@ result = Some 2 @>)
+
+// --- runOnceAndReport: zero-projects exit code ---
+
+[<Fact(Timeout = 30000)>]
+let ``runOnceAndReport returns 2 when no projects are discovered`` () =
+    withTempDir "runonce-zero-projects" (fun tmpDir ->
+        // Empty src/ — no .fsproj files anywhere.
+        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(tmpDir, "src"))
+        |> ignore
+
+        let nullChecker: FSharp.Compiler.CodeAnalysis.FSharpChecker =
+            Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
+
+        let createDaemon (root: string) =
+            Daemon.createWith nullChecker root Daemon.DaemonOptions.defaults
+
+        let config: DaemonConfiguration =
+            { Build = None
+              Format = Off
+              Lint = false
+              Cache = NoCache
+              Analyzers = None
+              Tests = None
+              FileCommands = []
+              Exclude = []
+              LogDir = "logs"
+              TimeoutSec = None }
+
+        let exitCode = runOnceAndReport (fun _ -> "") false createDaemon tmpDir config None
+
+        test <@ exitCode = 2 @>)

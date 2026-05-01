@@ -114,6 +114,38 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
         sb.Append($"%s{summary} in %d{fileCount} file(s)") |> ignore
         sb.ToString().TrimEnd('\n', '\r')
 
+/// Verify at least one discoverable `.fsproj` exists before any expensive
+/// daemon work. Returns `Some 2` (config-error exit code) and emits a
+/// clear stderr message when no project would be discovered — the caller
+/// is expected to exit with that code rather than continue. Returns
+/// `None` when at least one project would be picked up.
+///
+/// Used by both daemon-mode startup (`fshw start`) and the run-once paths
+/// (`fshw check --run-once`, `fshw build --run-once`, etc.) so every
+/// entry point fails fast on misconfiguration. The user's preference is
+/// loud failure over silent passing: zero projects almost always means a
+/// wrong working directory or an over-eager `.fshw.json` exclude pattern,
+/// and the daemon has no useful behavior to provide in that state.
+let failIfNoProjects (repoRoot: string) (excludePatterns: string list) : int option =
+    let isExcluded = FsHotWatch.PathFilter.isExcludedPath repoRoot excludePatterns
+
+    let hasProject =
+        [ "src"; "tests" ]
+        |> List.map (fun d -> System.IO.Path.Combine(repoRoot, d))
+        |> List.filter System.IO.Directory.Exists
+        |> List.exists (fun dir ->
+            System.IO.Directory.GetFiles(dir, "*.fsproj", System.IO.SearchOption.AllDirectories)
+            |> Array.exists (fun f -> not (isExcluded f)))
+
+    if hasProject then
+        None
+    else
+        eprintfn
+            "fshw: no projects discovered under %s. Check `.fshw.json` exclude patterns or working directory."
+            repoRoot
+
+        Some 2
+
 /// Run a daemon's RunOnce with live progress display to stderr.
 let runOnceWithProgress (daemon: FsHotWatch.Daemon.Daemon) : Map<string, PluginStatus> =
     if UI.isInteractive then
@@ -144,51 +176,55 @@ let runOnceAndReport
     (config: DaemonConfig.DaemonConfiguration)
     (pluginName: string option)
     : int =
-    let daemon = createDaemon repoRoot
-    DaemonConfig.registerPlugins daemon repoRoot config
-    let statuses = runOnceWithProgress daemon
+    match failIfNoProjects repoRoot config.Exclude with
+    | Some exitCode -> exitCode
+    | None ->
 
-    let allErrors =
-        match pluginName with
-        | Some name ->
-            daemon.Host.GetErrorsByPlugin(name)
-            |> Map.map (fun _ entries -> entries |> List.map (fun e -> name, e))
-        | None -> daemon.Host.GetErrors()
+        let daemon = createDaemon repoRoot
+        DaemonConfig.registerPlugins daemon repoRoot config
+        let statuses = runOnceWithProgress daemon
 
-    let failCount =
-        allErrors
-        |> Map.toList
-        |> List.collect snd
-        |> List.filter (fun (_, e) -> ErrorEntry.isFailing (not noWarnFail) e)
-        |> List.length
+        let allErrors =
+            match pluginName with
+            | Some name ->
+                daemon.Host.GetErrorsByPlugin(name)
+                |> Map.map (fun _ entries -> entries |> List.map (fun e -> name, e))
+            | None -> daemon.Host.GetErrors()
 
-    let parsed = snapshotHost daemon.Host statuses
-    let summary = renderSummary parsed
+        let failCount =
+            allErrors
+            |> Map.toList
+            |> List.collect snd
+            |> List.filter (fun (_, e) -> ErrorEntry.isFailing (not noWarnFail) e)
+            |> List.length
 
-    if summary <> "" then
-        eprintfn "%s" summary
+        let parsed = snapshotHost daemon.Host statuses
+        let summary = renderSummary parsed
 
-    eprintfn "%s" (formatErrors allErrors)
+        if summary <> "" then
+            eprintfn "%s" summary
 
-    // Defense-in-depth: warn if any FileCommand plugin's args reference a file
-    // modified after the plugin's last run started. Catches cache-key gaps in
-    // plugins whose salt doesn't fully cover their inputs.
-    let staleInputs =
-        config.FileCommands
-        |> List.choose (fun fc ->
-            match Map.tryFind fc.PluginName parsed |> Option.bind (fun p -> p.LastRun) with
-            | Some lastRun ->
-                Some
-                    { Name = fc.PluginName
-                      LastRunStarted = lastRun.StartedAt
-                      RepoRoot = repoRoot
-                      Args = fc.Args }
-            | None -> None)
-        |> detectStalePluginInputs
+        eprintfn "%s" (formatErrors allErrors)
 
-    let stalenessWarning = formatStalenessWarning staleInputs
+        // Defense-in-depth: warn if any FileCommand plugin's args reference a file
+        // modified after the plugin's last run started. Catches cache-key gaps in
+        // plugins whose salt doesn't fully cover their inputs.
+        let staleInputs =
+            config.FileCommands
+            |> List.choose (fun fc ->
+                match Map.tryFind fc.PluginName parsed |> Option.bind (fun p -> p.LastRun) with
+                | Some lastRun ->
+                    Some
+                        { Name = fc.PluginName
+                          LastRunStarted = lastRun.StartedAt
+                          RepoRoot = repoRoot
+                          Args = fc.Args }
+                | None -> None)
+            |> detectStalePluginInputs
 
-    if stalenessWarning <> "" then
-        eprintfn "%s" stalenessWarning
+        let stalenessWarning = formatStalenessWarning staleInputs
 
-    if failCount > 0 then 1 else 0
+        if stalenessWarning <> "" then
+            eprintfn "%s" stalenessWarning
+
+        if failCount > 0 then 1 else 0

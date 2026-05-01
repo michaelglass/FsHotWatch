@@ -700,10 +700,44 @@ let ``executeCommand Status with plugin name queries GetDiagnostics for that plu
     test <@ calledWith = "lint" @>
 
 [<Fact(Timeout = 15000)>]
+let ``executeCommand Start exits 2 when no projects are discovered`` () =
+    // Fail-fast contract: when project discovery would return 0, Start
+    // exits 2 (config error) BEFORE creating the daemon, acquiring the
+    // lockfile, or writing the pidfile — so a project-less directory
+    // never spins up a daemon that would idle forever.
+    withTempDir "cli-start-zero-projects" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+        let mutable createDaemonCalled = false
+
+        let createDaemon (_: string) : Daemon =
+            createDaemonCalled <- true
+            Unchecked.defaultof<Daemon>
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> false }
+
+        let exitCode =
+            executeCommand createDaemon ipc tmpDir "fshw-test-pipe" Start defaultGlobalOptions fakeConfig 30.0
+
+        test <@ exitCode = 2 @>
+        // Pre-check fires before any daemon work, so the factory must not
+        // be invoked and no .fshw state should be left behind.
+        test <@ not createDaemonCalled @>
+        test <@ not (Directory.Exists(Path.Combine(tmpDir, ".fshw"))) @>)
+
+[<Fact(Timeout = 15000)>]
 let ``executeCommand Start with fake daemon throws on null daemon`` () =
     // Use a unique temp dir to avoid writing the test process PID to /tmp/.fshw/daemon.pid
     // where killStaleDaemon from other tests would read it and kill the test process.
     withTempDir "cli-start" (fun tmpDir ->
+        // Stage a discoverable .fsproj so the failIfNoProjects pre-check
+        // passes and execution actually reaches `createDaemon`.
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        File.WriteAllText(Path.Combine(srcDir, "Stub.fsproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+
         let mutable createCalled = false
         let fakeDaemon = Unchecked.defaultof<Daemon>
 

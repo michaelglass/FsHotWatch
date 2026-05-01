@@ -490,67 +490,77 @@ let executeCommand
 
     match command with
     | Start ->
-        let stateDir = Path.Combine(repoRoot, ".fshw")
-        let pidFile = Path.Combine(stateDir, "daemon.pid")
-        let lockFile = Path.Combine(stateDir, "daemon.lock")
-        Directory.CreateDirectory(stateDir) |> ignore
-
-        // OS-enforced singleton: hold an exclusive lock on daemon.lock for the
-        // daemon's lifetime. Two concurrent `start` invocations cannot both
-        // acquire it; the second exits cleanly. Replaces the earlier probe-based
-        // guard which had a TOCTOU window between IsRunning check and pipe claim.
-        let acquired =
-            try
-                Some(new FileStream(lockFile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
-            with :? IOException ->
-                None
-
-        match acquired with
+        // Fail-fast on misconfiguration BEFORE acquiring the lockfile,
+        // writing the pidfile, or creating the daemon. Same contract as
+        // the run-once paths so every entry point behaves consistently:
+        // zero projects almost always means a wrong cwd or an over-eager
+        // `.fshw.json` exclude pattern, and there is no useful behaviour
+        // the daemon can provide.
+        match RunOnceOutput.failIfNoProjects repoRoot config.Exclude with
+        | Some exitCode -> exitCode
         | None ->
-            let pidInfo =
-                if File.Exists pidFile then
-                    $" (pid %s{File.ReadAllText(pidFile).Trim()})"
-                else
-                    ""
 
-            eprintfn $"Daemon already running at pipe %s{pipeName}%s{pidInfo}"
-            0
-        | Some lockStream ->
-            use _lock = lockStream
-            eprintfn $"Starting FsHotWatch daemon for %s{repoRoot}"
-            eprintfn $"Pipe: %s{pipeName}"
+            let stateDir = Path.Combine(repoRoot, ".fshw")
+            let pidFile = Path.Combine(stateDir, "daemon.pid")
+            let lockFile = Path.Combine(stateDir, "daemon.lock")
+            Directory.CreateDirectory(stateDir) |> ignore
 
-            // Write our own PID so killStaleDaemon can find the actual daemon process,
-            // not the nohup wrapper that launched us.
-            File.WriteAllText(pidFile, string (System.Diagnostics.Process.GetCurrentProcess().Id))
+            // OS-enforced singleton: hold an exclusive lock on daemon.lock for the
+            // daemon's lifetime. Two concurrent `start` invocations cannot both
+            // acquire it; the second exits cleanly. Replaces the earlier probe-based
+            // guard which had a TOCTOU window between IsRunning check and pipe claim.
+            let acquired =
+                try
+                    Some(new FileStream(lockFile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
+                with :? IOException ->
+                    None
 
-            let daemon = createDaemon repoRoot
-            registerPlugins daemon repoRoot config
-            let cts = new CancellationTokenSource()
+            match acquired with
+            | None ->
+                let pidInfo =
+                    if File.Exists pidFile then
+                        $" (pid %s{File.ReadAllText(pidFile).Trim()})"
+                    else
+                        ""
 
-            Console.CancelKeyPress.Add(fun e ->
-                e.Cancel <- true
-                cts.Cancel())
+                eprintfn $"Daemon already running at pipe %s{pipeName}%s{pidInfo}"
+                0
+            | Some lockStream ->
+                use _lock = lockStream
+                eprintfn $"Starting FsHotWatch daemon for %s{repoRoot}"
+                eprintfn $"Pipe: %s{pipeName}"
 
-            // Stop the daemon cleanly if `.fshw.json` is edited. The
-            // user then runs the daemon again to pick up the new config (or
-            // sees the error if the edit was invalid). No hot-reload.
-            use _configWatcher =
-                watchRepoConfigFile repoRoot (fun reason ->
-                    FsHotWatch.Logging.info "config" reason
+                // Write our own PID so killStaleDaemon can find the actual daemon process,
+                // not the nohup wrapper that launched us.
+                File.WriteAllText(pidFile, string (System.Diagnostics.Process.GetCurrentProcess().Id))
+
+                let daemon = createDaemon repoRoot
+                registerPlugins daemon repoRoot config
+                let cts = new CancellationTokenSource()
+
+                Console.CancelKeyPress.Add(fun e ->
+                    e.Cancel <- true
                     cts.Cancel())
 
-            try
-                Async.RunSynchronously(daemon.RunWithIpc(pipeName, cts))
-            with :? OperationCanceledException ->
-                ()
+                // Stop the daemon cleanly if `.fshw.json` is edited. The
+                // user then runs the daemon again to pick up the new config (or
+                // sees the error if the edit was invalid). No hot-reload.
+                use _configWatcher =
+                    watchRepoConfigFile repoRoot (fun reason ->
+                        FsHotWatch.Logging.info "config" reason
+                        cts.Cancel())
 
-            eprintfn "Daemon stopped."
+                try
+                    Async.RunSynchronously(daemon.RunWithIpc(pipeName, cts))
+                with :? OperationCanceledException ->
+                    ()
 
-            if File.Exists pidFile then
-                File.Delete pidFile
+                eprintfn "Daemon stopped."
 
-            0
+                if File.Exists pidFile then
+                    File.Delete pidFile
+
+                0
     | Stop ->
         withIpc (fun () ->
             // Multiple daemons may be listening on the same pipe (historically the
