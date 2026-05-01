@@ -5,6 +5,7 @@ open System.IO
 open System.Threading
 open Xunit
 open Swensen.Unquote
+open FsHotWatch.ContentDedup
 open FsHotWatch.Events
 open FsHotWatch.Watcher
 open FsHotWatch.Tests.TestHelpers
