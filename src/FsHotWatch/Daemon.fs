@@ -144,7 +144,7 @@ let private discoverAndRegisterProjects
     (excludePatterns: string list)
     =
     async {
-        let isExcluded = PathFilter.isExcludedPath excludePatterns
+        let isExcluded = PathFilter.isExcludedPath repoRoot excludePatterns
 
         let searchDirs =
             [ Path.Combine(repoRoot, "src"); Path.Combine(repoRoot, "tests") ]
