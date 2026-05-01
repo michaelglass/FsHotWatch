@@ -29,7 +29,6 @@ let private makeCtxAwareHandler (name: string) (action: PluginCtx<unit> -> Async
       Commands = []
       Subscriptions = Set.ofList [ SubscribeFileChanged ]
       CacheKey = None
-      RequireWarmStart = false
       Teardown = None }
 
 [<Fact(Timeout = 15000)>]

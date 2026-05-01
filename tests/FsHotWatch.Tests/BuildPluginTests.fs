@@ -83,16 +83,6 @@ let ``create accepts graph and test project names`` () =
 // runner with system load it intermittently flakes due to scheduler starvation.
 
 [<Fact(Timeout = 15000)>]
-let ``BuildPlugin opts in to framework warm-start gate`` () =
-    // Cold-start safety is enforced by the PluginFramework gate (RequireWarmStart);
-    // BuildPlugin must opt in so its cache key is suppressed until a real build
-    // has completed in this session.
-    let handler =
-        BuildPlugin.create "echo" "ok" [] (FsHotWatch.ProjectGraph.ProjectGraph()) [] None [] None
-
-    test <@ handler.RequireWarmStart = true @>
-
-[<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =
     let handler =
         BuildPlugin.create "echo" "build succeeded" [] (ProjectGraph()) [] None [] None
@@ -339,7 +329,7 @@ let ``build plugin triggers on ProjectChanged`` () =
     test <@ getBuild () = Some BuildSucceeded @>
 
 [<Fact(Timeout = 15000)>]
-let ``build is skipped when only test files change, after FCS confirms the file`` () =
+let ``build is skipped when only test files change, after BatchChecked covers the file`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
 
@@ -357,12 +347,12 @@ let ``build is skipped when only test files change, after FCS confirms the file`
 
     host.EmitFileChanged(SourceChanged [ "/tmp/tests/MyTests/Tests.fs" ])
 
-    // BuildSucceeded must not be emitted before FCS finishes checking the changed file —
+    // BuildSucceeded must not be emitted before the cohort completes —
     // downstream test-prune queries stale AffectedTests if it fires too early.
     Threading.Thread.Sleep(200)
     test <@ getBuild () = None @>
 
-    host.EmitFileChecked(fakeFileCheckResult "/tmp/tests/MyTests/Tests.fs")
+    host.EmitBatchChecked(fakeBatchChecked [ "/tmp/tests/MyTests/Tests.fs" ])
 
     waitForTerminalStatus host "build" 5000
 
@@ -370,7 +360,7 @@ let ``build is skipped when only test files change, after FCS confirms the file`
     test <@ getBuild () = Some BuildSucceeded @>
 
 [<Fact(Timeout = 15000)>]
-let ``build skip waits for FileChecked of all changed test files before emitting BuildSucceeded`` () =
+let ``build skip waits for BatchChecked covering all changed test files before emitting BuildSucceeded`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
 
@@ -389,13 +379,14 @@ let ``build skip waits for FileChecked of all changed test files before emitting
 
     host.EmitFileChanged(SourceChanged [ "/tmp/tests/MyTests/A.fs"; "/tmp/tests/MyTests/B.fs" ])
 
-    // First FileChecked: still missing B.fs, build must NOT have completed yet.
-    host.EmitFileChecked(fakeFileCheckResult "/tmp/tests/MyTests/A.fs")
+    // First BatchChecked covers only A — B is still expected, so the wait holds.
+    host.EmitBatchChecked(fakeBatchChecked [ "/tmp/tests/MyTests/A.fs" ])
     Threading.Thread.Sleep(150)
     test <@ getBuild () = None @>
 
-    // Second FileChecked: now both files seen, BuildSucceeded should fire.
-    host.EmitFileChecked(fakeFileCheckResult "/tmp/tests/MyTests/B.fs")
+    // Second BatchChecked covers both files (including A again) — subset
+    // satisfied, BuildSucceeded fires.
+    host.EmitBatchChecked(fakeBatchChecked [ "/tmp/tests/MyTests/A.fs"; "/tmp/tests/MyTests/B.fs" ])
     waitUntil (fun () -> (getBuild ()).IsSome) 5000
     test <@ getBuild () = Some BuildSucceeded @>
 
@@ -697,13 +688,13 @@ let ``BuildPlugin cache key matches between FileChanged and Custom BuildDone`` (
     test <@ fileKey = doneKey @>
 
 [<Fact(Timeout = 15000)>]
-let ``BuildPlugin cache key returns None for FileChecked events`` () =
-    // FileChecked events use a different composite key (File = Some x) so they
-    // would always miss if looked up; returning None skips the cache entirely.
+let ``BuildPlugin cache key returns None for BatchChecked events`` () =
+    // BatchChecked is a state trigger (drains WaitingForBatchPhase), not a
+    // cache trigger; returning None skips the cache for it.
     let handler = BuildPlugin.create "echo" "ok" [] (ProjectGraph()) [] None [] None
     let cacheKeyFn = handler.CacheKey.Value
-    let checkedEvt = FileChecked(fakeFileCheckResult "/tmp/Foo.fs")
-    test <@ cacheKeyFn checkedEvt = None @>
+    let batchEvt = PluginEvent.BatchChecked(fakeBatchChecked [ "/tmp/Foo.fs" ])
+    test <@ cacheKeyFn batchEvt = None @>
 
 [<Fact(Timeout = 15000)>]
 let ``BuildPlugin cache key reflects build command`` () =
@@ -1036,13 +1027,13 @@ let ``template build honors timeoutSec and surfaces TimedOut`` () =
             | _ -> false
         @>
 
-// --- WaitingForFcs phase: interruption + merge branches ---
+// --- WaitingForBatch phase: interruption + merge branches ---
 
 [<Fact(Timeout = 30000)>]
-let ``WaitingForFcs interrupted by ProjectChanged starts a real build`` () =
-    // While waiting for FCS to confirm a test-only change, a ProjectChanged
-    // event must abandon the wait and trigger handleProjectChanged → startBuild.
-    // Covers BuildPlugin line 578-579 (ProjectChanged inside WaitingForFcsPhase).
+let ``WaitingForBatch interrupted by ProjectChanged starts a real build`` () =
+    // While waiting for the next BatchChecked covering a test-only change, a
+    // ProjectChanged event must abandon the wait and trigger
+    // handleProjectChanged → startBuild.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
 
@@ -1060,7 +1051,7 @@ let ``WaitingForFcs interrupted by ProjectChanged starts a real build`` () =
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
-    // Test-files-only → enters WaitingForFcsPhase.
+    // Test-files-only → enters WaitingForBatchPhase.
     host.EmitFileChanged(SourceChanged [ "/tmp/tests/MyTests/Tests.fs" ])
     Threading.Thread.Sleep(150)
     test <@ getBuild () = None @>
@@ -1072,11 +1063,10 @@ let ``WaitingForFcs interrupted by ProjectChanged starts a real build`` () =
     test <@ getBuild () = Some BuildSucceeded @>
 
 [<Fact(Timeout = 30000)>]
-let ``WaitingForFcs merges additional test-file changes into the awaiting set`` () =
-    // While in WaitingForFcsPhase, another test-only SourceChanged must merge
-    // into the awaiting set (not start a build, not emit BuildSucceeded yet).
-    // Covers BuildPlugin lines 580-588 (test-only branch of FileChanged
-    // SourceChanged within WaitingForFcsPhase).
+let ``WaitingForBatch merges additional test-file changes into the expecting set`` () =
+    // While in WaitingForBatchPhase, another test-only SourceChanged must
+    // merge into the expecting set (not start a build, not emit BuildSucceeded
+    // until a BatchChecked covers the merged set).
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
 
@@ -1097,26 +1087,26 @@ let ``WaitingForFcs merges additional test-file changes into the awaiting set`` 
     Threading.Thread.Sleep(100)
     test <@ getBuild () = None @>
 
-    // Second test-only change merges into awaiting set.
+    // Second test-only change merges into expecting set.
     host.EmitFileChanged(SourceChanged [ "/tmp/tests/MyTests/B.fs" ])
     Threading.Thread.Sleep(100)
     test <@ getBuild () = None @>
 
-    // FCS confirming A alone is not enough — B is still awaited.
-    host.EmitFileChecked(fakeFileCheckResult "/tmp/tests/MyTests/A.fs")
+    // BatchChecked covering only A is not enough — B is still expected.
+    host.EmitBatchChecked(fakeBatchChecked [ "/tmp/tests/MyTests/A.fs" ])
     Threading.Thread.Sleep(150)
     test <@ getBuild () = None @>
 
-    // Confirming B drains the set → BuildSucceeded fires.
-    host.EmitFileChecked(fakeFileCheckResult "/tmp/tests/MyTests/B.fs")
+    // BatchChecked covering both → subset satisfied → BuildSucceeded fires.
+    host.EmitBatchChecked(fakeBatchChecked [ "/tmp/tests/MyTests/A.fs"; "/tmp/tests/MyTests/B.fs" ])
     waitUntil (fun () -> (getBuild ()).IsSome) 20000
     test <@ getBuild () = Some BuildSucceeded @>
 
 [<Fact(Timeout = 30000)>]
-let ``WaitingForFcs with non-test SourceChanged abandons the wait and runs a build`` () =
-    // While in WaitingForFcsPhase, a SourceChanged that includes a non-test
-    // file must take the handleSourceChanged branch (line 590) and start a
-    // real build instead of merging into the awaiting set.
+let ``WaitingForBatch with non-test SourceChanged abandons the wait and runs a build`` () =
+    // While in WaitingForBatchPhase, a SourceChanged that includes a non-test
+    // file must take the handleSourceChanged branch and start a real build
+    // instead of merging into the expecting set.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
     let (getBuild, recorder) = buildRecorder ()
 
@@ -1140,7 +1130,7 @@ let ``WaitingForFcs with non-test SourceChanged abandons the wait and runs a bui
     host.RegisterHandler(recorder)
     host.RegisterHandler(handler)
 
-    // Test-files-only → WaitingForFcsPhase.
+    // Test-files-only → WaitingForBatchPhase.
     host.EmitFileChanged(SourceChanged [ "/tmp/tests/MyTests/A.fs" ])
     Threading.Thread.Sleep(100)
     test <@ getBuild () = None @>

@@ -62,7 +62,6 @@ let private makeFakePlugin (duringRun: PluginCtx<unit> -> PluginHost -> unit) (h
       Commands = []
       Subscriptions = Set.ofList [ SubscribeFileChanged ]
       CacheKey = None
-      RequireWarmStart = false
       Teardown = None }
 
 [<Fact(Timeout = 15000)>]
@@ -150,7 +149,6 @@ let ``renderer during running phase shows 3 subtasks in verbose mode`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)

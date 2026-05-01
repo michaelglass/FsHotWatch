@@ -442,7 +442,6 @@ let ``plugin skips Update on cache hit and replays errors`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChecked ]
           CacheKey = Some(fun _ -> Some(hash "commit-abc"))
-          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -484,7 +483,6 @@ let ``plugin stores result on cache miss then hits on second event`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChecked ]
           CacheKey = Some(fun _ -> Some(hash "commit-xyz"))
-          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
@@ -521,7 +519,6 @@ let ``plugin runs Update when cache key changes`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChecked ]
           CacheKey = Some(fun _ -> Some(hash currentCommit))
-          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(handler)
