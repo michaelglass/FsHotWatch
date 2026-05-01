@@ -272,7 +272,7 @@ let ``LintPlugin cache key is stable across runs for same file content`` () =
     let handler = FsHotWatch.Lint.LintPlugin.create None None None
 
     let mkResult (file: string) (source: string) : FileCheckResult =
-        { File = file
+        { File = AbsFilePath.create file
           Source = source
           ParseResults = Unchecked.defaultof<_>
           CheckResults = ParseOnly
@@ -307,7 +307,7 @@ let ``LintPlugin cache key reflects config file content`` () =
         let handler1 = FsHotWatch.Lint.LintPlugin.create (Some configPath) None None
 
         let mkResult source : FileCheckResult =
-            { File = "/src/Foo.fs"
+            { File = AbsFilePath.create "/src/Foo.fs"
               Source = source
               ParseResults = Unchecked.defaultof<_>
               CheckResults = ParseOnly
@@ -336,7 +336,7 @@ let ``§1: LintPlugin cache key reflects FCS check signature for ParseOnly vs Fu
     let handler = FsHotWatch.Lint.LintPlugin.create None None None
 
     let mkResult (file: string) (source: string) (state: FileCheckState) : FileCheckResult =
-        { File = file
+        { File = AbsFilePath.create file
           Source = source
           ParseResults = Unchecked.defaultof<_>
           CheckResults = state
@@ -365,7 +365,7 @@ let ``LintPlugin cache key uses missing-config marker when config path doesn't e
     let h2 = FsHotWatch.Lint.LintPlugin.create None None None
 
     let mkResult () : FileCheckResult =
-        { File = "/src/Foo.fs"
+        { File = AbsFilePath.create "/src/Foo.fs"
           Source = "let x = 1"
           ParseResults = Unchecked.defaultof<_>
           CheckResults = ParseOnly

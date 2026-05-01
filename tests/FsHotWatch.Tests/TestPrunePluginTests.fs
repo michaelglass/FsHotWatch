@@ -816,7 +816,7 @@ let private emitFileAndWait
         File.WriteAllText(filePath, source)
         let! projOptions = getScriptOptions checker filePath source
         pipeline.RegisterProject(filePath, projOptions)
-        let! result = pipeline.CheckFile(filePath)
+        let! result = pipeline.CheckFile(AbsFilePath.create filePath)
 
         match result with
         | Some r -> host.EmitFileChecked(r)
@@ -956,7 +956,8 @@ let beta () = ()
 
         pipeline.RegisterProject(testsFile, projOptions)
 
-        let result = pipeline.CheckFile(testsFile) |> Async.RunSynchronously
+        let result =
+            pipeline.CheckFile(AbsFilePath.create testsFile) |> Async.RunSynchronously
 
         match result with
         | Some r -> host.EmitFileChecked(r)
@@ -1043,7 +1044,8 @@ let computeTest () =
         pipeline.RegisterProject(libFile, projOptions)
 
         // Initial index: both files analysed, edges written to DB.
-        let libResult = pipeline.CheckFile(libFile) |> Async.RunSynchronously
+        let libResult =
+            pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously
 
         match libResult with
         | Some r -> host.EmitFileChecked(r)
@@ -1058,7 +1060,8 @@ let computeTest () =
                 | None -> false)
             5000
 
-        let testsResult = pipeline.CheckFile(testsFile) |> Async.RunSynchronously
+        let testsResult =
+            pipeline.CheckFile(AbsFilePath.create testsFile) |> Async.RunSynchronously
 
         match testsResult with
         | Some r -> host.EmitFileChecked(r)
@@ -1091,7 +1094,8 @@ let compute (x: int) = x + 2
 
         File.WriteAllText(libFile, libSource2)
 
-        let libResult2 = pipeline.CheckFile(libFile) |> Async.RunSynchronously
+        let libResult2 =
+            pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously
 
         match libResult2 with
         | Some r -> host.EmitFileChecked(r)
@@ -1202,7 +1206,8 @@ let testOtherStuff () =
         pipeline.RegisterProject(libFile, projOptions)
 
         // Emit lib file
-        let libResult = pipeline.CheckFile(libFile) |> Async.RunSynchronously
+        let libResult =
+            pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously
 
         match libResult with
         | Some r -> host.EmitFileChecked(r)
@@ -1219,7 +1224,8 @@ let testOtherStuff () =
             5000
 
         // Emit tests file
-        let testsResult = pipeline.CheckFile(testsFile) |> Async.RunSynchronously
+        let testsResult =
+            pipeline.CheckFile(AbsFilePath.create testsFile) |> Async.RunSynchronously
 
         match testsResult with
         | Some r -> host.EmitFileChecked(r)
@@ -1254,7 +1260,8 @@ let validate (cfg: Config) = cfg.Value.Length > 0
 
         File.WriteAllText(libFile, libSource2)
 
-        let libResult2 = pipeline.CheckFile(libFile) |> Async.RunSynchronously
+        let libResult2 =
+            pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously
 
         match libResult2 with
         | Some r -> host.EmitFileChecked(r)
@@ -1476,11 +1483,11 @@ let lazyComputeTest () =
         // Seed the DB with the initial baseline by running a FileChecked +
         // BuildCompleted cycle (this is the only path that flushes pending
         // analysis to the DB).
-        match pipeline.CheckFile(libFile) |> Async.RunSynchronously with
+        match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith "lib CheckFile failed"
 
-        match pipeline.CheckFile(testsFile) |> Async.RunSynchronously with
+        match pipeline.CheckFile(AbsFilePath.create testsFile) |> Async.RunSynchronously with
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith "tests CheckFile failed"
 
@@ -1500,7 +1507,7 @@ let compute (x: int) = x + 2
 
         File.WriteAllText(libFile, libSource2)
 
-        match pipeline.CheckFile(libFile) |> Async.RunSynchronously with
+        match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith "lib CheckFile 2 failed"
 
@@ -1635,7 +1642,7 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
         // --- Phase 1: comment-only change should NOT add file to ChangedFiles ---
         File.WriteAllText(filePath, commentOnlySource)
 
-        match pipeline.CheckFile(filePath) |> Async.RunSynchronously with
+        match pipeline.CheckFile(AbsFilePath.create filePath) |> Async.RunSynchronously with
         | None -> Assert.Fail("FCS failed to check comment-only source")
         | Some result -> host.EmitFileChecked(result)
 
@@ -1649,7 +1656,7 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
         // --- Phase 2: AST change should add file to ChangedFiles ---
         File.WriteAllText(filePath, astChangedSource)
 
-        match pipeline.CheckFile(filePath) |> Async.RunSynchronously with
+        match pipeline.CheckFile(AbsFilePath.create filePath) |> Async.RunSynchronously with
         | None -> Assert.Fail("FCS failed to check AST-changed source")
         | Some result -> host.EmitFileChecked(result)
 

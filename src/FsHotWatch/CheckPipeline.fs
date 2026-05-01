@@ -59,19 +59,21 @@ type CheckPipeline
     let keyProvider =
         defaultArg cacheKeyProvider (TimestampCacheKeyProvider() :> ICacheKeyProvider)
 
-    let projectOptionsByFile = ConcurrentDictionary<string, FSharpProjectOptions list>()
+    let projectOptionsByFile =
+        ConcurrentDictionary<AbsFilePath, FSharpProjectOptions list>()
+
     let projectOptionsByProject = ConcurrentDictionary<string, FSharpProjectOptions>()
     let projectOptionsHashCache = ConcurrentDictionary<string, string>()
-    let fileTokens = ConcurrentDictionary<string, CancellationTokenSource>()
+    let fileTokens = ConcurrentDictionary<AbsFilePath, CancellationTokenSource>()
     let mutable nextVersion = 0L
 
-    let makeCacheKeyFast (filePath: string) (options: FSharpProjectOptions) : CacheKey =
+    let makeCacheKeyFast (filePath: AbsFilePath) (options: FSharpProjectOptions) : CacheKey =
         let optionsHash =
             match projectOptionsHashCache.TryGetValue(options.ProjectFileName) with
             | true, hash -> hash
             | false, _ -> getProjectOptionsHash options
 
-        { FileHash = ContentHash.create (keyProvider.GetFileHash(filePath))
+        { FileHash = ContentHash.create (keyProvider.GetFileHash(AbsFilePath.value filePath))
           ProjectOptionsHash = ContentHash.create optionsHash }
 
     member _.NextVersion() = Interlocked.Increment(&nextVersion)
@@ -88,18 +90,16 @@ type CheckPipeline
         cacheBackend |> Option.iter (fun b -> b.Clear())
 
     /// Invalidate the cache entry for a file so the next CheckFile call re-runs FCS.
-    member _.InvalidateFile(filePath: string) =
-        let absPath = System.IO.Path.GetFullPath(filePath)
-
+    member _.InvalidateFile(filePath: AbsFilePath) =
         match cacheBackend with
         | Some backend ->
-            match projectOptionsByFile.TryGetValue(absPath) with
+            match projectOptionsByFile.TryGetValue(filePath) with
             | true, optionsList ->
                 for options in optionsList do
-                    let key = makeCacheKeyFast absPath options
+                    let key = makeCacheKeyFast filePath options
                     backend.Invalidate(key)
 
-                Logging.debug "check" $"Cache invalidated: %s{System.IO.Path.GetFileName(absPath)}"
+                Logging.debug "check" $"Cache invalidated: %s{System.IO.Path.GetFileName(AbsFilePath.value filePath)}"
             | _ -> ()
         | None -> ()
 
@@ -117,7 +117,7 @@ type CheckPipeline
 
         for sourceFile in filteredOptions.SourceFiles do
             projectOptionsByFile.AddOrUpdate(
-                sourceFile,
+                AbsFilePath.create sourceFile,
                 [ filteredOptions ],
                 fun _ existing ->
                     if
@@ -146,7 +146,7 @@ type CheckPipeline
         projectOptionsByProject.Keys |> Seq.toList
 
     /// Get all registered source files across all projects.
-    member _.GetAllRegisteredFiles() : string list = projectOptionsByFile.Keys |> Seq.toList
+    member _.GetAllRegisteredFiles() : AbsFilePath list = projectOptionsByFile.Keys |> Seq.toList
 
     /// Cancel any in-flight check for the given file and return a new CancellationTokenSource.
     /// If a caller token is provided, the returned CTS is linked to it so that daemon-level
@@ -159,7 +159,7 @@ type CheckPipeline
     /// check has already emitted the fresh one — plugins (FCS error ledger, Lint,
     /// Analyzers) would observe newer-then-older ordering and re-publish stale
     /// errors.
-    member _.CancelPreviousCheck(filePath: string, ?ct: CancellationToken) : CancellationTokenSource =
+    member _.CancelPreviousCheck(filePath: AbsFilePath, ?ct: CancellationToken) : CancellationTokenSource =
         let ct = defaultArg ct CancellationToken.None
 
         let newCts =
@@ -211,7 +211,7 @@ type CheckPipeline
 
                     return
                         Some
-                            { File = absPath
+                            { File = AbsFilePath.create absPath
                               Source = source
                               ParseResults = parseResults
                               CheckResults = FullCheck checkResults
@@ -220,7 +220,7 @@ type CheckPipeline
                 | FSharpCheckFileAnswer.Aborted ->
                     return
                         Some
-                            { File = absPath
+                            { File = AbsFilePath.create absPath
                               Source = source
                               ParseResults = parseResults
                               CheckResults = ParseOnly
@@ -240,7 +240,8 @@ type CheckPipeline
             ct.ThrowIfCancellationRequested()
 
             let cacheKey =
-                cacheBackend |> Option.map (fun _ -> makeCacheKeyFast absPath options)
+                cacheBackend
+                |> Option.map (fun _ -> makeCacheKeyFast (AbsFilePath.create absPath) options)
 
             match tryGetCachedFullCheck cacheBackend cacheKey with
             | Some cached ->
@@ -263,17 +264,17 @@ type CheckPipeline
     /// Check a single file using the warm checker. Returns FileCheckResult if successful.
     /// Cancels any previous in-flight check for the same file before starting.
     /// For files in multiple projects, uses the first registered project's options.
-    member this.CheckFile(filePath: string, ?ct: CancellationToken) : Async<FileCheckResult option> =
+    member this.CheckFile(filePath: AbsFilePath, ?ct: CancellationToken) : Async<FileCheckResult option> =
         async {
             let ct = defaultArg ct CancellationToken.None
-            let absPath = Path.GetFullPath(filePath)
-            let fileCts = this.CancelPreviousCheck(absPath, ct)
+            let absPath = AbsFilePath.value filePath
+            let fileCts = this.CancelPreviousCheck(filePath, ct)
             let fileToken = fileCts.Token
 
             try
                 fileToken.ThrowIfCancellationRequested()
 
-                match projectOptionsByFile.TryGetValue(absPath) with
+                match projectOptionsByFile.TryGetValue(filePath) with
                 | false, _ ->
                     Logging.debug "check" $"No project options for: %s{absPath}"
                     return None
@@ -289,12 +290,12 @@ type CheckPipeline
     /// Check a file with explicit project options.
     /// Use this for shared files that need checking in multiple project contexts.
     member this.CheckFileWithOptions
-        (filePath: string, options: FSharpProjectOptions, ?ct: CancellationToken)
+        (filePath: AbsFilePath, options: FSharpProjectOptions, ?ct: CancellationToken)
         : Async<FileCheckResult option> =
         async {
             let ct = defaultArg ct CancellationToken.None
-            let absPath = Path.GetFullPath(filePath)
-            let fileCts = this.CancelPreviousCheck(absPath, ct)
+            let absPath = AbsFilePath.value filePath
+            let fileCts = this.CancelPreviousCheck(filePath, ct)
             let fileToken = fileCts.Token
 
             try
@@ -317,7 +318,7 @@ type CheckPipeline
 
                 try
                     for sourceFile in options.SourceFiles do
-                        let! result = this.CheckFile(sourceFile, ?ct = ct)
+                        let! result = this.CheckFile(AbsFilePath.create sourceFile, ?ct = ct)
 
                         match result with
                         | Some r -> results[sourceFile] <- r

@@ -117,7 +117,8 @@ let ``all plugins receive events when checking a file`` () =
     host.RegisterHandler(analyzers)
 
     // Check the file via the pipeline
-    let result = pipeline.CheckFile(sourceFile) |> Async.RunSynchronously
+    let result =
+        pipeline.CheckFile(AbsFilePath.create sourceFile) |> Async.RunSynchronously
 
     // Emit the check result to plugins (triggers lint, analyzers, test-prune)
     match result with
@@ -210,7 +211,8 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let pipeline = CheckPipeline(checker)
     pipeline.RegisterProject("FsHotWatch", projOptions)
 
-    let result = pipeline.CheckFile(sourceFile) |> Async.RunSynchronously
+    let result =
+        pipeline.CheckFile(AbsFilePath.create sourceFile) |> Async.RunSynchronously
 
     // Subscribe to the plugin's status before emitting so the transition to
     // terminal state can't race past us on slow CI (G-Research analyzer warm-up).
@@ -267,7 +269,10 @@ let private checkTempFile (checker: FSharpChecker) (filePath: string) =
 
     let pipeline = CheckPipeline(checker)
     pipeline.RegisterProject("TempProject", projOptions)
-    let result = pipeline.CheckFile(filePath) |> Async.RunSynchronously
+
+    let result =
+        pipeline.CheckFile(AbsFilePath.create filePath) |> Async.RunSynchronously
+
     result
 
 // ---------------------------------------------------------------------------
@@ -666,7 +671,9 @@ let ``LintPlugin reports no warnings on clean code`` () =
 
     let pipeline = CheckPipeline(checker)
     pipeline.RegisterProject("FsHotWatch", projOptions)
-    let result = pipeline.CheckFile(sourceFile) |> Async.RunSynchronously
+
+    let result =
+        pipeline.CheckFile(AbsFilePath.create sourceFile) |> Async.RunSynchronously
 
     match result with
     | Some checkResult ->
@@ -755,7 +762,9 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
 
         let pipeline = CheckPipeline(checker)
         pipeline.RegisterProject("FsHotWatch", projOptions)
-        let result = pipeline.CheckFile(sourceFile) |> Async.RunSynchronously
+
+        let result =
+            pipeline.CheckFile(AbsFilePath.create sourceFile) |> Async.RunSynchronously
 
         match result with
         | Some checkResult ->
@@ -797,7 +806,9 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
 
         let pipeline = CheckPipeline(checker)
         pipeline.RegisterProject("FsHotWatch", projOptions)
-        let result = pipeline.CheckFile(sourceFile) |> Async.RunSynchronously
+
+        let result =
+            pipeline.CheckFile(AbsFilePath.create sourceFile) |> Async.RunSynchronously
 
         match result with
         | Some checkResult ->
@@ -1485,11 +1496,14 @@ let ``file cache enables fast cold-start check`` () =
         pipeline1.RegisterProject("FsHotWatch", projOptions)
 
         let sw1 = Stopwatch.StartNew()
-        let result1 = pipeline1.CheckFile(sourceFile) |> Async.RunSynchronously
+
+        let result1 =
+            pipeline1.CheckFile(AbsFilePath.create sourceFile) |> Async.RunSynchronously
+
         sw1.Stop()
 
         test <@ result1.IsSome @>
-        test <@ result1.Value.File = Path.GetFullPath(sourceFile) @>
+        test <@ AbsFilePath.value result1.Value.File = Path.GetFullPath(sourceFile) @>
 
         // Verify cache file was written
         let cacheFiles = Directory.GetFiles(cacheDir, "*.json")
@@ -1502,7 +1516,8 @@ let ``file cache enables fast cold-start check`` () =
         let pipeline2 = CheckPipeline(checker, cacheBackend = backend2)
         pipeline2.RegisterProject("FsHotWatch", projOptions)
 
-        let result2 = pipeline2.CheckFile(sourceFile) |> Async.RunSynchronously
+        let result2 =
+            pipeline2.CheckFile(AbsFilePath.create sourceFile) |> Async.RunSynchronously
 
         // Partial cache hit triggers FCS re-check — result has real CheckResults
         test <@ result2.IsSome @>
@@ -1540,7 +1555,10 @@ let ``cached check returns None because partial FCS results are unusable by plug
         let backend1 = FileCheckCache(cacheDir) :> ICheckCacheBackend
         let pipeline1 = CheckPipeline(checker, cacheBackend = backend1)
         pipeline1.RegisterProject("FsHotWatch", projOptions)
-        let warm = pipeline1.CheckFile(sourceFile) |> Async.RunSynchronously
+
+        let warm =
+            pipeline1.CheckFile(AbsFilePath.create sourceFile) |> Async.RunSynchronously
+
         test <@ warm.IsSome @>
 
         // Verify cache file was written
@@ -1552,7 +1570,9 @@ let ``cached check returns None because partial FCS results are unusable by plug
         let backend2 = FileCheckCache(cacheDir) :> ICheckCacheBackend
         let pipeline2 = CheckPipeline(checker, cacheBackend = backend2)
         pipeline2.RegisterProject("FsHotWatch", projOptions)
-        let cached = pipeline2.CheckFile(sourceFile) |> Async.RunSynchronously
+
+        let cached =
+            pipeline2.CheckFile(AbsFilePath.create sourceFile) |> Async.RunSynchronously
 
         test <@ cached.IsSome @>
 
@@ -1759,7 +1779,7 @@ let ``§1 regression: Bar's fcsCheckSignature changes when Foo's signature break
         )
 
         let result1 =
-            pipeline.CheckFile(barPath)
+            pipeline.CheckFile(AbsFilePath.create barPath)
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "first CheckFile returned None")
 
@@ -1769,7 +1789,7 @@ let ``§1 regression: Bar's fcsCheckSignature changes when Foo's signature break
         File.WriteAllText(fooPath, "module Foo\nlet unrelated () = 0\n")
 
         let result2 =
-            pipeline.CheckFile(barPath)
+            pipeline.CheckFile(AbsFilePath.create barPath)
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "second CheckFile returned None")
 
