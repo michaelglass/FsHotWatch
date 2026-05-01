@@ -83,6 +83,7 @@ type PluginCtx<'Msg> =
 type SubscribedEvent =
     | SubscribeFileChanged
     | SubscribeFileChecked
+    | SubscribeBatchChecked
     | SubscribeBuildCompleted
     | SubscribeTestRunStarted
     | SubscribeTestProgress
@@ -131,6 +132,7 @@ type PluginHandler<'State, 'Msg> =
 type PluginDispatchEvent =
     | DispatchFileChanged of FileChangeKind
     | DispatchFileChecked of FileCheckResult
+    | DispatchBatchChecked of BatchChecked
     | DispatchBuildCompleted of BuildResult
     | DispatchTestRunStarted of TestRunStarted
     | DispatchTestProgress of TestProgress
@@ -507,6 +509,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
         match event with
         | DispatchFileChanged c when has SubscribeFileChanged -> post (FileChanged c)
         | DispatchFileChecked r when has SubscribeFileChecked -> post (FileChecked r)
+        | DispatchBatchChecked r when has SubscribeBatchChecked -> post (BatchChecked r)
         | DispatchBuildCompleted r when has SubscribeBuildCompleted -> post (BuildCompleted r)
         | DispatchTestRunStarted r when has SubscribeTestRunStarted -> post (TestRunStarted r)
         | DispatchTestProgress r when has SubscribeTestProgress -> post (TestProgress r)
