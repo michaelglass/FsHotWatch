@@ -1,6 +1,8 @@
 module FsHotWatch.Tests.IpcTests
 
 open System
+open System.IO.Pipes
+open System.Text
 open System.Threading
 open System.Threading.Tasks
 open Xunit
@@ -864,3 +866,87 @@ let ``repeated scan force via IPC increments generation each time`` () =
 
         if System.IO.Directory.Exists tmpDir then
             System.IO.Directory.Delete(tmpDir, true)
+
+// --- Listener-wedge survival under malformed client traffic ---
+//
+// Hypothesis (from rpc-overflow investigation): when a client connection
+// triggers an exception inside StreamJsonRpc's read path (e.g. an
+// `OverflowException` arising from a malformed/oversized `Content-Length`
+// header), the daemon-side `IpcServer.acceptOne` *should* dispose just that
+// connection and let the outer accept loop spawn a replacement listener,
+// keeping subsequent well-formed RPC calls working.
+//
+// If the server instead got wedged after one bad message, every subsequent
+// CLI invocation would surface the same error — which is what the
+// Intelligence Phase D stress test reported. This test exercises the
+// recovery path deterministically without a 7.8 GB daemon.
+
+/// Connect raw to the named pipe, write garbage, close. Returns true if the
+/// raw connect/write/close succeeded — the *server's* response is whatever
+/// the rpc layer does with our malformed bytes.
+let private writeMalformedFrame (pipeName: string) (payload: byte[]) : bool =
+    try
+        use pipeClient =
+            new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous)
+
+        pipeClient.ConnectAsync(2000).Wait()
+        pipeClient.Write(payload, 0, payload.Length)
+        pipeClient.Flush()
+        true
+    with _ ->
+        false
+
+[<Fact(Timeout = 30000)>]
+let ``server keeps accepting connections after a malformed-frame client`` () =
+    let pipeName = $"fshw-wedge-{Guid.NewGuid():N}"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let cts = new CancellationTokenSource()
+
+    let handler =
+        { Name = PluginName.create "wedge-test"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands = []
+          Subscriptions = PluginSubscriptions.none
+          CacheKey = None
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+
+    let serverTask =
+        Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+
+    waitForServer pipeName
+
+    try
+        // Sanity: server is up and answering well-formed traffic.
+        let beforeStatus = IpcClient.getStatus pipeName |> Async.RunSynchronously
+        test <@ beforeStatus.Contains("wedge-test") @>
+
+        // Hit the server with several rounds of garbage, mimicking the kinds
+        // of frames StreamJsonRpc might trip an OverflowException on:
+        //   1. Content-Length larger than fits in Int32 → integer-parse OF.
+        //   2. Random binary noise (no header at all).
+        //   3. Truncated header with no body.
+        let malformedFrames =
+            [ Encoding.ASCII.GetBytes("Content-Length: 999999999999999\r\n\r\n{}")
+              [| 0xFFuy; 0xFEuy; 0x00uy; 0x01uy; 0x02uy; 0x03uy |]
+              Encoding.ASCII.GetBytes("Content-Length: -1\r\n") ]
+
+        for frame in malformedFrames do
+            writeMalformedFrame pipeName frame |> ignore
+            // Give the server a moment to react / dispose.
+            Thread.Sleep(50)
+
+        // The whole point: a well-formed RPC after the garbage MUST still
+        // succeed. If the listener was wedged we'd time out or get an
+        // exception here.
+        let afterStatus = IpcClient.getStatus pipeName |> Async.RunSynchronously
+        test <@ afterStatus.Contains("wedge-test") @>
+    finally
+        cts.Cancel()
+
+        try
+            serverTask.Wait(TimeSpan.FromSeconds(3.0)) |> ignore
+        with _ ->
+            ()
