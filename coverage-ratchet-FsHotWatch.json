@@ -74,6 +74,19 @@
         "platform": "linux"
       }
     ],
+    "ContentDedup.fs": [
+      {
+        "line": 78,
+        "branch": 33,
+        "reason": "extracted from Watcher.fs 2026-05-01; directory-read IOException test is best-effort on macOS so UAE/IO catch branches may not register",
+        "platform": "macos"
+      },
+      {
+        "line": 78,
+        "branch": 33,
+        "platform": "linux"
+      }
+    ],
     "CoverageMerge.fs": [
       {
         "line": 97,
