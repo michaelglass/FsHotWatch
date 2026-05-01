@@ -775,8 +775,12 @@ let ``plugin with both pattern and afterTests fires on file change`` () =
         create (FsHotWatch.PluginFramework.PluginName.create "combined-a") trigger "echo" "hi" "/tmp" None
 
     host.RegisterHandler(handler)
+    // Subscribe-before-emit: avoids the polling race in waitForTerminalStatus where
+    // a slow `echo` fork+exec under CI load can exceed the 5s polling budget while
+    // the Fact(Timeout=20000) watchdog still has 15s to spare.
+    let completion = beginAwaitTerminal host "combined-a"
     host.EmitFileChanged(SourceChanged [ "coverage.ratchet.json" ])
-    waitForTerminalStatus host "combined-a" 5000
+    completion.Wait(TimeSpan.FromSeconds 15.0) |> ignore
 
     test
         <@
@@ -797,8 +801,12 @@ let ``plugin with both pattern and afterTests fires on test completion`` () =
         create (FsHotWatch.PluginFramework.PluginName.create "combined-b") trigger "echo" "hi" "/tmp" None
 
     host.RegisterHandler(handler)
+    // Subscribe-before-emit: see sibling test above. Observed 5081ms timeout under
+    // CI load when previous waitForTerminalStatus polling pattern raced the Run→
+    // Completed transition.
+    let completion = beginAwaitTerminal host "combined-b"
     emitRunCompleted host [ "proj-a", TestsPassed("ok", false, TimeSpan.Zero) ]
-    waitForTerminalStatus host "combined-b" 5000
+    completion.Wait(TimeSpan.FromSeconds 15.0) |> ignore
 
     test
         <@
