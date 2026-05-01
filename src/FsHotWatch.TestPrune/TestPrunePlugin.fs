@@ -5,6 +5,7 @@ open System.Diagnostics
 open System.IO
 open System.Text.Json
 open System.Threading
+open FSharp.Compiler.Diagnostics
 open FsHotWatch.Events
 open FsHotWatch
 open FsHotWatch.Logging
@@ -587,6 +588,32 @@ let private executeTests
         return testResults, started, completed
     }
 
+/// FCS cache-poisoning gate. A `FileChecked` whose underlying FCS result
+/// reports any Error-severity diagnostic is treated as untrustworthy: cold-
+/// start FCS sometimes returns "expected type X but here has type X" for
+/// files that compile cleanly once warm, and flushing those poisoned
+/// symbols would overwrite the prior good DB snapshot. Gating by severity
+/// (not message text) handles both the cold-start race and the user-broke-
+/// their-code case identically: in both, we hold the prior DB row instead
+/// of replacing it. `ParseOnly` (check aborted) is treated as "no observable
+/// errors" so the existing fall-through behaviour is preserved.
+let internal hasFcsErrors (state: FileCheckState) : bool =
+    match state with
+    | FullCheck cr ->
+        cr.Diagnostics
+        |> Array.exists (fun d -> d.Severity = FSharpDiagnosticSeverity.Error)
+    | ParseOnly -> false
+
+/// Count of Error-severity diagnostics — used only for the skip-log message
+/// so operators have a number to correlate against the FCS-error stream.
+let internal fcsErrorCount (state: FileCheckState) : int =
+    match state with
+    | FullCheck cr ->
+        cr.Diagnostics
+        |> Array.filter (fun d -> d.Severity = FSharpDiagnosticSeverity.Error)
+        |> Array.length
+    | ParseOnly -> 0
+
 /// Flush accumulated per-file analysis results to the DB in a single RebuildProjects
 /// call. Pure function: takes state, returns updated state.
 let private flushPendingAnalysis (db: Database) (state: TestPruneState) =
@@ -1014,101 +1041,126 @@ let create
                             else
                                 raw
 
-                        let! analysisResult =
-                            analyzeSource ctx.Checker fileStr result.Source result.ProjectOptions projectName
+                        // FCS cache-poisoning gate: skip symbol extraction whenever
+                        // FCS returned Error-severity diagnostics for this file.
+                        // Cold-start TcImports races emit ill-formed type-identity
+                        // errors that, if let through, overwrite a prior good DB
+                        // snapshot with partial/wrong symbols. By dropping the
+                        // FileChecked here we leave PendingAnalysis (and hence
+                        // the eventual flushPendingAnalysis → RebuildProjects)
+                        // untouched for this file — the prior DB rows survive.
+                        // Other (clean) files in the same scan/batch flush as
+                        // normal; only the poisoned file is held back.
+                        if hasFcsErrors result.CheckResults then
+                            let errCount = fcsErrorCount result.CheckResults
 
-                        match analysisResult with
-                        | Ok analysisResult ->
-                            let normalizedSymbols = normalizeSymbolPaths repoRoot analysisResult.Symbols
-
-                            let fileAnalysis =
-                                { Symbols = normalizedSymbols
-                                  Dependencies = analysisResult.Dependencies
-                                  TestMethods =
-                                    analysisResult.TestMethods
-                                    |> List.map (fun t -> { t with TestProject = projectName })
-                                  Attributes = analysisResult.Attributes
-                                  ParentLinks = analysisResult.ParentLinks
-                                  Diagnostics = analysisResult.Diagnostics }
-
-                            // Read stored symbols from the in-memory snapshot (populated after
-                            // each flush). Falls back to DB for warm starts where the snapshot
-                            // hasn't been populated yet.
-                            let storedSymbols =
-                                match Map.tryFind relPath state.SymbolSnapshot with
-                                | Some symbols -> symbols
-                                | None -> db.GetSymbolsInFile(relPath)
-
-                            // Accumulate per-project; flush on BuildCompleted.
-                            // Replace any prior analysis for this file to avoid double-counting
-                            // when a file is checked more than once before the flush (e.g. initial
-                            // scan followed by a file-change recheck).
-                            let existingForProject =
-                                state.PendingAnalysis |> Map.tryFind projectName |> Option.defaultValue []
-
-                            let filteredExisting =
-                                existingForProject
-                                |> List.filter (fun a ->
-                                    not (a.Symbols |> List.exists (fun s -> s.SourceFile = relPath)))
-
-                            let newPending =
-                                state.PendingAnalysis
-                                |> Map.add projectName (filteredExisting @ [ fileAnalysis ])
-
-                            let (changes, _events) = detectChanges normalizedSymbols storedSymbols
-                            let changedNames = changedSymbolNames changes
-
-                            Logging.info
+                            Logging.warn
                                 "test-prune"
-                                $"detectChanges for %s{relPath}: %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{normalizedSymbols.Length} current"
-
-                            let newChangedSymbols =
-                                if not changedNames.IsEmpty then
-                                    Logging.info "test-prune" $"Changed symbols: %A{changedNames}"
-                                    (state.ChangedSymbols @ changedNames) |> List.distinct
-                                else
-                                    state.ChangedSymbols
-
-                            // Only track file as changed if its AST actually changed.
-                            // Comment-only changes produce the same symbol hashes, so they
-                            // should not trigger extension-based tests (e.g. Falco routes).
-                            let newChangedFiles =
-                                if not changedNames.IsEmpty && not (state.ChangedFiles |> List.contains relPath) then
-                                    relPath :: state.ChangedFiles
-                                else
-                                    state.ChangedFiles
-
-                            // Update class→file mapping for test methods found in this file
-                            let newClassFiles =
-                                fileAnalysis.TestMethods
-                                |> List.fold (fun acc t -> Map.add t.TestClass fileStr acc) state.TestClassFiles
-
-                            // AffectedTests is no longer eagerly populated here. The
-                            // `affected-tests` IPC command computes it on demand from
-                            // state.ChangedSymbols against the current DB. AffectedTests
-                            // is set exclusively by flushAndQueryAffected on BuildCompleted
-                            // and consumed by runTestsWithImpact.
-                            let newState =
-                                { state with
-                                    ChangedFiles = newChangedFiles
-                                    PendingAnalysis = newPending
-                                    ChangedSymbols = newChangedSymbols
-                                    TestClassFiles = newClassFiles }
-
-                            // Keep the mutable snapshot in sync for the cache key function
-                            Volatile.Write(&changedSymbolsRef, newState.ChangedSymbols)
+                                $"skipping symbol-extract for %s{relPath}: FCS reported %d{errCount} error(s); preserving prior DB snapshot"
 
                             if isIdle then
                                 ctx.ReportStatus(Completed(DateTime.UtcNow))
 
-                            return newState
-                        | Error msg ->
-                            Logging.error "test-prune" $"Analysis failed for %s{relPath}: %s{msg}"
-
-                            if isIdle then
-                                ctx.ReportStatus(PluginStatus.Failed($"Analysis failed: %s{msg}", DateTime.UtcNow))
-
                             return state
+                        else
+
+                            let! analysisResult =
+                                analyzeSource ctx.Checker fileStr result.Source result.ProjectOptions projectName
+
+                            match analysisResult with
+                            | Ok analysisResult ->
+                                let normalizedSymbols = normalizeSymbolPaths repoRoot analysisResult.Symbols
+
+                                let fileAnalysis =
+                                    { Symbols = normalizedSymbols
+                                      Dependencies = analysisResult.Dependencies
+                                      TestMethods =
+                                        analysisResult.TestMethods
+                                        |> List.map (fun t -> { t with TestProject = projectName })
+                                      Attributes = analysisResult.Attributes
+                                      ParentLinks = analysisResult.ParentLinks
+                                      Diagnostics = analysisResult.Diagnostics }
+
+                                // Read stored symbols from the in-memory snapshot (populated after
+                                // each flush). Falls back to DB for warm starts where the snapshot
+                                // hasn't been populated yet.
+                                let storedSymbols =
+                                    match Map.tryFind relPath state.SymbolSnapshot with
+                                    | Some symbols -> symbols
+                                    | None -> db.GetSymbolsInFile(relPath)
+
+                                // Accumulate per-project; flush on BuildCompleted.
+                                // Replace any prior analysis for this file to avoid double-counting
+                                // when a file is checked more than once before the flush (e.g. initial
+                                // scan followed by a file-change recheck).
+                                let existingForProject =
+                                    state.PendingAnalysis |> Map.tryFind projectName |> Option.defaultValue []
+
+                                let filteredExisting =
+                                    existingForProject
+                                    |> List.filter (fun a ->
+                                        not (a.Symbols |> List.exists (fun s -> s.SourceFile = relPath)))
+
+                                let newPending =
+                                    state.PendingAnalysis
+                                    |> Map.add projectName (filteredExisting @ [ fileAnalysis ])
+
+                                let (changes, _events) = detectChanges normalizedSymbols storedSymbols
+                                let changedNames = changedSymbolNames changes
+
+                                Logging.info
+                                    "test-prune"
+                                    $"detectChanges for %s{relPath}: %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{normalizedSymbols.Length} current"
+
+                                let newChangedSymbols =
+                                    if not changedNames.IsEmpty then
+                                        Logging.info "test-prune" $"Changed symbols: %A{changedNames}"
+                                        (state.ChangedSymbols @ changedNames) |> List.distinct
+                                    else
+                                        state.ChangedSymbols
+
+                                // Only track file as changed if its AST actually changed.
+                                // Comment-only changes produce the same symbol hashes, so they
+                                // should not trigger extension-based tests (e.g. Falco routes).
+                                let newChangedFiles =
+                                    if
+                                        not changedNames.IsEmpty && not (state.ChangedFiles |> List.contains relPath)
+                                    then
+                                        relPath :: state.ChangedFiles
+                                    else
+                                        state.ChangedFiles
+
+                                // Update class→file mapping for test methods found in this file
+                                let newClassFiles =
+                                    fileAnalysis.TestMethods
+                                    |> List.fold (fun acc t -> Map.add t.TestClass fileStr acc) state.TestClassFiles
+
+                                // AffectedTests is no longer eagerly populated here. The
+                                // `affected-tests` IPC command computes it on demand from
+                                // state.ChangedSymbols against the current DB. AffectedTests
+                                // is set exclusively by flushAndQueryAffected on BuildCompleted
+                                // and consumed by runTestsWithImpact.
+                                let newState =
+                                    { state with
+                                        ChangedFiles = newChangedFiles
+                                        PendingAnalysis = newPending
+                                        ChangedSymbols = newChangedSymbols
+                                        TestClassFiles = newClassFiles }
+
+                                // Keep the mutable snapshot in sync for the cache key function
+                                Volatile.Write(&changedSymbolsRef, newState.ChangedSymbols)
+
+                                if isIdle then
+                                    ctx.ReportStatus(Completed(DateTime.UtcNow))
+
+                                return newState
+                            | Error msg ->
+                                Logging.error "test-prune" $"Analysis failed for %s{relPath}: %s{msg}"
+
+                                if isIdle then
+                                    ctx.ReportStatus(PluginStatus.Failed($"Analysis failed: %s{msg}", DateTime.UtcNow))
+
+                                return state
                     with ex ->
                         if isIdle then
                             ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
