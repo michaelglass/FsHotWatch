@@ -28,6 +28,18 @@ let fakeFileCheckResult (file: string) : FileCheckResult =
       ProjectOptions = Unchecked.defaultof<_>
       Version = 0L }
 
+/// Build a `BatchChecked` payload covering `files`, with deterministic
+/// timestamps + Generation = 1 — sufficient for unit tests that only care
+/// about the `Files` set the cohort signal carries.
+let fakeBatchChecked (files: string list) : BatchChecked =
+    let now = DateTime.UtcNow
+
+    { Trigger = BootScan
+      Files = files |> List.map AbsFilePath.create
+      Generation = 1L
+      StartedAt = now
+      CompletedAt = now }
+
 /// Spawn a redirected `sleep N` child for tests that need a long-lived but
 /// inert process (registry kill paths, daemon teardown checks).
 let startSleep (seconds: int) : Process =
