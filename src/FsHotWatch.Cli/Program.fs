@@ -221,28 +221,43 @@ let rec unwrapIpcException (ex: exn) : exn =
     | :? AggregateException as agg when agg.InnerException <> null -> unwrapIpcException agg.InnerException
     | _ -> ex
 
+/// Map an unwrapped IPC exception to a user-actionable hint, or None if the
+/// exception type isn't one we have a known recovery story for. Pure so it can
+/// be unit-tested without round-tripping through a real pipe.
+let ipcErrorHint (inner: exn) : string option =
+    match inner with
+    // StreamJsonRpc reads a Content-Length header then allocates a buffer of
+    // that size. A corrupted/garbage header (commonly: two daemons sharing the
+    // same pipe, or a leftover stale daemon from an older version) makes the
+    // length nonsensical, and the buffer alloc throws OutOfMemoryException —
+    // which is misleading because the machine isn't actually out of memory.
+    | :? OutOfMemoryException ->
+        Some
+            "The IPC pipe returned a corrupted message — usually caused by another \
+             daemon (possibly an older version) writing to the same pipe. Try: \
+             `dotnet fshw stop` then `dotnet fshw start`."
+    // Same pipe-corruption family as OOM, but a different .NET path: when the
+    // Content-Length parses to a value that overflows downstream Int32 arithmetic
+    // (or stream-position bookkeeping wraps on a long-running socket carrying
+    // huge payloads), StreamJsonRpc surfaces an OverflowException with
+    // "Arithmetic operation resulted in an overflow." Observed in production
+    // during the Intelligence stress test (fshw 0.10.0-stresstest4), where a
+    // daemon at ~7.8 GB RSS started returning malformed frames.
+    | :? OverflowException ->
+        Some
+            "The IPC pipe returned a corrupted or oversized message — usually a stale/leaky \
+             daemon. Try: `dotnet fshw stop` then `dotnet fshw start`. If it recurs, \
+             check `logs/daemon.log` for runaway memory growth."
+    | :? TimeoutException -> Some "Daemon did not respond in time. It may be busy or hung — check `logs/daemon.log`."
+    | _ -> None
+
 /// Wrap an IPC call with connection error handling.
 let private withIpc (action: unit -> int) : int =
     try
         action ()
     with ex ->
         let inner = unwrapIpcException ex
-
-        let hint =
-            match inner with
-            // StreamJsonRpc reads a Content-Length header then allocates a buffer of
-            // that size. A corrupted/garbage header (commonly: two daemons sharing the
-            // same pipe, or a leftover stale daemon from an older version) makes the
-            // length nonsensical, and the buffer alloc throws OutOfMemoryException —
-            // which is misleading because the machine isn't actually out of memory.
-            | :? OutOfMemoryException ->
-                Some
-                    "The IPC pipe returned a corrupted message — usually caused by another \
-                     daemon (possibly an older version) writing to the same pipe. Try: \
-                     `pkill -f FsHotWatch.Cli.dll` then `dotnet fshw start`."
-            | :? TimeoutException ->
-                Some "Daemon did not respond in time. It may be busy or hung — check `logs/daemon.log`."
-            | _ -> None
+        let hint = ipcErrorHint inner
 
         eprintfn "Could not connect to daemon: %s" inner.Message
 
