@@ -2425,3 +2425,335 @@ let ``cold-start BuildCompleted with unchanged state replays from task cache`` (
         // Cold start with unchanged state replays the cached run — the test
         // command (touch sentinel) must NOT have executed.
         test <@ not (File.Exists sentinel) @>)
+
+// =============================================================================
+// FCS cache-poisoning gate: don't flush symbols for files whose FCS check
+// produced Error-severity diagnostics. Cold-start FCS sometimes returns
+// "expected type X but here has type X" for files that compile cleanly
+// once warm; flushing those poisoned symbols overwrites the prior good DB
+// snapshot and breaks the cache-replay path on the next boot.
+// =============================================================================
+
+/// Returns a real FCS FileCheckResult for the given source — full type-check,
+/// real diagnostics. Used by the cache-poisoning gate tests below to feed
+/// realistic Error / Warning / clean diagnostic shapes through the plugin.
+let private checkSourceForReal (tmpDir: string) (fileName: string) (source: string) =
+    async {
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+        let filePath = Path.Combine(tmpDir, fileName)
+        File.WriteAllText(filePath, source)
+        let! projOptions = getScriptOptions checker filePath source
+        pipeline.RegisterProject(filePath, projOptions)
+        let! result = pipeline.CheckFile(AbsFilePath.create filePath)
+        return result
+    }
+
+[<Fact(Timeout = 15000)>]
+let ``hasFcsErrors returns false for ParseOnly`` () =
+    test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors ParseOnly) @>
+
+[<Fact(Timeout = 30000)>]
+let ``hasFcsErrors returns true for source with type error`` () =
+    withTempDir "tp-poisoning-err" (fun tmpDir ->
+        // Type mismatch: assigning string to int → Error.
+        let brokenSource =
+            """module Broken
+let x : int = "not an int"
+"""
+
+        let result =
+            checkSourceForReal tmpDir "Broken.fsx" brokenSource
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        test <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors result.CheckResults @>)
+
+[<Fact(Timeout = 30000)>]
+let ``hasFcsErrors returns false for clean source`` () =
+    withTempDir "tp-poisoning-clean" (fun tmpDir ->
+        let cleanSource =
+            """module Clean
+let answer = 42
+"""
+
+        let result =
+            checkSourceForReal tmpDir "Clean.fsx" cleanSource
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors result.CheckResults) @>)
+
+[<Fact(Timeout = 30000)>]
+let ``hasFcsErrors returns false for warning-only source`` () =
+    withTempDir "tp-poisoning-warn" (fun tmpDir ->
+        // Incomplete pattern match: warning, not error. FCS reports
+        // FS0025 at Warning severity. The gate must allow flush.
+        let warnSource =
+            """module Warn
+let f x =
+    match x with
+    | 1 -> "one"
+"""
+
+        let result =
+            checkSourceForReal tmpDir "Warn.fsx" warnSource
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        // Sanity: the source actually does have warning diagnostics.
+        let diagnostics =
+            match result.CheckResults with
+            | FullCheck cr -> cr.Diagnostics
+            | ParseOnly -> [||]
+
+        test <@ diagnostics.Length > 0 @>
+
+        test
+            <@
+                diagnostics
+                |> Array.forall (fun d -> d.Severity <> FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+            @>
+
+        // Gate result: warnings alone do NOT block flush.
+        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors result.CheckResults) @>)
+
+[<Fact(Timeout = 30000)>]
+let ``FileChecked with FCS errors does not flush symbols to DB`` () =
+    withTempDir "tp-poisoning-noflush" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+
+        let testConfigs =
+            [ { Project = "Broken"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+        let host = PluginHost.create checker tmpDir
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None
+        host.RegisterHandler(handler)
+
+        let brokenSource =
+            """module Broken
+type FactAttribute() = inherit System.Attribute()
+
+[<Fact>]
+let brokenTest () = ()
+
+let badTypeUse : int = "not-an-int"
+"""
+
+        let brokenFile = Path.Combine(tmpDir, "Broken.fsx")
+        File.WriteAllText(brokenFile, brokenSource)
+
+        let projOptions =
+            getScriptOptions checker brokenFile brokenSource |> Async.RunSynchronously
+
+        pipeline.RegisterProject(brokenFile, projOptions)
+
+        let result =
+            pipeline.CheckFile(AbsFilePath.create brokenFile)
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        // Confirm the result is poisoned (Error-severity diagnostics).
+        test <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors result.CheckResults @>
+
+        host.EmitFileChecked(result)
+        waitForPluginTerminal host "test-prune" 10.0
+
+        // Drive a flush via BuildSucceeded — the gate must prevent the
+        // poisoned analysis from ever reaching the DB.
+        let buildAwait = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        buildAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
+        // DB must be empty: poisoned FileChecked produced no symbol rows.
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+        let freshDb = Database.create dbPath
+        let symbols = freshDb.GetSymbolsInFile "Broken.fsx"
+
+        test <@ symbols.IsEmpty @>)
+
+[<Fact(Timeout = 30000)>]
+let ``FileChecked without FCS errors flushes symbols to DB (gate doesn't break clean path)`` () =
+    withTempDir "tp-poisoning-cleanflush" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+
+        let testConfigs =
+            [ { Project = "Clean"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+        let host = PluginHost.create checker tmpDir
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None
+        host.RegisterHandler(handler)
+
+        let cleanSource =
+            """module Clean
+type FactAttribute() = inherit System.Attribute()
+
+[<Fact>]
+let cleanTest () = ()
+"""
+
+        let cleanFile = Path.Combine(tmpDir, "Clean.fsx")
+        File.WriteAllText(cleanFile, cleanSource)
+
+        let projOptions =
+            getScriptOptions checker cleanFile cleanSource |> Async.RunSynchronously
+
+        pipeline.RegisterProject(cleanFile, projOptions)
+
+        let result =
+            pipeline.CheckFile(AbsFilePath.create cleanFile)
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors result.CheckResults) @>
+
+        host.EmitFileChecked(result)
+        waitForPluginTerminal host "test-prune" 10.0
+        let buildAwait = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        buildAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
+        // Symbols MUST be in DB.
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+
+        let mutable testMethods: TestMethodInfo list = []
+
+        waitUntil
+            (fun () ->
+                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+                let freshDb = Database.create dbPath
+                testMethods <- freshDb.GetTestMethodsInFile "Clean.fsx"
+                testMethods.Length >= 1)
+            5000
+
+        test <@ testMethods.Length >= 1 @>
+        test <@ testMethods |> List.exists (fun t -> t.TestMethod = "cleanTest") @>)
+
+[<Fact(Timeout = 60000)>]
+let ``cold-boot regression: prior DB snapshot preserved when FCS errors arrive`` () =
+    withTempDir "tp-poisoning-coldboot" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+
+        // testConfigs is required for the plugin to subscribe to BuildCompleted
+        // and run the flush-and-query cycle. Command is a no-op.
+        let testConfigs =
+            [ { Project = "CB"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        // Phase 1: clean check, flush populates DB.
+        let host1 = PluginHost.create checker tmpDir
+        let handler1 = create dbPath tmpDir (Some testConfigs) None None None None
+        host1.RegisterHandler(handler1)
+
+        let cleanSource =
+            """module CB
+type FactAttribute() = inherit System.Attribute()
+
+[<Fact>]
+let coldBootTest () = ()
+"""
+
+        let file = Path.Combine(tmpDir, "CB.fsx")
+        File.WriteAllText(file, cleanSource)
+
+        let projOptions =
+            getScriptOptions checker file cleanSource |> Async.RunSynchronously
+
+        pipeline.RegisterProject(file, projOptions)
+
+        let cleanResult =
+            pipeline.CheckFile(AbsFilePath.create file)
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None (clean)")
+
+        host1.EmitFileChecked(cleanResult)
+        waitForPluginTerminal host1 "test-prune" 10.0
+        let phase1Build = beginAwaitNextTerminal host1 "test-prune"
+        host1.EmitBuildCompleted(BuildSucceeded)
+        phase1Build.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
+        // Verify Phase 1 populated DB.
+        let mutable phase1Tests: TestMethodInfo list = []
+
+        waitUntil
+            (fun () ->
+                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+                let db = Database.create dbPath
+                phase1Tests <- db.GetTestMethodsInFile "CB.fsx"
+                phase1Tests.Length >= 1)
+            5000
+
+        test <@ phase1Tests.Length >= 1 @>
+
+        // Phase 2: simulate cold-boot poisoning with the same file but
+        // synthesized broken source — fresh plugin instance reading prior DB,
+        // FileChecked carries Error-severity diagnostics. The gate must
+        // prevent the prior good DB rows from being overwritten.
+        let brokenSource =
+            """module CB
+type FactAttribute() = inherit System.Attribute()
+
+[<Fact>]
+let coldBootTest () = ()
+
+let badTypeUse : int = "wrong-type"
+"""
+
+        File.WriteAllText(file, brokenSource)
+
+        let projOptionsBroken =
+            getScriptOptions checker file brokenSource |> Async.RunSynchronously
+
+        let pipeline2 = CheckPipeline(checker)
+        pipeline2.RegisterProject(file, projOptionsBroken)
+
+        let brokenResult =
+            pipeline2.CheckFile(AbsFilePath.create file)
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None (broken)")
+
+        test <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors brokenResult.CheckResults @>
+
+        let host2 = PluginHost.create checker tmpDir
+        let handler2 = create dbPath tmpDir (Some testConfigs) None None None None
+        host2.RegisterHandler(handler2)
+
+        host2.EmitFileChecked(brokenResult)
+        waitForPluginTerminal host2 "test-prune" 10.0
+        let phase2Build = beginAwaitNextTerminal host2 "test-prune"
+        host2.EmitBuildCompleted(BuildSucceeded)
+        phase2Build.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
+        // The load-bearing assertion: prior DB snapshot survives the
+        // poisoned FileChecked. coldBootTest must still be in the DB.
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+        let freshDb = Database.create dbPath
+        let phase2Tests = freshDb.GetTestMethodsInFile "CB.fsx"
+        test <@ phase2Tests |> List.exists (fun t -> t.TestMethod = "coldBootTest") @>)
