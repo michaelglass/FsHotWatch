@@ -7,6 +7,19 @@ open FsHotWatch.Events
 open FsHotWatch.Logging
 open FsHotWatch.Plugin
 
+/// Internal messages for the status agent.
+[<NoComparison; NoEquality>]
+type private StatusMsg =
+    | SetStatus of string * PluginStatus * System.Threading.Tasks.TaskCompletionSource<unit>
+    | GetStatus of string * AsyncReplyChannel<PluginStatus option>
+    | GetAllStatuses of AsyncReplyChannel<Map<string, PluginStatus>>
+
+/// Internal state owned by the status agent's loop.
+[<NoComparison; NoEquality>]
+type private StatusAgentState =
+    { Statuses: Map<string, PluginStatus>
+      RunStartedAt: Map<string, System.DateTime> }
+
 /// Manages plugin lifecycle, event dispatch, command registration, and status tracking.
 type PluginHost
     (checker: FSharpChecker, repoRoot: string, ?reporters: IErrorReporter list, ?taskCache: TaskCache.ITaskCache) =
@@ -16,41 +29,77 @@ type PluginHost
     let commands = ConcurrentDictionary<string, CommandHandler>()
     let preprocessors = ConcurrentBag<IFsHotWatchPreprocessor>()
     let fileCommandPatterns = ConcurrentDictionary<string, Watcher.FilePattern>()
-
-    // Status tracking uses a lock + mutable map instead of a MailboxProcessor.
-    // The event fires OUTSIDE the lock so subscribers can safely call GetAllStatuses
-    // without deadlocking (a MailboxProcessor fires events inside its loop,
-    // causing re-entrant PostAndReply deadlocks).
-    let mutable statuses: Map<string, PluginStatus> = Map.empty
-    let mutable runStartedAt: Map<string, System.DateTime> = Map.empty
-    let statusLock = obj ()
     let activity = PluginActivity.State()
 
+    // Status tracking is owned by a MailboxProcessor: the loop's recursion holds
+    // (Statuses, RunStartedAt) and serializes mutations. statusChanged.Trigger
+    // fires OUTSIDE the agent's loop (in the public setStatus wrapper, after
+    // the agent has applied the change) so subscribers can safely call
+    // GetAllStatuses re-entrantly without deadlocking - the agent isn't blocked
+    // inside the trigger callback.
+    let statusAgent =
+        MailboxProcessor<StatusMsg>.Start(fun inbox ->
+            let rec loop (state: StatusAgentState) =
+                async {
+                    let! msg = inbox.Receive()
+
+                    match msg with
+                    | SetStatus(name, status, tcs) ->
+                        let prev = Map.tryFind name state.Statuses
+                        let statuses' = Map.add name status state.Statuses
+
+                        let runStartedAt' =
+                            match prev, status with
+                            | _, Running since -> Map.add name since state.RunStartedAt
+                            | _, Completed at ->
+                                let startedAt =
+                                    match Map.tryFind name state.RunStartedAt with
+                                    | Some s -> s
+                                    | None -> at
+
+                                activity.RecordTerminal(name, CompletedRun, startedAt, at)
+                                Map.remove name state.RunStartedAt
+                            | _, Failed(err, at) ->
+                                let startedAt =
+                                    match Map.tryFind name state.RunStartedAt with
+                                    | Some s -> s
+                                    | None -> at
+
+                                activity.RecordTerminal(name, FailedRun err, startedAt, at)
+                                Map.remove name state.RunStartedAt
+                            | _ -> state.RunStartedAt
+
+                        tcs.SetResult(())
+
+                        return!
+                            loop
+                                { Statuses = statuses'
+                                  RunStartedAt = runStartedAt' }
+                    | GetStatus(name, reply) ->
+                        reply.Reply(Map.tryFind name state.Statuses)
+                        return! loop state
+                    | GetAllStatuses reply ->
+                        reply.Reply(state.Statuses)
+                        return! loop state
+                }
+
+            loop
+                { Statuses = Map.empty
+                  RunStartedAt = Map.empty })
+
     let setStatus (name: string) status =
-        lock statusLock (fun () ->
-            let prev = Map.tryFind name statuses
-            statuses <- Map.add name status statuses
+        // Apply the status mutation inside the agent, then fire statusChanged
+        // OUTSIDE the agent's serialization boundary. A subscriber doing
+        // GetAllStatuses (PostAndReply) from inside the trigger callback will
+        // not deadlock - the agent has already replied and is free to handle
+        // the next message.
+        let tcs =
+            System.Threading.Tasks.TaskCompletionSource<unit>(
+                System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+            )
 
-            match prev, status with
-            | _, Running since -> runStartedAt <- Map.add name since runStartedAt
-            | _, Completed at ->
-                let startedAt =
-                    match Map.tryFind name runStartedAt with
-                    | Some s -> s
-                    | None -> at
-
-                activity.RecordTerminal(name, CompletedRun, startedAt, at)
-                runStartedAt <- Map.remove name runStartedAt
-            | _, Failed(err, at) ->
-                let startedAt =
-                    match Map.tryFind name runStartedAt with
-                    | Some s -> s
-                    | None -> at
-
-                activity.RecordTerminal(name, FailedRun err, startedAt, at)
-                runStartedAt <- Map.remove name runStartedAt
-            | _ -> ())
-
+        statusAgent.Post(SetStatus(name, status, tcs))
+        tcs.Task.GetAwaiter().GetResult()
         statusChanged.Trigger(name, status)
 
     let setPluginStatus (name: PluginFramework.PluginName) status =
@@ -184,10 +233,11 @@ type PluginHost
 
     /// Get the status of a specific plugin by name.
     member _.GetStatus(pluginName: string) : PluginStatus option =
-        lock statusLock (fun () -> Map.tryFind pluginName statuses)
+        statusAgent.PostAndReply(fun ch -> GetStatus(pluginName, ch))
 
     /// Get all plugin statuses as an immutable map.
-    member _.GetAllStatuses() : Map<string, PluginStatus> = lock statusLock (fun () -> statuses)
+    member _.GetAllStatuses() : Map<string, PluginStatus> =
+        statusAgent.PostAndReply(fun ch -> GetAllStatuses ch)
 
     member _.StartSubtask(pluginName: string, key: string, label: string) =
         activity.StartSubtask(pluginName, key, label)
