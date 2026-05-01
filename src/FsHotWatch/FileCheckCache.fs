@@ -35,7 +35,7 @@ type FileCheckCache(cacheDir: string) =
                 let entry = JsonSerializer.Deserialize<CachedFileEntry>(json)
 
                 Some
-                    { File = entry.File
+                    { File = AbsFilePath.create entry.File
                       Source = ""
                       ParseResults = Unchecked.defaultof<_>
                       CheckResults = ParseOnly
@@ -51,7 +51,7 @@ type FileCheckCache(cacheDir: string) =
 
             try
                 let entry =
-                    { File = result.File
+                    { File = AbsFilePath.value result.File
                       Version = result.Version }
 
                 let json = JsonSerializer.Serialize(entry, serializerOptions)

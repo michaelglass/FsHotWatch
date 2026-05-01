@@ -36,7 +36,7 @@ type BuildPhase =
     /// Test-files-only change — build is logically a no-op but we wait for FCS to finish
     /// checking the changed files before emitting BuildSucceeded. Otherwise downstream
     /// test-prune dispatch would race FCS and read stale AffectedTests.
-    | WaitingForFcsPhase of awaiting: Set<string> * Lifecycle<Idle, BuildOutcome option>
+    | WaitingForFcsPhase of awaiting: Set<AbsFilePath> * Lifecycle<Idle, BuildOutcome option>
 
 type BuildState =
     { Phase: BuildPhase
@@ -162,13 +162,11 @@ let create
         | Some s -> TimeSpan.FromSeconds(float s)
         | None -> System.Threading.Timeout.InfiniteTimeSpan
 
-    // Normalize file paths to match what FCS emits in FileCheckResult.File so
-    // the WaitingForFcsPhase set drains reliably. Watcher events and FCS go
-    // through different pipelines and either may produce non-canonical forms.
-    let normalizePath (file: string) = Path.GetFullPath(file)
-
-    let isTestFile (file: string) =
-        graph.GetProjectsForFile(AbsFilePath.create file)
+    // Path normalization happens once at the SourceChanged → AbsFilePath boundary
+    // (callers inject `AbsFilePath.create` per file). FileCheckResult.File is already
+    // an AbsFilePath, so the WaitingForFcsPhase drain is a direct Set.remove.
+    let isTestFile (file: AbsFilePath) =
+        graph.GetProjectsForFile(file)
         |> List.exists (fun proj ->
             testProjectNameSet.Contains(Path.GetFileNameWithoutExtension(AbsProjectPath.value proj)))
 
@@ -331,12 +329,11 @@ let create
         (ctx: PluginCtx<BuildMsg>)
         (idle: Lifecycle<Idle, BuildOutcome option>)
         (template: string)
-        (files: string list)
+        (files: AbsFilePath list)
         =
         let nonTestFiles = files |> List.filter (fun f -> not (isTestFile f))
 
-        let affected =
-            graph.GetAffectedProjects(nonTestFiles |> List.map AbsFilePath.create)
+        let affected = graph.GetAffectedProjects(nonTestFiles)
 
         let buildable = affected |> List.filter (fun p -> not (isTestProject p))
 
@@ -423,7 +420,7 @@ let create
         (ctx: PluginCtx<BuildMsg>)
         (state: BuildState)
         (idle: Lifecycle<Idle, BuildOutcome option>)
-        (files: string list)
+        (files: AbsFilePath list)
         =
         let allTestFiles = not files.IsEmpty && files |> List.forall isTestFile
 
@@ -432,7 +429,7 @@ let create
             ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
 
             { state with
-                Phase = WaitingForFcsPhase(files |> List.map normalizePath |> Set.ofList, idle) }
+                Phase = WaitingForFcsPhase(Set.ofList files, idle) }
         else
             match buildTemplate with
             | Some template ->
@@ -486,6 +483,7 @@ let create
                                 |> List.collect (function
                                     | SourceChanged files -> files
                                     | _ -> [])
+                                |> List.map AbsFilePath.create
                                 |> List.distinct
 
                             match hasProjectChange, sourceFiles, updatedState.Phase with
@@ -513,7 +511,7 @@ let create
 
                 // --- FileChanged: normal handling (no deps or all satisfied) ---
                 | FileChanged(SourceChanged files), IdlePhase(idle, _) ->
-                    return handleSourceChanged ctx state idle files
+                    return handleSourceChanged ctx state idle (files |> List.map AbsFilePath.create)
                 | FileChanged(ProjectChanged _), IdlePhase(idle, _) -> return handleProjectChanged ctx state idle
                 | Custom(BuildDone(outcome, entries)), _ ->
                     // Build single-flight is owned by the framework (RunExclusive "build").
@@ -562,7 +560,7 @@ let create
                             SatisfiedDeps = Set.empty }
 
                 | FileChecked result, WaitingForFcsPhase(awaiting, idle) ->
-                    let remaining = Set.remove (normalizePath result.File) awaiting
+                    let remaining = Set.remove result.File awaiting
 
                     if remaining.IsEmpty then
                         ctx.EmitBuildCompleted(BuildSucceeded)
@@ -579,16 +577,17 @@ let create
                 | FileChanged(ProjectChanged _), WaitingForFcsPhase(_, idle) ->
                     return handleProjectChanged ctx state idle
                 | FileChanged(SourceChanged files), WaitingForFcsPhase(awaiting, idle) ->
-                    let nonTest = files |> List.filter (fun f -> not (isTestFile f))
+                    let typed = files |> List.map AbsFilePath.create
+                    let nonTest = typed |> List.filter (fun f -> not (isTestFile f))
 
                     if nonTest.IsEmpty then
-                        let merged = files |> List.fold (fun s f -> Set.add (normalizePath f) s) awaiting
+                        let merged = typed |> List.fold (fun s f -> Set.add f s) awaiting
 
                         return
                             { state with
                                 Phase = WaitingForFcsPhase(merged, idle) }
                     else
-                        return handleSourceChanged ctx state idle files
+                        return handleSourceChanged ctx state idle typed
                 | _ -> return state
             }
       Commands =

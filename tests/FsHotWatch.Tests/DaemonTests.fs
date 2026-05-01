@@ -525,7 +525,12 @@ let ``daemon RegisterProject stores options in pipeline`` () =
         // lookup, which was a Linux-only flake when the stored SourceFiles
         // entries didn't match what Path.GetFullPath produced for the lookup.
         test <@ daemon.Pipeline.GetProjectOptions("/tmp/Test.fsproj").IsSome @>
-        test <@ daemon.Pipeline.GetAllRegisteredFiles() |> List.contains absSource @>)
+
+        test
+            <@
+                daemon.Pipeline.GetAllRegisteredFiles()
+                |> List.contains (AbsFilePath.create absSource)
+            @>)
 
 // --- FormatScanStatus tests ---
 
