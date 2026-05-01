@@ -438,7 +438,7 @@ let ``EmitFileChecked dispatches to framework plugin handlers`` () =
     host.RegisterHandler(makeHandler "p2" ref2)
 
     let dummyResult =
-        { File = "/tmp/test.fs"
+        { File = AbsFilePath.create "/tmp/test.fs"
           Source = ""
           ParseResults = Unchecked.defaultof<_>
           CheckResults = ParseOnly
