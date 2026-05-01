@@ -725,6 +725,63 @@ let ``executeCommand Start exits 2 when no projects are discovered`` () =
         test <@ not (Directory.Exists(Path.Combine(tmpDir, ".fshw"))) @>)
 
 [<Fact(Timeout = 15000)>]
+let ``executeCommand Check exits 2 when no projects are discovered`` () =
+    // Same fail-fast contract as Start: project-requiring commands must
+    // propagate exit code 2 (config error) when zero projects are
+    // discoverable, instead of launching a daemon that immediately exits
+    // 2 itself and surfacing as "Failed to start daemon" + exit 1.
+    withTempDir "cli-check-zero-projects" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+        let mutable launched = false
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> false
+                LaunchDaemon = fun _ _ _ -> launched <- true }
+
+        let exitCode =
+            executeCommand
+                (fun _ -> Unchecked.defaultof<_>)
+                ipc
+                tmpDir
+                "fshw-test-pipe"
+                (Check [])
+                defaultGlobalOptions
+                fakeConfig
+                30.0
+
+        test <@ exitCode = 2 @>
+        // Pre-check fires before any daemon work; daemon launch is skipped.
+        test <@ not launched @>)
+
+[<Fact(Timeout = 15000)>]
+let ``executeCommand Build exits 2 when no projects are discovered`` () =
+    withTempDir "cli-build-zero-projects" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+        let mutable launched = false
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> false
+                LaunchDaemon = fun _ _ _ -> launched <- true }
+
+        let exitCode =
+            executeCommand
+                (fun _ -> Unchecked.defaultof<_>)
+                ipc
+                tmpDir
+                "fshw-test-pipe"
+                (Build [])
+                defaultGlobalOptions
+                fakeConfig
+                30.0
+
+        test <@ exitCode = 2 @>
+        test <@ not launched @>)
+
+[<Fact(Timeout = 15000)>]
 let ``executeCommand Start with fake daemon throws on null daemon`` () =
     // Use a unique temp dir to avoid writing the test process PID to /tmp/.fshw/daemon.pid
     // where killStaleDaemon from other tests would read it and kill the test process.
@@ -1346,6 +1403,14 @@ let ``executeCommand Rerun calls rerunPlugin with plugin name`` () =
 /// so that killStaleDaemon cannot read another test's PID file.
 let private withStartupFailure command =
     withTempDir "cli-fail" (fun tmpDir ->
+        // Stage a discoverable .fsproj so the failIfNoProjects pre-check
+        // (hoisted into executeCommand for project-requiring commands) passes
+        // and execution actually reaches the daemon-launch poll-timeout path
+        // that this helper is meant to exercise.
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        File.WriteAllText(Path.Combine(srcDir, "Stub.fsproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+
         let ipc =
             { fakeIpc () with
                 IsRunning = fun _ -> false }

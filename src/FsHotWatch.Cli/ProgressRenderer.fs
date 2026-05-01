@@ -64,6 +64,17 @@ let private isTimedOut (parsed: ParsedPluginStatus) : bool =
     | Some { Outcome = TimedOut _ } -> true
     | _ -> false
 
+/// Pull the elapsed-time display for a terminal status. Returns `Some` only
+/// when the run record is present AND its elapsed is non-zero — a missing
+/// record or a zero elapsed almost always means the cache-replay path
+/// produced a synthetic terminal record without going through `Running`,
+/// so we'd rather show no timing than claim "(0ms)" for a build that
+/// actually took 30s.
+let private terminalTimingStr (parsed: ParsedPluginStatus) : string option =
+    match parsed.LastRun with
+    | Some r when r.Elapsed > TimeSpan.Zero -> Some(UI.timing r.Elapsed)
+    | _ -> None
+
 // ----- Compact -----
 
 let private renderCompact
@@ -77,11 +88,6 @@ let private renderCompact
     let line =
         match parsed.Status with
         | Completed _ ->
-            let elapsed =
-                match parsed.LastRun with
-                | Some r -> r.Elapsed
-                | None -> TimeSpan.Zero
-
             let withIssues = DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics
 
             let summary =
@@ -95,20 +101,22 @@ let private renderCompact
                         | s -> $" %s{Color.dim}{Glyph.sep} %s{s}%s{Color.reset}"
                     | None -> ""
 
-            let timingStr = UI.timing elapsed
+            let timingPart =
+                match terminalTimingStr parsed with
+                | Some t -> $" %s{t}"
+                | None -> ""
 
             let glyph = if withIssues then Glyph.warn else Glyph.check
 
-            $"  %s{glyph} %s{padded} %s{timingStr}%s{summary}"
+            $"  %s{glyph} %s{padded}%s{timingPart}%s{summary}"
         | Failed(err, _) ->
             let short = summariseError err
 
-            let elapsed =
-                match parsed.LastRun with
-                | Some r -> r.Elapsed
-                | None -> TimeSpan.Zero
+            let timingPart =
+                match terminalTimingStr parsed with
+                | Some t -> $" %s{t}"
+                | None -> ""
 
-            let timingStr = UI.timing elapsed
             let timedOut = isTimedOut parsed
             let glyph = if timedOut then Glyph.timeout else Glyph.cross
 
@@ -121,7 +129,7 @@ let private renderCompact
                 else
                     short
 
-            $"  %s{glyph} %s{padded} %s{timingStr} %s{Color.dim}{Glyph.sep} %s{label}%s{Color.reset}"
+            $"  %s{glyph} %s{padded}%s{timingPart} %s{Color.dim}{Glyph.sep} %s{label}%s{Color.reset}"
         | Running since ->
             let elapsed = now - since
             let timingStr = UI.timing elapsed
@@ -197,24 +205,24 @@ let private verboseHeader
 
         $"  %s{glyph} %s{padded} %s{UI.timing elapsed}%s{detail}"
     | Completed _ ->
-        let elapsed =
-            match parsed.LastRun with
-            | Some r -> r.Elapsed
-            | None -> TimeSpan.Zero
+        let timingPart =
+            match terminalTimingStr parsed with
+            | Some t -> $" %s{t}"
+            | None -> ""
 
         let summary =
             match parsed.LastRun |> Option.map runSummary with
             | Some s when s <> "" -> $" %s{Color.dim}{Glyph.sep} %s{s}%s{Color.reset}"
             | _ -> ""
 
-        $"  %s{glyph} %s{padded} %s{UI.timing elapsed}%s{summary}"
+        $"  %s{glyph} %s{padded}%s{timingPart}%s{summary}"
     | Failed(err, _) ->
-        let elapsed =
-            match parsed.LastRun with
-            | Some r -> r.Elapsed
-            | None -> TimeSpan.Zero
+        let timingPart =
+            match terminalTimingStr parsed with
+            | Some t -> $" %s{t}"
+            | None -> ""
 
-        $"  %s{glyph} %s{padded} %s{UI.timing elapsed} %s{Color.dim}{Glyph.sep} %s{summariseError err}%s{Color.reset}"
+        $"  %s{glyph} %s{padded}%s{timingPart} %s{Color.dim}{Glyph.sep} %s{summariseError err}%s{Color.reset}"
     | Idle ->
         match parsed.LastRun with
         | Some r ->
@@ -279,8 +287,14 @@ let private renderVerbose
             let started =
                 match parsed.LastRun with
                 | Some r ->
-                    [ $"      %s{Color.dim}started: %s{clock (r.StartedAt.ToLocalTime())}%s{Color.reset}"
-                      $"      %s{Color.dim}elapsed: %s{UI.timing r.Elapsed}%s{Color.reset}" ]
+                    let startedLine =
+                        $"      %s{Color.dim}started: %s{clock (r.StartedAt.ToLocalTime())}%s{Color.reset}"
+
+                    if r.Elapsed > TimeSpan.Zero then
+                        [ startedLine
+                          $"      %s{Color.dim}elapsed: %s{UI.timing r.Elapsed}%s{Color.reset}" ]
+                    else
+                        [ startedLine ]
                 | None -> []
 
             let summary =
