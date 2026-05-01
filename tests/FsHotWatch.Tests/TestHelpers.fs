@@ -21,7 +21,7 @@ let dummyParseResults () : FSharpParseFileResults =
 /// Build a FileCheckResult with safe-uninitialized FCS parts. Lets plugin tests
 /// fire FileChecked events without spinning up real FCS.
 let fakeFileCheckResult (file: string) : FileCheckResult =
-    { File = file
+    { File = AbsFilePath.create file
       Source = "module Fake"
       ParseResults = dummyParseResults ()
       CheckResults = ParseOnly

@@ -62,7 +62,7 @@ type FileCheckState =
 type FileCheckResult =
     {
         /// Absolute path to the checked file.
-        File: string
+        File: AbsFilePath
         /// Source text of the file at check time.
         Source: string
         /// FCS parse results (AST).

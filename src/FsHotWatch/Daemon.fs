@@ -66,11 +66,15 @@ let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) 
             |> Array.toList
 
         if diagnostics.IsEmpty then
-            host.ClearErrors(PluginActivity.FcsPluginName, checkResult.File, version = checkResult.Version)
+            host.ClearErrors(
+                PluginActivity.FcsPluginName,
+                AbsFilePath.value checkResult.File,
+                version = checkResult.Version
+            )
         else
             host.ReportErrors(
                 PluginActivity.FcsPluginName,
-                checkResult.File,
+                AbsFilePath.value checkResult.File,
                 diagnostics,
                 version = checkResult.Version
             )
@@ -505,9 +509,12 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 |> List.collect (fun proj -> ctx.Graph.GetSourceFiles(proj))
                 |> List.map AbsFilePath.value
 
-            let allFilesToCheck = (allSourceFiles @ dependentProjectFiles) |> List.distinct
+            let allFilesToCheck =
+                (allSourceFiles @ dependentProjectFiles)
+                |> List.map AbsFilePath.create
+                |> List.distinct
 
-            ctx.Host.EmitFileChanged(SourceChanged allFilesToCheck)
+            ctx.Host.EmitFileChanged(SourceChanged(allFilesToCheck |> List.map AbsFilePath.value))
 
             Logging.debug "daemon" $"Checking %d{allFilesToCheck.Length} files after change"
             let mutable checkedFiles = Set.empty
@@ -518,7 +525,10 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                 for result in results do
                     match result with
                     | Some checkResult ->
-                        Logging.debug "daemon" $"EmitFileChecked: %s{Path.GetFileName(checkResult.File)}"
+                        Logging.debug
+                            "daemon"
+                            $"EmitFileChecked: %s{Path.GetFileName(AbsFilePath.value checkResult.File)}"
+
                         ctx.Host.EmitFileChecked(checkResult)
                         reportFcsDiagnostics ctx.FcsSuppressedCodes ctx.Host checkResult
                     | None -> ()
@@ -530,9 +540,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                     let projPath = AbsProjectPath.value proj
 
                     let projFiles =
-                        ctx.Graph.GetSourceFiles(proj)
-                        |> List.map AbsFilePath.value
-                        |> List.filter filesToCheckSet.Contains
+                        ctx.Graph.GetSourceFiles(proj) |> List.filter filesToCheckSet.Contains
 
                     checkedFiles <- Set.union checkedFiles (Set.ofList projFiles)
 
@@ -813,7 +821,7 @@ type Daemon
 
                 let triggerBuild () =
                     async {
-                        let files = pipeline.GetAllRegisteredFiles()
+                        let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
 
                         if not files.IsEmpty then
                             host.EmitFileChanged(SourceChanged files)
@@ -824,7 +832,8 @@ type Daemon
                     | Some fn -> fn ()
                     | None ->
                         async {
-                            let files = pipeline.GetAllRegisteredFiles()
+                            let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
+
                             let modified = host.RunPreprocessors(files)
                             return $"formatted %d{modified.Length} files"
                         }
@@ -901,7 +910,9 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
             lastFingerprint <- currentFingerprint
 
         let registeredProjects = pipeline.GetRegisteredProjects()
-        let files = pipeline.GetAllRegisteredFiles()
+
+        let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
+
         let total = files.Length
         Logging.info "scan" $"%d{registeredProjects.Length} projects, %d{total} files registered"
         let sw = System.Diagnostics.Stopwatch.StartNew()
@@ -941,10 +952,10 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
                     match pipeline.GetProjectOptions(projPath) with
                     | Some options ->
                         for file in projFiles do
-                            tierChecks.Add(pipeline.CheckFileWithOptions(file, options, ct))
+                            tierChecks.Add(pipeline.CheckFileWithOptions(AbsFilePath.create file, options, ct))
                     | None ->
                         for file in projFiles do
-                            tierChecks.Add(pipeline.CheckFile(file, ct))
+                            tierChecks.Add(pipeline.CheckFile(AbsFilePath.create file, ct))
 
                 let! results = tierChecks |> Seq.toList |> Async.Parallel
 
@@ -1070,7 +1081,8 @@ module Daemon =
                   ExcludePatterns = excludePatterns }
 
             let formatAllAndSuppress (suppressed: Set<string>) (replyChannel: AsyncReplyChannel<string>) =
-                let files = pipeline.GetAllRegisteredFiles()
+                let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
+
                 let modified = host.RunPreprocessors(files)
                 let newSuppressed = Set.union suppressed (Set.ofList modified)
                 replyChannel.Reply($"formatted %d{modified.Length} files")
