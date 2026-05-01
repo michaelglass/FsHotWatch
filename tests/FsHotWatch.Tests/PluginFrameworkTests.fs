@@ -61,7 +61,6 @@ let ``registered plugin dispatches FileChanged`` () =
           Commands = [ "was-called", fun _ctx state _args -> async { return $"%b{state}" } ]
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -84,7 +83,6 @@ let ``registered plugin skips unsubscribed events`` () =
           Commands = [ "get-count", fun _ctx state _args -> async { return $"%d{state}" } ]
           Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeTestRunCompleted ]
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -134,7 +132,6 @@ let ``commands query agent state`` () =
               Commands = [ "get-count", fun _ctx state _args -> async { return $"%d{state}" } ]
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
-              RequireWarmStart = false
               Teardown = None }
 
         let _reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -174,7 +171,6 @@ let ``Custom messages work for self-posting`` () =
               Commands = [ "got-custom", fun _ctx state _args -> async { return $"%b{state}" } ]
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
-              RequireWarmStart = false
               Teardown = None }
 
         let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -216,7 +212,6 @@ let ``handler errors are recovered`` () =
               Commands = [ "get-state", fun _ctx state _args -> async { return $"%d{state}" } ]
               Subscriptions = Set.ofList [ SubscribeFileChanged ]
               CacheKey = None
-              RequireWarmStart = false
               Teardown = None }
 
         let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
@@ -255,7 +250,6 @@ let ``plugin subscribing to CommandCompleted receives event`` () =
           Commands = [ "was-called", fun _ctx state _args -> async { return $"%b{state}" } ]
           Subscriptions = Set.ofList [ SubscribeCommandCompleted ]
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -298,7 +292,6 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
           Commands = [ "noop", fun _ctx _state _args -> async { return "ok" } ]
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     let reg =
@@ -359,7 +352,7 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
             | _ -> false
         @>
 
-// --- RequireWarmStart gate: skip cache replay until first terminal status this session ---
+// --- Cache replay: pre-populated cache hits on first dispatch (no warm-start gate) ---
 
 /// Build host services with a provided TaskCache for these tests.
 let private servicesWithCache (cache: TaskCache.ITaskCache) (registerCommand: string * CommandHandler -> unit) =
@@ -384,71 +377,14 @@ let private servicesWithCache (cache: TaskCache.ITaskCache) (registerCommand: st
       SetNextTerminalOutcome = fun _ _ -> () }
 
 [<Fact(Timeout = 20000)>]
-let ``RequireWarmStart bypasses pre-populated cache on session start, replays after first terminal`` () =
+let ``pre-populated cache replays on the very first dispatch`` () =
+    // Regression: with the old `RequireWarmStart` gate, plugins skipped replay
+    // until they completed once per session. Now that BatchChecked closes the
+    // half-formed-key window, the gate is gone and replay fires immediately.
     async {
         let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
         let cacheKey = ContentHash.create "k"
-        let pluginNameStr = "warm-pre"
-        let compKey: TaskCache.CompositeKey = { Plugin = pluginNameStr; File = None }
-
-        // Pre-populate cache as if a prior session had completed.
-        cache.Set
-            compKey
-            cacheKey
-            { CacheKey = cacheKey
-              Errors = []
-              Status = Completed System.DateTime.UtcNow
-              EmittedEvents = [] }
-
-        let updateCalls = ref 0
-        let mutable registeredCmd: CommandHandler option = None
-
-        let handler: PluginHandler<unit, unit> =
-            { Name = PluginName.create pluginNameStr
-              Init = ()
-              Update =
-                fun ctx state event ->
-                    async {
-                        match event with
-                        | FileChanged _ ->
-                            System.Threading.Interlocked.Increment(updateCalls) |> ignore
-                            ctx.ReportStatus(Completed System.DateTime.UtcNow)
-                        | _ -> ()
-
-                        return state
-                    }
-              Commands = [ "drain", fun _ctx _state _args -> async { return "ok" } ]
-              Subscriptions = Set.singleton SubscribeFileChanged
-              CacheKey = Some(fun _ -> Some cacheKey)
-              RequireWarmStart = true
-              Teardown = None }
-
-        let reg =
-            registerHandler (servicesWithCache cache (fun (_, cmd) -> registeredCmd <- Some cmd)) handler
-
-        // Dispatch 1: cache is hot from a prior session, but RequireWarmStart says
-        // skip replay — Update must run.
-        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
-        // Drain by querying via the registered command (queues behind the FileChanged).
-        let! _ = registeredCmd.Value [||]
-        test <@ !updateCalls = 1 @>
-
-        // Dispatch 2: terminal status fired during dispatch 1, so the session is
-        // now warm — replay should fire and Update must NOT run again.
-        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
-        let! _ = registeredCmd.Value [||]
-        test <@ !updateCalls = 1 @>
-    }
-    |> Async.RunSynchronously
-
-[<Fact(Timeout = 20000)>]
-let ``RequireWarmStart=false replays pre-populated cache on session start`` () =
-    // Control: with the gate disabled, the same pre-populated cache replays
-    // on the very first dispatch, so Update must NOT run.
-    async {
-        let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
-        let cacheKey = ContentHash.create "k"
-        let pluginNameStr = "warm-off"
+        let pluginNameStr = "cache-replay"
         let compKey: TaskCache.CompositeKey = { Plugin = pluginNameStr; File = None }
 
         cache.Set
@@ -479,7 +415,6 @@ let ``RequireWarmStart=false replays pre-populated cache on session start`` () =
               Commands = [ "drain", fun _ctx _state _args -> async { return "ok" } ]
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey = Some(fun _ -> Some cacheKey)
-              RequireWarmStart = false
               Teardown = None }
 
         let reg =
@@ -534,7 +469,6 @@ let ``RunExclusive ignores second call while first is running`` () =
               Commands = [ "get", fun _ctx s _ -> async { return string s } ]
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey = None
-              RequireWarmStart = false
               Teardown = None }
 
         let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
@@ -662,7 +596,6 @@ let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRu
               Commands = [ "drain", fun _ _ _ -> async { return "ok" } ]
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey = Some(fun _ -> Some cacheKey)
-              RequireWarmStart = false
               Teardown = None }
 
         let reg = registerHandler services handler
@@ -736,7 +669,6 @@ let ``RunExclusive releases slot when work raises and logs without re-posting co
               Commands = [ "get", fun _ s _ -> async { return string s } ]
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey = None
-              RequireWarmStart = false
               Teardown = None }
 
         let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
@@ -794,7 +726,6 @@ let ``IsRunning reports true while work in flight, false after completion`` () =
               Commands = [ "get", fun _ctx s _ -> async { return string s } ]
               Subscriptions = Set.singleton SubscribeFileChanged
               CacheKey = None
-              RequireWarmStart = false
               Teardown = None }
 
         let reg = registerWith handler (Some(fun (_, cmd) -> registeredCmd <- Some cmd))
@@ -837,7 +768,6 @@ let ``plugin subscribing to BatchChecked receives event`` () =
           Commands = [ "drain", fun _ctx _state _args -> async { return "ok" } ]
           Subscriptions = Set.ofList [ SubscribeBatchChecked ]
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
@@ -887,7 +817,6 @@ let ``plugin not subscribing to BatchChecked does not receive event`` () =
           // Subscribed to FileChanged only — must NOT see BatchChecked.
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     let reg = registerWith handler (Some(fun cmd -> registeredCmd <- Some cmd))
