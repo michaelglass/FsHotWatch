@@ -478,7 +478,9 @@ let private executeTests
                                     let logPath = Path.Combine(logDir, $"%s{config.Project}-%s{timestamp}.log")
                                     File.WriteAllText(logPath, output)
                                     Logging.info "test-prune" $"%s{config.Project}: full output saved to %s{logPath}"
-                                with ex ->
+                                with
+                                | :? IOException
+                                | :? UnauthorizedAccessException as ex ->
                                     Logging.error "test-prune" $"Failed to persist test output: %s{ex.Message}"
 
                                 let lines = output.Split('\n')
@@ -531,8 +533,11 @@ let private executeTests
                                         Flakiness.appendRecords (flakinessHistoryPath repoRoot) 20 records
 
                                     File.Delete p
-                                with ex ->
-                                    Logging.warn "test-prune" $"flakiness: failed to record run: {ex.Message}"
+                                with
+                                | :? IOException
+                                | :? UnauthorizedAccessException
+                                | :? JsonException as ex ->
+                                    Logging.warn "test-prune" $"flakiness: failed to record run: %s{ex.Message}"
 
                             results <- (config.Project, result) :: results
 

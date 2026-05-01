@@ -151,6 +151,14 @@ type CheckPipeline
     /// Cancel any in-flight check for the given file and return a new CancellationTokenSource.
     /// If a caller token is provided, the returned CTS is linked to it so that daemon-level
     /// cancellation also cancels the per-file check.
+    ///
+    /// Load-bearing for correctness, NOT a hot-path optimization: scanMailbox and
+    /// changeAgent in Daemon.fs (the `performScan` and `processBatch` paths) can
+    /// issue concurrent CheckFile calls for the same file. Without cancellation a
+    /// slow scan-side check can emit a stale FileChecked AFTER the batch-side
+    /// check has already emitted the fresh one — plugins (FCS error ledger, Lint,
+    /// Analyzers) would observe newer-then-older ordering and re-publish stale
+    /// errors.
     member _.CancelPreviousCheck(filePath: string, ?ct: CancellationToken) : CancellationTokenSource =
         let ct = defaultArg ct CancellationToken.None
 
