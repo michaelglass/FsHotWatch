@@ -52,11 +52,6 @@ let ``plugin has correct name`` () =
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "test-prune" @>
 
 [<Fact(Timeout = 15000)>]
-let ``testprune handler opts into RequireWarmStart`` () =
-    let handler = create ":memory:" "/tmp" None None None None None
-    test <@ handler.RequireWarmStart = true @>
-
-[<Fact(Timeout = 15000)>]
 let ``testprune subscribes to BatchChecked`` () =
     // Item 3 (corrected): TestPrune retains FileChecked for per-file
     // accumulation AND adds BatchChecked as the cohort-complete flush
@@ -2377,13 +2372,14 @@ let ``executeTests runs project on BuildSucceeded`` () =
         test <@ not staleWarning @>)
 
 [<Fact(Timeout = 25000)>]
-let ``regression: cold-start BuildCompleted bypasses task cache and runs tests`` () =
-    // When the daemon restarts, a new plugin instance has hadPriorResults=false.
-    // If we returned Some(buildCompletedKey) on cold start, the framework would hit
-    // the persisted cache entry from the prior session and replay it without ever
-    // calling runTestsWithImpact. This meant the full-suite cold-start path was
-    // bypassed and any project absent from the cached impact set never ran.
-    withTempDir "tp-cold-cache-bypass" (fun tmpDir ->
+let ``cold-start BuildCompleted with unchanged state replays from task cache`` () =
+    // The design that introduced BatchChecked deletes the RequireWarmStart
+    // workaround. On a cold daemon restart with NO changes since the prior
+    // session, BuildCompleted's cache key (changed-symbols ⊕ outcome) matches
+    // the prior session's entry — the framework replays without re-running
+    // tests. The pre-BatchChecked behavior of "cold-start always re-runs once"
+    // was a workaround for a half-formed-key window that no longer exists.
+    withTempDir "tp-cold-cache-replay" (fun tmpDir ->
         let taskCache =
             FsHotWatch.FileTaskCache.FileTaskCache(Path.Combine(tmpDir, "task-cache"))
             :> FsHotWatch.TaskCache.ITaskCache
@@ -2411,7 +2407,7 @@ let ``regression: cold-start BuildCompleted bypasses task cache and runs tests``
             host1.EmitBuildCompleted(BuildSucceeded)
             waitForTerminalStatus host1 "test-prune" 10000
 
-        // Delete sentinel so session 2 can prove it ran again.
+        // Delete sentinel — session 2 must NOT re-create it (cache replay path).
         if File.Exists sentinel then
             File.Delete sentinel
 
@@ -2423,18 +2419,9 @@ let ``regression: cold-start BuildCompleted bypasses task cache and runs tests``
 
         host2.RegisterHandler(handler2)
 
-        let observedRunning = ref false
-
-        host2.OnStatusChanged.Add(fun (name, status) ->
-            if name = "test-prune" then
-                match status with
-                | Running _ -> observedRunning.Value <- true
-                | _ -> ())
-
         host2.EmitBuildCompleted(BuildSucceeded)
         waitForTerminalStatus host2 "test-prune" 10000
 
-        // Cold start must trigger an actual test run (Running observed and sentinel written),
-        // not a silent cache replay that skips runTestsWithImpact.
-        test <@ observedRunning.Value @>
-        test <@ File.Exists sentinel @>)
+        // Cold start with unchanged state replays the cached run — the test
+        // command (touch sentinel) must NOT have executed.
+        test <@ not (File.Exists sentinel) @>)

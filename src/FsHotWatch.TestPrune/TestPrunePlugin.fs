@@ -1129,8 +1129,8 @@ let create
                     // well-formed" load-bearing on the BatchChecked dispatch
                     // ordering rather than on every FileChecked happening to
                     // arrive before the racing BuildCompleted. That's the
-                    // window RequireWarmStart exists to guard; commit 4 deletes
-                    // the flag once this seal is in place.
+                    // window the old `RequireWarmStart` gate existed to guard.
+                    // With this seal in place, the gate is gone (commit 4).
                     Volatile.Write(&changedSymbolsRef, state.ChangedSymbols)
                     return state
 
@@ -1336,7 +1336,7 @@ let create
             // BatchChecked, every FileChecked update has been folded in, so
             // changedSymbolsRef is consistent with state.ChangedSymbols and
             // any cache key derived from it is well-formed. This is the seal
-            // point that lets RequireWarmStart go (commit 4).
+            // point that let the old `RequireWarmStart` gate retire (commit 4).
             [ SubscribeFileChecked; SubscribeBatchChecked ]
             @ (if hasTestConfigs then [ SubscribeBuildCompleted ] else [])
         )
@@ -1399,5 +1399,4 @@ let create
             | _ -> None
 
         Some cacheKey
-      RequireWarmStart = true
       Teardown = None }
