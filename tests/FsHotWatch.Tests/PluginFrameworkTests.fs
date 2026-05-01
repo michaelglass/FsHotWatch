@@ -95,7 +95,7 @@ let ``registered plugin skips unsubscribed events`` () =
     // Dispatch unsubscribed events — should be ignored
     reg.Dispatch(
         DispatchFileChecked
-            { File = "/tmp/repo/Foo.fs"
+            { File = AbsFilePath.create "/tmp/repo/Foo.fs"
               Source = ""
               ParseResults = Unchecked.defaultof<_>
               CheckResults = ParseOnly

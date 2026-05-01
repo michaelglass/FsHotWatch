@@ -998,7 +998,8 @@ let create
                     let isIdle = not (ctx.IsRunning "tests")
 
                     try
-                        let relPath = Path.GetRelativePath(repoRoot, result.File).Replace('\\', '/')
+                        let fileStr = AbsFilePath.value result.File
+                        let relPath = Path.GetRelativePath(repoRoot, fileStr).Replace('\\', '/')
 
                         // Canonical project identity. For real .fsproj files, FCS
                         // gives "MyProject.fsproj" → "MyProject". For .fsx scripts
@@ -1014,7 +1015,7 @@ let create
                                 raw
 
                         let! analysisResult =
-                            analyzeSource ctx.Checker result.File result.Source result.ProjectOptions projectName
+                            analyzeSource ctx.Checker fileStr result.Source result.ProjectOptions projectName
 
                         match analysisResult with
                         | Ok analysisResult ->
@@ -1080,7 +1081,7 @@ let create
                             // Update class→file mapping for test methods found in this file
                             let newClassFiles =
                                 fileAnalysis.TestMethods
-                                |> List.fold (fun acc t -> Map.add t.TestClass result.File acc) state.TestClassFiles
+                                |> List.fold (fun acc t -> Map.add t.TestClass fileStr acc) state.TestClassFiles
 
                             // AffectedTests is no longer eagerly populated here. The
                             // `affected-tests` IPC command computes it on demand from
@@ -1357,7 +1358,7 @@ let create
                     FsHotWatch.TaskCache.merkleCacheKey
                         [ "plugin-version", "test-prune-merkle-v2"
                           "event", "FileChecked"
-                          "file", r.File
+                          "file", AbsFilePath.value r.File
                           "source", r.Source
                           "fcs-signature", fcsSignature ]
                 )

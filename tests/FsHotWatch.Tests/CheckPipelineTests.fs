@@ -51,7 +51,11 @@ type private InMemoryCache() =
 [<Fact(Timeout = 15000)>]
 let ``CheckFile returns None when no project registered for the file`` () =
     let pipeline = CheckPipeline(nullChecker)
-    let result = pipeline.CheckFile("/tmp/nonexistent/Lib.fs") |> Async.RunSynchronously
+
+    let result =
+        pipeline.CheckFile(AbsFilePath.create "/tmp/nonexistent/Lib.fs")
+        |> Async.RunSynchronously
+
     test <@ result = None @>
 
 [<Fact(Timeout = 15000)>]
@@ -81,9 +85,11 @@ let ``RegisterProject makes CheckFile find the project for its source files`` ()
 
         pipeline.RegisterProject("/tmp/Test.fsproj", options)
 
-        let result = pipeline.CheckFile(absSource) |> Async.RunSynchronously
+        let result =
+            pipeline.CheckFile(AbsFilePath.create absSource) |> Async.RunSynchronously
+
         test <@ result.IsSome @>
-        test <@ result.Value.File = absSource @>
+        test <@ AbsFilePath.value result.Value.File = absSource @>
     finally
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
@@ -95,7 +101,10 @@ let ``CheckFile returns None for unregistered file even when other projects exis
     let options = dummyOptions "/tmp/Other.fsproj" [ "/tmp/Other.fs" ]
     pipeline.RegisterProject("/tmp/Other.fsproj", options)
 
-    let result = pipeline.CheckFile("/tmp/NotRegistered.fs") |> Async.RunSynchronously
+    let result =
+        pipeline.CheckFile(AbsFilePath.create "/tmp/NotRegistered.fs")
+        |> Async.RunSynchronously
+
     test <@ result = None @>
 
 [<Fact(Timeout = 15000)>]
@@ -152,8 +161,18 @@ let ``PrepareForRediscovery clears stale file options`` () =
     pipeline.RegisterProject("/tmp/MyProject.fsproj", options)
 
     // Verify both files and the project are registered
-    test <@ pipeline.GetAllRegisteredFiles() |> List.contains "/tmp/FileA.fs" @>
-    test <@ pipeline.GetAllRegisteredFiles() |> List.contains "/tmp/FileB.fs" @>
+    test
+        <@
+            pipeline.GetAllRegisteredFiles()
+            |> List.contains (AbsFilePath.create "/tmp/FileA.fs")
+        @>
+
+    test
+        <@
+            pipeline.GetAllRegisteredFiles()
+            |> List.contains (AbsFilePath.create "/tmp/FileB.fs")
+        @>
+
     test <@ pipeline.GetRegisteredProjects() |> List.contains "/tmp/MyProject.fsproj" @>
 
     // Simulate re-discovery: clear, then re-register without FileB
@@ -166,8 +185,19 @@ let ``PrepareForRediscovery clears stale file options`` () =
     pipeline.RegisterProject("/tmp/MyProject.fsproj", updatedOptions)
 
     // FileA should still be registered, FileB should be gone
-    test <@ pipeline.GetAllRegisteredFiles() |> List.contains "/tmp/FileA.fs" @>
-    test <@ pipeline.GetAllRegisteredFiles() |> List.contains "/tmp/FileB.fs" |> not @>
+    test
+        <@
+            pipeline.GetAllRegisteredFiles()
+            |> List.contains (AbsFilePath.create "/tmp/FileA.fs")
+        @>
+
+    test
+        <@
+            pipeline.GetAllRegisteredFiles()
+            |> List.contains (AbsFilePath.create "/tmp/FileB.fs")
+            |> not
+        @>
+
     test <@ pipeline.GetRegisteredProjects() |> List.contains "/tmp/MyProject.fsproj" @>
 
 [<Fact(Timeout = 15000)>]
@@ -186,8 +216,8 @@ let ``RegisterProject excludes obj and bin files from registration`` () =
     pipeline.RegisterProject("/tmp/MyProject.fsproj", options)
 
     let registered = pipeline.GetAllRegisteredFiles()
-    test <@ registered |> List.contains "/tmp/src/Real.fs" @>
-    test <@ registered |> List.contains "/tmp/src/Another.fs" @>
+    test <@ registered |> List.contains (AbsFilePath.create "/tmp/src/Real.fs") @>
+    test <@ registered |> List.contains (AbsFilePath.create "/tmp/src/Another.fs") @>
     test <@ registered |> List.length = 2 @>
 
 [<Fact(Timeout = 15000)>]
@@ -197,24 +227,25 @@ let ``CheckFile returns None when token is cancelled`` () =
     cts.Cancel()
 
     let result =
-        pipeline.CheckFile("/tmp/anything.fs", cts.Token) |> Async.RunSynchronously
+        pipeline.CheckFile(AbsFilePath.create "/tmp/anything.fs", cts.Token)
+        |> Async.RunSynchronously
 
     test <@ result = None @>
 
 [<Fact(Timeout = 15000)>]
 let ``CancelPreviousCheck cancels previous token for same file`` () =
     let pipeline = CheckPipeline(nullChecker)
-    let first = pipeline.CancelPreviousCheck("/tmp/Test.fs")
+    let first = pipeline.CancelPreviousCheck(AbsFilePath.create "/tmp/Test.fs")
     test <@ not first.IsCancellationRequested @>
 
-    let _second = pipeline.CancelPreviousCheck("/tmp/Test.fs")
+    let _second = pipeline.CancelPreviousCheck(AbsFilePath.create "/tmp/Test.fs")
     test <@ first.IsCancellationRequested @>
 
 [<Fact(Timeout = 15000)>]
 let ``PrepareForRediscovery cancels all file tokens`` () =
     let pipeline = CheckPipeline(nullChecker)
-    let cts1 = pipeline.CancelPreviousCheck("/tmp/A.fs")
-    let cts2 = pipeline.CancelPreviousCheck("/tmp/B.fs")
+    let cts1 = pipeline.CancelPreviousCheck(AbsFilePath.create "/tmp/A.fs")
+    let cts2 = pipeline.CancelPreviousCheck(AbsFilePath.create "/tmp/B.fs")
 
     pipeline.PrepareForRediscovery()
 
@@ -225,7 +256,9 @@ let ``PrepareForRediscovery cancels all file tokens`` () =
 let ``CancelPreviousCheck links to caller token`` () =
     let pipeline = CheckPipeline(nullChecker)
     let callerCts = new CancellationTokenSource()
-    let fileCts = pipeline.CancelPreviousCheck("/tmp/Linked.fs", callerCts.Token)
+
+    let fileCts =
+        pipeline.CancelPreviousCheck(AbsFilePath.create "/tmp/Linked.fs", callerCts.Token)
 
     callerCts.Cancel()
     test <@ fileCts.IsCancellationRequested @>
@@ -249,8 +282,11 @@ let ``CheckFile assigns increasing version numbers`` () =
 
         pipeline.RegisterProject("/tmp/Version.fsproj", options)
 
-        let result1 = pipeline.CheckFile(absSource) |> Async.RunSynchronously
-        let result2 = pipeline.CheckFile(absSource) |> Async.RunSynchronously
+        let result1 =
+            pipeline.CheckFile(AbsFilePath.create absSource) |> Async.RunSynchronously
+
+        let result2 =
+            pipeline.CheckFile(AbsFilePath.create absSource) |> Async.RunSynchronously
 
         test <@ result1.IsSome @>
         test <@ result2.IsSome @>
@@ -268,32 +304,32 @@ let ``InvalidateFile with cache backend calls Invalidate for registered file`` (
 
     let options = dummyOptions "/tmp/Inv.fsproj" [ "/tmp/Inv.fs" ]
     pipeline.RegisterProject("/tmp/Inv.fsproj", options)
-    pipeline.InvalidateFile("/tmp/Inv.fs")
+    pipeline.InvalidateFile(AbsFilePath.create "/tmp/Inv.fs")
     test <@ cache.InvalidateCalls.Count = 1 @>
 
 [<Fact(Timeout = 15000)>]
 let ``InvalidateFile with cache backend does nothing for unregistered file`` () =
     let cache = InMemoryCache()
     let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
-    pipeline.InvalidateFile("/tmp/Unknown.fs")
+    pipeline.InvalidateFile(AbsFilePath.create "/tmp/Unknown.fs")
     test <@ cache.InvalidateCalls.Count = 0 @>
 
 [<Fact(Timeout = 15000)>]
 let ``InvalidateFile without cache backend does not throw`` () =
     let pipeline = CheckPipeline(nullChecker)
     // No cache backend — should be a no-op without error
-    pipeline.InvalidateFile("/tmp/NoCacheFile.fs")
+    pipeline.InvalidateFile(AbsFilePath.create "/tmp/NoCacheFile.fs")
 
 // --- cancelAndDispose already-disposed CTS (lines 17-18) ---
 
 [<Fact(Timeout = 15000)>]
 let ``CancelPreviousCheck tolerates already-disposed CTS`` () =
     let pipeline = CheckPipeline(nullChecker)
-    let cts = pipeline.CancelPreviousCheck("/tmp/Disposable.fs")
+    let cts = pipeline.CancelPreviousCheck(AbsFilePath.create "/tmp/Disposable.fs")
     // Manually dispose the CTS before the pipeline tries to cancel it
     cts.Dispose()
     // This second call will try to cancel+dispose the first (already disposed) CTS
-    let newCts = pipeline.CancelPreviousCheck("/tmp/Disposable.fs")
+    let newCts = pipeline.CancelPreviousCheck(AbsFilePath.create "/tmp/Disposable.fs")
     test <@ not newCts.IsCancellationRequested @>
 
 // --- PrepareForRediscovery clears cache backend ---
@@ -332,7 +368,8 @@ let ``CheckFile returns None when cancelled before FCS call`` () =
     cts.Cancel()
 
     let result =
-        pipeline.CheckFile("/tmp/Cancel.fs", cts.Token) |> Async.RunSynchronously
+        pipeline.CheckFile(AbsFilePath.create "/tmp/Cancel.fs", cts.Token)
+        |> Async.RunSynchronously
 
     test <@ result = None @>
 
@@ -364,7 +401,10 @@ let ``CheckFile honors a pre-cancelled caller token and returns None`` () =
         use cts = new CancellationTokenSource()
         cts.Cancel()
 
-        let result = pipeline.CheckFile(absSource, cts.Token) |> Async.RunSynchronously
+        let result =
+            pipeline.CheckFile(AbsFilePath.create absSource, cts.Token)
+            |> Async.RunSynchronously
+
         test <@ result = None @>)
 
 // --- Cache hit returns None (plugins can't use partial results) ---
@@ -381,7 +421,7 @@ let private dummyKey suffix =
       ProjectOptionsHash = ContentHash.create $"opts-%s{suffix}" }
 
 let private fullCheckResult path options =
-    { File = path
+    { File = AbsFilePath.create path
       Source = "module M"
       ParseResults = Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpParseFileResults>
       CheckResults = FullCheck Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults>
@@ -389,7 +429,7 @@ let private fullCheckResult path options =
       Version = 1L }
 
 let private parseOnlyResult path options =
-    { File = path
+    { File = AbsFilePath.create path
       Source = "module M"
       ParseResults = Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpParseFileResults>
       CheckResults = ParseOnly
@@ -421,7 +461,7 @@ let ``tryGetCachedFullCheck returns Some on FullCheck hit`` () =
     cache.Set key (fullCheckResult "/tmp/Hit.fs" opts)
     let result = tryGetCachedFullCheck (Some cache) (Some key)
     test <@ result.IsSome @>
-    test <@ result.Value.File = "/tmp/Hit.fs" @>
+    test <@ AbsFilePath.value result.Value.File = "/tmp/Hit.fs" @>
 
 [<Fact(Timeout = 15000)>]
 let ``tryGetCachedFullCheck returns None when cached entry is ParseOnly`` () =
@@ -451,9 +491,11 @@ let ``CheckFile short-circuits via cache hit without invoking FCS`` () =
     let seeded = fullCheckResult "/tmp/Hot.fs" opts
     (cache :> ICheckCacheBackend).Set key seeded
 
-    let result = pipeline.CheckFile("/tmp/Hot.fs") |> Async.RunSynchronously
+    let result =
+        pipeline.CheckFile(AbsFilePath.create "/tmp/Hot.fs") |> Async.RunSynchronously
+
     test <@ result.IsSome @>
-    test <@ result.Value.File = "/tmp/Hot.fs" @>
+    test <@ AbsFilePath.value result.Value.File = "/tmp/Hot.fs" @>
 
 [<Fact(Timeout = 15000)>]
 let ``InvalidateFile removes cached entry so next CheckFile would re-check`` () =
@@ -474,6 +516,6 @@ let ``InvalidateFile removes cached entry so next CheckFile would re-check`` () 
             |> Option.isSome
         @>
 
-    pipeline.InvalidateFile("/tmp/Inv2.fs")
+    pipeline.InvalidateFile(AbsFilePath.create "/tmp/Inv2.fs")
     test <@ tryGetCachedFullCheck (Some(cache :> ICheckCacheBackend)) (Some key) = None @>
     test <@ cache.InvalidateCalls.Count = 1 @>
