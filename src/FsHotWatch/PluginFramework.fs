@@ -144,6 +144,12 @@ type RegisteredPlugin =
         Dispatch: PluginDispatchEvent -> unit
         /// Optional teardown function for releasing resources.
         Teardown: (unit -> unit) option
+        /// True iff this plugin has at least one event still pending in its
+        /// mailbox or actively being processed by its handler. Used by
+        /// `WaitForComplete` to avoid the race where a plugin's status is
+        /// observably Idle but an event has been posted to its mailbox and
+        /// will trigger work as soon as the handler runs.
+        IsBusy: unit -> bool
     }
 
 /// Host-provided services bundled into a record to avoid fragile positional params.
@@ -193,9 +199,19 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
     let mutable agentRef: MailboxProcessor<Choice<PluginEvent<'Msg>, AsyncReplyChannel<'State>>> option =
         None
 
+    // Per-plugin inflight counter: incremented every time a Choice1Of2 event
+    // is posted to the agent's mailbox, decremented after the agent has
+    // finished handling that event. `WaitForComplete` consults this via
+    // `RegisteredPlugin.IsBusy` to avoid declaring quiescence while events are
+    // still queued or being processed but the plugin's status is observably
+    // Idle (e.g. handler hasn't yet called ReportStatus(Running)).
+    let inflightCount = ref 0
+
     let post (msg: 'Msg) =
         match agentRef with
-        | Some a -> a.Post(Choice1Of2(Custom msg))
+        | Some a ->
+            System.Threading.Interlocked.Increment(&inflightCount.contents) |> ignore
+            a.Post(Choice1Of2(Custom msg))
         | None -> ()
 
     let runOne (key: string) (w: Async<'Msg>) =
@@ -468,11 +484,24 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 ch.Reply(state)
                                 return! loop state
                             | Choice1Of2 event ->
-                                if tryReplayCache event then
-                                    return! loop state
-                                else
-                                    let! nextState = runAndCache event state
-                                    return! loop nextState
+                                let! nextState =
+                                    async {
+                                        try
+                                            if tryReplayCache event then
+                                                return state
+                                            else
+                                                return! runAndCache event state
+                                        finally
+                                            // Decrement only after the handler
+                                            // (or cache replay) finishes — until
+                                            // then `IsBusy` must report true so
+                                            // WaitForComplete doesn't return
+                                            // before this event has actually been
+                                            // processed.
+                                            System.Threading.Interlocked.Decrement(&inflightCount.contents) |> ignore
+                                    }
+
+                                return! loop nextState
                         }
 
                     loop handler.Init)
@@ -492,7 +521,10 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
         )
 
     // Build type-erased registration with subscription-filtered dispatch
-    let post event = agent.Post(Choice1Of2 event)
+    let post event =
+        System.Threading.Interlocked.Increment(&inflightCount.contents) |> ignore
+        agent.Post(Choice1Of2 event)
+
     let has e = handler.Subscriptions.Contains(e)
 
     let dispatch event =
@@ -509,7 +541,8 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
 
     { Name = handler.Name
       Dispatch = dispatch
-      Teardown = handler.Teardown }
+      Teardown = handler.Teardown
+      IsBusy = fun () -> System.Threading.Volatile.Read(&inflightCount.contents) > 0 }
 
 /// Ergonomic helpers over PluginCtx that every plugin tends to want.
 module PluginCtxHelpers =
