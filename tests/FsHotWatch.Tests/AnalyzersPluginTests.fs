@@ -146,7 +146,7 @@ let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
     host.RegisterHandler(handler)
 
     let fakeResult: FileCheckResult =
-        { File = "/tmp/nonexistent/Fake.fs"
+        { File = AbsFilePath.create "/tmp/nonexistent/Fake.fs"
           Source = "let x = 1"
           ParseResults = Unchecked.defaultof<_>
           CheckResults = ParseOnly

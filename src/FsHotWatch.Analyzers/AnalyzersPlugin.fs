@@ -23,7 +23,7 @@ type AnalyzersMsg =
     | AnalysisFailed of file: string * error: string
 
 type AnalyzersState =
-    { DiagnosticsByFile: Map<string, ErrorEntry list>
+    { DiagnosticsByFile: Map<AbsFilePath, ErrorEntry list>
       LoadedCount: int
       RunAnalyzed: int
       RunFindings: int
@@ -212,14 +212,15 @@ let internal createWithSlowHook
             async {
                 match event with
                 | FileChecked result ->
+                    let fileStr = AbsFilePath.value result.File
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
-                    ctx.StartSubtask PrimarySubtaskKey $"analyzing {Path.GetFileName result.File}"
+                    ctx.StartSubtask PrimarySubtaskKey $"analyzing {Path.GetFileName fileStr}"
 
                     let checkResultsObj =
                         match result.CheckResults with
                         | FullCheck cr -> box cr
                         | ParseOnly ->
-                            debug "analyzers" $"Running parse-only analyzers for %s{result.File}"
+                            debug "analyzers" $"Running parse-only analyzers for %s{fileStr}"
                             null
 
                     // Run analysis inline (awaited) so the framework's per-event
@@ -237,8 +238,8 @@ let internal createWithSlowHook
                                 return!
                                     PluginCtxHelpers.withSubtask
                                         ctx
-                                        result.File
-                                        $"analyzing {Path.GetFileName result.File}"
+                                        fileStr
+                                        $"analyzing {Path.GetFileName fileStr}"
                                         (async {
                                             try
                                                 let runAnalyzers () =
@@ -250,7 +251,7 @@ let internal createWithSlowHook
 
                                                     let context =
                                                         createCliContext
-                                                            (box result.File)
+                                                            (box fileStr)
                                                             (box sourceText)
                                                             (box result.ParseResults)
                                                             checkResultsObj
@@ -262,9 +263,7 @@ let internal createWithSlowHook
                                                 | WorkTimedOut after ->
                                                     let reason = $"timed out after %d{int after.TotalSeconds}s"
 
-                                                    error
-                                                        "analyzers"
-                                                        $"Analyzers TIMED OUT for %s{result.File}: %s{reason}"
+                                                    error "analyzers" $"Analyzers TIMED OUT for %s{fileStr}: %s{reason}"
 
                                                     ctx.EndSubtask PrimarySubtaskKey
                                                     ctx.CompleteWithTimeout reason
@@ -303,11 +302,11 @@ let internal createWithSlowHook
 
                                                     debug
                                                         "analyzers"
-                                                        $"Analyzed %s{Path.GetFileName result.File}: %d{entries.Length} diagnostics"
+                                                        $"Analyzed %s{Path.GetFileName fileStr}: %d{entries.Length} diagnostics"
 
                                                     return Choice2Of3 entries
                                             with ex ->
-                                                error "analyzers" $"Error analyzing %s{result.File}: %s{ex.ToString()}"
+                                                error "analyzers" $"Error analyzing %s{fileStr}: %s{ex.ToString()}"
 
                                                 return Choice3Of3(ex.ToString())
                                         })
@@ -323,7 +322,7 @@ let internal createWithSlowHook
                         // Success — apply the same state updates the old AnalysisComplete handler did,
                         // then call completeWith inside this event's window so the framework writes the
                         // cache for FileChecked.
-                        PluginCtxHelpers.reportOrClearFile ctx result.File entries
+                        PluginCtxHelpers.reportOrClearFile ctx fileStr entries
 
                         let updated = state.DiagnosticsByFile |> Map.add result.File entries
 
@@ -357,12 +356,12 @@ let internal createWithSlowHook
                                 RunWarnings = warnings }
                     | Choice3Of3 errMsg ->
                         // Crash — same logic as old Custom AnalysisFailed handler.
-                        ctx.ReportErrors result.File [ ErrorEntry.error $"Analyzer crashed: %s{errMsg}" ]
+                        ctx.ReportErrors fileStr [ ErrorEntry.error $"Analyzer crashed: %s{errMsg}" ]
                         ctx.EndSubtask PrimarySubtaskKey
-                        PluginCtxHelpers.completeWith ctx $"analyzer crashed on {Path.GetFileName result.File}"
+                        PluginCtxHelpers.completeWith ctx $"analyzer crashed on {Path.GetFileName fileStr}"
                         return state
                 | Custom(AnalysisComplete(file, entries)) ->
-                    let updated = state.DiagnosticsByFile |> Map.add file entries
+                    let updated = state.DiagnosticsByFile |> Map.add (AbsFilePath.create file) entries
 
                     let newErrors =
                         entries
@@ -433,7 +432,7 @@ let internal createWithSlowHook
                     FsHotWatch.TaskCache.merkleCacheKey
                         [ "plugin-version", "analyzers-merkle-v2"
                           "analyzer-paths", analyzerPathsHash
-                          "file", result.File
+                          "file", AbsFilePath.value result.File
                           "source", result.Source
                           "fcs-signature", fcsSignature ]
                 )
