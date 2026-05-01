@@ -595,6 +595,54 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
         @>
 
 [<Fact(Timeout = 20000)>]
+let ``OnStatusChanged subscriber re-entrantly calling GetAllStatuses does not deadlock`` () =
+    // Pins the invariant that statusChanged.Trigger fires OUTSIDE the status agent's
+    // serialization boundary. If the trigger fired inside the agent's loop, a
+    // subscriber doing PostAndReply (GetAllStatuses) would block waiting for the
+    // agent that is itself blocked inside the trigger.
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let observedFromHandler = ref None
+    let handlerEntered = new ManualResetEventSlim(false)
+    let handlerDone = new ManualResetEventSlim(false)
+
+    host.OnStatusChanged.Add(fun (name, _status) ->
+        if name = "reentrant" then
+            handlerEntered.Set()
+            // Re-entrant read must not deadlock.
+            let snapshot = host.GetAllStatuses()
+            observedFromHandler.Value <- Some snapshot
+            handlerDone.Set())
+
+    let handler =
+        { Name = PluginName.create "reentrant"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ -> ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          RequireWarmStart = false
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    let entered = handlerEntered.Wait(TimeSpan.FromSeconds(5.0))
+    test <@ entered @>
+    let finished = handlerDone.Wait(TimeSpan.FromSeconds(5.0))
+    test <@ finished @>
+    test <@ observedFromHandler.Value.IsSome @>
+    test <@ observedFromHandler.Value.Value |> Map.containsKey "reentrant" @>
+
+[<Fact(Timeout = 20000)>]
 let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls GetAllStatuses`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
