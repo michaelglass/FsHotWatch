@@ -12,13 +12,34 @@ let isGeneratedPath (path: string) =
     n.Contains("/obj/") || n.Contains("/bin/")
 
 /// True if the path matches any of the given exclude patterns or is inside obj/bin.
-/// Exclude patterns use gitignore-style glob syntax.
-let isExcludedPath (excludePatterns: string list) : (string -> bool) =
+/// Exclude patterns use gitignore-style glob syntax interpreted relative to
+/// `repoRoot`. Files outside `repoRoot` are not subject to user excludes
+/// (only the implicit obj/bin filter still applies). This matches gitignore
+/// semantics: patterns like `.workspaces/` only match paths that are
+/// repo-relative `.workspaces/...`, not arbitrary absolute paths that happen
+/// to contain that segment.
+let isExcludedPath (repoRoot: string) (excludePatterns: string list) : (string -> bool) =
     match excludePatterns with
     | [] -> isGeneratedPath
     | patterns ->
         let ig = (Ignore(), patterns) ||> List.fold (fun ig pat -> ig.Add(pat))
-        fun path -> isGeneratedPath path || ig.IsIgnored(normalize path)
+
+        let toRepoRelative (path: string) : string option =
+            let rel = Path.GetRelativePath(repoRoot, path).Replace('\\', '/')
+            // GetRelativePath returns a rooted path when it can't relativize
+            // (e.g. different drive roots on Windows) and a `..`-prefixed
+            // path when `path` lies outside `repoRoot`. In both cases the
+            // file is not repo-relative, so user excludes should not apply.
+            if Path.IsPathRooted(rel) || rel.StartsWith("..") then
+                None
+            else
+                Some rel
+
+        fun path ->
+            isGeneratedPath path
+            || (match toRepoRelative path with
+                | Some rel -> ig.IsIgnored(rel)
+                | None -> false)
 
 /// Load an ignore file (gitignore syntax) and return a predicate that checks
 /// absolute paths against it. Returns a function that always returns false
