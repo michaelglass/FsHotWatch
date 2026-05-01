@@ -1119,7 +1119,13 @@ let create
                     match buildResult with
                     | BuildSucceeded ->
                         if ctx.IsRunning "tests" then
-                            ctx.Log "queued re-run (tests already running)"
+                            // Leading "  ↳ " (↳) indents this entry one
+                            // level beyond test-result lines in the activity-fold
+                            // `recent:` view. The renderer adds 8 spaces to every
+                            // tail entry; we add 2 more here so it visually nests
+                            // under the in-flight test run rather than reading as
+                            // a sibling of the test-result lines.
+                            ctx.Log "  ↳ queued re-run (tests already running)"
 
                             Logging.info
                                 "test-prune"
