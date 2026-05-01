@@ -887,7 +887,6 @@ let ``BuildPlugin succeeds with echo command`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     let handler =
@@ -933,7 +932,6 @@ let ``BuildPlugin fails with false command`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     let handler = BuildPlugin.create "false" "" [] (ProjectGraph()) [] None [] None
@@ -1355,7 +1353,6 @@ let ``BuildPlugin does not run concurrent builds`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     // Use /bin/sleep 1 as a slow build command so the second emit arrives while the first is running
@@ -1879,7 +1876,6 @@ let ``concurrent FileChanged events do not start two builds`` () =
           Commands = []
           Subscriptions = Set.ofList [ SubscribeBuildCompleted ]
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     // Slow build (sleep 1) so the second FileChanged certainly arrives mid-build.
@@ -1981,7 +1977,6 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
           Commands = []
           Subscriptions = Set.ofList [ SubscribeFileChanged ]
           CacheKey = None
-          RequireWarmStart = false
           Teardown = None }
 
     host.RegisterHandler(makeStatusHandler "a" (fun ctx -> ctx.ReportStatus(Idle)))
