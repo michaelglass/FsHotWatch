@@ -649,8 +649,32 @@ let formatPluginWait
 
     $"%s{pluginName} (%s{elapsed}){subtaskPart}"
 
-/// Wait for all plugins to reach a terminal state with 1-second stability confirmation.
-/// Times out with TimeoutException after the specified timeout.
+/// Quiescence window applied after the last host activity (event dispatch or
+/// plugin status transition) before WaitForComplete declares the host idle.
+/// Picks up the "plugin transitioned through Idle between cycles" race: a
+/// plugin that's about to start a new cycle in response to a freshly-emitted
+/// event won't have updated its status yet, so the waiter must give the
+/// dispatch pipeline a chance to land before returning.
+let internal waitForAllTerminalQuiescenceWindow =
+    System.TimeSpan.FromMilliseconds(200.0)
+
+/// Wait for all plugins to settle. A plugin "settles" when:
+///   1. It's in a non-Running status (Idle / Completed / Failed) AND its
+///      work-cycle generation has advanced past the snapshot taken at call
+///      time — i.e. it has actually completed at least one cycle since we
+///      started waiting; OR
+///   2. It's been quiet through a 200ms quiescence window measured from the
+///      most recent host activity (event dispatch or status change). This
+///      handles plugins that legitimately have no work to do during this
+///      cycle (don't subscribe to a relevant event), and makes the wait
+///      bounded when nothing is happening.
+///
+/// The quiescence window also closes the race that motivated this design:
+/// without it, WaitForComplete could observe `allTerminal=true` in the brief
+/// window between a plugin emitting BuildCompleted, transitioning Completed,
+/// and a downstream plugin's mailbox actually picking up the BuildCompleted
+/// event and transitioning into Running. Times out with TimeoutException
+/// after the specified timeout.
 let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) () : Task<unit> =
     // TimeSpan.MaxValue signals "no timeout"; adding it to UtcNow overflows, so skip
     // deadline computation entirely in that case and rely on the MaxValue guard in loop.
@@ -661,6 +685,16 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
             System.DateTime.UtcNow + timeout
 
     let mutable lastLogTime = System.DateTime.UtcNow
+
+    // Snapshot per-plugin generations at call time. A plugin satisfies the
+    // "advanced a generation" leg of the wait condition once its current
+    // generation exceeds the snapshot value AND it's in a non-Running status.
+    // Plugins registered after the snapshot default to 0, which any later
+    // Idle->Running transition will exceed.
+    let snapshotGenerations = host.WorkCycleGenerations()
+
+    let generationOf (name: string) (gens: Map<string, int64>) =
+        Map.tryFind name gens |> Option.defaultValue 0L
 
     let getRunningPlugins () =
         let now = System.DateTime.UtcNow
@@ -684,17 +718,57 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
             lastLogTime <- now
 
             match getRunningPlugins () with
-            | [] -> Logging.info "wait" "All plugins terminal, waiting for stability confirmation..."
+            | [] -> Logging.info "wait" "All plugins terminal, waiting for quiescence..."
             | plugins ->
                 let joined = plugins |> String.concat ", "
                 Logging.info "wait" $"Waiting for plugins: %s{joined}"
 
     let formatTimeoutDetail () =
         match getRunningPlugins () with
-        | [] -> "all terminal but stability check failed"
+        | [] -> "all terminal but quiescence check failed"
         | running ->
             let joined = running |> String.concat ", "
             $"still running: %s{joined}"
+
+    let isQuiescent () =
+        System.DateTime.UtcNow - host.LastActivityAt()
+        >= waitForAllTerminalQuiescenceWindow
+
+    let allPluginsAdvancedToTerminal () =
+        let statuses = host.GetAllStatuses()
+        let currentGens = host.WorkCycleGenerations()
+
+        not statuses.IsEmpty
+        && statuses
+           |> Map.forall (fun name s ->
+               match s with
+               | Completed _
+               | Failed _ ->
+                   let snap = generationOf name snapshotGenerations
+                   let cur = generationOf name currentGens
+                   // Plugin must have completed a cycle DURING this wait.
+                   // For plugins already terminal at snapshot with the same
+                   // generation, that means no work happened — fall back to
+                   // quiescence in the caller.
+                   cur > snap
+               | _ -> false)
+
+    let allPluginsAtRest () =
+        // Conservative quiescence-based completion: no plugin is Running, no
+        // plugin has events still inflight (queued or being processed by its
+        // mailbox), and no host-level activity has happened in the quiescence
+        // window. Together these prove there's no work in flight that we could
+        // miss by returning now.
+        let statuses = host.GetAllStatuses()
+
+        not statuses.IsEmpty
+        && not (host.AnyPluginBusy())
+        && statuses
+           |> Map.forall (fun _ s ->
+               match s with
+               | Running _ -> false
+               | _ -> true)
+        && isQuiescent ()
 
     let rec loop () =
         async {
@@ -703,17 +777,19 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
 
                 raise (System.TimeoutException($"WaitForComplete timed out after %O{timeout} — %s{detail}"))
 
-            let statuses = host.GetAllStatuses()
-
-            if allTerminal statuses then
-                // Stability check: wait 1 second, then confirm still terminal
-                do! Async.Sleep 1000
-                let final = host.GetAllStatuses()
-
-                if allTerminal final then return () else return! loop ()
+            // Two satisfaction paths:
+            //   1. Every plugin started a new cycle since the snapshot AND has
+            //      reached terminal — clearly all the work triggered while we
+            //      were waiting has completed.
+            //   2. No plugin is Running, no plugin has inflight events, and the
+            //      host has been quiet for the quiescence window. This handles
+            //      plugins that legitimately have nothing to do this cycle, and
+            //      bounds the wait when nothing is happening.
+            if allPluginsAdvancedToTerminal () || allPluginsAtRest () then
+                return ()
             else
                 logRunningPlugins ()
-                do! Async.Sleep 100
+                do! Async.Sleep 50
                 return! loop ()
         }
 
