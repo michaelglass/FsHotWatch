@@ -470,369 +470,420 @@ let executeCommand
     let mode = pickMode opts.AgentMode opts.CompactMode
     let noWarnFail = opts.NoWarnFail
 
-    let ensureDaemonFn () =
-        ensureDaemon ipc repoRoot pipeName opts.DaemonExtraArgs config.LogDir startupTimeoutSeconds
+    // Fail-fast on misconfiguration BEFORE starting (or polling for) a daemon
+    // for any project-requiring command. The daemon's `start` path performs
+    // the same check internally and exits 2; if we reached `ensureDaemon`
+    // without checking here, the freshly-launched daemon would exit 2, the
+    // CLI's `IsRunning` poll would never observe a live daemon, and the user
+    // would see "Failed to start daemon" + exit 1 instead of the structured
+    // "no projects discovered" + exit 2 contract. Status/Stop/Scan/Init/etc.
+    // either tolerate or aren't relevant to a zero-projects workspace, so
+    // they skip this check.
+    let needsProjects =
+        match command with
+        | Start
+        | Check _
+        | Build _
+        | Test _
+        | Format _
+        | Lint _
+        | Analyze _
+        | FormatCheck _
+        | Errors _
+        | Rerun _ -> true
+        | Stop
+        | Scan
+        | Status _
+        | Init
+        | Config _
+        | Coverage _
+        | Completions -> false
 
-    let queryPluginWith (mode: ProgressRenderer.RenderMode) (filter: string) : int =
-        ensureAndQueryErrors mode noWarnFail ensureDaemonFn ipc pipeName filter
-
-    let queryPlugin filter =
-        queryPluginWith ProgressRenderer.Verbose filter
-
-    let withDaemon (action: unit -> int) : int =
-        if not (ensureDaemonFn ()) then
-            eprintfn "Failed to start daemon"
-            1
+    // Only pre-check when we're about to launch (or have launched) a fresh
+    // daemon. A reused already-running daemon is already past discovery,
+    // and tests/integration paths that bypass real launch (with stub IPCs)
+    // don't need the pre-check.
+    let zeroProjectsExit =
+        if needsProjects && not (ipc.IsRunning pipeName) then
+            RunOnceOutput.failIfNoProjects repoRoot config.Exclude
         else
-            action ()
+            None
 
-    let withDaemonAndIpc (action: unit -> int) : int = withDaemon (fun () -> withIpc action)
+    match zeroProjectsExit with
+    | Some exitCode -> exitCode
+    | None ->
 
-    match command with
-    | Start ->
-        // Fail-fast on misconfiguration BEFORE acquiring the lockfile,
-        // writing the pidfile, or creating the daemon. Same contract as
-        // the run-once paths so every entry point behaves consistently:
-        // zero projects almost always means a wrong cwd or an over-eager
-        // `.fshw.json` exclude pattern, and there is no useful behaviour
-        // the daemon can provide.
-        match RunOnceOutput.failIfNoProjects repoRoot config.Exclude with
-        | Some exitCode -> exitCode
-        | None ->
+        let ensureDaemonFn () =
+            ensureDaemon ipc repoRoot pipeName opts.DaemonExtraArgs config.LogDir startupTimeoutSeconds
 
-            let stateDir = Path.Combine(repoRoot, ".fshw")
-            let pidFile = Path.Combine(stateDir, "daemon.pid")
-            let lockFile = Path.Combine(stateDir, "daemon.lock")
-            Directory.CreateDirectory(stateDir) |> ignore
+        let queryPluginWith (mode: ProgressRenderer.RenderMode) (filter: string) : int =
+            ensureAndQueryErrors mode noWarnFail ensureDaemonFn ipc pipeName filter
 
-            // OS-enforced singleton: hold an exclusive lock on daemon.lock for the
-            // daemon's lifetime. Two concurrent `start` invocations cannot both
-            // acquire it; the second exits cleanly. Replaces the earlier probe-based
-            // guard which had a TOCTOU window between IsRunning check and pipe claim.
-            let acquired =
-                try
-                    Some(new FileStream(lockFile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
-                with :? IOException ->
-                    None
+        let queryPlugin filter =
+            queryPluginWith ProgressRenderer.Verbose filter
 
-            match acquired with
+        let withDaemon (action: unit -> int) : int =
+            if not (ensureDaemonFn ()) then
+                eprintfn "Failed to start daemon"
+                1
+            else
+                action ()
+
+        let withDaemonAndIpc (action: unit -> int) : int = withDaemon (fun () -> withIpc action)
+
+        match command with
+        | Start ->
+            // Fail-fast on misconfiguration BEFORE acquiring the lockfile,
+            // writing the pidfile, or creating the daemon. Same contract as
+            // the run-once paths so every entry point behaves consistently:
+            // zero projects almost always means a wrong cwd or an over-eager
+            // `.fshw.json` exclude pattern, and there is no useful behaviour
+            // the daemon can provide.
+            match RunOnceOutput.failIfNoProjects repoRoot config.Exclude with
+            | Some exitCode -> exitCode
             | None ->
-                let pidInfo =
-                    if File.Exists pidFile then
-                        $" (pid %s{File.ReadAllText(pidFile).Trim()})"
-                    else
-                        ""
 
-                eprintfn $"Daemon already running at pipe %s{pipeName}%s{pidInfo}"
-                0
-            | Some lockStream ->
-                use _lock = lockStream
-                eprintfn $"Starting FsHotWatch daemon for %s{repoRoot}"
-                eprintfn $"Pipe: %s{pipeName}"
+                let stateDir = Path.Combine(repoRoot, ".fshw")
+                let pidFile = Path.Combine(stateDir, "daemon.pid")
+                let lockFile = Path.Combine(stateDir, "daemon.lock")
+                Directory.CreateDirectory(stateDir) |> ignore
 
-                // Write our own PID so killStaleDaemon can find the actual daemon process,
-                // not the nohup wrapper that launched us.
-                File.WriteAllText(pidFile, string (System.Diagnostics.Process.GetCurrentProcess().Id))
+                // OS-enforced singleton: hold an exclusive lock on daemon.lock for the
+                // daemon's lifetime. Two concurrent `start` invocations cannot both
+                // acquire it; the second exits cleanly. Replaces the earlier probe-based
+                // guard which had a TOCTOU window between IsRunning check and pipe claim.
+                let acquired =
+                    try
+                        Some(new FileStream(lockFile, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None))
+                    with :? IOException ->
+                        None
 
-                let daemon = createDaemon repoRoot
-                registerPlugins daemon repoRoot config
-                let cts = new CancellationTokenSource()
+                match acquired with
+                | None ->
+                    let pidInfo =
+                        if File.Exists pidFile then
+                            $" (pid %s{File.ReadAllText(pidFile).Trim()})"
+                        else
+                            ""
 
-                Console.CancelKeyPress.Add(fun e ->
-                    e.Cancel <- true
-                    cts.Cancel())
+                    eprintfn $"Daemon already running at pipe %s{pipeName}%s{pidInfo}"
+                    0
+                | Some lockStream ->
+                    use _lock = lockStream
+                    eprintfn $"Starting FsHotWatch daemon for %s{repoRoot}"
+                    eprintfn $"Pipe: %s{pipeName}"
 
-                // Stop the daemon cleanly if `.fshw.json` is edited. The
-                // user then runs the daemon again to pick up the new config (or
-                // sees the error if the edit was invalid). No hot-reload.
-                use _configWatcher =
-                    watchRepoConfigFile repoRoot (fun reason ->
-                        FsHotWatch.Logging.info "config" reason
+                    // Write our own PID so killStaleDaemon can find the actual daemon process,
+                    // not the nohup wrapper that launched us.
+                    File.WriteAllText(pidFile, string (System.Diagnostics.Process.GetCurrentProcess().Id))
+
+                    let daemon = createDaemon repoRoot
+                    registerPlugins daemon repoRoot config
+                    let cts = new CancellationTokenSource()
+
+                    Console.CancelKeyPress.Add(fun e ->
+                        e.Cancel <- true
                         cts.Cancel())
 
-                try
-                    Async.RunSynchronously(daemon.RunWithIpc(pipeName, cts))
-                with :? OperationCanceledException ->
-                    ()
-
-                eprintfn "Daemon stopped."
-
-                if File.Exists pidFile then
-                    File.Delete pidFile
-
-                0
-    | Stop ->
-        withIpc (fun () ->
-            // Multiple daemons may be listening on the same pipe (historically the
-            // start command spawned duplicates); iterate Shutdown until the pipe
-            // has been quiet for two consecutive probes so we don't leave orphans
-            // behind and don't misreport "No daemon running" while the OS is still
-            // tearing down the last pipe endpoint.
-            let overallTimeout = TimeSpan.FromSeconds(30.0)
-            let sw = System.Diagnostics.Stopwatch.StartNew()
-            let mutable stopped = 0
-            let mutable consecutiveQuiet = 0
-
-            while consecutiveQuiet < 2 && sw.Elapsed < overallTimeout do
-                if ipc.IsRunning pipeName then
-                    consecutiveQuiet <- 0
+                    // Stop the daemon cleanly if `.fshw.json` is edited. The
+                    // user then runs the daemon again to pick up the new config (or
+                    // sees the error if the edit was invalid). No hot-reload.
+                    use _configWatcher =
+                        watchRepoConfigFile repoRoot (fun reason ->
+                            FsHotWatch.Logging.info "config" reason
+                            cts.Cancel())
 
                     try
-                        ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
-                        stopped <- stopped + 1
-                    with _ ->
+                        Async.RunSynchronously(daemon.RunWithIpc(pipeName, cts))
+                    with :? OperationCanceledException ->
                         ()
-                else
-                    consecutiveQuiet <- consecutiveQuiet + 1
 
-                Thread.Sleep(100)
+                    eprintfn "Daemon stopped."
 
-            match stopped with
-            | 0 -> UI.info "No daemon running"
-            | 1 -> UI.success "Daemon stopped"
-            | n -> UI.success $"{n} daemons stopped"
+                    if File.Exists pidFile then
+                        File.Delete pidFile
 
-            0)
-    | Scan ->
-        withIpc (fun () ->
-            let result = ipc.Scan pipeName |> Async.RunSynchronously
-            UI.success $"Scan: %s{result}"
-            0)
-    | Status pluginName ->
+                    0
+        | Stop ->
+            withIpc (fun () ->
+                // Multiple daemons may be listening on the same pipe (historically the
+                // start command spawned duplicates); iterate Shutdown until the pipe
+                // has been quiet for two consecutive probes so we don't leave orphans
+                // behind and don't misreport "No daemon running" while the OS is still
+                // tearing down the last pipe endpoint.
+                let overallTimeout = TimeSpan.FromSeconds(30.0)
+                let sw = System.Diagnostics.Stopwatch.StartNew()
+                let mutable stopped = 0
+                let mutable consecutiveQuiet = 0
 
+                while consecutiveQuiet < 2 && sw.Elapsed < overallTimeout do
+                    if ipc.IsRunning pipeName then
+                        consecutiveQuiet <- 0
 
-        withIpc (fun () ->
-            let filter = pluginName |> Option.defaultValue ""
-            let json = ipc.GetDiagnostics pipeName filter |> Async.RunSynchronously
-            let resp = IpcParsing.parseDiagnosticsResponse json
-
-            // GetDiagnostics filters files by plugin but returns all plugin statuses.
-            // Narrow Statuses client-side when a specific plugin was requested.
-            let scoped =
-                match pluginName with
-                | None -> resp
-                | Some name ->
-                    { resp with
-                        Statuses = resp.Statuses |> Map.filter (fun k _ -> k = name) }
-
-            match pluginName with
-            | Some name when Map.isEmpty scoped.Statuses ->
-                eprintfn "not found: %s" name
-                1
-            | _ ->
-                let output =
-                    IpcOutput.formatDiagnosticsResponse mode (renderLines mode (not noWarnFail)) scoped
-
-                eprintfn "%s" output
-                IpcOutput.exitCodeFromResponse noWarnFail scoped)
-    | Build flags when isRunOnce flags ->
-        let buildConfig =
-            { stripConfig config with
-                Build = config.Build }
-
-
-
-        RunOnceOutput.runOnceAndReport
-            (renderBlock mode (not noWarnFail))
-            noWarnFail
-            createDaemon
-            repoRoot
-            buildConfig
-            (Some "build")
-    | Build flags ->
-
-
-        withDaemon (fun () ->
-            let result =
-                if UI.isInteractive then
-                    UI.withSpinner "Building" (fun () -> ipc.TriggerBuild pipeName |> Async.RunSynchronously)
-                else
-                    eprintfn "  Building..."
-                    ipc.TriggerBuild pipeName |> Async.RunSynchronously
-
-            IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
-    | Test flags when isRunOnce flags ->
-        let testConfig =
-            { stripConfig config with
-                Build = config.Build
-                Tests = config.Tests }
-
-
-
-        RunOnceOutput.runOnceAndReport
-            (renderBlock mode (not noWarnFail))
-            noWarnFail
-            createDaemon
-            repoRoot
-            testConfig
-            (Some "test-prune")
-    | Test flags ->
-
-
-        withDaemon (fun () ->
-            let result =
-                if UI.isInteractive then
-                    UI.withSpinner "Running tests" (fun () ->
-                        ipc.RunCommand pipeName "run-tests" "{}" |> Async.RunSynchronously)
-                else
-                    eprintfn "  Running tests..."
-                    ipc.RunCommand pipeName "run-tests" "{}" |> Async.RunSynchronously
-
-            IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
-    | Format flags when isRunOnce flags ->
-        let formatConfig =
-            { stripConfig config with
-                Format = FormatMode.Auto }
-
-
-
-        RunOnceOutput.runOnceAndReport
-            (renderBlock mode (not noWarnFail))
-            noWarnFail
-            createDaemon
-            repoRoot
-            formatConfig
-            (Some "format")
-    | Format flags ->
-
-
-        withDaemon (fun () ->
-            let result =
-                if UI.isInteractive then
-                    UI.withSpinner "Formatting" (fun () -> ipc.FormatAll pipeName |> Async.RunSynchronously)
-                else
-                    eprintfn "  Formatting..."
-                    ipc.FormatAll pipeName |> Async.RunSynchronously
-
-            IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
-    | Lint flags when isRunOnce flags ->
-        let lintConfig = { stripConfig config with Lint = true }
-
-
-        RunOnceOutput.runOnceAndReport
-            (renderBlock mode (not noWarnFail))
-            noWarnFail
-            createDaemon
-            repoRoot
-            lintConfig
-            (Some "lint")
-    | Lint flags -> queryPluginWith (mode) "lint"
-    | Analyze flags when isRunOnce flags ->
-        let analyzeConfig =
-            { stripConfig config with
-                Analyzers = config.Analyzers }
-
-
-
-        RunOnceOutput.runOnceAndReport
-            (renderBlock mode (not noWarnFail))
-            noWarnFail
-            createDaemon
-            repoRoot
-            analyzeConfig
-            (Some "analyzers")
-    | Analyze flags -> queryPluginWith (mode) "analyzers"
-    | FormatCheck flags when isRunOnce flags ->
-        let formatCheckConfig =
-            { stripConfig config with
-                Format = FormatMode.Check }
-
-
-
-        RunOnceOutput.runOnceAndReport
-            (renderBlock mode (not noWarnFail))
-            noWarnFail
-            createDaemon
-            repoRoot
-            formatCheckConfig
-            (Some "format-check")
-    | FormatCheck flags -> queryPluginWith (mode) "format-check"
-    | Errors flags ->
-
-
-        match WaitMode.fromFlags flags with
-        | Error msg ->
-            eprintfn "fshw errors: %s" msg
-            2
-        | Ok waitMode ->
-            withDaemonAndIpc (fun () ->
-                let waitResult =
-                    match waitMode with
-                    | WaitMode.NoWait -> Ok()
-                    | WaitMode.WaitFor timeout ->
                         try
-                            let timeoutMs = int timeout.TotalMilliseconds
-                            ipc.WaitForComplete pipeName timeoutMs |> Async.RunSynchronously |> ignore
-                            Ok()
-                        with
-                        | :? TimeoutException as ex -> Error ex.Message
-                        | ex ->
-                            let inner = unwrapIpcException ex
-                            Error $"daemon stopped or died before wait completed: %s{inner.Message}"
+                            ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
+                            stopped <- stopped + 1
+                        with _ ->
+                            ()
+                    else
+                        consecutiveQuiet <- consecutiveQuiet + 1
 
-                match waitResult with
-                | Error msg ->
-                    eprintfn "fshw errors --wait: %s" msg
-                    2
-                | Ok() ->
-                    let errorsJson = ipc.GetDiagnostics pipeName "" |> Async.RunSynchronously
-                    let resp = IpcParsing.parseDiagnosticsResponse errorsJson
+                    Thread.Sleep(100)
 
-                    eprintfn "%s" (IpcOutput.formatDiagnosticsResponse mode (renderLines mode (not noWarnFail)) resp)
+                match stopped with
+                | 0 -> UI.info "No daemon running"
+                | 1 -> UI.success "Daemon stopped"
+                | n -> UI.success $"{n} daemons stopped"
 
-                    IpcOutput.exitCodeFromResponse noWarnFail resp)
-    | Rerun pluginName ->
-        withDaemonAndIpc (fun () ->
-            let result =
-                if UI.isInteractive then
-                    UI.withSpinner $"Running %s{pluginName}" (fun () ->
-                        ipc.RerunPlugin pipeName pluginName |> Async.RunSynchronously)
-                else
-                    eprintfn "  Running %s..." pluginName
-                    ipc.RerunPlugin pipeName pluginName |> Async.RunSynchronously
+                0)
+        | Scan ->
+            withIpc (fun () ->
+                let result = ipc.Scan pipeName |> Async.RunSynchronously
+                UI.success $"Scan: %s{result}"
+                0)
+        | Status pluginName ->
 
-            IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
-    | Init ->
-        let configPath = Path.Combine(repoRoot, ".fshw.json")
-        let projects = InitConfig.discoverProjects repoRoot None
-        let config = InitConfig.generateConfig projects
-        let json = InitConfig.serializeConfig config
 
-        try
-            use fs = new FileStream(configPath, FileMode.CreateNew, FileAccess.Write)
-            use sw = new StreamWriter(fs)
-            sw.Write(json + "\n")
-            printfn "%s" json
-            eprintfn "Wrote %s" configPath
+            withIpc (fun () ->
+                let filter = pluginName |> Option.defaultValue ""
+                let json = ipc.GetDiagnostics pipeName filter |> Async.RunSynchronously
+                let resp = IpcParsing.parseDiagnosticsResponse json
+
+                // GetDiagnostics filters files by plugin but returns all plugin statuses.
+                // Narrow Statuses client-side when a specific plugin was requested.
+                let scoped =
+                    match pluginName with
+                    | None -> resp
+                    | Some name ->
+                        { resp with
+                            Statuses = resp.Statuses |> Map.filter (fun k _ -> k = name) }
+
+                match pluginName with
+                | Some name when Map.isEmpty scoped.Statuses ->
+                    eprintfn "not found: %s" name
+                    1
+                | _ ->
+                    let output =
+                        IpcOutput.formatDiagnosticsResponse mode (renderLines mode (not noWarnFail)) scoped
+
+                    eprintfn "%s" output
+                    IpcOutput.exitCodeFromResponse noWarnFail scoped)
+        | Build flags when isRunOnce flags ->
+            let buildConfig =
+                { stripConfig config with
+                    Build = config.Build }
+
+
+
+            RunOnceOutput.runOnceAndReport
+                (renderBlock mode (not noWarnFail))
+                noWarnFail
+                createDaemon
+                repoRoot
+                buildConfig
+                (Some "build")
+        | Build flags ->
+
+
+            withDaemon (fun () ->
+                let result =
+                    if UI.isInteractive then
+                        UI.withSpinner "Building" (fun () -> ipc.TriggerBuild pipeName |> Async.RunSynchronously)
+                    else
+                        eprintfn "  Building..."
+                        ipc.TriggerBuild pipeName |> Async.RunSynchronously
+
+                IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
+        | Test flags when isRunOnce flags ->
+            let testConfig =
+                { stripConfig config with
+                    Build = config.Build
+                    Tests = config.Tests }
+
+
+
+            RunOnceOutput.runOnceAndReport
+                (renderBlock mode (not noWarnFail))
+                noWarnFail
+                createDaemon
+                repoRoot
+                testConfig
+                (Some "test-prune")
+        | Test flags ->
+
+
+            withDaemon (fun () ->
+                let result =
+                    if UI.isInteractive then
+                        UI.withSpinner "Running tests" (fun () ->
+                            ipc.RunCommand pipeName "run-tests" "{}" |> Async.RunSynchronously)
+                    else
+                        eprintfn "  Running tests..."
+                        ipc.RunCommand pipeName "run-tests" "{}" |> Async.RunSynchronously
+
+                IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
+        | Format flags when isRunOnce flags ->
+            let formatConfig =
+                { stripConfig config with
+                    Format = FormatMode.Auto }
+
+
+
+            RunOnceOutput.runOnceAndReport
+                (renderBlock mode (not noWarnFail))
+                noWarnFail
+                createDaemon
+                repoRoot
+                formatConfig
+                (Some "format")
+        | Format flags ->
+
+
+            withDaemon (fun () ->
+                let result =
+                    if UI.isInteractive then
+                        UI.withSpinner "Formatting" (fun () -> ipc.FormatAll pipeName |> Async.RunSynchronously)
+                    else
+                        eprintfn "  Formatting..."
+                        ipc.FormatAll pipeName |> Async.RunSynchronously
+
+                IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
+        | Lint flags when isRunOnce flags ->
+            let lintConfig = { stripConfig config with Lint = true }
+
+
+            RunOnceOutput.runOnceAndReport
+                (renderBlock mode (not noWarnFail))
+                noWarnFail
+                createDaemon
+                repoRoot
+                lintConfig
+                (Some "lint")
+        | Lint flags -> queryPluginWith (mode) "lint"
+        | Analyze flags when isRunOnce flags ->
+            let analyzeConfig =
+                { stripConfig config with
+                    Analyzers = config.Analyzers }
+
+
+
+            RunOnceOutput.runOnceAndReport
+                (renderBlock mode (not noWarnFail))
+                noWarnFail
+                createDaemon
+                repoRoot
+                analyzeConfig
+                (Some "analyzers")
+        | Analyze flags -> queryPluginWith (mode) "analyzers"
+        | FormatCheck flags when isRunOnce flags ->
+            let formatCheckConfig =
+                { stripConfig config with
+                    Format = FormatMode.Check }
+
+
+
+            RunOnceOutput.runOnceAndReport
+                (renderBlock mode (not noWarnFail))
+                noWarnFail
+                createDaemon
+                repoRoot
+                formatCheckConfig
+                (Some "format-check")
+        | FormatCheck flags -> queryPluginWith (mode) "format-check"
+        | Errors flags ->
+
+
+            match WaitMode.fromFlags flags with
+            | Error msg ->
+                eprintfn "fshw errors: %s" msg
+                2
+            | Ok waitMode ->
+                withDaemonAndIpc (fun () ->
+                    let waitResult =
+                        match waitMode with
+                        | WaitMode.NoWait -> Ok()
+                        | WaitMode.WaitFor timeout ->
+                            try
+                                let timeoutMs = int timeout.TotalMilliseconds
+                                ipc.WaitForComplete pipeName timeoutMs |> Async.RunSynchronously |> ignore
+                                Ok()
+                            with
+                            | :? TimeoutException as ex -> Error ex.Message
+                            | ex ->
+                                let inner = unwrapIpcException ex
+                                Error $"daemon stopped or died before wait completed: %s{inner.Message}"
+
+                    match waitResult with
+                    | Error msg ->
+                        eprintfn "fshw errors --wait: %s" msg
+                        2
+                    | Ok() ->
+                        let errorsJson = ipc.GetDiagnostics pipeName "" |> Async.RunSynchronously
+                        let resp = IpcParsing.parseDiagnosticsResponse errorsJson
+
+                        eprintfn
+                            "%s"
+                            (IpcOutput.formatDiagnosticsResponse mode (renderLines mode (not noWarnFail)) resp)
+
+                        IpcOutput.exitCodeFromResponse noWarnFail resp)
+        | Rerun pluginName ->
+            withDaemonAndIpc (fun () ->
+                let result =
+                    if UI.isInteractive then
+                        UI.withSpinner $"Running %s{pluginName}" (fun () ->
+                            ipc.RerunPlugin pipeName pluginName |> Async.RunSynchronously)
+                    else
+                        eprintfn "  Running %s..." pluginName
+                        ipc.RerunPlugin pipeName pluginName |> Async.RunSynchronously
+
+                IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
+        | Init ->
+            let configPath = Path.Combine(repoRoot, ".fshw.json")
+            let projects = InitConfig.discoverProjects repoRoot None
+            let config = InitConfig.generateConfig projects
+            let json = InitConfig.serializeConfig config
+
+            try
+                use fs = new FileStream(configPath, FileMode.CreateNew, FileAccess.Write)
+                use sw = new StreamWriter(fs)
+                sw.Write(json + "\n")
+                printfn "%s" json
+                eprintfn "Wrote %s" configPath
+                0
+            with :? IOException ->
+                eprintfn "%s already exists" configPath
+                1
+        | Check flags when isRunOnce flags ->
+
+            RunOnceOutput.runOnceAndReport
+                (renderBlock mode (not noWarnFail))
+                noWarnFail
+                createDaemon
+                repoRoot
+                config
+                None
+        | Check flags -> queryPluginWith (mode) ""
+        | Config ConfigCommand.Check ->
+            // Config has already been parsed by main; reaching here means it's valid.
+            printfn "config: OK (%d plugins configured)" (countPlugins config)
             0
-        with :? IOException ->
-            eprintfn "%s already exists" configPath
-            1
-    | Check flags when isRunOnce flags ->
+        | Coverage CoverageCommand.RefreshBaseline ->
+            let deleted = refreshCoverageBaseline repoRoot config
 
-        RunOnceOutput.runOnceAndReport (renderBlock mode (not noWarnFail)) noWarnFail createDaemon repoRoot config None
-    | Check flags -> queryPluginWith (mode) ""
-    | Config ConfigCommand.Check ->
-        // Config has already been parsed by main; reaching here means it's valid.
-        printfn "config: OK (%d plugins configured)" (countPlugins config)
-        0
-    | Coverage CoverageCommand.RefreshBaseline ->
-        let deleted = refreshCoverageBaseline repoRoot config
+            if deleted.IsEmpty then
+                printfn "No coverage baseline/partial JSON files found to remove."
+            else
+                printfn "Removed:"
 
-        if deleted.IsEmpty then
-            printfn "No coverage baseline/partial JSON files found to remove."
-        else
-            printfn "Removed:"
+                for p in deleted do
+                    printfn "  %s" p
 
-            for p in deleted do
-                printfn "  %s" p
-
-        0
-    | Completions ->
-        FishCompletions.writeToFile commandTree cliName
-        eprintfn "%s" $"%s{Color.green}✓%s{Color.reset} Fish completions installed"
-        eprintfn "  Wrote ~/.config/fish/completions/%s.fish" cliName
-        0
+            0
+        | Completions ->
+            FishCompletions.writeToFile commandTree cliName
+            eprintfn "%s" $"%s{Color.green}✓%s{Color.reset} Fish completions installed"
+            eprintfn "  Wrote ~/.config/fish/completions/%s.fish" cliName
+            0
 
 /// Execute an unknown command as a plugin command via IPC.
 let executePluginCommand (ipc: IpcOps) (pipeName: string) (opts: GlobalOptions) (cmd: string) (argsStr: string) : int =
