@@ -127,6 +127,83 @@ let ``runProcess strip respects caller-supplied DOTNET_ROOT_ARM64 override`` () 
         runProcess "sh" (echoEnv "DOTNET_ROOT_ARM64") "." [ "DOTNET_ROOT_ARM64", explicitValue ]
         |> expectStdout explicitValue)
 
+// DOTNET_HOST_PATH realpath contract — see strip block in
+// runProcessWithTimeout for the nix-wrapped-SDK scenario that motivated it.
+// The .NET muxer reads DOTNET_HOST_PATH literally and computes
+// DOTNET_ROOT_<arch> = dirname(DOTNET_HOST_PATH); on a wrapped-bin/ symlink
+// that dirname has no `shared/` sibling, so apphost dies. Resolving the
+// symlink before spawn lands dirname on the unwrapped runtime tree.
+
+[<Fact(Timeout = 20000)>]
+let ``runProcess resolves DOTNET_HOST_PATH symlink to its realpath`` () =
+    System.IO.Directory.CreateDirectory(System.IO.Path.GetTempPath()) |> ignore
+
+    let tmp =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-hostpath-{Guid.NewGuid():N}")
+
+    System.IO.Directory.CreateDirectory(tmp) |> ignore
+
+    try
+        let target = System.IO.Path.Combine(tmp, "real-dotnet")
+        System.IO.File.WriteAllText(target, "")
+        let link = System.IO.Path.Combine(tmp, "wrapped-dotnet")
+        System.IO.File.CreateSymbolicLink(link, target) |> ignore
+
+        withEnv "DOTNET_HOST_PATH" (Some link) (fun () ->
+            runProcess "sh" (echoEnv "DOTNET_HOST_PATH") "." [] |> expectStdout target)
+    finally
+        if System.IO.Directory.Exists(tmp) then
+            System.IO.Directory.Delete(tmp, true)
+
+[<Fact(Timeout = 20000)>]
+let ``runProcess leaves DOTNET_HOST_PATH unchanged when target is not a symlink`` () =
+    let tmp =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-hostpath-{Guid.NewGuid():N}")
+
+    System.IO.Directory.CreateDirectory(tmp) |> ignore
+
+    try
+        let regular = System.IO.Path.Combine(tmp, "regular-file")
+        System.IO.File.WriteAllText(regular, "")
+
+        withEnv "DOTNET_HOST_PATH" (Some regular) (fun () ->
+            runProcess "sh" (echoEnv "DOTNET_HOST_PATH") "." [] |> expectStdout regular)
+    finally
+        if System.IO.Directory.Exists(tmp) then
+            System.IO.Directory.Delete(tmp, true)
+
+[<Fact(Timeout = 20000)>]
+let ``runProcess leaves DOTNET_HOST_PATH unchanged when path does not exist`` () =
+    let bogus = $"/no/such/path/fshw-{Guid.NewGuid():N}"
+
+    withEnv "DOTNET_HOST_PATH" (Some bogus) (fun () ->
+        runProcess "sh" (echoEnv "DOTNET_HOST_PATH") "." [] |> expectStdout bogus)
+
+[<Fact(Timeout = 20000)>]
+let ``runProcess does not set DOTNET_HOST_PATH when inherited env did not have it`` () =
+    withEnv "DOTNET_HOST_PATH" None (fun () -> runProcess "sh" (echoEnv "DOTNET_HOST_PATH") "." [] |> expectStdout "")
+
+[<Fact(Timeout = 20000)>]
+let ``runProcess resolves DOTNET_HOST_PATH symlink chain to final target`` () =
+    let tmp =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-hostpath-chain-{Guid.NewGuid():N}")
+
+    System.IO.Directory.CreateDirectory(tmp) |> ignore
+
+    try
+        let final = System.IO.Path.Combine(tmp, "final")
+        System.IO.File.WriteAllText(final, "")
+        let mid = System.IO.Path.Combine(tmp, "mid")
+        System.IO.File.CreateSymbolicLink(mid, final) |> ignore
+        let outer = System.IO.Path.Combine(tmp, "outer")
+        System.IO.File.CreateSymbolicLink(outer, mid) |> ignore
+
+        withEnv "DOTNET_HOST_PATH" (Some outer) (fun () ->
+            runProcess "sh" (echoEnv "DOTNET_HOST_PATH") "." [] |> expectStdout final)
+    finally
+        if System.IO.Directory.Exists(tmp) then
+            System.IO.Directory.Delete(tmp, true)
+
 [<Fact(Timeout = 20000)>]
 let ``runProcess overlays explicit env on top of inherited env`` () =
     let inheritedKey = "FSHOTWATCH_ENV_PASSTHROUGH_INHERITED"
