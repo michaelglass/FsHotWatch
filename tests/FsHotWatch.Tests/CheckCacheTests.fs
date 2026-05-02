@@ -409,3 +409,44 @@ let ``hashDiagnosticSignatures stable when same diagnostic list given twice`` ()
           mkSig 10 1 300 "Info" "c" ]
 
     Assert.Equal(hashDiagnosticSignatures diags, hashDiagnosticSignatures diags)
+
+// --- F1 regression: diagnostic-hash failures must not collide on a magic string ---
+
+[<Fact(Timeout = 2000)>]
+let ``hashDiagnosticsOrFailure folds exception class so distinct failures don't collide`` () =
+    // F1 — see docs/plans/2026-05-02-error-handling-audit.md.
+    // The pre-fix code returned the literal "full-check-error" for every
+    // failure mode, so two distinct exceptions inside the diagnostic-hash
+    // path produced the same downstream cache key. The fix folds the
+    // exception class and message into the synthesized payload.
+    let throwInvalidOp () : DiagnosticSignature seq =
+        raise (System.InvalidOperationException "boom-1")
+
+    let throwArg () : DiagnosticSignature seq =
+        raise (System.ArgumentException "boom-2")
+
+    let h1 = hashDiagnosticsOrFailure throwInvalidOp
+    let h2 = hashDiagnosticsOrFailure throwArg
+    Assert.NotEqual<string>(h1, h2)
+    // The pre-fix literal must no longer surface as the cache key.
+    Assert.NotEqual<string>("full-check-error", h1)
+    Assert.NotEqual<string>("full-check-error", h2)
+
+[<Fact(Timeout = 2000)>]
+let ``hashDiagnosticsOrFailure is deterministic across calls for the same failure`` () =
+    let throwInvalidOp () : DiagnosticSignature seq =
+        raise (System.InvalidOperationException "stable-message")
+
+    let h1 = hashDiagnosticsOrFailure throwInvalidOp
+    let h2 = hashDiagnosticsOrFailure throwInvalidOp
+    Assert.Equal<string>(h1, h2)
+
+[<Fact(Timeout = 2000)>]
+let ``hashDiagnosticsOrFailure success path differs from any failure hash`` () =
+    let success () : DiagnosticSignature seq =
+        seq { mkSig 1 2 100 "Error" "ok" }
+
+    let throwIo () : DiagnosticSignature seq =
+        raise (System.IO.IOException "io-fail")
+
+    Assert.NotEqual<string>(hashDiagnosticsOrFailure success, hashDiagnosticsOrFailure throwIo)
