@@ -1289,6 +1289,9 @@ module Daemon =
             CacheBackend: ICheckCacheBackend option
             CacheKeyProvider: ICacheKeyProvider option
             /// FCS diagnostic codes to suppress. `None` means the default suppression set.
+            /// FCS diagnostic codes to suppress globally. `None` means no
+            /// daemon-level suppression — projects opt in via `<NoWarn>` in
+            /// their fsproj or `#nowarn "code"` in source.
             FcsSuppressedCodes: int list option
             /// `PathFilter.isExcludedPath` patterns applied during project discovery.
             ExcludePatterns: string list
@@ -1305,13 +1308,19 @@ module Daemon =
               ExcludePatterns = []
               ExtraWatchPatterns = [] }
 
+    /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
+    /// `None` resolves to `Set.empty` — fshw deliberately ships no built-in
+    /// suppressions. Projects that need to silence a code declare it via
+    /// `<NoWarn>` in the fsproj or `#nowarn "code"` in source.
+    let resolveFcsSuppressedCodes (configured: int list option) : Set<int> =
+        configured |> Option.defaultValue [] |> Set.ofList
+
     /// Create a daemon with the given checker (internal, for testing).
     let internal createWith (checker: FSharpChecker) (repoRoot: string) (opts: DaemonOptions) =
         let cacheBackend = opts.CacheBackend
         let cacheKeyProvider = opts.CacheKeyProvider
 
-        let fcsSuppressedCodes =
-            opts.FcsSuppressedCodes |> Option.defaultValue [ 1182 ] |> Set.ofList
+        let fcsSuppressedCodes = resolveFcsSuppressedCodes opts.FcsSuppressedCodes
 
         let excludePatterns = opts.ExcludePatterns
         let extraWatchPatterns = opts.ExtraWatchPatterns
