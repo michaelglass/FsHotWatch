@@ -22,7 +22,14 @@ type private StatusAgentState =
 
 /// Manages plugin lifecycle, event dispatch, command registration, and status tracking.
 type PluginHost
-    (checker: FSharpChecker, repoRoot: string, ?reporters: IErrorReporter list, ?taskCache: TaskCache.ITaskCache) =
+    (
+        checker: FSharpChecker,
+        repoRoot: string,
+        ?reporters: IErrorReporter list,
+        ?taskCache: TaskCache.ITaskCache,
+        ?fcsSuppressedCodes: Set<int>
+    ) =
+    let fcsSuppressedCodes = defaultArg fcsSuppressedCodes Set.empty
     let statusChanged = Event<string * PluginStatus>()
 
     let ledger = ErrorLedger(?reporters = reporters)
@@ -184,7 +191,8 @@ type PluginHost
                     Logging.info nameStr msg
               SetSummary = fun name s -> activity.SetSummary(PluginFramework.PluginName.value name, s)
               SetNextTerminalOutcome =
-                fun name outcome -> activity.SetNextTerminalOutcome(PluginFramework.PluginName.value name, outcome) }
+                fun name outcome -> activity.SetNextTerminalOutcome(PluginFramework.PluginName.value name, outcome)
+              FcsSuppressedCodes = fcsSuppressedCodes }
 
         let plugin = PluginFramework.registerHandler services handler
 
