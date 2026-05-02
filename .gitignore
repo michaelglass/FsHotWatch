@@ -79,3 +79,4 @@ docs/plans/
 # Cache event log (always-on telemetry; planned to disable after observation)
 cache-events.log
 .claude/scheduled_tasks.lock
+.ci-runs/

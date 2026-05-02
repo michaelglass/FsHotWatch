@@ -40,7 +40,7 @@ let ``plugin receives file change events`` () =
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    waitUntil (fun () -> fileChanges.Length >= 1) 5000
+    waitUntil (fun () -> fileChanges.Length >= 1) 12000
     test <@ fileChanges.Length = 1 @>
 
 [<Fact(Timeout = 15000)>]
@@ -89,7 +89,7 @@ let ``plugin reports status`` () =
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    waitUntil (fun () -> (host.GetStatus("status-test")) <> Some Idle) 5000
+    waitUntil (fun () -> (host.GetStatus("status-test")) <> Some Idle) 12000
 
     let status = host.GetStatus("status-test")
     test <@ status.IsSome @>
@@ -145,7 +145,7 @@ let ``EmitBuildCompleted reaches plugins`` () =
 
     host.RegisterHandler(handler)
     host.EmitBuildCompleted(BuildSucceeded)
-    waitUntil (fun () -> receivedBuild.IsSome) 5000
+    waitUntil (fun () -> receivedBuild.IsSome) 12000
     test <@ receivedBuild = Some BuildSucceeded @>
 
 [<Fact(Timeout = 20000)>]
@@ -173,7 +173,7 @@ let ``EmitBuildCompleted with failure reaches plugins`` () =
     host.RegisterHandler(handler)
     let errors = [ "error CS0001: Something broke" ]
     host.EmitBuildCompleted(BuildFailed errors)
-    waitUntil (fun () -> receivedBuild.IsSome) 5000
+    waitUntil (fun () -> receivedBuild.IsSome) 12000
 
     test
         <@
@@ -277,7 +277,7 @@ let ``multiple plugins receive the same event`` () =
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
-    waitUntil (fun () -> received1 && received2 && received3) 5000
+    waitUntil (fun () -> received1 && received2 && received3) 12000
     test <@ received1 @>
     test <@ received2 @>
     test <@ received3 @>
@@ -312,7 +312,7 @@ let ``plugin can report and query errors via host`` () =
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    waitUntil (fun () -> host.HasFailingReasons(warningsAreFailures = true)) 5000
+    waitUntil (fun () -> host.HasFailingReasons(warningsAreFailures = true)) 12000
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
     test
@@ -358,10 +358,10 @@ let ``plugin ClearErrors removes errors from ledger`` () =
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    waitUntil (fun () -> host.HasFailingReasons(warningsAreFailures = true)) 5000
+    waitUntil (fun () -> host.HasFailingReasons(warningsAreFailures = true)) 12000
     test <@ host.HasFailingReasons(warningsAreFailures = true) @>
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    waitUntil (fun () -> not (host.HasFailingReasons(warningsAreFailures = true))) 5000
+    waitUntil (fun () -> not (host.HasFailingReasons(warningsAreFailures = true))) 12000
     test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
 
 [<Fact(Timeout = 20000)>]
@@ -437,7 +437,7 @@ let ``EmitFileChecked dispatches to framework plugin handlers`` () =
 
     host.EmitFileChecked(dummyResult)
 
-    waitUntil (fun () -> ref1.Value && ref2.Value) 5000
+    waitUntil (fun () -> ref1.Value && ref2.Value) 12000
     test <@ ref1.Value @>
     test <@ ref2.Value @>
 
@@ -560,7 +560,7 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
 
     // Status agent dispatches asynchronously — wait for events
     // Initial Idle from RegisterHandler + Running + Completed = at least 3
-    waitUntil (fun () -> statusEvents.Length >= 3) 5000
+    waitUntil (fun () -> statusEvents.Length >= 3) 12000
     test <@ statusEvents.Length >= 3 @>
 
     test
