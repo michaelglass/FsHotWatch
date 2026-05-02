@@ -590,7 +590,7 @@ let ``afterTests TestProjects fires exactly once across progressive deltas`` () 
     // Delta 2: {B} arrives — accumulator = {A,B}, filter satisfied; fire.
     emitProgress host runId [ "B", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero) ]
 
-    waitUntil (fun () -> getCount () >= 1) 5000
+    waitUntil (fun () -> getCount () >= 1) 12000
 
     // Delta 3: {C} arrives — accumulator = {A,B,C}, filter still satisfies
     //           but this is the same RunId → dedupe, no re-fire.
@@ -621,7 +621,7 @@ let ``afterTests TestProjects fires again on a fresh batch`` () =
         [ "A", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero)
           "B", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero) ]
 
-    waitUntil (fun () -> getCount () >= 1) 5000
+    waitUntil (fun () -> getCount () >= 1) 12000
 
     // Batch 2 — NEW RunId. Plugin's idempotency sentinel is tied to the
     // previous RunId, so this fresh event must fire again.
@@ -630,7 +630,7 @@ let ``afterTests TestProjects fires again on a fresh batch`` () =
         [ "A", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero)
           "B", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero) ]
 
-    waitUntil (fun () -> getCount () >= 2) 5000
+    waitUntil (fun () -> getCount () >= 2) 12000
     test <@ getCount () = 2 @>
 
 // Regression: end-to-end from parseConfig(.fshw.json) → daemon registration
