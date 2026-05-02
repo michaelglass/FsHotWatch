@@ -213,7 +213,7 @@ type PluginHost
                 modifiedFiles <- modified @ modifiedFiles
                 setStatus preprocessor.Name (Completed(System.DateTime.UtcNow))
             with ex ->
-                setStatus preprocessor.Name (Failed(ex.Message, System.DateTime.UtcNow))
+                setStatus preprocessor.Name (Failed(ex.ToString(), System.DateTime.UtcNow))
 
         modifiedFiles |> List.distinct
 
