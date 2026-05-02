@@ -469,6 +469,36 @@ let ``preprocessor exception sets Failed status`` () =
             | _ -> false
         @>
 
+[<Fact(Timeout = 15000)>]
+let ``preprocessor exception sets Failed with ex.ToString() (type+stack), not just ex.Message`` () =
+    // Item D: same invariant as PluginFramework.safeUpdate. The preprocessor
+    // failure path must record the full exception string so the user can
+    // diagnose without grepping daemon.log.
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let preprocessor =
+        { new IFsHotWatchPreprocessor with
+            member _.Name = "boom-detail-pp"
+
+            member _.Process (_changedFiles: string list) (_repoRoot: string) =
+                raise (System.InvalidOperationException("pp-kaboom-distinctive"))
+
+            member _.Dispose() = () }
+
+    host.RegisterPreprocessor(preprocessor)
+    host.RunPreprocessors([ "src/Lib.fs" ]) |> ignore
+
+    let status = host.GetStatus("boom-detail-pp")
+    test <@ status.IsSome @>
+
+    let msg =
+        match status.Value with
+        | Failed(m, _) -> m
+        | _ -> ""
+
+    test <@ msg.Contains("pp-kaboom-distinctive") @>
+    test <@ msg.Contains("InvalidOperationException") @>
+
 [<Fact(Timeout = 20000)>]
 let ``ReportErrors with version passes through to ledger`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
