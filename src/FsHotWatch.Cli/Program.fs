@@ -465,6 +465,9 @@ let refreshCoverageBaseline (repoRoot: string) (config: DaemonConfiguration) : s
             |> List.map (fun name -> Path.Combine(dir, name))
             |> List.filter File.Exists
             |> List.choose (fun path ->
+                // TODO(error-audit F9): see docs/plans/2026-05-02-error-handling-audit.md
+                // — bare catch in a bulk loop hides real failures (permissions,
+                // sharing violations). Add a Logging.debug so failures are observable.
                 try
                     File.Delete(path)
                     Some path
@@ -635,6 +638,8 @@ let executeCommand
                     if ipc.IsRunning pipeName then
                         consecutiveQuiet <- 0
 
+                        // TODO(error-audit F9): see docs/plans/2026-05-02-error-handling-audit.md
+                        // — bulk-stop loop bare catch; add Logging.debug for observability.
                         try
                             ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
                             stopped <- stopped + 1

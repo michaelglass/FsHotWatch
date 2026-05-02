@@ -1161,6 +1161,11 @@ let create
                                     ctx.ReportStatus(PluginStatus.Failed($"Analysis failed: %s{msg}", DateTime.UtcNow))
 
                                 return state
+                    // TODO(error-audit F10): see docs/plans/2026-05-02-error-handling-audit.md
+                    // — Item 5B narrowing missed this site. PluginFramework.fs:382's
+                    // safeUpdate already covers this; the inner catch is redundant and
+                    // returns un-mutated state, leaking stale ChangedFiles into the next
+                    // cycle. Drop or narrow to schema-drift exceptions.
                     with ex ->
                         if isIdle then
                             ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
