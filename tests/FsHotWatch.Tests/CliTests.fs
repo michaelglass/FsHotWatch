@@ -782,6 +782,38 @@ let ``executeCommand Build exits 2 when no projects are discovered`` () =
         test <@ not launched @>)
 
 [<Fact(Timeout = 15000)>]
+let ``executeCommand Test exits 2 when no projects are discovered`` () =
+    // Regression guard for the zero-projects fail-fast contract on the
+    // `Test` command — same shape as Check/Build above. `Test` is in the
+    // CLI's needsProjects list (Program.fs `executeCommand`) and must
+    // propagate exit code 2 when project discovery would yield zero
+    // .fsproj files, instead of launching a daemon that exits 2 itself
+    // and surfaces as "Failed to start daemon" + exit 1.
+    withTempDir "cli-test-zero-projects" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+        let mutable launched = false
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> false
+                LaunchDaemon = fun _ _ _ -> launched <- true }
+
+        let exitCode =
+            executeCommand
+                (fun _ -> Unchecked.defaultof<_>)
+                ipc
+                tmpDir
+                "fshw-test-pipe"
+                (Test [])
+                defaultGlobalOptions
+                fakeConfig
+                30.0
+
+        test <@ exitCode = 2 @>
+        test <@ not launched @>)
+
+[<Fact(Timeout = 15000)>]
 let ``executeCommand Start with fake daemon throws on null daemon`` () =
     // Use a unique temp dir to avoid writing the test process PID to /tmp/.fshw/daemon.pid
     // where killStaleDaemon from other tests would read it and kill the test process.
