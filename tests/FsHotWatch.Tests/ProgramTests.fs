@@ -758,3 +758,35 @@ let ``ipcErrorHint maps TimeoutException to busy-or-hung hint`` () =
 let ``ipcErrorHint returns None for unrecognized exceptions`` () =
     let ex = InvalidOperationException("something else") :> exn
     test <@ ipcErrorHint ex = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``tryDeleteForCleanup returns Some on successful delete`` () =
+    let path = Path.Combine(Path.GetTempPath(), $"fshw-cleanup-{System.Guid.NewGuid()}.tmp")
+    File.WriteAllText(path, "x")
+    let r = tryDeleteForCleanup path
+    test <@ r = Some path @>
+    test <@ not (File.Exists path) @>
+
+[<Fact(Timeout = 15000)>]
+let ``tryDeleteForCleanup logs at debug and returns None on failure (F9)`` () =
+    // F9: bare `with _` previously hid the exception class. After the fix, the
+    // helper logs at Debug naming the exception class so failures are
+    // diagnosable on --verbose.
+    let original = FsHotWatch.Logging.logLevel
+    let sb = System.Text.StringBuilder()
+    let writer = new StringWriter(sb)
+    let prevErr = System.Console.Error
+
+    try
+        System.Console.SetError(writer)
+        FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
+        // An empty path forces File.Delete to throw ArgumentException.
+        let r = tryDeleteForCleanup ""
+        writer.Flush()
+        let output = sb.ToString()
+        test <@ r = None @>
+        test <@ output.Contains("cli-cleanup") @>
+        test <@ output.Contains("ArgumentException") @>
+    finally
+        System.Console.SetError(prevErr)
+        FsHotWatch.Logging.setLogLevel original
