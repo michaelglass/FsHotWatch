@@ -27,6 +27,9 @@ type Registry() =
         [ for kv in live do
               let p = kv.Value
 
+              // TODO(error-audit F19): see docs/plans/2026-05-02-error-handling-audit.md
+              // — bare _ broader than warranted. Process.HasExited throws only
+              // InvalidOperationException + Win32Exception; narrow to those.
               let alive =
                   try
                       not p.HasExited
@@ -40,6 +43,10 @@ type Registry() =
     /// iteration may be missed and silently dropped from `live` by the final
     /// Clear — accept that for daemon shutdown; do not call from steady-state.
     member _.KillAll() : unit =
+        // TODO(error-audit F20): see docs/plans/2026-05-02-error-handling-audit.md
+        // — bare _ catches Win32Exception (real failures) with InvalidOperation
+        // (already-exited). Comment names the dictionary race but the catch
+        // covers process-state exceptions; align comment + narrow types.
         for kv in live do
             try
                 let p = kv.Value
