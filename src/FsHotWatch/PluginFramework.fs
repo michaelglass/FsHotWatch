@@ -218,10 +218,16 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
         async {
             let mutable completion: 'Msg voption = ValueNone
 
-            // TODO(error-audit F15): see docs/plans/2026-05-02-error-handling-audit.md
-            // — RunExclusive work is plugin-supplied (third-party boundary); broad
-            // catch is justified-in-spirit but undocumented. Document the boundary
-            // or restructure so only `finally` runs and ex propagates to safeUpdate.
+            // F15 (audit 2026-05-02): the work async is plugin-supplied — a
+            // third-party-extension boundary that may raise anything. The
+            // broad catch is what guarantees the surrounding `finally` runs
+            // (releasing the runSlots entry); without it, an unhandled
+            // exception would skip the `with` and still hit the `finally`
+            // via async-exception propagation, but the `completion` post
+            // path ahead of `finally` would never receive a value, leaving
+            // the agent hanging waiting for the result. We log ex.ToString()
+            // so the type and stack trace are preserved for diagnosing the
+            // offending plugin.
             try
                 try
                     let! msg = w

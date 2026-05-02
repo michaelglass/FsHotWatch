@@ -1030,7 +1030,9 @@ let ``invokeOnChangeWith routes onChange exception to logError sink (F3)`` () =
     // .fshw.json would see no effect with no log line. The dispatch is now extracted
     // so we can inject a logError sink directly — no stderr capture race in parallel.
     let captured = ResizeArray<string>()
-    let sink (msg: string) = lock captured (fun () -> captured.Add(msg))
+
+    let sink (msg: string) =
+        lock captured (fun () -> captured.Add(msg))
 
     invokeOnChangeWith sink (fun _reason -> failwith "boom from onChange") "edit-1"
 
@@ -1041,7 +1043,10 @@ let ``invokeOnChangeWith routes onChange exception to logError sink (F3)`` () =
 [<Fact(Timeout = 15000)>]
 let ``invokeOnChangeWith does not invoke logError on success (F3)`` () =
     let captured = ResizeArray<string>()
-    let sink (msg: string) = lock captured (fun () -> captured.Add(msg))
+
+    let sink (msg: string) =
+        lock captured (fun () -> captured.Add(msg))
+
     let mutable called = ""
 
     invokeOnChangeWith sink (fun reason -> called <- reason) "edit-ok"
