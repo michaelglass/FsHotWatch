@@ -880,8 +880,11 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
 /// Phase B (warm cache) preservation: BuildPlugin's task-cache replay path
 /// emits `BuildCompleted` synchronously inside the captured-events handler,
 /// so when the cache hits this wait completes in milliseconds.
-let internal waitForPluginTerminalIfRunning
-    (host: PluginHost)
+/// Polling implementation parameterised on a status-reader so unit tests can
+/// drive deterministic state sequences without Task.Delay. The PluginHost
+/// adapter below is the production caller.
+let internal waitForPluginTerminalIfRunningWith
+    (getStatus: string -> PluginStatus option)
     (pluginName: string)
     (timeout: System.TimeSpan)
     : Async<unit> =
@@ -893,7 +896,7 @@ let internal waitForPluginTerminalIfRunning
                 System.DateTime.UtcNow + timeout
 
         let isRunning () =
-            match host.GetStatus(pluginName) with
+            match getStatus pluginName with
             | Some(Running _) -> true
             | _ -> false
 
@@ -929,6 +932,13 @@ let internal waitForPluginTerminalIfRunning
                     "scan"
                     $"waitForPluginTerminalIfRunning: '%s{pluginName}' still Running after %O{timeout}; proceeding anyway"
     }
+
+let internal waitForPluginTerminalIfRunning
+    (host: PluginHost)
+    (pluginName: string)
+    (timeout: System.TimeSpan)
+    : Async<unit> =
+    waitForPluginTerminalIfRunningWith host.GetStatus pluginName timeout
 
 /// The daemon ties together a warm FSharpChecker, file watcher, check pipeline, and plugin host.
 /// It runs until the provided CancellationToken is cancelled.

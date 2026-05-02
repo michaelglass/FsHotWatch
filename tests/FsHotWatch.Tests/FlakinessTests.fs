@@ -9,7 +9,7 @@ open FsHotWatch.Tests.TestHelpers
 
 // --- TestOutcome / parseCtrfTests ---
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 5000)>]
 let ``parseCtrfTests extracts name, status, and duration from CTRF JSON`` () =
     let json =
         """{"results":{"tool":{"name":"xUnit.net v3"}},"tests":[
@@ -25,22 +25,22 @@ let ``parseCtrfTests extracts name, status, and duration from CTRF JSON`` () =
     test <@ records.[1].Name = "Mod.Type.OtherMethod" @>
     test <@ records.[1].Outcome = TestOutcome.Failed @>
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 5000)>]
 let ``parseCtrfTests treats unknown statuses as Other`` () =
     let json = """{"tests":[{"name":"X","status":"weird","duration":0,"extra":{}}]}"""
 
     let records = parseCtrfTests json
     test <@ records.[0].Outcome = TestOutcome.Other @>
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 5000)>]
 let ``parseCtrfTests returns empty when no tests array present`` () =
     test <@ List.isEmpty (parseCtrfTests "{}") @>
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 5000)>]
 let ``parseCtrfTests returns empty on unparseable JSON`` () =
     test <@ List.isEmpty (parseCtrfTests "not json") @>
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 5000)>]
 let ``parseCtrfTests recognises skipped status`` () =
     let json = """{"tests":[{"name":"X","status":"skipped","duration":0,"extra":{}}]}"""
 
@@ -49,36 +49,36 @@ let ``parseCtrfTests recognises skipped status`` () =
 
 // --- computeFlakiness ---
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 5000)>]
 let ``computeFlakiness is 0 for all-passing history`` () =
     let outcomes = [ Passed; Passed; Passed; Passed ]
     test <@ computeFlakiness outcomes = 0.0 @>
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 5000)>]
 let ``computeFlakiness is 0 for all-failing history`` () =
     let outcomes = [ Failed; Failed; Failed ]
     test <@ computeFlakiness outcomes = 0.0 @>
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 5000)>]
 let ``computeFlakiness is 1 for alternating pass-fail`` () =
     let outcomes = [ Passed; Failed; Passed; Failed; Passed ]
     test <@ computeFlakiness outcomes = 1.0 @>
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 5000)>]
 let ``computeFlakiness counts only outcome transitions`` () =
     // P P F P → 2 transitions over 3 gaps → 2/3
     let outcomes = [ Passed; Passed; Failed; Passed ]
     let score = computeFlakiness outcomes
     test <@ abs (score - (2.0 / 3.0)) < 0.0001 @>
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 5000)>]
 let ``computeFlakiness ignores Skipped outcomes`` () =
     // Skipped runs aren't an outcome flip — collapse to neighboring outcome.
     let outcomes = [ Passed; Skipped; Failed ]
     // After dropping Skipped: P F → 1 transition / 1 gap = 1.0
     test <@ computeFlakiness outcomes = 1.0 @>
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 5000)>]
 let ``computeFlakiness is 0 when history has fewer than 2 effective runs`` () =
     test <@ computeFlakiness [] = 0.0 @>
     test <@ computeFlakiness [ Passed ] = 0.0 @>

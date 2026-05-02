@@ -141,7 +141,7 @@ let ``build plugin emits BuildCompleted on successful build`` () =
 
     waitForTerminalStatus host "build" 5000
 
-    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
     let status = host.GetStatus("build")
@@ -245,7 +245,7 @@ let ``build plugin emits BuildFailed on failed build`` () =
 
     waitForTerminalStatus host "build" 5000
 
-    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    waitUntil (fun () -> (getBuild ()).IsSome) 12000
 
     test
         <@
@@ -325,7 +325,7 @@ let ``build plugin triggers on ProjectChanged`` () =
 
     waitForTerminalStatus host "build" 5000
 
-    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
 [<Fact(Timeout = 15000)>]
@@ -356,7 +356,7 @@ let ``build is skipped when only test files change, after BatchChecked covers th
 
     waitForTerminalStatus host "build" 5000
 
-    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
 [<Fact(Timeout = 15000)>]
@@ -387,7 +387,7 @@ let ``build skip waits for BatchChecked covering all changed test files before e
     // Second BatchChecked covers both files (including A again) — subset
     // satisfied, BuildSucceeded fires.
     host.EmitBatchChecked(fakeBatchChecked [ "/tmp/tests/MyTests/A.fs"; "/tmp/tests/MyTests/B.fs" ])
-    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
 [<Fact(Timeout = 15000)>]
@@ -413,7 +413,7 @@ let ``build uses template for affected project`` () =
 
     waitForTerminalStatus host "build" 5000
 
-    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
 [<Fact(Timeout = 15000)>]
@@ -437,7 +437,7 @@ let ``build falls back to original command when no template`` () =
 
     waitForTerminalStatus host "build" 5000
 
-    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
 [<Fact(Timeout = 20000)>]
@@ -457,7 +457,7 @@ let ``build falls back when file not in graph`` () =
 
     waitForTerminalStatus host "build" 5000
 
-    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
 [<Fact(Timeout = 15000)>]
@@ -477,7 +477,7 @@ let ``ProjectChanged always uses fallback command`` () =
 
     waitForTerminalStatus host "build" 5000
 
-    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
 // --- dependsOn tests ---
@@ -507,7 +507,7 @@ let ``build with dependsOn buffers FileChanged until dependency satisfied`` () =
     )
 
     waitForTerminalStatus host "build" 5000
-    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
 [<Fact(Timeout = 20000)>]
@@ -531,7 +531,7 @@ let ``build with dependsOn proceeds immediately when deps already satisfied`` ()
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
     waitForTerminalStatus host "build" 5000
-    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
 [<Fact(Timeout = 15000)>]
@@ -576,7 +576,7 @@ let ``build with empty dependsOn works normally`` () =
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
     waitForTerminalStatus host "build" 5000
-    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
 [<Fact(Timeout = 15000)>]
@@ -609,7 +609,7 @@ let ``build with multiple dependsOn waits for all`` () =
     )
 
     waitForTerminalStatus host "build" 5000
-    waitUntil (fun () -> (getBuild ()).IsSome) 5000
+    waitUntil (fun () -> (getBuild ()).IsSome) 12000
     test <@ getBuild () = Some BuildSucceeded @>
 
 // --- §2a: BuildPlugin cache key behaviour ---
@@ -927,7 +927,7 @@ let private runVerifyHarness
         host.EmitFileChanged(SourceChanged [ srcPath ])
 
         waitForTerminalStatus host "build" 5000
-        waitUntil (fun () -> (getBuild ()).IsSome) 5000
+        waitUntil (fun () -> (getBuild ()).IsSome) 12000
         result <- getBuild)
 
     result

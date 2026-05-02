@@ -2018,3 +2018,95 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
     match parsed.["d"].Status with
     | PluginStatus.Failed(msg, _) -> test <@ msg = "oops" @>
     | other -> failwithf "expected Failed, got %A" other
+
+// `waitForPluginTerminalIfRunning` tests moved from FsHotWatch.Tests
+// 2026-05-02 — Task.Delay-based timing assertions systematically bust
+// Fact(Timeout=5000) under parallel unit-suite load. Integration suite
+// has looser parallelism so the timing windows hold.
+
+[<Fact(Timeout = 30000)>]
+let ``waitForPluginTerminalIfRunning returns immediately when plugin not registered`` () =
+    let host = FsHotWatch.PluginHost.PluginHost(Unchecked.defaultof<_>, "/tmp")
+    let sw = System.Diagnostics.Stopwatch.StartNew()
+
+    waitForPluginTerminalIfRunning host "build" (TimeSpan.FromSeconds(5.0))
+    |> Async.RunSynchronously
+
+    sw.Stop()
+    test <@ sw.Elapsed < TimeSpan.FromSeconds(3.0) @>
+
+let private makeControllablePlugin (name: string) =
+    let release = System.Threading.Tasks.TaskCompletionSource<unit>()
+
+    let handler =
+        { Name = PluginName.create name
+          Init = ()
+          Update =
+            fun (ctx: PluginCtx<unit>) state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
+                        do! release.Task |> Async.AwaitTask
+                        ctx.ReportStatus(PluginStatus.Completed(at = DateTime.UtcNow))
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
+
+    {| Handler = handler
+       Release = release |}
+
+[<Fact(Timeout = 30000)>]
+let ``waitForPluginTerminalIfRunning returns when plugin reaches terminal`` () =
+    let host = FsHotWatch.PluginHost.PluginHost(Unchecked.defaultof<_>, "/tmp")
+    let plugin = makeControllablePlugin "build"
+    host.RegisterHandler(plugin.Handler)
+
+    host.EmitFileChanged(SourceChanged [ "/tmp/Lib.fs" ])
+
+    let _ =
+        System.Threading.Tasks.Task.Run(fun () ->
+            task {
+                do! System.Threading.Tasks.Task.Delay(300)
+                plugin.Release.TrySetResult() |> ignore
+            }
+            :> System.Threading.Tasks.Task)
+
+    let sw = System.Diagnostics.Stopwatch.StartNew()
+
+    waitForPluginTerminalIfRunning host "build" (TimeSpan.FromSeconds(15.0))
+    |> Async.RunSynchronously
+
+    sw.Stop()
+
+    test <@ sw.Elapsed > TimeSpan.FromMilliseconds(200.0) @>
+    test <@ sw.Elapsed < TimeSpan.FromSeconds(14.0) @>
+
+    match host.GetStatus("build") with
+    | Some(Running _) -> failwith "build should be terminal after wait"
+    | _ -> ()
+
+[<Fact(Timeout = 30000)>]
+let ``waitForPluginTerminalIfRunning times out when plugin never leaves Running`` () =
+    let host = FsHotWatch.PluginHost.PluginHost(Unchecked.defaultof<_>, "/tmp")
+    let plugin = makeControllablePlugin "build"
+    host.RegisterHandler(plugin.Handler)
+
+    host.EmitFileChanged(SourceChanged [ "/tmp/Lib.fs" ])
+
+    let sw = System.Diagnostics.Stopwatch.StartNew()
+
+    waitForPluginTerminalIfRunning host "build" (TimeSpan.FromMilliseconds(500.0))
+    |> Async.RunSynchronously
+
+    sw.Stop()
+
+    test <@ sw.Elapsed > TimeSpan.FromMilliseconds(450.0) @>
+    test <@ sw.Elapsed < TimeSpan.FromSeconds(10.0) @>
+
+    plugin.Release.TrySetResult() |> ignore

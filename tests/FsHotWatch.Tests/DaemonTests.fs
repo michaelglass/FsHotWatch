@@ -60,109 +60,62 @@ module Foo"""
 
     test <@ parseNowarnCodes source = Set.ofList [ 1182; 3536 ] @>
 
-// ============================================================================
-// waitForPluginTerminalIfRunning tests
-// Root-cause fix for cold-scan FCS "type 'X' does not match type 'X'" diagnostics:
-// performScan must wait for BuildPlugin to leave Running before starting FCS
-// tier checks, so MSBuild's obj/Debug/.../ref/*.dll writes don't race FCS
-// reads of the same paths via -r: flags.
-// ============================================================================
+// Two `waitForPluginTerminalIfRunning` tests with Task.Delay-based timing and
+// elapsed-bound assertions (300ms release scenarios, 3.5s elapsed upper bound)
+// moved to FsHotWatch.IntegrationTests 2026-05-02 — they systematically busted
+// Fact(Timeout=5000) under unit-suite parallel load.
+//
+// The "not registered → return after settle" path stays here as a deterministic
+// unit test: completes when the function returns, no Task.Delay timing,
+// generous Fact(Timeout) so heavy parallel load can't cancel it.
 
-[<Fact(Timeout = 5000)>]
-let ``waitForPluginTerminalIfRunning returns immediately when plugin not registered`` () =
-    let host = FsHotWatch.PluginHost.PluginHost(Unchecked.defaultof<_>, "/tmp")
-    let sw = System.Diagnostics.Stopwatch.StartNew()
+[<Fact(Timeout = 15000)>]
+let ``waitForPluginTerminalIfRunningWith returns when status reader yields no plugin`` () =
+    let getStatus _ = None
 
-    waitForPluginTerminalIfRunning host "build" (TimeSpan.FromSeconds(5.0))
+    waitForPluginTerminalIfRunningWith getStatus "build" (TimeSpan.FromSeconds(5.0))
     |> Async.RunSynchronously
 
-    sw.Stop()
-    // Should return after the 200ms settle window with no plugin polling.
-    test <@ sw.Elapsed < TimeSpan.FromMilliseconds(800.0) @>
+[<Fact(Timeout = 15000)>]
+let ``waitForPluginTerminalIfRunningWith returns when plugin already terminal`` () =
+    let getStatus _ =
+        Some(PluginStatus.Completed(at = DateTime.UtcNow))
 
-/// Build a plugin handler whose status is fully controlled via a TCS,
-/// avoiding subprocess spawning (which causes test-parallel resource
-/// contention) while still exercising the Running → terminal transition.
-let private makeControllablePlugin (name: string) =
-    let release = System.Threading.Tasks.TaskCompletionSource<unit>()
-
-    let handler =
-        { Name = PluginName.create name
-          Init = ()
-          Update =
-            fun (ctx: PluginCtx<unit>) state event ->
-                async {
-                    match event with
-                    | FileChanged _ ->
-                        ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
-                        do! release.Task |> Async.AwaitTask
-                        ctx.ReportStatus(PluginStatus.Completed(at = DateTime.UtcNow))
-                    | _ -> ()
-
-                    return state
-                }
-          Commands = []
-          Subscriptions = Set.ofList [ SubscribeFileChanged ]
-          CacheKey = None
-          Teardown = None }
-
-    {| Handler = handler
-       Release = release |}
-
-[<Fact(Timeout = 5000)>]
-let ``waitForPluginTerminalIfRunning returns when plugin reaches terminal`` () =
-    let host = FsHotWatch.PluginHost.PluginHost(Unchecked.defaultof<_>, "/tmp")
-    let plugin = makeControllablePlugin "build"
-    host.RegisterHandler(plugin.Handler)
-
-    host.EmitFileChanged(SourceChanged [ "/tmp/Lib.fs" ])
-
-    // Schedule release after enough time for the wait to observe Running.
-    let _ =
-        System.Threading.Tasks.Task.Run(fun () ->
-            task {
-                do! System.Threading.Tasks.Task.Delay(300)
-                plugin.Release.TrySetResult() |> ignore
-            }
-            :> System.Threading.Tasks.Task)
-
-    let sw = System.Diagnostics.Stopwatch.StartNew()
-
-    waitForPluginTerminalIfRunning host "build" (TimeSpan.FromSeconds(4.0))
+    waitForPluginTerminalIfRunningWith getStatus "build" (TimeSpan.FromSeconds(5.0))
     |> Async.RunSynchronously
 
-    sw.Stop()
+[<Fact(Timeout = 15000)>]
+let ``waitForPluginTerminalIfRunningWith waits while Running, returns when terminal`` () =
+    // Status reader transitions from Running to Completed after the 4th call.
+    // The settle window will see Running first, then the polling loop sees
+    // Completed on a subsequent poll.
+    let calls = ref 0
 
-    // Lower bound proves we actually waited; upper bound bounds flake.
-    test <@ sw.Elapsed > TimeSpan.FromMilliseconds(200.0) @>
-    test <@ sw.Elapsed < TimeSpan.FromSeconds(3.5) @>
+    let getStatus _ =
+        calls.Value <- calls.Value + 1
 
-    match host.GetStatus("build") with
-    | Some(Running _) -> failwith "build should be terminal after wait"
-    | _ -> ()
+        if calls.Value < 4 then
+            Some(PluginStatus.Running(since = DateTime.UtcNow))
+        else
+            Some(PluginStatus.Completed(at = DateTime.UtcNow))
 
-[<Fact(Timeout = 5000)>]
-let ``waitForPluginTerminalIfRunning times out when plugin never leaves Running`` () =
-    let host = FsHotWatch.PluginHost.PluginHost(Unchecked.defaultof<_>, "/tmp")
-    let plugin = makeControllablePlugin "build"
-    host.RegisterHandler(plugin.Handler)
-
-    host.EmitFileChanged(SourceChanged [ "/tmp/Lib.fs" ])
-
-    let sw = System.Diagnostics.Stopwatch.StartNew()
-
-    // Plugin never releases; wait must hit the timeout and return (warning logged).
-    waitForPluginTerminalIfRunning host "build" (TimeSpan.FromMilliseconds(500.0))
+    waitForPluginTerminalIfRunningWith getStatus "build" (TimeSpan.FromSeconds(5.0))
     |> Async.RunSynchronously
 
-    sw.Stop()
+    // The polling loop visited at least 4 entries: settle + at least one Running poll + one terminal.
+    test <@ calls.Value >= 4 @>
 
-    // Should observe Running, hit timeout, return without exception.
-    test <@ sw.Elapsed > TimeSpan.FromMilliseconds(450.0) @>
-    test <@ sw.Elapsed < TimeSpan.FromSeconds(2.5) @>
+[<Fact(Timeout = 15000)>]
+let ``waitForPluginTerminalIfRunningWith returns after timeout when plugin stays Running`` () =
+    // Status reader always reports Running. The timeout is 200ms; settle window
+    // is 200ms, polling 50ms. Function must return without throwing when timeout
+    // elapses with plugin still Running.
+    let getStatus _ =
+        Some(PluginStatus.Running(since = DateTime.UtcNow))
 
-    // Release so the plugin doesn't leak the Update async.
-    plugin.Release.TrySetResult() |> ignore
+    waitForPluginTerminalIfRunningWith getStatus "build" (TimeSpan.FromMilliseconds(200.0))
+    |> Async.RunSynchronously
+// No assertion on elapsed — test that the function completes (doesn't deadlock).
 
 /// A null checker is fine for tests that don't perform actual compilation.
 let private nullChecker =
