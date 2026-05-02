@@ -447,6 +447,19 @@ let defaultGlobalOptions =
       CompactMode = false
       DaemonExtraArgs = "" }
 
+/// Delete a file, swallowing any exception. F9 (audit 2026-05-02): in a bulk
+/// cleanup loop one bad item shouldn't halt the rest, but the bare `with _`
+/// previously hid permission and sharing-violation failures. We log the
+/// exception class at debug so a future reader sees this isn't load-bearing
+/// and so failures are diagnosable on `--verbose`.
+let tryDeleteForCleanup (path: string) : string option =
+    try
+        File.Delete(path)
+        Some path
+    with ex ->
+        FsHotWatch.Logging.debug "cli-cleanup" $"Skipping %s{path}: %s{ex.GetType().Name}: %s{ex.Message}"
+        None
+
 /// Delete coverage baseline + partial JSON for every configured test project
 /// (skipping those with coverage opted out). Returns the list of paths that
 /// were actually removed — empty when nothing was present. Pure wrt. the
@@ -464,15 +477,7 @@ let refreshCoverageBaseline (repoRoot: string) (config: DaemonConfiguration) : s
               FsHotWatch.TestPrune.CoverageMerge.PartialName ]
             |> List.map (fun name -> Path.Combine(dir, name))
             |> List.filter File.Exists
-            |> List.choose (fun path ->
-                // TODO(error-audit F9): see docs/plans/2026-05-02-error-handling-audit.md
-                // — bare catch in a bulk loop hides real failures (permissions,
-                // sharing violations). Add a Logging.debug so failures are observable.
-                try
-                    File.Delete(path)
-                    Some path
-                with _ ->
-                    None))
+            |> List.choose tryDeleteForCleanup)
 
 /// Execute a parsed command with injectable dependencies.
 let executeCommand
@@ -638,13 +643,17 @@ let executeCommand
                     if ipc.IsRunning pipeName then
                         consecutiveQuiet <- 0
 
-                        // TODO(error-audit F9): see docs/plans/2026-05-02-error-handling-audit.md
-                        // — bulk-stop loop bare catch; add Logging.debug for observability.
+                        // F9 (audit 2026-05-02): bulk-stop loop tolerates one
+                        // shutdown failing (the OS may be tearing down the pipe
+                        // mid-call), but the bare `with _` hid real permission
+                        // / IPC bugs. Log at debug so failures are diagnosable.
                         try
                             ipc.Shutdown pipeName |> Async.RunSynchronously |> ignore
                             stopped <- stopped + 1
-                        with _ ->
-                            ()
+                        with ex ->
+                            FsHotWatch.Logging.debug
+                                "cli-stop"
+                                $"Shutdown attempt failed: %s{ex.GetType().Name}: %s{ex.Message}"
                     else
                         consecutiveQuiet <- consecutiveQuiet + 1
 
