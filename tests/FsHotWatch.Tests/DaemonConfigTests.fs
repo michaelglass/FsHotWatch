@@ -1023,6 +1023,32 @@ let ``watchRepoConfigFile watches existing config file`` () =
         File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), """{"lint": false}""")
         Assert.True(signal.Wait(5000), "expected callback within 5s"))
 
+[<Fact(Timeout = 15000)>]
+let ``invokeOnChangeWith routes onChange exception to logError sink (F3)`` () =
+    // F3 (audit/2026-05-02): the watcher previously did `try onChange reason with _ -> ()`,
+    // silently swallowing any exception from the daemon-stop callback. A user editing
+    // .fshw.json would see no effect with no log line. The dispatch is now extracted
+    // so we can inject a logError sink directly — no stderr capture race in parallel.
+    let captured = ResizeArray<string>()
+    let sink (msg: string) = lock captured (fun () -> captured.Add(msg))
+
+    invokeOnChangeWith sink (fun _reason -> failwith "boom from onChange") "edit-1"
+
+    test <@ captured.Count = 1 @>
+    test <@ captured.[0].Contains("onChange callback failed") @>
+    test <@ captured.[0].Contains("boom from onChange") @>
+
+[<Fact(Timeout = 15000)>]
+let ``invokeOnChangeWith does not invoke logError on success (F3)`` () =
+    let captured = ResizeArray<string>()
+    let sink (msg: string) = lock captured (fun () -> captured.Add(msg))
+    let mutable called = ""
+
+    invokeOnChangeWith sink (fun reason -> called <- reason) "edit-ok"
+
+    test <@ called = "edit-ok" @>
+    test <@ captured.Count = 0 @>
+
 [<Fact(Timeout = 20000)>]
 let ``watchConfigFile reports invalid reason when new contents fail to parse`` () =
     withTempDir "cfg-watch-invalid" (fun tmpDir ->
