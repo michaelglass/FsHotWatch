@@ -30,7 +30,8 @@ let private makeRecordingCtx () =
           CompleteWithSummary = fun s -> calls.Add(sprintf "Summary %s" s)
           CompleteWithTimeout = fun r -> calls.Add(sprintf "Timeout %s" r)
           RunExclusive = fun _ _ -> ()
-          IsRunning = fun _ -> false }
+          IsRunning = fun _ -> false
+          FcsSuppressedCodes = Set.empty }
 
     ctx, calls
 
