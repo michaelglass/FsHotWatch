@@ -1163,12 +1163,39 @@ let ``computeArgsSaltWith differs when an arg-file's hash returns None vs Some``
             ()
 
 [<Fact(Timeout = 15000)>]
-let ``hashFileWith returns None when reader throws`` () =
+let ``hashFileWith returns None when reader throws IOException`` () =
     let throwing _ =
         raise (System.IO.IOException("simulated read failure"))
 
     let result = hashFileWith throwing "/any/path"
     test <@ result = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``hashFileWith returns None when reader throws UnauthorizedAccessException`` () =
+    // UnauthorizedAccessException is an IOException-class failure (chmod-000 path)
+    // — narrow catch must accept it as a transient/expected file-IO error.
+    let throwing _ =
+        raise (System.UnauthorizedAccessException("denied"))
+
+    let result = hashFileWith throwing "/any/path"
+    test <@ result = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``hashFileWith propagates non-IO exceptions (F5)`` () =
+    // F5: bare `with _` previously swallowed real bugs. After narrowing to
+    // IOException + UnauthorizedAccessException, a programming bug
+    // (NullReferenceException) must surface, not produce silent None.
+    let throwing _ : byte[] =
+        raise (System.NullReferenceException("real bug"))
+
+    let mutable thrown = false
+
+    try
+        hashFileWith throwing "/any/path" |> ignore
+    with :? System.NullReferenceException ->
+        thrown <- true
+
+    test <@ thrown @>
 
 [<Fact(Timeout = 15000)>]
 let ``hashFileWith returns Some hex for successful read`` () =
