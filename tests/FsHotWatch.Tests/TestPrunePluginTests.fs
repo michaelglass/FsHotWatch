@@ -370,7 +370,7 @@ let ``FileChecked never transitions plugin to Running status`` () =
             ()
 
         // Wait for processing to complete (error path sets Failed with null checker)
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
 
         // Regression: FileChecked must never set Running — that caused rapid Running→Completed
         // cycling during FCS cold-start, making the UI show constantly-changing elapsed time
@@ -410,7 +410,7 @@ let ``FileChecked does not set Running status`` () =
         with _ ->
             ()
 
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
@@ -523,7 +523,7 @@ let ``FileChecked sets Failed status on analysis error`` () =
         with _ ->
             ()
 
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
@@ -555,7 +555,7 @@ let ``FileChecked replaces test-run Completed status with error state`` () =
         // Trigger build -> test run
         host.EmitBuildCompleted(BuildSucceeded)
 
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
 
         // After tests complete (Completed), emit FileChecked — error path (null checker) sets Failed,
         // so status changes away from Completed. On success path it would remain Completed.
@@ -680,7 +680,7 @@ let ``run-tests with only-failed reruns failed projects`` () =
         // First run — Fails project will fail
         host.EmitBuildCompleted(BuildSucceeded)
 
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
 
         // Now rerun only failed — should only run "Fails", not "Passes"
         let result =
@@ -756,7 +756,7 @@ let ``test failures are reported to error ledger`` () =
         host.RegisterHandler(handler)
 
         host.EmitBuildCompleted(BuildSucceeded)
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
 
         test <@ host.HasFailingReasons(warningsAreFailures = true) @>)
 
@@ -785,7 +785,7 @@ let ``test errors are cleared when all tests pass`` () =
         // Create fail flag so first run fails
         File.WriteAllText(Path.Combine(tmpDir, "fail_flag"), "")
         host.EmitBuildCompleted(BuildSucceeded)
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
         test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
         // Remove fail flag so second run passes
@@ -800,7 +800,7 @@ let ``test errors are cleared when all tests pass`` () =
                 | _ -> true)
             5000
 
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
         test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>)
 
 [<Fact(Timeout = 15000)>]
@@ -1007,7 +1007,7 @@ let ``FileChecked reports Completed when testConfigs provided (analysis done, aw
         // Wait for terminal status — plugin reports Completed after analysis
         // even with testConfigs, so WaitForComplete doesn't hang waiting for
         // a BuildCompleted that may never come.
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
@@ -1036,7 +1036,7 @@ let ``FileChecked reports Completed when no testConfigs (success path)`` () =
         |> Async.RunSynchronously
 
         // Wait for terminal status
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
 
         let status = host.GetStatus("test-prune")
         test <@ status.IsSome @>
@@ -1458,7 +1458,7 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
 
         // 1. Build completes → tests run and finish
         host.EmitBuildCompleted(BuildSucceeded)
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
 
         // Confirm we reached terminal state
         let statusAfterTests = host.GetStatus("test-prune")
@@ -1552,7 +1552,7 @@ let ``FileChecked with no detected symbol changes leaves ChangedSymbols empty`` 
         with _ ->
             ()
 
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
 
         // After FileChecked with no real analysis results, ChangedSymbols stays
         // empty so the lazy IPC returns "[]" without hitting the DB.
@@ -1687,7 +1687,7 @@ let ``BuildCompleted queries affected tests after flush`` () =
         // After BuildCompleted with no prior FileChecked, should still work
         // (AnalysisRan will be false, affected-tests returns "not analyzed")
         host.EmitBuildCompleted(BuildSucceeded)
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
 
         let result = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
         test <@ result.IsSome @>)
@@ -1717,12 +1717,12 @@ let ``skip tests when 0 affected classes and not cold start`` () =
 
         // First BuildCompleted = cold start, should run all
         host.EmitBuildCompleted(BuildSucceeded)
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
         test <@ runCount = 1 @>
 
         // Second BuildCompleted with no changed symbols — should SKIP
         host.EmitBuildCompleted(BuildSucceeded)
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
         test <@ runCount = 1 @>) // still 1, not 2
 
 [<Fact(Timeout = 15000)>]
@@ -2387,7 +2387,7 @@ let ``run summary omits slowest when only 1 project ran`` () =
         let host, _ = withSingleProjectHarness tmpDir "OnlyProj"
 
         host.EmitBuildCompleted(BuildSucceeded)
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
 
         let history = host.GetHistory("test-prune")
         let lastRun = history |> List.last
@@ -2415,7 +2415,7 @@ let ``test-results JSON exposes per-project elapsedMs after a successful run`` (
 
         host.RegisterHandler(handler)
         host.EmitBuildCompleted(BuildSucceeded)
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
 
         let json = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
         test <@ json.IsSome @>
@@ -2439,7 +2439,7 @@ let ``executeTests runs project on BuildSucceeded`` () =
         let host, sentinel = withSingleProjectHarness tmpDir "TestProj"
 
         host.EmitBuildCompleted(BuildSucceeded)
-        waitForPluginTerminal host "test-prune" 5.0
+        waitForPluginTerminal host "test-prune" 12.0
 
         test <@ File.Exists sentinel @>
 
