@@ -2531,7 +2531,7 @@ let private checkSourceForReal (tmpDir: string) (fileName: string) (source: stri
 
 [<Fact(Timeout = 15000)>]
 let ``hasFcsErrors returns false for ParseOnly`` () =
-    test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors ParseOnly) @>
+    test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty "" ParseOnly) @>
 
 [<Fact(Timeout = 30000)>]
 let ``hasFcsErrors returns true for source with type error`` () =
@@ -2547,7 +2547,8 @@ let x : int = "not an int"
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        test <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors result.CheckResults @>)
+        test
+            <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults @>)
 
 [<Fact(Timeout = 30000)>]
 let ``hasFcsErrors returns false for clean source`` () =
@@ -2562,7 +2563,10 @@ let answer = 42
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors result.CheckResults) @>)
+        test
+            <@
+                not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults)
+            @>)
 
 [<Fact(Timeout = 30000)>]
 let ``hasFcsErrors returns false for warning-only source`` () =
@@ -2596,7 +2600,120 @@ let f x =
             @>
 
         // Gate result: warnings alone do NOT block flush.
-        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors result.CheckResults) @>)
+        test
+            <@
+                not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults)
+            @>)
+
+// =============================================================================
+// F38 gate suppression symmetry — `hasFcsErrors` must apply the same
+// `parseNowarnCodes ∪ FcsSuppressedCodes` filter that
+// `Daemon.reportFcsDiagnostics` applies to the user-visible error stream.
+// Without the filter the gate trips on codes the user has already silenced
+// (e.g. FS1182 promoted to Error by `<TreatWarningsAsErrors>` + `#nowarn`),
+// killing TestPrune cache-replay across daemon restarts on cold scans.
+// =============================================================================
+
+[<Fact(Timeout = 30000)>]
+let ``hasFcsErrors respects per-file #nowarn directives`` () =
+    withTempDir "tp-poisoning-nowarn" (fun tmpDir ->
+        // Source has a real Error-severity diagnostic (FS0001 type mismatch).
+        // `#nowarn "1"` in the source adds code 1 to the gate's effective
+        // suppression set via `parseNowarnCodes`. The gate must drop the
+        // diagnostic — symmetric with `reportFcsDiagnostics` — even though
+        // FCS itself still reports it at Severity = Error.
+        let source =
+            """#nowarn "1"
+module Test
+let x : int = "not-an-int"
+"""
+
+        let result =
+            checkSourceForReal tmpDir "NoWarn.fsx" source
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        // Sanity: FCS still emits an Error-severity diagnostic the gate would
+        // otherwise trip on. (`#nowarn` does not actually suppress upstream FCS
+        // errors; the gate's own suppression filter is what carries the day.)
+        let hasErrorDiagnostic =
+            match result.CheckResults with
+            | FullCheck cr ->
+                cr.Diagnostics
+                |> Array.exists (fun d ->
+                    d.ErrorNumber = 1
+                    && d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+            | ParseOnly -> false
+
+        test <@ hasErrorDiagnostic @>
+
+        // The bug pre-fix: gate sees raw `cr.Diagnostics` and trips. Post-fix:
+        // `parseNowarnCodes` puts FS1 in the suppressed set and the gate falls through.
+        test
+            <@
+                not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults)
+            @>)
+
+[<Fact(Timeout = 30000)>]
+let ``hasFcsErrors respects configured FcsSuppressedCodes`` () =
+    withTempDir "tp-poisoning-config" (fun tmpDir ->
+        // No `#nowarn` in source — caller passes the suppression set instead.
+        // This is the path daemons use to silence cold-scan-only noise codes
+        // (`fcsSuppressedCodes` in DaemonConfig). The gate must honour it.
+        let source =
+            """module Test
+let x : int = "not-an-int"
+"""
+
+        let result =
+            checkSourceForReal tmpDir "Config.fsx" source
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        let hasErrorDiagnostic =
+            match result.CheckResults with
+            | FullCheck cr -> cr.Diagnostics |> Array.exists (fun d -> d.ErrorNumber = 1)
+            | ParseOnly -> false
+
+        test <@ hasErrorDiagnostic @>
+
+        test
+            <@
+                not (
+                    FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                        (Set.singleton 1)
+                        result.Source
+                        result.CheckResults
+                )
+            @>)
+
+[<Fact(Timeout = 30000)>]
+let ``hasFcsErrors still trips on real error not covered by suppression`` () =
+    // Load-bearing regression: the symmetry fix must not weaken the F38 gate
+    // for diagnostics the user has NOT silenced. A real type error with no
+    // matching suppression must still hold the prior DB snapshot.
+    withTempDir "tp-poisoning-loadbearing" (fun tmpDir ->
+        let source =
+            """module Test
+let x : int = "not-an-int"
+"""
+
+        let result =
+            checkSourceForReal tmpDir "Real.fsx" source
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        test
+            <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults @>
+
+        // Suppressing an unrelated code must NOT mask the real FS0001.
+        test
+            <@
+                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                    (Set.singleton 9999)
+                    result.Source
+                    result.CheckResults
+            @>)
 
 [<Fact(Timeout = 30000)>]
 let ``FileChecked with FCS errors does not flush symbols to DB`` () =
@@ -2643,7 +2760,8 @@ let badTypeUse : int = "not-an-int"
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
         // Confirm the result is poisoned (Error-severity diagnostics).
-        test <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors result.CheckResults @>
+        test
+            <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults @>
 
         host.EmitFileChecked(result)
         waitForPluginTerminal host "test-prune" 10.0
@@ -2703,7 +2821,10 @@ let cleanTest () = ()
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors result.CheckResults) @>
+        test
+            <@
+                not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults)
+            @>
 
         host.EmitFileChecked(result)
         waitForPluginTerminal host "test-prune" 10.0
@@ -2819,7 +2940,13 @@ let badTypeUse : int = "wrong-type"
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None (broken)")
 
-        test <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors brokenResult.CheckResults @>
+        test
+            <@
+                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                    Set.empty
+                    brokenResult.Source
+                    brokenResult.CheckResults
+            @>
 
         let host2 = PluginHost.create checker tmpDir
         let handler2 = create dbPath tmpDir (Some testConfigs) None None None None
