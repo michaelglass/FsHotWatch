@@ -418,13 +418,15 @@ type PluginHost
         for p in registeredPlugins do
             match p.Teardown with
             | Some teardown ->
-                // TODO(error-audit F14): see docs/plans/2026-05-02-error-handling-audit.md
-                // — plugin Teardown is third-party; broad catch keeps cleanup going
-                // across other plugins. Document the boundary and log ex.ToString().
+                // F14 (audit 2026-05-02): plugin Teardown is a third-party-
+                // extension boundary; the broad catch is what keeps one
+                // misbehaving plugin from preventing the rest from cleaning
+                // up. Log ex.ToString() so the type and stack trace are
+                // preserved for diagnosing the offending plugin.
                 try
                     teardown ()
                 with ex ->
-                    Logging.error (PluginFramework.PluginName.value p.Name) $"Teardown failed: %s{ex.Message}"
+                    Logging.error (PluginFramework.PluginName.value p.Name) $"Teardown failed: %s{ex.ToString()}"
             | None -> ()
 
         fileCommandPatterns.Clear()
