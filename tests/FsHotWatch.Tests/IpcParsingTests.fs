@@ -110,6 +110,28 @@ let ``parseOutcomeField tagged completed`` () =
 // --- parsePluginStatuses end-to-end with new wire format ---
 
 [<Fact(Timeout = 15000)>]
+let ``parsePluginStatuses returns empty map on malformed JSON (F8)`` () =
+    // F8: invalid JSON should produce Map.empty rather than crash the CLI,
+    // but only :? JsonException should be caught — anything else (a real
+    // programming bug) must surface.
+    let parsed = parsePluginStatuses "{ not json"
+    test <@ parsed = Map.empty @>
+
+[<Fact(Timeout = 15000)>]
+let ``parsePluginStatuses propagates non-JSON exceptions (F8)`` () =
+    // F8: passing null should surface as a real exception (ArgumentNullException
+    // from JsonDocument.Parse), not silently degrade to Map.empty.
+    let mutable thrown = false
+
+    try
+        parsePluginStatuses null |> ignore
+    with
+    | :? System.ArgumentNullException -> thrown <- true
+    | :? System.NullReferenceException -> thrown <- true
+
+    test <@ thrown @>
+
+[<Fact(Timeout = 15000)>]
 let ``parsePluginStatuses parses tagged status objects`` () =
     let json =
         """{"build":{"status":{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"},"subtasks":[],"activityTail":[],"lastRun":null},"lint":{"status":{"tag":"idle"},"subtasks":[],"activityTail":[],"lastRun":null}}"""
