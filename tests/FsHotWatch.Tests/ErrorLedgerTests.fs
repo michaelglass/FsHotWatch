@@ -328,6 +328,41 @@ let ``ErrorLedger does not notify reporters on stale version`` () =
     ledger.GetAll() |> ignore
     test <@ reportCount = 1 @>
 
+[<Fact(Timeout = 15000)>]
+let ``ErrorLedger logs reporter exception with stack trace (F11)`` () =
+    // F11: IErrorReporter is a third-party-shaped boundary; the broad catch is
+    // justified, but the previous \`ex.Message\` log stripped the stack trace
+    // exactly when we'd want to debug a misbehaving reporter. After the fix,
+    // the log includes the exception type name (and stack-trace text from
+    // ToString()), so the reporter is debuggable from logs alone.
+    let original = FsHotWatch.Logging.logLevel
+    let sb = System.Text.StringBuilder()
+    let writer = new System.IO.StringWriter(sb)
+    let prevErr = System.Console.Error
+
+    let throwingReporter =
+        { new IErrorReporter with
+            member _.Report _ _ _ =
+                raise (System.InvalidOperationException("reporter boom"))
+
+            member _.Clear _ _ = ()
+            member _.ClearPlugin _ = ()
+            member _.ClearAll() = () }
+
+    try
+        System.Console.SetError(writer)
+        FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
+        let ledger = ErrorLedger([ throwingReporter ])
+        ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
+        ledger.GetAll() |> ignore
+        writer.Flush()
+        let output = sb.ToString()
+        test <@ output.Contains("error-ledger") @>
+        test <@ output.Contains("InvalidOperationException") @>
+    finally
+        System.Console.SetError(prevErr)
+        FsHotWatch.Logging.setLogLevel original
+
 [<Fact>]
 let ``DiagnosticSeverity order is hint lt info lt warning lt error`` () =
     test <@ DiagnosticSeverity.order Hint < DiagnosticSeverity.order Info @>
