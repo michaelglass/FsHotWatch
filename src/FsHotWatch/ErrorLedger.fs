@@ -136,16 +136,17 @@ let private tryAcceptVersion key (v: int64) (state: LedgerState) =
 type ErrorLedger(?reporters: IErrorReporter list) =
     let reporters = defaultArg reporters []
 
-    // TODO(error-audit F11): see docs/plans/2026-05-02-error-handling-audit.md
-    // — IErrorReporter is a third-party-shaped boundary; the broad catch is
-    // justified in spirit but undocumented and logs ex.Message (no stack).
-    // Add a comment naming the boundary and log ex.ToString().
+    // F11 (audit 2026-05-02): IErrorReporter is a third-party-extension
+    // boundary — implementations are user-supplied and may raise anything.
+    // The broad catch keeps a misbehaving reporter from taking down the
+    // ledger agent; log ex.ToString() (not ex.Message) so the type and
+    // stack trace are preserved for diagnosing the offending reporter.
     let notifyReporters action =
         for r in reporters do
             try
                 action r
             with ex ->
-                Logging.error "error-ledger" $"Reporter failed: %s{ex.Message}"
+                Logging.error "error-ledger" $"Reporter failed: %s{ex.ToString()}"
 
     let agent =
         MailboxProcessor.Start(fun inbox ->

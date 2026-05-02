@@ -217,3 +217,98 @@ let ``runProcess overlays explicit env on top of inherited env`` () =
 
         runProcess "sh" args "." [ explicitKey, explicitValue ]
         |> expectStdout (inheritedValue + ":" + explicitValue))
+
+[<Fact(Timeout = 15000)>]
+let ``runProcessWithTimeout times out and kills long-running process (covers F17/F18 use sites)`` () =
+    // Spawn a long-running process and exercise the timeout-kill + drain path
+    // so the F17/F18 catch sites get coverage hits in the integration tree.
+    use _ = FsHotWatch.ProcessRegistry.install (FsHotWatch.ProcessRegistry.Registry())
+
+    match runProcessWithTimeout "sleep" "30" "." [] (TimeSpan.FromMilliseconds 200.0) with
+    | TimedOut _ -> ()
+    | other -> Assert.Fail $"expected TimedOut, got %A{other}"
+
+// --- F17/F18: isExpectedKillException / isExpectedDrainException helpers ---
+
+[<Fact(Timeout = 5000)>]
+let ``isExpectedKillException accepts InvalidOperationException (F17)`` () =
+    Assert.True(isExpectedKillException (System.InvalidOperationException()))
+
+[<Fact(Timeout = 5000)>]
+let ``isExpectedKillException rejects Win32Exception (F17)`` () =
+    // Win32Exception is a real permission/system failure that should propagate.
+    Assert.False(isExpectedKillException (System.ComponentModel.Win32Exception()))
+
+[<Fact(Timeout = 5000)>]
+let ``isExpectedKillException rejects NullReferenceException (F17)`` () =
+    Assert.False(isExpectedKillException (System.NullReferenceException()))
+
+[<Fact(Timeout = 5000)>]
+let ``isExpectedDrainException accepts AggregateException (F18)`` () =
+    Assert.True(isExpectedDrainException (System.AggregateException()))
+
+[<Fact(Timeout = 5000)>]
+let ``isExpectedDrainException accepts IOException (F18)`` () =
+    Assert.True(isExpectedDrainException (System.IO.IOException()))
+
+[<Fact(Timeout = 5000)>]
+let ``isExpectedDrainException accepts ObjectDisposedException (F18)`` () =
+    Assert.True(isExpectedDrainException (System.ObjectDisposedException("x")))
+
+[<Fact(Timeout = 5000)>]
+let ``isExpectedDrainException rejects NullReferenceException (F18)`` () =
+    Assert.False(isExpectedDrainException (System.NullReferenceException()))
+
+// --- F19/F20: ProcessRegistry narrow-catch contracts ---
+
+[<Fact(Timeout = 15000)>]
+let ``ProcessRegistry.Snapshot tolerates disposed processes (F19)`` () =
+    // F19: HasExited on a disposed Process throws InvalidOperationException.
+    // After narrowing from `with _` to :? InvalidOperationException + Win32,
+    // the Snapshot should still treat it as not-alive and skip it.
+    let registry = FsHotWatch.ProcessRegistry.Registry()
+    use _ = FsHotWatch.ProcessRegistry.install registry
+
+    // Spawn a fast process, wait for it to exit, then dispose so HasExited throws.
+    let psi = System.Diagnostics.ProcessStartInfo("echo", "hi")
+    psi.RedirectStandardOutput <- true
+    psi.UseShellExecute <- false
+    let proc = System.Diagnostics.Process.Start(psi)
+    registry.Track proc
+    proc.WaitForExit()
+    proc.Dispose()
+
+    // Should not throw and should return empty (alive=false swallowed).
+    let snap = registry.Snapshot()
+    Assert.Empty(snap)
+
+[<Fact(Timeout = 5000)>]
+let ``isExpectedProcessException accepts InvalidOperationException (F19/F20)`` () =
+    Assert.True(FsHotWatch.ProcessRegistry.isExpectedProcessException (System.InvalidOperationException()))
+
+[<Fact(Timeout = 5000)>]
+let ``isExpectedProcessException accepts Win32Exception (F19/F20)`` () =
+    Assert.True(FsHotWatch.ProcessRegistry.isExpectedProcessException (System.ComponentModel.Win32Exception()))
+
+[<Fact(Timeout = 5000)>]
+let ``isExpectedProcessException rejects NullReferenceException (F19/F20)`` () =
+    Assert.False(FsHotWatch.ProcessRegistry.isExpectedProcessException (System.NullReferenceException()))
+
+[<Fact(Timeout = 15000)>]
+let ``ProcessRegistry.KillAll tolerates already-exited processes (F20)`` () =
+    // F20: Kill on a process that already exited throws InvalidOperationException.
+    // After narrowing, KillAll must still complete cleanly when processes have
+    // exited normally before shutdown.
+    let registry = FsHotWatch.ProcessRegistry.Registry()
+    use _ = FsHotWatch.ProcessRegistry.install registry
+
+    let psi = System.Diagnostics.ProcessStartInfo("echo", "hi")
+    psi.RedirectStandardOutput <- true
+    psi.UseShellExecute <- false
+    let proc = System.Diagnostics.Process.Start(psi)
+    registry.Track proc
+    proc.WaitForExit()
+
+    // Should complete without throwing even though Kill would throw on an
+    // exited process if HasExited check raced.
+    registry.KillAll()
