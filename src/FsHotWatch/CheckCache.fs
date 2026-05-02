@@ -48,6 +48,10 @@ type TimestampCacheKeyProvider() =
         member _.GetFileHash(filePath: string) : string =
             let normalizedPath = Path.GetFullPath(filePath)
 
+            // TODO(error-audit F7): see docs/plans/2026-05-02-error-handling-audit.md
+            // — synthesizing "unreadable:<path>" turns transient locks into a
+            // poisoned cache hit that lives forever. Return None upstream so a
+            // transient failure becomes a cache miss + retry instead.
             try
                 let bytes = File.ReadAllBytes(normalizedPath)
                 let hash = System.Security.Cryptography.SHA256.HashData(bytes)
@@ -108,6 +112,10 @@ let fcsCheckSignature (checkResults: FileCheckState) : string =
         // the same as ParseOnly so callers get a stable signature.
         "full-check-null"
     | FullCheck results ->
+        // TODO(error-audit F1): see docs/plans/2026-05-02-error-handling-audit.md
+        // — magic-string fallback "full-check-error" collides across distinct
+        // failures and poisons downstream plugin cache keys. Fold ex.GetType().Name
+        // into the literal, or let the exception propagate.
         try
             results.Diagnostics
             |> Array.map (fun d ->

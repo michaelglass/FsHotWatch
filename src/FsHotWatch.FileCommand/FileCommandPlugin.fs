@@ -80,6 +80,9 @@ let private subtaskKey (nameStr: string) (reason: TriggerReason) : string =
 /// integration test confirms the production reader's failure mode (e.g.
 /// chmod-000) really does throw.
 let internal hashFileWith (read: string -> byte[]) (path: string) : string option =
+    // TODO(error-audit F5): see docs/plans/2026-05-02-error-handling-audit.md
+    // — bare catch on cache-key input; transient IO drops the file from the
+    // merkle and risks stale cache hits. Narrow to :? IOException.
     try
         let bytes = read path
         let hash = System.Security.Cryptography.SHA256.HashData(bytes)

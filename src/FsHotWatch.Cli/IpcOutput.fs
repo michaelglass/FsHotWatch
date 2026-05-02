@@ -101,6 +101,9 @@ let renderIpcResult
     (noWarnFail: bool)
     (result: string)
     : int =
+    // TODO(error-audit F8): see docs/plans/2026-05-02-error-handling-audit.md
+    // — silent JSON drop at IPC boundary; daemon-side schema drift becomes
+    // invisible. Narrow to :? JsonException and warn-log.
     let doc =
         try
             Some(JsonDocument.Parse(result))
