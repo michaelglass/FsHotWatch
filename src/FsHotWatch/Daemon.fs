@@ -11,26 +11,13 @@ open FsHotWatch.CheckCache
 open FsHotWatch.CheckPipeline
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
+open FsHotWatch.FcsDiagnosticFilter
 open FsHotWatch.Ipc
 open FsHotWatch.Logging
 open FsHotWatch.Plugin
 open FsHotWatch.Watcher
 open FsHotWatch.PluginHost
 open FsHotWatch.ProjectGraph
-
-/// Parse #nowarn directives from F# source text, returning the set of suppressed warning codes.
-/// Workaround for https://github.com/dotnet/fsharp/issues/9796 — FCS TransparentCompiler
-/// ignores #nowarn directives for warnaserror codes. When that issue is resolved, this
-/// function and its callers can be removed.
-let parseNowarnCodes (source: string) : Set<int> =
-    source.Split('\n')
-    |> Array.filter (fun line -> line.TrimStart().StartsWith("#nowarn"))
-    |> Array.collect (fun line -> line.TrimStart().Split('"'))
-    |> Array.choose (fun part ->
-        match System.Int32.TryParse(part) with
-        | true, code -> Some code
-        | _ -> None)
-    |> Set.ofArray
 
 /// Extract FCS diagnostics from check results and report to the error ledger.
 /// Reports all severity levels (Error, Warning, Info, Hidden) with configurable
@@ -47,9 +34,11 @@ let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) 
             | FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Hidden -> DiagnosticSeverity.Hint
 
         // Merge global suppressed codes with per-file #nowarn directives.
-        // Workaround for https://github.com/dotnet/fsharp/issues/9796
-        let nowarnCodes = parseNowarnCodes checkResult.Source
-        let allSuppressed = Set.union suppressedCodes nowarnCodes
+        // Workaround for https://github.com/dotnet/fsharp/issues/9796.
+        // Shared with TestPrunePlugin's `hasFcsErrors` cache-poisoning gate
+        // via `FcsDiagnosticFilter.allSuppressedCodes` so the user-visible
+        // diagnostic stream and the gate agree on which codes are noise.
+        let allSuppressed = allSuppressedCodes suppressedCodes checkResult.Source
 
         let diagnostics =
             checkResults.Diagnostics
@@ -1343,7 +1332,13 @@ module Daemon =
                 $"On-disk cache: %d{stats.EntryCount} entries, %.1f{float stats.SizeBytes / 1024.0 / 1024.0} MB"
 
             let host =
-                PluginHost(checker, repoRoot, reporters = [ fileReporter ], taskCache = taskCache)
+                PluginHost(
+                    checker,
+                    repoRoot,
+                    reporters = [ fileReporter ],
+                    taskCache = taskCache,
+                    fcsSuppressedCodes = fcsSuppressedCodes
+                )
 
             let fcsSink = host.ActivitySinkFor(PluginActivity.FcsPluginName)
 

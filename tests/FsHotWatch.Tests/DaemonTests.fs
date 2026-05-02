@@ -7,6 +7,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.Build
 open FsHotWatch.Daemon
+open FsHotWatch.FcsDiagnosticFilter
 open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 open FsHotWatch.Tests.TestHelpers

@@ -77,6 +77,12 @@ type PluginCtx<'Msg> =
         /// use this for IPC-facing status without maintaining their own
         /// "is running" bit.
         IsRunning: string -> bool
+        /// Caller-configured FCS warning codes the host has been told to
+        /// treat as noise. Plugins must merge this with per-file `#nowarn`
+        /// directives (`FcsDiagnosticFilter.allSuppressedCodes`) before any
+        /// gate or report decision so the user-visible error stream and any
+        /// cache-poisoning gates agree on what counts as an error.
+        FcsSuppressedCodes: Set<int>
     }
 
 /// Tags for events a plugin can subscribe to.
@@ -178,6 +184,10 @@ type PluginHostServices =
         /// flip the run's stored outcome (e.g. to TimedOut) without introducing a
         /// new PluginStatus variant.
         SetNextTerminalOutcome: PluginName -> RunOutcome -> unit
+        /// Caller-configured FCS warning codes treated as noise. Threaded into
+        /// every plugin's `PluginCtx.FcsSuppressedCodes` so plugin-level gates
+        /// stay in sync with the user-visible diagnostic filter.
+        FcsSuppressedCodes: Set<int>
     }
 
 /// Register a declarative plugin handler, returning a type-erased RegisteredPlugin.
@@ -285,7 +295,8 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                 services.SetSummary handler.Name $"timed out after {reason}"
                 services.SetNextTerminalOutcome handler.Name (TimedOut reason)
           RunExclusive = runExclusive
-          IsRunning = isRunning }
+          IsRunning = isRunning
+          FcsSuppressedCodes = services.FcsSuppressedCodes }
 
     let agent =
         MailboxProcessor<Choice<PluginEvent<'Msg>, AsyncReplyChannel<'State>>>
@@ -461,7 +472,8 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                                 services.SetSummary handler.Name $"timed out after {reason}"
                                                 services.SetNextTerminalOutcome handler.Name (TimedOut reason)
                                           RunExclusive = runExclusive
-                                          IsRunning = isRunning }
+                                          IsRunning = isRunning
+                                          FcsSuppressedCodes = services.FcsSuppressedCodes }
 
                                     let! nextState = safeUpdate capturingCtx state event
 
