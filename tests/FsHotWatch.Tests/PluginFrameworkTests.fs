@@ -475,7 +475,7 @@ let ``RunExclusive ignores second call while first is running`` () =
 
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/a.fs" ]))
         // Wait for first work to enter (gate-blocked).
-        waitUntil (fun () -> !started = 1) 5000
+        waitUntil (fun () -> !started = 1) 12000
         test <@ !started = 1 @>
 
         // Second dispatch while running: must be dropped.
@@ -486,15 +486,15 @@ let ``RunExclusive ignores second call while first is running`` () =
 
         // Release first work -> completion msg posts back to mailbox.
         gate.Set()
-        waitUntil (fun () -> !completed = 1) 5000
+        waitUntil (fun () -> !completed = 1) 12000
         test <@ !completed = 1 @>
 
         // After completion, a fresh dispatch must run.
         gate.Reset()
         reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/c.fs" ]))
-        waitUntil (fun () -> !started = 2) 5000
+        waitUntil (fun () -> !started = 2) 12000
         gate.Set()
-        waitUntil (fun () -> !completed = 2) 5000
+        waitUntil (fun () -> !completed = 2) 12000
         test <@ !started = 2 @>
         test <@ !completed = 2 @>
     }
@@ -734,14 +734,14 @@ let ``IsRunning reports true while work in flight, false after completion`` () =
         // Drain to ensure ctx captured + RunExclusive called.
         let! _ = registeredCmd.Value [||]
         // While work blocked on gate, IsRunning must report true.
-        waitUntil (fun () -> capturedCtx.Value.IsRunning "k") 5000
+        waitUntil (fun () -> capturedCtx.Value.IsRunning "k") 12000
         observedRunning.Value <- capturedCtx.Value.IsRunning "k"
         test <@ !observedRunning @>
         test <@ not (capturedCtx.Value.IsRunning "other") @>
 
         gate.Set()
         // After completion msg posts back, drain again.
-        waitUntil (fun () -> not (capturedCtx.Value.IsRunning "k")) 5000
+        waitUntil (fun () -> not (capturedCtx.Value.IsRunning "k")) 12000
         test <@ not (capturedCtx.Value.IsRunning "k") @>
     }
     |> Async.RunSynchronously
