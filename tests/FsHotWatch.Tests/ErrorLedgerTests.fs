@@ -1,11 +1,38 @@
 module FsHotWatch.Tests.ErrorLedgerTests
 
+open System
+open System.Threading.Tasks
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Tests.TestHelpers
 
 let private entry msg sev line = { errorEntry msg sev with Line = line }
+
+/// F12 (audit 2026-05-02): the ledger agent's mailbox loop previously
+/// wrapped its typed pattern-match in `with ex -> log; loop state`,
+/// silently swallowing programming bugs. The fix dropped that catch and
+/// surfaces unhandled exceptions through the agent's MailboxProcessor
+/// `Error` event, exposed publicly as `AgentCrashed`. This test injects
+/// a synthetic fault via the internal `RaiseFaultForTest` seam (the only
+/// realistic way to throw inside a typed-match over messages we own —
+/// production messages don't have a natural failure mode) and asserts
+/// the event fires instead of being swallowed.
+[<Fact(Timeout = 5000)>]
+let ``F12: programming-bug exception in agent loop surfaces via AgentCrashed instead of being swallowed`` () =
+    let ledger = ErrorLedger()
+
+    let crashed =
+        TaskCompletionSource<exn>(TaskCreationOptions.RunContinuationsAsynchronously)
+
+    use _ = ledger.AgentCrashed.Subscribe(fun ex -> crashed.TrySetResult(ex) |> ignore)
+
+    let bug = InvalidOperationException("simulated programming bug inside agent loop")
+    ledger.RaiseFaultForTest(bug)
+
+    let observed = crashed.Task.Wait(TimeSpan.FromSeconds(2.0))
+    test <@ observed @>
+    test <@ obj.ReferenceEquals(crashed.Task.Result, bug) @>
 
 [<Fact(Timeout = 15000)>]
 let ``Report adds errors and GetAll returns them grouped by file`` () =
