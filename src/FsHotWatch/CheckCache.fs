@@ -31,10 +31,14 @@ type ICheckCacheBackend =
     /// Clear all cache entries
     abstract member Clear: unit -> unit
 
-/// Pluggable strategy for computing file hashes (cache keys)
+/// Pluggable strategy for computing file hashes (cache keys).
+/// Returns None when the file cannot be read — callers must treat this as a
+/// cache miss (no key produced, no cache write) so a transient lock that
+/// resolves on retry produces a real read instead of a poisoned cache entry.
 type ICacheKeyProvider =
-    /// Compute a content hash for a file
-    abstract member GetFileHash: filePath: string -> string
+    /// Compute a content hash for a file. Returns None on read failure
+    /// (cache miss + retry; see audit F7).
+    abstract member GetFileHash: filePath: string -> string option
 
 /// Content-addressed cache key provider. SHA-256 of the file bytes — two files
 /// with identical content hash the same regardless of mtime, size-only metadata,
@@ -45,20 +49,22 @@ type ICacheKeyProvider =
 /// the implementation now reads and hashes file content.
 type TimestampCacheKeyProvider() =
     interface ICacheKeyProvider with
-        member _.GetFileHash(filePath: string) : string =
+        member _.GetFileHash(filePath: string) : string option =
             let normalizedPath = Path.GetFullPath(filePath)
 
-            // TODO(error-audit F7): see docs/plans/2026-05-02-error-handling-audit.md
-            // — synthesizing "unreadable:<path>" turns transient locks into a
-            // poisoned cache hit that lives forever. Return None upstream so a
-            // transient failure becomes a cache miss + retry instead.
             try
                 let bytes = File.ReadAllBytes(normalizedPath)
                 let hash = System.Security.Cryptography.SHA256.HashData(bytes)
-                System.Convert.ToHexString(hash).ToLowerInvariant()
+                Some(System.Convert.ToHexString(hash).ToLowerInvariant())
             with ex ->
+                // F7 — see docs/plans/2026-05-02-error-handling-audit.md.
+                // Returning None forces the caller to treat this as a cache
+                // miss (no key, no write). A transient lock (editor save,
+                // antivirus scan) that resolves on retry then produces a real
+                // hash on the next call, instead of a synthesized
+                // "unreadable:<path>" entry that pins stale data forever.
                 Logging.debug "cache" $"Could not read %s{normalizedPath}: %s{ex.Message}"
-                sha256Hex $"unreadable:%s{normalizedPath}"
+                None
 
 /// Computes ProjectOptionsHash from FSharpProjectOptions
 let getProjectOptionsHash (options: FSharpProjectOptions) : string =
@@ -143,7 +149,11 @@ let fcsCheckSignature (checkResults: FileCheckState) : string =
                   Message = d.Message })
             :> DiagnosticSignature seq)
 
-/// Compute a CacheKey for a file using the given provider
-let makeCacheKey (provider: ICacheKeyProvider) (filePath: string) (options: FSharpProjectOptions) : CacheKey =
-    { FileHash = ContentHash.create (provider.GetFileHash(filePath))
-      ProjectOptionsHash = ContentHash.create (getProjectOptionsHash options) }
+/// Compute a CacheKey for a file using the given provider. Returns None when
+/// the file cannot be read — callers must treat this as a cache miss
+/// (see audit F7).
+let makeCacheKey (provider: ICacheKeyProvider) (filePath: string) (options: FSharpProjectOptions) : CacheKey option =
+    provider.GetFileHash(filePath)
+    |> Option.map (fun fileHash ->
+        { FileHash = ContentHash.create fileHash
+          ProjectOptionsHash = ContentHash.create (getProjectOptionsHash options) })
