@@ -395,7 +395,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 return! handler.Update pluginCtx state event
                             with ex ->
                                 error (PluginName.value handler.Name) $"Plugin handler failed: %s{ex.ToString()}"
-                                services.ReportStatus handler.Name (Failed(ex.Message, DateTime.UtcNow))
+                                services.ReportStatus handler.Name (Failed(ex.ToString(), DateTime.UtcNow))
                                 return state
                         }
 
