@@ -152,9 +152,10 @@ let parsePluginStatusElement (el: JsonElement) : ParsedPluginStatus =
 
 /// Parse the top-level JSON object returned by GetStatus into structured per-plugin status.
 let parsePluginStatuses (json: string) : Map<string, ParsedPluginStatus> =
-    // TODO(error-audit F8): see docs/plans/2026-05-02-error-handling-audit.md
-    // — silent JSON drop returns Map.empty on parse failure; UI shows nothing
-    // and daemon regressions are invisible. Narrow to :? JsonException + warn.
+    // F8 (audit 2026-05-02): JSON-shape drift from the daemon must be visible —
+    // the previous bare `with _` silently rendered an empty UI. Narrow to
+    // :? JsonException so a real bug (null, ArgumentException) propagates,
+    // and warn-log so producer/consumer schema drift surfaces in CLI logs.
     try
         use doc = JsonDocument.Parse(json)
 
@@ -162,7 +163,8 @@ let parsePluginStatuses (json: string) : Map<string, ParsedPluginStatus> =
               if prop.Value.ValueKind = JsonValueKind.Object then
                   prop.Name, parsePluginStatusElement prop.Value ]
         |> Map.ofList
-    with _ ->
+    with :? JsonException as ex ->
+        FsHotWatch.Logging.warn "ipc-parsing" $"Failed to parse plugin-status JSON (schema drift?): %s{ex.Message}"
         Map.empty
 
 /// Project a ParsedPluginStatus map to plain PluginStatus values.
