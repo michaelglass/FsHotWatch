@@ -283,6 +283,11 @@ let private rediscoverAndClearRemoved
 type private ScanSignalMsg =
     | WaitFor of afterGen: int64 * TaskCompletionSource<unit>
     | Signal of newGen: int64
+    /// F12 (audit 2026-05-02) test seam: see ErrorLedger.LedgerMsg.RaiseFaultForTest
+    /// for the rationale. Production messages don't have a natural failure
+    /// mode, so this is the only realistic way to verify the agent surfaces
+    /// programming bugs instead of swallowing them.
+    | RaiseFaultForTest of exn
 
 type ScanSignal(?cancellationToken: CancellationToken) =
     let agent =
@@ -296,51 +301,60 @@ type ScanSignal(?cancellationToken: CancellationToken) =
                     async {
                         let! msg = inbox.Receive()
 
-                        try
-                            match msg with
-                            | WaitFor(afterGeneration, tcs) ->
-                                let alreadySatisfied =
-                                    if afterGeneration >= 0L then
-                                        latestGeneration > afterGeneration
-                                    else
-                                        latestGeneration > 0L
-
-                                if alreadySatisfied then
-                                    Logging.debug
-                                        "scan-signal"
-                                        $"WaitFor(%d{afterGeneration}) — already satisfied (latest=%d{latestGeneration}), resolving"
-
-                                    tcs.TrySetResult(()) |> ignore
-                                    return! loop latestGeneration waiters
+                        // F12 (audit 2026-05-02): no inner try/with — the body is a
+                        // typed match over messages we own; tcs.TrySetResult,
+                        // List.partition, and Logging.debug do not throw on valid
+                        // state. Anything that throws is a programming bug that
+                        // surfaces via `agent.Error` (exposed as `AgentCrashed`)
+                        // rather than silently looping in the original state.
+                        match msg with
+                        | WaitFor(afterGeneration, tcs) ->
+                            let alreadySatisfied =
+                                if afterGeneration >= 0L then
+                                    latestGeneration > afterGeneration
                                 else
-                                    Logging.debug "scan-signal" $"WaitFor(%d{afterGeneration}) — registering waiter"
-                                    return! loop latestGeneration ((afterGeneration, tcs) :: waiters)
+                                    latestGeneration > 0L
 
-                            | Signal newGeneration ->
-                                let toSignal, remaining =
-                                    waiters
-                                    |> List.partition (fun (afterGen, _) -> afterGen < 0L || newGeneration > afterGen)
-
+                            if alreadySatisfied then
                                 Logging.debug
                                     "scan-signal"
-                                    $"SignalGeneration(%d{newGeneration}) — resolving %d{toSignal.Length} waiters, %d{remaining.Length} remaining"
+                                    $"WaitFor(%d{afterGeneration}) — already satisfied (latest=%d{latestGeneration}), resolving"
 
-                                for _, tcs in toSignal do
-                                    tcs.TrySetResult(()) |> ignore
+                                tcs.TrySetResult(()) |> ignore
+                                return! loop latestGeneration waiters
+                            else
+                                Logging.debug "scan-signal" $"WaitFor(%d{afterGeneration}) — registering waiter"
+                                return! loop latestGeneration ((afterGeneration, tcs) :: waiters)
 
-                                return! loop (max latestGeneration newGeneration) remaining
-                        // TODO(error-audit F12): see docs/plans/2026-05-02-error-handling-audit.md
-                        // — mailbox-loop "agent must not die" guard inside a typed
-                        // pattern match over data we own. Programming bugs here recur
-                        // forever silently. Drop or narrow.
-                        with ex ->
-                            Logging.error "scan-signal" $"Agent failed: %s{ex.ToString()}"
-                            return! loop latestGeneration waiters
+                        | Signal newGeneration ->
+                            let toSignal, remaining =
+                                waiters
+                                |> List.partition (fun (afterGen, _) -> afterGen < 0L || newGeneration > afterGen)
+
+                            Logging.debug
+                                "scan-signal"
+                                $"SignalGeneration(%d{newGeneration}) — resolving %d{toSignal.Length} waiters, %d{remaining.Length} remaining"
+
+                            for _, tcs in toSignal do
+                                tcs.TrySetResult(()) |> ignore
+
+                            return! loop (max latestGeneration newGeneration) remaining
+
+                        | RaiseFaultForTest ex -> raise ex
                     }
 
                 loop 0L []),
             ?cancellationToken = cancellationToken
         )
+
+    do
+        agent.Error.Add(fun ex ->
+            // F12 (audit 2026-05-02): an unhandled exception inside the agent
+            // loop is a programming bug. Log loudly with the full stack trace
+            // (ex.ToString(), not ex.Message); the agent stops and pending
+            // waiters' WaitForGeneration tasks remain unresolved — a visible
+            // hang at the next caller, not the previous silent loop-and-drop.
+            Logging.error "scan-signal" $"Mailbox loop crashed (programming bug, agent stopped): %s{ex.ToString()}")
 
     /// Register a waiter that resolves when generation exceeds afterGeneration.
     /// If afterGeneration < 0, resolves on the next generation increment.
@@ -366,6 +380,15 @@ type ScanSignal(?cancellationToken: CancellationToken) =
 
     /// Signal all waiters whose afterGeneration is now satisfied.
     member _.SignalGeneration(newGeneration: int64) = agent.Post(Signal newGeneration)
+
+    /// F12 (audit 2026-05-02): unhandled exceptions inside the mailbox loop
+    /// surface here. Subscribe to observe programming bugs that the previous
+    /// inner try/with would have silently swallowed.
+    member _.AgentCrashed: IEvent<exn> = agent.Error
+
+    /// F12 test seam: deterministically raise inside the agent loop. See
+    /// `ErrorLedger.RaiseFaultForTest` for rationale.
+    member internal _.RaiseFaultForTest(ex: exn) = agent.Post(RaiseFaultForTest ex)
 
 /// Messages handled by the scan agent. The agent owns ScanState + Generation
 /// in its loop's recursion — readers round-trip via PostAndReply so they never
@@ -408,6 +431,40 @@ let private isTerminal (s: PluginStatus) =
 
 let private allTerminal (statuses: Map<string, PluginStatus>) =
     not statuses.IsEmpty && statuses |> Map.forall (fun _ s -> isTerminal s)
+
+/// F13 (audit 2026-05-02): centralized failure handler for daemon batch/scan
+/// steps. `processBatch` and `performScan` transitively call FCS, MSBuild, and
+/// arbitrary plugin Update functions — there isn't a smaller exception type
+/// that captures "anything from this layer", so the broad `Exception` catch
+/// is genuinely justified at this boundary. We hoist the policy to one place
+/// (rather than inlining the same `with ex -> log; idle` arm at three call
+/// sites) so the contract is readable and reviewable in one read:
+///   - `OperationCanceledException` is NOT a failure: it's the cancellation
+///     signal threaded through `CancellationToken`. Re-raise so async
+///     pipelines unwind; the caller decides whether to enter idle.
+///   - Anything else is logged with `ex.ToString()` (full stack + inner
+///     chain — `ex.Message` alone strips the diagnostic trail) and returned
+///     as `Error`. Callers fall back to idle to keep the daemon responsive.
+///
+/// Follow-up (deferred — see audit F13): the broad `Exception` arm should
+/// eventually be replaced by the narrow set FCS/MSBuild/plugins actually
+/// raise once we have a top-level daemon Failed-status path that surfaces
+/// truly unexpected exceptions to the user instead of just logging them.
+/// That refactor is invasive (touches PluginHost status reporting) and is
+/// tracked as the §5 Tier-2 follow-up "top-level daemon failure handler design".
+let internal runDaemonStep (label: string) (work: Async<'T>) : Async<Result<'T, exn>> =
+    async {
+        try
+            let! r = work
+            return Ok r
+        with
+        | :? OperationCanceledException as ex ->
+            Logging.debug "daemon" $"%s{label} cancelled"
+            return raise ex
+        | ex ->
+            Logging.error "daemon" $"%s{label} failed: %s{ex.ToString()}"
+            return Result.Error ex
+    }
 
 /// Dependencies for processBatch, bundled to avoid a long closure capture list.
 [<NoComparison; NoEquality>]
@@ -1341,27 +1398,30 @@ module Daemon =
                                         let newDelay = max delayMs (delayForChange change)
                                         return! debouncing (change :: pending) newDelay suppressed
                                     | Some(Choice2Of2 replyChannel) ->
-                                        // TODO(error-audit F13): see docs/plans/2026-05-02-error-handling-audit.md
-                                        // — broad catch over processBatch (FCS+MSBuild+plugins).
-                                        // Surface area is real but undocumented; needs a top-level
-                                        // daemon failure handler design before tightening.
-                                        try
-                                            let! newSuppressed = processBatch batchCtx (List.rev pending) suppressed
+                                        // F13 (audit 2026-05-02): policy hoisted to runDaemonStep —
+                                        // OperationCanceledException propagates; everything else is
+                                        // logged with full stack and we fall back to idle so the
+                                        // daemon stays responsive while the user sees the failure.
+                                        match!
+                                            runDaemonStep
+                                                "processChanges (with replyChannel)"
+                                                (processBatch batchCtx (List.rev pending) suppressed)
+                                        with
+                                        | Ok newSuppressed ->
                                             let finalSuppressed = formatAllAndSuppress newSuppressed replyChannel
                                             return! idle finalSuppressed
-                                        with ex ->
-                                            Logging.error "daemon" $"processChanges failed: %s{ex.ToString()}"
+                                        | Result.Error _ ->
                                             replyChannel.Reply("format failed")
                                             return! idle suppressed
                                     | None ->
-                                        // Debounce expired — process batch
-                                        // TODO(error-audit F13): see docs/plans/2026-05-02-error-handling-audit.md
-                                        try
-                                            let! newSuppressed = processBatch batchCtx (List.rev pending) suppressed
-                                            return! idle newSuppressed
-                                        with ex ->
-                                            Logging.error "daemon" $"processChanges failed: %s{ex.ToString()}"
-                                            return! idle suppressed
+                                        // Debounce expired — process batch (F13: see runDaemonStep).
+                                        match!
+                                            runDaemonStep
+                                                "processChanges"
+                                                (processBatch batchCtx (List.rev pending) suppressed)
+                                        with
+                                        | Ok newSuppressed -> return! idle newSuppressed
+                                        | Result.Error _ -> return! idle suppressed
                                 }
 
                             idle Set.empty),
@@ -1385,15 +1445,14 @@ module Daemon =
 
                                 match msg with
                                 | RequestScan(ct, reply) ->
-                                    // TODO(error-audit F13): see docs/plans/2026-05-02-error-handling-audit.md
-                                    // — broad catch over performScan; same caveat as the
-                                    // changeAgent batch handlers above.
-                                    try
-                                        let! newState = performScan batchCtx scanSignal state ct
+                                    // F13 (audit 2026-05-02): policy hoisted to runDaemonStep — see
+                                    // its docblock for the broad-catch justification at this
+                                    // boundary (FCS / MSBuild / plugin Update surface).
+                                    match! runDaemonStep "performScan" (performScan batchCtx scanSignal state ct) with
+                                    | Ok newState ->
                                         reply.Reply(())
                                         return! loop newState
-                                    with ex ->
-                                        Logging.error "scan" $"performScan failed: %s{ex.ToString()}"
+                                    | Result.Error _ ->
                                         reply.Reply(())
                                         return! loop state
                                 | GetState reply ->

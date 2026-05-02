@@ -116,6 +116,12 @@ type private LedgerMsg =
     | GetCountsByPlugin of AsyncReplyChannel<Map<string, DiagnosticCounts>>
     | FailingReasons of warningsAreFailures: bool * AsyncReplyChannel<Map<string, (string * ErrorEntry) list>>
     | HasFailingReasons of warningsAreFailures: bool * AsyncReplyChannel<bool>
+    /// F12 (audit 2026-05-02) test seam: only path that can deterministically
+    /// raise inside the typed match. Production messages don't have a natural
+    /// failure mode (Map/list/Reply ops don't throw on valid state), so without
+    /// this seam the "agent surfaces programming bugs" contract is unobservable.
+    /// Posted only by `ErrorLedger.RaiseFaultForTest`, which is itself internal.
+    | RaiseFaultForTest of exn
 
 let private isFailing warningsAreFailures e =
     ErrorEntry.isFailing warningsAreFailures e
@@ -155,136 +161,135 @@ type ErrorLedger(?reporters: IErrorReporter list) =
                     let! msg = inbox.Receive()
 
                     let newState =
-                        try
-                            match msg with
-                            | Report(plugin, file, entries, version) ->
-                                let key = struct (plugin, file)
+                        // F12 (audit 2026-05-02): no inner try/with here — the body
+                        // is a typed match over messages we own and field operations
+                        // that don't throw on valid state. Anything that throws is a
+                        // programming bug; swallowing it would let the bug recur
+                        // forever silently. Unhandled exceptions surface through
+                        // `agent.Error` (exposed publicly as `AgentCrashed`).
+                        match msg with
+                        | Report(plugin, file, entries, version) ->
+                            let key = struct (plugin, file)
 
-                                let accepted, state' =
-                                    match version with
-                                    | Some v -> tryAcceptVersion key v state
-                                    | None -> true, state
+                            let accepted, state' =
+                                match version with
+                                | Some v -> tryAcceptVersion key v state
+                                | None -> true, state
 
-                                if accepted then
-                                    if entries.IsEmpty then
-                                        notifyReporters (fun r -> r.Clear plugin file)
-
-                                        { state' with
-                                            Errors = Map.remove key state'.Errors }
-                                    else
-                                        notifyReporters (fun r -> r.Report plugin file entries)
-
-                                        { state' with
-                                            Errors = Map.add key entries state'.Errors }
-                                else
-                                    state'
-
-                            | Clear(plugin, file, version) ->
-                                let key = struct (plugin, file)
-
-                                let accepted, state' =
-                                    match version with
-                                    | Some v -> tryAcceptVersion key v state
-                                    | None -> true, state
-
-                                if accepted then
+                            if accepted then
+                                if entries.IsEmpty then
                                     notifyReporters (fun r -> r.Clear plugin file)
 
                                     { state' with
                                         Errors = Map.remove key state'.Errors }
                                 else
-                                    state'
+                                    notifyReporters (fun r -> r.Report plugin file entries)
 
-                            | ClearPlugin plugin ->
-                                let newErrors = state.Errors |> Map.filter (fun (struct (p, _)) _ -> p <> plugin)
+                                    { state' with
+                                        Errors = Map.add key entries state'.Errors }
+                            else
+                                state'
 
-                                let newVersions =
-                                    state.Versions |> Map.filter (fun (struct (p, _)) _ -> p <> plugin)
+                        | Clear(plugin, file, version) ->
+                            let key = struct (plugin, file)
 
-                                notifyReporters (fun r -> r.ClearPlugin plugin)
+                            let accepted, state' =
+                                match version with
+                                | Some v -> tryAcceptVersion key v state
+                                | None -> true, state
 
-                                { Errors = newErrors
-                                  Versions = newVersions }
+                            if accepted then
+                                notifyReporters (fun r -> r.Clear plugin file)
 
-                            | GetAll rc ->
-                                let result =
-                                    state.Errors
-                                    |> Map.toSeq
-                                    |> Seq.collect (fun (struct (plugin, file), entries) ->
-                                        entries |> List.map (fun e -> file, (plugin, e)))
-                                    |> Seq.groupBy fst
-                                    |> Seq.map (fun (file, entries) -> file, entries |> Seq.map snd |> Seq.toList)
-                                    |> Map.ofSeq
+                                { state' with
+                                    Errors = Map.remove key state'.Errors }
+                            else
+                                state'
 
-                                rc.Reply(result)
-                                state
+                        | ClearPlugin plugin ->
+                            let newErrors = state.Errors |> Map.filter (fun (struct (p, _)) _ -> p <> plugin)
 
-                            | GetByPlugin(pluginName, rc) ->
-                                let result =
-                                    state.Errors
-                                    |> Map.toSeq
-                                    |> Seq.choose (fun (struct (p, file), entries) ->
-                                        if p = pluginName then Some(file, entries) else None)
-                                    |> Map.ofSeq
+                            let newVersions =
+                                state.Versions |> Map.filter (fun (struct (p, _)) _ -> p <> plugin)
 
-                                rc.Reply(result)
-                                state
+                            notifyReporters (fun r -> r.ClearPlugin plugin)
 
-                            | GetCountsByPlugin rc ->
-                                let result =
-                                    state.Errors
-                                    |> Map.fold
-                                        (fun acc (struct (plugin, _)) entries ->
-                                            let prev =
-                                                Map.tryFind plugin acc |> Option.defaultValue DiagnosticCounts.empty
+                            { Errors = newErrors
+                              Versions = newVersions }
 
-                                            let next =
-                                                entries
-                                                |> List.fold
-                                                    (fun (d: DiagnosticCounts) e ->
-                                                        match e.Severity with
-                                                        | Error -> { d with Errors = d.Errors + 1 }
-                                                        | Warning -> { d with Warnings = d.Warnings + 1 }
-                                                        | _ -> d)
-                                                    prev
+                        | GetAll rc ->
+                            let result =
+                                state.Errors
+                                |> Map.toSeq
+                                |> Seq.collect (fun (struct (plugin, file), entries) ->
+                                    entries |> List.map (fun e -> file, (plugin, e)))
+                                |> Seq.groupBy fst
+                                |> Seq.map (fun (file, entries) -> file, entries |> Seq.map snd |> Seq.toList)
+                                |> Map.ofSeq
 
-                                            Map.add plugin next acc)
-                                        Map.empty
-
-                                rc.Reply(result)
-                                state
-
-                            | FailingReasons(warningsAreFailures, rc) ->
-                                let result =
-                                    state.Errors
-                                    |> Map.toSeq
-                                    |> Seq.collect (fun (struct (plugin, file), entries) ->
-                                        entries
-                                        |> List.filter (isFailing warningsAreFailures)
-                                        |> List.map (fun e -> file, (plugin, e)))
-                                    |> Seq.groupBy fst
-                                    |> Seq.map (fun (file, entries) -> file, entries |> Seq.map snd |> Seq.toList)
-                                    |> Map.ofSeq
-
-                                rc.Reply(result)
-                                state
-
-                            | HasFailingReasons(warningsAreFailures, rc) ->
-                                let hasAny =
-                                    state.Errors
-                                    |> Map.values
-                                    |> Seq.exists (List.exists (isFailing warningsAreFailures))
-
-                                rc.Reply(hasAny)
-                                state
-                        // TODO(error-audit F12): see docs/plans/2026-05-02-error-handling-audit.md
-                        // — mailbox-loop "agent must not die" guard inside a typed
-                        // pattern match over data we own. What would actually throw is
-                        // a programming bug; continuing the loop in original state means
-                        // the bug recurs forever and silently. Drop or narrow.
-                        with ex ->
-                            Logging.error "error-ledger" $"Agent failed: %s{ex.ToString()}"
+                            rc.Reply(result)
                             state
+
+                        | GetByPlugin(pluginName, rc) ->
+                            let result =
+                                state.Errors
+                                |> Map.toSeq
+                                |> Seq.choose (fun (struct (p, file), entries) ->
+                                    if p = pluginName then Some(file, entries) else None)
+                                |> Map.ofSeq
+
+                            rc.Reply(result)
+                            state
+
+                        | GetCountsByPlugin rc ->
+                            let result =
+                                state.Errors
+                                |> Map.fold
+                                    (fun acc (struct (plugin, _)) entries ->
+                                        let prev =
+                                            Map.tryFind plugin acc |> Option.defaultValue DiagnosticCounts.empty
+
+                                        let next =
+                                            entries
+                                            |> List.fold
+                                                (fun (d: DiagnosticCounts) e ->
+                                                    match e.Severity with
+                                                    | Error -> { d with Errors = d.Errors + 1 }
+                                                    | Warning -> { d with Warnings = d.Warnings + 1 }
+                                                    | _ -> d)
+                                                prev
+
+                                        Map.add plugin next acc)
+                                    Map.empty
+
+                            rc.Reply(result)
+                            state
+
+                        | FailingReasons(warningsAreFailures, rc) ->
+                            let result =
+                                state.Errors
+                                |> Map.toSeq
+                                |> Seq.collect (fun (struct (plugin, file), entries) ->
+                                    entries
+                                    |> List.filter (isFailing warningsAreFailures)
+                                    |> List.map (fun e -> file, (plugin, e)))
+                                |> Seq.groupBy fst
+                                |> Seq.map (fun (file, entries) -> file, entries |> Seq.map snd |> Seq.toList)
+                                |> Map.ofSeq
+
+                            rc.Reply(result)
+                            state
+
+                        | HasFailingReasons(warningsAreFailures, rc) ->
+                            let hasAny =
+                                state.Errors
+                                |> Map.values
+                                |> Seq.exists (List.exists (isFailing warningsAreFailures))
+
+                            rc.Reply(hasAny)
+                            state
+
+                        | RaiseFaultForTest ex -> raise ex
 
                     return! loop newState
                 }
@@ -292,6 +297,16 @@ type ErrorLedger(?reporters: IErrorReporter list) =
             loop
                 { Errors = Map.empty
                   Versions = Map.empty })
+
+    do
+        agent.Error.Add(fun ex ->
+            // F12 (audit 2026-05-02): an unhandled exception inside the agent
+            // loop is a programming bug. Log loudly with the full stack trace
+            // (ex.ToString(), not ex.Message) so the bug is debuggable; the
+            // agent then stops and subsequent posts queue up unconsumed —
+            // making the failure visible at the next caller rather than
+            // silently dropped as the previous inner try/with did.
+            Logging.error "error-ledger" $"Mailbox loop crashed (programming bug, agent stopped): %s{ex.ToString()}")
 
     /// Set errors for a plugin + file. Replaces previous. Empty list clears.
     /// When version is provided, updates with version < last accepted are ignored.
@@ -327,3 +342,16 @@ type ErrorLedger(?reporters: IErrorReporter list) =
     /// True if any failing entries exist (Error, or Warning when warningsAreFailures=true).
     member _.HasFailingReasons(warningsAreFailures: bool) =
         agent.PostAndReply(fun rc -> HasFailingReasons(warningsAreFailures, rc))
+
+    /// F12 (audit 2026-05-02): unhandled exceptions inside the mailbox loop
+    /// surface here. Subscribe to observe programming bugs that the previous
+    /// inner try/with would have silently swallowed. The default subscriber
+    /// (wired in `do agent.Error.Add ...`) logs with the full stack.
+    member _.AgentCrashed: IEvent<exn> = agent.Error
+
+    /// F12 test seam: deterministically raise inside the agent loop. Used by
+    /// tests to verify the "agent surfaces programming bugs" contract; the
+    /// production messages don't have a natural failure mode (Map/list/Reply
+    /// ops don't throw on valid state). Internal — only `FsHotWatch.Tests`
+    /// can call this via `InternalsVisibleTo`.
+    member internal _.RaiseFaultForTest(ex: exn) = agent.Post(RaiseFaultForTest ex)

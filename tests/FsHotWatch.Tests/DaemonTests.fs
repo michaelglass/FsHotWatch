@@ -868,3 +868,81 @@ let ``formatPluginWait includes subtask labels + elapsed when present`` () =
     test <@ formatted.Contains("test-prune (30m 0s)") @>
     test <@ formatted.Contains("Intelligence.Tests.Unit 12m 0s") @>
     test <@ formatted.Contains("Intelligence.Tests.Database 10m 0s") @>
+
+// ============================================================================
+// F12 + F13 (audit 2026-05-02): mailbox-loop guards + processBatch/performScan
+// broad catches in Daemon.fs. See docs/plans/2026-05-02-error-handling-audit.md
+// ============================================================================
+
+/// F12: ScanSignal's mailbox loop previously wrapped its typed pattern-match
+/// in `with ex -> log; loop state`, silently swallowing programming bugs in a
+/// daemon-internal control-plane component. The fix dropped that catch and
+/// surfaces unhandled exceptions through the agent's Error event, exposed as
+/// `AgentCrashed`. We inject a synthetic fault via the internal
+/// `RaiseFaultForTest` seam (production messages don't have a natural failure
+/// mode — the catch was guarding against future programming bugs) and assert
+/// the event fires instead of being swallowed.
+[<Fact(Timeout = 5000)>]
+let ``F12: ScanSignal programming-bug surfaces via AgentCrashed instead of being swallowed`` () =
+    let scanSignal = FsHotWatch.Daemon.ScanSignal()
+
+    let crashed =
+        System.Threading.Tasks.TaskCompletionSource<exn>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+        )
+
+    use _ =
+        scanSignal.AgentCrashed.Subscribe(fun ex -> crashed.TrySetResult(ex) |> ignore)
+
+    let bug =
+        InvalidOperationException("simulated programming bug inside ScanSignal loop")
+
+    scanSignal.RaiseFaultForTest(bug)
+
+    let observed = crashed.Task.Wait(TimeSpan.FromSeconds(2.0))
+    test <@ observed @>
+    test <@ obj.ReferenceEquals(crashed.Task.Result, bug) @>
+
+/// F13: `runDaemonStep` is the single hoisted failure-handler that
+/// `processBatch`/`performScan` call sites now route through, so the broad-
+/// catch policy lives in one place rather than three inline `with ex ->` arms.
+/// Two contracts to verify:
+///   1. OperationCanceledException is NOT swallowed — cancellation is a normal
+///      signal, not a daemon failure, and the inner code paths rely on it
+///      bubbling to break out of async pipelines.
+///   2. Other exceptions are admitted (logged + returned as `Error`) so the
+///      caller can fall back to idle without crashing the daemon.
+[<Fact(Timeout = 5000)>]
+let ``F13: runDaemonStep lets OperationCanceledException propagate (cancellation is not failure)`` () =
+    let cancelling: Async<int> =
+        async { return raise (OperationCanceledException("simulated cancel")) }
+
+    let work = FsHotWatch.Daemon.runDaemonStep "test-step" cancelling
+
+    let ex =
+        Assert.ThrowsAny<OperationCanceledException>(fun () -> Async.RunSynchronously(work) |> ignore)
+
+    test <@ ex.Message.Contains("simulated cancel") @>
+
+[<Fact(Timeout = 5000)>]
+let ``F13: runDaemonStep returns Error for unexpected exceptions and admits the original instance`` () =
+    let bug = InvalidOperationException("simulated processBatch bug")
+    let failing: Async<int> = async { return raise bug }
+
+    let result =
+        Async.RunSynchronously(FsHotWatch.Daemon.runDaemonStep "test-step" failing)
+
+    match result with
+    | Ok _ -> Assert.Fail("expected Error result for unexpected exception")
+    | Result.Error ex -> test <@ obj.ReferenceEquals(ex, bug) @>
+
+[<Fact(Timeout = 5000)>]
+let ``F13: runDaemonStep returns Ok with the work result on success`` () =
+    let work: Async<int> = async { return 42 }
+
+    let result =
+        Async.RunSynchronously(FsHotWatch.Daemon.runDaemonStep "test-step" work)
+
+    match result with
+    | Ok v -> test <@ v = 42 @>
+    | Result.Error ex -> Assert.Fail($"expected Ok 42, got Error {ex}")
