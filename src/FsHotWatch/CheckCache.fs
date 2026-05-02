@@ -94,6 +94,27 @@ let hashDiagnosticSignatures (signatures: DiagnosticSignature seq) : string =
 
     sha256Hex parts
 
+/// Hash a thunk that produces diagnostic signatures. If the thunk throws,
+/// fold the exception's type and message into a synthesized hash payload so
+/// distinct failure modes produce distinct cache keys (instead of all
+/// collapsing to a single magic literal — see audit F1). The exception is
+/// logged at error so a real bug isn't silently absorbed.
+///
+/// Extracted as a thunk-taking helper so the failure path is unit-testable
+/// without constructing a real (or breakable) FSharpCheckFileResults.
+let hashDiagnosticsOrFailure (extract: unit -> DiagnosticSignature seq) : string =
+    try
+        extract () |> hashDiagnosticSignatures
+    with ex ->
+        Logging.error "cache" $"diagnostic-hash failed (%s{ex.GetType().FullName}): %s{ex.ToString()}"
+
+        // Fold the exception class + message into the synthesized payload so
+        // two distinct failures don't share a downstream cache key. Hashing
+        // the payload (rather than returning a literal prefix + raw message)
+        // keeps the output the same shape — a hex digest — as the success
+        // path, so callers don't need a separate code path for failures.
+        sha256Hex $"diagnostic-hash-failed:%s{ex.GetType().FullName}:%s{ex.Message}"
+
 /// §1: signature of FCS check results, suitable as an oracle answer for plugin
 /// cache keys. Two runs of the same file with identical FCS view (i.e., the
 /// transitive cross-file state that affects this file's compilation produced
@@ -112,11 +133,7 @@ let fcsCheckSignature (checkResults: FileCheckState) : string =
         // the same as ParseOnly so callers get a stable signature.
         "full-check-null"
     | FullCheck results ->
-        // TODO(error-audit F1): see docs/plans/2026-05-02-error-handling-audit.md
-        // — magic-string fallback "full-check-error" collides across distinct
-        // failures and poisons downstream plugin cache keys. Fold ex.GetType().Name
-        // into the literal, or let the exception propagate.
-        try
+        hashDiagnosticsOrFailure (fun () ->
             results.Diagnostics
             |> Array.map (fun d ->
                 { StartLine = d.StartLine
@@ -124,9 +141,7 @@ let fcsCheckSignature (checkResults: FileCheckState) : string =
                   ErrorNumber = d.ErrorNumber
                   Severity = $"%A{d.Severity}"
                   Message = d.Message })
-            |> hashDiagnosticSignatures
-        with _ ->
-            "full-check-error"
+            :> DiagnosticSignature seq)
 
 /// Compute a CacheKey for a file using the given provider
 let makeCacheKey (provider: ICacheKeyProvider) (filePath: string) (options: FSharpProjectOptions) : CacheKey =
