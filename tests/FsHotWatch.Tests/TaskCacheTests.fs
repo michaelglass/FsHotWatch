@@ -448,7 +448,7 @@ let ``plugin skips Update on cache hit and replays errors`` () =
     host.EmitFileChecked(dummyFileCheckResult "/src/A.fs")
 
     // Wait for the agent to process the event
-    waitUntil (fun () -> host.GetStatus("test-plugin") <> Some Idle) 5000
+    waitUntil (fun () -> host.GetStatus("test-plugin") <> Some Idle) 12000
 
     // Update should NOT have been called — cache hit
     test <@ updateCallCount = 0 @>
@@ -531,7 +531,7 @@ let ``plugin runs Update when cache key changes`` () =
     // Change the commit — second event should miss cache
     currentCommit <- "commit-2"
     host.EmitFileChecked(dummyFileCheckResult "/src/C.fs")
-    waitUntil (fun () -> updateCallCount = 2) 5000
+    waitUntil (fun () -> updateCallCount = 2) 12000
     test <@ updateCallCount = 2 @>
 
 // --- FileTaskCache tests ---

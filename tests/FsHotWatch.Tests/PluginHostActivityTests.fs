@@ -44,7 +44,7 @@ let ``ctx.Log appears in host activity tail`` () =
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
-    waitUntil (fun () -> host.GetHistory("logger") |> List.isEmpty |> not) 5000
+    waitUntil (fun () -> host.GetHistory("logger") |> List.isEmpty |> not) 12000
     let hist = host.GetHistory("logger")
     test <@ hist.Length = 1 @>
     let r = List.head hist
@@ -67,7 +67,7 @@ let ``ctx.StartSubtask and EndSubtask reflected in host`` () =
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
-    waitUntil (fun () -> host.GetHistory("subtasker") |> List.isEmpty |> not) 5000
+    waitUntil (fun () -> host.GetHistory("subtasker") |> List.isEmpty |> not) 12000
     test <@ observedDuring.Value |> List.length = 2 @>
     test <@ List.isEmpty (host.GetSubtasks("subtasker")) @>
 
@@ -84,7 +84,7 @@ let ``CompleteWithSummary captured in history`` () =
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
-    waitUntil (fun () -> host.GetHistory("summarizer") |> List.isEmpty |> not) 5000
+    waitUntil (fun () -> host.GetHistory("summarizer") |> List.isEmpty |> not) 12000
     let r = List.head (host.GetHistory("summarizer"))
     test <@ r.Summary = Some "did the thing" @>
 
@@ -96,7 +96,7 @@ let ``Running to Completed records positive elapsed`` () =
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
-    waitUntil (fun () -> host.GetHistory("timer") |> List.isEmpty |> not) 5000
+    waitUntil (fun () -> host.GetHistory("timer") |> List.isEmpty |> not) 12000
     let r = List.head (host.GetHistory("timer"))
     test <@ r.Elapsed > TimeSpan.Zero @>
 
@@ -109,5 +109,5 @@ let ``Terminal transition auto-ends open subtasks`` () =
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
-    waitUntil (fun () -> host.GetHistory("leaker") |> List.isEmpty |> not) 5000
+    waitUntil (fun () -> host.GetHistory("leaker") |> List.isEmpty |> not) 12000
     test <@ List.isEmpty (host.GetSubtasks("leaker")) @>

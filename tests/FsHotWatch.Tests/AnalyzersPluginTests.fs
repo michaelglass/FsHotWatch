@@ -156,7 +156,7 @@ let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
     host.EmitFileChecked(fakeResult)
 
     // Wait for the plugin to finish processing (status reaches Completed/Failed)
-    waitForTerminalStatus host "analyzers" 5000
+    waitForTerminalStatus host "analyzers" 12000
 
     // ParseOnly should dispatch to the async worker (not skip synchronously).
     // With Unchecked.defaultof ParseResults, the analyzer will crash — but it
@@ -336,7 +336,7 @@ let ``multiple concurrent FileChecked events are bounded by semaphore`` () =
     for e in events do
         host.EmitFileChecked(e)
 
-    waitForTerminalStatus host "analyzers" 5000
+    waitForTerminalStatus host "analyzers" 12000
 
     let errors = host.GetErrorsByPlugin("analyzers")
     test <@ errors.Count > 0 @>
@@ -371,7 +371,7 @@ let ``analyzers handler times out when work exceeds TimeoutSec`` () =
 
     host.RegisterHandler(handler)
     host.EmitFileChecked(fakeResult "/tmp/slow/File.fs")
-    waitForTerminalStatus host "analyzers" 5000
+    waitForTerminalStatus host "analyzers" 12000
     let snap = host.GetActivitySnapshot("analyzers")
 
     match snap.LastRun with

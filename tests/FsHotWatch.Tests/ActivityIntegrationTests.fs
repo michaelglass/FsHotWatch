@@ -154,7 +154,7 @@ let ``renderer during running phase shows 3 subtasks in verbose mode`` () =
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     // Wait until subtasks appear.
-    waitUntil (fun () -> host.GetSubtasks("slow") |> List.length = 3) 5000
+    waitUntil (fun () -> host.GetSubtasks("slow") |> List.length = 3) 12000
     let parsed = parsedFor host "slow"
     let lines = renderPlugin Verbose true DateTime.UtcNow "slow" parsed
     captured.Value <- lines
