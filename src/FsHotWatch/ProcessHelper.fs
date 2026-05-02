@@ -112,6 +112,9 @@ let runProcessWithTimeout
     for key in dotnetArchRootKeys do
         psi.Environment.Remove(key) |> ignore
 
+    for (key, value) in mergeDotnetEnv command env do
+        psi.Environment[key] <- value
+
     // Realpath DOTNET_HOST_PATH so dirname(DOTNET_HOST_PATH) lands on the
     // directory containing shared/Microsoft.NETCore.App. On normal installs
     // this is a no-op (already canonical). On Nix-wrapped SDKs, the wrapper
@@ -119,6 +122,11 @@ let runProcessWithTimeout
     // this, child apphosts die with "apphost_version not found" because the
     // muxer reads DOTNET_HOST_PATH literally. See
     // memory/dotnet_tool_launcher_truncates_nix_profiles.md.
+    //
+    // Applied AFTER the explicit env overlay so callers passing
+    // DOTNET_HOST_PATH explicitly also get the symlink resolved. This lets
+    // tests exercise the contract via explicit env rather than mutating
+    // process env, which would race other tests' subprocess spawns.
     match psi.Environment.TryGetValue "DOTNET_HOST_PATH" with
     | true, hostPath when not (String.IsNullOrEmpty hostPath) ->
         try
@@ -129,9 +137,6 @@ let runProcessWithTimeout
         with _ ->
             () // path missing or not a symlink — leave the original value alone
     | _ -> ()
-
-    for (key, value) in mergeDotnetEnv command env do
-        psi.Environment[key] <- value
 
     use proc = Process.Start(psi)
     // Register so a daemon shutdown can tear down in-flight children.

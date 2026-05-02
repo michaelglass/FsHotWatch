@@ -127,17 +127,23 @@ let ``runProcess strip respects caller-supplied DOTNET_ROOT_ARM64 override`` () 
         runProcess "sh" (echoEnv "DOTNET_ROOT_ARM64") "." [ "DOTNET_ROOT_ARM64", explicitValue ]
         |> expectStdout explicitValue)
 
-// DOTNET_HOST_PATH realpath contract — see strip block in
+// DOTNET_HOST_PATH realpath contract — see realpath block in
 // runProcessWithTimeout for the nix-wrapped-SDK scenario that motivated it.
 // The .NET muxer reads DOTNET_HOST_PATH literally and computes
 // DOTNET_ROOT_<arch> = dirname(DOTNET_HOST_PATH); on a wrapped-bin/ symlink
 // that dirname has no `shared/` sibling, so apphost dies. Resolving the
 // symlink before spawn lands dirname on the unwrapped runtime tree.
+//
+// These tests exercise the contract via the explicit-env arg (4th param of
+// runProcess) rather than mutating process env. Process-env mutation races
+// the parallel test runner: a concurrent DaemonTests subprocess inherits
+// the test's pointing-at-temp-dir DOTNET_HOST_PATH, the test cleans the
+// temp dir, and the daemon spawn fails with "Permission denied" / "No such
+// file" on `wrapped-dotnet`. ProcessHelper applies the realpath after the
+// explicit overlay so this contract holds for either entry point.
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess resolves DOTNET_HOST_PATH symlink to its realpath`` () =
-    System.IO.Directory.CreateDirectory(System.IO.Path.GetTempPath()) |> ignore
-
     let tmp =
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-hostpath-{Guid.NewGuid():N}")
 
@@ -149,8 +155,8 @@ let ``runProcess resolves DOTNET_HOST_PATH symlink to its realpath`` () =
         let link = System.IO.Path.Combine(tmp, "wrapped-dotnet")
         System.IO.File.CreateSymbolicLink(link, target) |> ignore
 
-        withEnv "DOTNET_HOST_PATH" (Some link) (fun () ->
-            runProcess "sh" (echoEnv "DOTNET_HOST_PATH") "." [] |> expectStdout target)
+        runProcess "sh" (echoEnv "DOTNET_HOST_PATH") "." [ "DOTNET_HOST_PATH", link ]
+        |> expectStdout target
     finally
         if System.IO.Directory.Exists(tmp) then
             System.IO.Directory.Delete(tmp, true)
@@ -166,8 +172,8 @@ let ``runProcess leaves DOTNET_HOST_PATH unchanged when target is not a symlink`
         let regular = System.IO.Path.Combine(tmp, "regular-file")
         System.IO.File.WriteAllText(regular, "")
 
-        withEnv "DOTNET_HOST_PATH" (Some regular) (fun () ->
-            runProcess "sh" (echoEnv "DOTNET_HOST_PATH") "." [] |> expectStdout regular)
+        runProcess "sh" (echoEnv "DOTNET_HOST_PATH") "." [ "DOTNET_HOST_PATH", regular ]
+        |> expectStdout regular
     finally
         if System.IO.Directory.Exists(tmp) then
             System.IO.Directory.Delete(tmp, true)
@@ -176,11 +182,16 @@ let ``runProcess leaves DOTNET_HOST_PATH unchanged when target is not a symlink`
 let ``runProcess leaves DOTNET_HOST_PATH unchanged when path does not exist`` () =
     let bogus = $"/no/such/path/fshw-{Guid.NewGuid():N}"
 
-    withEnv "DOTNET_HOST_PATH" (Some bogus) (fun () ->
-        runProcess "sh" (echoEnv "DOTNET_HOST_PATH") "." [] |> expectStdout bogus)
+    runProcess "sh" (echoEnv "DOTNET_HOST_PATH") "." [ "DOTNET_HOST_PATH", bogus ]
+    |> expectStdout bogus
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess does not set DOTNET_HOST_PATH when inherited env did not have it`` () =
+    // Setting to None temporarily unsets the variable. This is safe under
+    // parallel test load: a concurrent dotnet spawn missing DOTNET_HOST_PATH
+    // re-derives it from argv[0] and works fine. (Setting it to a temp path
+    // is what races — that's why the other tests in this group use the
+    // explicit-env arg instead of mutating process env.)
     withEnv "DOTNET_HOST_PATH" None (fun () -> runProcess "sh" (echoEnv "DOTNET_HOST_PATH") "." [] |> expectStdout "")
 
 [<Fact(Timeout = 20000)>]
@@ -198,8 +209,8 @@ let ``runProcess resolves DOTNET_HOST_PATH symlink chain to final target`` () =
         let outer = System.IO.Path.Combine(tmp, "outer")
         System.IO.File.CreateSymbolicLink(outer, mid) |> ignore
 
-        withEnv "DOTNET_HOST_PATH" (Some outer) (fun () ->
-            runProcess "sh" (echoEnv "DOTNET_HOST_PATH") "." [] |> expectStdout final)
+        runProcess "sh" (echoEnv "DOTNET_HOST_PATH") "." [ "DOTNET_HOST_PATH", outer ]
+        |> expectStdout final
     finally
         if System.IO.Directory.Exists(tmp) then
             System.IO.Directory.Delete(tmp, true)
