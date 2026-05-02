@@ -1136,3 +1136,39 @@ let ``RerunFileCommandPlugin returns Ok for registered plugin`` () =
     let host = PluginHost.create nullChecker "/tmp"
     host.RegisterFileCommandPattern("coverage-ratchet", parsePattern "*.ratchet.json")
     test <@ host.RerunFileCommandPlugin("coverage-ratchet") = Result.Ok() @>
+
+[<Fact(Timeout = 15000)>]
+let ``Teardown logs failing plugin Teardown with exception class (F14)`` () =
+    // F14: plugin Teardown is a third-party-extension boundary; the catch
+    // keeps cleanup going across other plugins. Previously logged ex.Message
+    // only, stripping the stack trace just when a misbehaving plugin needed
+    // diagnosing. Verify the log now includes the exception type name.
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let handler =
+        { Name = PluginName.create "boom"
+          Init = ()
+          Update = fun _ _ _ -> async { return () }
+          Commands = []
+          Subscriptions = Set.empty
+          CacheKey = None
+          Teardown = Some(fun () -> raise (System.InvalidOperationException("teardown boom"))) }
+
+    host.RegisterHandler(handler)
+
+    let original = FsHotWatch.Logging.logLevel
+    let sb = System.Text.StringBuilder()
+    let writer = new System.IO.StringWriter(sb)
+    let prevErr = System.Console.Error
+
+    try
+        System.Console.SetError(writer)
+        FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
+        host.Teardown()
+        writer.Flush()
+        let output = sb.ToString()
+        test <@ output.Contains("Teardown failed") @>
+        test <@ output.Contains("InvalidOperationException") @>
+    finally
+        System.Console.SetError(prevErr)
+        FsHotWatch.Logging.setLogLevel original
