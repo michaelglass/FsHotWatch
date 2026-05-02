@@ -808,6 +808,71 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
 
     loop () |> Async.StartAsTask
 
+/// Wait for a single named plugin to leave Running. Returns immediately if the
+/// plugin is not registered or is already terminal. Polling-based; bounded by
+/// `timeout`. Used by `performScan` to serialize "BuildPlugin completes"
+/// before "FCS tier checks begin" on cold scans.
+///
+/// Why this exists: cold scans emit `FileChanged(SourceChanged files)` to all
+/// subscribers, which kicks BuildPlugin into running `dotnet build`. MSBuild
+/// then rewrites `obj/Debug/.../ref/*.dll`. If FCS tier checks run in parallel,
+/// they read those same `-r:` paths mid-write, producing the spurious
+/// "type 'X' does not match type 'X'" CCU-mismatch diagnostics. Awaiting the
+/// build's terminal status before FCS reads stabilizes the obj/ tree.
+///
+/// Phase B (warm cache) preservation: BuildPlugin's task-cache replay path
+/// emits `BuildCompleted` synchronously inside the captured-events handler,
+/// so when the cache hits this wait completes in milliseconds.
+let internal waitForPluginTerminalIfRunning
+    (host: PluginHost)
+    (pluginName: string)
+    (timeout: System.TimeSpan)
+    : Async<unit> =
+    async {
+        let deadline =
+            if timeout = System.TimeSpan.MaxValue then
+                System.DateTime.MaxValue
+            else
+                System.DateTime.UtcNow + timeout
+
+        let isRunning () =
+            match host.GetStatus(pluginName) with
+            | Some(Running _) -> true
+            | _ -> false
+
+        // EmitFileChanged dispatches to mailboxes synchronously but plugins
+        // transition to Running asynchronously when their handler runs. Give
+        // the dispatch a brief settle window so we don't observe the plugin
+        // as "Idle" right before it enters Running.
+        let settleDeadline =
+            System.DateTime.UtcNow + System.TimeSpan.FromMilliseconds(200.0)
+
+        while not (isRunning ()) && System.DateTime.UtcNow < settleDeadline do
+            do! Async.Sleep 25
+
+        // If the plugin never entered Running (not registered, or finished
+        // before we polled), there's nothing to wait for.
+        if not (isRunning ()) then
+            return ()
+        else
+            let mutable lastLogTime = System.DateTime.UtcNow
+
+            while isRunning ()
+                  && (timeout = System.TimeSpan.MaxValue || System.DateTime.UtcNow < deadline) do
+                let now = System.DateTime.UtcNow
+
+                if (now - lastLogTime).TotalSeconds >= 10.0 then
+                    lastLogTime <- now
+                    Logging.info "scan" $"Waiting for plugin '%s{pluginName}' to leave Running..."
+
+                do! Async.Sleep 50
+
+            if isRunning () then
+                Logging.warn
+                    "scan"
+                    $"waitForPluginTerminalIfRunning: '%s{pluginName}' still Running after %O{timeout}; proceeding anyway"
+    }
+
 /// The daemon ties together a warm FSharpChecker, file watcher, check pipeline, and plugin host.
 /// It runs until the provided CancellationToken is cancelled.
 type Daemon
@@ -1059,6 +1124,20 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
                 Logging.info "scan" $"Preprocessors modified %d{modified.Length} files (watcher may re-trigger)"
 
             host.EmitFileChanged(SourceChanged files)
+
+            // Serialize: wait for BuildPlugin to leave Running BEFORE running
+            // FCS check tiers. The build refreshes obj/Debug/.../ref/*.dll
+            // which FCS reads via `-r:` flags from FSharpProjectOptions.
+            // Without this wait, MSBuild and FCS race over the same files
+            // and FCS produces spurious "type 'X' does not match type 'X'"
+            // CCU-identity diagnostics on cold scans where stale obj/ ref
+            // dlls are concurrently rewritten under FCS's read.
+            //
+            // No-op when BuildPlugin is not registered or already terminal;
+            // millisecond-scale when BuildPlugin's task-cache replay path
+            // emits BuildCompleted synchronously (Phase B / warm cache).
+            do! waitForPluginTerminalIfRunning host "build" (System.TimeSpan.FromMinutes(10.0))
+
             let mutable completed = 0
 
             let mutable checkedCount = 0
