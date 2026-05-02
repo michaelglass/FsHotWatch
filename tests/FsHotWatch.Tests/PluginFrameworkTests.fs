@@ -352,6 +352,71 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
             | _ -> false
         @>
 
+[<Fact(Timeout = 15000)>]
+let ``handler that throws records ex.ToString() (full type+stack) in Failed status, not just ex.Message`` () =
+    // Item D: when a plugin's Update throws, the user-visible Failed status must
+    // include the full exception (ex.ToString() — type name and stack trace),
+    // not just ex.Message. Otherwise the user has to grep daemon.log to figure
+    // out which throw site fired.
+    let reportedStatuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
+    let mutable registeredCmd: CommandHandler option = None
+
+    let handler: PluginHandler<unit, unit> =
+        { Name = PluginName.create "throwing-detail-handler"
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ -> raise (System.InvalidOperationException("kaboom-distinctive-msg"))
+                    | _ -> return state
+                }
+          Commands = [ "noop", fun _ctx _state _args -> async { return "ok" } ]
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
+
+    let reg =
+        registerHandler
+            { Checker = checker
+              RepoRoot = "/tmp/repo"
+              ReportStatus = fun _ status -> reportedStatuses.Enqueue(status)
+              ReportErrors = fun _ _ _ -> ()
+              ClearErrors = fun _ _ -> ()
+              ClearPlugin = fun _ -> ()
+              EmitBuildCompleted = fun _ -> ()
+              EmitTestRunStarted = fun _ -> ()
+              EmitTestProgress = fun _ -> ()
+              EmitTestRunCompleted = fun _ -> ()
+              EmitCommandCompleted = fun _ -> ()
+              RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd
+              TaskCache = None
+              StartSubtask = fun _ _ _ -> ()
+              UpdateSubtask = fun _ _ _ -> ()
+              EndSubtask = fun _ _ -> ()
+              Log = fun _ _ -> ()
+              SetSummary = fun _ _ -> ()
+              SetNextTerminalOutcome = fun _ _ -> () }
+            handler
+
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
+    registeredCmd.Value [||] |> Async.RunSynchronously |> ignore
+
+    let statuses = reportedStatuses.ToArray() |> List.ofArray
+
+    let failedMsg =
+        statuses
+        |> List.tryPick (function
+            | Failed(m, _) -> Some m
+            | _ -> None)
+
+    test <@ failedMsg.IsSome @>
+    let msg = failedMsg.Value
+    // Must include the original message (ex.Message contents).
+    test <@ msg.Contains("kaboom-distinctive-msg") @>
+    // Must include the exception type name (only ex.ToString() supplies this).
+    test <@ msg.Contains("InvalidOperationException") @>
+
 // --- Cache replay: pre-populated cache hits on first dispatch (no warm-start gate) ---
 
 /// Build host services with a provided TaskCache for these tests.
