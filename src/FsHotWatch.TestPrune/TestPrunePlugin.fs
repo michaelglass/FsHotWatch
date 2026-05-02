@@ -8,6 +8,7 @@ open System.Threading
 open FSharp.Compiler.Diagnostics
 open FsHotWatch.Events
 open FsHotWatch
+open FsHotWatch.FcsDiagnosticFilter
 open FsHotWatch.Logging
 open FsHotWatch.ProcessHelper
 open FsHotWatch.PluginActivity
@@ -597,20 +598,38 @@ let private executeTests
 /// their-code case identically: in both, we hold the prior DB row instead
 /// of replacing it. `ParseOnly` (check aborted) is treated as "no observable
 /// errors" so the existing fall-through behaviour is preserved.
-let internal hasFcsErrors (state: FileCheckState) : bool =
+///
+/// `suppressedCodes` (caller-configured) is merged with per-file `#nowarn`
+/// directives via `FcsDiagnosticFilter.allSuppressedCodes` so the gate sees
+/// the same filter the user-visible error stream applies in
+/// `Daemon.reportFcsDiagnostics`. Without this symmetry the gate trips on
+/// codes the user has already silenced (e.g. FS1182 promoted to Error by
+/// `<TreatWarningsAsErrors>` but suppressed via `#nowarn "1182"`), killing
+/// cache-replay across daemon restarts on every cold scan.
+let internal hasFcsErrors (suppressedCodes: Set<int>) (source: string) (state: FileCheckState) : bool =
     match state with
     | FullCheck cr ->
+        let allSuppressed = allSuppressedCodes suppressedCodes source
+
         cr.Diagnostics
-        |> Array.exists (fun d -> d.Severity = FSharpDiagnosticSeverity.Error)
+        |> Array.exists (fun d ->
+            d.Severity = FSharpDiagnosticSeverity.Error
+            && not (allSuppressed.Contains d.ErrorNumber))
     | ParseOnly -> false
 
-/// Count of Error-severity diagnostics — used only for the skip-log message
-/// so operators have a number to correlate against the FCS-error stream.
-let internal fcsErrorCount (state: FileCheckState) : int =
+/// Count of Error-severity diagnostics not in the effective suppression set —
+/// used only for the skip-log message so operators have a number to
+/// correlate against the FCS-error stream. Must apply the same filter as
+/// `hasFcsErrors` so the count matches what the gate decided on.
+let internal fcsErrorCount (suppressedCodes: Set<int>) (source: string) (state: FileCheckState) : int =
     match state with
     | FullCheck cr ->
+        let allSuppressed = allSuppressedCodes suppressedCodes source
+
         cr.Diagnostics
-        |> Array.filter (fun d -> d.Severity = FSharpDiagnosticSeverity.Error)
+        |> Array.filter (fun d ->
+            d.Severity = FSharpDiagnosticSeverity.Error
+            && not (allSuppressed.Contains d.ErrorNumber))
         |> Array.length
     | ParseOnly -> 0
 
@@ -1050,8 +1069,9 @@ let create
                     // untouched for this file — the prior DB rows survive.
                     // Other (clean) files in the same scan/batch flush as
                     // normal; only the poisoned file is held back.
-                    if hasFcsErrors result.CheckResults then
-                        let errCount = fcsErrorCount result.CheckResults
+                    if hasFcsErrors ctx.FcsSuppressedCodes result.Source result.CheckResults then
+                        let errCount =
+                            fcsErrorCount ctx.FcsSuppressedCodes result.Source result.CheckResults
 
                         Logging.warn
                             "test-prune"
