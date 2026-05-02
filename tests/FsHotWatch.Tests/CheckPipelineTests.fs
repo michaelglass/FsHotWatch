@@ -302,10 +302,42 @@ let ``InvalidateFile with cache backend calls Invalidate for registered file`` (
     let cache = InMemoryCache()
     let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
 
-    let options = dummyOptions "/tmp/Inv.fsproj" [ "/tmp/Inv.fs" ]
-    pipeline.RegisterProject("/tmp/Inv.fsproj", options)
-    pipeline.InvalidateFile(AbsFilePath.create "/tmp/Inv.fs")
-    test <@ cache.InvalidateCalls.Count = 1 @>
+    // F7: real on-disk file so makeCacheKeyFast returns Some and Invalidate
+    // is actually called.
+    let tempDir =
+        Path.Combine(Path.GetTempPath(), $"fshw-inv-{System.Guid.NewGuid():N}")
+
+    Directory.CreateDirectory(tempDir) |> ignore
+    let invFile = Path.Combine(tempDir, "Inv.fs")
+    File.WriteAllText(invFile, "module Inv")
+    let projFile = Path.Combine(tempDir, "Inv.fsproj")
+    let options = dummyOptions projFile [ invFile ]
+
+    try
+        pipeline.RegisterProject(projFile, options)
+        pipeline.InvalidateFile(AbsFilePath.create invFile)
+        test <@ cache.InvalidateCalls.Count = 1 @>
+    finally
+        try
+            Directory.Delete(tempDir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 15000)>]
+let ``InvalidateFile skips Invalidate when registered file is unreadable (F7 None branch)`` () =
+    // F7: when GetFileHash returns None, makeCacheKeyFast returns None and
+    // InvalidateFile must skip the call entirely (no key to invalidate).
+    // Exercises the None match arm introduced by the F7 fix.
+    let cache = InMemoryCache()
+    let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
+
+    let missing = "/nonexistent/F7-Inv.fs"
+    let projFile = "/tmp/F7-Inv.fsproj"
+    let options = dummyOptions projFile [ missing ]
+    pipeline.RegisterProject(projFile, options)
+
+    pipeline.InvalidateFile(AbsFilePath.create missing)
+    test <@ cache.InvalidateCalls.Count = 0 @>
 
 [<Fact(Timeout = 15000)>]
 let ``InvalidateFile with cache backend does nothing for unregistered file`` () =
@@ -481,41 +513,73 @@ let ``CheckFile short-circuits via cache hit without invoking FCS`` () =
     let cache = InMemoryCache()
     let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
 
-    let opts = dummyOptions "/tmp/Hot.fsproj" [ "/tmp/Hot.fs" ]
-    pipeline.RegisterProject("/tmp/Hot.fsproj", opts)
+    // Use a real on-disk file: F7 makes makeCacheKey return None when the
+    // file is unreadable (so the cache lookup is bypassed). To test the
+    // cache-hit path we need a real file the provider can hash.
+    let tempDir =
+        Path.Combine(Path.GetTempPath(), $"fshw-cachehit-{System.Guid.NewGuid():N}")
 
-    // Compute the same key the pipeline would use, then seed the cache.
-    let key =
-        makeCacheKey (TimestampCacheKeyProvider() :> ICacheKeyProvider) "/tmp/Hot.fs" opts
+    Directory.CreateDirectory(tempDir) |> ignore
+    let hotFile = Path.Combine(tempDir, "Hot.fs")
+    File.WriteAllText(hotFile, "module Hot")
+    let projFile = Path.Combine(tempDir, "Hot.fsproj")
+    let opts = dummyOptions projFile [ hotFile ]
+    pipeline.RegisterProject(projFile, opts)
 
-    let seeded = fullCheckResult "/tmp/Hot.fs" opts
-    (cache :> ICheckCacheBackend).Set key seeded
+    try
+        // Compute the same key the pipeline would use, then seed the cache.
+        let key =
+            makeCacheKey (TimestampCacheKeyProvider() :> ICacheKeyProvider) hotFile opts
+            |> Option.defaultWith (fun () -> failwith "expected Some CacheKey for real file")
 
-    let result =
-        pipeline.CheckFile(AbsFilePath.create "/tmp/Hot.fs") |> Async.RunSynchronously
+        let seeded = fullCheckResult hotFile opts
+        (cache :> ICheckCacheBackend).Set key seeded
 
-    test <@ result.IsSome @>
-    test <@ AbsFilePath.value result.Value.File = "/tmp/Hot.fs" @>
+        let result =
+            pipeline.CheckFile(AbsFilePath.create hotFile) |> Async.RunSynchronously
+
+        test <@ result.IsSome @>
+        test <@ AbsFilePath.value result.Value.File = hotFile @>
+    finally
+        try
+            Directory.Delete(tempDir, true)
+        with _ ->
+            ()
 
 [<Fact(Timeout = 15000)>]
 let ``InvalidateFile removes cached entry so next CheckFile would re-check`` () =
     let cache = InMemoryCache()
     let pipeline = CheckPipeline(nullChecker, cacheBackend = cache)
 
-    let opts = dummyOptions "/tmp/Inv2.fsproj" [ "/tmp/Inv2.fs" ]
-    pipeline.RegisterProject("/tmp/Inv2.fsproj", opts)
+    // F7: real file on disk so makeCacheKey returns Some.
+    let tempDir =
+        Path.Combine(Path.GetTempPath(), $"fshw-invalidate-{System.Guid.NewGuid():N}")
 
-    let key =
-        makeCacheKey (TimestampCacheKeyProvider() :> ICacheKeyProvider) "/tmp/Inv2.fs" opts
+    Directory.CreateDirectory(tempDir) |> ignore
+    let invFile = Path.Combine(tempDir, "Inv2.fs")
+    File.WriteAllText(invFile, "module Inv2")
+    let projFile = Path.Combine(tempDir, "Inv2.fsproj")
+    let opts = dummyOptions projFile [ invFile ]
+    pipeline.RegisterProject(projFile, opts)
 
-    (cache :> ICheckCacheBackend).Set key (fullCheckResult "/tmp/Inv2.fs" opts)
+    try
+        let key =
+            makeCacheKey (TimestampCacheKeyProvider() :> ICacheKeyProvider) invFile opts
+            |> Option.defaultWith (fun () -> failwith "expected Some CacheKey for real file")
 
-    test
-        <@
-            tryGetCachedFullCheck (Some(cache :> ICheckCacheBackend)) (Some key)
-            |> Option.isSome
-        @>
+        (cache :> ICheckCacheBackend).Set key (fullCheckResult invFile opts)
 
-    pipeline.InvalidateFile(AbsFilePath.create "/tmp/Inv2.fs")
-    test <@ tryGetCachedFullCheck (Some(cache :> ICheckCacheBackend)) (Some key) = None @>
-    test <@ cache.InvalidateCalls.Count = 1 @>
+        test
+            <@
+                tryGetCachedFullCheck (Some(cache :> ICheckCacheBackend)) (Some key)
+                |> Option.isSome
+            @>
+
+        pipeline.InvalidateFile(AbsFilePath.create invFile)
+        test <@ tryGetCachedFullCheck (Some(cache :> ICheckCacheBackend)) (Some key) = None @>
+        test <@ cache.InvalidateCalls.Count = 1 @>
+    finally
+        try
+            Directory.Delete(tempDir, true)
+        with _ ->
+            ()

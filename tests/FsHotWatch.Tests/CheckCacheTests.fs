@@ -74,7 +74,8 @@ let ``TimestampCacheKeyProvider returns consistent hash for same file`` () =
     try
         let hash1 = provider.GetFileHash(tempFile)
         let hash2 = provider.GetFileHash(tempFile)
-        Assert.Equal<string>(hash1, hash2)
+        Assert.Equal<string option>(hash1, hash2)
+        Assert.True(hash1.IsSome, "expected Some for readable file")
     finally
         File.Delete(tempFile)
 
@@ -94,7 +95,7 @@ let ``cache key is content-addressed: same bytes + different mtime → same hash
         File.SetLastWriteTimeUtc(tempFile, DateTime.UtcNow)
 
         let hash2 = provider.GetFileHash(tempFile)
-        Assert.Equal<string>(hash1, hash2)
+        Assert.Equal<string option>(hash1, hash2)
     finally
         File.Delete(tempFile)
 
@@ -112,18 +113,47 @@ let ``TimestampCacheKeyProvider returns different hash after file modification``
         File.WriteAllText(tempFile, "modified content")
 
         let hash2 = provider.GetFileHash(tempFile)
-        Assert.NotEqual<string>(hash1, hash2)
+        Assert.NotEqual<string option>(hash1, hash2)
     finally
         File.Delete(tempFile)
 
 [<Fact(Timeout = 15000)>]
-let ``TimestampCacheKeyProvider returns lowercase hex hash`` () =
+let ``TimestampCacheKeyProvider returns Some lowercase hex hash for readable file`` () =
     let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
-    let hash = provider.GetFileHash("/nonexistent/test.fs")
+    let tempFile = Path.GetTempFileName()
+    File.WriteAllText(tempFile, "x")
 
-    Assert.Matches("^[a-f0-9]+$", hash)
-    Assert.DoesNotContain("-", hash)
-    Assert.True(hash.Length = 64)
+    try
+        match provider.GetFileHash(tempFile) with
+        | Some hash ->
+            Assert.Matches("^[a-f0-9]+$", hash)
+            Assert.DoesNotContain("-", hash)
+            Assert.True(hash.Length = 64)
+        | None -> Assert.Fail "expected Some hash for readable file"
+    finally
+        File.Delete(tempFile)
+
+[<Fact(Timeout = 15000)>]
+let ``TimestampCacheKeyProvider returns None for unreadable file (F7: cache miss + retry)`` () =
+    // F7 — see docs/plans/2026-05-02-error-handling-audit.md.
+    // Pre-fix code synthesized a "unreadable:<path>" key that lived forever
+    // in downstream caches; a transient lock that resolved on retry would
+    // serve stale data. Returning None forces a cache miss + retry.
+    let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
+    let result = provider.GetFileHash("/nonexistent/test-f7.fs")
+    Assert.True(result.IsNone, $"expected None for unreadable file, got %A{result}")
+
+[<Fact(Timeout = 15000)>]
+let ``makeCacheKey returns None when file is unreadable`` () =
+    let provider = TimestampCacheKeyProvider() :> ICacheKeyProvider
+    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+
+    let opts, _ =
+        checker.GetProjectOptionsFromScript(Path.GetTempFileName(), FSharp.Compiler.Text.SourceText.ofString "module A")
+        |> Async.RunSynchronously
+
+    let key = makeCacheKey provider "/nonexistent/missing-makeCacheKey.fs" opts
+    Assert.True(key.IsNone, $"expected None CacheKey for unreadable file, got %A{key}")
 
 [<Fact(Timeout = 15000)>]
 let ``makeCacheKey produces different keys for different files`` () =
@@ -143,7 +173,9 @@ let ``makeCacheKey produces different keys for different files`` () =
     let key2 = makeCacheKey provider tempFile2 opts1
 
     try
-        Assert.NotEqual<string>(ContentHash.value key1.FileHash, ContentHash.value key2.FileHash)
+        match key1, key2 with
+        | Some k1, Some k2 -> Assert.NotEqual<string>(ContentHash.value k1.FileHash, ContentHash.value k2.FileHash)
+        | _ -> Assert.Fail $"expected both Some, got %A{key1}, %A{key2}"
     finally
         File.Delete(tempFile1)
         File.Delete(tempFile2)
@@ -443,10 +475,8 @@ let ``hashDiagnosticsOrFailure is deterministic across calls for the same failur
 
 [<Fact(Timeout = 2000)>]
 let ``hashDiagnosticsOrFailure success path differs from any failure hash`` () =
-    let success () : DiagnosticSignature seq =
-        seq { mkSig 1 2 100 "Error" "ok" }
+    let success () : DiagnosticSignature seq = seq { mkSig 1 2 100 "Error" "ok" }
 
-    let throwIo () : DiagnosticSignature seq =
-        raise (System.IO.IOException "io-fail")
+    let throwIo () : DiagnosticSignature seq = raise (System.IO.IOException "io-fail")
 
     Assert.NotEqual<string>(hashDiagnosticsOrFailure success, hashDiagnosticsOrFailure throwIo)

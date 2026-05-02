@@ -67,14 +67,20 @@ type CheckPipeline
     let fileTokens = ConcurrentDictionary<AbsFilePath, CancellationTokenSource>()
     let mutable nextVersion = 0L
 
-    let makeCacheKeyFast (filePath: AbsFilePath) (options: FSharpProjectOptions) : CacheKey =
+    let makeCacheKeyFast (filePath: AbsFilePath) (options: FSharpProjectOptions) : CacheKey option =
         let optionsHash =
             match projectOptionsHashCache.TryGetValue(options.ProjectFileName) with
             | true, hash -> hash
             | false, _ -> getProjectOptionsHash options
 
-        { FileHash = ContentHash.create (keyProvider.GetFileHash(AbsFilePath.value filePath))
-          ProjectOptionsHash = ContentHash.create optionsHash }
+        // F7: GetFileHash returns None when the file is unreadable. Propagate
+        // that None upstream so the cache lookup is bypassed and the next
+        // call (after the transient lock clears) produces a fresh read
+        // instead of poisoning the cache with a synthesized key.
+        keyProvider.GetFileHash(AbsFilePath.value filePath)
+        |> Option.map (fun fileHash ->
+            { FileHash = ContentHash.create fileHash
+              ProjectOptionsHash = ContentHash.create optionsHash })
 
     member _.NextVersion() = Interlocked.Increment(&nextVersion)
 
@@ -96,8 +102,13 @@ type CheckPipeline
             match projectOptionsByFile.TryGetValue(filePath) with
             | true, optionsList ->
                 for options in optionsList do
-                    let key = makeCacheKeyFast filePath options
-                    backend.Invalidate(key)
+                    match makeCacheKeyFast filePath options with
+                    | Some key -> backend.Invalidate(key)
+                    | None ->
+                        // F7: file unreadable; nothing to invalidate (no key
+                        // was ever produced). The next CheckFile will re-try
+                        // on disk read.
+                        ()
 
                 Logging.debug "check" $"Cache invalidated: %s{System.IO.Path.GetFileName(AbsFilePath.value filePath)}"
             | _ -> ()
@@ -241,7 +252,7 @@ type CheckPipeline
 
             let cacheKey =
                 cacheBackend
-                |> Option.map (fun _ -> makeCacheKeyFast (AbsFilePath.create absPath) options)
+                |> Option.bind (fun _ -> makeCacheKeyFast (AbsFilePath.create absPath) options)
 
             match tryGetCachedFullCheck cacheBackend cacheKey with
             | Some cached ->
