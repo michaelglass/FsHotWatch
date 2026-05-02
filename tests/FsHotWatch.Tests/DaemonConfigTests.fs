@@ -1122,6 +1122,34 @@ let ``parseConfig fileCommand timeoutSec lands on entry`` () =
     | _ -> failwith "expected one file command"
 
 // ---------------------------------------------------------------------------
+// FcsSuppressedCodes — daemon must not embed project-level policy
+// ---------------------------------------------------------------------------
+//
+// Regression: the daemon used to default `FcsSuppressedCodes` to `[1182]`
+// (silencing F# warning FS1182, "unused binding") because one downstream
+// project (SqlHydra) generated noisy code. That embedded a project-level
+// policy in the daemon — the wrong layer. Projects that hit FS1182 now
+// declare it explicitly via `<NoWarn>FS1182</NoWarn>` in the fsproj or
+// `#nowarn "1182"` in source. The daemon-level default is empty.
+
+[<Fact(Timeout = 5000)>]
+let ``FcsSuppressedCodes default resolves to empty Set when not configured`` () =
+    let resolved =
+        Daemon.resolveFcsSuppressedCodes Daemon.DaemonOptions.defaults.FcsSuppressedCodes
+
+    test <@ resolved = Set.empty @>
+
+[<Fact(Timeout = 5000)>]
+let ``FcsSuppressedCodes None resolves to empty Set`` () =
+    let resolved = Daemon.resolveFcsSuppressedCodes None
+    test <@ resolved = Set.empty @>
+
+[<Fact(Timeout = 5000)>]
+let ``FcsSuppressedCodes Some resolves to that Set`` () =
+    let resolved = Daemon.resolveFcsSuppressedCodes (Some [ 42; 99 ])
+    test <@ resolved = Set.ofList [ 42; 99 ] @>
+
+// ---------------------------------------------------------------------------
 // shellInvocation — shell-hook command dispatch
 // ---------------------------------------------------------------------------
 //
