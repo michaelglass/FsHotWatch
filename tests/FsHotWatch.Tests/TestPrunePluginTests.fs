@@ -421,6 +421,86 @@ let ``FileChecked does not set Running status`` () =
         | Running _ -> Assert.Fail("FileChecked must not set Running — causes status cycling in the UI")
         | _ -> ())
 
+[<Fact(Timeout = 30000)>]
+let ``FileChecked exception while tests running surfaces Failed via framework safeUpdate (F10)`` () =
+    // F10 (audit/2026-05-02): the previous FileChecked Update had an inner
+    // try/with that only reported Failed *when isIdle* (no test run in flight)
+    // and silently swallowed otherwise — masking real bugs whenever a check
+    // happened mid-test. Dropping the inner catch lets PluginFramework's
+    // safeUpdate own the boundary; safeUpdate ALWAYS reports Failed.
+    //
+    // This test pins the not-isIdle path:
+    //   1. Configure a long-sleeping test command and trigger BuildCompleted
+    //      to put RunExclusive "tests" in flight (so ctx.IsRunning "tests" =
+    //      true and isIdle = false).
+    //   2. Emit a FileChecked that throws inside the Update body
+    //      (ProjectOptions = Unchecked.defaultof<_> → NullReferenceException).
+    //   3. Assert the plugin transitions to Failed.
+    //
+    // Before the fix: Failed never reached (inner catch swallowed because
+    // isIdle was false). After the fix: Failed reached via safeUpdate.
+    withTempDir "tp-f10-not-idle" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "test.db")
+
+        // Long-running test command so "tests" RunExclusive stays in flight
+        // through the whole assertion. We force-cancel it via the host
+        // disposable at end-of-scope (withTempDir cleanup tears down the
+        // process registry).
+        let configs =
+            [ { Project = "TestProject"
+                Command = "sleep"
+                Args = "10"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create dbPath tmpDir (Some configs) None None None None
+        host.RegisterHandler(handler)
+
+        // Subscribe to Failed *before* triggering anything — avoids the race
+        // where the transition happens before we start polling.
+        let failedAwaiter =
+            beginAwaitStatus host "test-prune" (function
+                | Failed _ -> true
+                | _ -> false)
+
+        // Kick off the long-running test run.
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        // Wait until the test run is actually in flight (status reaches
+        // Running) so isIdle is guaranteed false when we emit FileChecked.
+        let runningWait =
+            beginAwaitStatus host "test-prune" (function
+                | Running _ -> true
+                | _ -> false)
+
+        if not (runningWait.Wait(TimeSpan.FromSeconds 10.0)) then
+            Assert.Fail("test run never reached Running — cannot exercise not-isIdle path")
+
+        // Now emit a FileChecked that throws inside the FileChecked branch
+        // of Update (ProjectOptions = Unchecked.defaultof<_>).
+        let fakeFile = Path.Combine(tmpDir, "Lib.fs")
+        File.WriteAllText(fakeFile, "module Lib\n")
+
+        let fakeResult =
+            { fakeFileCheckResult fakeFile with
+                Source = "module Lib\n" }
+
+        try
+            host.EmitFileChecked(fakeResult)
+        with _ ->
+            ()
+
+        // safeUpdate must observe the throw and report Failed even though
+        // the test run is in flight. Before F10 was fixed, the inner catch
+        // would swallow silently and we'd time out here.
+        if not (failedAwaiter.Wait(TimeSpan.FromSeconds 10.0)) then
+            let cur = host.GetStatus("test-prune")
+            Assert.Fail($"expected Failed status from safeUpdate after FileChecked throw; got: %A{cur}"))
+
 [<Fact(Timeout = 15000)>]
 let ``FileChecked sets Failed status on analysis error`` () =
     withTempDir "tp-complete-no-configs" (fun tmpDir ->
