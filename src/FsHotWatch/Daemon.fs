@@ -283,6 +283,11 @@ let private rediscoverAndClearRemoved
 type private ScanSignalMsg =
     | WaitFor of afterGen: int64 * TaskCompletionSource<unit>
     | Signal of newGen: int64
+    /// F12 (audit 2026-05-02) test seam: see ErrorLedger.LedgerMsg.RaiseFaultForTest
+    /// for the rationale. Production messages don't have a natural failure
+    /// mode, so this is the only realistic way to verify the agent surfaces
+    /// programming bugs instead of swallowing them.
+    | RaiseFaultForTest of exn
 
 type ScanSignal(?cancellationToken: CancellationToken) =
     let agent =
@@ -296,51 +301,60 @@ type ScanSignal(?cancellationToken: CancellationToken) =
                     async {
                         let! msg = inbox.Receive()
 
-                        try
-                            match msg with
-                            | WaitFor(afterGeneration, tcs) ->
-                                let alreadySatisfied =
-                                    if afterGeneration >= 0L then
-                                        latestGeneration > afterGeneration
-                                    else
-                                        latestGeneration > 0L
-
-                                if alreadySatisfied then
-                                    Logging.debug
-                                        "scan-signal"
-                                        $"WaitFor(%d{afterGeneration}) — already satisfied (latest=%d{latestGeneration}), resolving"
-
-                                    tcs.TrySetResult(()) |> ignore
-                                    return! loop latestGeneration waiters
+                        // F12 (audit 2026-05-02): no inner try/with — the body is a
+                        // typed match over messages we own; tcs.TrySetResult,
+                        // List.partition, and Logging.debug do not throw on valid
+                        // state. Anything that throws is a programming bug that
+                        // surfaces via `agent.Error` (exposed as `AgentCrashed`)
+                        // rather than silently looping in the original state.
+                        match msg with
+                        | WaitFor(afterGeneration, tcs) ->
+                            let alreadySatisfied =
+                                if afterGeneration >= 0L then
+                                    latestGeneration > afterGeneration
                                 else
-                                    Logging.debug "scan-signal" $"WaitFor(%d{afterGeneration}) — registering waiter"
-                                    return! loop latestGeneration ((afterGeneration, tcs) :: waiters)
+                                    latestGeneration > 0L
 
-                            | Signal newGeneration ->
-                                let toSignal, remaining =
-                                    waiters
-                                    |> List.partition (fun (afterGen, _) -> afterGen < 0L || newGeneration > afterGen)
-
+                            if alreadySatisfied then
                                 Logging.debug
                                     "scan-signal"
-                                    $"SignalGeneration(%d{newGeneration}) — resolving %d{toSignal.Length} waiters, %d{remaining.Length} remaining"
+                                    $"WaitFor(%d{afterGeneration}) — already satisfied (latest=%d{latestGeneration}), resolving"
 
-                                for _, tcs in toSignal do
-                                    tcs.TrySetResult(()) |> ignore
+                                tcs.TrySetResult(()) |> ignore
+                                return! loop latestGeneration waiters
+                            else
+                                Logging.debug "scan-signal" $"WaitFor(%d{afterGeneration}) — registering waiter"
+                                return! loop latestGeneration ((afterGeneration, tcs) :: waiters)
 
-                                return! loop (max latestGeneration newGeneration) remaining
-                        // TODO(error-audit F12): see docs/plans/2026-05-02-error-handling-audit.md
-                        // — mailbox-loop "agent must not die" guard inside a typed
-                        // pattern match over data we own. Programming bugs here recur
-                        // forever silently. Drop or narrow.
-                        with ex ->
-                            Logging.error "scan-signal" $"Agent failed: %s{ex.ToString()}"
-                            return! loop latestGeneration waiters
+                        | Signal newGeneration ->
+                            let toSignal, remaining =
+                                waiters
+                                |> List.partition (fun (afterGen, _) -> afterGen < 0L || newGeneration > afterGen)
+
+                            Logging.debug
+                                "scan-signal"
+                                $"SignalGeneration(%d{newGeneration}) — resolving %d{toSignal.Length} waiters, %d{remaining.Length} remaining"
+
+                            for _, tcs in toSignal do
+                                tcs.TrySetResult(()) |> ignore
+
+                            return! loop (max latestGeneration newGeneration) remaining
+
+                        | RaiseFaultForTest ex -> raise ex
                     }
 
                 loop 0L []),
             ?cancellationToken = cancellationToken
         )
+
+    do
+        agent.Error.Add(fun ex ->
+            // F12 (audit 2026-05-02): an unhandled exception inside the agent
+            // loop is a programming bug. Log loudly with the full stack trace
+            // (ex.ToString(), not ex.Message); the agent stops and pending
+            // waiters' WaitForGeneration tasks remain unresolved — a visible
+            // hang at the next caller, not the previous silent loop-and-drop.
+            Logging.error "scan-signal" $"Mailbox loop crashed (programming bug, agent stopped): %s{ex.ToString()}")
 
     /// Register a waiter that resolves when generation exceeds afterGeneration.
     /// If afterGeneration < 0, resolves on the next generation increment.
@@ -366,6 +380,15 @@ type ScanSignal(?cancellationToken: CancellationToken) =
 
     /// Signal all waiters whose afterGeneration is now satisfied.
     member _.SignalGeneration(newGeneration: int64) = agent.Post(Signal newGeneration)
+
+    /// F12 (audit 2026-05-02): unhandled exceptions inside the mailbox loop
+    /// surface here. Subscribe to observe programming bugs that the previous
+    /// inner try/with would have silently swallowed.
+    member _.AgentCrashed: IEvent<exn> = agent.Error
+
+    /// F12 test seam: deterministically raise inside the agent loop. See
+    /// `ErrorLedger.RaiseFaultForTest` for rationale.
+    member internal _.RaiseFaultForTest(ex: exn) = agent.Post(RaiseFaultForTest ex)
 
 /// Messages handled by the scan agent. The agent owns ScanState + Generation
 /// in its loop's recursion — readers round-trip via PostAndReply so they never
