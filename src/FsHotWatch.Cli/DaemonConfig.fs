@@ -551,6 +551,23 @@ let countPlugins (config: DaemonConfiguration) : int =
     let fcCount = List.length config.FileCommands
     buildCount + lintCount + analyzerCount + testsCount + fcCount
 
+/// Invoke `onChange reason`; if it throws, surface the failure via `logError`.
+/// Extracted (rather than inlined into `watchConfigFile`) so the boundary's
+/// behaviour is unit-testable without depending on a process-global
+/// `Console.SetError` capture (which races across parallel tests).
+///
+/// Per error-handling audit F3: the daemon-stop callback's only signal back
+/// to the daemon is `onChange` itself; reraising from a FileSystemWatcher
+/// threadpool callback would crash the process via unhandled-threadpool-
+/// exception, so we surface visibly via the error log and continue. The
+/// user sees the failure in stderr/log instead of the daemon mysteriously
+/// ignoring config edits.
+let invokeOnChangeWith (logError: string -> unit) (onChange: string -> unit) (reason: string) : unit =
+    try
+        onChange reason
+    with ex ->
+        logError $"onChange callback failed (config edit not propagated): %s{ex.ToString()}"
+
 /// Watch `.fshw.json` for any write/rename/create and invoke the callback
 /// once with a human-readable reason. Re-parses the file to distinguish
 /// "config changed" from "config invalid, stopping".
@@ -594,13 +611,7 @@ let watchConfigFile (configPath: string) (onChange: string -> unit) : IDisposabl
                 with ex ->
                     $"config invalid, stopping: %s{ex.Message}"
 
-            // TODO(error-audit F3): see docs/plans/2026-05-02-error-handling-audit.md
-            // — empty catch on the daemon-stop callback. If onChange throws, the
-            // daemon silently ignores config changes. Log + reraise.
-            try
-                onChange reason
-            with _ ->
-                ()
+            invokeOnChangeWith (FsHotWatch.Logging.error "config-watcher") onChange reason
 
     watcher.Changed.Add(handler)
     watcher.Created.Add(handler)
