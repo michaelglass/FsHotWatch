@@ -739,6 +739,15 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
         let currentGens = host.WorkCycleGenerations()
 
         not statuses.IsEmpty
+        // Even when every plugin has reached terminal AND its generation has
+        // advanced past the snapshot, a downstream plugin can still have an
+        // event queued in its mailbox (or be inside a handler that hasn'''t yet
+        // returned). The BuildCompleted -> TestPrune.PendingRerun -> Running
+        // edge is the canonical case: BuildCompleted is dispatched
+        // (inflight=1) while TestPrune is still showing Completed from the
+        // prior FileChecked cycle. Without this gate the wait would resolve
+        // in that window.
+        && not (host.AnyPluginBusy())
         && statuses
            |> Map.forall (fun name s ->
                match s with
