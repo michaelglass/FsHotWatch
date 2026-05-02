@@ -127,6 +127,10 @@ let runProcessWithTimeout
         let exited = proc.WaitForExit(timeoutMs)
 
         if not exited then
+            // TODO(error-audit F17): see docs/plans/2026-05-02-error-handling-audit.md
+            // — bare _ catches Win32Exception (real permission failures) alongside
+            // the expected InvalidOperationException (process already exited).
+            // Narrow to :? InvalidOperationException.
             try
                 proc.Kill(entireProcessTree = true)
             with _ ->
@@ -135,6 +139,9 @@ let runProcessWithTimeout
             // best-effort drain so we still report partial output
             let drainMs = 500
 
+            // TODO(error-audit F18): see docs/plans/2026-05-02-error-handling-audit.md
+            // — bare _ swallows ObjectDisposedException + real bugs alongside the
+            // expected AggregateException. Narrow to :? AggregateException | :? IOException.
             try
                 Task.WaitAll([| stdoutTask :> Task; stderrTask :> Task |], drainMs) |> ignore
             with _ ->

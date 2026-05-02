@@ -179,6 +179,11 @@ let internal createFormatCheckWithSlowHook
                     files
                     |> List.sort
                     |> List.collect (fun f ->
+                        // TODO(error-audit F2): see docs/plans/2026-05-02-error-handling-audit.md
+                        // — unreadable file silently treated as "" inside the cache
+                        // merkle. Two unreadable files (or one unreadable + one truly
+                        // empty) collide. Skip from the merkle or hash a distinct
+                        // "read-failed:<exClass>" payload.
                         let source =
                             try
                                 File.ReadAllText(f)
