@@ -1183,20 +1183,38 @@ let create
                     // Cohort-complete flush. Per-file accumulation already
                     // happened in the FileChecked handler; by the time we get
                     // here every FileChecked from this cohort has been folded
-                    // into state.ChangedSymbols (mailbox is FIFO and the daemon
-                    // emits BatchChecked strictly after the last FileChecked).
+                    // into state.ChangedSymbols / state.PendingAnalysis
+                    // (mailbox is FIFO and the daemon emits BatchChecked
+                    // strictly after the last FileChecked).
                     //
-                    // Re-publish state.ChangedSymbols into changedSymbolsRef as
-                    // an explicit seal — redundant with the per-file Volatile
-                    // write today, but it makes the invariant "by the time the
-                    // next event (e.g. BuildCompleted) hits, the cache key is
-                    // well-formed" load-bearing on the BatchChecked dispatch
-                    // ordering rather than on every FileChecked happening to
-                    // arrive before the racing BuildCompleted. That's the
-                    // window the old `RequireWarmStart` gate existed to guard.
-                    // With this seal in place, the gate is gone (commit 4).
-                    Volatile.Write(&changedSymbolsRef, state.ChangedSymbols)
-                    return state
+                    // We persist PendingAnalysis to the DB here — this is the
+                    // canonical persistence point, NOT BuildCompleted. On a
+                    // cold scan, performScan awaits BuildPlugin terminal
+                    // BEFORE running FCS tier checks (Daemon.fs:1195) so
+                    // BuildCompleted reaches the TestPrune mailbox BEFORE any
+                    // FileChecked. If the flush only ran on BuildCompleted, it
+                    // would always fire against an empty PendingAnalysis on
+                    // cold scans, leaving the symbol DB permanently empty.
+                    // BatchChecked owning the flush makes the persistence
+                    // independent of event ordering.
+                    //
+                    // BuildCompleted's flush is retained as an idempotent
+                    // re-run (PendingAnalysis is already empty by then,
+                    // RebuildProjects is skipped) plus the test-trigger.
+                    let flushed =
+                        try
+                            Ok(flushAndQueryAffected state)
+                        with ex ->
+                            Error ex
+
+                    match flushed with
+                    | Error ex ->
+                        Logging.error "test-prune" $"BatchChecked flushAndQueryAffected failed: %s{ex.Message}"
+                        tryRepairSchemaDrift ex
+                        return state
+                    | Ok flushedState ->
+                        Volatile.Write(&changedSymbolsRef, flushedState.ChangedSymbols)
+                        return flushedState
 
                 | PluginEvent.BuildCompleted buildResult ->
                     match buildResult with

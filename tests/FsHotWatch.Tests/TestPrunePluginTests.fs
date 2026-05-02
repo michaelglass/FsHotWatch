@@ -2547,8 +2547,7 @@ let x : int = "not an int"
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        test
-            <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults @>)
+        test <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults @>)
 
 [<Fact(Timeout = 30000)>]
 let ``hasFcsErrors returns false for clean source`` () =
@@ -2563,10 +2562,7 @@ let answer = 42
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        test
-            <@
-                not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults)
-            @>)
+        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>)
 
 [<Fact(Timeout = 30000)>]
 let ``hasFcsErrors returns false for warning-only source`` () =
@@ -2600,10 +2596,7 @@ let f x =
             @>
 
         // Gate result: warnings alone do NOT block flush.
-        test
-            <@
-                not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults)
-            @>)
+        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>)
 
 // =============================================================================
 // F38 gate suppression symmetry — `hasFcsErrors` must apply the same
@@ -2649,10 +2642,7 @@ let x : int = "not-an-int"
 
         // The bug pre-fix: gate sees raw `cr.Diagnostics` and trips. Post-fix:
         // `parseNowarnCodes` puts FS1 in the suppressed set and the gate falls through.
-        test
-            <@
-                not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults)
-            @>)
+        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>)
 
 [<Fact(Timeout = 30000)>]
 let ``hasFcsErrors respects configured FcsSuppressedCodes`` () =
@@ -2703,17 +2693,11 @@ let x : int = "not-an-int"
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        test
-            <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults @>
+        test <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults @>
 
         // Suppressing an unrelated code must NOT mask the real FS0001.
         test
-            <@
-                FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
-                    (Set.singleton 9999)
-                    result.Source
-                    result.CheckResults
-            @>)
+            <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors (Set.singleton 9999) result.Source result.CheckResults @>)
 
 [<Fact(Timeout = 30000)>]
 let ``FileChecked with FCS errors does not flush symbols to DB`` () =
@@ -2760,8 +2744,7 @@ let badTypeUse : int = "not-an-int"
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
         // Confirm the result is poisoned (Error-severity diagnostics).
-        test
-            <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults @>
+        test <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults @>
 
         host.EmitFileChecked(result)
         waitForPluginTerminal host "test-prune" 10.0
@@ -2821,10 +2804,7 @@ let cleanTest () = ()
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
-        test
-            <@
-                not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults)
-            @>
+        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>
 
         host.EmitFileChecked(result)
         waitForPluginTerminal host "test-prune" 10.0
@@ -2833,6 +2813,74 @@ let cleanTest () = ()
         buildAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
         // Symbols MUST be in DB.
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+
+        let mutable testMethods: TestMethodInfo list = []
+
+        waitUntil
+            (fun () ->
+                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+                let freshDb = Database.create dbPath
+                testMethods <- freshDb.GetTestMethodsInFile "Clean.fsx"
+                testMethods.Length >= 1)
+            5000
+
+        test <@ testMethods.Length >= 1 @>
+        test <@ testMethods |> List.exists (fun t -> t.TestMethod = "cleanTest") @>)
+
+[<Fact(Timeout = 30000)>]
+let ``BatchChecked persists accumulated symbols to DB without a follow-up BuildCompleted`` () =
+    // Phase B persistence regression (2026-05-02): on a cold scan, performScan
+    // awaits BuildPlugin terminal BEFORE FCS tier checks, so BuildCompleted
+    // arrives at the TestPrune mailbox before any FileChecked. The
+    // BuildCompleted handler then flushes against an empty PendingAnalysis
+    // (no-op). FileChecked × N follow, populating PendingAnalysis. BatchChecked
+    // is the cohort-complete signal — it MUST flush the accumulated analysis,
+    // otherwise the symbol DB stays empty and every subsequent cold scan
+    // perpetuates the empty-DB state.
+    withTempDir "tp-batchchecked-flush" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+        let host = PluginHost.create checker tmpDir
+        // No testConfigs — BuildCompleted is unsubscribed; only FileChecked
+        // and BatchChecked drive the flush. The BatchChecked subscription is
+        // unconditional (independent of testConfigs).
+        let handler = create dbPath tmpDir None None None None None
+        host.RegisterHandler(handler)
+
+        let cleanSource =
+            """module Clean
+type FactAttribute() = inherit System.Attribute()
+
+[<Fact>]
+let cleanTest () = ()
+"""
+
+        let cleanFile = Path.Combine(tmpDir, "Clean.fsx")
+        File.WriteAllText(cleanFile, cleanSource)
+
+        let projOptions =
+            getScriptOptions checker cleanFile cleanSource |> Async.RunSynchronously
+
+        pipeline.RegisterProject(cleanFile, projOptions)
+
+        let result =
+            pipeline.CheckFile(AbsFilePath.create cleanFile)
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        host.EmitFileChecked(result)
+        waitForPluginTerminal host "test-prune" 10.0
+
+        // Cohort-complete signal — no BuildCompleted ever fires.
+        let batchAwait = beginAwaitNextTerminal host "test-prune"
+        host.EmitBatchChecked(fakeBatchChecked [ cleanFile ])
+        batchAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
+        // Symbols MUST be in DB after BatchChecked, even without a
+        // subsequent BuildCompleted.
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
 
         let mutable testMethods: TestMethodInfo list = []
