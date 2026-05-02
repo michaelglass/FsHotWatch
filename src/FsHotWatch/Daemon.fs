@@ -32,36 +32,6 @@ let parseNowarnCodes (source: string) : Set<int> =
         | _ -> None)
     |> Set.ofArray
 
-/// Detect FCS "type X does not match type X" diagnostics where the two
-/// rendered type names are *literally identical*. This pattern indicates a
-/// cross-project assembly-identity race in FCS (typically on the very first
-/// scan after `rm -rf .fshw/` against a tree with stale `obj/` artifacts):
-/// FCS sees two different assembly views of the same logical type and flags
-/// them as incompatible. The pattern cannot occur for legitimate user code —
-/// FCS would render the assemblies' qualified names if two distinct types
-/// truly shared a fully-qualified name. Errors of this shape clear on rerun
-/// once FCS's internal reference graph stabilises.
-///
-/// Filtering at display time is a pragmatic workaround; the deeper fix would
-/// be to force FCS reference-cache invalidation after the first BuildSucceeded,
-/// or serialise the cold scan in strict topological order — both bigger
-/// surgeries. See task #41 / /tmp/fshw-fix-spurious-cold-fcs-errors.md.
-let private selfMismatchPatterns =
-    [
-      // "The type 'X' does not match the type 'X'" (and "type 'X' does not match type 'X'")
-      System.Text.RegularExpressions.Regex(
-          @"type\s+'([^']+)'\s+does not match\s+(?:the\s+)?type\s+'\1'",
-          System.Text.RegularExpressions.RegexOptions.Singleline
-      )
-      // "This expression was expected to have type    'X'    but here has type    'X'"
-      System.Text.RegularExpressions.Regex(
-          @"expected to have type\s+'([^']+)'.*but here has type\s+'\1'",
-          System.Text.RegularExpressions.RegexOptions.Singleline
-      ) ]
-
-let internal looksLikeFcsSelfMismatch (message: string) : bool =
-    selfMismatchPatterns |> List.exists (fun r -> r.IsMatch(message))
-
 /// Extract FCS diagnostics from check results and report to the error ledger.
 /// Reports all severity levels (Error, Warning, Info, Hidden) with configurable
 /// suppressed diagnostic codes.
@@ -81,15 +51,10 @@ let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) 
         let nowarnCodes = parseNowarnCodes checkResult.Source
         let allSuppressed = Set.union suppressedCodes nowarnCodes
 
-        let mutable suppressedSelfMismatch = 0
-
         let diagnostics =
             checkResults.Diagnostics
             |> Array.choose (fun d ->
                 if allSuppressed.Contains(d.ErrorNumber) then
-                    None
-                elif looksLikeFcsSelfMismatch d.Message then
-                    suppressedSelfMismatch <- suppressedSelfMismatch + 1
                     None
                 else
                     Some
@@ -99,11 +64,6 @@ let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) 
                           Column = d.StartColumn
                           Detail = None })
             |> Array.toList
-
-        if suppressedSelfMismatch > 0 then
-            Logging.debug
-                "check"
-                $"Suppressed %d{suppressedSelfMismatch} FCS self-mismatch diagnostic(s) in %s{Path.GetFileName(AbsFilePath.value checkResult.File)} (cross-project identity race; safe to ignore)"
 
         if diagnostics.IsEmpty then
             host.ClearErrors(
