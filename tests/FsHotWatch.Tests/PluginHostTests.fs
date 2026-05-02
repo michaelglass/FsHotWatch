@@ -785,6 +785,106 @@ let ``waitForAllTerminal waits for downstream plugin that hasn't yet picked up i
     test <@ final |> Map.forall (fun _ s -> isCompleted s) @>
 
 [<Fact(Timeout = 30000)>]
+let ``waitForAllTerminal does not return while a downstream plugin still has events queued in its mailbox after it has already advanced a generation``
+    ()
+    =
+    // Repro of the BuildCompleted -> Pending -> Running edge race.
+    //
+    // Plugin B subscribes to BOTH FileChanged and BuildCompleted.
+    //   - On FileChanged: Running -> Completed (advances B's generation to 1)
+    //   - On BuildCompleted: long delay before transitioning to Running, then
+    //     Completed.
+    //
+    // Plugin A emits BuildCompleted some time after FileChanged. By that time, B
+    // has already transitioned to Completed (gen=1) for its first cycle.
+    //
+    // Bug window: between A.Completed (gen 1>0) emitting BuildCompleted and
+    // B's handler picking it up,
+    //   - A is Completed, gen advanced past snapshot
+    //   - B is Completed, gen advanced past snapshot
+    //   - B has a BuildCompleted queued in its mailbox (inflight=1)
+    //
+    // The legacy `allPluginsAdvancedToTerminal` predicate returns true here
+    // even though B has not yet started its second cycle, so WaitForComplete
+    // returns prematurely. The fix must keep the wait pending until B's queued
+    // event has been drained.
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let bRunningCount = ref 0
+
+    let aHandler =
+        { Name = PluginName.create "plugin-a"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                        // Long enough for B to finish its FileChanged cycle and
+                        // settle into Completed before BuildCompleted is emitted.
+                        do! Async.Sleep(300)
+                        ctx.EmitBuildCompleted(BuildSucceeded)
+                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
+
+    let bHandler =
+        { Name = PluginName.create "plugin-b"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                        do! Async.Sleep(50)
+                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                    | BuildCompleted _ ->
+                        // Sleep before transitioning to Running. This widens the
+                        // race window: B is in Completed (from the prior
+                        // FileChanged cycle) with the BuildCompleted event sitting
+                        // in its mailbox / handler.
+                        do! Async.Sleep(500)
+                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
+
+                        Interlocked.Increment(&bRunningCount.contents) |> ignore
+
+                        do! Async.Sleep(20)
+                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged; SubscribeBuildCompleted ]
+          CacheKey = None
+          Teardown = None }
+
+    host.RegisterHandler(aHandler)
+    host.RegisterHandler(bHandler)
+
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+    let waitTask = waitForAllTerminal host (TimeSpan.FromSeconds(15.0)) ()
+
+    let completed = waitTask.Wait(TimeSpan.FromSeconds(20.0))
+    test <@ completed @>
+    // The wait must not have returned before B picked up its second event and
+    // ran through its second cycle. With the bug, the wait returns while B's
+    // BuildCompleted is still queued in its mailbox and bRunningCount=1.
+    let observed = Volatile.Read(&bRunningCount.contents)
+    // bRunningCount=1 means B drained its queued BuildCompleted and ran the
+    // second cycle to its terminal Completed. With the bug, the wait returns
+    // while BuildCompleted is still queued / handler is still in its
+    // pre-Running sleep, so bRunningCount=0.
+    test <@ observed = 1 @>
+
+[<Fact(Timeout = 30000)>]
 let ``waitForAllTerminal waits for full cascade A -> B -> C`` () =
     // Cascade: A (FileChanged -> emits BuildCompleted), B (BuildCompleted ->
     // emits TestRunCompleted), C (TestRunCompleted -> terminal). Calling
