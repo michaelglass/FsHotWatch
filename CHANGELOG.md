@@ -4,6 +4,14 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### Drop hardcoded FS1182 default suppression
+
+#### Changed
+- **BREAKING (behavior):** `Daemon.DaemonOptions.FcsSuppressedCodes = None` now resolves to an empty `Set<int>` instead of `Set.ofList [ 1182 ]`. The daemon no longer ships a built-in suppression for FS1182 ("unused binding"), which embedded a project-level policy (originally a workaround for SqlHydra-generated code) at the wrong layer. Projects that need FS1182 silenced should declare it explicitly via `<NoWarn>FS1182</NoWarn>` in the fsproj (e.g. `Directory.Build.props`, as Intelligence already does) or `#nowarn "1182"` in source — both paths report at the correct scope.
+
+#### Added
+- `Daemon.resolveFcsSuppressedCodes : int list option -> Set<int>` — public helper exposing the option→Set resolution so it's directly testable.
+
 ### BuildPlugin owns artifact-freshness; remove ProjectDirtyTracker
 
 #### Added
