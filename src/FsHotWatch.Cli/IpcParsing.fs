@@ -152,6 +152,9 @@ let parsePluginStatusElement (el: JsonElement) : ParsedPluginStatus =
 
 /// Parse the top-level JSON object returned by GetStatus into structured per-plugin status.
 let parsePluginStatuses (json: string) : Map<string, ParsedPluginStatus> =
+    // TODO(error-audit F8): see docs/plans/2026-05-02-error-handling-audit.md
+    // — silent JSON drop returns Map.empty on parse failure; UI shows nothing
+    // and daemon regressions are invisible. Narrow to :? JsonException + warn.
     try
         use doc = JsonDocument.Parse(json)
 
