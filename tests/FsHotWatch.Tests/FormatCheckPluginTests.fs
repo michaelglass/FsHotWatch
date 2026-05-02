@@ -108,6 +108,88 @@ let ``format check handles non-existent source file gracefully`` () =
     test <@ result.IsSome @>
     test <@ result.Value.Contains("\"count\": 0") @>
 
+// --- F2 regression: unreadable file in the format-check merkle ---
+// See docs/plans/2026-05-02-error-handling-audit.md §F2.
+
+[<Fact(Timeout = 15000)>]
+let ``format-check cacheKey returns None when any input file is unreadable (F2)`` () =
+    // F2 — pre-fix the cacheKey lambda silently substituted "" for an
+    // unreadable file. That collided with a real empty file AND across
+    // distinct read-failure causes, producing stale "format OK" cache hits
+    // on transient locks. The fix returns None so the cache is bypassed
+    // (cache miss + retry on the next event).
+    let handler = createFormatCheck None
+
+    let cacheKeyFn =
+        handler.CacheKey |> Option.defaultWith (fun () -> failwith "expected CacheKey")
+
+    let nonExistentFile =
+        Path.Combine(Path.GetTempPath(), $"fshw-f2-missing-{Guid.NewGuid():N}.fs")
+
+    let key = cacheKeyFn (FileChanged(SourceChanged [ nonExistentFile ]))
+
+    test <@ key = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``format-check cacheKey returns None when one of multiple files is unreadable (F2 short-circuit)`` () =
+    // Cover the post-None short-circuit branch in the fold: a readable file
+    // followed by an unreadable one collapses to None for the whole event.
+    let handler = createFormatCheck None
+
+    let cacheKeyFn =
+        handler.CacheKey |> Option.defaultWith (fun () -> failwith "expected CacheKey")
+
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-f2-mixed-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+    // After alphabetical sort, "Good.fs" comes before "missing-...fs". The
+    // good file is read first (Some path), then the missing one drives None.
+    let goodFile = Path.Combine(tmpDir, "Good.fs")
+    File.WriteAllText(goodFile, "module Good\n")
+    let missingFile = Path.Combine(tmpDir, $"missing-{Guid.NewGuid():N}.fs")
+    // After alphabetical sort, "AAA-missing-...fs" comes BEFORE "ZZZ-good.fs",
+    // exercising the short-circuit branch where Option.bind sees None and
+    // skips the (still readable) successor file.
+    let sortedFirstMissing = Path.Combine(tmpDir, "AAA-still-missing.fs")
+    let sortedSecondGood = Path.Combine(tmpDir, "ZZZ-good.fs")
+    File.WriteAllText(sortedSecondGood, "module ZZZ\n")
+
+    try
+        let key = cacheKeyFn (FileChanged(SourceChanged [ goodFile; missingFile ]))
+        test <@ key = None @>
+        // Short-circuit: first file None → second file's Some never folds in.
+        let key2 =
+            cacheKeyFn (FileChanged(SourceChanged [ sortedFirstMissing; sortedSecondGood ]))
+
+        test <@ key2 = None @>
+    finally
+        try
+            Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 15000)>]
+let ``format-check cacheKey returns Some for readable files`` () =
+    // Sanity: the happy path still produces a key so cache hits are possible
+    // when all inputs are readable.
+    let handler = createFormatCheck None
+
+    let cacheKeyFn =
+        handler.CacheKey |> Option.defaultWith (fun () -> failwith "expected CacheKey")
+
+    let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-f2-ok-{Guid.NewGuid():N}")
+    Directory.CreateDirectory(tmpDir) |> ignore
+    let file = Path.Combine(tmpDir, "F2Ok.fs")
+    File.WriteAllText(file, "module F2Ok\n")
+
+    try
+        let key = cacheKeyFn (FileChanged(SourceChanged [ file ]))
+        test <@ key.IsSome @>
+    finally
+        try
+            Directory.Delete(tmpDir, true)
+        with _ ->
+            ()
+
 [<Fact(Timeout = 15000)>]
 let ``FormatPreprocessor formats unformatted file`` () =
     let tmpDir = Path.Combine(Path.GetTempPath(), $"fshw-fmt-{Guid.NewGuid():N}")
