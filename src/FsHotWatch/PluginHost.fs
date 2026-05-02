@@ -418,6 +418,9 @@ type PluginHost
         for p in registeredPlugins do
             match p.Teardown with
             | Some teardown ->
+                // TODO(error-audit F14): see docs/plans/2026-05-02-error-handling-audit.md
+                // — plugin Teardown is third-party; broad catch keeps cleanup going
+                // across other plugins. Document the boundary and log ex.ToString().
                 try
                     teardown ()
                 with ex ->

@@ -136,6 +136,10 @@ let private tryAcceptVersion key (v: int64) (state: LedgerState) =
 type ErrorLedger(?reporters: IErrorReporter list) =
     let reporters = defaultArg reporters []
 
+    // TODO(error-audit F11): see docs/plans/2026-05-02-error-handling-audit.md
+    // — IErrorReporter is a third-party-shaped boundary; the broad catch is
+    // justified in spirit but undocumented and logs ex.Message (no stack).
+    // Add a comment naming the boundary and log ex.ToString().
     let notifyReporters action =
         for r in reporters do
             try
@@ -272,6 +276,11 @@ type ErrorLedger(?reporters: IErrorReporter list) =
 
                                 rc.Reply(hasAny)
                                 state
+                        // TODO(error-audit F12): see docs/plans/2026-05-02-error-handling-audit.md
+                        // — mailbox-loop "agent must not die" guard inside a typed
+                        // pattern match over data we own. What would actually throw is
+                        // a programming bug; continuing the loop in original state means
+                        // the bug recurs forever and silently. Drop or narrow.
                         with ex ->
                             Logging.error "error-ledger" $"Agent failed: %s{ex.ToString()}"
                             state

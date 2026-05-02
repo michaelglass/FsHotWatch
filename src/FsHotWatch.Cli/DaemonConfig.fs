@@ -594,6 +594,9 @@ let watchConfigFile (configPath: string) (onChange: string -> unit) : IDisposabl
                 with ex ->
                     $"config invalid, stopping: %s{ex.Message}"
 
+            // TODO(error-audit F3): see docs/plans/2026-05-02-error-handling-audit.md
+            // — empty catch on the daemon-stop callback. If onChange throws, the
+            // daemon silently ignores config changes. Log + reraise.
             try
                 onChange reason
             with _ ->

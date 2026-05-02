@@ -218,6 +218,10 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
         async {
             let mutable completion: 'Msg voption = ValueNone
 
+            // TODO(error-audit F15): see docs/plans/2026-05-02-error-handling-audit.md
+            // — RunExclusive work is plugin-supplied (third-party boundary); broad
+            // catch is justified-in-spirit but undocumented. Document the boundary
+            // or restructure so only `finally` runs and ex propagates to safeUpdate.
             try
                 try
                     let! msg = w

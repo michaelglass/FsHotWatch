@@ -329,6 +329,10 @@ type ScanSignal(?cancellationToken: CancellationToken) =
                                     tcs.TrySetResult(()) |> ignore
 
                                 return! loop (max latestGeneration newGeneration) remaining
+                        // TODO(error-audit F12): see docs/plans/2026-05-02-error-handling-audit.md
+                        // — mailbox-loop "agent must not die" guard inside a typed
+                        // pattern match over data we own. Programming bugs here recur
+                        // forever silently. Drop or narrow.
                         with ex ->
                             Logging.error "scan-signal" $"Agent failed: %s{ex.ToString()}"
                             return! loop latestGeneration waiters
@@ -1258,6 +1262,10 @@ module Daemon =
                                         let newDelay = max delayMs (delayForChange change)
                                         return! debouncing (change :: pending) newDelay suppressed
                                     | Some(Choice2Of2 replyChannel) ->
+                                        // TODO(error-audit F13): see docs/plans/2026-05-02-error-handling-audit.md
+                                        // — broad catch over processBatch (FCS+MSBuild+plugins).
+                                        // Surface area is real but undocumented; needs a top-level
+                                        // daemon failure handler design before tightening.
                                         try
                                             let! newSuppressed = processBatch batchCtx (List.rev pending) suppressed
                                             let finalSuppressed = formatAllAndSuppress newSuppressed replyChannel
@@ -1268,6 +1276,7 @@ module Daemon =
                                             return! idle suppressed
                                     | None ->
                                         // Debounce expired — process batch
+                                        // TODO(error-audit F13): see docs/plans/2026-05-02-error-handling-audit.md
                                         try
                                             let! newSuppressed = processBatch batchCtx (List.rev pending) suppressed
                                             return! idle newSuppressed
@@ -1297,6 +1306,9 @@ module Daemon =
 
                                 match msg with
                                 | RequestScan(ct, reply) ->
+                                    // TODO(error-audit F13): see docs/plans/2026-05-02-error-handling-audit.md
+                                    // — broad catch over performScan; same caveat as the
+                                    // changeAgent batch handlers above.
                                     try
                                         let! newState = performScan batchCtx scanSignal state ct
                                         reply.Reply(())

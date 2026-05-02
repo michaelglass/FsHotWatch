@@ -305,6 +305,10 @@ let internal createWithSlowHook
                                                         $"Analyzed %s{Path.GetFileName fileStr}: %d{entries.Length} diagnostics"
 
                                                     return Choice2Of3 entries
+                                            // TODO(error-audit F16): see docs/plans/2026-05-02-error-handling-audit.md
+                                            // — third-party analyzer boundary; broad catch
+                                            // justified-in-spirit but undocumented. Add a
+                                            // comment naming the boundary.
                                             with ex ->
                                                 error "analyzers" $"Error analyzing %s{fileStr}: %s{ex.ToString()}"
 
