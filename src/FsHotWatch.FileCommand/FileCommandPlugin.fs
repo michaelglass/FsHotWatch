@@ -80,15 +80,18 @@ let private subtaskKey (nameStr: string) (reason: TriggerReason) : string =
 /// integration test confirms the production reader's failure mode (e.g.
 /// chmod-000) really does throw.
 let internal hashFileWith (read: string -> byte[]) (path: string) : string option =
-    // TODO(error-audit F5): see docs/plans/2026-05-02-error-handling-audit.md
-    // — bare catch on cache-key input; transient IO drops the file from the
-    // merkle and risks stale cache hits. Narrow to :? IOException.
+    // F5 (audit 2026-05-02): `read` is a file-IO call, so transient IO failures
+    // (file locked by editor, missing, perms) legitimately drop this entry from
+    // the merkle and we tolerate the resulting cache miss. Anything else
+    // (NullReferenceException, programming bugs) must surface — bare `with _`
+    // would silently mask real defects.
     try
         let bytes = read path
         let hash = System.Security.Cryptography.SHA256.HashData(bytes)
         Some(System.Convert.ToHexString(hash).ToLowerInvariant())
-    with _ ->
-        None
+    with
+    | :? System.IO.IOException -> None
+    | :? System.UnauthorizedAccessException -> None
 
 let private tryHashFile = hashFileWith System.IO.File.ReadAllBytes
 
