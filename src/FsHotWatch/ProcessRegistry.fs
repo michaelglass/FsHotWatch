@@ -5,6 +5,17 @@ open System.Collections.Concurrent
 open System.Diagnostics
 open System.Threading
 
+/// F19/F20 (audit 2026-05-02): exception classes treated as benign when
+/// observing or killing a tracked Process. HasExited and Kill both throw
+/// InvalidOperationException (no process associated / already exited) and
+/// Win32Exception (access denied). Both are tolerated here. NullReferenceException
+/// and other CLR-level bugs propagate.
+let isExpectedProcessException (ex: exn) : bool =
+    match ex with
+    | :? InvalidOperationException -> true
+    | :? System.ComponentModel.Win32Exception -> true
+    | _ -> false
+
 /// Per-scope process tracker. Scoped via AsyncLocal so a daemon's spawned children
 /// register against that daemon's registry, not a process-wide global. This keeps
 /// `killAll` from clobbering unrelated work in parallel test runs.
@@ -27,13 +38,12 @@ type Registry() =
         [ for kv in live do
               let p = kv.Value
 
-              // TODO(error-audit F19): see docs/plans/2026-05-02-error-handling-audit.md
-              // — bare _ broader than warranted. Process.HasExited throws only
-              // InvalidOperationException + Win32Exception; narrow to those.
+              // F19 (audit 2026-05-02): see isExpectedProcessException — any
+              // tolerated exception means "can't observe; treat as not alive".
               let alive =
                   try
                       not p.HasExited
-                  with _ ->
+                  with ex when isExpectedProcessException ex ->
                       false
 
               if alive then
@@ -43,17 +53,18 @@ type Registry() =
     /// iteration may be missed and silently dropped from `live` by the final
     /// Clear — accept that for daemon shutdown; do not call from steady-state.
     member _.KillAll() : unit =
-        // TODO(error-audit F20): see docs/plans/2026-05-02-error-handling-audit.md
-        // — bare _ catches Win32Exception (real failures) with InvalidOperation
-        // (already-exited). Comment names the dictionary race but the catch
-        // covers process-state exceptions; align comment + narrow types.
+        // F20 (audit 2026-05-02): see isExpectedProcessException — both
+        // HasExited and Kill can race with natural exit (InvalidOperationException)
+        // or fail with Win32Exception access-denied. Both tolerated here so
+        // daemon shutdown can proceed across the whole live set; other
+        // classes propagate as they indicate real bugs.
         for kv in live do
             try
                 let p = kv.Value
 
                 if not p.HasExited then
                     p.Kill(entireProcessTree = true)
-            with _ ->
+            with ex when isExpectedProcessException ex ->
                 ()
 
         live.Clear()
