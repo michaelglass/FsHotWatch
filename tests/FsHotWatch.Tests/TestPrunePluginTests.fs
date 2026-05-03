@@ -3460,3 +3460,89 @@ let bad : int = "not-an-int"
         // FCS check is clean, Item 3 refuses to promote — sidecar stays dirty.
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
         test <@ not (FsHotWatch.TestPrune.FileFreshness.isClean "Mixed.fsx" freshness) @>)
+
+// =============================================================================
+// detectChanges call site: stored vs current must agree on unit. The DB stores
+// externs under the synthetic SourceFile "_extern", and `GetSymbolsInFile`
+// filters by source_file = relPath — so the stored side is file-local only.
+// Before this fix, the call passed unfiltered `normalizedSymbols` (file-local +
+// externs) on the current side, producing a phantom diff equal to the file's
+// extern count for every clean re-check. ~80% of every file's allSymbols are
+// externs in real codebases, hence "Phase B always reports 4921 affected tests"
+// in Intelligence stress runs. Fix: filter current symbols by SourceFile match
+// before invoking detectChanges.
+// =============================================================================
+
+[<Fact(Timeout = 30000)>]
+let ``detectChanges: re-check of unchanged source with externs reports no changes`` () =
+    withTempDir "tp-extern-filter" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let filePath = Path.Combine(tmpDir, "Lib.fsx")
+        let relPath = "Lib.fsx"
+        // Source uses List.length so the extractor pulls in
+        // Microsoft.FSharp.Collections.List.length as an extern symbol.
+        let source = "module Lib\nlet xs = List.length []\n"
+
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        File.WriteAllText(filePath, source)
+        let sourceText = SourceText.ofString source
+
+        let projOptions =
+            checker.GetProjectOptionsFromScript(filePath, sourceText, assumeDotNetFramework = false)
+            |> Async.RunSynchronously
+            |> fst
+
+        // Seed: extract symbols (file-local + externs) and persist via
+        // RebuildProjects. The DB tags externs with SourceFile = "_extern" so
+        // GetSymbolsInFile(relPath) returns only file-local rows.
+        let seedResult =
+            analyzeSource checker filePath source projOptions "TestProject"
+            |> Async.RunSynchronously
+
+        let seededSymbols =
+            match seedResult with
+            | Error msg ->
+                Assert.Fail($"Initial analysis failed: {msg}")
+                []
+            | Ok result ->
+                let normalized =
+                    { result with
+                        Symbols = normalizeSymbolPaths tmpDir result.Symbols }
+
+                let db = Database.create dbPath
+                db.RebuildProjects([ normalized ])
+                normalized.Symbols
+
+        // Sanity: extracted set actually contains externs (otherwise the test
+        // tautologically passes regardless of the fix).
+        let externs = seededSymbols |> List.filter (fun s -> s.IsExtern)
+        test <@ not externs.IsEmpty @>
+
+        // Sanity: DB read-back is file-local only — externs absent.
+        let storedFromDb = (Database.create dbPath).GetSymbolsInFile(relPath)
+        test <@ storedFromDb |> List.forall (fun s -> not s.IsExtern) @>
+
+        // Seed sidecar clean so detectChanges actually runs (Path D gate).
+        FsHotWatch.TestPrune.FileFreshness.save
+            tmpDir
+            (FsHotWatch.TestPrune.FileFreshness.markClean DateTime.UtcNow relPath Map.empty)
+
+        let pipeline = CheckPipeline(checker)
+        pipeline.RegisterProject(projOptions.ProjectFileName, projOptions)
+
+        let host = PluginHost.create checker tmpDir
+        let handler = create dbPath tmpDir None None None None None
+        host.RegisterHandler(handler)
+
+        // Re-check the IDENTICAL source — no edit. detectChanges should report
+        // zero changes. Without the fix, externs in the current set produce a
+        // phantom diff equal to externs.Length.
+        match pipeline.CheckFile(AbsFilePath.create filePath) |> Async.RunSynchronously with
+        | None -> Assert.Fail("FCS failed on re-check")
+        | Some r -> host.EmitFileChecked(r)
+
+        waitForTerminalStatus host "test-prune" 30000
+
+        let changedFiles = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
+
+        test <@ changedFiles.Value = "[]" @>)
