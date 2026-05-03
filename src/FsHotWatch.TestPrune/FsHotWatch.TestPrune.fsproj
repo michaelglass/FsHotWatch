@@ -33,6 +33,7 @@
   <ItemGroup>
     <Compile Include="CoverageMerge.fs" />
     <Compile Include="Flakiness.fs" />
+    <Compile Include="FileFreshness.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
 
