@@ -108,7 +108,7 @@
     "Daemon.fs": [
       {
         "line": 76,
-        "branch": 70,
+        "branch": 71,
         "reason": "drifts 74-76%; pinned to floor",
         "platform": "macos"
       },
@@ -199,6 +199,11 @@
         "platform": "linux"
       }
     ],
+    "FileFreshness.fs": {
+      "line": 90,
+      "branch": 88,
+      "reason": "loosened automatically"
+    },
     "FileTaskCache.fs": [
       {
         "line": 93,
