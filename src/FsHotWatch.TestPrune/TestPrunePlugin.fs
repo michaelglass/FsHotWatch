@@ -1178,11 +1178,21 @@ let create
                         // session) restores the normal flow.
                         let (changedNames, suppressedDiff) =
                             if currentClean && storedClean then
-                                let (changes, _events) = detectChanges normalizedSymbols storedSymbols
+                                // db.GetSymbolsInFile (and the in-memory snapshot
+                                // populated from it) returns only file-local rows
+                                // — externs persist with SourceFile = "_extern".
+                                // Filter the current side to match, otherwise
+                                // every clean re-check produces a phantom diff
+                                // equal to the file's extern count (~80% of
+                                // allSymbols in real codebases).
+                                let currentForFile =
+                                    normalizedSymbols |> List.filter (fun s -> s.SourceFile = relPath)
+
+                                let (changes, _events) = detectChanges currentForFile storedSymbols
 
                                 Logging.info
                                     "test-prune"
-                                    $"detectChanges for %s{relPath}: %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{normalizedSymbols.Length} current"
+                                    $"detectChanges for %s{relPath}: %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{currentForFile.Length} current"
 
                                 changedSymbolNames changes, false
                             else
