@@ -62,7 +62,7 @@
     ],
     "CheckPipeline.fs": [
       {
-        "line": 79,
+        "line": 80,
         "branch": 65,
         "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor",
         "platform": "macos"
@@ -108,7 +108,7 @@
     "Daemon.fs": [
       {
         "line": 76,
-        "branch": 70,
+        "branch": 71,
         "reason": "drifts 74-76%; pinned to floor",
         "platform": "macos"
       },
@@ -199,6 +199,11 @@
         "platform": "linux"
       }
     ],
+    "FileFreshness.fs": {
+      "line": 90,
+      "branch": 88,
+      "reason": "loosened automatically"
+    },
     "FileTaskCache.fs": [
       {
         "line": 93,
@@ -433,7 +438,7 @@
     ],
     "Program.fs": [
       {
-        "line": 68,
+        "line": 67,
         "branch": 57,
         "reason": "CLI entry point; line drifts 66-68% and branch drifts 53-54% across runs \u2014 pin to floor; auto-ratchet bumps to ceiling and breaks CI on the next unlucky run",
         "platform": "macos"
