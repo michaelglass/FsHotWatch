@@ -1183,6 +1183,14 @@ let computeTest () =
 
         pipeline.RegisterProject(libFile, projOptions)
 
+        // Item 3 ordering: BuildCompleted FIRST so subsequent FileChecked
+        // events are allowed to promote the freshness sidecar to clean.
+        // Mirrors fshw's real cold-scan pipeline (BuildPlugin terminal
+        // gates FCS tier dispatch).
+        let firstBuild = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        firstBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
         // Initial index: both files analysed, edges written to DB.
         let libResult =
             pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously
@@ -1191,15 +1199,10 @@ let computeTest () =
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith "lib CheckFile failed"
 
-        waitUntil
-            (fun () ->
-                let r = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
-
-                match r with
-                | Some json -> json.Contains("Lib.fsx")
-                | None -> false)
-            5000
-
+        // (No waitUntil for `Lib.fsx` in ChangedFiles here — under Item 3 the
+        // first detectChanges against an empty stored sidecar is bypassed,
+        // so this initial check just primes the sidecar to clean. The real
+        // assertion is the affected-tests check at the end.)
         let testsResult =
             pipeline.CheckFile(AbsFilePath.create testsFile) |> Async.RunSynchronously
 
@@ -1207,24 +1210,13 @@ let computeTest () =
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith "tests CheckFile failed"
 
-        waitUntil
-            (fun () ->
-                let r = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
-
-                match r with
-                | Some json -> json.Contains("Tests.fsx")
-                | None -> false)
-            5000
-
         waitForPluginIdle host "test-prune" 10.0
 
-        // Subscribe BEFORE emit and wait for the *next* Completed after BuildCompleted,
-        // so we know the flush-and-run cycle has finished (including TestsFinished
-        // resetting ChangedSymbols). beginAwaitTerminal races here because plugin
-        // is already at Completed from the prior FileChecked.
-        let firstBuild = beginAwaitNextTerminal host "test-prune"
-        host.EmitBuildCompleted(BuildSucceeded)
-        firstBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        // Drive a BatchChecked so the symbol DB is flushed from
+        // PendingAnalysis.
+        let firstBatch = beginAwaitNextTerminal host "test-prune"
+        host.EmitBatchChecked(fakeBatchChecked [ libFile; testsFile ])
+        firstBatch.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
         // Modify compute's body — content hash changes but signature does not.
         let libSource2 =
@@ -1345,6 +1337,13 @@ let testOtherStuff () =
 
         pipeline.RegisterProject(libFile, projOptions)
 
+        // Item 3 ordering: BuildCompleted FIRST so subsequent FileCheckeds
+        // promote the freshness sidecar to clean. Mirrors fshw's real
+        // cold-scan pipeline.
+        let firstBuild = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        firstBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
         // Emit lib file
         let libResult =
             pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously
@@ -1352,16 +1351,6 @@ let testOtherStuff () =
         match libResult with
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith "lib CheckFile failed"
-
-        // Wait for the agent to process the FileChecked message
-        waitUntil
-            (fun () ->
-                let result = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
-
-                match result with
-                | Some json -> json.Contains("Lib.fsx")
-                | None -> false)
-            5000
 
         // Emit tests file
         let testsResult =
@@ -1371,23 +1360,15 @@ let testOtherStuff () =
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith "tests CheckFile failed"
 
-        // Wait for the agent to process the FileChecked message
-        waitUntil
-            (fun () ->
-                let result = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
-
-                match result with
-                | Some json -> json.Contains("Tests.fsx")
-                | None -> false)
-            5000
-
         // Wait for analysis
         waitForPluginIdle host "test-prune" 10.0
 
-        // Emit build completion to flush analysis to database
-        let firstBuild = beginAwaitNextTerminal host "test-prune"
-        host.EmitBuildCompleted(BuildSucceeded)
-        firstBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        // BatchChecked drives the flush of accumulated PendingAnalysis to
+        // the symbol DB so the subsequent edited-file FileChecked has stored
+        // rows to diff against.
+        let firstBatch = beginAwaitNextTerminal host "test-prune"
+        host.EmitBatchChecked(fakeBatchChecked [ libFile; testsFile ])
+        firstBatch.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
         // Now change the type: add a new field
         let libSource2 =
@@ -1620,9 +1601,14 @@ let lazyComputeTest () =
 
         pipeline.RegisterProject(libFile, projOptions)
 
-        // Seed the DB with the initial baseline by running a FileChecked +
-        // BuildCompleted cycle (this is the only path that flushes pending
-        // analysis to the DB).
+        // Item 3 ordering: BuildCompleted FIRST so the seed FileCheckeds
+        // can promote the freshness sidecar to clean. (Mirrors fshw's real
+        // cold-scan: BuildPlugin terminal gates FCS tier checks.)
+        let firstBuild = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        firstBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
+        // Seed the DB with the initial baseline.
         match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
         | Some r -> host.EmitFileChecked(r)
         | None -> failwith "lib CheckFile failed"
@@ -1633,9 +1619,11 @@ let lazyComputeTest () =
 
         waitForPluginIdle host "test-prune" 10.0
 
-        let firstBuild = beginAwaitNextTerminal host "test-prune"
-        host.EmitBuildCompleted(BuildSucceeded)
-        firstBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        // BatchChecked drives the flush of accumulated PendingAnalysis to
+        // the symbol DB.
+        let firstBatch = beginAwaitNextTerminal host "test-prune"
+        host.EmitBatchChecked(fakeBatchChecked [ libFile; testsFile ])
+        firstBatch.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
         // Now mutate the symbol and emit a single FileChecked. We do NOT
         // emit BuildCompleted afterward — affected-tests must be answered
@@ -1770,6 +1758,15 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
 
             let db = Database.create dbPath
             db.RebuildProjects([ normalized ])
+
+        // Seed the freshness sidecar to match the seeded DB. Item 3's gate
+        // means the plugin only trusts stored DB rows when the sidecar
+        // records the file as `fcsClean = true`. In the steady-state daemon
+        // this entry exists from the prior post-build session; we write it
+        // directly here to model that pre-condition.
+        FsHotWatch.TestPrune.FileFreshness.save
+            tmpDir
+            (FsHotWatch.TestPrune.FileFreshness.markClean DateTime.UtcNow relPath Map.empty)
 
         // --- Set up pipeline (same checker) and plugin host ---
         let pipeline = CheckPipeline(checker)
@@ -2700,8 +2697,16 @@ let x : int = "not-an-int"
             <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors (Set.singleton 9999) result.Source result.CheckResults @>)
 
 [<Fact(Timeout = 30000)>]
-let ``FileChecked with FCS errors does not flush symbols to DB`` () =
-    withTempDir "tp-poisoning-noflush" (fun tmpDir ->
+let ``FileChecked with FCS errors persists symbols to DB and stamps sidecar dirty`` () =
+    // Path D contract (replaces the prior F38 "withhold" behaviour):
+    // dirty FCS results no longer block the symbol-DB write. Symbols flow
+    // through to the DB as normal; the protection that prevented Phase B
+    // from spuriously seeing "0 stored" is moved to the FsHotWatch-owned
+    // freshness sidecar, which marks the file `fcsClean = false`. Phase B
+    // detectChanges then bypasses the diff for that file rather than
+    // computing a phantom "all symbols changed" delta against an empty
+    // stored row set.
+    withTempDir "tp-poisoning-persist-dirty" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
 
         let testConfigs =
@@ -2749,18 +2754,21 @@ let badTypeUse : int = "not-an-int"
         host.EmitFileChecked(result)
         waitForPluginTerminal host "test-prune" 10.0
 
-        // Drive a flush via BuildSucceeded — the gate must prevent the
-        // poisoned analysis from ever reaching the DB.
+        // Drive a flush via BuildSucceeded.
         let buildAwait = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         buildAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
-        // DB must be empty: poisoned FileChecked produced no symbol rows.
+        // NEW contract: symbols ARE in the DB (gate no longer withholds the write).
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
         let freshDb = Database.create dbPath
         let symbols = freshDb.GetSymbolsInFile "Broken.fsx"
+        test <@ not symbols.IsEmpty @>
 
-        test <@ symbols.IsEmpty @>)
+        // NEW contract: the freshness sidecar marks the file dirty so Phase B
+        // detectChanges bypasses it.
+        let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
+        test <@ not (FsHotWatch.TestPrune.FileFreshness.isClean "Broken.fsx" freshness) @>)
 
 [<Fact(Timeout = 30000)>]
 let ``FileChecked without FCS errors flushes symbols to DB (gate doesn't break clean path)`` () =
@@ -2806,11 +2814,27 @@ let cleanTest () = ()
 
         test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>
 
-        host.EmitFileChecked(result)
-        waitForPluginTerminal host "test-prune" 10.0
+        // Item 3 ordering: BuildSucceeded fires FIRST (matches real fshw cold
+        // scan — BuildPlugin's terminal status gates FCS tier checks). The
+        // sidecar's `markClean` only fires for FileChecked events that arrive
+        // AFTER BuildCompleted has been observed in this session.
         let buildAwait = beginAwaitNextTerminal host "test-prune"
         host.EmitBuildCompleted(BuildSucceeded)
         buildAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
+        // Use `beginAwaitNextTerminal` (not `waitForPluginTerminal`) for the
+        // FileChecked wait — the plugin already returned to terminal state
+        // after the build's test run, so `waitForPluginTerminal` would early-
+        // return against the prior terminal before this event is processed.
+        let fileAwait = beginAwaitNextTerminal host "test-prune"
+        host.EmitFileChecked(result)
+        fileAwait.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
+        // BatchChecked drives the cohort-complete flush that persists
+        // accumulated FileChecked analysis to the DB.
+        let batchAwait = beginAwaitNextTerminal host "test-prune"
+        host.EmitBatchChecked(fakeBatchChecked [ cleanFile ])
+        batchAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
         // Symbols MUST be in DB.
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
@@ -2826,7 +2850,13 @@ let cleanTest () = ()
             5000
 
         test <@ testMethods.Length >= 1 @>
-        test <@ testMethods |> List.exists (fun t -> t.TestMethod = "cleanTest") @>)
+        test <@ testMethods |> List.exists (fun t -> t.TestMethod = "cleanTest") @>
+
+        // NEW Path D + Item 3 contract: clean FCS check that arrives AFTER
+        // BuildCompleted stamps the sidecar `fcsClean = true` so Phase B
+        // detectChanges trusts the stored rows for this file.
+        let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
+        test <@ FsHotWatch.TestPrune.FileFreshness.isClean "Clean.fsx" freshness @>)
 
 [<Fact(Timeout = 30000)>]
 let ``BatchChecked persists accumulated symbols to DB without a follow-up BuildCompleted`` () =
@@ -2897,7 +2927,17 @@ let cleanTest () = ()
         test <@ testMethods |> List.exists (fun t -> t.TestMethod = "cleanTest") @>)
 
 [<Fact(Timeout = 60000)>]
-let ``cold-boot regression: prior DB snapshot preserved when FCS errors arrive`` () =
+let ``cold-boot regression: dirty FCS leaves sidecar dirty so detectChanges falls back`` () =
+    // Path D replaces the prior cold-boot regression test. Under the old F38
+    // gate the contract was "prior DB rows survive a dirty FCS check."
+    // Under Path D the contract is: dirty FCS may overwrite rows (we always
+    // persist), BUT the freshness sidecar marks the file dirty so a future
+    // `detectChanges` against those potentially-poisoned rows is bypassed
+    // rather than producing a phantom large diff.
+    //
+    // What we still must protect against is a *spurious large diff* — the
+    // 4921-affected-tests Phase B regression. The sidecar is the load-bearing
+    // piece for that, not the symbol-DB write decision.
     withTempDir "tp-poisoning-coldboot" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
 
@@ -2942,11 +2982,21 @@ let coldBootTest () = ()
             |> Async.RunSynchronously
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None (clean)")
 
-        host1.EmitFileChecked(cleanResult)
-        waitForPluginTerminal host1 "test-prune" 10.0
+        // Item 3 ordering: BuildSucceeded fires FIRST, then FileChecked, then
+        // BatchChecked drives the flush. Mirrors the real fshw cold-scan
+        // pipeline (BuildPlugin terminal gates FCS tier checks). Only this
+        // ordering allows the sidecar to stamp `fcsClean = true`.
         let phase1Build = beginAwaitNextTerminal host1 "test-prune"
         host1.EmitBuildCompleted(BuildSucceeded)
         phase1Build.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
+        let phase1FcsAwait = beginAwaitNextTerminal host1 "test-prune"
+        host1.EmitFileChecked(cleanResult)
+        phase1FcsAwait.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
+        let phase1Batch = beginAwaitNextTerminal host1 "test-prune"
+        host1.EmitBatchChecked(fakeBatchChecked [ file ])
+        phase1Batch.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
         // Verify Phase 1 populated DB.
         let mutable phase1Tests: TestMethodInfo list = []
@@ -3000,15 +3050,413 @@ let badTypeUse : int = "wrong-type"
         let handler2 = create dbPath tmpDir (Some testConfigs) None None None None
         host2.RegisterHandler(handler2)
 
-        host2.EmitFileChecked(brokenResult)
-        waitForPluginTerminal host2 "test-prune" 10.0
+        // Item 3 ordering for Phase 2 too: BuildSucceeded first, then dirty
+        // FileChecked. This exercises the `markUnverified` preservation rule:
+        // a prior `fcsClean = true` record (from Phase 1) is NOT downgraded to
+        // dirty even though the current FCS check has Error-severity
+        // diagnostics. The trade-off is intentional — cold-start reliability
+        // over correctness on user-broke-their-code transients. The next
+        // genuine clean check refreshes the timestamp.
         let phase2Build = beginAwaitNextTerminal host2 "test-prune"
         host2.EmitBuildCompleted(BuildSucceeded)
         phase2Build.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
-        // The load-bearing assertion: prior DB snapshot survives the
-        // poisoned FileChecked. coldBootTest must still be in the DB.
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
-        let freshDb = Database.create dbPath
-        let phase2Tests = freshDb.GetTestMethodsInFile "CB.fsx"
-        test <@ phase2Tests |> List.exists (fun t -> t.TestMethod = "coldBootTest") @>)
+        let phase2FcsAwait = beginAwaitNextTerminal host2 "test-prune"
+        host2.EmitFileChecked(brokenResult)
+        phase2FcsAwait.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
+        // Item 3 contract: prior clean record from Phase 1 survives a dirty
+        // Phase 2 FileChecked.
+        let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
+        test <@ FsHotWatch.TestPrune.FileFreshness.isClean "CB.fsx" freshness @>
+
+        // Even though the sidecar still reads clean, the *current* FCS check
+        // is dirty — `currentClean` in the FileChecked handler is false, so
+        // detectChanges is bypassed for this event regardless of stored state.
+        // ChangedFiles therefore does not gain a phantom entry from the
+        // poisoned check.
+        let changedAfterDirty =
+            host2.RunCommand("changed-files", [||]) |> Async.RunSynchronously
+
+        test <@ changedAfterDirty.Value = "[]" @>)
+
+// =============================================================================
+// Path D — per-file freshness sidecar gates the detectChanges call site so
+// cross-restart Phase B replay only computes a real diff for files that
+// ended their last session FCS-clean. This is the load-bearing change for
+// the 4921-affected-tests Phase B regression: without the sidecar gate, a
+// fresh daemon's first FCS check sees ~0 stored rows for files whose prior
+// session ended dirty, producing a phantom "all symbols changed" delta.
+// =============================================================================
+
+[<Fact(Timeout = 30000)>]
+let ``Phase B replay: stored=dirty, current=clean → detectChanges bypassed`` () =
+    // Pre-populate the DB with stale (deliberately empty) symbol rows for a
+    // file whose prior session ended FCS-dirty. The freshness sidecar
+    // already records that file as dirty. The plugin then receives a fresh
+    // FCS-clean FileChecked for the same file with full symbols. Without
+    // the sidecar gate, detectChanges would report N current vs 0 stored =
+    // N changes (the Phase B 4921-affected-tests bug). With the gate, the
+    // diff is bypassed and ChangedFiles stays empty.
+    withTempDir "tp-phaseb-bypass" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let relPath = "PhaseB.fsx"
+        let absPath = Path.Combine(tmpDir, relPath)
+
+        // Seed the sidecar with a dirty entry for this file (simulates "prior
+        // session ended dirty"). Empty DB rows for the file simulates "F38
+        // gate previously withheld the write" — though under the new contract
+        // the rows are written, the sidecar is what gates the diff.
+        let earlier = DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc)
+
+        let priorSidecar =
+            Map.empty
+            |> Map.add
+                relPath
+                { FsHotWatch.TestPrune.FileFreshness.FcsClean = false
+                  FsHotWatch.TestPrune.FileFreshness.LastCleanCheckAt = Some earlier }
+
+        FsHotWatch.TestPrune.FileFreshness.save tmpDir priorSidecar
+
+        let cleanSource =
+            """module PhaseB
+type FactAttribute() = inherit System.Attribute()
+
+let usefulValue = 42
+let anotherValue = "hello"
+
+[<Fact>]
+let phaseBTest () = ()
+"""
+
+        File.WriteAllText(absPath, cleanSource)
+
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+
+        let projOptions =
+            getScriptOptions checker absPath cleanSource |> Async.RunSynchronously
+
+        pipeline.RegisterProject(absPath, projOptions)
+
+        // testConfigs needed so the plugin subscribes to BuildCompleted;
+        // Item 3 gates `markClean` on a BuildCompleted having been observed.
+        let testConfigs =
+            [ { Project = "PhaseB"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create checker tmpDir
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None
+        host.RegisterHandler(handler)
+
+        let result =
+            pipeline.CheckFile(AbsFilePath.create absPath)
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        // Sanity: this is a clean check.
+        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>
+
+        // Item 3 ordering: BuildSucceeded first so the FileChecked that
+        // follows is allowed to promote the sidecar to clean.
+        let buildAwait = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        buildAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
+        let fcsAwait = beginAwaitNextTerminal host "test-prune"
+        host.EmitFileChecked(result)
+        fcsAwait.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
+        // Load-bearing: ChangedFiles must NOT include relPath. Stored=empty,
+        // current=N would produce N changes without the gate; with the gate
+        // the diff is bypassed entirely (sidecar said dirty when FileChecked
+        // arrived, so storedClean=false and the diff is skipped).
+        let changedFiles = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
+
+        test <@ changedFiles.Value = "[]" @>
+
+        // The clean recheck flips the sidecar from dirty → clean so the NEXT
+        // restart's Phase B (post-this-session) trusts the rows.
+        let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
+        test <@ FsHotWatch.TestPrune.FileFreshness.isClean relPath freshness @>)
+
+[<Fact(Timeout = 30000)>]
+let ``Phase B replay: stored=clean → detectChanges runs as today`` () =
+    // Counterpart to the prior test. Once a file has gone clean → clean
+    // across a restart boundary, detectChanges runs normally and a real AST
+    // change produces a real diff. This guards against an over-aggressive
+    // gate that would mask legitimate changes.
+    withTempDir "tp-phaseb-realdiff" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let relPath = "Lib.fs"
+        let absPath = Path.Combine(tmpDir, relPath)
+
+        let initialSource = "module Lib\nlet x = 1\n"
+        let astChangedSource = "module Lib\nlet x = 1\nlet y = 2\n"
+
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+
+        File.WriteAllText(absPath, initialSource)
+        let initialSourceText = SourceText.ofString initialSource
+
+        let projOptions =
+            checker.GetProjectOptionsFromScript(absPath, initialSourceText, assumeDotNetFramework = false)
+            |> Async.RunSynchronously
+            |> fst
+
+        // Seed DB with initial source symbols — same pattern as the existing
+        // comment-only test (line 1736).
+        let seedResult =
+            analyzeSource checker absPath initialSource projOptions "TestProject"
+            |> Async.RunSynchronously
+
+        match seedResult with
+        | Error msg -> Assert.Fail($"Initial analysis failed: {msg}")
+        | Ok result ->
+            let normalized =
+                { result with
+                    Symbols = normalizeSymbolPaths tmpDir result.Symbols }
+
+            let db = Database.create dbPath
+            db.RebuildProjects([ normalized ])
+
+        // Seed sidecar clean (Phase A ended successfully for this file).
+        let now = DateTime.UtcNow
+
+        let priorSidecar =
+            FsHotWatch.TestPrune.FileFreshness.markClean now relPath Map.empty
+
+        FsHotWatch.TestPrune.FileFreshness.save tmpDir priorSidecar
+
+        // New session. The plugin will load the sidecar at startup and treat
+        // the file as trusted-for-diff.
+        let pipeline = CheckPipeline(checker)
+        pipeline.RegisterProject(projOptions.ProjectFileName, projOptions)
+
+        let host = PluginHost.create checker tmpDir
+        let handler = create dbPath tmpDir None None None None None
+        host.RegisterHandler(handler)
+
+        // Real AST change. detectChanges should report a diff.
+        File.WriteAllText(absPath, astChangedSource)
+
+        match pipeline.CheckFile(AbsFilePath.create absPath) |> Async.RunSynchronously with
+        | None -> Assert.Fail("FCS failed on AST-changed source")
+        | Some r -> host.EmitFileChecked(r)
+
+        waitForTerminalStatus host "test-prune" 30000
+
+        let changed = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
+        test <@ changed.Value.Contains(relPath) @>)
+
+// =============================================================================
+// Item 3 — BuildCompleted-gated stamping. The sidecar's `markClean` only
+// fires for FileChecked events that arrive AFTER a BuildCompleted has been
+// observed in the current session. Pre-build FileChecked events stamp
+// `markUnverified` (treated as dirty unless a prior clean record exists).
+// This eliminates the cold-FCS-vs-warm-FCS extractor-stability problem
+// the Path D fcs-clean predicate alone couldn't solve: by the time
+// fshw's pipeline emits BuildCompleted, FCS has been warmed by the build's
+// reference-graph realization, so subsequent FileChecked events extract
+// the same number of symbols a Phase B warm rerun would.
+// =============================================================================
+
+[<Fact(Timeout = 30000)>]
+let ``Item 3: pre-BuildCompleted clean FileChecked → sidecar stays dirty`` () =
+    // Mirrors the realistic case where, on plugin startup, sidecar is empty
+    // and a FileChecked arrives BEFORE any BuildCompleted. The plugin must
+    // refuse to stamp clean — `currentClean=true` is necessary but not
+    // sufficient; warm-enough state is signalled by BuildCompleted.
+    withTempDir "tp-item3-pre-build-clean" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+
+        let testConfigs =
+            [ { Project = "Pre"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+        let host = PluginHost.create checker tmpDir
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None
+        host.RegisterHandler(handler)
+
+        let cleanSource = "module Pre\nlet n = 1\n"
+        let cleanFile = Path.Combine(tmpDir, "Pre.fsx")
+        File.WriteAllText(cleanFile, cleanSource)
+
+        let projOptions =
+            getScriptOptions checker cleanFile cleanSource |> Async.RunSynchronously
+
+        pipeline.RegisterProject(cleanFile, projOptions)
+
+        let result =
+            pipeline.CheckFile(AbsFilePath.create cleanFile)
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        // Sanity.
+        test <@ not (FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty result.Source result.CheckResults) @>
+
+        // Critically — emit FileChecked WITHOUT a prior BuildCompleted.
+        host.EmitFileChecked(result)
+        waitForPluginTerminal host "test-prune" 10.0
+
+        // Item 3: even though the FCS check itself was clean, the absence of
+        // a prior BuildCompleted means the plugin stamps `markUnverified` →
+        // sidecar entry is fcsClean=false.
+        let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
+        test <@ not (FsHotWatch.TestPrune.FileFreshness.isClean "Pre.fsx" freshness) @>)
+
+[<Fact(Timeout = 30000)>]
+let ``Item 3: post-BuildCompleted clean FileChecked → sidecar stamped clean`` () =
+    // Counterpart: same harness, but BuildCompleted fires first. The plugin
+    // observes the build, sets its session flag, and the subsequent
+    // FileChecked is allowed to promote the sidecar entry to clean.
+    withTempDir "tp-item3-post-build-clean" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+
+        let testConfigs =
+            [ { Project = "Post"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+        let host = PluginHost.create checker tmpDir
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None
+        host.RegisterHandler(handler)
+
+        let cleanSource = "module Post\nlet n = 1\n"
+        let cleanFile = Path.Combine(tmpDir, "Post.fsx")
+        File.WriteAllText(cleanFile, cleanSource)
+
+        let projOptions =
+            getScriptOptions checker cleanFile cleanSource |> Async.RunSynchronously
+
+        pipeline.RegisterProject(cleanFile, projOptions)
+
+        let result =
+            pipeline.CheckFile(AbsFilePath.create cleanFile)
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
+
+        // Build first.
+        let buildAwait = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        buildAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
+        // Then FileChecked. `beginAwaitNextTerminal` (NOT `waitForPluginTerminal`)
+        // because the plugin is already in a terminal state after the build's
+        // test run completed; `waitForPluginTerminal` would return immediately
+        // against the prior terminal status, before this FileChecked is
+        // actually processed.
+        let fileAwait = beginAwaitNextTerminal host "test-prune"
+        host.EmitFileChecked(result)
+        fileAwait.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
+        // Item 3 promotion: sidecar now records the file clean.
+        let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
+        test <@ FsHotWatch.TestPrune.FileFreshness.isClean "Post.fsx" freshness @>)
+
+[<Fact(Timeout = 30000)>]
+let ``Item 3: clean check after prior dirty, still pre-build → stays dirty`` () =
+    // Two FileCheckeds in sequence, NO BuildCompleted. First is dirty, second
+    // is clean. The clean-but-pre-build event must NOT promote the entry —
+    // exactly because warm extraction stability isn't guaranteed yet.
+    withTempDir "tp-item3-dirty-then-clean" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+
+        let testConfigs =
+            [ { Project = "Mixed"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+        let host = PluginHost.create checker tmpDir
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None
+        host.RegisterHandler(handler)
+
+        let mixedFile = Path.Combine(tmpDir, "Mixed.fsx")
+
+        // Phase 1: dirty source, dirty FileChecked.
+        let dirtySource =
+            """module Mixed
+let bad : int = "not-an-int"
+"""
+
+        File.WriteAllText(mixedFile, dirtySource)
+
+        let dirtyOpts =
+            getScriptOptions checker mixedFile dirtySource |> Async.RunSynchronously
+
+        pipeline.RegisterProject(mixedFile, dirtyOpts)
+
+        let dirtyResult =
+            pipeline.CheckFile(AbsFilePath.create mixedFile)
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile None (dirty)")
+
+        test
+            <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty dirtyResult.Source dirtyResult.CheckResults @>
+
+        let dirtyAwait = beginAwaitNextTerminal host "test-prune"
+        host.EmitFileChecked(dirtyResult)
+        dirtyAwait.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
+        // Phase 2: same file, clean source. Re-check via a fresh pipeline so
+        // FCS reanalyzes against the new source.
+        let cleanSource = "module Mixed\nlet n = 1\n"
+        File.WriteAllText(mixedFile, cleanSource)
+
+        let cleanOpts =
+            getScriptOptions checker mixedFile cleanSource |> Async.RunSynchronously
+
+        let pipeline2 = CheckPipeline(checker)
+        pipeline2.RegisterProject(mixedFile, cleanOpts)
+
+        let cleanResult =
+            pipeline2.CheckFile(AbsFilePath.create mixedFile)
+            |> Async.RunSynchronously
+            |> Option.defaultWith (fun () -> failwith "CheckFile None (clean)")
+
+        test
+            <@
+                not (
+                    FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors
+                        Set.empty
+                        cleanResult.Source
+                        cleanResult.CheckResults
+                )
+            @>
+
+        let cleanAwait = beginAwaitNextTerminal host "test-prune"
+        host.EmitFileChecked(cleanResult)
+        cleanAwait.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
+        // No BuildCompleted has fired in this session. Even though the latest
+        // FCS check is clean, Item 3 refuses to promote — sidecar stays dirty.
+        let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
+        test <@ not (FsHotWatch.TestPrune.FileFreshness.isClean "Mixed.fsx" freshness) @>)
