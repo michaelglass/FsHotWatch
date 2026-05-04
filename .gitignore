@@ -2,6 +2,9 @@
 .claude/settings.local.json
 CLAUDE.md
 
+# Local-machine NuGet feed override (not for commit)
+NuGet.Config
+
 # jj workspaces — destination for parallel agent workspaces (see CLAUDE.md)
 .workspaces/
 
