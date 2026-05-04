@@ -431,15 +431,6 @@ let ``parseConfig coverage section parses configPath and searchDir`` () =
     test <@ config.Coverage.IsSome @>
     test <@ config.Coverage.Value.ConfigPath = "coverage-ratchet-Proj.json" @>
     test <@ config.Coverage.Value.SearchDir = "artifacts" @>
-    test <@ config.Coverage.Value.MergeBaselines = false @>
-
-[<Fact(Timeout = 15000)>]
-let ``parseConfig coverage section parses mergeBaselines`` () =
-    let json = """{"coverage": {"searchDir": "coverage", "mergeBaselines": true}}"""
-
-    let config = parseConfig json defaults
-    test <@ config.Coverage.IsSome @>
-    test <@ config.Coverage.Value.MergeBaselines = true @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig coverage section defaults configPath and searchDir when absent`` () =
@@ -448,7 +439,6 @@ let ``parseConfig coverage section defaults configPath and searchDir when absent
     test <@ config.Coverage.IsSome @>
     test <@ config.Coverage.Value.ConfigPath = "coverage-ratchet.json" @>
     test <@ config.Coverage.Value.SearchDir = "." @>
-    test <@ config.Coverage.Value.MergeBaselines = false @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig no coverage section yields None`` () =
