@@ -65,6 +65,7 @@ FsHotWatch is split into small packages so you only install what you need:
 | [`FsHotWatch.Fantomas`](src/FsHotWatch.Fantomas/) | Plugin: checks if your files are formatted with Fantomas |
 | [`FsHotWatch.Build`](src/FsHotWatch.Build/) | Plugin: runs `dotnet build` and emits BuildCompleted events |
 | [`FsHotWatch.FileCommand`](src/FsHotWatch.FileCommand/) | Plugin: runs custom commands when specific files change |
+| [`FsHotWatch.Coverage`](src/FsHotWatch.Coverage/) | Plugin: checks per-file line/branch coverage thresholds after each test run |
 
 ## Writing your own plugin
 
@@ -166,7 +167,11 @@ Create `.fshw.json` in your repo root. All fields are optional — sensible defa
       "command": "dotnet",
       "args": "fsi --typecheck-only"
     }
-  ]
+  ],
+  "coverage": {
+    "configPath": "coverage-ratchet.json",
+    "searchDir": "coverage"
+  }
 }
 ```
 
@@ -226,6 +231,13 @@ Create `.fshw.json` in your repo root. All fields are optional — sensible defa
 | `pattern` | `string` | `"*.fsx"` | File extension pattern to match (e.g. `"*.fsx"`, `"*.sql"`). |
 | `command` | `string` | `"echo"` | Command to run when a matching file changes. |
 | `args` | `string` | `""` | Arguments to the command. |
+
+**`coverage` fields:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `configPath` | `string` | `"coverage-ratchet.json"` | Path to the coverage-ratchet thresholds file (relative to repo root or absolute). |
+| `searchDir` | `string` | `"."` | Directory tree to search for `coverage.cobertura.xml` files after each test run. |
 
 ### Cache directory
 
