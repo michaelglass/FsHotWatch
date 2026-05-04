@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: detectChanges now filters extern symbols from both sides internally, eliminating phantom diffs on warm FCS restart
+- fix: namespace entities are no longer misclassified as Type symbols in tryClassifyEntity, eliminating +1 phantom symbol rows
+
 ## 4.0.0 - 2026-04-25
 - fix: schema forward-compat. `openCheckedConnection` now treats
   `user_version > SchemaVersion` as "leave it alone" (a newer process wrote
