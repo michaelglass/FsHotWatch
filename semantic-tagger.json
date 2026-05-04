@@ -35,6 +35,11 @@
       "name": "FsHotWatch.FileCommand",
       "fsproj": "src/FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj",
       "tagPrefix": "filecommand-v"
+    },
+    {
+      "name": "FsHotWatch.Coverage",
+      "fsproj": "src/FsHotWatch.Coverage/FsHotWatch.Coverage.fsproj",
+      "tagPrefix": "coverage-v"
     }
   ]
 }
