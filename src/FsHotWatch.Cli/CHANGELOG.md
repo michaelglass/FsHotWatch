@@ -4,6 +4,8 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+- chore: release together with core 0.8.0-alpha.13
+
 ## 0.8.0-alpha.12 - 2026-04-29
 
 ### Added
