@@ -8,8 +8,7 @@ open CoverageRatchet.Merge
 open CoverageRatchet.Thresholds
 open CoverageRatchet.Ratchet
 
-type CoverageMsg =
-    | CheckDone of CheckResult
+type CoverageMsg = CheckDone of CheckResult
 
 let private pollForFiles (searchDir: string) (maxAttempts: int) (delayMs: int) =
     async {
@@ -72,61 +71,65 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                       match state with
                       | None -> "coverage: no check run yet"
                       | Some true -> "coverage: OK"
-                      | Some false -> "coverage: FAILED (run `fshw errors` for details)" } ]
+                      | Some false -> "coverage: FAILED (run `fshw errors` for details)"
+              } ]
       Update =
-          fun ctx state event ->
-              match event with
-              | TestRunCompleted trc ->
-                  match trc.Outcome with
-                  | Aborted _ -> async { return state }
-                  | Normal ->
-                      ctx.RunExclusive
-                          "coverage-check"
-                          (async {
-                              mergeIntoBaselines searchDir
-                              let! xmlPaths = pollForFiles searchDir 50 100
-                              let result =
-                                  if List.isEmpty xmlPaths then AllPassed
-                                  else runCheck configPath xmlPaths
+        fun ctx state event ->
+            match event with
+            | TestRunCompleted trc ->
+                match trc.Outcome with
+                | Aborted _ -> async { return state }
+                | Normal ->
+                    ctx.RunExclusive
+                        "coverage-check"
+                        (async {
+                            mergeIntoBaselines searchDir
+                            let! xmlPaths = pollForFiles searchDir 50 100
 
-                              if trc.RanFullSuite then
-                                  match result with
-                                  | AllPassed -> refreshBaselines searchDir
-                                  | SomeFailed _ -> ()
+                            let result =
+                                if List.isEmpty xmlPaths then
+                                    AllPassed
+                                else
+                                    runCheck configPath xmlPaths
 
-                              return CheckDone result
-                          })
+                            if trc.RanFullSuite then
+                                match result with
+                                | AllPassed -> refreshBaselines searchDir
+                                | SomeFailed _ -> ()
 
-                      async { return state }
+                            return CheckDone result
+                        })
 
-              | Custom(CheckDone AllPassed) ->
-                  async {
-                      ctx.ClearAllErrors()
-                      ctx.ReportStatus(PluginStatus.Completed System.DateTime.Now)
-                      return Some true
-                  }
+                    async { return state }
 
-              | Custom(CheckDone(SomeFailed results)) ->
-                  async {
-                      for r in results do
-                          let lineMsg =
-                              if not (FileResult.linePassed r) then
-                                  [ $"line=%.1f{r.File.LinePct}%% < min %.1f{r.LineThreshold}%%" ]
-                              else
-                                  []
+            | Custom(CheckDone AllPassed) ->
+                async {
+                    ctx.ClearAllErrors()
+                    ctx.ReportStatus(PluginStatus.Completed System.DateTime.Now)
+                    return Some true
+                }
 
-                          let branchMsg =
-                              if not (FileResult.branchPassed r) then
-                                  [ $"branch=%.1f{r.File.BranchPct}%% < min %.1f{r.BranchThreshold}%%" ]
-                              else
-                                  []
+            | Custom(CheckDone(SomeFailed results)) ->
+                async {
+                    for r in results do
+                        let lineMsg =
+                            if not (FileResult.linePassed r) then
+                                [ $"line=%.1f{r.File.LinePct}%% < min %.1f{r.LineThreshold}%%" ]
+                            else
+                                []
 
-                          let detail = String.concat ", " (lineMsg @ branchMsg)
-                          ctx.ReportErrors r.File.FileName [ ErrorEntry.error $"coverage: %s{detail}" ]
+                        let branchMsg =
+                            if not (FileResult.branchPassed r) then
+                                [ $"branch=%.1f{r.File.BranchPct}%% < min %.1f{r.BranchThreshold}%%" ]
+                            else
+                                []
 
-                      let summary = $"%d{results.Length} file(s) below threshold"
-                      ctx.ReportStatus(PluginStatus.Failed(summary, System.DateTime.Now))
-                      return Some false
-                  }
+                        let detail = String.concat ", " (lineMsg @ branchMsg)
+                        ctx.ReportErrors r.File.FileName [ ErrorEntry.error $"coverage: %s{detail}" ]
 
-              | _ -> async { return state } }
+                    let summary = $"%d{results.Length} file(s) below threshold"
+                    ctx.ReportStatus(PluginStatus.Failed(summary, System.DateTime.Now))
+                    return Some false
+                }
+
+            | _ -> async { return state } }
