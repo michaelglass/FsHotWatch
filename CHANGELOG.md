@@ -132,10 +132,20 @@ TestPrune prunes the test suite in two phases: **Phase A** runs during the initi
 - New `BuildPhase.WaitingForFcsPhase` variant: when `SourceChanged` carries only test files, the plugin transitions into a wait phase carrying the awaiting set (path-normalized via `Path.GetFullPath`) and emits `BuildSucceeded` only once every file has produced a `FileChecked`. Subscribes to `SubscribeFileChecked`.
 - **BREAKING:** `BuildPhase` is a public DU; consumers that pattern-match on it must add a `WaitingForFcsPhase` case.
 
-### FsHotWatch.Coverage
+### FsHotWatch.Coverage (new package)
 
-#### Removed
-- **BREAKING:** Package retired. Coverage enforcement now flows through `fileCommands afterTests` in FsHotWatch.Cli, invoking an external CLI (e.g. `coverageratchet`).
+#### Added
+- New `FsHotWatch.Coverage` NuGet package — checks per-file line and branch coverage
+  thresholds after every `TestRunCompleted` event. Reads Cobertura XML produced by the
+  test runner and compares against per-file thresholds in a `coverage-ratchet.json` config.
+  Violations surface via `fshw errors`; thresholds are updated via `fshw coverage-ratchet`.
+- `CoveragePlugin.create (configPath: string) (searchDir: string)` — factory function.
+- IPC commands: `coverage-ratchet [configPath]` (update thresholds), `coverage-status`.
+- `.fshw.json` `"coverage"` section: `{ "configPath": "...", "searchDir": "..." }`. Both
+  fields are optional (defaults: `"coverage-ratchet.json"` and `"."`).
+- Always merges partial runs into a coverage baseline (`mergeIntoBaselines`) before
+  checking; replaces baseline wholesale (`refreshBaselines`) only after a passing
+  full-suite run, so partial/impact-filtered runs accumulate coverage rather than resetting it.
 
 ### FsHotWatch (core)
 
@@ -165,6 +175,10 @@ TestPrune prunes the test suite in two phases: **Phase A** runs during the initi
 ### FsHotWatch.TestPrune
 
 #### Changed
+- **Behavior:** `run-tests` IPC command (invoked by `fshw test`) now routes through the
+  event machinery, emitting `TestRunStarted` → `TestProgress` × N → `TestRunCompleted`.
+  Plugins subscribed to `SubscribeTestRunCompleted` (including `CoveragePlugin`) now
+  observe manually-triggered runs the same way as daemon-triggered ones. No API change.
 - **BREAKING:** `executeTests` emits the three-event lifecycle (`TestRunStarted` → `TestProgress` × N → `TestRunCompleted`) instead of the single `TestCompleted`. The abort path emits `TestRunStarted` + `TestRunCompleted(Aborted reason)` so subscribers see a coherent end to every run.
 - The per-group accumulator is now a mutable `Map<string, TestResult>` under the emission lock (per-project `Map.add`) instead of rebuilding a `Map` from a `ResizeArray` on every emission.
 

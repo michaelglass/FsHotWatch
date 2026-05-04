@@ -31,6 +31,10 @@ let private pollForFiles (searchDir: string) (maxAttempts: int) (delayMs: int) =
 let private runCheck (configPath: string) (xmlPaths: string list) : CheckResult =
     check (loadConfig configPath) (parseFiles xmlPaths)
 
+/// <summary>Create a CoveragePlugin handler that checks per-file line and branch coverage
+/// thresholds after each <c>TestRunCompleted</c> event.</summary>
+/// <param name="configPath">Path to the coverage-ratchet.json thresholds config.</param>
+/// <param name="searchDir">Directory tree to search for <c>coverage.cobertura.xml</c> files.</param>
 let create (configPath: string) (searchDir: string) : PluginHandler<bool option, CoverageMsg> =
     { Name = PluginName.create "coverage"
       Init = None
