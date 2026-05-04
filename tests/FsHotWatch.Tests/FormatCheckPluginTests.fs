@@ -67,15 +67,19 @@ let ``format check handles non-source change events without crashing`` () =
     host.EmitFileChanged(ProjectChanged [ "/tmp/Test.fsproj" ])
     host.EmitFileChanged(SolutionChanged)
 
-    // 9s (just under the Fact timeout of 10s) so we fail as Fact-timeout
-    // rather than a silently-expired poll, and so we give slow Linux CI
-    // runners enough headroom for the plugin's async transition.
+    // Wait until Completed AND no events still queued. The two EmitFileChanged
+    // calls above are dispatched asynchronously; waitUntil could see Completed
+    // after the first event but before the second (SolutionChanged) has been
+    // dequeued, causing a spurious Running at the assertion below. Requiring
+    // !AnyPluginBusy() ensures both events have been fully processed.
+    // 17s: well under the 20s Fact timeout but enough headroom for slow Linux CI.
     waitUntil
         (fun () ->
-            match host.GetStatus("format-check") with
-            | Some(Completed _) -> true
-            | _ -> false)
-        9000
+            (not (host.AnyPluginBusy()))
+            && (match host.GetStatus("format-check") with
+                | Some(Completed _) -> true
+                | _ -> false))
+        17000
 
     // The plugin still sets Completed status (empty unformatted set)
     let status = host.GetStatus("format-check")
