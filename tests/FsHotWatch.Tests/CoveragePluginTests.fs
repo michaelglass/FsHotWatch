@@ -215,3 +215,56 @@ let ``plugin refreshes baseline after passing full-suite run`` () =
 
         let errors = host.GetErrorsByPlugin("coverage")
         test <@ errors.IsEmpty @>)
+
+[<Fact(Timeout = 15000)>]
+let ``coverage-refresh advances baselines to current XMLs`` () =
+    withTempDir "coverage" (fun dir ->
+        let projectDir = Path.Combine(dir, "MyProject")
+        Directory.CreateDirectory(projectDir) |> ignore
+        let xmlPath = Path.Combine(projectDir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 1) ])
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        let result = host.RunCommand("coverage-refresh", [||]) |> Async.RunSynchronously
+
+        let baselinePath = Path.Combine(projectDir, "coverage.baseline.xml")
+        test <@ File.Exists(baselinePath) @>
+
+        test <@ result.Value.Contains("baselines advanced") @>)
+
+[<Fact(Timeout = 15000)>]
+let ``coverage-reset deletes existing baselines`` () =
+    withTempDir "coverage" (fun dir ->
+        let projectDir = Path.Combine(dir, "MyProject")
+        Directory.CreateDirectory(projectDir) |> ignore
+        let baselinePath = Path.Combine(projectDir, "coverage.baseline.xml")
+        let xmlPath = Path.Combine(projectDir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1) ])
+        File.WriteAllText(baselinePath, coberturaXml "MyModule.fs" [ (1, 1) ])
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        let result = host.RunCommand("coverage-reset", [||]) |> Async.RunSynchronously
+
+        test <@ not (File.Exists(baselinePath)) @>
+        test <@ result.Value.Contains("deleted 1") @>)
+
+[<Fact(Timeout = 15000)>]
+let ``coverage-reset reports when no baselines exist`` () =
+    withTempDir "coverage" (fun dir ->
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        let result = host.RunCommand("coverage-reset", [||]) |> Async.RunSynchronously
+
+        test <@ result = Some "coverage-reset: no baselines found" @>)
