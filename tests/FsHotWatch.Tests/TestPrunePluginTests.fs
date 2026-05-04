@@ -701,6 +701,41 @@ let ``run-tests not registered when no testConfigs`` () =
     test <@ result.IsNone @>
 
 [<Fact(Timeout = 15000)>]
+let ``run-tests emits TestRunCompleted so other plugins see the run`` () =
+    withTempDir "tp-run-trc" (fun dir ->
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(configPath, "{}")
+
+        let configs =
+            [ { Project = "TestProject"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(create ":memory:" dir (Some configs) None None None None)
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Completed _)
+                | Some(Failed _) -> true
+                | _ -> false)
+            10000
+
+        match host.GetStatus("coverage") with
+        | Some(Completed _)
+        | Some(Failed _) -> ()
+        | other -> Assert.Fail($"Expected coverage to process TestRunCompleted after run-tests, got: %A{other}"))
+
+[<Fact(Timeout = 15000)>]
 let ``dispose is callable`` () =
     // Framework-managed plugins don't need explicit dispose, but verify create doesn't throw
     let _handler = create ":memory:" "/tmp" None None None None None
