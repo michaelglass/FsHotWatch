@@ -4,10 +4,12 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
-### TestPrune: Phase B test-skip correctness on cold restart
+### TestPrune: test-skip now works correctly after daemon restart
+
+TestPrune prunes the test suite in two phases: **Phase A** runs during the initial cold scan (FCS checks every file from scratch and records symbol fingerprints), and **Phase B** runs on subsequent daemon restarts when FCS is warm (the daemon reloads the persisted fingerprints and skips tests whose symbol fingerprints haven't changed). Before this fix, Phase B would always re-run tests even with no source edits, because the fingerprint comparison included extern symbols (cross-file type references) on the current side but not the stored side, producing phantom diffs on every restart.
 
 #### Fixed
-- fix: Phase B test-skip now works correctly on cold restart with warm cache — `detectChanges` extern filter moved into TestPrune.Core 4.0.1, eliminating phantom symbol diffs that caused already-passing tests to re-run unnecessarily after a daemon restart with a populated cache.
+- fix: daemon restart with no source edits no longer spuriously re-runs tests — `detectChanges` now filters extern symbols from both sides internally (requires TestPrune.Core ≥ 4.0.1), eliminating the phantom symbol diffs that caused already-passing tests to re-run on every warm restart.
 
 #### Changed
 - refactor: remove redundant `currentForFile` pre-filter from `TestPrunePlugin` (`detectChanges` now handles extern filtering internally in TestPrune.Core).
