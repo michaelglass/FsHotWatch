@@ -372,3 +372,95 @@ let writeMinimalFsproj (projPath: string) (tfm: string) (compiles: string list) 
         + "</Project>"
 
     File.WriteAllText(projPath, xml)
+
+// ----------------------------------------------------------------------------
+// Seeded test-prune environment scaffolding.
+//
+// Three TestPrunePlugin tests share ~25 lines of identical setup: write a
+// single-file F# script into a temp dir, derive ProjectOptions, run a baseline
+// `analyzeSource`, write the symbols into a fresh DB via `RebuildProjects`, mark
+// the freshness sidecar clean for that file, then stand up a CheckPipeline +
+// PluginHost wired to a TestPrunePlugin handler. The body block then performs
+// the test-specific work (re-check, AST edit, etc.) and asserts.
+//
+// `withSeededTestEnv` factors that prelude into one place so the regression
+// guards don't accumulate near-duplicate boilerplate.
+// ----------------------------------------------------------------------------
+
+/// State handed to a `withSeededTestEnv` body. All paths are temp-dir-relative
+/// where appropriate; `FilePath` is absolute (the temp dir + RelPath) and
+/// `RelPath` is the `Lib.fs` / `Lib.fsx` form the plugin sees.
+type SeededTestEnv =
+    { TmpDir: string
+      Db: TestPrune.Database.Database
+      Pipeline: FsHotWatch.CheckPipeline.CheckPipeline
+      Host: FsHotWatch.PluginHost.PluginHost
+      Checker: FSharpChecker
+      ProjOptions: FSharpProjectOptions
+      RelPath: string
+      FilePath: string
+      SeededSymbols: TestPrune.AstAnalyzer.SymbolInfo list }
+
+/// Seed a one-file F# project into a temp dir, persist its symbols to a fresh
+/// SQLite DB, mark the freshness sidecar clean, and hand the body block a fully
+/// wired pipeline + plugin host. The body performs whatever test-specific edits
+/// + assertions it needs; cleanup happens in `withTempDir`'s `finally`.
+let withSeededTestEnv (prefix: string) (relPath: string) (source: string) (body: SeededTestEnv -> unit) : unit =
+    withTempDir prefix (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let filePath = Path.Combine(tmpDir, relPath)
+        let checker = sharedChecker.Value
+
+        File.WriteAllText(filePath, source)
+        let sourceText = FSharp.Compiler.Text.SourceText.ofString source
+
+        let projOptions =
+            checker.GetProjectOptionsFromScript(filePath, sourceText, assumeDotNetFramework = false)
+            |> Async.RunSynchronously
+            |> fst
+
+        let seedResult =
+            TestPrune.AstAnalyzer.analyzeSource checker filePath source projOptions "TestProject"
+            |> Async.RunSynchronously
+
+        let seededSymbols =
+            match seedResult with
+            | Error msg ->
+                Xunit.Assert.Fail($"Initial analysis failed: {msg}")
+                []
+            | Ok result ->
+                let normalized =
+                    { result with
+                        Symbols = TestPrune.AstAnalyzer.normalizeSymbolPaths tmpDir result.Symbols }
+
+                let db = TestPrune.Database.Database.create dbPath
+                db.RebuildProjects([ normalized ])
+                normalized.Symbols
+
+        // Sidecar must be clean for detectChanges to actually run (Path D gate).
+        FsHotWatch.TestPrune.FileFreshness.save
+            tmpDir
+            (FsHotWatch.TestPrune.FileFreshness.markClean DateTime.UtcNow relPath Map.empty)
+
+        let pipeline = FsHotWatch.CheckPipeline.CheckPipeline(checker)
+        pipeline.RegisterProject(projOptions.ProjectFileName, projOptions)
+
+        let host = FsHotWatch.PluginHost.PluginHost.create checker tmpDir
+
+        let handler =
+            FsHotWatch.TestPrune.TestPrunePlugin.create dbPath tmpDir None None None None None
+
+        host.RegisterHandler(handler)
+
+        let env =
+            { TmpDir = tmpDir
+              Db = TestPrune.Database.Database.create dbPath
+              Pipeline = pipeline
+              Host = host
+              Checker = checker
+              ProjOptions = projOptions
+              RelPath = relPath
+              FilePath = filePath
+              SeededSymbols = seededSymbols }
+
+        body env)
