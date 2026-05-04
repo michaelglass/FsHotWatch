@@ -4,6 +4,7 @@ open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 open CoverageRatchet.Cobertura
+open CoverageRatchet.Merge
 open CoverageRatchet.Thresholds
 open CoverageRatchet.Ratchet
 
@@ -30,7 +31,7 @@ let private pollForFiles (searchDir: string) (maxAttempts: int) (delayMs: int) =
 let private runCheck (configPath: string) (xmlPaths: string list) : CheckResult =
     check (loadConfig configPath) (parseFiles xmlPaths)
 
-let create (configPath: string) (searchDir: string) : PluginHandler<bool option, CoverageMsg> =
+let create (configPath: string) (searchDir: string) (mergeBaselines: bool) : PluginHandler<bool option, CoverageMsg> =
     { Name = PluginName.create "coverage"
       Init = None
       Subscriptions = Set.singleton SubscribeTestRunCompleted
@@ -45,6 +46,9 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                           args.[0]
                       else
                           configPath
+
+                  if mergeBaselines then
+                      mergeIntoBaselines searchDir
 
                   let xmlPaths = findCoverageFiles searchDir
 
@@ -77,11 +81,20 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                       ctx.RunExclusive
                           "coverage-check"
                           (async {
-                              let! xmlPaths = pollForFiles searchDir 50 100
+                              if mergeBaselines then
+                                  mergeIntoBaselines searchDir
 
-                              return
-                                  if List.isEmpty xmlPaths then CheckDone AllPassed
-                                  else CheckDone(runCheck configPath xmlPaths)
+                              let! xmlPaths = pollForFiles searchDir 50 100
+                              let result =
+                                  if List.isEmpty xmlPaths then AllPassed
+                                  else runCheck configPath xmlPaths
+
+                              if mergeBaselines && trc.RanFullSuite then
+                                  match result with
+                                  | AllPassed -> refreshBaselines searchDir
+                                  | SomeFailed _ -> ()
+
+                              return CheckDone result
                           })
 
                       async { return state }
