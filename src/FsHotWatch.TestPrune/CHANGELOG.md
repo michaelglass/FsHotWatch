@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: Phase B test-skip now works correctly on cold restart with warm cache — `detectChanges` extern filter moved into TestPrune.Core 4.0.1, eliminating phantom symbol diffs that caused already-passing tests to re-run after a daemon restart with a populated cache
+- refactor: remove redundant `currentForFile` pre-filter from `TestPrunePlugin`; `detectChanges` handles extern filtering internally
+
 ## 0.7.0-alpha.12 - 2026-04-29
 
 ### Changed
