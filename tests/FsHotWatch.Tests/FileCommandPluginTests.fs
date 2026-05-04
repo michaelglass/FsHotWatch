@@ -653,6 +653,7 @@ let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style
           Analyzers = None
           Tests = None
           FileCommands = []
+          Coverage = None
           Exclude = []
           LogDir = "logs"
           TimeoutSec = None }

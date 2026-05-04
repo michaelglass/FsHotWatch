@@ -130,6 +130,9 @@ type DaemonConfiguration =
                Command: string
                Args: string
                TimeoutSec: int option |} list
+        Coverage:
+            {| ConfigPath: string
+               SearchDir: string |} option
         Exclude: string list
         /// Directory (relative to repoRoot or absolute) for daemon.log. Defaults to "logs".
         LogDir: string
@@ -151,6 +154,7 @@ let private defaultConfigFor (repoRoot: string) =
       Analyzers = None
       Tests = None
       FileCommands = []
+      Coverage = None
       Exclude = []
       LogDir = "logs"
       TimeoutSec = None }
@@ -475,6 +479,24 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             |> Seq.toList
         | _ -> []
 
+    let coverage =
+        match root.TryGetProperty("coverage") with
+        | true, v when v.ValueKind = JsonValueKind.Object ->
+            let configPath =
+                match v.TryGetProperty("configPath") with
+                | true, cp when cp.ValueKind = JsonValueKind.String -> cp.GetString()
+                | _ -> "coverage-ratchet.json"
+
+            let searchDir =
+                match v.TryGetProperty("searchDir") with
+                | true, sd when sd.ValueKind = JsonValueKind.String -> sd.GetString()
+                | _ -> "."
+
+            Some
+                {| ConfigPath = configPath
+                   SearchDir = searchDir |}
+        | _ -> None
+
     let exclude =
         match root.TryGetProperty("exclude") with
         | true, arr when arr.ValueKind = JsonValueKind.Array ->
@@ -498,6 +520,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       Analyzers = analyzers
       Tests = tests
       FileCommands = fileCommands
+      Coverage = coverage
       Exclude = exclude
       LogDir = logDir
       TimeoutSec = timeoutSec }
@@ -873,3 +896,22 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         match parsedPattern with
         | Some pattern -> daemon.Host.RegisterFileCommandPattern(fc.PluginName, pattern)
         | None -> ()
+
+    // Coverage plugin
+    match config.Coverage with
+    | Some cov ->
+        let absSearchDir =
+            if Path.IsPathRooted(cov.SearchDir) then
+                cov.SearchDir
+            else
+                Path.GetFullPath(Path.Combine(repoRoot, cov.SearchDir))
+
+        let absConfigPath =
+            if Path.IsPathRooted(cov.ConfigPath) then
+                cov.ConfigPath
+            else
+                Path.GetFullPath(Path.Combine(repoRoot, cov.ConfigPath))
+
+        Logging.info "config" $"Registering CoveragePlugin: config=%s{absConfigPath} searchDir=%s{absSearchDir}"
+        daemon.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create absConfigPath absSearchDir)
+    | None -> ()

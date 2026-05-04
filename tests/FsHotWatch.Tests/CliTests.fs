@@ -214,6 +214,7 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
                        Projects = [ makeProj "ProjA" true; makeProj "ProjB" true; makeProj "ProjOptOut" false ]
                        CoverageDir = covDir |}
               FileCommands = []
+              Coverage = None
               Exclude = []
               LogDir = "logs"
               TimeoutSec = None }
@@ -548,6 +549,7 @@ let private fakeConfig: DaemonConfiguration =
       Analyzers = None
       Tests = None
       FileCommands = []
+      Coverage = None
       Exclude = []
       LogDir = "logs"
       TimeoutSec = None }
