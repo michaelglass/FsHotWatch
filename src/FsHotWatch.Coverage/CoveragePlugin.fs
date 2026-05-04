@@ -8,7 +8,7 @@ open CoverageRatchet.Thresholds
 open CoverageRatchet.Ratchet
 
 type CoverageMsg =
-    | CheckDone of failedFiles: (string * string) list
+    | CheckDone of CheckResult
 
 let private pollForFiles (searchDir: string) (maxAttempts: int) (delayMs: int) =
     async {
@@ -27,33 +27,8 @@ let private pollForFiles (searchDir: string) (maxAttempts: int) (delayMs: int) =
         return result
     }
 
-let private runCheck (configPath: string) (xmlPaths: string list) =
-    async {
-        let coverage = parseFiles xmlPaths
-        let config = loadConfig configPath
-        let results = buildFileResults config coverage
-
-        return
-            results
-            |> List.choose (fun r ->
-                if FileResult.passed r then
-                    None
-                else
-                    let lineMsg =
-                        if not (FileResult.linePassed r) then
-                            [ $"line=%.1f{r.File.LinePct}%% < min %.1f{r.LineThreshold}%%" ]
-                        else
-                            []
-
-                    let branchMsg =
-                        if not (FileResult.branchPassed r) then
-                            [ $"branch=%.1f{r.File.BranchPct}%% < min %.1f{r.BranchThreshold}%%" ]
-                        else
-                            []
-
-                    let detail = String.concat ", " (lineMsg @ branchMsg)
-                    Some(r.File.FileName, $"coverage: %s{detail}"))
-    }
+let private runCheck (configPath: string) (xmlPaths: string list) : CheckResult =
+    check (loadConfig configPath) (parseFiles xmlPaths)
 
 let create (configPath: string) (searchDir: string) : PluginHandler<bool option, CoverageMsg> =
     { Name = PluginName.create "coverage"
@@ -104,28 +79,41 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                           (async {
                               let! xmlPaths = pollForFiles searchDir 50 100
 
-                              if List.isEmpty xmlPaths then
-                                  return CheckDone []
-                              else
-                                  let! failures = runCheck configPath xmlPaths
-                                  return CheckDone failures
+                              return
+                                  if List.isEmpty xmlPaths then CheckDone AllPassed
+                                  else CheckDone(runCheck configPath xmlPaths)
                           })
 
                       async { return state }
 
-              | Custom(CheckDone failures) ->
+              | Custom(CheckDone AllPassed) ->
                   async {
-                      if List.isEmpty failures then
-                          ctx.ClearAllErrors()
-                          ctx.ReportStatus(PluginStatus.Completed System.DateTime.Now)
-                          return Some true
-                      else
-                          for (file, msg) in failures do
-                              ctx.ReportErrors file [ ErrorEntry.error msg ]
+                      ctx.ClearAllErrors()
+                      ctx.ReportStatus(PluginStatus.Completed System.DateTime.Now)
+                      return Some true
+                  }
 
-                          let summary = $"%d{failures.Length} file(s) below threshold"
-                          ctx.ReportStatus(PluginStatus.Failed(summary, System.DateTime.Now))
-                          return Some false
+              | Custom(CheckDone(SomeFailed results)) ->
+                  async {
+                      for r in results do
+                          let lineMsg =
+                              if not (FileResult.linePassed r) then
+                                  [ $"line=%.1f{r.File.LinePct}%% < min %.1f{r.LineThreshold}%%" ]
+                              else
+                                  []
+
+                          let branchMsg =
+                              if not (FileResult.branchPassed r) then
+                                  [ $"branch=%.1f{r.File.BranchPct}%% < min %.1f{r.BranchThreshold}%%" ]
+                              else
+                                  []
+
+                          let detail = String.concat ", " (lineMsg @ branchMsg)
+                          ctx.ReportErrors r.File.FileName [ ErrorEntry.error $"coverage: %s{detail}" ]
+
+                      let summary = $"%d{results.Length} file(s) below threshold"
+                      ctx.ReportStatus(PluginStatus.Failed(summary, System.DateTime.Now))
+                      return Some false
                   }
 
               | _ -> async { return state } }
