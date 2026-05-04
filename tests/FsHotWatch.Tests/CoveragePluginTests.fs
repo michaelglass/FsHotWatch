@@ -62,10 +62,7 @@ let ``plugin subscribes to TestRunCompleted`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``plugin reports errors when file is below threshold`` () =
-    let dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
-    Directory.CreateDirectory(dir) |> ignore
-
-    try
+    withTempDir "coverage" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
 
@@ -90,16 +87,11 @@ let ``plugin reports errors when file is below threshold`` () =
 
         let fileErrors = errors |> Map.tryFind "MyModule.fs"
         test <@ fileErrors.IsSome @>
-        test <@ not fileErrors.Value.IsEmpty @>
-    finally
-        Directory.Delete(dir, true)
+        test <@ not fileErrors.Value.IsEmpty @>)
 
 [<Fact(Timeout = 15000)>]
 let ``plugin clears errors when all files pass`` () =
-    let dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
-    Directory.CreateDirectory(dir) |> ignore
-
-    try
+    withTempDir "coverage" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
 
@@ -130,16 +122,11 @@ let ``plugin clears errors when all files pass`` () =
             @>
 
         let errors = host.GetErrorsByPlugin("coverage")
-        test <@ errors.IsEmpty @>
-    finally
-        Directory.Delete(dir, true)
+        test <@ errors.IsEmpty @>)
 
 [<Fact(Timeout = 15000)>]
 let ``plugin skips check when no coverage XML found`` () =
-    let dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
-    Directory.CreateDirectory(dir) |> ignore
-
-    try
+    withTempDir "coverage" (fun dir ->
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
         File.WriteAllText(configPath, defaultThresholdsJson)
 
@@ -157,16 +144,11 @@ let ``plugin skips check when no coverage XML found`` () =
             10000
 
         let errors = host.GetErrorsByPlugin("coverage")
-        test <@ errors.IsEmpty @>
-    finally
-        Directory.Delete(dir, true)
+        test <@ errors.IsEmpty @>)
 
 [<Fact(Timeout = 15000)>]
 let ``plugin ignores aborted test runs`` () =
-    let dir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
-    Directory.CreateDirectory(dir) |> ignore
-
-    try
+    withTempDir "coverage" (fun dir ->
         let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
         File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 0) ])
@@ -193,6 +175,4 @@ let ``plugin ignores aborted test runs`` () =
                 match status with
                 | Some(Failed _) -> false
                 | _ -> true
-            @>
-    finally
-        Directory.Delete(dir, true)
+            @>)
