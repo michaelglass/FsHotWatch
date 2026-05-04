@@ -215,3 +215,44 @@ let ``plugin refreshes baseline after passing full-suite run`` () =
 
         let errors = host.GetErrorsByPlugin("coverage")
         test <@ errors.IsEmpty @>)
+
+[<Fact(Timeout = 15000)>]
+let ``plugin does not refresh baseline after partial run`` () =
+    withTempDir "coverage" (fun dir ->
+        let projectDir = Path.Combine(dir, "MyProject")
+        Directory.CreateDirectory(projectDir) |> ignore
+
+        let xmlPath = Path.Combine(projectDir, "coverage.cobertura.xml")
+        let baselinePath = Path.Combine(projectDir, "coverage.baseline.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+
+        // Baseline has line 2 with hits=99 (high-watermark).
+        // Current run has line 2 with hits=1.
+        // mergeIntoBaselines preserves max hits (baseline stays at 99).
+        // refreshBaselines would replace baseline with current XML (line 2 = hits=1).
+        // After a partial run, the baseline's high hit count must survive.
+        File.WriteAllText(baselinePath, coberturaXml "MyModule.fs" [ (1, 1); (2, 99) ])
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 1) ])
+        File.WriteAllText(configPath, thresholdsJsonWithOverride "MyModule.fs" 50 0)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        host.EmitTestRunCompleted
+            { RunId = Guid.NewGuid()
+              TotalElapsed = TimeSpan.Zero
+              Outcome = Normal
+              Results = Map.empty
+              RanFullSuite = false }
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            10000
+
+        // If refreshBaselines ran, the baseline would have hits="1" (current run).
+        // merge preserves the high-watermark, so hits="99" must still be present.
+        let baseline = File.ReadAllText(baselinePath)
+        test <@ baseline.Contains("hits=\"99\"") @>)
