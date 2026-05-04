@@ -1721,88 +1721,44 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
     //
     // After the fix, newChangedFiles is only updated when changedNames is non-empty,
     // i.e. only when the AST actually changed.
-    withTempDir "tp-comment-regression" (fun tmpDir ->
-        let dbPath = Path.Combine(tmpDir, "test.db")
-        let filePath = Path.Combine(tmpDir, "Lib.fs")
-        let relPath = "Lib.fs"
+    let initialSource = "module Lib\nlet x = 1\n"
+    let commentOnlySource = "module Lib\n// a comment added\nlet x = 1\n"
+    let astChangedSource = "module Lib\nlet x = 1\nlet y = 2\n"
 
-        let initialSource = "module Lib\nlet x = 1\n"
-        let commentOnlySource = "module Lib\n// a comment added\nlet x = 1\n"
-        let astChangedSource = "module Lib\nlet x = 1\nlet y = 2\n"
-
-        // Create a single checker and project options shared by both DB setup and the plugin.
-        // Using the same checker ensures analyzeSource (inside the plugin) can reuse FCS results.
-        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
-
-        File.WriteAllText(filePath, initialSource)
-        let initialSourceText = SourceText.ofString initialSource
-
-        let projOptions =
-            checker.GetProjectOptionsFromScript(filePath, initialSourceText, assumeDotNetFramework = false)
-            |> Async.RunSynchronously
-            |> fst
-
-        // --- Seed DB directly with initial source symbols ---
-        // The plugin's BuildCompleted flush only runs when testConfigs is provided,
-        // so we populate the baseline here via analyzeSource + RebuildProjects.
-        let seedResult =
-            analyzeSource checker filePath initialSource projOptions "TestProject"
-            |> Async.RunSynchronously
-
-        match seedResult with
-        | Error msg -> Assert.Fail($"Initial analysis failed: {msg}")
-        | Ok result ->
-            let normalized =
-                { result with
-                    Symbols = normalizeSymbolPaths tmpDir result.Symbols }
-
-            let db = Database.create dbPath
-            db.RebuildProjects([ normalized ])
-
-        // Seed the freshness sidecar to match the seeded DB. Item 3's gate
-        // means the plugin only trusts stored DB rows when the sidecar
-        // records the file as `fcsClean = true`. In the steady-state daemon
-        // this entry exists from the prior post-build session; we write it
-        // directly here to model that pre-condition.
-        FsHotWatch.TestPrune.FileFreshness.save
-            tmpDir
-            (FsHotWatch.TestPrune.FileFreshness.markClean DateTime.UtcNow relPath Map.empty)
-
-        // --- Set up pipeline (same checker) and plugin host ---
-        let pipeline = CheckPipeline(checker)
-        pipeline.RegisterProject(projOptions.ProjectFileName, projOptions)
-
-        let host = PluginHost.create checker tmpDir
-        let handler = create dbPath tmpDir None None None None None
-        host.RegisterHandler(handler)
-
+    withSeededTestEnv "tp-comment-regression" "Lib.fs" initialSource (fun env ->
         // --- Phase 1: comment-only change should NOT add file to ChangedFiles ---
-        File.WriteAllText(filePath, commentOnlySource)
+        File.WriteAllText(env.FilePath, commentOnlySource)
 
-        match pipeline.CheckFile(AbsFilePath.create filePath) |> Async.RunSynchronously with
+        match
+            env.Pipeline.CheckFile(AbsFilePath.create env.FilePath)
+            |> Async.RunSynchronously
+        with
         | None -> Assert.Fail("FCS failed to check comment-only source")
-        | Some result -> host.EmitFileChecked(result)
+        | Some result -> env.Host.EmitFileChecked(result)
 
-        waitForTerminalStatus host "test-prune" 30000
+        waitForTerminalStatus env.Host "test-prune" 30000
 
         let changedAfterComment =
-            host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
+            env.Host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
 
         test <@ changedAfterComment.Value = "[]" @>
 
         // --- Phase 2: AST change should add file to ChangedFiles ---
-        File.WriteAllText(filePath, astChangedSource)
+        File.WriteAllText(env.FilePath, astChangedSource)
 
-        match pipeline.CheckFile(AbsFilePath.create filePath) |> Async.RunSynchronously with
+        match
+            env.Pipeline.CheckFile(AbsFilePath.create env.FilePath)
+            |> Async.RunSynchronously
+        with
         | None -> Assert.Fail("FCS failed to check AST-changed source")
-        | Some result -> host.EmitFileChecked(result)
+        | Some result -> env.Host.EmitFileChecked(result)
 
-        waitForTerminalStatus host "test-prune" 30000
+        waitForTerminalStatus env.Host "test-prune" 30000
 
         let changedAfterAst =
-            host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
+            env.Host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
 
-        test <@ changedAfterAst.Value.Contains(relPath) @>)
+        test <@ changedAfterAst.Value.Contains(env.RelPath) @>)
 
 // --- buildFilterArgs unit tests ---
 
@@ -3192,68 +3148,24 @@ let ``Phase B replay: stored=clean → detectChanges runs as today`` () =
     // across a restart boundary, detectChanges runs normally and a real AST
     // change produces a real diff. This guards against an over-aggressive
     // gate that would mask legitimate changes.
-    withTempDir "tp-phaseb-realdiff" (fun tmpDir ->
-        let dbPath = Path.Combine(tmpDir, "tp.db")
-        let relPath = "Lib.fs"
-        let absPath = Path.Combine(tmpDir, relPath)
+    let initialSource = "module Lib\nlet x = 1\n"
+    let astChangedSource = "module Lib\nlet x = 1\nlet y = 2\n"
 
-        let initialSource = "module Lib\nlet x = 1\n"
-        let astChangedSource = "module Lib\nlet x = 1\nlet y = 2\n"
-
-        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
-
-        File.WriteAllText(absPath, initialSource)
-        let initialSourceText = SourceText.ofString initialSource
-
-        let projOptions =
-            checker.GetProjectOptionsFromScript(absPath, initialSourceText, assumeDotNetFramework = false)
-            |> Async.RunSynchronously
-            |> fst
-
-        // Seed DB with initial source symbols — same pattern as the existing
-        // comment-only test (line 1736).
-        let seedResult =
-            analyzeSource checker absPath initialSource projOptions "TestProject"
-            |> Async.RunSynchronously
-
-        match seedResult with
-        | Error msg -> Assert.Fail($"Initial analysis failed: {msg}")
-        | Ok result ->
-            let normalized =
-                { result with
-                    Symbols = normalizeSymbolPaths tmpDir result.Symbols }
-
-            let db = Database.create dbPath
-            db.RebuildProjects([ normalized ])
-
-        // Seed sidecar clean (Phase A ended successfully for this file).
-        let now = DateTime.UtcNow
-
-        let priorSidecar =
-            FsHotWatch.TestPrune.FileFreshness.markClean now relPath Map.empty
-
-        FsHotWatch.TestPrune.FileFreshness.save tmpDir priorSidecar
-
-        // New session. The plugin will load the sidecar at startup and treat
-        // the file as trusted-for-diff.
-        let pipeline = CheckPipeline(checker)
-        pipeline.RegisterProject(projOptions.ProjectFileName, projOptions)
-
-        let host = PluginHost.create checker tmpDir
-        let handler = create dbPath tmpDir None None None None None
-        host.RegisterHandler(handler)
-
+    withSeededTestEnv "tp-phaseb-realdiff" "Lib.fs" initialSource (fun env ->
         // Real AST change. detectChanges should report a diff.
-        File.WriteAllText(absPath, astChangedSource)
+        File.WriteAllText(env.FilePath, astChangedSource)
 
-        match pipeline.CheckFile(AbsFilePath.create absPath) |> Async.RunSynchronously with
+        match
+            env.Pipeline.CheckFile(AbsFilePath.create env.FilePath)
+            |> Async.RunSynchronously
+        with
         | None -> Assert.Fail("FCS failed on AST-changed source")
-        | Some r -> host.EmitFileChecked(r)
+        | Some r -> env.Host.EmitFileChecked(r)
 
-        waitForTerminalStatus host "test-prune" 30000
+        waitForTerminalStatus env.Host "test-prune" 30000
 
-        let changed = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
-        test <@ changed.Value.Contains(relPath) @>)
+        let changed = env.Host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
+        test <@ changed.Value.Contains(env.RelPath) @>)
 
 // =============================================================================
 // Item 3 — BuildCompleted-gated stamping. The sidecar's `markClean` only
@@ -3475,74 +3387,33 @@ let bad : int = "not-an-int"
 
 [<Fact(Timeout = 30000)>]
 let ``detectChanges: re-check of unchanged source with externs reports no changes`` () =
-    withTempDir "tp-extern-filter" (fun tmpDir ->
-        let dbPath = Path.Combine(tmpDir, "tp.db")
-        let filePath = Path.Combine(tmpDir, "Lib.fsx")
-        let relPath = "Lib.fsx"
-        // Source uses List.length so the extractor pulls in
-        // Microsoft.FSharp.Collections.List.length as an extern symbol.
-        let source = "module Lib\nlet xs = List.length []\n"
+    // Source uses List.length so the extractor pulls in
+    // Microsoft.FSharp.Collections.List.length as an extern symbol.
+    let source = "module Lib\nlet xs = List.length []\n"
 
-        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
-        File.WriteAllText(filePath, source)
-        let sourceText = SourceText.ofString source
-
-        let projOptions =
-            checker.GetProjectOptionsFromScript(filePath, sourceText, assumeDotNetFramework = false)
-            |> Async.RunSynchronously
-            |> fst
-
-        // Seed: extract symbols (file-local + externs) and persist via
-        // RebuildProjects. The DB tags externs with SourceFile = "_extern" so
-        // GetSymbolsInFile(relPath) returns only file-local rows.
-        let seedResult =
-            analyzeSource checker filePath source projOptions "TestProject"
-            |> Async.RunSynchronously
-
-        let seededSymbols =
-            match seedResult with
-            | Error msg ->
-                Assert.Fail($"Initial analysis failed: {msg}")
-                []
-            | Ok result ->
-                let normalized =
-                    { result with
-                        Symbols = normalizeSymbolPaths tmpDir result.Symbols }
-
-                let db = Database.create dbPath
-                db.RebuildProjects([ normalized ])
-                normalized.Symbols
-
+    withSeededTestEnv "tp-extern-filter" "Lib.fsx" source (fun env ->
         // Sanity: extracted set actually contains externs (otherwise the test
         // tautologically passes regardless of the fix).
-        let externs = seededSymbols |> List.filter (fun s -> s.IsExtern)
+        let externs = env.SeededSymbols |> List.filter (fun s -> s.IsExtern)
         test <@ not externs.IsEmpty @>
 
         // Sanity: DB read-back is file-local only — externs absent.
-        let storedFromDb = (Database.create dbPath).GetSymbolsInFile(relPath)
+        let storedFromDb = env.Db.GetSymbolsInFile(env.RelPath)
         test <@ storedFromDb |> List.forall (fun s -> not s.IsExtern) @>
 
-        // Seed sidecar clean so detectChanges actually runs (Path D gate).
-        FsHotWatch.TestPrune.FileFreshness.save
-            tmpDir
-            (FsHotWatch.TestPrune.FileFreshness.markClean DateTime.UtcNow relPath Map.empty)
-
-        let pipeline = CheckPipeline(checker)
-        pipeline.RegisterProject(projOptions.ProjectFileName, projOptions)
-
-        let host = PluginHost.create checker tmpDir
-        let handler = create dbPath tmpDir None None None None None
-        host.RegisterHandler(handler)
-
         // Re-check the IDENTICAL source — no edit. detectChanges should report
-        // zero changes. Without the fix, externs in the current set produce a
-        // phantom diff equal to externs.Length.
-        match pipeline.CheckFile(AbsFilePath.create filePath) |> Async.RunSynchronously with
+        // zero changes. Without TestPrune.Core's internal extern filter, externs
+        // in the current set would produce a phantom diff equal to externs.Length.
+        match
+            env.Pipeline.CheckFile(AbsFilePath.create env.FilePath)
+            |> Async.RunSynchronously
+        with
         | None -> Assert.Fail("FCS failed on re-check")
-        | Some r -> host.EmitFileChecked(r)
+        | Some r -> env.Host.EmitFileChecked(r)
 
-        waitForTerminalStatus host "test-prune" 30000
+        waitForTerminalStatus env.Host "test-prune" 30000
 
-        let changedFiles = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
+        let changedFiles =
+            env.Host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
 
         test <@ changedFiles.Value = "[]" @>)
