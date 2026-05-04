@@ -1,6 +1,5 @@
 module FsHotWatch.Coverage.CoveragePlugin
 
-open System.IO
 open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.PluginFramework
@@ -8,65 +7,57 @@ open CoverageRatchet.Cobertura
 open CoverageRatchet.Thresholds
 open CoverageRatchet.Ratchet
 
-type CoverageState =
-    { LastPassed: bool option }
-
 type CoverageMsg =
     | CheckDone of failedFiles: (string * string) list
 
 let private pollForFiles (searchDir: string) (maxAttempts: int) (delayMs: int) =
     async {
-        let mutable found = false
+        let mutable result = []
         let mutable attempt = 0
 
-        while not found && attempt < maxAttempts do
+        while List.isEmpty result && attempt < maxAttempts do
             let files = findCoverageFiles searchDir
 
             if not (List.isEmpty files) then
-                found <- true
+                result <- files
             else
                 do! Async.Sleep delayMs
                 attempt <- attempt + 1
 
-        return findCoverageFiles searchDir
+        return result
     }
 
-let private runCheck (configPath: string) (searchDir: string) =
+let private runCheck (configPath: string) (xmlPaths: string list) =
     async {
-        let xmlPaths = findCoverageFiles searchDir
+        let coverage = parseFiles xmlPaths
+        let config = loadConfig configPath
+        let results = buildFileResults config coverage
 
-        if List.isEmpty xmlPaths then
-            return []
-        else
-            let coverage = parseFiles xmlPaths
-            let config = loadConfig configPath
-            let results = buildFileResults config coverage
+        return
+            results
+            |> List.choose (fun r ->
+                if FileResult.passed r then
+                    None
+                else
+                    let lineMsg =
+                        if not (FileResult.linePassed r) then
+                            [ $"line=%.1f{r.File.LinePct}%% < min %.1f{r.LineThreshold}%%" ]
+                        else
+                            []
 
-            return
-                results
-                |> List.choose (fun r ->
-                    if FileResult.passed r then
-                        None
-                    else
-                        let lineMsg =
-                            if not (FileResult.linePassed r) then
-                                [ $"line=%.1f{r.File.LinePct}%% < min %.1f{r.LineThreshold}%%" ]
-                            else
-                                []
+                    let branchMsg =
+                        if not (FileResult.branchPassed r) then
+                            [ $"branch=%.1f{r.File.BranchPct}%% < min %.1f{r.BranchThreshold}%%" ]
+                        else
+                            []
 
-                        let branchMsg =
-                            if not (FileResult.branchPassed r) then
-                                [ $"branch=%.1f{r.File.BranchPct}%% < min %.1f{r.BranchThreshold}%%" ]
-                            else
-                                []
-
-                        let detail = String.concat ", " (lineMsg @ branchMsg)
-                        Some(r.File.FileName, $"coverage: %s{detail}"))
+                    let detail = String.concat ", " (lineMsg @ branchMsg)
+                    Some(r.File.FileName, $"coverage: %s{detail}"))
     }
 
-let create (configPath: string) (searchDir: string) : PluginHandler<CoverageState, CoverageMsg> =
+let create (configPath: string) (searchDir: string) : PluginHandler<bool option, CoverageMsg> =
     { Name = PluginName.create "coverage"
-      Init = { LastPassed = None }
+      Init = None
       Subscriptions = Set.singleton SubscribeTestRunCompleted
       CacheKey = None
       Teardown = None
@@ -97,7 +88,7 @@ let create (configPath: string) (searchDir: string) : PluginHandler<CoverageStat
           fun _ctx state _args ->
               async {
                   return
-                      match state.LastPassed with
+                      match state with
                       | None -> "coverage: no check run yet"
                       | Some true -> "coverage: OK"
                       | Some false -> "coverage: FAILED (run `fshw errors` for details)" } ]
@@ -116,7 +107,7 @@ let create (configPath: string) (searchDir: string) : PluginHandler<CoverageStat
                               if List.isEmpty xmlPaths then
                                   return CheckDone []
                               else
-                                  let! failures = runCheck configPath searchDir
+                                  let! failures = runCheck configPath xmlPaths
                                   return CheckDone failures
                           })
 
@@ -127,14 +118,14 @@ let create (configPath: string) (searchDir: string) : PluginHandler<CoverageStat
                       if List.isEmpty failures then
                           ctx.ClearAllErrors()
                           ctx.ReportStatus(PluginStatus.Completed System.DateTime.Now)
-                          return { LastPassed = Some true }
+                          return Some true
                       else
                           for (file, msg) in failures do
                               ctx.ReportErrors file [ ErrorEntry.error msg ]
 
                           let summary = $"%d{failures.Length} file(s) below threshold"
                           ctx.ReportStatus(PluginStatus.Failed(summary, System.DateTime.Now))
-                          return { LastPassed = Some false }
+                          return Some false
                   }
 
               | _ -> async { return state } }
