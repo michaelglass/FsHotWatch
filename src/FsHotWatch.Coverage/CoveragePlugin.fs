@@ -61,6 +61,30 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                       return $"coverage-ratchet: thresholds updated in %s{cfgPath}"
               }
 
+          "coverage-refresh",
+          fun _ctx _state _args ->
+              async {
+                  let xmlPaths = findCoverageFiles searchDir
+
+                  if List.isEmpty xmlPaths then
+                      return "coverage-refresh: no coverage.cobertura.xml found"
+                  else
+                      refreshBaselines searchDir
+                      return $"coverage-refresh: baselines advanced in %s{searchDir}"
+              }
+
+          "coverage-reset",
+          fun _ctx _state _args ->
+              async {
+                  let count = deleteBaselines searchDir
+
+                  return
+                      if count = 0 then
+                          "coverage-reset: no baselines found"
+                      else
+                          $"coverage-reset: deleted %d{count} baseline(s) in %s{searchDir}"
+              }
+
           "coverage-status",
           fun _ctx state _args ->
               async {
