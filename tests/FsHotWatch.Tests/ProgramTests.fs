@@ -19,6 +19,7 @@ let private fakeConfig: DaemonConfiguration =
       Analyzers = None
       Tests = None
       FileCommands = []
+      Coverage = None
       Exclude = []
       LogDir = "logs"
       TimeoutSec = None }

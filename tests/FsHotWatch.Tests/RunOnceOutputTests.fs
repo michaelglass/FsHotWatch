@@ -349,6 +349,7 @@ let ``runOnceAndReport returns 2 when no projects are discovered`` () =
               Analyzers = None
               Tests = None
               FileCommands = []
+              Coverage = None
               Exclude = []
               LogDir = "logs"
               TimeoutSec = None }

@@ -25,6 +25,7 @@ let private defaults: DaemonConfiguration =
       Analyzers = None
       Tests = None
       FileCommands = []
+      Coverage = None
       Exclude = []
       LogDir = "logs"
       TimeoutSec = None }
@@ -419,10 +420,34 @@ let ``parseConfig tests project with no project key defaults to unknown`` () =
     let p = config.Tests.Value.Projects.[0]
     test <@ p.Project = "unknown" @>
 
-// --- parseConfig: coverage ---
-// Coverage config block was removed — coverage XMLs are now emitted under
-// <repoRoot>/<tests.coverageDir>/<project>/ (default "coverage"), and
-// ratcheting is driven by fileCommands afterTests invoking an external tool.
+// --- parseConfig: coverage plugin ---
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig coverage section parses configPath and searchDir`` () =
+    let json =
+        """{"coverage": {"configPath": "coverage-ratchet-Proj.json", "searchDir": "artifacts"}}"""
+
+    let config = parseConfig json defaults
+    test <@ config.Coverage.IsSome @>
+    test <@ config.Coverage.Value.ConfigPath = "coverage-ratchet-Proj.json" @>
+    test <@ config.Coverage.Value.SearchDir = "artifacts" @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig coverage section defaults configPath and searchDir when absent`` () =
+    let json = """{"coverage": {}}"""
+    let config = parseConfig json defaults
+    test <@ config.Coverage.IsSome @>
+    test <@ config.Coverage.Value.ConfigPath = "coverage-ratchet.json" @>
+    test <@ config.Coverage.Value.SearchDir = "." @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig no coverage section yields None`` () =
+    let config = parseConfig "{}" defaults
+    test <@ config.Coverage.IsNone @>
+
+// --- parseConfig: tests.coverageDir ---
+// Coverage XMLs are emitted under <repoRoot>/<tests.coverageDir>/<project>/ (default "coverage"),
+// and ratcheting is driven by fileCommands afterTests invoking an external tool or the coverage plugin.
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig tests without coverageDir defaults to coverage`` () =
