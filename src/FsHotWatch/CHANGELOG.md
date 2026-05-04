@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.13 - 2026-05-04
+
 - fix: `Daemon.DaemonOptions.FcsSuppressedCodes = None` now resolves to an empty `Set<int>` instead of `Set.ofList [ 1182 ]`; projects that need FS1182 silenced should declare `<NoWarn>FS1182</NoWarn>` in their fsproj
 - feat: `Daemon.resolveFcsSuppressedCodes : int list option -> Set<int>` — public helper exposing the option→Set resolution so it is directly testable
 
