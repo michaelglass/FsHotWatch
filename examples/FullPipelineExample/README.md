@@ -13,6 +13,7 @@ open FsHotWatch.Lint
 open FsHotWatch.Analyzers
 open FsHotWatch.Fantomas
 open FsHotWatch.FileCommand
+open FsHotWatch.Coverage
 
 let repoRoot = System.IO.Directory.GetCurrentDirectory()
 let daemon = Daemon.create repoRoot
@@ -90,19 +91,13 @@ daemon.RegisterHandler(
         None                                    // timeoutSec
 )
 
-// Coverage ratchet — fires after every test run AND when its config file changes
-let coverageTrigger: CommandTrigger =
-    { FilePattern = Some(fun f -> f.EndsWith("coverage-ratchet.json"))
-      AfterTests = Some AnyTest }
-
+// Coverage threshold checking — verifies per-file line/branch thresholds after each test run.
+// Reads coverage.cobertura.xml files from the "coverage/" directory and compares against
+// per-file thresholds in coverage-ratchet.json. Use `fshw coverage-ratchet` to update thresholds.
 daemon.RegisterHandler(
-    FileCommandPlugin.create
-        (PluginName.create "coverage-ratchet")
-        coverageTrigger
-        "dotnet"
-        "tool run coverageratchet check coverage-ratchet.json"
-        repoRoot
-        None
+    CoveragePlugin.create
+        (System.IO.Path.Combine(repoRoot, "coverage-ratchet.json"))  // configPath
+        (System.IO.Path.Combine(repoRoot, "coverage"))               // searchDir
 )
 
 // Start with IPC
@@ -118,4 +113,5 @@ See each package's README for per-plugin details:
 - [FsHotWatch.Analyzers](../../src/FsHotWatch.Analyzers/)
 - [FsHotWatch.Lint](../../src/FsHotWatch.Lint/)
 - [FsHotWatch.Fantomas](../../src/FsHotWatch.Fantomas/)
+- [FsHotWatch.Coverage](../../src/FsHotWatch.Coverage/)
 - [FsHotWatch.FileCommand](../../src/FsHotWatch.FileCommand/)
