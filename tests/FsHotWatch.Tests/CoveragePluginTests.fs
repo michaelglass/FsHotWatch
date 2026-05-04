@@ -47,12 +47,15 @@ let private emitRunCompleted (host: PluginHost) =
 
 [<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =
-    let handler = FsHotWatch.Coverage.CoveragePlugin.create "/tmp/ratchet.json" "/tmp"
+    let handler =
+        FsHotWatch.Coverage.CoveragePlugin.create "/tmp/ratchet.json" "/tmp" false
+
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "coverage" @>
 
 [<Fact(Timeout = 15000)>]
 let ``plugin subscribes to TestRunCompleted`` () =
-    let handler = FsHotWatch.Coverage.CoveragePlugin.create "/tmp/ratchet.json" "/tmp"
+    let handler =
+        FsHotWatch.Coverage.CoveragePlugin.create "/tmp/ratchet.json" "/tmp" false
 
     test
         <@
@@ -71,7 +74,7 @@ let ``plugin reports errors when file is below threshold`` () =
         File.WriteAllText(configPath, defaultThresholdsJson)
 
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
-        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir false)
 
         emitRunCompleted host
 
@@ -101,7 +104,7 @@ let ``plugin clears errors when all files pass`` () =
         File.WriteAllText(configPath, thresholdsJsonWithOverride "MyModule.fs" 50 0)
 
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
-        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir false)
 
         emitRunCompleted host
 
@@ -131,7 +134,7 @@ let ``plugin skips check when no coverage XML found`` () =
         File.WriteAllText(configPath, defaultThresholdsJson)
 
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
-        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir false)
 
         emitRunCompleted host
 
@@ -155,7 +158,7 @@ let ``plugin ignores aborted test runs`` () =
         File.WriteAllText(configPath, defaultThresholdsJson)
 
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
-        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir false)
 
         // Emit an aborted run
         host.EmitTestRunCompleted
@@ -176,3 +179,41 @@ let ``plugin ignores aborted test runs`` () =
                 | Some(Failed _) -> false
                 | _ -> true
             @>)
+
+[<Fact(Timeout = 15000)>]
+let ``plugin with mergeBaselines merges partials and refreshes baseline on passing full-suite run`` () =
+    withTempDir "coverage" (fun dir ->
+        let projectDir = Path.Combine(dir, "MyProject")
+        Directory.CreateDirectory(projectDir) |> ignore
+
+        let xmlPath = Path.Combine(projectDir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+
+        // 100% coverage — will pass
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 1) ])
+        File.WriteAllText(configPath, thresholdsJsonWithOverride "MyModule.fs" 50 0)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir true)
+
+        // Full-suite run
+        host.EmitTestRunCompleted
+            { RunId = Guid.NewGuid()
+              TotalElapsed = TimeSpan.Zero
+              Outcome = Normal
+              Results = Map.empty
+              RanFullSuite = true }
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            10000
+
+        // baseline.xml should have been written (refreshBaselines after passing full-suite run)
+        let baselinePath = Path.Combine(projectDir, "coverage.baseline.xml")
+        test <@ File.Exists(baselinePath) @>
+
+        let errors = host.GetErrorsByPlugin("coverage")
+        test <@ errors.IsEmpty @>)

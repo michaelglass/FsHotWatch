@@ -132,7 +132,8 @@ type DaemonConfiguration =
                TimeoutSec: int option |} list
         Coverage:
             {| ConfigPath: string
-               SearchDir: string |} option
+               SearchDir: string
+               MergeBaselines: bool |} option
         Exclude: string list
         /// Directory (relative to repoRoot or absolute) for daemon.log. Defaults to "logs".
         LogDir: string
@@ -492,9 +493,15 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 | true, sd when sd.ValueKind = JsonValueKind.String -> sd.GetString()
                 | _ -> "."
 
+            let mergeBaselines =
+                match v.TryGetProperty("mergeBaselines") with
+                | true, mb when mb.ValueKind = JsonValueKind.True -> true
+                | _ -> false
+
             Some
                 {| ConfigPath = configPath
-                   SearchDir = searchDir |}
+                   SearchDir = searchDir
+                   MergeBaselines = mergeBaselines |}
         | _ -> None
 
     let exclude =
@@ -912,6 +919,9 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             else
                 Path.GetFullPath(Path.Combine(repoRoot, cov.ConfigPath))
 
-        Logging.info "config" $"Registering CoveragePlugin: config=%s{absConfigPath} searchDir=%s{absSearchDir}"
-        daemon.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create absConfigPath absSearchDir)
+        Logging.info
+            "config"
+            $"Registering CoveragePlugin: config=%s{absConfigPath} searchDir=%s{absSearchDir} mergeBaselines=%b{cov.MergeBaselines}"
+
+        daemon.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create absConfigPath absSearchDir cov.MergeBaselines)
     | None -> ()
