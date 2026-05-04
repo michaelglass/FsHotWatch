@@ -1056,7 +1056,7 @@ let create
                                     | Ok configs when configs.IsEmpty ->
                                         return JsonSerializer.Serialize({| error = "no matching test projects" |})
                                     | Ok configs ->
-                                        let! results, _started, _completed =
+                                        let! results, started, completed =
                                             executeTests
                                                 None
                                                 repoRoot
@@ -1066,6 +1066,11 @@ let create
                                                 configs
                                                 Map.empty
                                                 filter
+
+                                        // Route through the normal event machinery so
+                                        // coverage plugin, file-command afterTests hooks,
+                                        // and TestPrune error state all see this run.
+                                        ctx.RunExclusive "tests" (async { return TestsFinished(started, completed) })
 
                                         return formatTestResultsJson results
                             with ex ->
