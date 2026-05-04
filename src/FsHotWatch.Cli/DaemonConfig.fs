@@ -912,6 +912,12 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             else
                 Path.GetFullPath(Path.Combine(repoRoot, cov.ConfigPath))
 
+        if not (File.Exists absConfigPath) then
+            Logging.warn "config" $"CoveragePlugin: configPath does not exist: %s{absConfigPath}"
+
+        if not (Directory.Exists absSearchDir) then
+            Logging.warn "config" $"CoveragePlugin: searchDir does not exist: %s{absSearchDir}"
+
         Logging.info "config" $"Registering CoveragePlugin: config=%s{absConfigPath} searchDir=%s{absSearchDir}"
         daemon.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create absConfigPath absSearchDir)
     | None -> ()
