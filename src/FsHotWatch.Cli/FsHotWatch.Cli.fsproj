@@ -42,6 +42,7 @@
         <ProjectReference Include="../FsHotWatch.Analyzers/FsHotWatch.Analyzers.fsproj" />
         <ProjectReference Include="../FsHotWatch.TestPrune/FsHotWatch.TestPrune.fsproj" />
         <ProjectReference Include="../FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj" />
+        <ProjectReference Include="../FsHotWatch.Coverage/FsHotWatch.Coverage.fsproj" />
     </ItemGroup>
 
     <ItemGroup>
