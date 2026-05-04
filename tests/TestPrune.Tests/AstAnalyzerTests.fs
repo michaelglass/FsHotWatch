@@ -212,6 +212,149 @@ let x = 1
 
         test <@ modSym.IsSome @>
 
+module ``Namespace handling`` =
+
+    [<Fact>]
+    let ``namespace declarations are not extracted as Type symbols`` () =
+        // Regression: tryClassifyEntity used to fall through to the `else Some(Type, fullName)`
+        // branch for FSharpEntity values where IsNamespace = true, which produced phantom
+        // Type-kind symbols for the namespace. Combined with `symbols.full_name UNIQUE` and
+        // UPSERT-on-conflict semantics, every file under `namespace Foo` would re-extract
+        // the namespace symbol on each diff and report a phantom "+1 added" change.
+        let result =
+            analyze
+                """
+namespace Foo
+
+module Bar =
+    let x = 1
+"""
+
+        // The namespace itself must NOT be persisted as a Type-kind symbol.
+        let namespaceSym = result.Symbols |> List.tryFind (fun s -> s.FullName = "Foo")
+
+        test <@ namespaceSym.IsNone @>
+
+        // Sanity: the actual module under the namespace is still extracted.
+        let modSym =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Bar", StringComparison.Ordinal) && s.Kind = Module)
+
+        test <@ modSym.IsSome @>
+
+module ``Entity classification flavors`` =
+
+    // Regression guard: when we replaced tryClassifyEntity's catch-all
+    // `else Some(Type, fullName)` with explicit `entity.Is*` branches,
+    // we needed to make sure each legitimate Type-flavored entity still
+    // classifies. If a future FCS upgrade adds a kind we don't enumerate,
+    // these tests will surface it as a missing extraction.
+
+    [<Fact>]
+    let ``class entities classify as Type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type MyClass() =
+    member _.Foo() = 42
+"""
+
+        let cls =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("MyClass", StringComparison.Ordinal))
+
+        test <@ cls |> Option.map (fun s -> s.Kind) = Some Type @>
+
+    [<Fact>]
+    let ``interface entities classify as Type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type IFoo =
+    abstract member Bar: unit -> int
+"""
+
+        let iface =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("IFoo", StringComparison.Ordinal))
+
+        test <@ iface |> Option.map (fun s -> s.Kind) = Some Type @>
+
+    [<Fact>]
+    let ``struct (value type) entities classify as Type`` () =
+        let result =
+            analyze
+                """
+module M
+
+[<Struct>]
+type Point = { X: int; Y: int }
+"""
+
+        let st =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("Point", StringComparison.Ordinal))
+
+        test <@ st |> Option.map (fun s -> s.Kind) = Some Type @>
+
+    [<Fact>]
+    let ``delegate entities classify as Type`` () =
+        let result =
+            analyze
+                """
+module M
+
+type MyDel = delegate of int -> int
+"""
+
+        let d =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("MyDel", StringComparison.Ordinal))
+
+        test <@ d |> Option.map (fun s -> s.Kind) = Some Type @>
+
+    [<Fact>]
+    let ``units of measure classify as Type`` () =
+        let result =
+            analyze
+                """
+module M
+
+[<Measure>]
+type kg
+"""
+
+        let m =
+            result.Symbols
+            |> List.tryFind (fun s -> s.FullName.EndsWith("kg", StringComparison.Ordinal))
+
+        test <@ m |> Option.map (fun s -> s.Kind) = Some Type @>
+
+    [<Fact>]
+    let ``record/union/enum classify as Type (re-confirm after refactor)`` () =
+        let result =
+            analyze
+                """
+module M
+
+type R = { N: int }
+type U = | A | B
+type E = X = 1 | Y = 2
+"""
+
+        let kinds =
+            [ "R"; "U"; "E" ]
+            |> List.map (fun n ->
+                result.Symbols
+                |> List.tryFind (fun s -> s.FullName.EndsWith(n, StringComparison.Ordinal))
+                |> Option.map (fun s -> s.Kind))
+
+        test <@ kinds = [ Some Type; Some Type; Some Type ] @>
+
 module ``Test method detection`` =
 
     // NOTE: Detecting [<Fact>] attributes requires xunit assemblies to be referenced

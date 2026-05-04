@@ -138,6 +138,61 @@ module ``Comment shift does not produce false Modified`` =
         let changes, _events = detectChanges current stored
         test <@ changes = [ Modified "Mod.funcA" ] @>
 
+module ``Extern filtering`` =
+
+    /// Regression: previously, callers had to pre-filter externs out of the `current`
+    /// argument before calling `detectChanges`, or they'd see phantom diffs equal to the
+    /// file's extern count (because stored never holds externs but current did). The
+    /// invariant "externs are never compared" now lives inside detectChanges itself, so
+    /// no caller can violate it by forgetting.
+    [<Fact>]
+    let ``externs in current are filtered out (no phantom diffs vs stored without externs)`` () =
+        let externSym =
+            { mkSymbol "Lib.externedFn" Function 1 3 with
+                IsExtern = true }
+
+        let regularSym = mkSymbol "Lib.regularFn" Function 5 10
+
+        // current has externs+regular (as a fresh AnalysisResult would); stored only
+        // has the regular symbol (because indexing previously dropped externs).
+        let current = [ externSym; regularSym ]
+        let stored = [ regularSym ]
+
+        let changes, _events = detectChanges current stored
+        test <@ changes |> List.isEmpty @>
+
+    [<Fact>]
+    let ``externs in stored are filtered out (no phantom Removed diffs)`` () =
+        // Symmetric guard: if a stored DB ever held an extern (e.g. legacy data), it
+        // shouldn't surface as a Removed change once the indexer stops persisting it.
+        let externSym =
+            { mkSymbol "Lib.legacyExtern" Function 1 3 with
+                IsExtern = true }
+
+        let regularSym = mkSymbol "Lib.regularFn" Function 5 10
+
+        let current = [ regularSym ]
+        let stored = [ externSym; regularSym ]
+
+        let changes, _events = detectChanges current stored
+        test <@ changes |> List.isEmpty @>
+
+    [<Fact>]
+    let ``non-extern diffs are still detected normally when externs are present`` () =
+        // Sanity: filtering externs must not swallow real diffs in the same call.
+        let externSym =
+            { mkSymbol "Lib.externedFn" Function 1 3 with
+                IsExtern = true }
+
+        let storedFn = mkSymbolWithHash "Lib.regularFn" Function 5 10 "old"
+        let currentFn = mkSymbolWithHash "Lib.regularFn" Function 5 10 "new"
+
+        let current = [ externSym; currentFn ]
+        let stored = [ storedFn ]
+
+        let changes, _events = detectChanges current stored
+        test <@ changes = [ Modified "Lib.regularFn" ] @>
+
 module ``changedSymbolNames extracts names`` =
 
     [<Fact>]

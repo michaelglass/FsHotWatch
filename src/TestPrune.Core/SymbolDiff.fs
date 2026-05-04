@@ -21,10 +21,19 @@ let changeKind (change: SymbolChange) : ChangeKind =
 /// - It exists in both but content hash differs (Modified)
 /// - Only in current (Added)
 /// - Only in stored (Removed)
+///
+/// Externs (`s.IsExtern = true`) are filtered from BOTH sides before comparison.
+/// The indexer doesn't persist externs, so a fresh AnalysisResult containing them
+/// would otherwise produce phantom `Added` diffs equal to the file's extern count.
+/// Filtering here (rather than at every caller) makes that invariant unforgettable.
 let detectChanges
     (currentSymbols: SymbolInfo list)
     (storedSymbols: SymbolInfo list)
     : SymbolChange list * AnalysisEvent list =
+    let dropExterns = List.filter (fun (s: SymbolInfo) -> not s.IsExtern)
+    let currentSymbols = dropExterns currentSymbols
+    let storedSymbols = dropExterns storedSymbols
+
     let currentByName =
         currentSymbols |> List.map (fun s -> s.FullName, s) |> Map.ofList
 

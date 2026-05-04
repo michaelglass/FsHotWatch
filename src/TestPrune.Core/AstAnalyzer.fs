@@ -154,12 +154,50 @@ let private tryClassifyEntity (entity: FSharpEntity) : (SymbolKind * string) opt
     try
         let fullName = entity.FullName
 
-        if entity.IsFSharpModule then Some(Module, fullName)
-        elif entity.IsFSharpUnion then Some(Type, fullName)
-        elif entity.IsFSharpRecord then Some(Type, fullName)
-        elif entity.IsEnum then Some(Type, fullName)
-        elif entity.IsFSharpAbbreviation then Some(Type, fullName)
-        else Some(Type, fullName)
+        // Namespaces are not trackable per-file dependencies: they aren't owned by any
+        // single file, and consumers reach types *through* a namespace rather than
+        // depending on it. Persisting them collides with `symbols.full_name UNIQUE`
+        // (UPSERT attributes the row to whichever file last extracted it), which then
+        // produces phantom "+1 added" diffs on every other file in the namespace.
+        // Explicit per-flavor branches. The previous `else Some(Type, fullName)`
+        // catch-all silently mis-classified namespaces (and any future kind FCS adds)
+        // as Type, which collided with `symbols.full_name UNIQUE` and produced
+        // phantom diffs. Each legitimate entity flavor is listed here, and the
+        // final `else None` surfaces unrecognized kinds (caller emits a debug log).
+        if entity.IsNamespace then
+            None
+        elif entity.IsFSharpModule then
+            Some(Module, fullName)
+        elif entity.IsFSharpUnion then
+            Some(Type, fullName)
+        elif entity.IsFSharpRecord then
+            Some(Type, fullName)
+        elif entity.IsEnum then
+            Some(Type, fullName)
+        elif entity.IsFSharpAbbreviation then
+            Some(Type, fullName)
+        elif entity.IsClass then
+            Some(Type, fullName)
+        elif entity.IsInterface then
+            Some(Type, fullName)
+        elif entity.IsValueType then
+            // Covers F# structs and CLR value types.
+            Some(Type, fullName)
+        elif entity.IsDelegate then
+            Some(Type, fullName)
+        elif entity.IsArrayType then
+            Some(Type, fullName)
+        elif entity.IsByRef then
+            Some(Type, fullName)
+        elif entity.IsMeasure then
+            Some(Type, fullName)
+        else
+            // Unknown entity kind — likely a new FCS flavor we haven't seen yet.
+            // Returning None keeps it out of the symbol graph (the safe default)
+            // rather than silently labelling it `Type` and risking a UNIQUE collision.
+            // If this fires in the wild we'll see it via missing-symbol regressions
+            // and add an explicit branch.
+            None
     with :? InvalidOperationException ->
         None
 
