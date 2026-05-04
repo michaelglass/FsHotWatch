@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <PackageId>FsHotWatch.Coverage</PackageId>
+    <Version>0.1.0-alpha.1</Version>
+    <Authors>Michael Glass</Authors>
+    <Description>FsHotWatch plugin that checks per-file coverage thresholds after test runs</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/michaelglass/FsHotWatch</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/michaelglass/FsHotWatch</PackageProjectUrl>
+    <PackageTags>fsharp;coverage;cobertura;ratchet;plugin</PackageTags>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <NoWarn>$(NoWarn);NU1605</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="CoveragePlugin.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../FsHotWatch/FsHotWatch.fsproj" />
+    <ProjectReference Include="../../../MichaelsWackyFsPackageTools/src/CoverageRatchet.Core/CoverageRatchet.Core.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>FsHotWatch.Tests</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>FsHotWatch.IntegrationTests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.203" PrivateAssets="All" />
+    <PackageReference Update="FSharp.Core" Version="10.1.*" />
+  </ItemGroup>
+</Project>

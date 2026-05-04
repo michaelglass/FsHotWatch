@@ -92,6 +92,7 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
                    Projects = testProjects
                    CoverageDir = "coverage" |}
       FileCommands = []
+      Coverage = None
       Exclude = []
       LogDir = "logs"
       TimeoutSec = None }

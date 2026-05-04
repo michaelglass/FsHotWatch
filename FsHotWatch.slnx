@@ -7,6 +7,7 @@
   <Project Path="src/FsHotWatch.Fantomas/FsHotWatch.Fantomas.fsproj" />
   <Project Path="src/FsHotWatch.Build/FsHotWatch.Build.fsproj" />
   <Project Path="src/FsHotWatch.FileCommand/FsHotWatch.FileCommand.fsproj" />
+  <Project Path="src/FsHotWatch.Coverage/FsHotWatch.Coverage.fsproj" />
   <Project Path="tests/FsHotWatch.Tests/FsHotWatch.Tests.fsproj" />
   <Project Path="tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj" />
   <Project Path="examples/ExampleAnalyzer/ExampleAnalyzer.fsproj" />
