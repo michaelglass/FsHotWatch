@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.11 - 2026-05-04
+
 - feat: `BuildOutcome.BuildArtifactsStale` — new variant emitted when MSBuild reports success but canonical DLLs are missing or older than their newest source; downstream plugins can trust `BuildSucceeded` as a guarantee of artifact freshness
 - feat: `StaleArtifact` / `StaleReason` types carry structured diagnostics for stale-artifact reporting
 - refactor: `ProjectDirtyTracker` removed; staleness now enforced inline by BuildPlugin post-build verification
