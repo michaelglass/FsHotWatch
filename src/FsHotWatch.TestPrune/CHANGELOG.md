@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- feat: `run-tests` IPC command (invoked by `fshw test`) now routes through the event machinery, emitting `TestRunStarted` → `TestRunCompleted`. Plugins subscribed to `TestRunCompleted` (e.g. `CoveragePlugin`) now observe manually-triggered runs identically to daemon-triggered ones. No API change.
+
 ## 0.7.0-alpha.13 - 2026-05-04
 
 - fix: daemon restart with no source edits no longer spuriously re-runs tests — `detectChanges` now filters extern symbols from both sides internally (TestPrune.Core ≥ 4.0.1), eliminating phantom symbol diffs that caused every warm restart to invalidate the full test suite
