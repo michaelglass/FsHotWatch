@@ -706,29 +706,12 @@ let ``run-tests emits TestRunCompleted so other plugins see the run`` () =
         let configPath = Path.Combine(dir, "coverage-ratchet.json")
         File.WriteAllText(configPath, "{}")
 
-        let configs =
-            [ { Project = "TestProject"
-                Command = "echo"
-                Args = "ok"
-                Group = "default"
-                Environment = []
-                FilterTemplate = None
-                ClassJoin = " "
-                TimeoutSec = None } ]
-
-        let host = PluginHost.create (Unchecked.defaultof<_>) dir
-        host.RegisterHandler(create ":memory:" dir (Some configs) None None None None)
+        let host, _ = withSingleProjectHarness dir "TestProject"
         host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
 
         host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
 
-        waitUntil
-            (fun () ->
-                match host.GetStatus("coverage") with
-                | Some(Completed _)
-                | Some(Failed _) -> true
-                | _ -> false)
-            10000
+        waitForTerminalStatus host "coverage" 10000
 
         match host.GetStatus("coverage") with
         | Some(Completed _)
