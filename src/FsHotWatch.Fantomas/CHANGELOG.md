@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.11 - 2026-05-04
+
 - chore: dependency updates
 
 ## 0.7.0-alpha.10 - 2026-04-29
