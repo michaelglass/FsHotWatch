@@ -47,15 +47,13 @@ let private emitRunCompleted (host: PluginHost) =
 
 [<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =
-    let handler =
-        FsHotWatch.Coverage.CoveragePlugin.create "/tmp/ratchet.json" "/tmp" false
+    let handler = FsHotWatch.Coverage.CoveragePlugin.create "/tmp/ratchet.json" "/tmp"
 
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "coverage" @>
 
 [<Fact(Timeout = 15000)>]
 let ``plugin subscribes to TestRunCompleted`` () =
-    let handler =
-        FsHotWatch.Coverage.CoveragePlugin.create "/tmp/ratchet.json" "/tmp" false
+    let handler = FsHotWatch.Coverage.CoveragePlugin.create "/tmp/ratchet.json" "/tmp"
 
     test
         <@
@@ -74,7 +72,7 @@ let ``plugin reports errors when file is below threshold`` () =
         File.WriteAllText(configPath, defaultThresholdsJson)
 
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
-        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir false)
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
 
         emitRunCompleted host
 
@@ -104,7 +102,7 @@ let ``plugin clears errors when all files pass`` () =
         File.WriteAllText(configPath, thresholdsJsonWithOverride "MyModule.fs" 50 0)
 
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
-        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir false)
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
 
         emitRunCompleted host
 
@@ -134,7 +132,7 @@ let ``plugin skips check when no coverage XML found`` () =
         File.WriteAllText(configPath, defaultThresholdsJson)
 
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
-        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir false)
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
 
         emitRunCompleted host
 
@@ -158,7 +156,7 @@ let ``plugin ignores aborted test runs`` () =
         File.WriteAllText(configPath, defaultThresholdsJson)
 
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
-        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir false)
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
 
         // Emit an aborted run
         host.EmitTestRunCompleted
@@ -181,7 +179,7 @@ let ``plugin ignores aborted test runs`` () =
             @>)
 
 [<Fact(Timeout = 15000)>]
-let ``plugin with mergeBaselines merges partials and refreshes baseline on passing full-suite run`` () =
+let ``plugin refreshes baseline after passing full-suite run`` () =
     withTempDir "coverage" (fun dir ->
         let projectDir = Path.Combine(dir, "MyProject")
         Directory.CreateDirectory(projectDir) |> ignore
@@ -194,7 +192,7 @@ let ``plugin with mergeBaselines merges partials and refreshes baseline on passi
         File.WriteAllText(configPath, thresholdsJsonWithOverride "MyModule.fs" 50 0)
 
         let host = PluginHost.create (Unchecked.defaultof<_>) dir
-        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir true)
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
 
         // Full-suite run
         host.EmitTestRunCompleted
