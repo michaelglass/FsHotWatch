@@ -4,6 +4,14 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### TestPrune: Phase B test-skip correctness on cold restart
+
+#### Fixed
+- fix: Phase B test-skip now works correctly on cold restart with warm cache — `detectChanges` extern filter moved into TestPrune.Core 4.0.1, eliminating phantom symbol diffs that caused already-passing tests to re-run unnecessarily after a daemon restart with a populated cache.
+
+#### Changed
+- refactor: remove redundant `currentForFile` pre-filter from `TestPrunePlugin` (`detectChanges` now handles extern filtering internally in TestPrune.Core).
+
 ### Drop hardcoded FS1182 default suppression
 
 #### Changed
