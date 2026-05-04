@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.0.1 - 2026-05-04
+
 - fix: detectChanges now filters extern symbols from both sides internally, eliminating phantom diffs on warm FCS restart
 - fix: namespace entities are no longer misclassified as Type symbols in tryClassifyEntity, eliminating +1 phantom symbol rows
 
