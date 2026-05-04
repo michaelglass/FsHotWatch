@@ -10,6 +10,7 @@ on:
       - "fantomas-v*"
       - "build-v*"
       - "filecommand-v*"
+      - "coverage-v*"
 
 permissions:
   contents: read
