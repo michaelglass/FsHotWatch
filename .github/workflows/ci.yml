@@ -25,15 +25,3 @@ jobs:
       # Host FSharpLint via AnalyzersPlugin to reuse the warm FSharpChecker
       # instead of spawning a fresh compiler per project.
       lint-cmd: 'dotnet run --project src/FsHotWatch.Cli --no-build -- analyze --run-once'
-      # Clone sibling repos one level up from the checkout so temporary
-      # ProjectReferences in the fsproj files can resolve:
-      #   - TestPrune (TODO(testprune-3.1): revert to PackageReference when
-      #     TestPrune.Core 3.1 ships to NuGet, then remove this clone step)
-      pre-build-cmd: |
-        git clone --depth 1 https://github.com/michaelglass/TestPrune.git ../TestPrune
-        # Re-run restore now that the siblings exist. The reusable workflow's
-        # `dotnet restore` ran before this hook (see michaels-wacky-build.yml)
-        # and cached "ProjectReference not found", so the subsequent
-        # `dotnet build --no-restore` would fail to copy those DLLs
-        # into FsHotWatch.Cli's bin dir without this re-restore.
-        dotnet restore
