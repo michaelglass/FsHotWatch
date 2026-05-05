@@ -29,11 +29,8 @@ jobs:
       # ProjectReferences in the fsproj files can resolve:
       #   - TestPrune (TODO(testprune-3.1): revert to PackageReference when
       #     TestPrune.Core 3.1 ships to NuGet, then remove this clone step)
-      #   - MichaelsWackyFsPackageTools (for CoverageRatchet.Core; revert to
-      #     PackageReference when CoverageRatchet.Core ships to NuGet)
       pre-build-cmd: |
         git clone --depth 1 https://github.com/michaelglass/TestPrune.git ../TestPrune
-        git clone --depth 1 https://github.com/michaelglass/MichaelsWackyFsPackageTools.git ../MichaelsWackyFsPackageTools
         # Re-run restore now that the siblings exist. The reusable workflow's
         # `dotnet restore` ran before this hook (see michaels-wacky-build.yml)
         # and cached "ProjectReference not found", so the subsequent
