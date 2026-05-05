@@ -28,7 +28,6 @@
 
   <ItemGroup>
     <ProjectReference Include="../FsHotWatch/FsHotWatch.fsproj" />
-    <ProjectReference Include="../../../MichaelsWackyFsPackageTools/src/CoverageRatchet.Core/CoverageRatchet.Core.fsproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -42,6 +41,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.203" PrivateAssets="All" />
+    <PackageReference Include="CoverageRatchet.Core" Version="0.1.0-alpha.1" />
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
   </ItemGroup>
 </Project>
