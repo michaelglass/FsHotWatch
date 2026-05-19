@@ -4,6 +4,10 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+### Added
+
+- `fshw test --filter-class <pattern>` and `fshw test --filter-trait <name=value>` flags. Both pass through to the xUnit v3 standalone runner (`dotnet exec <test.dll> --filter-class/--filter-trait`) via the existing `run-tests` IPC `filter` payload, so callers no longer need to bypass the daemon to run a single test class or trait. Supported in daemon mode; combining with `--run-once` exits with code 2 (run-once mode has no filter plumbing).
+
 ## 0.8.0-alpha.13 - 2026-05-04
 
 - chore: release together with core 0.8.0-alpha.13
