@@ -67,8 +67,22 @@ let ``parse test returns Test with no flags`` () =
     test <@ CommandTree.parse tree [| "test" |] = Ok(Test []) @>
 
 [<Fact(Timeout = 15000)>]
-let ``parse test --run-once returns Test RunOnce`` () =
-    test <@ CommandTree.parse tree [| "test"; "--run-once" |] = Ok(Test [ RunOnce ]) @>
+let ``parse test --run-once returns Test TestRunOnce`` () =
+    test <@ CommandTree.parse tree [| "test"; "--run-once" |] = Ok(Test [ TestRunOnce ]) @>
+
+[<Fact(Timeout = 15000)>]
+let ``parse test --filter-class returns Test FilterClass`` () =
+    test
+        <@ CommandTree.parse tree [| "test"; "--filter-class"; "*CryptoTests*" |] = Ok(
+            Test [ FilterClass "*CryptoTests*" ]
+        ) @>
+
+[<Fact(Timeout = 15000)>]
+let ``parse test --filter-trait returns Test FilterTrait`` () =
+    test
+        <@ CommandTree.parse tree [| "test"; "--filter-trait"; "Category=Browser" |] = Ok(
+            Test [ FilterTrait "Category=Browser" ]
+        ) @>
 
 [<Fact(Timeout = 15000)>]
 let ``parse format returns Format with no flags`` () =
@@ -1250,6 +1264,96 @@ let ``executeCommand Test calls runCommand with run-tests`` () =
 
     test <@ result = 0 @>
     test <@ cmdName = "run-tests" @>
+
+[<Fact(Timeout = 15000)>]
+let ``executeCommand Test --filter-class forwards filter arg to run-tests IPC`` () =
+    let mutable capturedArgs = ""
+
+    let ipc =
+        { fakeIpc () with
+            RunCommand =
+                fun _ _ args ->
+                    async {
+                        capturedArgs <- args
+                        return """{"status": "passed"}"""
+                    } }
+
+    let result =
+        executeCommand
+            (fun _ -> Unchecked.defaultof<_>)
+            ipc
+            "/tmp"
+            "pipe"
+            (Test [ FilterClass "*CryptoTests*" ])
+            defaultGlobalOptions
+            fakeConfig
+            30.0
+
+    test <@ result = 0 @>
+    test <@ capturedArgs.Contains("--filter-class") @>
+    test <@ capturedArgs.Contains("*CryptoTests*") @>
+
+[<Fact(Timeout = 15000)>]
+let ``executeCommand Test --filter-trait forwards filter arg to run-tests IPC`` () =
+    let mutable capturedArgs = ""
+
+    let ipc =
+        { fakeIpc () with
+            RunCommand =
+                fun _ _ args ->
+                    async {
+                        capturedArgs <- args
+                        return """{"status": "passed"}"""
+                    } }
+
+    let result =
+        executeCommand
+            (fun _ -> Unchecked.defaultof<_>)
+            ipc
+            "/tmp"
+            "pipe"
+            (Test [ FilterTrait "Category=Browser" ])
+            defaultGlobalOptions
+            fakeConfig
+            30.0
+
+    test <@ result = 0 @>
+    test <@ capturedArgs.Contains("--filter-trait") @>
+    test <@ capturedArgs.Contains("Category=Browser") @>
+
+[<Fact>]
+let ``TestFilter.render combines class and trait filters`` () =
+    let rendered =
+        TestFilter.render
+            [ FilterClass "*CryptoTests*"
+              FilterTrait "Category=Browser" ]
+
+    test <@ rendered = "--filter-class *CryptoTests* --filter-trait Category=Browser" @>
+
+[<Fact>]
+let ``TestFilter.render quotes patterns containing whitespace`` () =
+    let rendered = TestFilter.render [ FilterClass "Foo Bar" ]
+    test <@ rendered = "--filter-class \"Foo Bar\"" @>
+
+[<Fact>]
+let ``TestFilter.render returns empty string when no filter flags present`` () =
+    test <@ TestFilter.render [ TestRunOnce ] = "" @>
+    test <@ TestFilter.render [] = "" @>
+
+[<Fact(Timeout = 15000)>]
+let ``executeCommand Test --run-once with filter fails fast`` () =
+    let result =
+        executeCommand
+            (fun _ -> Unchecked.defaultof<_>)
+            (fakeIpc ())
+            "/tmp"
+            "pipe"
+            (Test [ TestRunOnce; FilterClass "*X*" ])
+            defaultGlobalOptions
+            fakeConfig
+            30.0
+
+    test <@ result = 2 @>
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Format calls formatAll`` () =
