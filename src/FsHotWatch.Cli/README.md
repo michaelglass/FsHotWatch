@@ -33,7 +33,7 @@ fshw status
 | `scan-status` | Check scan progress without blocking. |
 | `status [plugin]` | Show plugin statuses. Optionally filter to one plugin. |
 | `build` | Trigger a build and wait for completion. |
-| `test [opts]` | Run tests. Options: `-p project`, `-f filter`, `--only-failed`. |
+| `test [opts]` | Run tests. Options: `--filter-class <pattern>`, `--filter-trait <name=value>`, `--run-once`. |
 | `format` | Run Fantomas formatter on all files. |
 | `lint` | Run FSharpLint on all files and report warnings. |
 | `errors` | Show current errors from all plugins. |
@@ -53,11 +53,14 @@ fshw status
 ## Examples
 
 ```bash
-# Run tests for a specific project
-fshw test -p MyApp.Tests
+# Run only tests in a specific class (xUnit v3 wildcards supported)
+fshw test --filter-class "*CryptoTests*"
 
-# Run only previously-failed tests
-fshw test --only-failed
+# Run only tests with a given trait
+fshw test --filter-trait "Category=Browser"
+
+# Combine filters (passed through to the xUnit v3 standalone runner)
+fshw test --filter-class "*Repository*" --filter-trait "Speed=Fast"
 
 # Show just the lint plugin's status
 fshw status lint

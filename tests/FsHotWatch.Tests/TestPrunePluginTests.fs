@@ -651,6 +651,38 @@ let ``run-tests with project filter runs only named project`` () =
         test <@ not (result.Value.Contains("Beta")) @>)
 
 [<Fact(Timeout = 15000)>]
+let ``run-tests with filter passes raw filter args through to the test command`` () =
+    withTempDir "tp-run-filter" (fun tmpDir ->
+        let configs =
+            [ { Project = "TestProject"
+                Command = "echo"
+                Args = "marker"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+        let handler = create ":memory:" tmpDir (Some configs) None None None None
+
+        host.RegisterHandler(handler)
+
+        let result =
+            host.RunCommand(
+                "run-tests",
+                [| """{"filter": "--filter-class FooTests --filter-trait Category=Browser"}""" |]
+            )
+            |> Async.RunSynchronously
+
+        test <@ result.IsSome @>
+        // `echo` echoes its argv, so the captured output proves the filter
+        // string was appended to the test command line.
+        test <@ result.Value.Contains("--filter-class FooTests") @>
+        test <@ result.Value.Contains("--filter-trait Category=Browser") @>)
+
+[<Fact(Timeout = 15000)>]
 let ``run-tests with only-failed reruns failed projects`` () =
     withTempDir "tp-run-failed" (fun tmpDir ->
         let configs =
@@ -1487,7 +1519,8 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
 
         // 3. WaitForComplete should resolve within a few seconds (1s stability + margin).
         //    Before the fix, the plugin stayed Running indefinitely after this FileChecked.
-        let waitTask = waitForAllTerminal host (System.TimeSpan.FromSeconds(5.0)) ()
+        let waitTask =
+            waitForAllTerminal host (System.TimeSpan.FromSeconds(5.0)) System.Threading.CancellationToken.None ()
 
         let completed = waitTask.Wait(System.TimeSpan.FromSeconds(8.0))
 
