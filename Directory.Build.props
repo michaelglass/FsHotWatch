@@ -14,4 +14,11 @@
   <ItemGroup>
     <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.7" />
   </ItemGroup>
+
+  <!-- Pin transitive Nerdbank.MessagePack — versions < 1.1.62 (StreamJsonRpc
+       2.24.84 pulls in 1.0.2) are flagged by GHSA-2cwq-pwfr-wcw3 as
+       high-severity. Fresh `dotnet restore` fails NU1903 without this pin. -->
+  <ItemGroup>
+    <PackageReference Include="Nerdbank.MessagePack" Version="1.1.62" />
+  </ItemGroup>
 </Project>
