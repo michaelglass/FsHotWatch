@@ -14,19 +14,31 @@ type FileWatcher =
             for d in this.Disposables do
                 d.Dispose()
 
+/// True if the file is `project.assets.json` — dotnet restore's materialized
+/// package graph. Lives under `obj/`, so this check intentionally bypasses
+/// `isGeneratedPath` (every other obj/ entry stays excluded).
+let internal isProjectAssetsJson (path: string) =
+    Path.GetFileName(path).Equals("project.assets.json", StringComparison.OrdinalIgnoreCase)
+
 /// Returns true if the file path has a relevant extension and is not in obj/ or bin/.
+/// `project.assets.json` is the documented exception: it lives in obj/ but is
+/// the canonical post-`dotnet restore` signal that a project's package graph
+/// changed (FR docs/fr-auto-refresh-fsproj-changes.md, 2026-05-25).
 let internal isRelevantFile (path: string) =
-    let ext = Path.GetExtension(path).ToLowerInvariant()
+    if isProjectAssetsJson path then
+        true
+    else
+        let ext = Path.GetExtension(path).ToLowerInvariant()
 
-    let isRelevantExt =
-        ext = ".fs"
-        || ext = ".fsx"
-        || ext = ".fsproj"
-        || ext = ".sln"
-        || ext = ".slnx"
-        || ext = ".props"
+        let isRelevantExt =
+            ext = ".fs"
+            || ext = ".fsx"
+            || ext = ".fsproj"
+            || ext = ".sln"
+            || ext = ".slnx"
+            || ext = ".props"
 
-    isRelevantExt && not (PathFilter.isGeneratedPath path)
+        isRelevantExt && not (PathFilter.isGeneratedPath path)
 
 /// How a FileCommandPlugin pattern string matches paths. Parsed once at
 /// config-load time via `FilePattern.parse` so downstream code never has to
@@ -82,12 +94,15 @@ let internal isRelevantFileOrExtra (extraPatterns: FilePattern list) (path: stri
         matchesExtra && not (PathFilter.isGeneratedPath path)
 
 /// Classify a file path as a solution, project, or source change.
+/// `obj/project.assets.json` routes through `ProjectChanged` so the daemon
+/// reacts to it identically to a raw `.fsproj` edit — same dispatch path,
+/// same downstream invalidation + re-check semantics.
 let internal classifyChange (path: string) =
     let ext = Path.GetExtension(path).ToLowerInvariant()
 
     if ext = ".sln" || ext = ".slnx" then
         SolutionChanged
-    elif ext = ".fsproj" || ext = ".props" then
+    elif ext = ".fsproj" || ext = ".props" || isProjectAssetsJson path then
         ProjectChanged [ path ]
     else
         SourceChanged [ path ]
@@ -158,7 +173,7 @@ module FileWatcher =
                 let onCoalesced (dirPath: string) =
                     try
                         if Directory.Exists(dirPath) then
-                            for pattern in [| "*.fs"; "*.fsx"; "*.fsproj"; "*.props" |] do
+                            for pattern in [| "*.fs"; "*.fsx"; "*.fsproj"; "*.props"; "project.assets.json" |] do
                                 for file in Directory.EnumerateFiles(dirPath, pattern, SearchOption.AllDirectories) do
                                     if isRelevantFile file then
                                         onChange (classifyChange file)
@@ -177,7 +192,8 @@ module FileWatcher =
                             w.Filters.Add("*.fs")
                             w.Filters.Add("*.fsx")
                             w.Filters.Add("*.fsproj")
-                            w.Filters.Add("*.props"))
+                            w.Filters.Add("*.props")
+                            w.Filters.Add("project.assets.json"))
                     )
                 else
                     None
