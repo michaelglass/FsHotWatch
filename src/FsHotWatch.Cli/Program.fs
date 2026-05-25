@@ -25,7 +25,8 @@ type TestFlag =
 /// xUnit's parser happy.
 module TestFilter =
     let private needsQuoting (s: string) =
-        s |> Seq.exists (fun c -> Char.IsWhiteSpace(c) || c = '"' || c = '\'' || c = '\\')
+        s
+        |> Seq.exists (fun c -> Char.IsWhiteSpace(c) || c = '"' || c = '\'' || c = '\\')
 
     let private quoteIfNeeded (s: string) =
         if needsQuoting s then
@@ -795,8 +796,7 @@ let executeCommand
                 if filter = "" then
                     "{}"
                 else
-                    let escaped =
-                        filter.Replace("\\", "\\\\").Replace("\"", "\\\"")
+                    let escaped = filter.Replace("\\", "\\\\").Replace("\"", "\\\"")
 
                     $"{{\"filter\": \"%s{escaped}\"}}"
 
