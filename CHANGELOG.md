@@ -4,6 +4,44 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### Daemon: auto-refresh FCS on `.fsproj` and `obj/project.assets.json` changes
+
+Reported by `thellma/intelligence` during the `bedrock-spike` landing
+(docs/fr-auto-refresh-fsproj-changes.md, 2026-05-25). Adding an
+`AWSSDK.Bedrock` `PackageReference` and running `dotnet restore` left
+the daemon reporting `FS0039: namespace 'Bedrock' is not defined`
+until the user ran `dotnet fshw stop && dotnet fshw start` — discarding
+the entire FCS cache for ~20 unrelated projects unnecessarily.
+
+Two contracts had to be added to fully close the loop.
+
+#### Fixed
+- **The daemon now re-runs FCS on the affected project's source files
+  after a project-tier change.** Previously `processBatch` invalidated
+  the FCS cache and re-discovered options on a `.fsproj` change, but
+  the per-file re-check only ran when the same batch also contained
+  source-file edits. A pure project change had no source files, so the
+  error ledger retained the previous cohort's stale diagnostics until
+  the user saved a `.fs` file or restarted the daemon. The boot-scan
+  re-check on restart is what made the "stop && start" workaround
+  appear to "fix" the bug.
+
+#### Added
+- `Watcher.isProjectAssetsJson` / extended `Watcher.classifyChange` —
+  `obj/project.assets.json` (the post-`dotnet restore` materialization
+  of the package graph) is now treated as a project-tier change. The
+  `FileSystemWatcher` / FSEvents enumeration picks it up despite living
+  under `obj/` (every other `obj/` entry stays excluded). This gives
+  the daemon a second, canonical "package graph is coherent on disk"
+  signal that doesn't race with a `.fsproj` edit's "package graph is
+  intended to change."
+
+#### Changed
+- `Pinned transitive Nerdbank.MessagePack 1.1.62` (GHSA-2cwq-pwfr-wcw3).
+  `StreamJsonRpc 2.24.84` pulls in vulnerable `1.0.2` by default,
+  failing fresh `dotnet restore` under `NU1903`. Same Directory.Build.props
+  pattern as the existing `System.Security.Cryptography.Xml` pin.
+
 ### TestPrune: test-skip now works correctly after daemon restart
 
 TestPrune prunes the test suite in two phases: **Phase A** runs during the initial cold scan (FCS checks every file from scratch and records symbol fingerprints), and **Phase B** runs on subsequent daemon restarts when FCS is warm (the daemon reloads the persisted fingerprints and skips tests whose symbol fingerprints haven't changed). Before this fix, Phase B would always re-run tests even with no source edits, because the fingerprint comparison included extern symbols (cross-file type references) on the current side but not the stored side, producing phantom diffs on every restart.
