@@ -12,18 +12,20 @@ open FsHotWatch.Ipc
 
 type RunFlag = | [<CmdFlag(Short = "r", Description = "Run once without daemon")>] RunOnce
 
-type TestFlag =
-    | [<CmdFlag(Name = "run-once", Short = "r", Description = "Run once without daemon")>] TestRunOnce
+/// Flags for `fshw test-rerun`. Forward-progress `fshw test` deliberately
+/// has no filter knobs — the test-prune plugin runs everything downstream of
+/// a change by design. `test-rerun` is the explicit investigation verb that
+/// slices what just ran (or what you ask for) via xUnit v3's --filter-* args.
+type RerunFlag =
     | [<CmdFlag(Description = "Pass --filter-class <pattern> to the underlying test runner (xUnit v3)");
         CmdArg("pattern")>] FilterClass of string
     | [<CmdFlag(Description = "Pass --filter-trait <name=value> to the underlying test runner (xUnit v3)");
         CmdArg("name=value")>] FilterTrait of string
 
-/// Build the raw filter-arg string that gets appended to each test command.
-/// Quote pattern values that contain whitespace or shell-special characters.
-/// Trait values are key=value pairs; only the value half is quoted to keep
-/// xUnit's parser happy.
-module TestFilter =
+/// Render `RerunFlag list` to the raw arg string the xUnit v3 standalone
+/// runner expects, quoting values that contain whitespace / shell metachars.
+/// Empty flag list renders to "".
+module RerunFilter =
     let private needsQuoting (s: string) =
         s
         |> Seq.exists (fun c -> Char.IsWhiteSpace(c) || c = '"' || c = '\'' || c = '\\')
@@ -43,21 +45,12 @@ module TestFilter =
             let value = s.Substring(i + 1)
             $"%s{name}=%s{quoteIfNeeded value}"
 
-    /// Render the filter portion ("" if no filter flags present).
-    let render (flags: TestFlag list) : string =
+    let render (flags: RerunFlag list) : string =
         flags
-        |> List.choose (function
-            | FilterClass p -> Some $"--filter-class %s{quoteIfNeeded p}"
-            | FilterTrait t -> Some $"--filter-trait %s{quoteTrait t}"
-            | TestRunOnce -> None)
+        |> List.map (function
+            | FilterClass p -> $"--filter-class %s{quoteIfNeeded p}"
+            | FilterTrait t -> $"--filter-trait %s{quoteTrait t}")
         |> String.concat " "
-
-    let hasFilter (flags: TestFlag list) =
-        flags
-        |> List.exists (function
-            | FilterClass _
-            | FilterTrait _ -> true
-            | TestRunOnce -> false)
 
 type ErrorsFlag =
     | [<CmdFlag(Short = "w", Description = "Block until every plugin reaches a terminal state")>] Wait
@@ -101,8 +94,10 @@ type Command =
     | [<Cmd("Stop the daemon")>] Stop
     | [<CmdExample("", "--run-once"); Cmd("Run all checks")>] Check of RunFlag list
     | [<CmdExample("", "--run-once"); Cmd("Build the project")>] Build of RunFlag list
-    | [<CmdExample("", "--run-once", "--filter-class *CryptoTests*", "--filter-trait Category=Browser");
-        Cmd("Run tests")>] Test of TestFlag list
+    | [<CmdExample("", "--run-once"); Cmd("Run tests")>] Test of RunFlag list
+    | [<CmdExample("--filter-class *CryptoTests*", "--filter-trait Category=Browser");
+        Cmd("Rerun tests with an xUnit v3 --filter-class / --filter-trait slice", Name = "test-rerun")>] TestRerun of
+        RerunFlag list
     | [<CmdExample("", "--run-once"); Cmd("Format code")>] Format of RunFlag list
     | [<Cmd("Show lint results from daemon")>] Lint of RunFlag list
     | [<Cmd("Show format-check results from daemon", Name = "format-check")>] FormatCheck of RunFlag list
@@ -556,6 +551,7 @@ let executeCommand
         | Check _
         | Build _
         | Test _
+        | TestRerun _
         | Format _
         | Lint _
         | Analyze _
@@ -771,42 +767,53 @@ let executeCommand
                         ipc.TriggerBuild pipeName |> Async.RunSynchronously
 
                 IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
-        | Test flags when List.contains TestRunOnce flags ->
-            if TestFilter.hasFilter flags then
-                eprintfn "Error: --filter-class / --filter-trait are not supported with --run-once."
-                eprintfn "       Start the daemon (`fshw start`) and rerun without --run-once."
-                2
-            else
-                let testConfig =
-                    { stripConfig config with
-                        Build = config.Build
-                        Tests = config.Tests }
+        | Test flags when isRunOnce flags ->
+            let testConfig =
+                { stripConfig config with
+                    Build = config.Build
+                    Tests = config.Tests }
 
-                RunOnceOutput.runOnceAndReport
-                    (renderBlock mode (not noWarnFail))
-                    noWarnFail
-                    createDaemon
-                    repoRoot
-                    testConfig
-                    (Some "test-prune")
-        | Test flags ->
+            RunOnceOutput.runOnceAndReport
+                (renderBlock mode (not noWarnFail))
+                noWarnFail
+                createDaemon
+                repoRoot
+                testConfig
+                (Some "test-prune")
+        | Test _ ->
+            withDaemon (fun () ->
+                let result =
+                    if UI.isInteractive then
+                        UI.withSpinner "Running tests" (fun () ->
+                            ipc.RunCommand pipeName "run-tests" "{}" |> Async.RunSynchronously)
+                    else
+                        eprintfn "  Running tests..."
+                        ipc.RunCommand pipeName "run-tests" "{}" |> Async.RunSynchronously
+
+                IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
+        | TestRerun flags ->
+            // `test-rerun` is daemon-only by design: it routes through the
+            // same `run-tests` IPC as `fshw test`, with the rendered filter
+            // appended to each TestConfig's command via the rawFilter
+            // passthrough in TestPrunePlugin. The forward-progress `fshw test`
+            // verb deliberately exposes no filter knobs (testprune already
+            // runs everything downstream of a change); slicing belongs here.
+            let filter = RerunFilter.render flags
+
             let runArgsJson =
-                let filter = TestFilter.render flags
-
                 if filter = "" then
                     "{}"
                 else
                     let escaped = filter.Replace("\\", "\\\\").Replace("\"", "\\\"")
-
                     $"{{\"filter\": \"%s{escaped}\"}}"
 
             withDaemon (fun () ->
                 let result =
                     if UI.isInteractive then
-                        UI.withSpinner "Running tests" (fun () ->
+                        UI.withSpinner "Rerunning tests" (fun () ->
                             ipc.RunCommand pipeName "run-tests" runArgsJson |> Async.RunSynchronously)
                     else
-                        eprintfn "  Running tests..."
+                        eprintfn "  Rerunning tests..."
                         ipc.RunCommand pipeName "run-tests" runArgsJson |> Async.RunSynchronously
 
                 IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
