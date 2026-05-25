@@ -6,7 +6,9 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ### Added
 
-- `fshw test --filter-class <pattern>` and `fshw test --filter-trait <name=value>` flags. Both pass through to the xUnit v3 standalone runner (`dotnet exec <test.dll> --filter-class/--filter-trait`) via the existing `run-tests` IPC `filter` payload, so callers no longer need to bypass the daemon to run a single test class or trait. Supported in daemon mode; combining with `--run-once` exits with code 2 (run-once mode has no filter plumbing).
+- `fshw test-rerun [--filter-class <pattern>] [--filter-trait <name=value>]` command. Routes through the existing `run-tests` IPC with the filter passed to the xUnit v3 standalone runner. Lets callers slice a test run for investigation (single class, single trait) without bypassing the daemon — preserving the analyzer/lint/format/coverage hooks. Daemon-only.
+
+  Filter flags deliberately do NOT live on `fshw test`. The forward-progress `test` verb runs everything downstream of a change via test-prune's impact analysis; letting it filter would silently weaken that guarantee. Slicing belongs on the explicit investigation verb.
 
 ## 0.8.0-alpha.13 - 2026-05-04
 
