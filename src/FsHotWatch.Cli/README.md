@@ -33,7 +33,8 @@ fshw status
 | `scan-status` | Check scan progress without blocking. |
 | `status [plugin]` | Show plugin statuses. Optionally filter to one plugin. |
 | `build` | Trigger a build and wait for completion. |
-| `test [opts]` | Run tests. Options: `--filter-class <pattern>`, `--filter-trait <name=value>`, `--run-once`. |
+| `test [opts]` | Run all tests downstream of recent changes (test-prune impact analysis). Options: `--run-once`. |
+| `test-rerun [opts]` | Rerun a slice of tests through the daemon, bypassing impact analysis. Options: `--filter-class <pattern>`, `--filter-trait <name=value>`. Daemon-only. |
 | `format` | Run Fantomas formatter on all files. |
 | `lint` | Run FSharpLint on all files and report warnings. |
 | `errors` | Show current errors from all plugins. |
@@ -53,14 +54,17 @@ fshw status
 ## Examples
 
 ```bash
-# Run only tests in a specific class (xUnit v3 wildcards supported)
-fshw test --filter-class "*CryptoTests*"
+# Run everything downstream of recent changes (impact-filtered by test-prune)
+fshw test
 
-# Run only tests with a given trait
-fshw test --filter-trait "Category=Browser"
+# Rerun a single test class for investigation (xUnit v3 wildcards supported)
+fshw test-rerun --filter-class "*CryptoTests*"
+
+# Rerun only tests with a given trait
+fshw test-rerun --filter-trait "Category=Browser"
 
 # Combine filters (passed through to the xUnit v3 standalone runner)
-fshw test --filter-class "*Repository*" --filter-trait "Speed=Fast"
+fshw test-rerun --filter-class "*Repository*" --filter-trait "Speed=Fast"
 
 # Show just the lint plugin's status
 fshw status lint

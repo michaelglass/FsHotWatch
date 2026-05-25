@@ -67,26 +67,37 @@ let ``parse test returns Test with no flags`` () =
     test <@ CommandTree.parse tree [| "test" |] = Ok(Test []) @>
 
 [<Fact(Timeout = 15000)>]
-let ``parse test --run-once returns Test TestRunOnce`` () =
-    test <@ CommandTree.parse tree [| "test"; "--run-once" |] = Ok(Test [ TestRunOnce ]) @>
+let ``parse test --run-once returns Test RunOnce`` () =
+    test <@ CommandTree.parse tree [| "test"; "--run-once" |] = Ok(Test [ RunOnce ]) @>
 
 [<Fact(Timeout = 15000)>]
-let ``parse test --filter-class returns Test FilterClass`` () =
+let ``parse test-rerun returns TestRerun with no flags`` () =
+    test <@ CommandTree.parse tree [| "test-rerun" |] = Ok(TestRerun []) @>
+
+[<Fact(Timeout = 15000)>]
+let ``parse test-rerun --filter-class returns TestRerun FilterClass`` () =
     test
         <@
-            CommandTree.parse tree [| "test"; "--filter-class"; "*CryptoTests*" |] = Ok(
-                Test [ FilterClass "*CryptoTests*" ]
+            CommandTree.parse tree [| "test-rerun"; "--filter-class"; "*CryptoTests*" |] = Ok(
+                TestRerun [ FilterClass "*CryptoTests*" ]
             )
         @>
 
 [<Fact(Timeout = 15000)>]
-let ``parse test --filter-trait returns Test FilterTrait`` () =
+let ``parse test-rerun --filter-trait returns TestRerun FilterTrait`` () =
     test
         <@
-            CommandTree.parse tree [| "test"; "--filter-trait"; "Category=Browser" |] = Ok(
-                Test [ FilterTrait "Category=Browser" ]
+            CommandTree.parse tree [| "test-rerun"; "--filter-trait"; "Category=Browser" |] = Ok(
+                TestRerun [ FilterTrait "Category=Browser" ]
             )
         @>
+
+[<Fact(Timeout = 15000)>]
+let ``parse test-rerun rejects --run-once`` () =
+    // --run-once belongs on `fshw test` (forward-progress); test-rerun is daemon-only.
+    match CommandTree.parse tree [| "test-rerun"; "--run-once" |] with
+    | Error(UnknownFlag _) -> ()
+    | other -> failwith $"Expected UnknownFlag, got %A{other}"
 
 [<Fact(Timeout = 15000)>]
 let ``parse format returns Format with no flags`` () =
@@ -1270,7 +1281,35 @@ let ``executeCommand Test calls runCommand with run-tests`` () =
     test <@ cmdName = "run-tests" @>
 
 [<Fact(Timeout = 15000)>]
-let ``executeCommand Test --filter-class forwards filter arg to run-tests IPC`` () =
+let ``executeCommand TestRerun with no flags calls run-tests with empty payload`` () =
+    let mutable capturedArgs = ""
+
+    let ipc =
+        { fakeIpc () with
+            RunCommand =
+                fun _ cmd args ->
+                    async {
+                        capturedArgs <- args
+                        test <@ cmd = "run-tests" @>
+                        return """{"status": "passed"}"""
+                    } }
+
+    let result =
+        executeCommand
+            (fun _ -> Unchecked.defaultof<_>)
+            ipc
+            "/tmp"
+            "pipe"
+            (TestRerun [])
+            defaultGlobalOptions
+            fakeConfig
+            30.0
+
+    test <@ result = 0 @>
+    test <@ capturedArgs = "{}" @>
+
+[<Fact(Timeout = 15000)>]
+let ``executeCommand TestRerun --filter-class forwards filter to run-tests IPC`` () =
     let mutable capturedArgs = ""
 
     let ipc =
@@ -1288,7 +1327,7 @@ let ``executeCommand Test --filter-class forwards filter arg to run-tests IPC`` 
             ipc
             "/tmp"
             "pipe"
-            (Test [ FilterClass "*CryptoTests*" ])
+            (TestRerun [ FilterClass "*CryptoTests*" ])
             defaultGlobalOptions
             fakeConfig
             30.0
@@ -1298,7 +1337,7 @@ let ``executeCommand Test --filter-class forwards filter arg to run-tests IPC`` 
     test <@ capturedArgs.Contains("*CryptoTests*") @>
 
 [<Fact(Timeout = 15000)>]
-let ``executeCommand Test --filter-trait forwards filter arg to run-tests IPC`` () =
+let ``executeCommand TestRerun --filter-trait forwards filter to run-tests IPC`` () =
     let mutable capturedArgs = ""
 
     let ipc =
@@ -1316,7 +1355,7 @@ let ``executeCommand Test --filter-trait forwards filter arg to run-tests IPC`` 
             ipc
             "/tmp"
             "pipe"
-            (Test [ FilterTrait "Category=Browser" ])
+            (TestRerun [ FilterTrait "Category=Browser" ])
             defaultGlobalOptions
             fakeConfig
             30.0
@@ -1326,36 +1365,24 @@ let ``executeCommand Test --filter-trait forwards filter arg to run-tests IPC`` 
     test <@ capturedArgs.Contains("Category=Browser") @>
 
 [<Fact>]
-let ``TestFilter.render combines class and trait filters`` () =
+let ``RerunFilter.render combines class and trait filters`` () =
     let rendered =
-        TestFilter.render [ FilterClass "*CryptoTests*"; FilterTrait "Category=Browser" ]
+        RerunFilter.render [ FilterClass "*CryptoTests*"; FilterTrait "Category=Browser" ]
 
     test <@ rendered = "--filter-class *CryptoTests* --filter-trait Category=Browser" @>
 
 [<Fact>]
-let ``TestFilter.render quotes patterns containing whitespace`` () =
-    let rendered = TestFilter.render [ FilterClass "Foo Bar" ]
+let ``RerunFilter.render quotes patterns containing whitespace`` () =
+    let rendered = RerunFilter.render [ FilterClass "Foo Bar" ]
     test <@ rendered = "--filter-class \"Foo Bar\"" @>
 
 [<Fact>]
-let ``TestFilter.render returns empty string when no filter flags present`` () =
-    test <@ TestFilter.render [ TestRunOnce ] = "" @>
-    test <@ TestFilter.render [] = "" @>
+let ``RerunFilter.render quotes only the value half of a trait pair`` () =
+    let rendered = RerunFilter.render [ FilterTrait "Category=Slow Browser" ]
+    test <@ rendered = "--filter-trait Category=\"Slow Browser\"" @>
 
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Test --run-once with filter fails fast`` () =
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            (fakeIpc ())
-            "/tmp"
-            "pipe"
-            (Test [ TestRunOnce; FilterClass "*X*" ])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 2 @>
+[<Fact>]
+let ``RerunFilter.render returns empty string for empty flag list`` () = test <@ RerunFilter.render [] = "" @>
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Format calls formatAll`` () =
