@@ -73,16 +73,20 @@ let ``parse test --run-once returns Test TestRunOnce`` () =
 [<Fact(Timeout = 15000)>]
 let ``parse test --filter-class returns Test FilterClass`` () =
     test
-        <@ CommandTree.parse tree [| "test"; "--filter-class"; "*CryptoTests*" |] = Ok(
-            Test [ FilterClass "*CryptoTests*" ]
-        ) @>
+        <@
+            CommandTree.parse tree [| "test"; "--filter-class"; "*CryptoTests*" |] = Ok(
+                Test [ FilterClass "*CryptoTests*" ]
+            )
+        @>
 
 [<Fact(Timeout = 15000)>]
 let ``parse test --filter-trait returns Test FilterTrait`` () =
     test
-        <@ CommandTree.parse tree [| "test"; "--filter-trait"; "Category=Browser" |] = Ok(
-            Test [ FilterTrait "Category=Browser" ]
-        ) @>
+        <@
+            CommandTree.parse tree [| "test"; "--filter-trait"; "Category=Browser" |] = Ok(
+                Test [ FilterTrait "Category=Browser" ]
+            )
+        @>
 
 [<Fact(Timeout = 15000)>]
 let ``parse format returns Format with no flags`` () =
@@ -1324,9 +1328,7 @@ let ``executeCommand Test --filter-trait forwards filter arg to run-tests IPC`` 
 [<Fact>]
 let ``TestFilter.render combines class and trait filters`` () =
     let rendered =
-        TestFilter.render
-            [ FilterClass "*CryptoTests*"
-              FilterTrait "Category=Browser" ]
+        TestFilter.render [ FilterClass "*CryptoTests*"; FilterTrait "Category=Browser" ]
 
     test <@ rendered = "--filter-class *CryptoTests* --filter-trait Category=Browser" @>
 
