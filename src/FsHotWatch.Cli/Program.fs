@@ -4,6 +4,7 @@ open System
 open System.IO
 open System.Security.Cryptography
 open System.Text
+open System.Text.Json
 open System.Threading
 open CommandTree
 open FsHotWatch.Cli.DaemonConfig
@@ -17,10 +18,10 @@ type RunFlag = | [<CmdFlag(Short = "r", Description = "Run once without daemon")
 /// a change by design. `test-rerun` is the explicit investigation verb that
 /// slices what just ran (or what you ask for) via xUnit v3's --filter-* args.
 type RerunFlag =
-    | [<CmdFlag(Description = "Pass --filter-class <pattern> to the underlying test runner (xUnit v3)");
-        CmdArg("pattern")>] FilterClass of string
-    | [<CmdFlag(Description = "Pass --filter-trait <name=value> to the underlying test runner (xUnit v3)");
-        CmdArg("name=value")>] FilterTrait of string
+    | [<CmdFlag(Description = "Pass --filter-class <pattern> to the underlying test runner (xUnit v3)")>] FilterClass of
+        string
+    | [<CmdFlag(Description = "Pass --filter-trait <name=value> to the underlying test runner (xUnit v3)")>] FilterTrait of
+        string
 
 /// Render `RerunFlag list` to the raw arg string the xUnit v3 standalone
 /// runner expects, quoting values that contain whitespace / shell metachars.
@@ -804,8 +805,7 @@ let executeCommand
                 if filter = "" then
                     "{}"
                 else
-                    let escaped = filter.Replace("\\", "\\\\").Replace("\"", "\\\"")
-                    $"{{\"filter\": \"%s{escaped}\"}}"
+                    JsonSerializer.Serialize {| filter = filter |}
 
             withDaemon (fun () ->
                 let result =
