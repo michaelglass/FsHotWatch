@@ -2236,7 +2236,9 @@ let ``daemon auto-rechecks affected project's source files after .fsproj edit`` 
 
             if libCheckCount.Value < 1 then
                 Assert.Fail(
-                    sprintf "Baseline failed: boot scan should produce ≥1 FileChecked for Lib.fs (got %d)" libCheckCount.Value
+                    sprintf
+                        "Baseline failed: boot scan should produce ≥1 FileChecked for Lib.fs (got %d)"
+                        libCheckCount.Value
                 )
 
             let baseline = libCheckCount.Value
@@ -2274,6 +2276,91 @@ let ``daemon auto-rechecks affected project's source files after .fsproj edit`` 
                         "FR contract failed: after .fsproj edit, expected FileChecked for Lib.fs to increment past baseline=%d within 60s, but stayed at %d. The daemon detected the .fsproj change and re-discovered options, but never re-ran FCS on the project's source files."
                         baseline
                         libCheckCount.Value
+                )
+
+            cts.Cancel()
+
+            try
+                task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+            with :? AggregateException ->
+                ()
+        finally
+            (daemon :> IDisposable).Dispose())
+
+[<Fact(Timeout = 120000)>]
+let ``watcher delivers ProjectChanged event when obj/project.assets.json is written`` () =
+    // Contract 2: the daemon's file watcher actually picks up writes to
+    // `obj/project.assets.json` even though `obj/` is otherwise excluded by
+    // `PathFilter.isGeneratedPath`. This is the new post-restore signal —
+    // without it, the only signal the daemon has for a PackageReference
+    // change is the .fsproj edit itself (which can race ahead of the
+    // restore completing).
+    withTempDir "fshw-fr-assets" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "src", "MyProj")
+        let objDir = Path.Combine(projDir, "obj")
+        Directory.CreateDirectory(objDir) |> ignore
+
+        // Minimal .fsproj so daemon discovery doesn't bail.
+        let fsprojPath = Path.Combine(projDir, "MyProj.fsproj")
+
+        File.WriteAllText(
+            fsprojPath,
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>\n"
+        )
+
+        let assetsPath = Path.Combine(objDir, "project.assets.json")
+
+        let projectChanges = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
+
+        let recorder: PluginHandler<unit, obj> =
+            { Name = PluginName.create "assets-json-recorder"
+              Init = ()
+              Update =
+                fun _ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged change -> projectChanges.Add(change)
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              CacheKey = None
+              Teardown = None }
+
+        let cts = new CancellationTokenSource()
+
+        let daemon =
+            Daemon.createWith (Unchecked.defaultof<FSharpChecker>) tmpDir Daemon.DaemonOptions.defaults
+
+        try
+            daemon.RegisterHandler(recorder)
+            let task = Async.StartAsTask(daemon.Run(cts.Token))
+            daemon.Ready.Wait(TimeSpan.FromSeconds(30.0)) |> ignore
+
+            // FSEvents cold-start can be 4-20s on macOS. Probe-loop writes
+            // until at least one ProjectChanged for the assets file lands.
+            let hasAssetsProjectChange () =
+                projectChanges
+                |> Seq.exists (fun c ->
+                    match c with
+                    | ProjectChanged files -> files |> List.exists (fun f -> f.EndsWith("project.assets.json"))
+                    | _ -> false)
+
+            probeLoop
+                (fun n -> File.WriteAllText(assetsPath, sprintf "{\"version\":3,\"probe\":%d}" n))
+                hasAssetsProjectChange
+                90000
+
+            if not (hasAssetsProjectChange ()) then
+                let summary = projectChanges |> Seq.map (sprintf "%O") |> String.concat "; "
+
+                Assert.Fail(
+                    sprintf
+                        "Contract failed: writes to %s should fire ProjectChanged within 90s but never did. Observed: %s"
+                        assetsPath
+                        (if summary = "" then "(no FileChanged events)" else summary)
                 )
 
             cts.Cancel()
