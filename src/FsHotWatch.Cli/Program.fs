@@ -793,19 +793,12 @@ let executeCommand
 
                 IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
         | TestRerun flags ->
-            // `test-rerun` is daemon-only by design: it routes through the
-            // same `run-tests` IPC as `fshw test`, with the rendered filter
-            // appended to each TestConfig's command via the rawFilter
-            // passthrough in TestPrunePlugin. The forward-progress `fshw test`
-            // verb deliberately exposes no filter knobs (testprune already
-            // runs everything downstream of a change); slicing belongs here.
-            let filter = RerunFilter.render flags
-
+            // Filter knobs live here, not on `fshw test`, so the
+            // forward-progress contract (everything downstream runs) stays intact.
             let runArgsJson =
-                if filter = "" then
-                    "{}"
-                else
-                    JsonSerializer.Serialize {| filter = filter |}
+                match RerunFilter.render flags with
+                | "" -> "{}"
+                | filter -> JsonSerializer.Serialize {| filter = filter |}
 
             withDaemon (fun () ->
                 let result =
