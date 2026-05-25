@@ -14,4 +14,12 @@
   <ItemGroup>
     <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.7" />
   </ItemGroup>
+
+  <!-- Pin transitive Nerdbank.MessagePack to a patched version (1.0.2 has
+       GHSA-2cwq-pwfr-wcw3 — attacker-controlled stackalloc in DateTime
+       decoding causes process-terminating StackOverflowException; patched
+       in 1.1.62). Pulled in via StreamJsonRpc. -->
+  <ItemGroup>
+    <PackageReference Include="Nerdbank.MessagePack" Version="1.1.62" />
+  </ItemGroup>
 </Project>
