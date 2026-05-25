@@ -513,7 +513,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                         (f :: accepted, sup))
                 ([], suppressed)
 
-        let allSourceFiles =
+        let mutable allSourceFiles =
             filteredSourceFiles
             |> List.rev
             |> List.filter (fun f ->
@@ -559,6 +559,26 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
 
             if not projFilesChanged.IsEmpty then
                 ctx.Host.EmitFileChanged(ProjectChanged projFilesChanged)
+
+            // Auto re-check of affected projects' source files.
+            // Without this, the rediscovery + FCS invalidation just above
+            // leaves the error ledger holding stale diagnostics until the user
+            // saves a .fs file or runs `fshw check`. The FR's user-visible
+            // symptom ("daemon kept reporting FS0039 until manually stopped+
+            // started") is the absence of this re-check, not the invalidation
+            // itself.
+            //
+            // We synthesize source-change entries for every file the daemon
+            // now knows about and let the existing tier-check loop dedup +
+            // execute. On the FsHotWatch FileCheckCache layer, files whose
+            // effective options didn't change cache-hit, so the cost is
+            // bounded to projects whose options actually moved.
+            let projectInducedFiles =
+                ctx.Graph.GetAllProjects()
+                |> List.collect (fun p -> ctx.Graph.GetSourceFiles(p))
+                |> List.map AbsFilePath.value
+
+            allSourceFiles <- (allSourceFiles @ projectInducedFiles) |> List.distinct
 
         let batchStartedAt = System.DateTime.UtcNow
         let dispatchedFiles = ResizeArray<AbsFilePath>()
