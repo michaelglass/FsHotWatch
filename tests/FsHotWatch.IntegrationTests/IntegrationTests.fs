@@ -2110,3 +2110,177 @@ let ``waitForPluginTerminalIfRunning times out when plugin never leaves Running`
     test <@ sw.Elapsed < TimeSpan.FromSeconds(10.0) @>
 
     plugin.Release.TrySetResult() |> ignore
+
+// ===========================================================================
+// FR (docs/fr-auto-refresh-fsproj-changes.md, 2026-05-25):
+// Adding a PackageReference + `dotnet restore` must refresh the affected
+// project's FCS state without restarting the daemon and without forcing the
+// user to save any .fs file.
+//
+// The user-visible symptom ("daemon keeps reporting stale FS0039 until
+// manually stopped+started") decomposes into two daemon contracts that the
+// FR fix has to honor. We test them as two separate integration tests rather
+// than one E2E because the FCS-resolves-new-namespace endpoint relies on
+// Ionide.ProjInfo's design-time MSBuild eval correctly picking up post-
+// restore PackageReferences — a property of the *user's* real project tree,
+// not a daemon contract per se, and minimal synthetic .fsproj test fixtures
+// don't reliably trigger it.
+//
+//   contract 1 (this file, "daemon auto-rechecks ..."): after a .fsproj or
+//   obj/project.assets.json change, the daemon re-evaluates the project's
+//   options *and* re-runs FCS on the project's source files within one
+//   debounce window — without any .fs file being saved. The original bug
+//   was that the daemon would re-evaluate options but never re-check, so
+//   the FCS error ledger stayed stale.
+//
+//   contract 2 (this file, "watcher classifies project.assets.json"):
+//   `Watcher.classifyChange` maps `obj/project.assets.json` paths to
+//   `ProjectChanged`, and the FileSystemWatcher / FSEvents stream actually
+//   delivers events for that file even though it lives in obj/ (otherwise
+//   excluded). This is the new signal the FR added.
+//
+// Manual end-to-end of the full FR ("dotnet add package X → fshw build
+// works without restart") is verified against the real repo by the user.
+// ===========================================================================
+
+let private runDotnetIn (cwd: string) (args: string) : unit =
+    let psi = ProcessStartInfo("dotnet", args)
+    psi.UseShellExecute <- false
+    psi.RedirectStandardOutput <- true
+    psi.RedirectStandardError <- true
+    psi.WorkingDirectory <- cwd
+    let proc = Process.Start(psi)
+    let _ = proc.StandardOutput.ReadToEnd()
+    let stderr = proc.StandardError.ReadToEnd()
+    proc.WaitForExit()
+
+    if proc.ExitCode <> 0 then
+        failwithf "dotnet %s in %s failed (exit %d): %s" args cwd proc.ExitCode stderr
+
+[<Fact(Timeout = 180000)>]
+let ``daemon auto-rechecks affected project's source files after .fsproj edit`` () =
+    // Contract 1: after a .fsproj change, the daemon must re-run FCS on the
+    // project's source files within one debounce window — *without* any .fs
+    // file being saved. The original bug: invalidate + re-evaluate options
+    // fired, but the per-file re-check never followed, so the FCS error
+    // ledger stayed stale.
+    //
+    // We don't assert anything about *which* FCS errors appear — just that a
+    // second FileChecked cohort lands for the project's source file after the
+    // .fsproj edit. That's the daemon contract; whether the new options
+    // actually contain a new PackageReference is a downstream concern (real
+    // project, real ProjInfo eval).
+    withTempDir "fshw-fr-recheck" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "src", "MyProj")
+        Directory.CreateDirectory(projDir) |> ignore
+
+        let fsprojPath = Path.Combine(projDir, "MyProj.fsproj")
+        let libFsPath = Path.Combine(projDir, "Lib.fs")
+        let libFsCanonical = Path.GetFullPath(libFsPath)
+
+        let fsprojInitial =
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+</Project>
+"""
+
+        File.WriteAllText(fsprojPath, fsprojInitial)
+        File.WriteAllText(libFsPath, "module Lib\nlet x = 1\n")
+
+        runDotnetIn projDir "restore --nologo"
+
+        // Capture FileChecked emissions for Lib.fs so we can count cohorts.
+        let libCheckCount = ref 0
+
+        let counter: PluginHandler<unit, obj> =
+            { Name = PluginName.create "lib-recheck-counter"
+              Init = ()
+              Update =
+                fun _ctx state event ->
+                    async {
+                        match event with
+                        | FileChecked result ->
+                            if AbsFilePath.value result.File = libFsCanonical then
+                                System.Threading.Interlocked.Increment(libCheckCount) |> ignore
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeFileChecked ]
+              CacheKey = None
+              Teardown = None }
+
+        let checker =
+            FSharpChecker.Create(projectCacheSize = 50, keepAssemblyContents = false)
+
+        let cts = new CancellationTokenSource()
+        let daemon = Daemon.createWith checker tmpDir Daemon.DaemonOptions.defaults
+
+        try
+            daemon.RegisterHandler(counter)
+            let task = Async.StartAsTask(daemon.Run(cts.Token))
+            daemon.Ready.Wait(TimeSpan.FromSeconds(60.0)) |> ignore
+
+            // Boot scan: drives the first FileChecked for Lib.fs.
+            daemon.ScanAll() |> Async.RunSynchronously
+
+            // Give the FileChecked event time to propagate to our handler.
+            waitUntil (fun () -> libCheckCount.Value >= 1) 30000
+
+            if libCheckCount.Value < 1 then
+                Assert.Fail(
+                    sprintf "Baseline failed: boot scan should produce ≥1 FileChecked for Lib.fs (got %d)" libCheckCount.Value
+                )
+
+            let baseline = libCheckCount.Value
+
+            // Edit .fsproj. The CONTENT of the new project file doesn't matter
+            // for this contract test — only that it triggers a ProjectChanged
+            // event. We use a comment so MSBuild eval still succeeds (and
+            // returns the same options, which is the worst-case for re-check
+            // detection — if our trigger fires even when options are unchanged,
+            // it definitely fires when they change).
+            let fsprojBumped =
+                """<Project Sdk="Microsoft.NET.Sdk">
+  <!-- bumped -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+</Project>
+"""
+
+            File.WriteAllText(fsprojPath, fsprojBumped)
+
+            // FR contract: a ProjectChanged must trigger a fresh FileChecked
+            // cohort for the project's source files within one debounce window
+            // + MSBuild re-eval. Allow a generous timeout for FSEvents
+            // cold-start + 200ms project debounce + 0.5s MSBuild eval + FCS check.
+            waitUntil (fun () -> libCheckCount.Value > baseline) 60000
+
+            if libCheckCount.Value <= baseline then
+                Assert.Fail(
+                    sprintf
+                        "FR contract failed: after .fsproj edit, expected FileChecked for Lib.fs to increment past baseline=%d within 60s, but stayed at %d. The daemon detected the .fsproj change and re-discovered options, but never re-ran FCS on the project's source files."
+                        baseline
+                        libCheckCount.Value
+                )
+
+            cts.Cancel()
+
+            try
+                task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+            with :? AggregateException ->
+                ()
+        finally
+            (daemon :> IDisposable).Dispose())
