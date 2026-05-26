@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.0.2 - 2026-05-27
+
 - chore: update external NuGet dependencies — Microsoft.Data.Sqlite 10.0.5→10.0.8,
   Microsoft.SourceLink.GitHub 10.0.201→10.0.300. Pinned FSharp.Core to 10.1.204
   (was floating `10.1.*`, which drifted to 10.1.300 and broke restore: FSharp.Compiler.Service
