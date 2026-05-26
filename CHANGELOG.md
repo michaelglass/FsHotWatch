@@ -4,6 +4,26 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### Dependencies: refresh external packages
+
+Routine maintenance bump of external (non-FsHotWatch) NuGet dependencies to
+current releases. All gated checks (daemon `check`, 1230 unit tests with
+coverage) stay green; no public API change.
+
+#### Changed
+- `FSharp.Compiler.Service` 43.12.203 → 43.12.204 (core daemon + Analyzers
+  plugin + ExampleAnalyzer).
+- `StreamJsonRpc` 2.24.84 → 2.24.92 (IPC).
+- `Microsoft.SourceLink.GitHub` 10.0.203 → 10.0.300 (all packable projects).
+- `Microsoft.Testing.Extensions.CodeCoverage` 18.6.2 → 18.7.0 (test).
+- Pinned transitives advanced to current patched releases:
+  `System.Security.Cryptography.Xml` 10.0.7 → 10.0.8 and
+  `Nerdbank.MessagePack` 1.1.62 → 1.2.4 (both still cover their respective
+  CVE pins in `Directory.Build.props`).
+
+`FSharp.Core` stays on the pinned `10.1.*` float (already current). No
+YamlDotNet dependency exists in this repo.
+
 ### Daemon: auto-refresh FCS on `.fsproj` and `obj/project.assets.json` changes
 
 Reported by `thellma/intelligence` during the `bedrock-spike` landing
