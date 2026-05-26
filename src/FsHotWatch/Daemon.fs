@@ -131,6 +131,7 @@ let private discoverAndRegisterProjects
     (graph: ProjectGraph)
     (pipeline: CheckPipeline)
     (excludePatterns: string list)
+    (clearCheckCache: bool)
     =
     async {
         let isExcluded = PathFilter.isExcludedPath repoRoot excludePatterns
@@ -162,7 +163,7 @@ let private discoverAndRegisterProjects
                 $"No .fsproj files discovered under %s{searched} of %s{repoRoot}. Check `.fshw.json` exclude patterns or working directory."
 
         graph.PrepareForRediscovery()
-        pipeline.PrepareForRediscovery()
+        pipeline.PrepareForRediscovery(clearCheckCache = clearCheckCache)
 
         let logDir = projInfoLogDir repoRoot
         Directory.CreateDirectory(logDir) |> ignore
@@ -241,7 +242,74 @@ let private discoverAndRegisterProjects
             Logging.error "discover" $"MSBuild evaluation failed (%.1f{sw.Elapsed.TotalSeconds}s): %s{ex.Message}"
     }
 
+/// Map a batch of changed project-tier paths (`.fsproj`, `.props`, or
+/// `obj/project.assets.json`) to the set of *known* `.fsproj` paths whose FCS
+/// state should be scoped-invalidated.
+///
+/// Returns `None` when the change is repo-wide and a full re-discovery is the
+/// only safe response:
+///   - any `.props` file (Directory.Build.props et al. affect every project),
+///   - a `project.assets.json` or `.fsproj` under a directory that doesn't
+///     match a currently-known project (a brand-new project the graph hasn't
+///     registered yet — needs full discovery to pick up).
+///
+/// `Some projects` lists the affected known projects; the caller still expands
+/// to transitive dependents before invalidating/re-checking. Order is not
+/// significant.
+let internal resolveAffectedProjects (knownProjects: string list) (changedPaths: string list) : string list option =
+    let normalize (p: string) = Path.GetFullPath(p).Replace('\\', '/')
+
+    let knownNorm = knownProjects |> List.map normalize
+
+    let projDirToFsproj =
+        knownNorm
+        |> List.map (fun p -> (Path.GetDirectoryName(p: string)), p)
+        |> Map.ofList
+
+    let rec loop (acc: string list) (remaining: string list) =
+        match remaining with
+        | [] -> Some(List.distinct acc)
+        | path :: rest ->
+            let basename = Path.GetFileName(path: string)
+
+            if basename.EndsWith(".props", StringComparison.OrdinalIgnoreCase) then
+                None
+            elif basename.Equals("project.assets.json", StringComparison.OrdinalIgnoreCase) then
+                // <projDir>/obj/project.assets.json → owning <projDir>/<name>.fsproj
+                let objDir = Path.GetDirectoryName(path: string)
+
+                if isNull objDir then
+                    None
+                else
+                    let projDir = normalize (Path.GetDirectoryName(objDir: string))
+
+                    match Map.tryFind projDir projDirToFsproj with
+                    | Some fsproj -> loop (fsproj :: acc) rest
+                    | None -> None
+            elif basename.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase) then
+                let norm = normalize path
+
+                if List.contains norm knownNorm then
+                    loop (norm :: acc) rest
+                else
+                    None
+            else
+                // Unexpected non-project path in a project-tier batch — be safe.
+                None
+
+    loop [] changedPaths
+
 /// Re-discover projects and clear FCS errors for any files that were removed.
+/// `clearCheckCache` controls whether the full FileCheckCache is dropped:
+///   - `true` (full re-discovery): the conservative behavior — every cached
+///     check result is discarded, so the subsequent re-check recomputes
+///     everything. Used when the change is repo-wide (`.props`, solution,
+///     new/removed project) and we can't reason about which projects are stale.
+///   - `false` (scoped re-discovery): the project→options maps are rebuilt
+///     (so file/project membership is fresh) but cached check results are
+///     kept. Projects whose options didn't change keep their warm cache; the
+///     caller is responsible for explicitly invalidating the affected project
+///     and its transitive dependents (see `InvalidateProjectFiles`).
 /// Returns the set of removed files.
 let private rediscoverAndClearRemoved
     (repoRoot: string)
@@ -251,10 +319,11 @@ let private rediscoverAndClearRemoved
     (host: PluginHost)
     (logTag: string)
     (excludePatterns: string list)
+    (clearCheckCache: bool)
     =
     async {
         let oldFiles = graph.GetAllFiles() |> Set.ofList
-        do! discoverAndRegisterProjects repoRoot loader graph pipeline excludePatterns
+        do! discoverAndRegisterProjects repoRoot loader graph pipeline excludePatterns clearCheckCache
         let newFiles = graph.GetAllFiles() |> Set.ofList
         let removedFiles = Set.difference oldFiles newFiles
 
@@ -460,7 +529,16 @@ let internal runDaemonStep (label: string) (work: Async<'T>) : Async<Result<'T, 
 type internal BatchContext =
     {
         Host: PluginHost
+        /// Global FCS invalidation — drops every project's checker state plus
+        /// the language-service root caches. Used by the full re-discovery
+        /// path (repo-wide `.props` / solution / new-project changes).
         InvalidateFcs: (unit -> unit) option
+        /// Scoped FCS invalidation — drops just the given projects' checker
+        /// configurations, leaving every other project's state warm. Used by
+        /// the scoped project-change path. Receives each affected project's
+        /// *current* (pre-re-discovery) `FSharpProjectOptions`. `None` disables
+        /// the scoped path (test daemons with a null checker).
+        InvalidateFcsForProjects: (FSharpProjectOptions list -> unit) option
         RepoRoot: string
         Loader: IWorkspaceLoader
         Graph: ProjectGraph.ProjectGraph
@@ -513,7 +591,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                         (f :: accepted, sup))
                 ([], suppressed)
 
-        let allSourceFiles =
+        let mutable allSourceFiles =
             filteredSourceFiles
             |> List.rev
             |> List.filter (fun f ->
@@ -539,26 +617,106 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
             ctx.Host.EmitFileChanged(SolutionChanged)
 
         if not projFilesChanged.IsEmpty || hasSolution then
-            Logging.info "daemon" "Project/solution change detected — re-discovering projects"
+            // Generated obj/ files (MSBuild's AssemblyInfo / AssemblyAttributes)
+            // are in the ProjectGraph (it stores the raw ProjInfo SourceFiles)
+            // but the CheckPipeline filters them out of its options, so feeding
+            // them to FCS yields a spurious "not part of the project" error.
+            // The pipeline's source list is authoritative for what's checkable.
+            let checkableFilesOf (projects: AbsProjectPath list) =
+                projects
+                |> List.collect ctx.Graph.GetSourceFiles
+                |> List.map AbsFilePath.value
+                |> List.filter (fun f -> not (PathFilter.isGeneratedPath f))
+                |> List.distinct
 
-            ctx.InvalidateFcs |> Option.iter (fun invalidate -> invalidate ())
+            // Decide scoped vs. full. Scoped applies only when every changed
+            // path maps to a known project (no `.props`, no new project, no
+            // solution edit) AND a scoped FCS invalidator is wired.
+            let scopedProjects =
+                if hasSolution then
+                    None
+                else
+                    resolveAffectedProjects (ctx.Pipeline.GetRegisteredProjects()) projFilesChanged
 
-            let! _ =
-                rediscoverAndClearRemoved
-                    ctx.RepoRoot
-                    ctx.Loader
-                    ctx.Graph
-                    ctx.Pipeline
-                    ctx.Host
+            match scopedProjects, ctx.InvalidateFcsForProjects with
+            | Some affectedFsprojs, Some invalidateScoped when not (List.isEmpty affectedFsprojs) ->
+                // ── Scoped path ──────────────────────────────────────────────
+                // Re-check the affected projects AND their transitive
+                // dependents (a dependent's compilation can break when the
+                // changed project's public surface changes). Everything else
+                // keeps its warm FCS + cached check results.
+                let recheckProjects =
+                    affectedFsprojs
+                    |> List.map AbsProjectPath.create
+                    |> List.collect ctx.Graph.GetTransitiveDependents
+                    |> List.distinct
+
+                // Snapshot current options BEFORE re-discovery — these are the
+                // configs FCS currently holds and the keys the cache currently
+                // uses. Used for FCS invalidation and (via InvalidateFile) cache
+                // eviction so dependents whose options-hash is unchanged still
+                // recompute instead of serving a stale cached result.
+                let oldOpts =
+                    recheckProjects
+                    |> List.choose (fun p -> ctx.Pipeline.GetProjectOptions(AbsProjectPath.value p))
+
+                for f in checkableFilesOf recheckProjects |> List.map AbsFilePath.create do
+                    ctx.Pipeline.InvalidateFile f
+
+                invalidateScoped oldOpts
+
+                Logging.info
                     "daemon"
-                    ctx.ExcludePatterns
+                    $"Scoped project change — %d{affectedFsprojs.Length} changed + %d{recheckProjects.Length - affectedFsprojs.Length} dependent project(s) invalidated; rest stay warm"
 
-            Logging.info
-                "daemon"
-                $"Re-discovery complete: %d{ctx.Graph.GetAllProjects().Length} projects, %d{ctx.Pipeline.GetAllRegisteredFiles().Length} files"
+                let! _ =
+                    rediscoverAndClearRemoved
+                        ctx.RepoRoot
+                        ctx.Loader
+                        ctx.Graph
+                        ctx.Pipeline
+                        ctx.Host
+                        "daemon"
+                        ctx.ExcludePatterns
+                        false // keep unrelated projects' check cache
 
-            if not projFilesChanged.IsEmpty then
-                ctx.Host.EmitFileChanged(ProjectChanged projFilesChanged)
+                if not projFilesChanged.IsEmpty then
+                    ctx.Host.EmitFileChanged(ProjectChanged projFilesChanged)
+
+                // Re-derive source files from the refreshed graph (membership
+                // may have shifted) for the same project set.
+                allSourceFiles <- (allSourceFiles @ checkableFilesOf recheckProjects) |> List.distinct
+
+            | _ ->
+                // ── Full path ────────────────────────────────────────────────
+                // Repo-wide change (.props / solution), a project the graph
+                // doesn't know yet, or no scoped invalidator (null-checker test
+                // daemon). Drop everything and re-check the whole graph.
+                Logging.info "daemon" "Project/solution change detected — full re-discovery"
+
+                ctx.InvalidateFcs |> Option.iter (fun invalidate -> invalidate ())
+
+                let! _ =
+                    rediscoverAndClearRemoved
+                        ctx.RepoRoot
+                        ctx.Loader
+                        ctx.Graph
+                        ctx.Pipeline
+                        ctx.Host
+                        "daemon"
+                        ctx.ExcludePatterns
+                        true
+
+                Logging.info
+                    "daemon"
+                    $"Re-discovery complete: %d{ctx.Graph.GetAllProjects().Length} projects, %d{ctx.Pipeline.GetAllRegisteredFiles().Length} files"
+
+                if not projFilesChanged.IsEmpty then
+                    ctx.Host.EmitFileChanged(ProjectChanged projFilesChanged)
+
+                allSourceFiles <-
+                    (allSourceFiles @ checkableFilesOf (ctx.Graph.GetAllProjects()))
+                    |> List.distinct
 
         let batchStartedAt = System.DateTime.UtcNow
         let dispatchedFiles = ResizeArray<AbsFilePath>()
@@ -1050,7 +1208,7 @@ type Daemon
 
     /// Discover .fsproj files in src/ and tests/ and register them with the pipeline.
     member _.DiscoverAndRegisterProjects() =
-        discoverAndRegisterProjects repoRoot workspaceLoader graph pipeline excludePatterns
+        discoverAndRegisterProjects repoRoot workspaceLoader graph pipeline excludePatterns true
 
     /// Format scan state as a human-readable string.
     member _.FormatScanStatus() =
@@ -1157,7 +1315,8 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
         let mutable lastFingerprint = state.LastFingerprint
 
         if currentFingerprint <> state.LastFingerprint then
-            let! _ = rediscoverAndClearRemoved ctx.RepoRoot ctx.Loader graph pipeline host "scan" ctx.ExcludePatterns
+            let! _ =
+                rediscoverAndClearRemoved ctx.RepoRoot ctx.Loader graph pipeline host "scan" ctx.ExcludePatterns true
 
             lastFingerprint <- currentFingerprint
 
@@ -1369,6 +1528,16 @@ module Daemon =
                         Some(fun () ->
                             checker.InvalidateAll()
                             checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients())
+                  InvalidateFcsForProjects =
+                    if isNull (box checker) then
+                        None
+                    else
+                        Some(fun optsList ->
+                            // Per-project invalidation only. No global
+                            // ClearLanguageServiceRootCaches — that GC is what
+                            // makes the full path cold; scoping is the point.
+                            for opts in optsList do
+                                checker.InvalidateConfiguration(opts))
                   RepoRoot = repoRoot
                   Loader = loader
                   Graph = graph
