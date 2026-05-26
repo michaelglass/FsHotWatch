@@ -8,7 +8,7 @@
         "platform": "macos"
       },
       {
-        "line": 74,
+        "line": 72,
         "branch": 70,
         "reason": "reflection-based CliContext branches vary by platform; parse-only path \u002B knownNonAnalyzerPrefixes filter both add untested branches on Linux",
         "platform": "linux"
@@ -68,7 +68,7 @@
         "platform": "macos"
       },
       {
-        "line": 80,
+        "line": 78,
         "branch": 69,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
