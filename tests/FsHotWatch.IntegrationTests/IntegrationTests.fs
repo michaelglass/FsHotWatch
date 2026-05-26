@@ -2139,8 +2139,15 @@ let ``waitForPluginTerminalIfRunning times out when plugin never leaves Running`
 //   delivers events for that file even though it lives in obj/ (otherwise
 //   excluded). This is the new signal the FR added.
 //
-// Manual end-to-end of the full FR ("dotnet add package X → fshw build
-// works without restart") is verified against the real repo by the user.
+//   contract 3 (this file, "daemon resolves a newly-added PackageReference
+//   ... without restart"): the literal FR acceptance criterion, end to end.
+//   Add a PackageReference, `dotnet restore`, and the FCS error referencing
+//   the new namespace clears with no daemon restart and no .fs save. This
+//   exercises the race the FR hinted at: the `.fsproj` edit fires the watcher
+//   while `dotnet restore` is still writing obj/, so the first eval can see a
+//   stale package graph; the post-restore `project.assets.json` write (now a
+//   watched signal — contract 2) triggers a second eval that picks up the
+//   resolved reference.
 // ===========================================================================
 
 let private runDotnetIn (cwd: string) (args: string) : unit =
@@ -2361,6 +2368,128 @@ let ``watcher delivers ProjectChanged event when obj/project.assets.json is writ
                         "Contract failed: writes to %s should fire ProjectChanged within 90s but never did. Observed: %s"
                         assetsPath
                         (if summary = "" then "(no FileChanged events)" else summary)
+                )
+
+            cts.Cancel()
+
+            try
+                task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+            with :? AggregateException ->
+                ()
+        finally
+            (daemon :> IDisposable).Dispose())
+
+[<Fact(Timeout = 240000)>]
+let ``daemon resolves a newly-added PackageReference and clears the stale FS0039 without restart`` () =
+    // Contract 3: the literal FR acceptance criterion, end to end with a real
+    // package (Newtonsoft.Json), real `dotnet restore`, real FCS.
+    //
+    // This is the test that motivated the whole change set. Note the ordering
+    // hazard it deliberately exercises: writing the .fsproj fires the watcher
+    // immediately, but `dotnet restore` then takes longer than the 200ms
+    // project debounce — so the daemon's first re-eval can race ahead and read
+    // a stale obj/ package graph (observed: FCS still can't see Newtonsoft).
+    // The fix that makes this test pass is watching `obj/project.assets.json`
+    // (contract 2): restore's final atomic write of that file triggers a
+    // SECOND re-eval after the package graph is coherent, which resolves the
+    // reference and — via the auto re-check (contract 1) — clears the error.
+    withTempDir "fshw-fr-e2e" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "src", "MyProj")
+        Directory.CreateDirectory(projDir) |> ignore
+
+        let fsprojPath = Path.Combine(projDir, "MyProj.fsproj")
+        let libFsPath = Path.Combine(projDir, "Lib.fs")
+        let libFsCanonical = Path.GetFullPath(libFsPath)
+
+        let fsprojNoPackage =
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+</Project>
+"""
+
+        let fsprojWithPackage =
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+</Project>
+"""
+
+        File.WriteAllText(fsprojPath, fsprojNoPackage)
+
+        File.WriteAllText(
+            libFsPath,
+            "module Lib\nopen Newtonsoft.Json\nlet useIt () : JsonSerializer = JsonSerializer()\n"
+        )
+
+        runDotnetIn projDir "restore --nologo"
+
+        let checker =
+            FSharpChecker.Create(projectCacheSize = 50, keepAssemblyContents = false)
+
+        let cts = new CancellationTokenSource()
+        let daemon = Daemon.createWith checker tmpDir Daemon.DaemonOptions.defaults
+
+        let hasNewtonsoftError () =
+            daemon.Host.GetErrorsByPlugin(FsHotWatch.PluginActivity.FcsPluginName)
+            |> Map.toSeq
+            |> Seq.exists (fun (file, entries) ->
+                (file = libFsCanonical || file.EndsWith("Lib.fs"))
+                && entries |> List.exists (fun e -> e.Message.Contains("Newtonsoft")))
+
+        try
+            let task = Async.StartAsTask(daemon.Run(cts.Token))
+            daemon.Ready.Wait(TimeSpan.FromSeconds(60.0)) |> ignore
+
+            // Boot scan: Lib.fs opens Newtonsoft, which isn't referenced yet →
+            // baseline FS0039.
+            daemon.ScanAll() |> Async.RunSynchronously
+            waitUntil hasNewtonsoftError 90000
+
+            if not (hasNewtonsoftError ()) then
+                Assert.Fail(
+                    "Baseline failed: expected FS0039 (Newtonsoft not defined) after boot scan but none observed."
+                )
+
+            // Add the package + restore. The watcher sees both the .fsproj edit
+            // and (after restore) the obj/project.assets.json write. No .fs save,
+            // no daemon restart.
+            File.WriteAllText(fsprojPath, fsprojWithPackage)
+            runDotnetIn projDir "restore --nologo --force"
+
+            let assetsPath = Path.Combine(projDir, "obj", "project.assets.json")
+
+            if not (File.ReadAllText(assetsPath).Contains("Newtonsoft.Json")) then
+                Assert.Fail("Test setup invalid: project.assets.json lacks Newtonsoft.Json after restore.")
+
+            // The daemon must converge to a clean ledger on its own.
+            let errorCleared () = not (hasNewtonsoftError ())
+            waitUntil errorCleared 120000
+
+            if not (errorCleared ()) then
+                let remaining =
+                    daemon.Host.GetErrorsByPlugin(FsHotWatch.PluginActivity.FcsPluginName)
+                    |> Map.toSeq
+                    |> Seq.collect (fun (f, es) -> es |> List.map (fun e -> sprintf "%s: %s" f e.Message))
+                    |> String.concat " | "
+
+                Assert.Fail(
+                    sprintf
+                        "FR acceptance failed: after PackageReference add + restore, FCS still can't resolve Newtonsoft after 120s (no restart). Remaining: %s"
+                        remaining
                 )
 
             cts.Cancel()
