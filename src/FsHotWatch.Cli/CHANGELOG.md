@@ -4,6 +4,8 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+## 0.8.0-alpha.14 - 2026-05-26
+
 ### Added
 
 - `fshw test-rerun [--filter-class <pattern>] [--filter-trait <name=value>]` command. Routes through the existing `run-tests` IPC with the filter passed to the xUnit v3 standalone runner. Lets callers slice a test run for investigation (single class, single trait) without bypassing the daemon — preserving the analyzer/lint/format/coverage hooks. Daemon-only.
