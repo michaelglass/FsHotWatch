@@ -900,3 +900,65 @@ let ``F13: runDaemonStep returns Ok with the work result on success`` () =
     match result with
     | Ok v -> test <@ v = 42 @>
     | Result.Error ex -> Assert.Fail($"expected Ok 42, got Error {ex}")
+
+// ===========================================================================
+// resolveAffectedProjects — routes a project-tier change batch to the set of
+// known projects whose FCS state should be scoped-invalidated, or None when a
+// full re-discovery is the only safe response.
+// ===========================================================================
+
+[<Fact(Timeout = 5000)>]
+let ``resolveAffectedProjects maps a known .fsproj edit to that project`` () =
+    let known = [ "/repo/src/A/A.fsproj"; "/repo/src/B/B.fsproj" ]
+
+    let result =
+        FsHotWatch.Daemon.resolveAffectedProjects known [ "/repo/src/A/A.fsproj" ]
+
+    match result with
+    | Some [ one ] -> test <@ one.Replace('\\', '/').EndsWith("/A/A.fsproj") @>
+    | other -> Assert.Fail($"expected Some [A.fsproj], got %A{other}")
+
+[<Fact(Timeout = 5000)>]
+let ``resolveAffectedProjects maps obj/project.assets.json to its owning project`` () =
+    let known = [ "/repo/src/A/A.fsproj"; "/repo/src/B/B.fsproj" ]
+
+    let result =
+        FsHotWatch.Daemon.resolveAffectedProjects known [ "/repo/src/A/obj/project.assets.json" ]
+
+    match result with
+    | Some [ one ] -> test <@ one.Replace('\\', '/').EndsWith("/A/A.fsproj") @>
+    | other -> Assert.Fail($"expected Some [A.fsproj], got %A{other}")
+
+[<Fact(Timeout = 5000)>]
+let ``resolveAffectedProjects returns None for a .props change (repo-wide)`` () =
+    let known = [ "/repo/src/A/A.fsproj" ]
+    test <@ FsHotWatch.Daemon.resolveAffectedProjects known [ "/repo/Directory.Build.props" ] = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``resolveAffectedProjects returns None when any path is repo-wide even if others map`` () =
+    let known = [ "/repo/src/A/A.fsproj" ]
+
+    let changed = [ "/repo/src/A/A.fsproj"; "/repo/Directory.Build.props" ]
+
+    test <@ FsHotWatch.Daemon.resolveAffectedProjects known changed = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``resolveAffectedProjects returns None for an unknown (new) project`` () =
+    let known = [ "/repo/src/A/A.fsproj" ]
+    test <@ FsHotWatch.Daemon.resolveAffectedProjects known [ "/repo/src/New/New.fsproj" ] = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``resolveAffectedProjects returns None for assets.json under an unknown project`` () =
+    let known = [ "/repo/src/A/A.fsproj" ]
+
+    test <@ FsHotWatch.Daemon.resolveAffectedProjects known [ "/repo/src/New/obj/project.assets.json" ] = None @>
+
+[<Fact(Timeout = 5000)>]
+let ``resolveAffectedProjects dedups .fsproj and its assets.json to one project`` () =
+    let known = [ "/repo/src/A/A.fsproj" ]
+
+    let changed = [ "/repo/src/A/A.fsproj"; "/repo/src/A/obj/project.assets.json" ]
+
+    match FsHotWatch.Daemon.resolveAffectedProjects known changed with
+    | Some [ _ ] -> ()
+    | other -> Assert.Fail($"expected a single deduped project, got %A{other}")
