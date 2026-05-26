@@ -2256,3 +2256,53 @@ let getArticles () = ()
         test <@ readsFromAttrs[0].SymbolFullName.EndsWith("getArticles") @>
         test <@ readsFromAttrs[0].ArgsJson.Contains("articles") @>
         test <@ readsFromAttrs[0].ArgsJson.Contains("status") @>
+
+module ``Backtick name handling`` =
+
+    [<Fact>]
+    let ``backtick-named test methods are detected as symbols`` () =
+        let source =
+            """module TestModule
+
+type FactAttribute() =
+    inherit System.Attribute()
+
+[<Fact>]
+let ``my backtick test`` () = ()
+
+[<Fact>]
+let normalTest () = ()
+"""
+
+        let options = getScriptOptions checker "test.fsx" source |> Async.RunSynchronously
+
+        let result =
+            analyzeSource checker "test.fsx" source options "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis ->
+            // Both test methods should be detected
+            let testMethods = analysis.TestMethods
+            test <@ testMethods.Length >= 2 @>
+
+            let hasBacktickTest =
+                testMethods |> List.exists (fun tm -> tm.TestMethod.Contains("backtick"))
+
+            let hasNormalTest =
+                testMethods |> List.exists (fun tm -> tm.TestMethod = "normalTest")
+
+            test <@ hasBacktickTest @>
+            test <@ hasNormalTest @>
+
+            // Both should appear as symbols (the bug was backtick functions were filtered out)
+            let hasBacktickSymbol =
+                analysis.Symbols |> List.exists (fun s -> s.FullName.Contains("backtick"))
+
+            let hasNormalSymbol =
+                analysis.Symbols
+                |> List.exists (fun s -> s.FullName.EndsWith("normalTest", StringComparison.Ordinal))
+
+            test <@ hasBacktickSymbol @>
+            test <@ hasNormalSymbol @>
+        | Error e -> failwith $"analysis failed: {e}"
