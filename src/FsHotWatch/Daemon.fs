@@ -573,10 +573,18 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
             // execute. On the FsHotWatch FileCheckCache layer, files whose
             // effective options didn't change cache-hit, so the cost is
             // bounded to projects whose options actually moved.
+            //
+            // Generated obj/ files (MSBuild's AssemblyInfo / AssemblyAttributes)
+            // are excluded: the ProjectGraph records them (it registers the raw
+            // ProjInfo SourceFiles list) but the CheckPipeline filters them out
+            // of its options, so FCS rejects them with "not part of the project"
+            // and logs a spurious error on every project change. The pipeline's
+            // own source list is authoritative for what's checkable.
             let projectInducedFiles =
                 ctx.Graph.GetAllProjects()
                 |> List.collect (fun p -> ctx.Graph.GetSourceFiles(p))
                 |> List.map AbsFilePath.value
+                |> List.filter (fun f -> not (PathFilter.isGeneratedPath f))
 
             allSourceFiles <- (allSourceFiles @ projectInducedFiles) |> List.distinct
 
