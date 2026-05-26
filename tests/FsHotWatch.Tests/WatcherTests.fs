@@ -91,6 +91,45 @@ let ``classifyChange maps .sln to SolutionChanged`` () =
 let ``classifyChange maps .slnx to SolutionChanged`` () =
     test <@ classifyChange "/repo/App.slnx" = SolutionChanged @>
 
+// === project.assets.json — post-restore package-graph signal ===
+// FR docs/fr-auto-refresh-fsproj-changes.md (2026-05-25): the daemon
+// must detect when `dotnet restore` materializes a new PackageReference,
+// not just when the user types `<PackageReference>` into the .fsproj.
+// `obj/project.assets.json` is the canonical post-restore signal — it's
+// updated atomically when the resolver finishes, so reacting to it
+// avoids the race where the .fsproj has the new package but restore
+// hasn't completed yet.
+
+[<Fact(Timeout = 15000)>]
+let ``isRelevantFile accepts obj/project.assets.json despite obj/ exclusion`` () =
+    test <@ isRelevantFile "/repo/src/MyProj/obj/project.assets.json" @>
+
+[<Fact(Timeout = 15000)>]
+let ``isRelevantFile still rejects other files under obj/`` () =
+    test <@ not (isRelevantFile "/repo/src/MyProj/obj/Debug/MyProj.AssemblyInfo.fs") @>
+    test <@ not (isRelevantFile "/repo/src/MyProj/obj/MyProj.fsproj.nuget.g.props") @>
+    test <@ not (isRelevantFile "/repo/src/MyProj/obj/project.nuget.cache") @>
+
+[<Fact(Timeout = 15000)>]
+let ``classifyChange maps obj/project.assets.json to ProjectChanged`` () =
+    let path = "/repo/src/MyProj/obj/project.assets.json"
+    test <@ classifyChange path = ProjectChanged [ path ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``classifyChange routes assets.json identically to .fsproj (so processBatch dispatch is shared)`` () =
+    // Both paths must arrive at processBatch through the same FileChangeKind
+    // variant so the project-tier code path handles them identically. If they
+    // diverge, downstream tier-check / invalidation logic has to branch.
+    let fsprojChange = classifyChange "/repo/src/MyProj/MyProj.fsproj"
+    let assetsChange = classifyChange "/repo/src/MyProj/obj/project.assets.json"
+
+    let isProject =
+        function
+        | ProjectChanged _ -> true
+        | _ -> false
+
+    test <@ isProject fsprojChange && isProject assetsChange @>
+
 // === Unit tests for hasContentChanged ===
 
 [<Fact(Timeout = 15000)>]
