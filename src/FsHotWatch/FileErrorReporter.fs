@@ -11,6 +11,22 @@ let private errorFileName (plugin: string) (file: string) =
 
 let private jsonOptions = JsonSerializerOptions(WriteIndented = true)
 
+/// System.Text.Json's UTF-8 transcoder throws OverflowException when serializing a
+/// single string token larger than ~700M chars. A misbehaving plugin can stuff an
+/// entire test-suite output into a diagnostic message/detail (observed when many
+/// integration tests fail at once), which crashes the reporter and wedges the daemon.
+/// Cap each string field far below that bound; the full output is preserved elsewhere
+/// (e.g. per-test-run logs), so the on-disk ledger only needs a readable excerpt.
+[<Literal>]
+let maxFieldChars = 20000
+
+let internal truncateField (s: string) : string =
+    if isNull s || s.Length <= maxFieldChars then
+        s
+    else
+        let dropped = s.Length - maxFieldChars
+        s.Substring(0, maxFieldChars) + $"… [truncated %d{dropped} chars]"
+
 let private tryDelete path = File.Delete(path)
 
 /// Writes per-plugin per-file JSON error files to a directory.
@@ -21,11 +37,11 @@ type FileErrorReporter(errorDir: string) =
         let records =
             entries
             |> List.map (fun e ->
-                {| message = e.Message
+                {| message = truncateField e.Message
                    severity = DiagnosticSeverity.toString e.Severity
                    line = e.Line
                    column = e.Column
-                   detail = e.Detail |})
+                   detail = e.Detail |> Option.map truncateField |})
 
         JsonSerializer.Serialize(records, jsonOptions)
 
