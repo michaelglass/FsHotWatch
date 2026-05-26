@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: daemon auto-refreshes FCS state on `.fsproj` / `obj/project.assets.json` changes — adding a `PackageReference` + `dotnet restore` now resolves without a daemon restart or a `.fs` save (FR `docs/fr-auto-refresh-fsproj-changes.md`). `Watcher.classifyChange` routes `obj/project.assets.json` through `ProjectChanged` (recovers the `.fsproj`-edit-races-`restore` window), and `Daemon.processBatch` re-checks the affected project's source files after re-discovery.
+- feat: scoped FCS invalidation — a single project change invalidates only that project plus its transitive dependents (`Daemon.resolveAffectedProjects`), keeping unrelated projects' warm FCS state and cached check results instead of cold-starting the whole solution. Repo-wide changes (`.props`, solution edits, a brand-new project) fall back to full re-discovery.
+- feat: `CheckPipeline.PrepareForRediscovery` gained an optional `?clearCheckCache` parameter (default `true`); the scoped project-change path passes `false` to retain unrelated projects' cached check results across re-discovery.
+
 ## 0.8.0-alpha.13 - 2026-05-04
 
 - fix: `Daemon.DaemonOptions.FcsSuppressedCodes = None` now resolves to an empty `Set<int>` instead of `Set.ofList [ 1182 ]`; projects that need FS1182 silenced should declare `<NoWarn>FS1182</NoWarn>` in their fsproj
