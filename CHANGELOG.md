@@ -13,7 +13,8 @@ the daemon reporting `FS0039: namespace 'Bedrock' is not defined`
 until the user ran `dotnet fshw stop && dotnet fshw start` — discarding
 the entire FCS cache for ~20 unrelated projects unnecessarily.
 
-Two contracts had to be added to fully close the loop.
+Closing the loop took three contracts: detect the change, re-evaluate
+only what's affected, and keep everything else hot.
 
 #### Fixed
 - **The daemon now re-runs FCS on the affected project's source files
@@ -25,6 +26,20 @@ Two contracts had to be added to fully close the loop.
   the user saved a `.fs` file or restarted the daemon. The boot-scan
   re-check on restart is what made the "stop && start" workaround
   appear to "fix" the bug.
+- **A project change no longer cold-starts every other project.** The
+  re-check above, as first written, re-checked *all* registered files
+  and cleared the whole check cache — on a 20-project solution that
+  reintroduced the ~30s cold start the FR set out to eliminate. The
+  daemon now scopes invalidation to the changed project **and its
+  transitive dependents** (`Daemon.resolveAffectedProjects`): it calls
+  `FSharpChecker.InvalidateConfiguration` for just that set, re-discovers
+  without clearing unrelated projects' cached results, and re-checks only
+  that set. Dependents are explicitly cache-invalidated so a dependent
+  that breaks when the changed project's public surface changes still
+  recomputes (correctness over warmth). Repo-wide changes (`.props`,
+  solution edits, a brand-new project) and the case where watcher and
+  project-graph paths diverge (a repo under a symlink) fall back to the
+  full invalidate-and-recheck path.
 
 #### Added
 - `Watcher.isProjectAssetsJson` / extended `Watcher.classifyChange` —
