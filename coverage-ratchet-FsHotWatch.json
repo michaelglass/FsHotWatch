@@ -112,7 +112,7 @@
     },
     "Daemon.fs": [
       {
-        "line": 74,
+        "line": 75,
         "branch": 71,
         "reason": "drifts 74-76%; pinned to floor (scoped-invalidation branches in processBatch are integration-tested, excluded from coverage)",
         "platform": "macos"
@@ -380,7 +380,7 @@
     ],
     "PluginActivity.fs": [
       {
-        "line": 86,
+        "line": 87,
         "branch": 71,
         "reason": "loosened: Recording phase state paths hit 65-66% across runs; pin to observed floor (line drifts 86-88%); observed 86.8% on macOS, pinned below floor",
         "platform": "macos"
@@ -422,7 +422,7 @@
     ],
     "ProcessHelper.fs": [
       {
-        "line": 90,
+        "line": 93,
         "branch": 100,
         "reason": "kill-on-timeout drain branches fire flakily between runs (89-92% line); pinned to floor 89 \u2014 note: avoid \u0027mise run check\u0027 auto-ratchet, it bumps back to ceiling on lucky run",
         "platform": "macos"
@@ -448,8 +448,8 @@
     ],
     "Program.fs": [
       {
-        "line": 67,
-        "branch": 57,
+        "line": 68,
+        "branch": 58,
         "reason": "CLI entry point; line drifts 66-68% and branch drifts 53-54% across runs \u2014 pin to floor; auto-ratchet bumps to ceiling and breaks CI on the next unlucky run",
         "platform": "macos"
       },
