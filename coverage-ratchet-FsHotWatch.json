@@ -63,8 +63,8 @@
     "CheckPipeline.fs": [
       {
         "line": 79,
-        "branch": 65,
-        "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor; observed 79.4% on macOS, pinned below floor",
+        "branch": 64,
+        "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor; scoped-rediscovery PrepareForRediscovery(clearCheckCache) branch is integration-tested, pinned below floor",
         "platform": "macos"
       },
       {
@@ -112,9 +112,9 @@
     },
     "Daemon.fs": [
       {
-        "line": 76,
+        "line": 74,
         "branch": 71,
-        "reason": "drifts 74-76%; pinned to floor",
+        "reason": "drifts 74-76%; pinned to floor (scoped-invalidation branches in processBatch are integration-tested, excluded from coverage)",
         "platform": "macos"
       },
       {
