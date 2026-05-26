@@ -76,3 +76,33 @@ let ``sanitizeFileName replaces slashes and angle brackets`` () =
         let expectedFile = Path.Combine(tmpDir, "fcs---src-FsHotWatch-Daemon.fs.json")
 
         test <@ File.Exists(expectedFile) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``Report caps oversized message and detail (guards transcode overflow)`` () =
+    withTempDir "fer-truncate" (fun tmpDir ->
+        let reporter = FileErrorReporter(tmpDir)
+        // A plugin dumping full test output into a diagnostic can exceed System.Text.Json's
+        // UTF-8 transcoder limit and crash serialization, wedging the daemon. The reporter
+        // must cap such fields rather than serialize them whole.
+        let oversized = String.replicate (maxFieldChars + 5000) "x"
+        let entry = ErrorEntry.errorWithDetail oversized oversized
+
+        (reporter :> IErrorReporter).Report "build" "<build>" [ entry ]
+
+        let content = File.ReadAllText(Path.Combine(tmpDir, "build--_build_.json"))
+        // both oversized fields are capped and marked, never written in full
+        test <@ content.Contains("[truncated 5000 chars]") @>
+        test <@ not (content.Contains(oversized)) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``Report tolerates a null message field`` () =
+    withTempDir "fer-null-msg" (fun tmpDir ->
+        let reporter = FileErrorReporter(tmpDir)
+        // Message is a plain (nullable) string; the field cap must not NRE on null.
+        let entry =
+            { ErrorEntry.error "x" with
+                Message = null }
+
+        (reporter :> IErrorReporter).Report "build" "<build>" [ entry ]
+
+        test <@ File.Exists(Path.Combine(tmpDir, "build--_build_.json")) @>)
