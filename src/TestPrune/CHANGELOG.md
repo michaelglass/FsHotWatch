@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- chore: update external NuGet dependencies — Microsoft.Data.Sqlite 10.0.5→10.0.8,
+  Microsoft.SourceLink.GitHub 10.0.201→10.0.300, Microsoft.Testing.Extensions.CodeCoverage
+  18.6.2→18.7.0. Pinned FSharp.Core to 10.1.204 (was floating `10.1.*`, which drifted to
+  10.1.300 and broke restore: FSharp.Compiler.Service 43.12.204 hard-pins FSharp.Core to `[10.1.204]`).
+
 ## 4.0.1 - 2026-05-04
 
 - fix: detectChanges now filters extern symbols from both sides internally, eliminating phantom diffs on warm FCS restart
