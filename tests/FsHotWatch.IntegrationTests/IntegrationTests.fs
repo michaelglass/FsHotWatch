@@ -2110,3 +2110,624 @@ let ``waitForPluginTerminalIfRunning times out when plugin never leaves Running`
     test <@ sw.Elapsed < TimeSpan.FromSeconds(10.0) @>
 
     plugin.Release.TrySetResult() |> ignore
+
+// ===========================================================================
+// FR (docs/fr-auto-refresh-fsproj-changes.md, 2026-05-25):
+// Adding a PackageReference + `dotnet restore` must refresh the affected
+// project's FCS state without restarting the daemon and without forcing the
+// user to save any .fs file.
+//
+// The user-visible symptom ("daemon keeps reporting stale FS0039 until
+// manually stopped+started") decomposes into two daemon contracts that the
+// FR fix has to honor. We test them as two separate integration tests rather
+// than one E2E because the FCS-resolves-new-namespace endpoint relies on
+// Ionide.ProjInfo's design-time MSBuild eval correctly picking up post-
+// restore PackageReferences — a property of the *user's* real project tree,
+// not a daemon contract per se, and minimal synthetic .fsproj test fixtures
+// don't reliably trigger it.
+//
+//   contract 1 (this file, "daemon auto-rechecks ..."): after a .fsproj or
+//   obj/project.assets.json change, the daemon re-evaluates the project's
+//   options *and* re-runs FCS on the project's source files within one
+//   debounce window — without any .fs file being saved. The original bug
+//   was that the daemon would re-evaluate options but never re-check, so
+//   the FCS error ledger stayed stale.
+//
+//   contract 2 (this file, "watcher classifies project.assets.json"):
+//   `Watcher.classifyChange` maps `obj/project.assets.json` paths to
+//   `ProjectChanged`, and the FileSystemWatcher / FSEvents stream actually
+//   delivers events for that file even though it lives in obj/ (otherwise
+//   excluded). This is the new signal the FR added.
+//
+//   contract 3 (this file, "daemon resolves a newly-added PackageReference
+//   ... without restart"): the literal FR acceptance criterion, end to end.
+//   Add a PackageReference, `dotnet restore`, and the FCS error referencing
+//   the new namespace clears with no daemon restart and no .fs save. This
+//   exercises the race the FR hinted at: the `.fsproj` edit fires the watcher
+//   while `dotnet restore` is still writing obj/, so the first eval can see a
+//   stale package graph; the post-restore `project.assets.json` write (now a
+//   watched signal — contract 2) triggers a second eval that picks up the
+//   resolved reference.
+// ===========================================================================
+
+let private runDotnetIn (cwd: string) (args: string) : unit =
+    let psi = ProcessStartInfo("dotnet", args)
+    psi.UseShellExecute <- false
+    psi.RedirectStandardOutput <- true
+    psi.RedirectStandardError <- true
+    psi.WorkingDirectory <- cwd
+    let proc = Process.Start(psi)
+    let _ = proc.StandardOutput.ReadToEnd()
+    let stderr = proc.StandardError.ReadToEnd()
+    proc.WaitForExit()
+
+    if proc.ExitCode <> 0 then
+        failwithf "dotnet %s in %s failed (exit %d): %s" args cwd proc.ExitCode stderr
+
+[<Fact(Timeout = 180000)>]
+let ``daemon auto-rechecks affected project's source files after .fsproj edit`` () =
+    // Contract 1: after a .fsproj change, the daemon must re-run FCS on the
+    // project's source files within one debounce window — *without* any .fs
+    // file being saved. The original bug: invalidate + re-evaluate options
+    // fired, but the per-file re-check never followed, so the FCS error
+    // ledger stayed stale.
+    //
+    // We don't assert anything about *which* FCS errors appear — just that a
+    // second FileChecked cohort lands for the project's source file after the
+    // .fsproj edit. That's the daemon contract; whether the new options
+    // actually contain a new PackageReference is a downstream concern (real
+    // project, real ProjInfo eval).
+    withTempDir "fshw-fr-recheck" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "src", "MyProj")
+        Directory.CreateDirectory(projDir) |> ignore
+
+        let fsprojPath = Path.Combine(projDir, "MyProj.fsproj")
+        let libFsPath = Path.Combine(projDir, "Lib.fs")
+        let libFsCanonical = Path.GetFullPath(libFsPath)
+
+        let fsprojInitial =
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+</Project>
+"""
+
+        File.WriteAllText(fsprojPath, fsprojInitial)
+        File.WriteAllText(libFsPath, "module Lib\nlet x = 1\n")
+
+        runDotnetIn projDir "restore --nologo"
+
+        // Capture FileChecked emissions for Lib.fs so we can count cohorts.
+        let libCheckCount = ref 0
+
+        let counter: PluginHandler<unit, obj> =
+            { Name = PluginName.create "lib-recheck-counter"
+              Init = ()
+              Update =
+                fun _ctx state event ->
+                    async {
+                        match event with
+                        | FileChecked result ->
+                            if AbsFilePath.value result.File = libFsCanonical then
+                                System.Threading.Interlocked.Increment(libCheckCount) |> ignore
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeFileChecked ]
+              CacheKey = None
+              Teardown = None }
+
+        let checker =
+            FSharpChecker.Create(projectCacheSize = 50, keepAssemblyContents = false)
+
+        let cts = new CancellationTokenSource()
+        let daemon = Daemon.createWith checker tmpDir Daemon.DaemonOptions.defaults
+
+        try
+            daemon.RegisterHandler(counter)
+            let task = Async.StartAsTask(daemon.Run(cts.Token))
+            daemon.Ready.Wait(TimeSpan.FromSeconds(60.0)) |> ignore
+
+            // Boot scan: drives the first FileChecked for Lib.fs.
+            daemon.ScanAll() |> Async.RunSynchronously
+
+            // Give the FileChecked event time to propagate to our handler.
+            waitUntil (fun () -> libCheckCount.Value >= 1) 30000
+
+            if libCheckCount.Value < 1 then
+                Assert.Fail(
+                    sprintf
+                        "Baseline failed: boot scan should produce ≥1 FileChecked for Lib.fs (got %d)"
+                        libCheckCount.Value
+                )
+
+            let baseline = libCheckCount.Value
+
+            // Edit .fsproj. The CONTENT of the new project file doesn't matter
+            // for this contract test — only that it triggers a ProjectChanged
+            // event. We use a comment so MSBuild eval still succeeds (and
+            // returns the same options, which is the worst-case for re-check
+            // detection — if our trigger fires even when options are unchanged,
+            // it definitely fires when they change).
+            let fsprojBumped =
+                """<Project Sdk="Microsoft.NET.Sdk">
+  <!-- bumped -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+</Project>
+"""
+
+            File.WriteAllText(fsprojPath, fsprojBumped)
+
+            // FR contract: a ProjectChanged must trigger a fresh FileChecked
+            // cohort for the project's source files within one debounce window
+            // + MSBuild re-eval. Allow a generous timeout for FSEvents
+            // cold-start + 200ms project debounce + 0.5s MSBuild eval + FCS check.
+            waitUntil (fun () -> libCheckCount.Value > baseline) 60000
+
+            if libCheckCount.Value <= baseline then
+                Assert.Fail(
+                    sprintf
+                        "FR contract failed: after .fsproj edit, expected FileChecked for Lib.fs to increment past baseline=%d within 60s, but stayed at %d. The daemon detected the .fsproj change and re-discovered options, but never re-ran FCS on the project's source files."
+                        baseline
+                        libCheckCount.Value
+                )
+
+            cts.Cancel()
+
+            try
+                task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+            with :? AggregateException ->
+                ()
+        finally
+            (daemon :> IDisposable).Dispose())
+
+[<Fact(Timeout = 120000)>]
+let ``watcher delivers ProjectChanged event when obj/project.assets.json is written`` () =
+    // Contract 2: the daemon's file watcher actually picks up writes to
+    // `obj/project.assets.json` even though `obj/` is otherwise excluded by
+    // `PathFilter.isGeneratedPath`. This is the new post-restore signal —
+    // without it, the only signal the daemon has for a PackageReference
+    // change is the .fsproj edit itself (which can race ahead of the
+    // restore completing).
+    withTempDir "fshw-fr-assets" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "src", "MyProj")
+        let objDir = Path.Combine(projDir, "obj")
+        Directory.CreateDirectory(objDir) |> ignore
+
+        // Minimal .fsproj so daemon discovery doesn't bail.
+        let fsprojPath = Path.Combine(projDir, "MyProj.fsproj")
+
+        File.WriteAllText(
+            fsprojPath,
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>\n"
+        )
+
+        let assetsPath = Path.Combine(objDir, "project.assets.json")
+
+        let projectChanges = System.Collections.Concurrent.ConcurrentBag<FileChangeKind>()
+
+        let recorder: PluginHandler<unit, obj> =
+            { Name = PluginName.create "assets-json-recorder"
+              Init = ()
+              Update =
+                fun _ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged change -> projectChanges.Add(change)
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              CacheKey = None
+              Teardown = None }
+
+        let cts = new CancellationTokenSource()
+
+        let daemon =
+            Daemon.createWith (Unchecked.defaultof<FSharpChecker>) tmpDir Daemon.DaemonOptions.defaults
+
+        try
+            daemon.RegisterHandler(recorder)
+            let task = Async.StartAsTask(daemon.Run(cts.Token))
+            daemon.Ready.Wait(TimeSpan.FromSeconds(30.0)) |> ignore
+
+            // FSEvents cold-start can be 4-20s on macOS. Probe-loop writes
+            // until at least one ProjectChanged for the assets file lands.
+            let hasAssetsProjectChange () =
+                projectChanges
+                |> Seq.exists (fun c ->
+                    match c with
+                    | ProjectChanged files -> files |> List.exists (fun f -> f.EndsWith("project.assets.json"))
+                    | _ -> false)
+
+            probeLoop
+                (fun n -> File.WriteAllText(assetsPath, sprintf "{\"version\":3,\"probe\":%d}" n))
+                hasAssetsProjectChange
+                90000
+
+            if not (hasAssetsProjectChange ()) then
+                let summary = projectChanges |> Seq.map (sprintf "%O") |> String.concat "; "
+
+                Assert.Fail(
+                    sprintf
+                        "Contract failed: writes to %s should fire ProjectChanged within 90s but never did. Observed: %s"
+                        assetsPath
+                        (if summary = "" then "(no FileChanged events)" else summary)
+                )
+
+            cts.Cancel()
+
+            try
+                task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+            with :? AggregateException ->
+                ()
+        finally
+            (daemon :> IDisposable).Dispose())
+
+[<Fact(Timeout = 240000)>]
+let ``daemon resolves a newly-added PackageReference and clears the stale FS0039 without restart`` () =
+    // Contract 3: the literal FR acceptance criterion, end to end with a real
+    // package (Newtonsoft.Json), real `dotnet restore`, real FCS.
+    //
+    // This is the test that motivated the whole change set. Note the ordering
+    // hazard it deliberately exercises: writing the .fsproj fires the watcher
+    // immediately, but `dotnet restore` then takes longer than the 200ms
+    // project debounce — so the daemon's first re-eval can race ahead and read
+    // a stale obj/ package graph (observed: FCS still can't see Newtonsoft).
+    // The fix that makes this test pass is watching `obj/project.assets.json`
+    // (contract 2): restore's final atomic write of that file triggers a
+    // SECOND re-eval after the package graph is coherent, which resolves the
+    // reference and — via the auto re-check (contract 1) — clears the error.
+    withTempDir "fshw-fr-e2e" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "src", "MyProj")
+        Directory.CreateDirectory(projDir) |> ignore
+
+        let fsprojPath = Path.Combine(projDir, "MyProj.fsproj")
+        let libFsPath = Path.Combine(projDir, "Lib.fs")
+        let libFsCanonical = Path.GetFullPath(libFsPath)
+
+        let fsprojNoPackage =
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+</Project>
+"""
+
+        let fsprojWithPackage =
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Lib.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+</Project>
+"""
+
+        File.WriteAllText(fsprojPath, fsprojNoPackage)
+
+        File.WriteAllText(
+            libFsPath,
+            "module Lib\nopen Newtonsoft.Json\nlet useIt () : JsonSerializer = JsonSerializer()\n"
+        )
+
+        runDotnetIn projDir "restore --nologo"
+
+        let checker =
+            FSharpChecker.Create(projectCacheSize = 50, keepAssemblyContents = false)
+
+        let cts = new CancellationTokenSource()
+        let daemon = Daemon.createWith checker tmpDir Daemon.DaemonOptions.defaults
+
+        let hasNewtonsoftError () =
+            daemon.Host.GetErrorsByPlugin(FsHotWatch.PluginActivity.FcsPluginName)
+            |> Map.toSeq
+            |> Seq.exists (fun (file, entries) ->
+                (file = libFsCanonical || file.EndsWith("Lib.fs"))
+                && entries |> List.exists (fun e -> e.Message.Contains("Newtonsoft")))
+
+        try
+            let task = Async.StartAsTask(daemon.Run(cts.Token))
+            daemon.Ready.Wait(TimeSpan.FromSeconds(60.0)) |> ignore
+
+            // Boot scan: Lib.fs opens Newtonsoft, which isn't referenced yet →
+            // baseline FS0039.
+            daemon.ScanAll() |> Async.RunSynchronously
+            waitUntil hasNewtonsoftError 90000
+
+            if not (hasNewtonsoftError ()) then
+                Assert.Fail(
+                    "Baseline failed: expected FS0039 (Newtonsoft not defined) after boot scan but none observed."
+                )
+
+            // Add the package + restore. The watcher sees both the .fsproj edit
+            // and (after restore) the obj/project.assets.json write. No .fs save,
+            // no daemon restart.
+            File.WriteAllText(fsprojPath, fsprojWithPackage)
+            runDotnetIn projDir "restore --nologo --force"
+
+            let assetsPath = Path.Combine(projDir, "obj", "project.assets.json")
+
+            if not (File.ReadAllText(assetsPath).Contains("Newtonsoft.Json")) then
+                Assert.Fail("Test setup invalid: project.assets.json lacks Newtonsoft.Json after restore.")
+
+            // The daemon must converge to a clean ledger on its own.
+            let errorCleared () = not (hasNewtonsoftError ())
+            waitUntil errorCleared 120000
+
+            if not (errorCleared ()) then
+                let remaining =
+                    daemon.Host.GetErrorsByPlugin(FsHotWatch.PluginActivity.FcsPluginName)
+                    |> Map.toSeq
+                    |> Seq.collect (fun (f, es) -> es |> List.map (fun e -> sprintf "%s: %s" f e.Message))
+                    |> String.concat " | "
+
+                Assert.Fail(
+                    sprintf
+                        "FR acceptance failed: after PackageReference add + restore, FCS still can't resolve Newtonsoft after 120s (no restart). Remaining: %s"
+                        remaining
+                )
+
+            cts.Cancel()
+
+            try
+                task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+            with :? AggregateException ->
+                ()
+        finally
+            (daemon :> IDisposable).Dispose())
+
+// ===========================================================================
+// Scoped invalidation (gap #1): a change to one project must re-check that
+// project AND its transitive dependents, but leave INDEPENDENT projects warm
+// (not re-checked, cache preserved). The earlier "re-check everything" fix
+// was correct but paid full cold-start cost on every project change.
+// ===========================================================================
+
+/// Resolve all symlink components to the canonical real path. macOS temp dirs
+/// live under /var/folders (a symlink to /private/var/folders); FSEvents
+/// reports the canonical /private form while MSBuild/ProjInfo preserve the
+/// as-given /var form. Production repos generally sit at a canonical path, so
+/// the daemon's scoped-invalidation path matches watcher events to project
+/// paths by string equality and falls back to full re-discovery when they
+/// diverge (correct, just not warmth-preserving). These scoped tests
+/// canonicalize the temp root up front so they exercise the common-case
+/// scoped path rather than the symlink-divergence fallback.
+let rec private realPath (path: string) : string =
+    let full = Path.GetFullPath path
+
+    if full = "/" || isNull (Path.GetDirectoryName full) then
+        full
+    else
+        let combined =
+            Path.Combine(realPath (Path.GetDirectoryName full), Path.GetFileName full)
+
+        match
+            (try
+                Directory.ResolveLinkTarget(combined, true)
+             with _ ->
+                 null)
+        with
+        | null ->
+            match
+                (try
+                    File.ResolveLinkTarget(combined, true)
+                 with _ ->
+                     null)
+            with
+            | null -> combined
+            | t -> t.FullName
+        | t -> t.FullName
+
+/// Per-file FileChecked counter handler. Returns (getCount, handler).
+let private fileCheckCounter (name: string) (targetCanonical: string) =
+    let count = ref 0
+
+    let handler: PluginHandler<unit, obj> =
+        { Name = PluginName.create name
+          Init = ()
+          Update =
+            fun _ctx state event ->
+                async {
+                    match event with
+                    | FileChecked result ->
+                        if AbsFilePath.value result.File = targetCanonical then
+                            System.Threading.Interlocked.Increment(count) |> ignore
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChecked ]
+          CacheKey = None
+          Teardown = None }
+
+    ((fun () -> count.Value), handler)
+
+[<Fact(Timeout = 180000)>]
+let ``scoped: changing one project leaves an independent project warm (not re-checked)`` () =
+    withTempDir "fshw-scoped-warm" (fun tmpDir ->
+        let tmpDir = realPath tmpDir
+
+        let mkProj (name: string) (body: string) =
+            let dir = Path.Combine(tmpDir, "src", name)
+            Directory.CreateDirectory(dir) |> ignore
+            let fsproj = Path.Combine(dir, name + ".fsproj")
+
+            File.WriteAllText(
+                fsproj,
+                sprintf
+                    "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"%s.fs\"/></ItemGroup></Project>\n"
+                    name
+            )
+
+            let fs = Path.Combine(dir, name + ".fs")
+            File.WriteAllText(fs, body)
+            (dir, fsproj, Path.GetFullPath fs)
+
+        let _, aFsproj, aFs = mkProj "A" "module A\nlet a = 1\n"
+        let _, _, bFs = mkProj "B" "module B\nlet b = 2\n"
+
+        runDotnetIn (Path.GetDirectoryName aFsproj) "restore --nologo"
+        runDotnetIn (Path.Combine(tmpDir, "src", "B")) "restore --nologo"
+
+        let getA, counterA = fileCheckCounter "count-a" aFs
+        let getB, counterB = fileCheckCounter "count-b" bFs
+
+        let checker = FSharpChecker.Create(projectCacheSize = 50)
+        let cts = new CancellationTokenSource()
+        let daemon = Daemon.createWith checker tmpDir Daemon.DaemonOptions.defaults
+
+        try
+            daemon.RegisterHandler(counterA)
+            daemon.RegisterHandler(counterB)
+            let task = Async.StartAsTask(daemon.Run(cts.Token))
+            daemon.Ready.Wait(TimeSpan.FromSeconds(60.0)) |> ignore
+
+            daemon.ScanAll() |> Async.RunSynchronously
+            waitUntil (fun () -> getA () >= 1 && getB () >= 1) 60000
+
+            if getA () < 1 || getB () < 1 then
+                Assert.Fail(
+                    sprintf "Baseline: both projects should be checked on boot (A=%d B=%d)" (getA ()) (getB ())
+                )
+
+            let baselineB = getB ()
+
+            // Touch A's .fsproj only.
+            File.WriteAllText(
+                aFsproj,
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><!-- bump --><PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"A.fs\"/></ItemGroup></Project>\n"
+            )
+
+            let aBefore = getA ()
+            // A must be re-checked.
+            waitUntil (fun () -> getA () > aBefore) 60000
+
+            if getA () <= aBefore then
+                Assert.Fail(sprintf "A should be re-checked after its .fsproj change (stayed at %d)" (getA ()))
+
+            // Give any erroneous B re-check time to land, then assert B stayed flat.
+            System.Threading.Thread.Sleep(3000)
+
+            if getB () <> baselineB then
+                Assert.Fail(
+                    sprintf
+                        "Independent project B was re-checked (%d → %d) when only A changed — scoped invalidation should leave it warm."
+                        baselineB
+                        (getB ())
+                )
+
+            cts.Cancel()
+
+            try
+                task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+            with :? AggregateException ->
+                ()
+        finally
+            (daemon :> IDisposable).Dispose())
+
+[<Fact(Timeout = 180000)>]
+let ``scoped: changing a project re-checks its dependent (correctness over warmth)`` () =
+    withTempDir "fshw-scoped-dep" (fun tmpDir ->
+        let tmpDir = realPath tmpDir
+        let srcDir = Path.Combine(tmpDir, "src")
+        let aDir = Path.Combine(srcDir, "A")
+        let bDir = Path.Combine(srcDir, "B")
+        Directory.CreateDirectory(aDir) |> ignore
+        Directory.CreateDirectory(bDir) |> ignore
+
+        // A: library. B: references A.
+        let aFsproj = Path.Combine(aDir, "A.fsproj")
+
+        File.WriteAllText(
+            aFsproj,
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"A.fs\"/></ItemGroup></Project>\n"
+        )
+
+        let aFs = Path.Combine(aDir, "A.fs")
+        File.WriteAllText(aFs, "module A\nlet a = 1\n")
+
+        let bFsproj = Path.Combine(bDir, "B.fsproj")
+
+        File.WriteAllText(
+            bFsproj,
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"B.fs\"/></ItemGroup><ItemGroup><ProjectReference Include=\"../A/A.fsproj\"/></ItemGroup></Project>\n"
+        )
+
+        let bFs = Path.Combine(bDir, "B.fs")
+        File.WriteAllText(bFs, "module B\nlet b = A.a + 1\n")
+
+        let bFsCanonical = Path.GetFullPath bFs
+
+        // Restore B (pulls in A as a project reference).
+        runDotnetIn bDir "restore --nologo"
+        runDotnetIn aDir "restore --nologo"
+
+        let getB, counterB = fileCheckCounter "count-b-dep" bFsCanonical
+
+        let checker = FSharpChecker.Create(projectCacheSize = 50)
+        let cts = new CancellationTokenSource()
+        let daemon = Daemon.createWith checker tmpDir Daemon.DaemonOptions.defaults
+
+        try
+            daemon.RegisterHandler(counterB)
+            let task = Async.StartAsTask(daemon.Run(cts.Token))
+            daemon.Ready.Wait(TimeSpan.FromSeconds(60.0)) |> ignore
+
+            daemon.ScanAll() |> Async.RunSynchronously
+            waitUntil (fun () -> getB () >= 1) 60000
+
+            if getB () < 1 then
+                Assert.Fail("Baseline: dependent B should be checked on boot")
+
+            let baselineB = getB ()
+
+            // Touch A's .fsproj (the dependency). B depends on A, so B must
+            // be re-checked even though B's own files/options didn't change.
+            File.WriteAllText(
+                aFsproj,
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><!-- bump --><PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup><Compile Include=\"A.fs\"/></ItemGroup></Project>\n"
+            )
+
+            waitUntil (fun () -> getB () > baselineB) 90000
+
+            if getB () <= baselineB then
+                Assert.Fail(
+                    sprintf
+                        "Dependent B was NOT re-checked (stayed at %d) when its dependency A changed — scoped invalidation must include transitive dependents."
+                        baselineB
+                )
+
+            cts.Cancel()
+
+            try
+                task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+            with :? AggregateException ->
+                ()
+        finally
+            (daemon :> IDisposable).Dispose())
