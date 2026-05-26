@@ -85,7 +85,20 @@ type CheckPipeline
     member _.NextVersion() = Interlocked.Increment(&nextVersion)
 
     /// Clear all registered projects, file mappings, and per-file cancellation tokens.
-    member _.PrepareForRediscovery() =
+    ///
+    /// `clearCheckCache` (default `true`) controls whether the FileCheckCache is
+    /// also dropped. The project→options maps are *always* rebuilt — they're
+    /// cheap and membership may have changed. The check-result cache is keyed
+    /// by `(file content hash, project-options hash)`, so retaining it across a
+    /// scoped re-discovery is safe: a project whose options changed gets a new
+    /// key (cache miss → recompute), and a project whose options are unchanged
+    /// keeps its warm entry. Pass `false` from the scoped project-change path
+    /// (which separately invalidates the affected project + its dependents) so
+    /// unrelated projects stay hot; leave `true` for full/repo-wide
+    /// re-discovery where reasoning about per-project staleness isn't possible.
+    member _.PrepareForRediscovery(?clearCheckCache: bool) =
+        let clearCheckCache = defaultArg clearCheckCache true
+
         for kvp in fileTokens do
             cancelAndDispose kvp.Value
 
@@ -93,7 +106,9 @@ type CheckPipeline
         projectOptionsByFile.Clear()
         projectOptionsByProject.Clear()
         projectOptionsHashCache.Clear()
-        cacheBackend |> Option.iter (fun b -> b.Clear())
+
+        if clearCheckCache then
+            cacheBackend |> Option.iter (fun b -> b.Clear())
 
     /// Invalidate the cache entry for a file so the next CheckFile call re-runs FCS.
     member _.InvalidateFile(filePath: AbsFilePath) =
