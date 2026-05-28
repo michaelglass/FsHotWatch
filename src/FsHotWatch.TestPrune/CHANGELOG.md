@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.15 - 2026-05-28
+
 - chore: bump TestPrune.Core 4.0.1 → 4.0.2 (picks up the backtick-named-test-method shortName fix).
 
 ## 0.7.0-alpha.14 - 2026-05-04

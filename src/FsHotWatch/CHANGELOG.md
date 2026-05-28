@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.15 - 2026-05-28
+
 - fix: `FileErrorReporter` caps oversized `message`/`detail` fields before serialization to avoid `System.Text.Json` transcode `OverflowException` (FR `fr-fileerrorreporter-overflow.md`).
 
 ## 0.8.0-alpha.14 - 2026-05-26
