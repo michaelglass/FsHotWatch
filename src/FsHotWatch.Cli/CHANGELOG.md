@@ -4,6 +4,8 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+- chore: bump CommandTree 0.5.0 → 0.5.1.
+
 ## 0.8.0-alpha.14 - 2026-05-26
 
 ### Added

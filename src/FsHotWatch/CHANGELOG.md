@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: `FileErrorReporter` caps oversized `message`/`detail` fields before serialization to avoid `System.Text.Json` transcode `OverflowException` (FR `fr-fileerrorreporter-overflow.md`).
+
 ## 0.8.0-alpha.14 - 2026-05-26
 
 - feat: daemon auto-refreshes FCS state on `.fsproj` / `obj/project.assets.json` changes — adding a `PackageReference` + `dotnet restore` now resolves without a daemon restart or a `.fs` save (FR `docs/fr-auto-refresh-fsproj-changes.md`). `Watcher.classifyChange` routes `obj/project.assets.json` through `ProjectChanged` (recovers the `.fsproj`-edit-races-`restore` window), and `Daemon.processBatch` re-checks the affected project's source files after re-discovery.
