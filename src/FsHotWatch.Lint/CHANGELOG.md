@@ -2,9 +2,7 @@
 
 ## Unreleased
 
-## 0.7.0-alpha.11 - 2026-05-04
-
-- chore: dependency updates
+- chore: bump FSharpLintAnalyzerShim 0.3.0-alpha.1 → 0.3.0-alpha.3 (security pin for `System.Security.Cryptography.Xml` 10.0.8; FCS 43.12.204) and refresh transitive dependencies. (Reclaims the `0.7.0-alpha.11` version number — the prior alpha.11 attempt was tagged locally but never published to NuGet.)
 
 ## 0.7.0-alpha.10 - 2026-04-29
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- chore: bump TestPrune.Core 4.0.1 → 4.0.2 (picks up the backtick-named-test-method shortName fix).
+
 ## 0.7.0-alpha.14 - 2026-05-04
 
 - feat: `run-tests` IPC command (invoked by `fshw test`) now routes through the event machinery, emitting `TestRunStarted` → `TestRunCompleted`. Plugins subscribed to `TestRunCompleted` (e.g. `CoveragePlugin`) now observe manually-triggered runs identically to daemon-triggered ones. No API change.
