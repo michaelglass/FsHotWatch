@@ -2314,30 +2314,16 @@ module ``Un-nameable symbols do not abort analysis`` =
     // FSharpEntity.get_TryFullName()/get_FullName() rather than returning None.
     // The AST walk used to let that NRE propagate and abort the whole impact
     // pass, producing zero edges. The analyzer must skip such symbols and still
-    // return Ok (possibly with fewer edges). See AstAnalyzer.tryEntityFullName.
-
-    /// Run the analyzer over a source string and assert it returns Ok without
-    /// throwing. Returns the analysis result for further assertions.
-    let private analyzeOk source =
-        let result =
-            analyzeSource
-                checker
-                "test.fsx"
-                source
-                (getScriptOptions checker "test.fsx" source |> Async.RunSynchronously)
-                "TestProject"
-            |> Async.RunSynchronously
-
-        match result with
-        | Ok analysis -> analysis
-        | Error e -> failwith $"analysis aborted (expected graceful degradation): {e}"
+    // return Ok (possibly with fewer edges). See AstAnalyzer.tryName.
+    // `analyze` (module top) already asserts Ok-or-failwith, which is exactly the
+    // "must not abort" guarantee these tests need.
 
     [<Fact>]
     let ``anonymous-record projection does not throw`` () =
         // `{| Year = d.Year; Month = d.Month |}` — the exact shape that aborted
         // impact analysis downstream.
         let analysis =
-            analyzeOk
+            analyze
                 """
 module M
 
@@ -2361,7 +2347,7 @@ let useIt () = yearMonth DateTime.Now
         // This is the extractGenericTypeArgs -> collect path from the stack trace:
         // a generic container (list) whose type argument is an anonymous record.
         let analysis =
-            analyzeOk
+            analyze
                 """
 module M
 
@@ -2382,7 +2368,7 @@ let countRows () = rows [ DateTime.Now ] |> List.length
     [<Fact>]
     let ``nested anonymous records and projections do not throw`` () =
         let analysis =
-            analyzeOk
+            analyze
                 """
 module M
 

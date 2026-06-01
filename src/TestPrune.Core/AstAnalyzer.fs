@@ -161,8 +161,9 @@ type AnalysisResult =
 ///
 /// `tryName` wraps the access and swallows ANY exception, returning None so the
 /// caller SKIPS that edge/symbol and the pass degrades gracefully (slightly more
-/// conservative impact selection) instead of crashing. Route every fallible
-/// entity/symbol name or type access in the AST walk through this helper.
+/// conservative impact selection) instead of crashing. Use it for the
+/// name-returning accessors; the side-effecting walk regions guard the same
+/// fallible reads with local `try … with _ -> ()` for the identical reason.
 let internal tryName (access: unit -> string) : string option =
     try
         Some(access ())
@@ -1043,22 +1044,28 @@ let private extractResults
                             ()
 
                         if isTestAttribute mfv then
-                            let fallbackClass, testMethod = extractTestClass mfv.FullName
+                            // mfv.FullName can itself throw on un-nameable symbols (the
+                            // same FCS NRE/IOE guarded elsewhere); skip the test-method
+                            // edge instead of letting it abort the whole pass.
+                            try
+                                let fallbackClass, testMethod = extractTestClass mfv.FullName
 
-                            let testClass =
-                                try
-                                    match mfv.DeclaringEntity with
-                                    | Some entity -> buildClrClassName entity
-                                    | None -> fallbackClass
-                                with _ ->
-                                    fallbackClass
+                                let testClass =
+                                    try
+                                        match mfv.DeclaringEntity with
+                                        | Some entity -> buildClrClassName entity
+                                        | None -> fallbackClass
+                                    with _ ->
+                                        fallbackClass
 
-                            testMethods <-
-                                { SymbolFullName = mfv.FullName
-                                  TestProject = projectName
-                                  TestClass = testClass
-                                  TestMethod = testMethod }
-                                :: testMethods
+                                testMethods <-
+                                    { SymbolFullName = mfv.FullName
+                                      TestProject = projectName
+                                      TestClass = testClass
+                                      TestMethod = testMethod }
+                                    :: testMethods
+                            with _ ->
+                                ()
 
                             // Direct edges from the test method to every fixture its
                             // declaring class exposes (ctor-param types + IClassFixture /
