@@ -142,6 +142,19 @@ let mergePerLineMax (baseline: CoverageData) (partial: CoverageData) : CoverageD
         k, mergeFiles av bv)
     |> Map.ofSeq
 
+/// Count distinct (file, line) pairs whose hit count is > 0 across the whole
+/// CoverageData. Used in two places: `toCobertura` (to compute `lines-covered`)
+/// and the TestPrune plugin's "did this baseline actually cover anything"
+/// guard (refuse to promote an empty/all-zero baseline that would tank the
+/// ratchet). Factored here so both call sites share one definition.
+let coveredLineCount (data: CoverageData) : int =
+    data
+    |> Map.toSeq
+    |> Seq.sumBy (fun (_, files) ->
+        files
+        |> Map.toSeq
+        |> Seq.sumBy (fun (_, lines) -> lines |> Map.toSeq |> Seq.filter (fun (_, h) -> h > 0) |> Seq.length))
+
 let private escapeXml (s: string) =
     s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;")
 
@@ -164,7 +177,7 @@ let toCobertura (data: CoverageData) : string =
         |> Seq.toList
 
     let totalLines = allLines.Length
-    let coveredLines = allLines |> List.filter (fun (_, h) -> h > 0) |> List.length
+    let coveredLines = coveredLineCount data
 
     sb.Append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n") |> ignore
 
