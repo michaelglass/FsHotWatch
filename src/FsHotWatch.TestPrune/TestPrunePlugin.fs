@@ -91,12 +91,36 @@ let processCoverageOutput (paths: CoveragePaths) (wasFiltered: bool) : unit =
 
         data
 
+    // Issue 3: a baseline counts as "really executed" only if it carries at
+    // least one COVERED line (hits > 0). An aborted full run (apphost died at
+    // launch) can leave an empty or all-zero baseline on disk; persisting it
+    // would drop every covered line and tank the ratchet. `coveredLineCount`
+    // lets the full-run branch refuse to overwrite a good cobertura with such
+    // a degenerate baseline.
+    let coveredLineCount (data: CoverageMerge.CoverageData) =
+        data
+        |> Map.toSeq
+        |> Seq.sumBy (fun (_, files) ->
+            files
+            |> Map.toSeq
+            |> Seq.sumBy (fun (_, lines) -> lines |> Map.toSeq |> Seq.filter (fun (_, h) -> h > 0) |> Seq.length))
+
     try
         if not wasFiltered then
             if File.Exists(paths.Baseline) then
                 let baseline = parseAndCheck paths.Baseline
-                let xml = CoverageMerge.toCobertura baseline
-                File.WriteAllText(paths.Cobertura, xml)
+
+                // Only promote the fresh baseline to the authoritative cobertura
+                // when it actually covered something. An empty/all-zero baseline
+                // is the signature of an aborted run — leaving the prior good
+                // cobertura untouched is strictly safer than lowering it.
+                if coveredLineCount baseline > 0 then
+                    let xml = CoverageMerge.toCobertura baseline
+                    File.WriteAllText(paths.Cobertura, xml)
+                else
+                    Logging.warn
+                        "test-prune"
+                        $"coverage: full-run baseline %s{paths.Baseline} has no covered lines — refusing to overwrite %s{paths.Cobertura} (treating as aborted/partial run)"
 
             if File.Exists(paths.Partial) then
                 File.Delete(paths.Partial)
@@ -230,6 +254,48 @@ let internal buildFilterArgs (config: TestConfig) (classesByProject: Map<string,
         let result = template.Replace("{classes}", joined)
         Logging.info "test-prune" $"Filter: %s{result}"
         Some result
+
+/// Issue 1 — cold-start apphost-missing classifier. On a cold daemon a
+/// `dotnet run --project <proj> --no-build` can be launched before the build
+/// plugin produced that project's apphost/dll. `dotnet run` then fails to
+/// spawn the apphost and surfaces the .NET host's start-process error in its
+/// output, exiting non-zero. That non-zero exit is an ORDERING bug, never a
+/// test failure — reporting it as FAILED is the spurious-red defect.
+///
+/// This classifier distinguishes that launch failure from a genuine non-zero
+/// test exit. A real xUnit/MTP failure carries `failed <name>` lines and a
+/// `failed:`/`Test run summary` block; the apphost-launch failure carries the
+/// host's "An error occurred trying to start process …" / "No such file or
+/// directory" signature and NO test-summary block. The match is deliberately
+/// conservative: when in doubt we treat output as a real failure (never
+/// silence a red). Pure + internal so both branches are unit-testable without
+/// a live daemon.
+let internal looksLikeApphostMissing (output: string) : bool =
+    if String.IsNullOrWhiteSpace output then
+        false
+    else
+        let lower = output.ToLowerInvariant()
+
+        // Signatures the .NET host emits when it cannot launch the apphost the
+        // build was supposed to produce.
+        let hasStartProcessFailure =
+            lower.Contains("an error occurred trying to start process")
+            || (lower.Contains("no such file or directory")
+                && (lower.Contains("apphost")
+                    || lower.Contains("/bin/")
+                    || lower.Contains("\\bin\\")))
+            || lower.Contains("apphost_version not found")
+
+        // A genuine test run always emits a summary / per-test `failed ` lines.
+        // Their PRESENCE means the runner actually executed tests, so this is a
+        // real failure, not a launch race — don't misclassify it.
+        let looksLikeRealTestFailure =
+            lower.Contains("test run summary")
+            || lower.Contains("failed:")
+            || (output.Split('\n')
+                |> Array.exists (fun l -> l.TrimStart().StartsWith("failed ")))
+
+        hasStartProcessFailure && not looksLikeRealTestFailure
 
 /// Parse "failed Namespace.Class.Method (Xms)" lines from test output.
 /// Returns (className, methodName, fullLine) tuples.
@@ -460,7 +526,7 @@ let private executeTests
 
                             let projectSw = Stopwatch.StartNew()
 
-                            let runTest =
+                            let runOnce =
                                 async {
                                     return
                                         runProcessWithTimeout
@@ -471,26 +537,68 @@ let private executeTests
                                             timeoutSpan
                                 }
 
+                            // Issue 1: cold-start apphost-missing retry. The
+                            // BuildCompleted→TestPrune ordering already gates the
+                            // launch on a successful build, but a narrow race can
+                            // still fire `--no-build` before the apphost lands. If
+                            // the FIRST run failed with the start-process
+                            // signature (not a real test failure), wait briefly
+                            // for the build to settle and retry ONCE. A still-
+                            // missing apphost after the retry is surfaced as
+                            // "waiting on build", never FAILED.
+                            let runTestWithRetry =
+                                async {
+                                    let! first = runOnce
+
+                                    match first with
+                                    | ProcessOutcome.Failed(_, out) when looksLikeApphostMissing out ->
+                                        Logging.warn
+                                            "test-prune"
+                                            $"%s{config.Project}: apphost missing at launch (build not settled yet); retrying once after a short wait"
+
+                                        do! Async.Sleep 750
+                                        let! second = runOnce
+                                        return second
+                                    | other -> return other
+                                }
+
                             let! processResult =
                                 match ctx with
                                 | Some c ->
-                                    PluginCtxHelpers.withSubtask c config.Project $"testing {config.Project}" runTest
-                                | None -> runTest
+                                    PluginCtxHelpers.withSubtask
+                                        c
+                                        config.Project
+                                        $"testing {config.Project}"
+                                        runTestWithRetry
+                                | None -> runTestWithRetry
 
                             projectSw.Stop()
                             let projectElapsed = projectSw.Elapsed
 
+                            // Issue 1: distinguish a still-missing apphost (an
+                            // ordering bug) from a genuine non-zero test exit.
+                            let apphostMissing =
+                                match processResult with
+                                | ProcessOutcome.Failed(_, out) -> looksLikeApphostMissing out
+                                | _ -> false
+
                             let success = isSucceeded processResult
                             let output = outputOf processResult
 
-                            if success then
+                            if apphostMissing then
+                                logToCtx $"{config.Project}: waiting on build (apphost not yet produced)"
+
+                                Logging.warn
+                                    "test-prune"
+                                    $"%s{config.Project}: apphost still missing after retry — surfacing as 'waiting on build', not FAILED (this is a build-ordering issue, never a test failure)"
+                            elif success then
                                 logToCtx $"{config.Project}: passed"
                                 Logging.info "test-prune" $"%s{config.Project}: PASSED"
                             else
                                 logToCtx $"{config.Project}: failed"
                                 Logging.error "test-prune" $"%s{config.Project}: FAILED"
 
-                            if not success then
+                            if not success && not apphostMissing then
                                 try
                                     let logDir = testRunsDir repoRoot
                                     Directory.CreateDirectory(logDir) |> ignore
@@ -528,6 +636,15 @@ let private executeTests
 
                             let result =
                                 match processResult with
+                                | _ when apphostMissing ->
+                                    // Waiting on build: not a failure and not a real
+                                    // execution. Mark wasFiltered=true so it can never
+                                    // be treated as a full-suite run that lowers a
+                                    // coverage baseline (Issue 3), and elapsed=Zero
+                                    // since the runner never actually ran the tests.
+                                    // isPassed=true keeps it out of the FAILED verdict;
+                                    // the "waiting on build" output documents why.
+                                    TestsPassed("waiting on build (apphost not produced)", true, TimeSpan.Zero)
                                 | ProcessOutcome.Succeeded _ -> TestsPassed(output, wasFiltered, projectElapsed)
                                 | ProcessOutcome.TimedOut(after, _) ->
                                     TestsTimedOut(output, after, wasFiltered, projectElapsed)
@@ -535,9 +652,12 @@ let private executeTests
 
                             // Post-test coverage step: merge or convert the coverlet JSON
                             // output into the Cobertura file downstream consumers read.
+                            // Issue 3: a run that never executed (apphost missing) must
+                            // NOT touch the baseline/cobertura — a partial/empty file
+                            // would otherwise lower the per-line coverage.
                             match projectCoveragePaths with
-                            | Some paths -> processCoverageOutput paths wasFiltered
-                            | None -> ()
+                            | Some paths when not apphostMissing -> processCoverageOutput paths wasFiltered
+                            | _ -> ()
 
                             // Per-test flakiness tracking: parse the CTRF report this run
                             // emitted, append per-test records to the rolling history file
@@ -1389,9 +1509,19 @@ let create
                         { Results = completed.Results
                           Elapsed = completed.TotalElapsed }
 
-                    if testResults.Results |> Map.forall (fun _ r -> TestResult.isPassed r) then
-                        ctx.ClearAllErrors()
-                    else
+                    // Issue 2: clear this plugin's prior-cycle diagnostics
+                    // UNCONDITIONALLY before re-reporting, so `fshw errors` /
+                    // the aggregate verdict reflects ONLY the most recent
+                    // completed cycle. Previously the clear only happened on the
+                    // all-passed branch; when a later cycle had a different set
+                    // of failing projects, the superseded reds from the prior
+                    // cycle were never cleared and accumulated as stale entries.
+                    // ClearAllErrors == ClearPlugin "test-prune" (see
+                    // PluginFramework), so this replaces the whole plugin ledger
+                    // rather than only the all-pass case.
+                    ctx.ClearAllErrors()
+
+                    if not (testResults.Results |> Map.forall (fun _ r -> TestResult.isPassed r)) then
                         reportTestErrors ctx state.TestClassFiles testResults
 
                     // Pushing a terminal Completed/Failed status is what appends the

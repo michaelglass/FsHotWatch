@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix (verdict reliability): a cold-start `dotnet run --no-build` that fails because the build plugin hasn't produced the apphost yet is no longer reported as a spurious test FAILED. The runner now classifies the start-process launch failure (`looksLikeApphostMissing`, distinct from a genuine non-zero test exit), retries once after a short settle, and surfaces a still-missing apphost as "waiting on build" rather than a failure. Such a run also never writes/lowers a coverage baseline.
+- fix (verdict reliability): the test-cycle completion handler now clears the plugin's prior-cycle diagnostics **unconditionally** before re-reporting, so `fshw errors` / the aggregate verdict reflect only the most recent completed cycle. Previously the clear fired only on the all-passed branch, so a superseded red from an earlier cycle accumulated as a stale failure. This also makes every cached failing entry self-clearing on replay (the capturing context records the leading `ClearPlugin`), closing the `test-prune@<hash>.json` stale-snapshot replay.
+- fix (verdict reliability): `processCoverageOutput` no longer overwrites a populated cobertura with an empty/all-zero baseline produced by an aborted full run — a baseline with no covered lines is refused, so a partial/aborted run can never lower the per-line coverage the ratchet reads.
+
 ## 0.7.0-alpha.15 - 2026-05-28
 
 - chore: bump TestPrune.Core 4.0.1 → 4.0.2 (picks up the backtick-named-test-method shortName fix).
