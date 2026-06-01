@@ -2205,26 +2205,48 @@ let private mkCobertura (pkg: string) (file: string) (lines: (int * int) list) :
         file
         linesXml
 
-[<Fact>]
-let ``processCoverageOutput on full run copies baseline to cobertura and deletes partial`` () =
-    withTempDir "cov-full" (fun dir ->
+// Issue 4: the full-run-copies-baseline and filtered-run-merges-baseline
+// cobertura tests share all scaffolding (write baseline + partial, run
+// processCoverageOutput, assert the cobertura line-rate) and differ only in
+// the filtered flag, the baseline/partial line data, the expected line-rate,
+// and whether the partial is consumed (full run deletes it) or preserved
+// (filtered run keeps it for debugging). Collapsed into one [<Theory>].
+[<Theory>]
+// full run: baseline 1-of-2 covered → 0.5; partial deleted.
+[<InlineData(false, "10:1,11:0", "10:5", "line-rate=\"0.5\"", false)>]
+// filtered run with baseline: per-line max merge covers both lines → 1.0; partial preserved.
+[<InlineData(true, "10:1,11:0", "10:0,11:2", "line-rate=\"1\"", true)>]
+let ``processCoverageOutput produces the expected cobertura line-rate``
+    (wasFiltered: bool)
+    (baselineLines: string)
+    (partialLines: string)
+    (expectedRate: string)
+    (partialPreserved: bool)
+    =
+    let parseLines (s: string) =
+        s.Split(',')
+        |> Array.map (fun pair ->
+            let parts = pair.Split(':')
+            int parts.[0], int parts.[1])
+        |> Array.toList
+
+    withTempDir "cov-rate" (fun dir ->
         let paths: CoveragePaths =
             { Baseline = Path.Combine(dir, "coverage.baseline.cobertura.xml")
               Partial = Path.Combine(dir, "coverage.partial.cobertura.xml")
               Cobertura = Path.Combine(dir, "coverage.cobertura.xml")
               ArgsTemplate = defaultCoverageArgsTemplate }
 
-        File.WriteAllText(paths.Baseline, mkCobertura "Foo.dll" "Foo.fs" [ (10, 1); (11, 0) ])
-        File.WriteAllText(paths.Partial, mkCobertura "Foo.dll" "Foo.fs" [ (10, 5) ])
+        File.WriteAllText(paths.Baseline, mkCobertura "Foo.dll" "Foo.fs" (parseLines baselineLines))
+        File.WriteAllText(paths.Partial, mkCobertura "Foo.dll" "Foo.fs" (parseLines partialLines))
 
-        processCoverageOutput paths false
+        processCoverageOutput paths wasFiltered
 
         test <@ File.Exists(paths.Cobertura) @>
-        test <@ not (File.Exists(paths.Partial)) @>
+        test <@ File.Exists(paths.Partial) = partialPreserved @>
 
         let xml = File.ReadAllText(paths.Cobertura)
-        // baseline has 1-covered-of-2 → 0.5
-        test <@ xml.Contains("line-rate=\"0.5\"") @>)
+        test <@ xml.Contains(expectedRate) @>)
 
 [<Fact>]
 let ``processCoverageOutput on filtered run without baseline skips cobertura emission (bootstrap)`` () =
@@ -2241,29 +2263,6 @@ let ``processCoverageOutput on filtered run without baseline skips cobertura emi
 
         test <@ not (File.Exists(paths.Cobertura)) @>
         // partial is preserved for debugging
-        test <@ File.Exists(paths.Partial) @>)
-
-[<Fact>]
-let ``processCoverageOutput on filtered run with baseline merges per-line max into cobertura`` () =
-    withTempDir "cov-merge" (fun dir ->
-        let paths: CoveragePaths =
-            { Baseline = Path.Combine(dir, "coverage.baseline.cobertura.xml")
-              Partial = Path.Combine(dir, "coverage.partial.cobertura.xml")
-              Cobertura = Path.Combine(dir, "coverage.cobertura.xml")
-              ArgsTemplate = defaultCoverageArgsTemplate }
-
-        // Baseline says line 10 covered (1 hit), line 11 not covered.
-        File.WriteAllText(paths.Baseline, mkCobertura "Foo.dll" "Foo.fs" [ (10, 1); (11, 0) ])
-        // Partial says line 10 not covered (filtered run missed it), line 11 covered.
-        File.WriteAllText(paths.Partial, mkCobertura "Foo.dll" "Foo.fs" [ (10, 0); (11, 2) ])
-
-        processCoverageOutput paths true
-
-        test <@ File.Exists(paths.Cobertura) @>
-        // Merge keeps max: line 10 still 1, line 11 now 2 — both covered → 1.0.
-        let xml = File.ReadAllText(paths.Cobertura)
-        test <@ xml.Contains("line-rate=\"1\"") @>
-        // partial preserved for debugging
         test <@ File.Exists(paths.Partial) @>)
 
 [<Fact>]
@@ -3500,33 +3499,110 @@ let ``looksLikeApphostMissing is false for empty / passing output`` () =
     test <@ not (looksLikeApphostMissing "") @>
     test <@ not (looksLikeApphostMissing "Test run summary: Passed!\n  total: 5\n  succeeded: 5") @>
 
-[<Fact(Timeout = 20000)>]
-let ``cold-start apphost-missing is not reported as a test FAILED`` () =
-    // Simulate the cold race: a runner that, on its FIRST invocation, prints the
-    // apphost-launch failure and exits non-zero (exactly like `dotnet run
-    // --no-build` before the build settled), then SUCCEEDS on the retry once the
-    // apphost exists. The plugin must retry-after-settle and NOT surface a
-    // spurious FAILED status.
-    withTempDir "tp-apphost-missing" (fun tmpDir ->
+// Issue 2: STRUCTURAL apphost detection. `tryApphostPresent` derives the
+// apphost binary path from the runner's `--project` arg and File.Exists-checks
+// it, instead of sniffing localized OS error text.
+
+[<Fact(Timeout = 15000)>]
+let ``tryApphostPresent returns None when args carry no --project`` () =
+    // A custom, non-`dotnet run` command isn't derivable — caller must fall
+    // back to the output sniff.
+    test <@ tryApphostPresent "/tmp/runner.sh" "/repo" = None @>
+    test <@ tryApphostPresent "test" "/repo" = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``tryApphostPresent reports false when the bin dir is absent`` () =
+    withTempDir "tp-apphost-struct-missing" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "Unit")
+        Directory.CreateDirectory(projDir) |> ignore
+        // No bin/Debug at all → apphost definitionally absent.
+        test <@ tryApphostPresent $"run --project {projDir} --no-build --" tmpDir = Some false @>)
+
+[<Fact(Timeout = 15000)>]
+let ``tryApphostPresent reports false when bin exists but apphost is missing`` () =
+    withTempDir "tp-apphost-struct-empty-bin" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "Unit")
+        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
+        Directory.CreateDirectory(tfmDir) |> ignore
+        // Only the DLL landed, not the apphost.
+        File.WriteAllText(Path.Combine(tfmDir, "Unit.dll"), "")
+        test <@ tryApphostPresent $"run --project {projDir} --no-build --" tmpDir = Some false @>)
+
+[<Fact(Timeout = 15000)>]
+let ``tryApphostPresent reports true when the apphost binary exists`` () =
+    withTempDir "tp-apphost-struct-present" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "Unit")
+        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
+        Directory.CreateDirectory(tfmDir) |> ignore
+        // The extension-less apphost sibling of the canonical DLL.
+        File.WriteAllText(Path.Combine(tfmDir, "Unit"), "")
+        test <@ tryApphostPresent $"run --project {projDir} --no-build --" tmpDir = Some(true) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``tryApphostPresent resolves an fsproj --project to its assembly name`` () =
+    withTempDir "tp-apphost-struct-fsproj" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "Unit")
+        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
+        Directory.CreateDirectory(tfmDir) |> ignore
+        let fsproj = Path.Combine(projDir, "MyTests.fsproj")
+        File.WriteAllText(fsproj, "<Project/>")
+        // Apphost name follows the project file base name, not the dir leaf.
+        File.WriteAllText(Path.Combine(tfmDir, "MyTests"), "")
+        test <@ tryApphostPresent $"run --project {fsproj} --no-build --" tmpDir = Some(true) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``tryApphostPresent finds a Windows .exe apphost`` () =
+    withTempDir "tp-apphost-struct-exe" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "Unit")
+        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
+        Directory.CreateDirectory(tfmDir) |> ignore
+        File.WriteAllText(Path.Combine(tfmDir, "Unit.exe"), "")
+        test <@ tryApphostPresent $"run --project {projDir} --no-build --" tmpDir = Some(true) @>)
+
+// Issue 4: the cold-start and persistent apphost-missing cases share all
+// scaffolding and differ only in the runner script + the expected verdict, so
+// they collapse into one [<Theory>]. `transient` = the apphost-missing failure
+// clears on retry (cold-start race); otherwise it persists every run.
+//
+// These configs run a bare `sh <script>` (no `--project` arg), so the
+// structural `tryApphostPresent` check returns None and the plugin falls back
+// to the `looksLikeApphostMissing` output sniff — exercising the defensive
+// fallback path end-to-end.
+[<Theory(Timeout = 20000)>]
+[<InlineData(true)>] // cold-start: fails once with the launch signature, then succeeds
+[<InlineData(false)>] // persistent: apphost never appears
+let ``apphost-missing cold-start retries green; persistent defers non-green (never FAILED test)`` (transient: bool) =
+    withTempDir "tp-apphost" (fun tmpDir ->
         let scriptPath = Path.Combine(tmpDir, "runner.sh")
 
-        // First run: emit the start-process failure to stderr and exit 1.
-        // Subsequent runs: exit 0 (apphost now present). Counter lives in the
-        // working dir (repoRoot = tmpDir). Written to a file to avoid fragile
-        // nested shell quoting through the F# arg string.
-        File.WriteAllText(
-            scriptPath,
-            "n=$(cat attempts 2>/dev/null || echo 0)\n"
-            + "n=$((n+1))\n"
-            + "echo $n > attempts\n"
-            + "if [ \"$n\" -le 1 ]; then\n"
-            + "  echo \"Unhandled exception: An error occurred trying to start process '/x/bin/Debug/net10.0/Unit' with working directory '/x'. No such file or directory\" 1>&2\n"
-            + "  exit 1\n"
-            + "else\n"
-            + "  echo ok\n"
-            + "  exit 0\n"
-            + "fi\n"
-        )
+        // The launch-failure line carries the .NET host's start-process
+        // signature (no test-summary block), which the fallback sniff
+        // classifies as apphost-missing. Counter lives in the working dir
+        // (repoRoot = tmpDir); written to a file to avoid fragile nested
+        // shell quoting through the F# arg string.
+        let launchFailure =
+            "echo \"Unhandled exception: An error occurred trying to start process '/x/bin/Debug/net10.0/Unit' with working directory '/x'. No such file or directory\" 1>&2"
+
+        let script =
+            if transient then
+                // First run: emit the failure and exit 1. Retry: exit 0.
+                "n=$(cat attempts 2>/dev/null || echo 0)\n"
+                + "n=$((n+1))\n"
+                + "echo $n > attempts\n"
+                + "if [ \"$n\" -le 1 ]; then\n"
+                + "  "
+                + launchFailure
+                + "\n"
+                + "  exit 1\n"
+                + "else\n"
+                + "  echo ok\n"
+                + "  exit 0\n"
+                + "fi\n"
+            else
+                // Apphost never appears — fails identically every run.
+                launchFailure + "\n" + "exit 1\n"
+
+        File.WriteAllText(scriptPath, script)
 
         let configs =
             [ { Project = "Unit"
@@ -3545,52 +3621,46 @@ let ``cold-start apphost-missing is not reported as a test FAILED`` () =
         host.EmitBuildCompleted(BuildSucceeded)
         waitForPluginTerminal host "test-prune" 15.0
 
-        // The plugin retried after the apphost-missing failure and the retry
-        // passed, so there must be NO failing reasons in the ledger.
-        test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
+        // In NEITHER case may an apphost-missing launch be reported as a test
+        // FAILED — that's an ordering bug, never a real red.
+        let failingReasons =
+            host.GetErrorsByPlugin("test-prune")
+            |> Map.toList
+            |> List.collect snd
+            |> List.filter (fun e -> e.Severity = FsHotWatch.ErrorLedger.Error)
 
-        match host.GetStatus("test-prune") with
-        | Some(Failed _) -> Assert.Fail("apphost-missing was reported as a test FAILED")
-        | _ -> ())
+        test
+            <@
+                failingReasons
+                |> List.forall (fun e -> not (e.Message.ToLowerInvariant().Contains("tests failed")))
+            @>
 
-[<Fact(Timeout = 20000)>]
-let ``persistent apphost-missing surfaces as waiting-on-build, never FAILED`` () =
-    // If the apphost is STILL missing after the single retry (build never
-    // settled), the project must be surfaced as "waiting on build" — not a
-    // real test failure. The verdict must not flip red for an ordering bug.
-    withTempDir "tp-apphost-persist" (fun tmpDir ->
-        let scriptPath = Path.Combine(tmpDir, "runner.sh")
+        if transient then
+            // Retry succeeded → PASSED. No failing reasons, status not Failed.
+            test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
 
-        File.WriteAllText(
-            scriptPath,
-            "echo \"Unhandled exception: An error occurred trying to start process '/x/bin/Debug/net10.0/Unit'. No such file or directory\" 1>&2\n"
-            + "exit 1\n"
-        )
+            match host.GetStatus("test-prune") with
+            | Some(Failed _) -> Assert.Fail("transient apphost-missing was reported as FAILED")
+            | _ -> ()
+        else
+            // Issue 1 regression: a persistently-missing apphost means the tests
+            // NEVER RAN — it must be DEFERRED, which is NON-GREEN (nothing was
+            // verified; a CI gate must not silent-green it), with an honest
+            // "waiting on build" diagnostic rather than a "test failed" one.
+            // On pre-Issue-1 code this returned TestsPassed → a false green.
+            test <@ host.HasFailingReasons(warningsAreFailures = true) @>
 
-        let configs =
-            [ { Project = "Unit"
-                Command = "sh"
-                Args = scriptPath
-                Group = "default"
-                Environment = []
-                FilterTemplate = None
-                ClassJoin = " "
-                TimeoutSec = None } ]
+            let waitingDiagnostic =
+                failingReasons
+                |> List.exists (fun e -> e.Message.ToLowerInvariant().Contains("waiting on build"))
 
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = create ":memory:" tmpDir (Some configs) None None None None
-        host.RegisterHandler(handler)
+            test <@ waitingDiagnostic @>
 
-        host.EmitBuildCompleted(BuildSucceeded)
-        waitForPluginTerminal host "test-prune" 15.0
-
-        // Even though the runner never succeeded, this is an ordering problem,
-        // not a test failure — the ledger must carry no failing reasons.
-        test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
-
-        match host.GetStatus("test-prune") with
-        | Some(Failed _) -> Assert.Fail("persistent apphost-missing was reported as a test FAILED")
-        | _ -> ())
+            // Status must be non-green (Failed) — but the message must say
+            // "waiting on build", not "failed".
+            match host.GetStatus("test-prune") with
+            | Some(Failed(msg, _)) -> test <@ msg.ToLowerInvariant().Contains("waiting on build") @>
+            | other -> Assert.Fail($"expected non-green Failed status for deferred project, got %A{other}"))
 
 // =============================================================================
 // Issue 2 — `fshw errors` must reflect ONLY the most recent completed cycle.

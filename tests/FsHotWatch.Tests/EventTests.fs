@@ -104,6 +104,39 @@ let ``TestResult.isPassed distinguishes Passed and Failed`` () =
     test <@ TestResult.isPassed (TestsPassed("ok", false, TimeSpan.Zero)) @>
     test <@ not (TestResult.isPassed (TestsFailed("bad", false, TimeSpan.Zero))) @>
 
+// Issue 1: the dedicated TestsDeferred case (apphost missing → tests never
+// ran). It must thread correctly through every TestResult helper.
+[<Fact(Timeout = 15000)>]
+let ``TestResult helpers handle the TestsDeferred case`` () =
+    let deferred = TestsDeferred "apphost not produced; tests did not run"
+    // output returns the reason.
+    test <@ TestResult.output deferred = "apphost not produced; tests did not run" @>
+    // A deferred project never ran — treat as filtered so it can't be classed
+    // a full-suite run that lowers a coverage baseline.
+    test <@ TestResult.wasFiltered deferred @>
+    // No wall-clock duration.
+    test <@ TestResult.elapsed deferred = TimeSpan.Zero @>
+    // CRITICAL: must NEVER count as passed — a never-ran project cannot produce
+    // a green verdict.
+    test <@ not (TestResult.isPassed deferred) @>
+    // It's deferred, not a timeout.
+    test <@ not (TestResult.isTimedOut deferred) @>
+    test <@ TestResult.isDeferred deferred @>
+    // Real results are not deferred.
+    test <@ not (TestResult.isDeferred (TestsPassed("ok", false, TimeSpan.Zero))) @>
+    test <@ not (TestResult.isDeferred (TestsFailed("bad", false, TimeSpan.Zero))) @>
+
+[<Fact(Timeout = 15000)>]
+let ``TestResult.ranFullSuite treats a deferred project as filtered`` () =
+    // A deferred (never-ran) project must not make the run look like a full
+    // suite that could lower a baseline.
+    let results =
+        Map.ofList
+            [ "A", TestsPassed("ok", false, TimeSpan.Zero)
+              "B", TestsDeferred "apphost not produced" ]
+
+    test <@ not (TestResult.ranFullSuite results) @>
+
 [<Fact(Timeout = 15000)>]
 let ``TestResult.ranFullSuite is true for empty map`` () =
     test <@ TestResult.ranFullSuite Map.empty @>
