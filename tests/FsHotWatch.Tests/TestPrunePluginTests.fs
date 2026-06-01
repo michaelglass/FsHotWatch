@@ -3467,3 +3467,250 @@ let ``detectChanges: re-check of unchanged source with externs reports no change
             env.Host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
 
         test <@ changedFiles.Value = "[]" @>)
+
+// =============================================================================
+// Issue 1 — cold-start apphost-missing must NOT be reported as a spurious
+// FAILED. A `dotnet run --no-build` launched before the build plugin produced
+// the apphost fails with an "An error occurred trying to start process … No
+// such file or directory" message — distinct from a genuine non-zero test
+// exit. `looksLikeApphostMissing` is the classifier that distinguishes the two.
+// =============================================================================
+
+[<Fact(Timeout = 15000)>]
+let ``looksLikeApphostMissing detects the start-process launch failure`` () =
+    // The exact shape the .NET host emits when `dotnet run --no-build` cannot
+    // find the apphost binary because the build plugin hasn't produced it yet.
+    let output =
+        "Unhandled exception: System.ComponentModel.Win32Exception (2): An error occurred trying to start process '/repo/tests/Unit/bin/Debug/net10.0/Unit' with working directory '/repo'. No such file or directory"
+
+    test <@ looksLikeApphostMissing output @>
+
+[<Fact(Timeout = 15000)>]
+let ``looksLikeApphostMissing is false for a genuine test failure`` () =
+    // A real xUnit/MTP failure carries `failed <name>` + a `failed:` summary,
+    // never the start-process signature. Misclassifying this as apphost-missing
+    // would SILENCE real reds — the opposite, and worse, failure mode.
+    let output =
+        "failed FsHotWatch.Tests.FooTests.bar (3ms)\nTest run summary: Failed!\n  total: 10\n  failed: 1\n  succeeded: 9"
+
+    test <@ not (looksLikeApphostMissing output) @>
+
+[<Fact(Timeout = 15000)>]
+let ``looksLikeApphostMissing is false for empty / passing output`` () =
+    test <@ not (looksLikeApphostMissing "") @>
+    test <@ not (looksLikeApphostMissing "Test run summary: Passed!\n  total: 5\n  succeeded: 5") @>
+
+[<Fact(Timeout = 20000)>]
+let ``cold-start apphost-missing is not reported as a test FAILED`` () =
+    // Simulate the cold race: a runner that, on its FIRST invocation, prints the
+    // apphost-launch failure and exits non-zero (exactly like `dotnet run
+    // --no-build` before the build settled), then SUCCEEDS on the retry once the
+    // apphost exists. The plugin must retry-after-settle and NOT surface a
+    // spurious FAILED status.
+    withTempDir "tp-apphost-missing" (fun tmpDir ->
+        let scriptPath = Path.Combine(tmpDir, "runner.sh")
+
+        // First run: emit the start-process failure to stderr and exit 1.
+        // Subsequent runs: exit 0 (apphost now present). Counter lives in the
+        // working dir (repoRoot = tmpDir). Written to a file to avoid fragile
+        // nested shell quoting through the F# arg string.
+        File.WriteAllText(
+            scriptPath,
+            "n=$(cat attempts 2>/dev/null || echo 0)\n"
+            + "n=$((n+1))\n"
+            + "echo $n > attempts\n"
+            + "if [ \"$n\" -le 1 ]; then\n"
+            + "  echo \"Unhandled exception: An error occurred trying to start process '/x/bin/Debug/net10.0/Unit' with working directory '/x'. No such file or directory\" 1>&2\n"
+            + "  exit 1\n"
+            + "else\n"
+            + "  echo ok\n"
+            + "  exit 0\n"
+            + "fi\n"
+        )
+
+        let configs =
+            [ { Project = "Unit"
+                Command = "sh"
+                Args = scriptPath
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        host.RegisterHandler(handler)
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForPluginTerminal host "test-prune" 15.0
+
+        // The plugin retried after the apphost-missing failure and the retry
+        // passed, so there must be NO failing reasons in the ledger.
+        test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
+
+        match host.GetStatus("test-prune") with
+        | Some(Failed _) -> Assert.Fail("apphost-missing was reported as a test FAILED")
+        | _ -> ())
+
+[<Fact(Timeout = 20000)>]
+let ``persistent apphost-missing surfaces as waiting-on-build, never FAILED`` () =
+    // If the apphost is STILL missing after the single retry (build never
+    // settled), the project must be surfaced as "waiting on build" — not a
+    // real test failure. The verdict must not flip red for an ordering bug.
+    withTempDir "tp-apphost-persist" (fun tmpDir ->
+        let scriptPath = Path.Combine(tmpDir, "runner.sh")
+
+        File.WriteAllText(
+            scriptPath,
+            "echo \"Unhandled exception: An error occurred trying to start process '/x/bin/Debug/net10.0/Unit'. No such file or directory\" 1>&2\n"
+            + "exit 1\n"
+        )
+
+        let configs =
+            [ { Project = "Unit"
+                Command = "sh"
+                Args = scriptPath
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        host.RegisterHandler(handler)
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForPluginTerminal host "test-prune" 15.0
+
+        // Even though the runner never succeeded, this is an ordering problem,
+        // not a test failure — the ledger must carry no failing reasons.
+        test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
+
+        match host.GetStatus("test-prune") with
+        | Some(Failed _) -> Assert.Fail("persistent apphost-missing was reported as a test FAILED")
+        | _ -> ())
+
+// =============================================================================
+// Issue 2 — `fshw errors` must reflect ONLY the most recent completed cycle.
+// When a cycle re-runs, the plugin's prior-cycle diagnostics must be
+// cleared/replaced so stale reds from a superseded run don't accumulate.
+// =============================================================================
+
+[<Fact(Timeout = 20000)>]
+let ``stale failures from a prior cycle are cleared when the next cycle supersedes them`` () =
+    // Cycle 1: ProjA fails (ProjB passes) → ledger holds a ProjA red.
+    // Cycle 2: ProjA passes, ProjB fails → ledger must hold ONLY a ProjB red;
+    // the superseded ProjA entry must be gone. Before the fix, the
+    // Custom(TestsFinished) handler only cleared on the all-pass branch, so the
+    // ProjA red from cycle 1 was never cleared when cycle 2 reported ProjB —
+    // `fshw errors` showed a stale red the fresh cycle had already cleared.
+    //
+    // Driven via the `run-tests` IPC command rather than BuildCompleted so each
+    // cycle deterministically RE-RUNS the given projects (BuildCompleted's
+    // impact path would skip on a warm cycle with no changed symbols).
+    withTempDir "tp-stale-clear" (fun tmpDir ->
+        let flagA = Path.Combine(tmpDir, "failA")
+        let flagB = Path.Combine(tmpDir, "failB")
+
+        let mk (proj: string) (flag: string) =
+            { Project = proj
+              Command = "sh"
+              Args = $"-c \"if [ -f {flag} ]; then exit 1; else exit 0; fi\""
+              Group = "default"
+              Environment = []
+              FilterTemplate = None
+              ClassJoin = " "
+              TimeoutSec = None }
+
+        let configs = [ mk "ProjA" flagA; mk "ProjB" flagB ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        host.RegisterHandler(handler)
+
+        let ledgerFiles () =
+            host.GetErrorsByPlugin("test-prune") |> Map.toList |> List.map fst
+
+        let hasFileFor (substr: string) () =
+            ledgerFiles () |> List.exists (fun f -> f.Contains(substr))
+
+        // Cycle 1: only ProjA fails. run-tests runs executeTests synchronously
+        // then posts TestsFinished; wait for the ledger to reflect the ProjA red.
+        File.WriteAllText(flagA, "")
+        host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
+        waitUntil (hasFileFor "ProjA") 12000
+
+        let cycle1Files = ledgerFiles ()
+        test <@ cycle1Files |> List.exists (fun f -> f.Contains("ProjA")) @>
+        test <@ not (cycle1Files |> List.exists (fun f -> f.Contains("ProjB"))) @>
+
+        // Cycle 2: ProjA now passes, ProjB fails. Wait for the ledger to reflect
+        // the new ProjB red (which only appears after the Custom(TestsFinished)
+        // handler ran clear-then-report for this cycle).
+        File.Delete(flagA)
+        File.WriteAllText(flagB, "")
+        host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
+        waitUntil (hasFileFor "ProjB") 12000
+
+        let cycle2Files = ledgerFiles ()
+
+        // ProjB red is present, ProjA red has been superseded/cleared.
+        test <@ cycle2Files |> List.exists (fun f -> f.Contains("ProjB")) @>
+        test <@ not (cycle2Files |> List.exists (fun f -> f.Contains("ProjA"))) @>)
+
+// =============================================================================
+// Issue 3 — a partial / aborted / un-executed run must NEVER lower an existing
+// coverage baseline. `processCoverageOutput` must not persist a baseline from a
+// run that did not genuinely execute the project's tests.
+// =============================================================================
+
+[<Fact>]
+let ``processCoverageOutput full run does NOT clobber cobertura when baseline is empty`` () =
+    // Regression for Issue 3: an aborted full run (apphost died at launch) leaves
+    // an EMPTY/partial baseline cobertura on disk. The old code copied that empty
+    // baseline straight over the good cobertura, dropping every covered line and
+    // tanking the ratchet number. A baseline with no covered lines must never
+    // replace a populated cobertura.
+    withTempDir "cov-empty-baseline" (fun dir ->
+        let paths: CoveragePaths =
+            { Baseline = Path.Combine(dir, "coverage.baseline.cobertura.xml")
+              Partial = Path.Combine(dir, "coverage.partial.cobertura.xml")
+              Cobertura = Path.Combine(dir, "coverage.cobertura.xml")
+              ArgsTemplate = defaultCoverageArgsTemplate }
+
+        // A good, populated cobertura already on disk from a prior clean run.
+        let goodCobertura = mkCobertura "Foo.dll" "Foo.fs" [ (10, 1); (11, 1) ]
+        File.WriteAllText(paths.Cobertura, goodCobertura)
+
+        // An aborted full run wrote an EMPTY baseline (no covered lines).
+        File.WriteAllText(paths.Baseline, mkCobertura "Foo.dll" "Foo.fs" [ (10, 0); (11, 0) ])
+
+        processCoverageOutput paths false
+
+        // The good cobertura must be untouched — not lowered to 0% coverage.
+        let xml = File.ReadAllText(paths.Cobertura)
+        test <@ xml = goodCobertura @>)
+
+[<Fact>]
+let ``processCoverageOutput full run with no parsed entries does not write cobertura`` () =
+    // A baseline file that exists but parses to zero coverage entries (schema
+    // drift / aborted mid-write) must not overwrite an existing cobertura.
+    withTempDir "cov-zero-entries" (fun dir ->
+        let paths: CoveragePaths =
+            { Baseline = Path.Combine(dir, "coverage.baseline.cobertura.xml")
+              Partial = Path.Combine(dir, "coverage.partial.cobertura.xml")
+              Cobertura = Path.Combine(dir, "coverage.cobertura.xml")
+              ArgsTemplate = defaultCoverageArgsTemplate }
+
+        let goodCobertura = mkCobertura "Foo.dll" "Foo.fs" [ (10, 1) ]
+        File.WriteAllText(paths.Cobertura, goodCobertura)
+        // Empty <packages/> — parses to zero entries.
+        File.WriteAllText(paths.Baseline, "<?xml version=\"1.0\"?><coverage><packages /></coverage>")
+
+        processCoverageOutput paths false
+
+        let xml = File.ReadAllText(paths.Cobertura)
+        // Untouched: still the populated document.
+        test <@ xml = goodCobertura @>)
