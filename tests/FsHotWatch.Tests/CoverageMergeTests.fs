@@ -34,6 +34,20 @@ let ``mergePerLineMax includes files only in partial`` () =
     Assert.Equal(1, hits merged "Foo.dll" "Bar.fs" 5)
 
 [<Fact>]
+let ``coveredLineCount counts only lines with hits greater than zero`` () =
+    // Issue 3: shared helper that both toCobertura and the TestPrune plugin's
+    // baseline guard call. Two covered lines (hits > 0), one uncovered.
+    let data = parse (cobertura "Foo.dll" "Foo.fs" [ (10, 3); (11, 0); (12, 1) ])
+
+    Assert.Equal(2, coveredLineCount data)
+
+[<Fact>]
+let ``coveredLineCount is zero for an all-zero (aborted) baseline`` () =
+    let data = parse (cobertura "Foo.dll" "Foo.fs" [ (10, 0); (11, 0) ])
+    Assert.Equal(0, coveredLineCount data)
+    Assert.Equal(0, coveredLineCount Map.empty)
+
+[<Fact>]
 let ``toCobertura emits well-formed XML with line-rate`` () =
     let merged = parse (cobertura "Foo.dll" "Foo.fs" [ (10, 1); (11, 0) ])
     let xml = toCobertura merged

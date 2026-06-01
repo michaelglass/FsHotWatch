@@ -673,6 +673,45 @@ let ``FileTaskCache roundtrips wasFiltered=true and RanFullSuite=false`` () =
         test <@ TestResult.isPassed p1 @>)
 
 [<Fact(Timeout = 15000)>]
+let ``FileTaskCache roundtrips the TestsDeferred case (never-ran, non-green)`` () =
+    // Issue 1: the new TestsDeferred case must survive serialization, and on
+    // the way back it must stay NON-passing (so a cached deferred result can
+    // never replay as a silent false-green).
+    withTempDir "ftc-deferred" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+
+        let result =
+            { CacheKey = hash "k"
+              Errors = []
+              Status = Completed(at = fixedTime)
+              EmittedEvents =
+                [ CachedTestRunCompleted
+                      { RunId = System.Guid.NewGuid()
+                        TotalElapsed = System.TimeSpan.Zero
+                        Outcome = Normal
+                        Results = Map.ofList [ "p1", TestsDeferred "apphost not produced; tests did not run" ]
+                        RanFullSuite = false } ] }
+
+        c.Set (ck "test-prune" "X.fs") (hash "k") result
+
+        let cache2 = FileTaskCache(tmpDir)
+        let r = (cache2 :> ITaskCache).TryGet (ck "test-prune" "X.fs") (hash "k")
+        test <@ r.IsSome @>
+
+        let evt =
+            r.Value.EmittedEvents
+            |> List.tryPick (function
+                | CachedTestRunCompleted e -> Some e
+                | _ -> None)
+
+        test <@ evt.IsSome @>
+        let p1 = evt.Value.Results.["p1"]
+        test <@ TestResult.isDeferred p1 @>
+        test <@ not (TestResult.isPassed p1) @>
+        test <@ (TestResult.output p1).Contains("apphost not produced") @>)
+
+[<Fact(Timeout = 15000)>]
 let ``FileTaskCache roundtrips error entries with detail`` () =
     withTempDir "ftc-detail" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
@@ -801,6 +840,61 @@ let ``FileTaskCache.ParseFailureCount increments on malformed cache file`` () =
 // FileTaskCache.fs sits at ~77.7 % line coverage and the ratchet's 78 %
 // threshold drifts in/out of fail across runs (deterministic shortfall,
 // not flake — see coverage_ratchet_lucky_ceiling memory).
+
+[<Fact(Timeout = 15000)>]
+let ``FileTaskCache tolerates explicit null wasFiltered/elapsedSeconds (old cache back-compat)`` () =
+    // Old caches written before these fields existed (and any that serialized
+    // them as JSON null) must still deserialize, defaulting to false / Zero.
+    // Exercises the `isNull node` branches in deserializeTestResult.
+    withTempDir "ftc-null-fields" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+        let key = ck "test-prune" "X.fs"
+        let cacheKey = hash "k"
+
+        let result =
+            { CacheKey = cacheKey
+              Errors = []
+              Status = Completed(at = fixedTime)
+              EmittedEvents =
+                [ CachedTestRunCompleted
+                      { RunId = System.Guid.NewGuid()
+                        TotalElapsed = System.TimeSpan.Zero
+                        Outcome = Normal
+                        Results = Map.ofList [ "p1", TestsPassed("ok", true, TimeSpan.FromSeconds 2.0) ]
+                        RanFullSuite = false } ] }
+
+        c.Set key cacheKey result
+
+        // Rewrite the on-disk JSON, replacing the stored wasFiltered/elapsedSeconds
+        // values with explicit nulls (the "old/partial cache" shape).
+        let path = System.IO.Directory.EnumerateFiles(tmpDir, "*.json") |> Seq.head
+        let raw = System.IO.File.ReadAllText(path)
+
+        let patched =
+            raw
+                .Replace("\"wasFiltered\":true", "\"wasFiltered\":null")
+                .Replace("\"wasFiltered\": true", "\"wasFiltered\": null")
+                .Replace("\"elapsedSeconds\":2", "\"elapsedSeconds\":null")
+                .Replace("\"elapsedSeconds\": 2", "\"elapsedSeconds\": null")
+
+        System.IO.File.WriteAllText(path, patched)
+
+        let cache2 = FileTaskCache(tmpDir)
+        let r = (cache2 :> ITaskCache).TryGet key cacheKey
+        test <@ r.IsSome @>
+
+        let evt =
+            r.Value.EmittedEvents
+            |> List.tryPick (function
+                | CachedTestRunCompleted e -> Some e
+                | _ -> None)
+
+        test <@ evt.IsSome @>
+        let p1 = evt.Value.Results.["p1"]
+        // Null fields → safe defaults.
+        test <@ not (TestResult.wasFiltered p1) @>
+        test <@ TestResult.elapsed p1 = TimeSpan.Zero @>)
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache roundtrips TestsTimedOut variant`` () =

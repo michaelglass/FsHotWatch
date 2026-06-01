@@ -89,6 +89,11 @@ let private serializeTestResult (key: string) (result: TestResult) =
         obj["wasFiltered"] <- wasFiltered
         obj["timeoutSeconds"] <- after.TotalSeconds
         obj["elapsedSeconds"] <- elapsed.TotalSeconds
+    | TestsDeferred reason ->
+        obj["result"] <- "deferred"
+        // Stored under `output` so the back-compat deserializer's `output`
+        // read finds it without a special case.
+        obj["output"] <- reason
 
     obj
 
@@ -132,6 +137,7 @@ let private deserializeTestResult (obj: JsonObject) : string * TestResult =
                     0.0
 
             TestsTimedOut(output, TimeSpan.FromSeconds secs, wasFiltered, elapsed)
+        | "deferred" -> TestsDeferred output
         | r -> failwith $"Unknown test result: %s{r}"
 
     project, result
