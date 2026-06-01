@@ -94,17 +94,10 @@ let processCoverageOutput (paths: CoveragePaths) (wasFiltered: bool) : unit =
     // Issue 3: a baseline counts as "really executed" only if it carries at
     // least one COVERED line (hits > 0). An aborted full run (apphost died at
     // launch) can leave an empty or all-zero baseline on disk; persisting it
-    // would drop every covered line and tank the ratchet. `coveredLineCount`
-    // lets the full-run branch refuse to overwrite a good cobertura with such
-    // a degenerate baseline.
-    let coveredLineCount (data: CoverageMerge.CoverageData) =
-        data
-        |> Map.toSeq
-        |> Seq.sumBy (fun (_, files) ->
-            files
-            |> Map.toSeq
-            |> Seq.sumBy (fun (_, lines) -> lines |> Map.toSeq |> Seq.filter (fun (_, h) -> h > 0) |> Seq.length))
-
+    // would drop every covered line and tank the ratchet.
+    // `CoverageMerge.coveredLineCount` lets the full-run branch refuse to
+    // overwrite a good cobertura with such a degenerate baseline; it is the
+    // same helper `toCobertura` uses to compute `lines-covered`.
     try
         if not wasFiltered then
             if File.Exists(paths.Baseline) then
@@ -114,7 +107,7 @@ let processCoverageOutput (paths: CoveragePaths) (wasFiltered: bool) : unit =
                 // when it actually covered something. An empty/all-zero baseline
                 // is the signature of an aborted run — leaving the prior good
                 // cobertura untouched is strictly safer than lowering it.
-                if coveredLineCount baseline > 0 then
+                if CoverageMerge.coveredLineCount baseline > 0 then
                     let xml = CoverageMerge.toCobertura baseline
                     File.WriteAllText(paths.Cobertura, xml)
                 else
@@ -124,11 +117,11 @@ let processCoverageOutput (paths: CoveragePaths) (wasFiltered: bool) : unit =
 
             if File.Exists(paths.Partial) then
                 File.Delete(paths.Partial)
+        // Bootstrap: no baseline yet, partial can't produce a faithful
+        // Cobertura on its own. Leave everything as-is so downstream
+        // ratchets skip (or fail with a clear "missing file" message
+        // that prompts the user to run a full test).
         else if not (File.Exists(paths.Baseline)) then
-            // Bootstrap: no baseline yet, partial can't produce a faithful
-            // Cobertura on its own. Leave everything as-is so downstream
-            // ratchets skip (or fail with a clear "missing file" message
-            // that prompts the user to run a full test).
             Logging.info "test-prune" "coverage: skipping cobertura emit (no baseline — run a full test first)"
         else if File.Exists(paths.Partial) then
             let baseline = parseAndCheck paths.Baseline
@@ -228,6 +221,7 @@ let private formatTestResultsJson (results: TestResults) =
                 | TestsPassed(o, _, _) -> ("passed", o)
                 | TestsFailed(o, _, _) -> ("failed", o)
                 | TestsTimedOut(o, _, _, _) -> ("timed-out", o)
+                | TestsDeferred reason -> ("deferred", reason)
 
             {| project = name
                status = status
@@ -255,12 +249,102 @@ let internal buildFilterArgs (config: TestConfig) (classesByProject: Map<string,
         Logging.info "test-prune" $"Filter: %s{result}"
         Some result
 
-/// Issue 1 — cold-start apphost-missing classifier. On a cold daemon a
+/// Issue 2 — STRUCTURAL apphost-missing detection. On a cold daemon a
 /// `dotnet run --project <proj> --no-build` can be launched before the build
-/// plugin produced that project's apphost/dll. `dotnet run` then fails to
-/// spawn the apphost and surfaces the .NET host's start-process error in its
-/// output, exiting non-zero. That non-zero exit is an ORDERING bug, never a
-/// test failure — reporting it as FAILED is the spurious-red defect.
+/// plugin produced that project's apphost binary; `dotnet run` then fails to
+/// spawn it and exits non-zero. That is an ORDERING bug, never a test failure.
+///
+/// Rather than sniff localized OS error text out of the runner output (fragile
+/// to locale and SDK phrasing — see `looksLikeApphostMissing`, kept only as a
+/// defensive fallback), we derive the apphost binary path from the runner's
+/// `--project` arg and check `File.Exists` BEFORE/around the launch. The
+/// apphost is the extension-less sibling of the canonical
+/// `<projDir>/bin/Debug/<tfm>/<assemblyName>.dll` (`.exe` on Windows). We don't
+/// know the TFM without the project graph here, so we glob every
+/// `bin/Debug/*/` TFM dir for the assembly. If NO apphost is found for a
+/// derivable project, that absence IS the "apphost not yet produced" signal.
+///
+/// Returns:
+///   Some true  — project derivable AND apphost present
+///   Some false — project derivable AND apphost absent (the deferred signal)
+///   None       — could not derive a project from args (e.g. a non-`dotnet run`
+///                custom command); caller falls back to the output sniff.
+let internal tryApphostPresent (args: string) (repoRoot: string) : bool option =
+    // Tokenize on whitespace and find the value after `--project`.
+    let tokens =
+        if String.IsNullOrWhiteSpace args then
+            [||]
+        else
+            args.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries)
+
+    let projArg =
+        tokens
+        |> Array.tryFindIndex (fun t -> t = "--project" || t = "-p")
+        |> Option.bind (fun i -> if i + 1 < tokens.Length then Some(tokens.[i + 1]) else None)
+        |> Option.map (fun raw -> raw.Trim('"'))
+
+    match projArg with
+    | None -> None
+    | Some proj ->
+        // Resolve to an absolute path (relative paths are repoRoot-relative).
+        let abs =
+            if Path.IsPathRooted proj then
+                proj
+            else
+                Path.Combine(repoRoot, proj)
+
+        // The `--project` value may point at a `.fsproj`/`.csproj` file or at a
+        // directory. Derive (projDir, assemblyName) for both shapes. The
+        // assembly name defaults to the project/dir leaf — matching the
+        // canonical DLL derivation in ProjectGraph.GetCanonicalDllPath, which
+        // uses the project file's base name.
+        let projDir, assemblyName =
+            if
+                File.Exists abs
+                && (abs.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase)
+                    || abs.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+            then
+                Path.GetDirectoryName(abs), Path.GetFileNameWithoutExtension(abs)
+            else
+                // Treat as a directory. The assembly name conventionally matches
+                // the directory leaf; if a single project file lives there, prefer
+                // that file's base name.
+                let dir = abs.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+
+                let nameFromProjFile =
+                    if Directory.Exists dir then
+                        Directory.GetFiles(dir, "*.fsproj")
+                        |> Array.append (Directory.GetFiles(dir, "*.csproj"))
+                        |> Array.tryHead
+                        |> Option.map Path.GetFileNameWithoutExtension
+                    else
+                        None
+
+                dir, (nameFromProjFile |> Option.defaultValue (Path.GetFileName dir))
+
+        let binDir = Path.Combine(projDir, "bin", "Debug")
+
+        if not (Directory.Exists binDir) then
+            // No build output at all yet — apphost definitionally absent.
+            Some false
+        else
+            // The apphost lives at bin/Debug/<tfm>/<assemblyName>(.exe). We don't
+            // know the TFM, so scan every TFM dir for the extension-less binary
+            // (Unix) or the `.exe` (Windows).
+            let present =
+                Directory.GetDirectories(binDir)
+                |> Array.exists (fun tfmDir ->
+                    File.Exists(Path.Combine(tfmDir, assemblyName))
+                    || File.Exists(Path.Combine(tfmDir, assemblyName + ".exe")))
+
+            Some present
+
+/// Issue 1/2 — defensive fallback apphost-missing classifier, used ONLY when
+/// `tryApphostPresent` can't derive a project from the runner args (custom,
+/// non-`dotnet run` commands). On a cold daemon a `dotnet run --project <proj>
+/// --no-build` launched before the build plugin produced the apphost fails to
+/// spawn it and surfaces the .NET host's start-process error, exiting non-zero.
+/// That non-zero exit is an ORDERING bug, never a test failure.
 ///
 /// This classifier distinguishes that launch failure from a genuine non-zero
 /// test exit. A real xUnit/MTP failure carries `failed <name>` lines and a
@@ -351,6 +435,14 @@ let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<str
                             |> Option.defaultValue $"<tests/%s{project}>"
 
                         file, ErrorLedger.ErrorEntry.errorWithDetail line output)
+            | TestsDeferred reason ->
+                // Issue 1: NOT a test failure — surface an honest "waiting on
+                // build / did not run" diagnostic so the verdict is non-green
+                // (nothing was verified) WITHOUT claiming a test failed.
+                [ $"<tests/%s{project}>",
+                  ErrorLedger.ErrorEntry.errorWithDetail
+                      $"%s{project}: waiting on build — %s{reason}"
+                      $"The %s{project} test project did not run because its build artifact (apphost) was not produced. Tests were NOT executed, so this cycle cannot be reported as passing. This is a build-ordering issue, not a test failure." ]
             | TestsPassed _ -> [])
         |> List.groupBy fst
         |> List.map (fun (file, entries) -> file, entries |> List.map snd)
@@ -537,21 +629,41 @@ let private executeTests
                                             timeoutSpan
                                 }
 
-                            // Issue 1: cold-start apphost-missing retry. The
+                            // Issue 2: STRUCTURAL apphost-missing detection. Prefer
+                            // a `File.Exists` check on the derived apphost binary
+                            // over sniffing localized OS error text. When the
+                            // project isn't derivable from the runner args (custom,
+                            // non-`dotnet run` command), fall back to the output
+                            // sniff. `outcome` is the process result whose output
+                            // the fallback inspects.
+                            let detectApphostMissing (outcome: ProcessOutcome) : bool =
+                                // A clean exit means the apphost ran — never a
+                                // launch-ordering problem, regardless of artifacts.
+                                if isSucceeded outcome then
+                                    false
+                                else
+                                    match tryApphostPresent config.Args repoRoot with
+                                    | Some present -> not present
+                                    | None ->
+                                        // Not derivable — fall back to the text sniff.
+                                        match outcome with
+                                        | ProcessOutcome.Failed(_, out) -> looksLikeApphostMissing out
+                                        | _ -> false
+
+                            // Issue 1/2: cold-start apphost-missing retry. The
                             // BuildCompleted→TestPrune ordering already gates the
                             // launch on a successful build, but a narrow race can
                             // still fire `--no-build` before the apphost lands. If
-                            // the FIRST run failed with the start-process
-                            // signature (not a real test failure), wait briefly
-                            // for the build to settle and retry ONCE. A still-
-                            // missing apphost after the retry is surfaced as
-                            // "waiting on build", never FAILED.
+                            // the FIRST run looks like an apphost-missing launch
+                            // (structural check, or text sniff fallback), wait
+                            // briefly for the build to settle and retry ONCE. A
+                            // still-missing apphost after the retry is surfaced as
+                            // DEFERRED ("waiting on build"), never FAILED.
                             let runTestWithRetry =
                                 async {
                                     let! first = runOnce
 
-                                    match first with
-                                    | ProcessOutcome.Failed(_, out) when looksLikeApphostMissing out ->
+                                    if detectApphostMissing first then
                                         Logging.warn
                                             "test-prune"
                                             $"%s{config.Project}: apphost missing at launch (build not settled yet); retrying once after a short wait"
@@ -559,7 +671,8 @@ let private executeTests
                                         do! Async.Sleep 750
                                         let! second = runOnce
                                         return second
-                                    | other -> return other
+                                    else
+                                        return first
                                 }
 
                             let! processResult =
@@ -575,12 +688,10 @@ let private executeTests
                             projectSw.Stop()
                             let projectElapsed = projectSw.Elapsed
 
-                            // Issue 1: distinguish a still-missing apphost (an
-                            // ordering bug) from a genuine non-zero test exit.
-                            let apphostMissing =
-                                match processResult with
-                                | ProcessOutcome.Failed(_, out) -> looksLikeApphostMissing out
-                                | _ -> false
+                            // Issue 1/2: distinguish a still-missing apphost (an
+                            // ordering bug) from a genuine non-zero test exit,
+                            // via the same structural-with-fallback check.
+                            let apphostMissing = detectApphostMissing processResult
 
                             let success = isSucceeded processResult
                             let output = outputOf processResult
@@ -637,14 +748,17 @@ let private executeTests
                             let result =
                                 match processResult with
                                 | _ when apphostMissing ->
-                                    // Waiting on build: not a failure and not a real
-                                    // execution. Mark wasFiltered=true so it can never
-                                    // be treated as a full-suite run that lowers a
-                                    // coverage baseline (Issue 3), and elapsed=Zero
-                                    // since the runner never actually ran the tests.
-                                    // isPassed=true keeps it out of the FAILED verdict;
-                                    // the "waiting on build" output documents why.
-                                    TestsPassed("waiting on build (apphost not produced)", true, TimeSpan.Zero)
+                                    // Issue 1: the tests NEVER RAN — the apphost
+                                    // wasn't produced. This is a dedicated
+                                    // `TestsDeferred` case, NOT a pass: `isPassed`
+                                    // is false for it, so it can never produce a
+                                    // silent false-green verdict. It is also not a
+                                    // real failure — the verdict surfaces it as an
+                                    // honest "waiting on build" diagnostic.
+                                    // `TestsDeferred` carries no elapsed/wasFiltered,
+                                    // and `wasFiltered` reports true for it, so it
+                                    // never lowers a coverage baseline (Issue 3).
+                                    TestsDeferred "apphost not produced; tests did not run"
                                 | ProcessOutcome.Succeeded _ -> TestsPassed(output, wasFiltered, projectElapsed)
                                 | ProcessOutcome.TimedOut(after, _) ->
                                     TestsTimedOut(output, after, wasFiltered, projectElapsed)
@@ -1159,7 +1273,10 @@ let create
                                                     |> List.choose (fun (name, r) ->
                                                         match r with
                                                         | TestsFailed _
-                                                        | TestsTimedOut _ -> Some name
+                                                        | TestsTimedOut _
+                                                        // A deferred project never ran — `--only-failed`
+                                                        // (rerun non-green projects) should pick it up.
+                                                        | TestsDeferred _ -> Some name
                                                         | _ -> None)
                                                     |> Set.ofList
 
@@ -1529,13 +1646,23 @@ let create
                     let recordRunOutcome (results: TestResults) =
                         let total = results.Results.Count
 
-                        let failedList =
+                        // Non-green = anything not passed. Split into genuine
+                        // failures vs deferred (never-ran) so the verdict can be
+                        // honest: deferred is non-green but is "could not run /
+                        // waiting on build", NOT "failed".
+                        let nonGreen =
                             results.Results
                             |> Map.toList
                             |> List.filter (fun (_, r) -> not (TestResult.isPassed r))
 
+                        let deferredList = nonGreen |> List.filter (fun (_, r) -> TestResult.isDeferred r)
+
+                        let failedList =
+                            nonGreen |> List.filter (fun (_, r) -> not (TestResult.isDeferred r))
+
                         let failed = failedList.Length
-                        let passed = total - failed
+                        let deferred = deferredList.Length
+                        let passed = total - failed - deferred
 
                         let anyFiltered =
                             results.Results |> Map.exists (fun _ r -> TestResult.wasFiltered r)
@@ -1566,6 +1693,12 @@ let create
                                     let (n, e) = withElapsed |> List.maxBy snd
                                     $", slowest: %s{n} %.1f{e.TotalSeconds}s"
 
+                        let deferredSuffix =
+                            if deferred > 0 then
+                                $", %d{deferred} waiting on build"
+                            else
+                                ""
+
                         if not timedOutProjects.IsEmpty then
                             let names = timedOutProjects |> String.concat ", "
                             ctx.CompleteWithTimeout $"test project(s): {names}"
@@ -1578,14 +1711,38 @@ let create
                             )
                         else
                             ctx.CompleteWithSummary
-                                $"%d{passed} passed, %d{failed} failed in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})"
+                                $"%d{passed} passed, %d{failed} failed%s{deferredSuffix} in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})"
 
-                            if failed = 0 then
+                            if failed = 0 && deferred = 0 then
                                 ctx.ReportStatus(Completed(DateTime.UtcNow))
+                            elif failed = 0 then
+                                // Issue 1: only deferred projects — nothing FAILED,
+                                // but nothing was verified either. Non-green, with an
+                                // honest "waiting on build" message (never "failed").
+                                let names = deferredList |> List.map fst |> String.concat ", "
+
+                                ctx.ReportStatus(
+                                    PluginStatus.Failed(
+                                        $"%d{deferred} waiting on build (tests did not run): %s{names}",
+                                        DateTime.UtcNow
+                                    )
+                                )
                             else
                                 let names = failedList |> List.map fst |> String.concat ", "
 
-                                ctx.ReportStatus(PluginStatus.Failed($"%d{failed} failed: %s{names}", DateTime.UtcNow))
+                                let deferredNote =
+                                    if deferred > 0 then
+                                        let dn = deferredList |> List.map fst |> String.concat ", "
+                                        $" (%d{deferred} waiting on build: %s{dn})"
+                                    else
+                                        ""
+
+                                ctx.ReportStatus(
+                                    PluginStatus.Failed(
+                                        $"%d{failed} failed: %s{names}%s{deferredNote}",
+                                        DateTime.UtcNow
+                                    )
+                                )
 
                     if state.PendingRerun then
                         Logging.info "test-prune" "Re-running tests (queued during previous run)"
