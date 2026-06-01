@@ -390,6 +390,47 @@ let ``ErrorLedger logs reporter exception with stack trace (F11)`` () =
         System.Console.SetError(prevErr)
         FsHotWatch.Logging.setLogLevel original
 
+[<Fact(Timeout = 15000)>]
+let ``ErrorLedger reporter throwing on Report yields non-clean verdict with synthetic error`` () =
+    // Regression guard (2026-06-01): a reporter that throws while persisting a
+    // diagnostic must NOT collapse "there were errors" into a clean pass. The
+    // CLI verdict/exit code reads ErrorLedger.GetAll()/FailingReasons, so a
+    // reporter failure must land a synthetic Error entry in that same path.
+    let throwingReporter =
+        { new IErrorReporter with
+            member _.Report _ _ _ =
+                raise (System.InvalidOperationException("reporter boom"))
+
+            member _.Clear _ _ = ()
+            member _.ClearPlugin _ = ()
+            member _.ClearAll() = () }
+
+    let ledger = ErrorLedger([ throwingReporter ])
+    ledger.Report("lint", "/src/A.fs", [ entry "real error" DiagnosticSeverity.Error 1 ])
+    ledger.GetAll() |> ignore // sync barrier
+
+    // The verdict the CLI consumes must be non-clean.
+    test <@ ledger.HasFailingReasons(warningsAreFailures = false) @>
+
+    let all = ledger.GetAll()
+    let allEntries = all |> Map.toSeq |> Seq.collect snd |> Seq.toList
+
+    // A descriptive synthetic error must be present (not silently empty), and it
+    // must name the failing plugin so the daemon log + verdict agree.
+    test
+        <@
+            allEntries
+            |> List.exists (fun (plugin, e) ->
+                plugin = "error-ledger"
+                && e.Severity = DiagnosticSeverity.Error
+                && e.Message.Contains("lint")
+                && e.Message.Contains("InvalidOperationException"))
+        @>
+
+    // The failing reasons (what the exit code is computed from) must be non-empty.
+    let failing = ledger.FailingReasons(warningsAreFailures = false)
+    test <@ not failing.IsEmpty @>
+
 [<Fact>]
 let ``DiagnosticSeverity order is hint lt info lt warning lt error`` () =
     test <@ DiagnosticSeverity.order Hint < DiagnosticSeverity.order Info @>

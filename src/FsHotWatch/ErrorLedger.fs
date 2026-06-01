@@ -123,8 +123,30 @@ type private LedgerMsg =
     /// Posted only by `ErrorLedger.RaiseFaultForTest`, which is itself internal.
     | RaiseFaultForTest of exn
 
+/// Plugin name under which the ledger self-reports its own reporter failures.
+/// A reporter that throws while persisting a diagnostic means "we could not
+/// record the errors" — which must read as non-clean, never as silence. The
+/// synthetic Error entry lands in the same `state.Errors` map that GetAll /
+/// FailingReasons / HasFailingReasons (and thus the CLI exit code) consult.
+[<Literal>]
+let reporterFailurePlugin = "error-ledger"
+
 let private isFailing warningsAreFailures e =
     ErrorEntry.isFailing warningsAreFailures e
+
+/// Build a synthetic Error entry describing reporters that threw while a given
+/// plugin's diagnostics were being recorded, naming the failing plugin and the
+/// exception(s) so the verdict and the daemon log agree.
+let private syntheticReporterFailure (plugin: string) (entryCount: int) (failures: exn list) : ErrorEntry =
+    let detail = failures |> List.map (fun ex -> ex.ToString()) |> String.concat "\n\n"
+
+    let exSummary =
+        failures
+        |> List.map (fun ex -> ex.GetType().Name)
+        |> List.distinct
+        |> String.concat ", "
+
+    ErrorEntry.errorWithDetail $"failed to record %d{entryCount} diagnostic(s) from %s{plugin}: %s{exSummary}" detail
 
 /// Check version and advance if accepted. Returns (accepted, newState).
 let private tryAcceptVersion key (v: int64) (state: LedgerState) =
@@ -147,12 +169,23 @@ type ErrorLedger(?reporters: IErrorReporter list) =
     // The broad catch keeps a misbehaving reporter from taking down the
     // ledger agent; log ex.ToString() (not ex.Message) so the type and
     // stack trace are preserved for diagnosing the offending reporter.
-    let notifyReporters action =
+    //
+    // 2026-06-01: surviving the crash must NOT also erase the verdict. The
+    // logging stays, but callers now also receive the exceptions so a failed
+    // *persist* of a diagnostic can be self-reported as a synthetic error the
+    // aggregate verdict / exit code observes (see syntheticReporterFailure).
+    // Returns the exceptions raised by reporters (empty when all succeeded).
+    let notifyReporters action : exn list =
+        let mutable failures = []
+
         for r in reporters do
             try
                 action r
             with ex ->
                 Logging.error "error-ledger" $"Reporter failed: %s{ex.ToString()}"
+                failures <- ex :: failures
+
+        List.rev failures
 
     let agent =
         MailboxProcessor.Start(fun inbox ->
@@ -176,17 +209,35 @@ type ErrorLedger(?reporters: IErrorReporter list) =
                                 | Some v -> tryAcceptVersion key v state
                                 | None -> true, state
 
+                            // The synthetic key under which a reporter-failure
+                            // for this plugin/file is tracked, so a later clean
+                            // re-report of the same file clears the stale alarm.
+                            let failureKey = struct (reporterFailurePlugin, file)
+
                             if accepted then
                                 if entries.IsEmpty then
-                                    notifyReporters (fun r -> r.Clear plugin file)
+                                    notifyReporters (fun r -> r.Clear plugin file) |> ignore
 
                                     { state' with
-                                        Errors = Map.remove key state'.Errors }
+                                        Errors = state'.Errors |> Map.remove key |> Map.remove failureKey }
                                 else
-                                    notifyReporters (fun r -> r.Report plugin file entries)
+                                    let failures = notifyReporters (fun r -> r.Report plugin file entries)
 
-                                    { state' with
-                                        Errors = Map.add key entries state'.Errors }
+                                    let errors = Map.add key entries state'.Errors
+
+                                    let errors =
+                                        if List.isEmpty failures then
+                                            // Reporters persisted cleanly: drop any prior failure alarm.
+                                            Map.remove failureKey errors
+                                        else
+                                            // A reporter could not persist these diagnostics. Self-report
+                                            // so the aggregate verdict / exit code is non-clean rather than
+                                            // falsely green (the diagnostics may be lost on disk).
+                                            let synthetic = syntheticReporterFailure plugin entries.Length failures
+
+                                            Map.add failureKey [ synthetic ] errors
+
+                                    { state' with Errors = errors }
                             else
                                 state'
 
@@ -199,7 +250,11 @@ type ErrorLedger(?reporters: IErrorReporter list) =
                                 | None -> true, state
 
                             if accepted then
-                                notifyReporters (fun r -> r.Clear plugin file)
+                                // Symmetry note (2026-06-01): a failed Clear is logged but not
+                                // self-reported. Unlike a failed Report, it can only leave a
+                                // stale-red on-disk file — never a false-green — and the verdict
+                                // reads the in-memory ledger (cleared here) regardless.
+                                notifyReporters (fun r -> r.Clear plugin file) |> ignore
 
                                 { state' with
                                     Errors = Map.remove key state'.Errors }
@@ -212,7 +267,9 @@ type ErrorLedger(?reporters: IErrorReporter list) =
                             let newVersions =
                                 state.Versions |> Map.filter (fun (struct (p, _)) _ -> p <> plugin)
 
-                            notifyReporters (fun r -> r.ClearPlugin plugin)
+                            // See Clear symmetry note: a failed ClearPlugin is stale-red, not
+                            // false-green, so it is logged but not self-reported.
+                            notifyReporters (fun r -> r.ClearPlugin plugin) |> ignore
 
                             { Errors = newErrors
                               Versions = newVersions }
