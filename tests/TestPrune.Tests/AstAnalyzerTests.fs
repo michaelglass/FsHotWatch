@@ -2306,3 +2306,121 @@ let normalTest () = ()
             test <@ hasBacktickSymbol @>
             test <@ hasNormalSymbol @>
         | Error e -> failwith $"analysis failed: {e}"
+
+module ``Un-nameable symbols do not abort analysis`` =
+
+    // Regression: some FCS symbols (e.g. anonymous-record projections, generic
+    // type args over anonymous records) throw NullReferenceException from
+    // FSharpEntity.get_TryFullName()/get_FullName() rather than returning None.
+    // The AST walk used to let that NRE propagate and abort the whole impact
+    // pass, producing zero edges. The analyzer must skip such symbols and still
+    // return Ok (possibly with fewer edges). See AstAnalyzer.tryEntityFullName.
+
+    /// Run the analyzer over a source string and assert it returns Ok without
+    /// throwing. Returns the analysis result for further assertions.
+    let private analyzeOk source =
+        let result =
+            analyzeSource
+                checker
+                "test.fsx"
+                source
+                (getScriptOptions checker "test.fsx" source |> Async.RunSynchronously)
+                "TestProject"
+            |> Async.RunSynchronously
+
+        match result with
+        | Ok analysis -> analysis
+        | Error e -> failwith $"analysis aborted (expected graceful degradation): {e}"
+
+    [<Fact>]
+    let ``anonymous-record projection does not throw`` () =
+        // `{| Year = d.Year; Month = d.Month |}` — the exact shape that aborted
+        // impact analysis downstream.
+        let analysis =
+            analyzeOk
+                """
+module M
+
+open System
+
+let yearMonth (d: DateTime) = {| Year = d.Year; Month = d.Month |}
+
+let useIt () = yearMonth DateTime.Now
+"""
+
+        // The point is "no throw"; we also keep a real symbol around to prove the
+        // pass actually ran rather than short-circuiting.
+        test
+            <@
+                analysis.Symbols
+                |> List.exists (fun s -> s.FullName.EndsWith("yearMonth", StringComparison.Ordinal))
+            @>
+
+    [<Fact>]
+    let ``generic type args over anonymous records do not throw`` () =
+        // This is the extractGenericTypeArgs -> collect path from the stack trace:
+        // a generic container (list) whose type argument is an anonymous record.
+        let analysis =
+            analyzeOk
+                """
+module M
+
+open System
+
+let rows (ds: DateTime list) =
+    ds |> List.map (fun d -> {| Year = d.Year; Month = d.Month |})
+
+let countRows () = rows [ DateTime.Now ] |> List.length
+"""
+
+        test
+            <@
+                analysis.Symbols
+                |> List.exists (fun s -> s.FullName.EndsWith("rows", StringComparison.Ordinal))
+            @>
+
+    [<Fact>]
+    let ``nested anonymous records and projections do not throw`` () =
+        let analysis =
+            analyzeOk
+                """
+module M
+
+open System
+
+let nested (d: DateTime) =
+    {| Date = {| Year = d.Year; Month = d.Month |}
+       Day = d.Day |}
+
+let pull () =
+    let n = nested DateTime.Now
+    n.Date.Year
+"""
+
+        test
+            <@
+                analysis.Symbols
+                |> List.exists (fun s -> s.FullName.EndsWith("nested", StringComparison.Ordinal))
+            @>
+
+    // Direct unit coverage of the defensive name accessor. The production bug was
+    // that the AST walk guarded only `InvalidOperationException`, so the real-world
+    // `NullReferenceException` thrown by FSharpEntity.get_TryFullName() on
+    // un-nameable symbols escaped and aborted the whole impact pass. `tryName` must
+    // swallow ANY exception (NRE included) and return None so the edge is skipped.
+
+    [<Fact>]
+    let ``tryName returns the value when the accessor succeeds`` () =
+        test <@ TestHelpers.testTryName (fun () -> "Some.Full.Name") = Some "Some.Full.Name" @>
+
+    [<Fact>]
+    let ``tryName swallows NullReferenceException (regression for the FCS NRE)`` () =
+        // This is the exact exception class from the stack trace:
+        //   FSharp.Compiler.Symbols.FSharpEntity.get_TryFullName() -> NullReferenceException
+        // Before the fix the accessor caught only InvalidOperationException, so this
+        // threw straight through and aborted analysis.
+        test <@ TestHelpers.testTryName (fun () -> raise (NullReferenceException())) = None @>
+
+    [<Fact>]
+    let ``tryName swallows InvalidOperationException`` () =
+        test <@ TestHelpers.testTryName (fun () -> raise (InvalidOperationException())) = None @>

@@ -148,6 +148,30 @@ type AnalysisResult =
           ParentLinks = []
           Diagnostics = AnalysisDiagnostics.Zero }
 
+/// Defensive accessor for fallible FCS symbol-name reads.
+///
+/// `FSharpEntity.FullName`/`TryFullName` (and similar name/type accessors on FCS
+/// symbols) are NOT total: for some un-nameable symbols — e.g. an anonymous-record
+/// projection `{| Year = d.Year |}` or a generic type arg over one —
+/// `FSharpEntity.get_TryFullName()` itself THROWS rather than returning None. The
+/// thrown type is environment-dependent: a `NullReferenceException` in compiled
+/// projects (the observed downstream crash) and an `InvalidOperationException` in
+/// script/`fsx` checking. A single un-nameable symbol used to abort the entire
+/// impact pass, producing zero edges.
+///
+/// `tryName` wraps the access and swallows ANY exception, returning None so the
+/// caller SKIPS that edge/symbol and the pass degrades gracefully (slightly more
+/// conservative impact selection) instead of crashing. Route every fallible
+/// entity/symbol name or type access in the AST walk through this helper.
+let internal tryName (access: unit -> string) : string option =
+    try
+        Some(access ())
+    with _ ->
+        // Intentionally catch-all: FCS name accessors throw NRE in compiled
+        // projects and IOE in scripts; both (and any future variant) must be
+        // treated as "un-nameable, skip" rather than aborting the pass.
+        None
+
 /// Internal classification logic that can be tested with injected symbolClassifier.
 /// This separation allows test code to provide mock symbols that throw exceptions.
 let private tryClassifyEntity (entity: FSharpEntity) : (SymbolKind * string) option =
@@ -198,7 +222,10 @@ let private tryClassifyEntity (entity: FSharpEntity) : (SymbolKind * string) opt
             // If this fires in the wild we'll see it via missing-symbol regressions
             // and add an explicit branch.
             None
-    with :? InvalidOperationException ->
+    with _ ->
+        // Catch-all (was InvalidOperationException-only): `entity.FullName` reads
+        // FSharpEntity.get_TryFullName(), which throws NullReferenceException — not
+        // just IOE — on un-nameable symbols (anonymous records). Skip the symbol.
         None
 
 let private tryClassifyMemberOrFunction (mfv: FSharpMemberOrFunctionOrValue) : (SymbolKind * string) option =
@@ -218,13 +245,13 @@ let private tryClassifyMemberOrFunction (mfv: FSharpMemberOrFunctionOrValue) : (
             Some(Function, fullName)
         else
             Some(Value, fullName)
-    with :? InvalidOperationException ->
+    with _ ->
         None
 
 let private tryClassifyUnionCase (uc: FSharpUnionCase) : (SymbolKind * string) option =
     try
         Some(DuCase, uc.FullName)
-    with :? InvalidOperationException ->
+    with _ ->
         None
 
 let private classifySymbol (symbol: FSharpSymbol) : (SymbolKind * string) option =
@@ -241,14 +268,14 @@ module internal TestHelpers =
     let testTryClassifyEntity = tryClassifyEntity
     let testTryClassifyMemberOrFunction = tryClassifyMemberOrFunction
     let testTryClassifyUnionCase = tryClassifyUnionCase
+    let testTryName = tryName
 
 let private tryGetUnionParentType (symbol: FSharpSymbol) : string option =
     match symbol with
-    | :? FSharpUnionCase as uc ->
-        try
-            Some uc.ReturnType.TypeDefinition.FullName
-        with :? InvalidOperationException ->
-            None
+    // `uc.ReturnType.TypeDefinition.FullName` is a fallible FCS name read (see
+    // `tryName`): it can throw NRE on un-nameable parent types. Route it through
+    // the shared defensive accessor so a single bad case skips the edge.
+    | :? FSharpUnionCase as uc -> tryName (fun () -> uc.ReturnType.TypeDefinition.FullName)
     | _ -> None
 
 /// Recursively extract all concrete type argument entity full names from a type.
@@ -259,7 +286,7 @@ let private extractGenericTypeArgs (fsharpType: FSharpType) : string list =
                   yield t.TypeDefinition.FullName
               for arg in t.GenericArguments do
                   yield! collect arg ]
-        with :? InvalidOperationException ->
+        with _ ->
             []
 
     try
@@ -267,7 +294,7 @@ let private extractGenericTypeArgs (fsharpType: FSharpType) : string list =
             []
         else
             fsharpType.GenericArguments |> Seq.toList |> List.collect collect
-    with :? InvalidOperationException ->
+    with _ ->
         []
 
 /// Extract generic type argument edges from a symbol use's full type.
@@ -276,7 +303,7 @@ let private tryGetGenericTypeArgEdges (symbol: FSharpSymbol) : string list =
     | :? FSharpMemberOrFunctionOrValue as mfv ->
         try
             extractGenericTypeArgs mfv.FullType
-        with :? InvalidOperationException ->
+        with _ ->
             []
     | _ -> []
 
@@ -288,14 +315,14 @@ let private tryGetRecordTypeFromField (symbol: FSharpSymbol) : string option =
             match mfv.DeclaringEntity with
             | Some entity when entity.IsFSharpRecord -> Some entity.FullName
             | _ -> None
-        with :? InvalidOperationException ->
+        with _ ->
             None
     | :? FSharpField as f ->
         try
             match f.DeclaringEntity with
             | Some entity when entity.IsFSharpRecord -> Some entity.FullName
             | _ -> None
-        with :? InvalidOperationException ->
+        with _ ->
             None
     | _ -> None
 
@@ -331,7 +358,7 @@ let private hasAttribute (predicate: string -> bool) (mfv: FSharpMemberOrFunctio
     try
         mfv.Attributes
         |> Seq.exists (fun attr -> predicate attr.AttributeType.DisplayName)
-    with :? InvalidOperationException ->
+    with _ ->
         false
 
 let private isTestAttribute =
@@ -354,7 +381,7 @@ let private buildClrClassName (entity: FSharpEntity) : string =
             match e.DeclaringEntity with
             | Some parent when parent.IsFSharpModule -> collect parent (e.CompiledName :: acc)
             | _ -> (e.FullName :: acc) |> String.concat "+"
-        with :? System.InvalidOperationException ->
+        with _ ->
             (e.FullName :: acc) |> String.concat "+"
 
     collect entity []
@@ -825,7 +852,7 @@ let private extractResults
                         Some t.TypeDefinition.FullName
                     else
                         None
-                with :? InvalidOperationException ->
+                with _ ->
                     None
 
             // Render an attribute's constructor arguments as the JSON-ish payload
@@ -853,7 +880,7 @@ let private extractResults
                         match value with
                         | :? string as s -> Some s
                         | _ -> None)
-                with :? InvalidOperationException ->
+                with _ ->
                     None
 
             // Pull T out of an `IClassFixture<T>` or `ICollectionFixture<T>` interface
@@ -869,7 +896,7 @@ let private extractResults
                         tryFullName iface.GenericArguments[0]
                     else
                         None
-                with :? InvalidOperationException ->
+                with _ ->
                     None
 
             // Fixture types that should be linked directly to each test method on the
@@ -882,7 +909,7 @@ let private extractResults
                 let key =
                     try
                         entity.FullName
-                    with :? InvalidOperationException ->
+                    with _ ->
                         ""
 
                 match fixtureCache.TryGetValue(key) with
@@ -894,17 +921,17 @@ let private extractResults
                             |> Seq.filter (fun m ->
                                 try
                                     m.IsConstructor
-                                with :? InvalidOperationException ->
+                                with _ ->
                                     false)
                             |> Seq.collect (fun m ->
                                 try
                                     m.CurriedParameterGroups
                                     |> Seq.concat
                                     |> Seq.choose (fun p -> tryFullName p.Type)
-                                with :? InvalidOperationException ->
+                                with _ ->
                                     Seq.empty)
                             |> Seq.toList
-                        with :? InvalidOperationException ->
+                        with _ ->
                             []
 
                     let fromInterfaces =
@@ -914,7 +941,7 @@ let private extractResults
                                 fixtureInterfaceArg (fun n -> n = IClassFixtureName || n = ICollectionFixtureName)
                             )
                             |> Seq.toList
-                        with :? InvalidOperationException ->
+                        with _ ->
                             []
 
                     let result = fromCtorParams @ fromInterfaces |> List.distinct
@@ -927,7 +954,7 @@ let private extractResults
                 try
                     entity.DeclaredInterfaces
                     |> Seq.tryPick (fixtureInterfaceArg (fun n -> n = ICollectionFixtureName))
-                with :? InvalidOperationException ->
+                with _ ->
                     None
 
             // Pre-pass over entity definitions: capture entity-level attributes (the
@@ -982,9 +1009,9 @@ let private extractResults
                                             collectionMemberships <-
                                                 collectionMemberships |> Map.add entityFullName (name :: existing)
                                         | None -> ()
-                                with :? InvalidOperationException ->
+                                with _ ->
                                     ()
-                        with :? InvalidOperationException ->
+                        with _ ->
                             ()
                     | _ -> ()
 
@@ -1012,7 +1039,7 @@ let private extractResults
                                       Parent = entity.FullName }
                                     :: parentLinks
                             | _ -> ()
-                        with :? InvalidOperationException ->
+                        with _ ->
                             ()
 
                         if isTestAttribute mfv then
@@ -1023,7 +1050,7 @@ let private extractResults
                                     match mfv.DeclaringEntity with
                                     | Some entity -> buildClrClassName entity
                                     | None -> fallbackClass
-                                with :? System.InvalidOperationException ->
+                                with _ ->
                                     fallbackClass
 
                             testMethods <-
@@ -1062,7 +1089,7 @@ let private extractResults
                                                 :: fixtureEdges
                                     | None -> ()
                                 | _ -> ()
-                            with :? InvalidOperationException ->
+                            with _ ->
                                 ()
 
                         try
@@ -1075,7 +1102,7 @@ let private extractResults
                                         :: attributes
                                 with _ ->
                                     ()
-                        with :? InvalidOperationException ->
+                        with _ ->
                             ()
                     | _ -> ()
 
