@@ -1101,10 +1101,7 @@ let classifyParse (parsed: Result<GlobalFlag list * Command, ParseError>) : Pars
         printfn "%s" (CommandTree.helpForPath commandTree path cliName)
         RepoIndependent 0
     | Error VersionRequested ->
-        let version =
-            System.Reflection.Assembly.GetExecutingAssembly().GetName().Version |> string
-
-        printfn "%s %s" cliName version
+        printfn "%s" (CommandTree.renderVersion cliName)
         RepoIndependent 0
     // ROOT-level unknown command (empty groupPath) is the only error that defers to
     // the daemon; everything else fails hard here, BEFORE any repo-root lookup, so
