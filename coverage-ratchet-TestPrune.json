@@ -1,18 +1,23 @@
 {
   "overrides": {
+    "AnonymousRecordAnalyzer.fs": {
+      "line": 69.1,
+      "branch": 70.0,
+      "reason": "opt-in anon-record analyzer: the AST walk has one arm per SynExpr/SynType/SynPat case so it descends through arbitrary nesting; tests cover the realistic constructs that can host an anonymous record, but many rarely-load-bearing descent arms (e.g. DotIndexedSet, ObjExpr, AddressOf, Upcast/Downcast, MeasurePower, Or-types) cannot reproducibly host one to be exercised. Pinned at the honest achieved floor rather than excluded."
+    },
     "AstAnalyzer.fs": {
       "line": 87.5,
-      "branch": 62.5,
+      "branch": 70,
       "reason": "loosened: v5 aggregate-type invalidation (containment links) + Layer 2a.1 fixture-edge emission (ctor-params + IClassFixture interface detection); defensive try/with paths around FCS metadata access are not reproducibly hit from tests; impossible-states cleanup added explicit FSharpEntity branches (IsArrayType / IsByRef / final else-None) that F# source cannot synthesize an FSharpEntity for"
     },
     "Attributes.fs": {
       "line": 0,
       "branch": 100,
-      "reason": "loosened: marker attributes — no runtime logic to cover"
+      "reason": "loosened: marker attributes \u2014 no runtime logic to cover"
     },
     "Database.fs": {
-      "line": 95,
-      "branch": 66.9,
+      "line": 98,
+      "branch": 70,
       "reason": "loosened: UPSERT-based RebuildProjects + timestamp orphan cleanup added branches; conditional extern UPSERT path not hit by existing fixtures"
     },
     "DeadCode.fs": {
@@ -23,16 +28,16 @@
     "FalcoRouteAnalysis.fs": {
       "line": 74.2,
       "branch": 28.5,
-      "reason": "loosened: edge-injection refactor changed coverage profile, handler→test symbol resolution branches"
+      "reason": "loosened: edge-injection refactor changed coverage profile, handler\u2192test symbol resolution branches"
     },
     "ImpactAnalysis.fs": {
-      "line": 98,
-      "branch": 83,
+      "line": 99,
+      "branch": 85,
       "reason": "loosened: added DependsOnFile/DependsOnGlob attribute seeding (JSON parsing + glob-to-regex + path normalization); one defensive catch arm for malformed JSON is hard to reach through the test harness"
     },
     "InMemoryStore.fs": {
-      "line": 92.6,
-      "branch": 87.5,
+      "line": 95,
+      "branch": 88,
       "reason": "loosened: attribute store branches added for SQL extension support"
     },
     "Orchestration.fs": {

@@ -190,6 +190,22 @@ type ITestPruneExtension =
 [`TestPrune.Falco`](src/TestPrune.Falco/) is an extension for Falco
 web apps that maps URL routes to integration tests.
 
+## Analyzer (opt-in)
+
+Anonymous records (`{| Year = d.Year |}` and the matching `{| Year: int |}`
+type annotations) have no stable cross-build name, so TestPrune's AST impact
+analysis **skips** them. A test or symbol coupled to a change *only* through an
+anonymous record is therefore invisible to impact selection.
+
+[`TestPrune.Analyzers`](src/TestPrune.Analyzers/) is an opt-in
+[FSharp.Analyzers.SDK](https://github.com/ionide/FSharp.Analyzers.SDK) analyzer
+that flags every anonymous-record occurrence (diagnostic `TP001`,
+`TestPrune.AnonymousRecord`, severity *Warning*) so precision-sensitive repos can
+steer that coupling to a tracked alternative — a named record, or an explicit
+`[<TestPrune.DependsOnFile>]` / `[<TestPrune.DependsOnGlob>]` edge. It is opt-in by
+construction: nothing changes unless you load the analyzer into your analyzer host
+(FsHotWatch, Ionide, or `fsharp-analyzers`).
+
 ## Packages
 
 | Package | What it's for |
@@ -197,6 +213,7 @@ web apps that maps URL routes to integration tests.
 | [`TestPrune.Core`](https://www.nuget.org/packages/TestPrune.Core) | The library — use this in your build system or editor |
 | [`TestPrune.Attributes`](https://www.nuget.org/packages/TestPrune.Attributes) | Consumer-side markers: `[<DependsOn>]`, `[<DependsOnFile>]`, `[<DependsOnGlob>]` |
 | [`TestPrune.Falco`](https://www.nuget.org/packages/TestPrune.Falco) | Extension for Falco web apps (route → test mapping) |
+| [`TestPrune.Analyzers`](https://www.nuget.org/packages/TestPrune.Analyzers) | Opt-in F# analyzer that flags anonymous records (invisible to impact analysis) |
 | `TestPrune` | CLI tool (reference implementation — see below) |
 
 ## CLI (reference implementation)

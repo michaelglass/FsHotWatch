@@ -29,6 +29,7 @@
     <Compile Include="FalcoRouteExtensionTests.fs" />
     <Compile Include="SqlCouplingTests.fs" />
     <Compile Include="SqlHydraAnalyzerTests.fs" />
+    <Compile Include="AnonymousRecordAnalyzerTests.fs" />
   </ItemGroup>
 
   <!-- xUnit runner configuration -->
@@ -42,6 +43,7 @@
     <ProjectReference Include="../../src/TestPrune.Falco/TestPrune.Falco.fsproj" />
     <ProjectReference Include="../../src/TestPrune.Sql/TestPrune.Sql.fsproj" />
     <ProjectReference Include="../../src/TestPrune.SqlHydra/TestPrune.SqlHydra.fsproj" />
+    <ProjectReference Include="../../src/TestPrune.Analyzers/TestPrune.Analyzers.fsproj" />
   </ItemGroup>
 
   <ItemGroup>

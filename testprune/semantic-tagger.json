@@ -10,6 +10,11 @@
       "name": "TestPrune.Falco",
       "fsproj": "src/TestPrune.Falco/TestPrune.Falco.fsproj",
       "tagPrefix": "falco-v"
+    },
+    {
+      "name": "TestPrune.Analyzers",
+      "fsproj": "src/TestPrune.Analyzers/TestPrune.Analyzers.fsproj",
+      "tagPrefix": "analyzers-v"
     }
   ]
 }
