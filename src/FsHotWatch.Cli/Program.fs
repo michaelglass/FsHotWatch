@@ -295,20 +295,23 @@ let ipcErrorHint (inner: exn) : string option =
     | :? TimeoutException -> Some "Daemon did not respond in time. It may be busy or hung — check `logs/daemon.log`."
     | _ -> None
 
+/// Render a failed IPC call to stderr: the unwrapped daemon-connection error plus
+/// its recovery hint (if any). Shared by every IPC entry point so the message and
+/// hint stay identical across the CLI.
+let reportDaemonError (ex: exn) : unit =
+    let inner = unwrapIpcException ex
+    eprintfn "Could not connect to daemon: %s" inner.Message
+
+    match ipcErrorHint inner with
+    | Some h -> eprintfn "  hint: %s" h
+    | None -> ()
+
 /// Wrap an IPC call with connection error handling.
 let private withIpc (action: unit -> int) : int =
     try
         action ()
     with ex ->
-        let inner = unwrapIpcException ex
-        let hint = ipcErrorHint inner
-
-        eprintfn "Could not connect to daemon: %s" inner.Message
-
-        match hint with
-        | Some h -> eprintfn "  hint: %s" h
-        | None -> ()
-
+        reportDaemonError ex
         1
 
 /// Ensure daemon, poll for progress, render colored output.
@@ -973,12 +976,58 @@ let executeCommand
             eprintfn "  Wrote ~/.config/fish/completions/%s.fish" cliName
             0
 
-/// Execute an unknown command as a plugin command via IPC.
-let executePluginCommand (ipc: IpcOps) (pipeName: string) (opts: GlobalOptions) (cmd: string) (argsStr: string) : int =
-    withIpc (fun () ->
-        let mode = pickMode opts.AgentMode opts.CompactMode
+/// Outcome of forwarding a root-level unknown command to the daemon.
+///   `Handled exitCode` — the daemon recognized and ran the command (a real plugin
+///     command); `exitCode` is its rendered result.
+///   `NotRecognized` — the daemon replied with the unknown-command sentinel, so the
+///     CLI must fail hard with the canonical parse error + nearest help.
+///   `DaemonUnavailable` — the IPC call itself failed (already reported to stderr).
+type PluginCommandOutcome =
+    | Handled of int
+    | NotRecognized
+    | DaemonUnavailable
+
+/// Forward an unknown root-level command to the daemon as a dynamic plugin command.
+/// Distinguishes a genuinely-unknown command (daemon returned the unknown-command
+/// sentinel) from a real plugin result so the caller can fail hard on the former.
+let executePluginCommand
+    (ipc: IpcOps)
+    (pipeName: string)
+    (opts: GlobalOptions)
+    (cmd: string)
+    (argsStr: string)
+    : PluginCommandOutcome =
+    let mode = pickMode opts.AgentMode opts.CompactMode
+
+    try
         let result = ipc.RunCommand pipeName cmd argsStr |> Async.RunSynchronously
-        IpcOutput.renderIpcResult mode (renderLines mode true) false result)
+
+        if FsHotWatch.Ipc.isUnknownCommandReply result then
+            NotRecognized
+        else
+            Handled(IpcOutput.renderIpcResult mode (renderLines mode true) false result)
+    with ex ->
+        reportDaemonError ex
+        DaemonUnavailable
+
+/// Resolve a ROOT-level unknown command to an exit code: forward it to the daemon
+/// as a dynamic plugin command, and FAIL HARD with the canonical parse error + help
+/// if the daemon doesn't recognize it (the strict-CLI contract — garbage input never
+/// silently succeeds). `renderErr` re-renders the original parse error on the
+/// not-recognized path. Pure wrt. its injected `ipc`, so it's unit-testable without
+/// the `[<EntryPoint>]` and repo-root plumbing.
+let forwardRootUnknownCommand
+    (ipc: IpcOps)
+    (pipeName: string)
+    (opts: GlobalOptions)
+    (cmd: string)
+    (argsStr: string)
+    (renderErr: unit -> int)
+    : int =
+    match executePluginCommand ipc pipeName opts cmd argsStr with
+    | Handled exitCode -> exitCode
+    | NotRecognized -> renderErr ()
+    | DaemonUnavailable -> 1
 
 /// Apply parsed global flags: configure logging and return the resolved options.
 let applyGlobalFlags (globals: GlobalFlag list) : GlobalOptions =
@@ -1014,6 +1063,55 @@ let applyGlobalFlags (globals: GlobalFlag list) : GlobalOptions =
     { opts with
         DaemonExtraArgs = extraArgs }
 
+/// Render a genuine (non-Help/Version) parse error to stderr using CommandTree's
+/// uniform renderer — a clear one-line message plus the nearest subcommand/group
+/// help — and return the exit code. `CommandTree.isError` is the source of truth
+/// for the code (true → non-zero). Help/Version are handled by the caller before
+/// this and never reach here.
+let reportParseError (err: ParseError) : int =
+    eprintfn "%s" (CommandTree.renderParseError commandTree err cliName)
+    if CommandTree.isError err then 1 else 0
+
+/// Classification of a parse result with respect to what `main` must do next.
+/// Separates the repo-INDEPENDENT decisions (help, version, and every genuine
+/// flag/arg error — plus a NESTED unknown command, which is a real typo against a
+/// known group with no daemon passthrough) from the two paths that need the repo
+/// root: running a successfully-parsed command, and forwarding a ROOT-level unknown
+/// command to the per-repo daemon. Pure and total, so it's unit-testable without
+/// the `[<EntryPoint>]` plumbing — which is where the strict-CLI ordering lives.
+type ParseDispatch =
+    /// Repo-independent: print the canonical help/error to the right stream and exit
+    /// with this code. Covers Help (0), Version (0), and all genuine input errors
+    /// except a root-level unknown command. Fixes the out-of-repo masking bug.
+    | RepoIndependent of int
+    /// A successfully-parsed command — needs the repo root + daemon to execute.
+    | RunCommand of globals: GlobalFlag list * command: Command
+    /// A ROOT-level unknown command (empty groupPath): the dynamic plugin-passthrough.
+    /// Carries the token, the raw remaining argv to forward verbatim, and the error to
+    /// re-render if the daemon doesn't recognize it.
+    | RootUnknownCommand of input: string * rest: string array * err: ParseError
+
+/// Classify a parse result. Help/Version print to stdout (exit 0); genuine
+/// repo-independent errors render via `reportParseError` (non-zero); Ok and a
+/// root-level unknown command defer to the repo-root branch in `main`.
+let classifyParse (parsed: Result<GlobalFlag list * Command, ParseError>) : ParseDispatch =
+    match parsed with
+    | Ok(globals, command) -> RunCommand(globals, command)
+    | Error(HelpRequested path) ->
+        printfn "%s" (CommandTree.helpForPath commandTree path cliName)
+        RepoIndependent 0
+    | Error VersionRequested ->
+        let version =
+            System.Reflection.Assembly.GetExecutingAssembly().GetName().Version |> string
+
+        printfn "%s %s" cliName version
+        RepoIndependent 0
+    // ROOT-level unknown command (empty groupPath) is the only error that defers to
+    // the daemon; everything else fails hard here, BEFORE any repo-root lookup, so
+    // running outside a jj/git checkout no longer masks flag/arg errors.
+    | Error(UnknownCommand(input, rest, []) as err) -> RootUnknownCommand(input, rest, err)
+    | Error err -> RepoIndependent(reportParseError err)
+
 [<EntryPoint>]
 let main args =
     let argList = args |> Array.toList
@@ -1034,34 +1132,34 @@ let main args =
         0
     else
 
-        // Parse before locating the repo root so `<cmd> --help` and `--version`
-        // work outside a jj/git checkout.
+        // Parse before locating the repo root so `<cmd> --help`, `--version`, and —
+        // critically — flag/arg errors all work (and are NOT masked) outside a
+        // jj/git checkout. `classifyParse` does the repo-independent dispatch.
         let parsed = globalSpec.Parse args
 
-        match parsed with
-        | Error(HelpRequested path) ->
-            printfn "%s" (CommandTree.helpForPath commandTree path cliName)
-            0
-        | Error VersionRequested ->
-            let version =
-                System.Reflection.Assembly.GetExecutingAssembly().GetName().Version |> string
-
-            printfn "%s %s" cliName version
-            0
-        | _ ->
-
+        match classifyParse parsed with
+        | RepoIndependent exitCode -> exitCode
+        | dispatch ->
+            // Both remaining cases need the repo root. A root-level unknown command
+            // can't reach a daemon outside a repo, so fail hard with the canonical
+            // error+help rather than the misleading "not in a repository" message.
             let repoRoot =
                 match findRepoRoot (Directory.GetCurrentDirectory()) with
                 | Some root -> root
                 | None ->
-                    eprintfn "Error: not in a jj or git repository"
-                    exit 1
-                    ""
+                    match dispatch with
+                    | RootUnknownCommand(_, _, err) ->
+                        exit (reportParseError err)
+                        ""
+                    | _ ->
+                        eprintfn "Error: not in a jj or git repository"
+                        exit 1
+                        ""
 
             let pipeName = computePipeName repoRoot
 
-            match parsed with
-            | Ok(globals, command) ->
+            match dispatch with
+            | RunCommand(globals, command) ->
                 let opts = applyGlobalFlags globals
 
                 let config =
@@ -1089,32 +1187,18 @@ let main args =
                             ExtraWatchPatterns = fileCommandPatterns }
 
                 executeCommand createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
-            | Error(HelpRequested _)
-            | Error VersionRequested ->
-                // Already handled above before repo-root lookup.
-                0
-            | Error(UnknownCommand(input, _path)) ->
-                let argsStr =
-                    argList
-                    |> List.skipWhile (fun a -> a <> input)
-                    |> List.skip 1
-                    |> String.concat " "
+            // ROOT-level unknown command: the dynamic plugin-passthrough. Forward the
+            // raw remaining args (`rest`) straight to the daemon. If the daemon doesn't
+            // recognize it, fail hard with the canonical error + help instead of today's
+            // confusing daemon echo/timeout — garbage CLI input fails uniformly.
+            | RootUnknownCommand(input, rest, err) ->
+                let argsStr = rest |> String.concat " "
 
                 let opts =
                     { defaultGlobalOptions with
                         AgentMode = argList |> List.exists (fun a -> a = "--agent" || a = "-a")
                         CompactMode = argList |> List.exists (fun a -> a = "--compact" || a = "-q") }
 
-                executePluginCommand defaultIpcOps pipeName opts input argsStr
-            | Error(InvalidArguments(cmd, msg)) ->
-                eprintfn "Invalid arguments for '%s': %s" cmd msg
-                1
-            | Error(AmbiguousArgument(input, candidates)) ->
-                eprintfn "Ambiguous command '%s'. Did you mean: %s" input (String.concat ", " candidates)
-                1
-            | Error(UnknownFlag(flag, cmd, validFlags)) ->
-                eprintfn "Unknown flag '%s' for '%s'. Valid flags: %s" flag cmd (String.concat ", " validFlags)
-                1
-            | Error(DuplicateFlag(flag, cmd)) ->
-                eprintfn "Flag '%s' provided more than once for '%s'" flag cmd
-                1
+                forwardRootUnknownCommand defaultIpcOps pipeName opts input argsStr (fun () -> reportParseError err)
+            // RepoIndependent is fully handled above before the repo-root lookup.
+            | RepoIndependent exitCode -> exitCode
