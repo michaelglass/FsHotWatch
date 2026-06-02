@@ -21,6 +21,26 @@ open FsHotWatch.ErrorLedger
 
 let private severityToString = DiagnosticSeverity.toString
 
+/// Distinctive prefix marking the `RunCommand` reply as "the plugin host did not
+/// recognize this command" (host `RunCommand` returned `None`). A fixed sentinel
+/// rather than free-form JSON so the CLI can detect it with a cheap, total
+/// `String.StartsWith` check (no JSON-parse / exception-filter branch to leave
+/// half-covered). Real plugin commands return their own textual or JSON payloads
+/// and never emit this `fshw-`-namespaced control reply.
+[<Literal>]
+let UnknownCommandSentinelPrefix = "fshw-unknown-command:"
+
+/// Sentinel returned by `RunCommand` over IPC when the daemon's plugin host does not
+/// recognize the requested command. Carries the command name so the consumer can
+/// render an actionable error without re-deriving it.
+let unknownCommandReply (name: string) : string = UnknownCommandSentinelPrefix + name
+
+/// True when `reply` is the `RunCommand` unknown-command sentinel produced by
+/// `unknownCommandReply`. Total — any other (real) plugin output returns false.
+let isUnknownCommandReply (reply: string) : bool =
+    not (isNull reply)
+    && reply.StartsWith(UnknownCommandSentinelPrefix, StringComparison.Ordinal)
+
 /// Serialize PluginStatus as a tagged JSON variant so consumers can round-trip
 /// the discriminated union without string parsing.
 let private statusPayload (status: PluginStatus) : obj =
@@ -129,7 +149,8 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
             JsonSerializer.Serialize(map)
         | None -> "{}"
 
-    /// Runs a registered command by name and returns the result or "unknown command".
+    /// Runs a registered command by name and returns the result, or the
+    /// `unknownCommandReply` sentinel when the plugin host doesn't recognize it.
     member _.RunCommand(name: string, argsJson: string) : Task<string> =
         task {
             let args =
@@ -142,7 +163,7 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
 
             match result with
             | Some r -> return r
-            | None -> return "unknown command"
+            | None -> return unknownCommandReply name
         }
 
     /// Gracefully shut down the daemon.
