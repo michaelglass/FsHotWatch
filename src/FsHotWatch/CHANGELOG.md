@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.16 - 2026-06-02
+
 - feat: TestsDeferred result case — a test project that never ran (apphost not yet produced) is reported as deferred ("waiting on build"), non-passing, instead of a false-green pass; the aggregate verdict/exit code can no longer be green when tests didn't actually run.
 - fix: a throwing IErrorReporter no longer yields a false-clean verdict — the ledger self-reports the reporter failure so the verdict/exit code reflects that diagnostics couldn't be recorded.
 

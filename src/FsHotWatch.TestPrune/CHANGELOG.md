@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.16 - 2026-06-02
+
 - fix: cold-start apphost-missing is no longer a spurious test FAILED — detected structurally (File.Exists on the apphost) and surfaced as "waiting on build" with a one-shot retry.
 - fix: `fshw errors` / the aggregate verdict now reflects only the most recent completed test cycle — superseded stale failures are cleared each cycle.
 - fix: a partial/aborted test run can no longer lower a coverage baseline.
