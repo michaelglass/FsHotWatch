@@ -54,6 +54,17 @@ let ``runProcessWithTimeout registers the child while running and unregisters on
     // recycle must not linger.
     Assert.Empty(FsHotWatch.ProcessRegistry.snapshot ())
 
+[<Fact(Timeout = 5000)>]
+let ``isTimedOut is true only for TimedOut`` () =
+    // Deterministic coverage for the ProcessOutcome predicate. The live
+    // timeout-kill path that produces a real TimedOut value is exercised in
+    // FsHotWatch.IntegrationTests (kept out of the coverage suite because its
+    // OS-scheduling-dependent kill/drain branches jitter); this pins the pure
+    // discriminator in the unit suite.
+    Assert.True(isTimedOut (TimedOut(TimeSpan.FromSeconds 1.0, "tail")))
+    Assert.False(isTimedOut (Succeeded "ok"))
+    Assert.False(isTimedOut (Failed(1, "boom")))
+
 [<Fact(Timeout = 15000)>]
 let ``isDotnetCommand matches dotnet basename`` () =
     Assert.True(isDotnetCommand "dotnet")
