@@ -164,6 +164,27 @@ type AnalysisResult =
 /// conservative impact selection) instead of crashing. Use it for the
 /// name-returning accessors; the side-effecting walk regions guard the same
 /// fallible reads with local `try … with _ -> ()` for the identical reason.
+///
+/// Why skip rather than fall back to a different identifier? The symbols that
+/// throw here are precisely the ones with no stable, cross-compilation name to
+/// key the graph on. An anonymous-record projection (and a generic arg over one)
+/// is structural and anonymous: FCS has no `FullName` for it, and the available
+/// alternatives don't help:
+///   - `CompiledName`/`LogicalName`/`DisplayName` give synthesized,
+///     non-deterministic strings (e.g. `<>f__AnonymousType...`) that vary by
+///     compilation order and across builds. Persisting one as the symbol's
+///     `full_name` would churn the `symbols.full_name UNIQUE` key from run to
+///     run, manufacturing phantom add/remove diffs on every re-index — the exact
+///     class of false-positive selection 4.0.1 worked to eliminate.
+///   - Even a structurally-derived key (field names/types) wouldn't correlate
+///     the *use site* with a *declaration* anywhere, because an anon record has
+///     no declaration symbol to diff against — so the edge would point at a node
+///     nothing else references and never trigger a test. It costs index churn
+///     for zero added precision.
+/// So the only edge we could synthesize is one that is either unstable (harmful)
+/// or inert (useless). Skipping the single un-nameable symbol loses at most one
+/// edge; the consuming/declaring symbols around it are still nameable and still
+/// produce their own edges, so real impact coverage is essentially unaffected.
 let internal tryName (access: unit -> string) : string option =
     try
         Some(access ())
@@ -171,6 +192,11 @@ let internal tryName (access: unit -> string) : string option =
         // Intentionally catch-all: FCS name accessors throw NRE in compiled
         // projects and IOE in scripts; both (and any future variant) must be
         // treated as "un-nameable, skip" rather than aborting the pass.
+        // Skip (not fall back to CompiledName/LogicalName/a structural key): see
+        // the doc comment above — every alternative identifier for these symbols
+        // is either unstable (phantom diffs vs `full_name UNIQUE`) or inert (an
+        // edge to a node nothing else references). Dropping the edge is strictly
+        // safer than fabricating a misleading one.
         None
 
 /// Internal classification logic that can be tested with injected symbolClassifier.
