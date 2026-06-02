@@ -68,6 +68,48 @@ let private reportFcsDiagnostics (suppressedCodes: Set<int>) (host: PluginHost) 
                 version = checkResult.Version
             )
 
+/// Apply the deps-freshness gate to one project before its files are checked.
+/// Returns `true` when FCS analysis should proceed for the project, `false`
+/// when it must be skipped (stale assets that couldn't be auto-recovered, or a
+/// still-stale state we already attempted). On a fail-fast, exactly one Error
+/// diagnostic is reported through the ledger under the `deps` plugin so the
+/// aggregate verdict is non-zero and the phantom error-storm is never produced.
+/// `None` gate (test daemons) always proceeds. Pure of FCS — only consults the
+/// injected gate and reports/clears via the host.
+let internal applyDepsGate
+    (gate: (string -> DepsFreshness.GateResult) option)
+    (host: PluginHost)
+    (projPath: string)
+    : bool =
+    match gate with
+    | None -> true
+    | Some g ->
+        match g projPath with
+        | DepsFreshness.Proceed ->
+            host.ClearErrors(DepsFreshness.pluginName, projPath)
+            true
+        | DepsFreshness.RecoveredOk ->
+            Logging.info "deps" $"%s{Path.GetFileName projPath}: deps were stale — auto-restored OK"
+            host.ClearErrors(DepsFreshness.pluginName, projPath)
+            true
+        | DepsFreshness.SkipAlreadyAttempted ->
+            Logging.warn
+                "deps"
+                $"%s{Path.GetFileName projPath}: deps still stale (recovery already attempted) — skipping FCS analysis"
+
+            false
+        | DepsFreshness.FailFast(message, detail) ->
+            Logging.error "deps" message
+
+            let entry =
+                if System.String.IsNullOrEmpty detail then
+                    ErrorLedger.ErrorEntry.error message
+                else
+                    ErrorLedger.ErrorEntry.errorWithDetail message detail
+
+            host.ReportErrors(DepsFreshness.pluginName, projPath, [ entry ])
+            false
+
 /// Fingerprint fsproj files by path + last-write-time. Used by ScanAll to skip
 /// expensive MSBuild re-evaluation when no project files have changed.
 let private fingerprintFsprojFiles (repoRoot: string) =
@@ -552,6 +594,12 @@ type internal BatchContext =
         /// (which use the scan agent's own counter). Boxed `ref` so the
         /// long-lived BatchContext shares state across batches.
         InSessionBatchGen: int64 ref
+        /// Deps-freshness gate: given a project's `.fsproj` path, decides
+        /// whether its restored `obj/project.assets.json` is in sync with its
+        /// declared deps (running a one-shot restore to recover) before FCS
+        /// analysis. `None` disables the gate (test daemons with a null
+        /// checker). See `DepsFreshness.evaluateProject`.
+        DepsGate: (string -> DepsFreshness.GateResult) option
     }
 
 /// Process a batch of debounced file changes: filter, re-discover projects if needed,
@@ -780,13 +828,17 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
 
                     checkedFiles <- Set.union checkedFiles (Set.ofList projFiles)
 
-                    match ctx.Pipeline.GetProjectOptions(projPath) with
-                    | Some options ->
-                        for file in projFiles do
-                            tierChecks.Add(ctx.Pipeline.CheckFileWithOptions(file, options, ctx.DaemonCt.Value))
-                    | None ->
-                        for file in projFiles do
-                            tierChecks.Add(ctx.Pipeline.CheckFile(file, ctx.DaemonCt.Value))
+                    // Deps-freshness gate (incremental path): skip FCS for a
+                    // project whose restored assets are stale and couldn't be
+                    // auto-recovered — see `applyDepsGate`.
+                    if applyDepsGate ctx.DepsGate ctx.Host projPath then
+                        match ctx.Pipeline.GetProjectOptions(projPath) with
+                        | Some options ->
+                            for file in projFiles do
+                                tierChecks.Add(ctx.Pipeline.CheckFileWithOptions(file, options, ctx.DaemonCt.Value))
+                        | None ->
+                            for file in projFiles do
+                                tierChecks.Add(ctx.Pipeline.CheckFile(file, ctx.DaemonCt.Value))
 
                 let! results = tierChecks |> Seq.toList |> Async.Parallel
                 emitResults results
@@ -1376,13 +1428,20 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
 
                     skippedCount <- skippedCount + ((graph.GetSourceFiles(proj) |> List.length) - projFiles.Length)
 
-                    match pipeline.GetProjectOptions(projPath) with
-                    | Some options ->
-                        for file in projFiles do
-                            tierChecks.Add(pipeline.CheckFileWithOptions(AbsFilePath.create file, options, ct))
-                    | None ->
-                        for file in projFiles do
-                            tierChecks.Add(pipeline.CheckFile(AbsFilePath.create file, ct))
+                    // Deps-freshness gate: if this project's restored assets are
+                    // stale, try a one-shot restore; if that fails, fail fast
+                    // (one diagnostic) and skip FCS for the project so the
+                    // phantom "namespace not found" storm is never produced.
+                    if applyDepsGate ctx.DepsGate host projPath then
+                        match pipeline.GetProjectOptions(projPath) with
+                        | Some options ->
+                            for file in projFiles do
+                                tierChecks.Add(pipeline.CheckFileWithOptions(AbsFilePath.create file, options, ct))
+                        | None ->
+                            for file in projFiles do
+                                tierChecks.Add(pipeline.CheckFile(AbsFilePath.create file, ct))
+                    else
+                        skippedCount <- skippedCount + projFiles.Length
 
                 let! results = tierChecks |> Seq.toList |> Async.Parallel
 
@@ -1545,7 +1604,24 @@ module Daemon =
                   DaemonCt = daemonCtRef
                   FcsSuppressedCodes = fcsSuppressedCodes
                   ExcludePatterns = excludePatterns
-                  InSessionBatchGen = ref 0L }
+                  InSessionBatchGen = ref 0L
+                  DepsGate =
+                    if isNull (box checker) then
+                        // No FCS analysis happens with a null checker (test
+                        // daemons), so the gate would have nothing to guard.
+                        None
+                    else
+                        let tracker = DepsFreshness.RecoveryTracker()
+                        let runner = DepsFreshness.productionRestoreRunner repoRoot
+
+                        Some(fun projPath ->
+                            DepsFreshness.evaluateProject
+                                (DepsFreshness.detectProjectFreshness repoRoot)
+                                (DepsFreshness.staleSignature repoRoot)
+                                DepsFreshness.assetsPresent
+                                runner
+                                tracker
+                                projPath) }
 
             let formatAllAndSuppress (suppressed: Set<string>) (replyChannel: AsyncReplyChannel<string>) =
                 let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
