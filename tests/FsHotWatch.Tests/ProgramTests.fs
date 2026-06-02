@@ -35,7 +35,7 @@ let private fakeIpc () : IpcOps =
                     """{"plugin": {"status": {"tag": "completed", "at": "2026-01-01T00:00:00Z"}, "subtasks": [], "activityTail": [], "lastRun": null}}"""
             }
       GetPluginStatus = fun _ _ -> async { return "{}" }
-      RunCommand = fun _ _ _ -> async { return "unknown command" }
+      RunCommand = fun _ name _ -> async { return FsHotWatch.Ipc.unknownCommandReply name }
       GetDiagnostics = fun _ _ -> async { return """{"count": 0, "files": {}}""" }
       WaitForScan = fun _ _ -> async { return "idle" }
       WaitForComplete = fun _ _ -> async { return "{}" }

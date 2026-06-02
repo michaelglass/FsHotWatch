@@ -224,7 +224,9 @@ let ``RunCommand returns unknown command for non-existent command`` () =
         let result =
             IpcClient.runCommand pipeName "no-such-command" "" |> Async.RunSynchronously
 
-        test <@ result = "unknown command" @>
+        // 0.6.0 strict-CLI: unknown command comes back as a distinguishable JSON
+        // sentinel (not a plain string) so the CLI can fail hard on it.
+        test <@ isUnknownCommandReply result @>
     finally
         cts.Cancel()
 
@@ -341,7 +343,7 @@ let ``DaemonRpcTarget.RunCommand returns unknown command for missing command`` (
         |> Async.AwaitTask
         |> Async.RunSynchronously
 
-    test <@ result = "unknown command" @>
+    test <@ isUnknownCommandReply result @>
 
 [<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.RunCommand returns result for known command`` () =
