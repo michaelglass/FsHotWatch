@@ -25,6 +25,9 @@
         <DevelopmentDependency>true</DevelopmentDependency>
         <IncludeBuildOutput>false</IncludeBuildOutput>
         <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+        <!-- Add the analyzer DLL to the package via pack's TFM-specific content
+             collection (does NOT re-invoke Build), matching fsharp-analyzers. -->
+        <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);_AddAnalyzersToOutput</TargetsForTfmSpecificContentInPackage>
         <!-- snupkg symbol packages aren't meaningful for an analyzers/-only package. -->
         <IncludeSymbols>false</IncludeSymbols>
         <NoWarn>$(NoWarn);NU5128</NoWarn>
@@ -44,15 +47,13 @@
     <!-- Place the analyzer assembly under analyzers/dotnet/fs/ in the nupkg so analyzer
          hosts (FsHotWatch AnalyzersPlugin / Ionide / fsharp-analyzers) discover it.
          FSharp.Core, FSharp.Compiler.Service and FSharp.Analyzers.SDK are provided by
-         the host, so only this project's own output assembly is packed. -->
-    <Target Name="_AddAnalyzerToPackage"
-            BeforeTargets="_GetPackageFiles"
-            DependsOnTargets="Build">
+         the host, so only this project's own output assembly is packed. Hooked via
+         TargetsForTfmSpecificContentInPackage (above) so pack collects the built
+         output without re-invoking Build — mirrors fsharp-analyzers. -->
+    <Target Name="_AddAnalyzersToOutput">
         <ItemGroup>
-            <None Include="$(TargetDir)$(AssemblyName).dll"
-                  Pack="true"
-                  PackagePath="analyzers/dotnet/fs"
-                  Visible="false" />
+            <TfmSpecificPackageFile Include="$(OutputPath)/$(AssemblyName).dll"
+                                    PackagePath="analyzers/dotnet/fs" />
         </ItemGroup>
     </Target>
 
