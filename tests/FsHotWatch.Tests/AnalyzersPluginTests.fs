@@ -496,3 +496,108 @@ let ``promoteIfFailing leaves warning untouched when threshold is error`` () =
     let result = promoteIfFailing DiagnosticSeverity.Error entry
     test <@ result.Severity = DiagnosticSeverity.Warning @>
     test <@ result.Message = "a warning" @>
+
+// ---------------------------------------------------------------------------
+// Verdict reliability (2026-06-02 Issue A): the analyzer summary count must be
+// derived from the current cycle's live diagnostic map — the SAME set that
+// gates the verdict — never a monotonic accumulator carried across cycles.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``summarize derives findings from the live map, not an accumulator`` () =
+    let mkErr msg =
+        { Message = msg
+          Severity = DiagnosticSeverity.Error
+          Line = 1
+          Column = 0
+          Detail = None }
+
+    let mkWarn msg =
+        { Message = msg
+          Severity = DiagnosticSeverity.Warning
+          Line = 1
+          Column = 0
+          Detail = None }
+
+    let map =
+        Map.ofList
+            [ AbsFilePath.create "/tmp/A.fs", [ mkErr "e1"; mkWarn "w1" ]
+              AbsFilePath.create "/tmp/B.fs", [ mkErr "e2" ] ]
+
+    test <@ summarize 2 map = "analyzed 2 files, 3 findings (2 errors, 1 warnings)" @>
+
+[<Fact>]
+let ``summarize reads 0 findings when every file's entry is empty`` () =
+    // A prior cycle's findings cleared (entry replaced with []) ⇒ 0, not stale N.
+    let map =
+        Map.ofList [ AbsFilePath.create "/tmp/A.fs", []; AbsFilePath.create "/tmp/B.fs", [] ]
+
+    test <@ summarize 2 map = "analyzed 2 files, 0 findings (0 errors, 0 warnings)" @>
+
+/// Recording PluginCtx that captures CompleteWithSummary and the per-file
+/// report/clear calls (the gated ledger set, modelled as a Map).
+let private makeAnalyzerRecordingCtx () =
+    let summaries = System.Collections.Generic.List<string>()
+    let ledger = System.Collections.Generic.Dictionary<string, ErrorEntry list>()
+
+    let ctx: FsHotWatch.PluginFramework.PluginCtx<AnalyzersMsg> =
+        { ReportStatus = fun _ -> ()
+          ReportErrors = fun file entries -> ledger.[file] <- entries
+          ClearErrors = fun file -> ledger.Remove(file) |> ignore
+          ClearAllErrors = fun () -> ledger.Clear()
+          EmitBuildCompleted = fun _ -> ()
+          EmitTestRunStarted = fun _ -> ()
+          EmitTestProgress = fun _ -> ()
+          EmitTestRunCompleted = fun _ -> ()
+          EmitCommandCompleted = fun _ -> ()
+          Checker = Unchecked.defaultof<_>
+          RepoRoot = ""
+          Post = fun _ -> ()
+          StartSubtask = fun _ _ -> ()
+          UpdateSubtask = fun _ _ -> ()
+          EndSubtask = fun _ -> ()
+          Log = fun _ -> ()
+          CompleteWithSummary = fun s -> summaries.Add s
+          CompleteWithTimeout = fun _ -> ()
+          RunExclusive = fun _ _ -> ()
+          IsRunning = fun _ -> false
+          FcsSuppressedCodes = Set.empty }
+
+    ctx, summaries, ledger
+
+[<Fact(Timeout = 15000)>]
+let ``regression: clean cycle after a findings cycle renders 0, not the stale count`` () =
+    let handler = create [] None DiagnosticSeverity.Hint
+    let ctx, summaries, ledger = makeAnalyzerRecordingCtx ()
+
+    let file = "/tmp/cycle/Phantom.fs"
+
+    let findings =
+        [ { Message = "rule X"
+            Severity = DiagnosticSeverity.Error
+            Line = 10
+            Column = 1
+            Detail = None }
+          { Message = "rule Y"
+            Severity = DiagnosticSeverity.Error
+            Line = 20
+            Column = 1
+            Detail = None } ]
+
+    // Cycle 1: 2 errors on the file.
+    let state1 =
+        handler.Update ctx handler.Init (Custom(AnalysisComplete(file, findings)))
+        |> Async.RunSynchronously
+
+    test <@ summaries |> Seq.last = "analyzed 1 files, 2 findings (2 errors, 0 warnings)" @>
+    test <@ ledger.ContainsKey file && ledger.[file].Length = 2 @>
+
+    // Cycle 2: same file re-checks clean (0 findings).
+    handler.Update ctx state1 (Custom(AnalysisComplete(file, [])))
+    |> Async.RunSynchronously
+    |> ignore
+
+    // The summary must reflect the CURRENT cycle's gated set: 0 findings — not
+    // the stale 2 from cycle 1. And the file's ledger entry must be cleared.
+    test <@ summaries |> Seq.last = "analyzed 2 files, 0 findings (0 errors, 0 warnings)" @>
+    test <@ not (ledger.ContainsKey file) @>
