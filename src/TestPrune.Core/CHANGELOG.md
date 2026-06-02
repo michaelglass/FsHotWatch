@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.0.3 - 2026-06-02
+
 - fix: the AST impact analyzer no longer aborts on un-nameable F# symbols. `FSharpEntity.FullName`/`TryFullName` can throw (`NullReferenceException` in compiled projects, `InvalidOperationException` in scripts) on symbols such as anonymous-record projections; these are now caught and the offending edge is skipped, so a single un-nameable symbol degrades impact selection slightly instead of crashing the whole analysis pass.
 
 ## 4.0.2 - 2026-05-27

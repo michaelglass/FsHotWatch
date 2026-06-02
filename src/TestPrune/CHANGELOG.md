@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.0.3 - 2026-06-02
+
 - fix: `test-prune` impact analysis no longer crashes on un-nameable F# symbols (e.g. anonymous-record projections) in analyzed sources — the AST walk skips the un-nameable symbol and continues (via TestPrune.Core).
 
 ## 4.0.2 - 2026-05-27
