@@ -158,11 +158,6 @@ description = "Preview a release without mutating (no tag, no publish)"
 run = "dotnet tool run fssemantictagger release --dry-run"
 depends = ["restore"]
 
-[tasks.release-alpha]
-description = "Tag an alpha release"
-run = "dotnet tool run fssemantictagger release --prerelease alpha"
-depends = ["restore"]
-
 [tasks.compile]
 description = "Compile the solution (dotnet build)"
 run = "dotnet build"
