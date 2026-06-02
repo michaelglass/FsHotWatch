@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: impact-filtered (partial) test runs no longer produce a false coverage red — coverage is no longer reported as failing from a stale/partial baseline when only a subset of tests ran.
+
 ## 0.7.0-alpha.9 - 2026-05-28
 
 - chore: bump CoverageRatchet.Core 0.1.0-alpha.1 → 0.1.0-alpha.2.
