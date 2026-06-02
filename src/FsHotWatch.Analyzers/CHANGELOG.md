@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: the analyzer summary no longer reports a phantom finding/error count — the `N findings (N errors, …)` line now reflects real diagnostics, so a genuinely clean run can't display a non-zero error count that corresponds to no actual finding (a false-green in the display).
+
 ## 0.7.0-alpha.13 - 2026-05-28
 
 - chore: refresh transitive dependencies (CommandTree 0.5.1, CoverageRatchet.Core 0.1.0-alpha.2, TestPrune.Core 4.0.2, FSharpLintAnalyzerShim 0.3.0-alpha.3 via the lint shim).
