@@ -38,6 +38,13 @@ let Message =
 /// nodes: module/namespace declarations, member/let bindings, expressions, patterns
 /// (which can carry type annotations), and types. Each occurrence yields one range, so
 /// nested and repeated anonymous records each produce their own diagnostic.
+///
+/// Why hand-rolled instead of `FSharp.Analyzers.SDK.ASTCollecting.walkAst`: SDK 0.36.0's
+/// precompiled `walkAst` IL calls `SynExpr.LetOrUse.get_isBang()` (present in its pinned
+/// FCS 43.10.101) which was removed in this repo's FCS 43.12.204, so `walkAst` throws
+/// `MissingMethodException` at runtime on any `let` binding. This hand-rolled walk is
+/// compiled against this repo's FCS, so it is the necessary approach until the SDK ships
+/// an FCS-43.12-aligned build.
 let collectAnonRecordRanges (input: ParsedInput) : range list =
     let ranges = ResizeArray<range>()
 

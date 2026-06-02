@@ -17,8 +17,6 @@
         <Version>0.1.0</Version>
         <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
-        <IncludeSymbols>true</IncludeSymbols>
-        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
 
         <!-- FSharp.Analyzers.SDK packaging convention: ship the analyzer DLL (+ its
              non-framework deps) under analyzers/dotnet/fs/ instead of lib/, and mark

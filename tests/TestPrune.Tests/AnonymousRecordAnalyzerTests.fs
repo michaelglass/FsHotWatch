@@ -8,9 +8,10 @@ open TestPrune.Analyzers.AnonymousRecordAnalyzer
 
 let private checker = FSharpChecker.Create()
 
-/// Parse a source string and return the collected anonymous-record ranges.
-let private collect (source: string) =
-    let fileName = "/tmp/AnonRecordTest.fsx"
+/// Parse `source` under `fileName` and return the collected anonymous-record ranges.
+/// `fileName` selects the parse mode: a `.fsx`/`.fs` implementation file by default, or a
+/// `.fsi` signature file when called with such an extension.
+let private collectIn (fileName: string) (source: string) =
     let sourceText = FSharp.Compiler.Text.SourceText.ofString source
 
     let projOptions, _ =
@@ -23,12 +24,16 @@ let private collect (source: string) =
 
     collectAnonRecordRanges parseResults.ParseTree
 
+/// Parse `source` as an implementation file (`.fsx`) and return the collected ranges.
+let private collect (source: string) =
+    collectIn "/tmp/AnonRecordTest.fsx" source
+
 let private messagesFor (source: string) = collect source |> buildMessages
 
 module ``Anonymous-record expressions`` =
 
     [<Fact>]
-    let ``flags a single anonymous-record expression`` () =
+    let ``flags a single anon-record expression and reports it on its line`` () =
         let ranges =
             collect
                 """
@@ -37,19 +42,8 @@ let x = {| Year = 2026 |}
 """
 
         test <@ List.length ranges = 1 @>
-
-    [<Fact>]
-    let ``reports the diagnostic on the anon-record line`` () =
-        let ranges =
-            collect
-                """
-module M
-let x = {| Year = 2026 |}
-"""
-
-        let r = List.exactlyOne ranges
         // Anon record is on line 3 of the source.
-        let startLine = r.StartLine
+        let startLine = (List.exactlyOne ranges).StartLine
         test <@ startLine = 3 @>
 
     [<Fact>]
@@ -277,24 +271,13 @@ let f (p: Point) = p.X
 
     [<Fact>]
     let ``a signature file produces no diagnostics`` () =
-        let fileName = "/tmp/AnonRecordTest.fsi"
-        let source = "module M\nval x: int\n"
-        let sourceText = FSharp.Compiler.Text.SourceText.ofString source
-
-        let projOptions, _ =
-            checker.GetProjectOptionsFromScript(fileName, sourceText, assumeDotNetFramework = false)
-            |> Async.RunSynchronously
-
-        let parseResults =
-            checker.ParseFile(fileName, sourceText, projOptions |> checker.GetParsingOptionsFromProjectOptions |> fst)
-            |> Async.RunSynchronously
-
-        test <@ List.isEmpty (collectAnonRecordRanges parseResults.ParseTree) @>
+        let ranges = collectIn "/tmp/AnonRecordTest.fsi" "module M\nval x: int\n"
+        test <@ List.isEmpty ranges @>
 
 module ``Diagnostic shape`` =
 
     [<Fact>]
-    let ``message carries the stable code and warning severity`` () =
+    let ``message carries the stable code, severity, and impact-analysis guidance`` () =
         let messages =
             messagesFor
                 """
@@ -306,17 +289,6 @@ let x = {| Year = 2026 |}
         test <@ m.Code = "TP001" @>
         test <@ m.Type = "TestPrune.AnonymousRecord" @>
         test <@ m.Severity = Severity.Warning @>
-
-    [<Fact>]
-    let ``message mentions impact analysis and the fix`` () =
-        let messages =
-            messagesFor
-                """
-module M
-let x = {| Year = 2026 |}
-"""
-
-        let m = List.exactlyOne messages
         test <@ m.Message.Contains "impact analysis" @>
         test <@ m.Message.Contains "DependsOnFile" @>
 
