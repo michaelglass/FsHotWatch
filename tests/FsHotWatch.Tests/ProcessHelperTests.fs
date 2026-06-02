@@ -229,15 +229,12 @@ let ``runProcess overlays explicit env on top of inherited env`` () =
         runProcess "sh" args "." [ explicitKey, explicitValue ]
         |> expectStdout (inheritedValue + ":" + explicitValue))
 
-[<Fact(Timeout = 15000)>]
-let ``runProcessWithTimeout times out and kills long-running process (covers F17/F18 use sites)`` () =
-    // Spawn a long-running process and exercise the timeout-kill + drain path
-    // so the F17/F18 catch sites get coverage hits in the integration tree.
-    use _ = FsHotWatch.ProcessRegistry.install (FsHotWatch.ProcessRegistry.Registry())
-
-    match runProcessWithTimeout "sleep" "30" "." [] (TimeSpan.FromMilliseconds 200.0) with
-    | TimedOut _ -> ()
-    | other -> Assert.Fail $"expected TimedOut, got %A{other}"
+// The timeout-kill test that spawned `sleep 30` to force the kill-on-timeout
+// drain path lives in FsHotWatch.IntegrationTests/ProcessHelperTimeoutTests.fs.
+// Its OS-scheduling-dependent coverage of ProcessHelper.fs lines ~157-196 made
+// the unit-suite line coverage jitter, so it was moved to the integration suite
+// (no coverage package). The deterministic helpers below still pin the F17/F18
+// contracts in the unit suite.
 
 // --- F17/F18: isExpectedKillException / isExpectedDrainException helpers ---
 
