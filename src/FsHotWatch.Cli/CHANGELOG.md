@@ -4,6 +4,8 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+- feat: strict CLI parsing (CommandTree 0.6.0) — invalid input (unknown flags/commands) now fails hard with a clear error, the nearest subcommand's help, and a non-zero exit, uniformly and even outside a jj/git repo (previously masked by the repo-root check). Unknown top-level commands are still forwarded to the daemon for plugin resolution and only fail hard when genuinely unrecognized.
+
 ## 0.8.0-alpha.15 - 2026-05-28
 
 - chore: bump CommandTree 0.5.0 → 0.5.1.
