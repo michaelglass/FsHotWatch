@@ -271,8 +271,140 @@ let ``parse init returns Init`` () =
 [<Fact(Timeout = 15000)>]
 let ``parse unknown command returns UnknownCommand`` () =
     match CommandTree.parse tree [| "warnings" |] with
-    | Error(UnknownCommand("warnings", _)) -> ()
+    // CommandTree 0.6.0: UnknownCommand carries (input, rest, groupPath). A root-level
+    // unknown command has an empty groupPath; rest is the raw argv past the token.
+    | Error(UnknownCommand("warnings", [||], [])) -> ()
     | other -> failwith $"Expected UnknownCommand, got %A{other}"
+
+[<Fact(Timeout = 15000)>]
+let ``parse unknown command keeps trailing args in rest`` () =
+    match CommandTree.parse tree [| "warnings"; "--verbose"; "x" |] with
+    | Error(UnknownCommand("warnings", [| "--verbose"; "x" |], [])) -> ()
+    | other -> failwith $"Expected UnknownCommand with rest, got %A{other}"
+
+// --- reportParseError / renderParseError tests ---
+//
+// These assert the strict-CLI contract: garbage/invalid input renders a clear
+// error PLUS the nearest subcommand/group help and returns a non-zero exit code,
+// uniformly via CommandTree.renderParseError + isError.
+
+/// Run `f`, capturing everything it writes to stderr, and return (stderr, result).
+let private captureStderr (f: unit -> 'a) : string * 'a =
+    let original = Console.Error
+    use sw = new StringWriter()
+    Console.SetError(sw)
+
+    try
+        let result = f ()
+        sw.Flush()
+        sw.ToString(), result
+    finally
+        Console.SetError(original)
+
+[<Fact(Timeout = 15000)>]
+let ``reportParseError on test --all renders unknown-flag error plus test help and exits non-zero`` () =
+    // `--all` is not a flag on `fshw test` → UnknownFlag. This is the case the
+    // repo-owner wants to stop being masked when run outside a repo.
+    let err =
+        match spec.Parse [| "test"; "--all" |] with
+        | Error e -> e
+        | Ok _ -> failwith "expected a parse error for `test --all`"
+
+    let stderr, exitCode = captureStderr (fun () -> reportParseError err)
+
+    test <@ exitCode <> 0 @>
+    // Mentions the offending flag...
+    test <@ stderr.Contains("--all") @>
+    // ...and renders the `test` command's own help (its description appears).
+    test <@ stderr.ToLowerInvariant().Contains("run tests") @>
+
+[<Fact(Timeout = 15000)>]
+let ``reportParseError on a nested unknown command fails hard with non-zero exit`` () =
+    // `config bogus` — `config` is a known GROUP, `bogus` is an unknown child →
+    // UnknownCommand with a non-empty groupPath. No daemon passthrough for this.
+    let err =
+        match spec.Parse [| "config"; "bogus" |] with
+        | Error e -> e
+        | Ok _ -> failwith "expected a parse error for `config bogus`"
+
+    match err with
+    | UnknownCommand(_, _, _ :: _) -> ()
+    | other -> failwith $"expected a nested UnknownCommand, got %A{other}"
+
+    let stderr, exitCode = captureStderr (fun () -> reportParseError err)
+    test <@ exitCode <> 0 @>
+    test <@ stderr.Length > 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``reportParseError returns 0 for HelpRequested`` () =
+    // isError is false for Help/Version — informational, exit zero.
+    let err =
+        match spec.Parse [| "test"; "--help" |] with
+        | Error e -> e
+        | Ok _ -> failwith "expected HelpRequested"
+
+    let _, exitCode = captureStderr (fun () -> reportParseError err)
+    test <@ exitCode = 0 @>
+
+// classifyParse is the pure dispatch that encodes the strict-CLI ordering: all
+// repo-independent decisions (help/version + every genuine flag/arg error and a
+// nested unknown command) resolve BEFORE the repo-root lookup; only Ok and a
+// root-level unknown command defer to the daemon path.
+
+[<Fact(Timeout = 15000)>]
+let ``classifyParse Ok yields RunCommand`` () =
+    match classifyParse (spec.Parse [| "start" |]) with
+    | RunCommand([], Start) -> ()
+    | other -> failwith $"expected RunCommand([], Start), got %A{other}"
+
+[<Fact(Timeout = 15000)>]
+let ``classifyParse help yields RepoIndependent 0`` () =
+    let _, dispatch =
+        captureStderr (fun () -> classifyParse (spec.Parse [| "test"; "--help" |]))
+
+    test <@ dispatch = RepoIndependent 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``classifyParse version yields RepoIndependent 0`` () =
+    let _, dispatch =
+        captureStderr (fun () -> classifyParse (spec.Parse [| "--version" |]))
+
+    test <@ dispatch = RepoIndependent 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``classifyParse unknown flag yields RepoIndependent non-zero (not masked, no repo needed)`` () =
+    let stderr, dispatch =
+        captureStderr (fun () -> classifyParse (spec.Parse [| "test"; "--all" |]))
+
+    match dispatch with
+    | RepoIndependent code -> test <@ code <> 0 @>
+    | other -> failwith $"expected RepoIndependent, got %A{other}"
+
+    test <@ stderr.Contains("--all") @>
+
+[<Fact(Timeout = 15000)>]
+let ``classifyParse nested unknown command yields RepoIndependent non-zero`` () =
+    let _, dispatch =
+        captureStderr (fun () -> classifyParse (spec.Parse [| "config"; "bogus" |]))
+
+    match dispatch with
+    | RepoIndependent code -> test <@ code <> 0 @>
+    | other -> failwith $"expected RepoIndependent for nested unknown, got %A{other}"
+
+[<Fact(Timeout = 15000)>]
+let ``classifyParse root unknown command yields RootUnknownCommand with raw rest`` () =
+    match classifyParse (spec.Parse [| "deploy"; "--fast"; "x" |]) with
+    | RootUnknownCommand("deploy", [| "--fast"; "x" |], UnknownCommand("deploy", _, [])) -> ()
+    | other -> failwith $"expected RootUnknownCommand, got %A{other}"
+
+[<Fact(Timeout = 15000)>]
+let ``unknownCommandReply round-trips through isUnknownCommandReply`` () =
+    test <@ FsHotWatch.Ipc.isUnknownCommandReply (FsHotWatch.Ipc.unknownCommandReply "bogus") @>
+    // The sentinel carries the command name so a consumer can render it.
+    test <@ (FsHotWatch.Ipc.unknownCommandReply "bogus").Contains("bogus") @>
+    test <@ not (FsHotWatch.Ipc.isUnknownCommandReply """{"status":"passed"}""") @>
+    test <@ not (FsHotWatch.Ipc.isUnknownCommandReply "plain text") @>
+    test <@ not (FsHotWatch.Ipc.isUnknownCommandReply null) @>
 
 // --- GlobalSpec.Parse tests ---
 
@@ -557,6 +689,15 @@ let ``CLI command proxying works against running daemon`` () =
             IpcClient.runCommand pipeName "greet" "Claude" |> Async.RunSynchronously
 
         test <@ result.Contains("hello Claude") @>
+
+        // An unrecognized command must come back as the distinguishable unknown-command
+        // sentinel over IPC (not a plain echo), so the CLI can fail hard on it.
+        let unknown =
+            IpcClient.runCommand pipeName "definitely-not-a-command" ""
+            |> Async.RunSynchronously
+
+        test <@ FsHotWatch.Ipc.isUnknownCommandReply unknown @>
+        test <@ not (FsHotWatch.Ipc.isUnknownCommandReply "hello Claude") @>
     finally
         cts.Cancel()
 
@@ -595,7 +736,7 @@ let private fakeIpc () : IpcOps =
       ScanStatus = fun _ -> async { return "idle" }
       GetStatus = fun _ -> async { return completedStatusJson }
       GetPluginStatus = fun _ _ -> async { return "{}" }
-      RunCommand = fun _ _ _ -> async { return "unknown command" }
+      RunCommand = fun _ name _ -> async { return FsHotWatch.Ipc.unknownCommandReply name }
       GetDiagnostics = fun _ _ -> async { return """{"count": 0, "files": {}}""" }
       WaitForScan = fun _ _ -> async { return "idle" }
       WaitForComplete = fun _ _ -> async { return "{}" }
@@ -662,22 +803,105 @@ let ``executeCommand Status returns 0`` () =
     test <@ result = 0 @>
 
 [<Fact(Timeout = 15000)>]
-let ``executePluginCommand proxies to IPC`` () =
+let ``executePluginCommand proxies a recognized command to IPC`` () =
     let mutable cmdName = ""
+    let mutable argsSeen = ""
 
     let ipc =
         { fakeIpc () with
             RunCommand =
-                fun _ cmd _ ->
+                fun _ cmd args ->
                     async {
                         cmdName <- cmd
+                        argsSeen <- args
                         return "result"
                     } }
 
-    let result = executePluginCommand ipc "pipe" defaultGlobalOptions "warnings" ""
+    // A real plugin result (not the unknown-command sentinel) → Handled with the
+    // rendered exit code, and the raw rest args are forwarded verbatim.
+    let result =
+        executePluginCommand ipc "pipe" defaultGlobalOptions "warnings" "--verbose x"
+
+    test <@ result = Handled 0 @>
+    test <@ cmdName = "warnings" @>
+    test <@ argsSeen = "--verbose x" @>
+
+[<Fact(Timeout = 15000)>]
+let ``executePluginCommand reports NotRecognized when daemon returns unknown-command sentinel`` () =
+    // The daemon's RunCommand replies with the unknown-command sentinel when the
+    // plugin host doesn't recognize the command. The CLI must surface this distinctly
+    // so the caller can fail hard with the canonical parse error.
+    let ipc =
+        { fakeIpc () with
+            RunCommand = fun _ name _ -> async { return FsHotWatch.Ipc.unknownCommandReply name } }
+
+    let result = executePluginCommand ipc "pipe" defaultGlobalOptions "bogus" ""
+    test <@ result = NotRecognized @>
+
+[<Fact(Timeout = 15000)>]
+let ``executePluginCommand reports DaemonUnavailable when IPC throws (with hint)`` () =
+    // TimeoutException maps to a known recovery hint → the Some-hint branch.
+    let ipc =
+        { fakeIpc () with
+            RunCommand = fun _ _ _ -> async { return raise (TimeoutException("no daemon")) } }
+
+    let result = executePluginCommand ipc "pipe" defaultGlobalOptions "bogus" ""
+    test <@ result = DaemonUnavailable @>
+
+[<Fact(Timeout = 15000)>]
+let ``executePluginCommand reports DaemonUnavailable when IPC throws (no hint)`` () =
+    // A plain exception has no known hint → the None-hint branch.
+    let ipc =
+        { fakeIpc () with
+            RunCommand = fun _ _ _ -> async { return raise (InvalidOperationException("pipe gone")) } }
+
+    let result = executePluginCommand ipc "pipe" defaultGlobalOptions "bogus" ""
+    test <@ result = DaemonUnavailable @>
+
+[<Fact(Timeout = 15000)>]
+let ``forwardRootUnknownCommand returns the daemon exit code when handled`` () =
+    let ipc =
+        { fakeIpc () with
+            RunCommand = fun _ _ _ -> async { return "ran" } }
+
+    let mutable renderCalled = false
+
+    let result =
+        forwardRootUnknownCommand ipc "pipe" defaultGlobalOptions "plugin-cmd" "" (fun () ->
+            renderCalled <- true
+            99)
 
     test <@ result = 0 @>
-    test <@ cmdName = "warnings" @>
+    test <@ not renderCalled @>
+
+[<Fact(Timeout = 15000)>]
+let ``forwardRootUnknownCommand fails hard via renderErr when daemon does not recognize the command`` () =
+    let ipc =
+        { fakeIpc () with
+            RunCommand = fun _ name _ -> async { return FsHotWatch.Ipc.unknownCommandReply name } }
+
+    let mutable renderCalled = false
+
+    // The not-recognized path must invoke renderErr (which prints the canonical
+    // error+help and returns the non-zero exit code) — garbage never silently succeeds.
+    let result =
+        forwardRootUnknownCommand ipc "pipe" defaultGlobalOptions "bogus" "" (fun () ->
+            renderCalled <- true
+            7)
+
+    test <@ result = 7 @>
+    test <@ renderCalled @>
+
+[<Fact(Timeout = 15000)>]
+let ``forwardRootUnknownCommand returns 1 when the daemon is unavailable`` () =
+    let ipc =
+        { fakeIpc () with
+            RunCommand = fun _ _ _ -> async { return raise (TimeoutException("no daemon")) } }
+
+    let result =
+        forwardRootUnknownCommand ipc "pipe" defaultGlobalOptions "bogus" "" (fun () -> 7)
+
+    test <@ result = 1 @>
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Scan calls scan IPC`` () =
