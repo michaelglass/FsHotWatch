@@ -8,7 +8,38 @@ open CoverageRatchet.Merge
 open CoverageRatchet.Thresholds
 open CoverageRatchet.Ratchet
 
-type CoverageMsg = CheckDone of CheckResult
+/// The gated coverage verdict for a cycle, after applying the impact-filter
+/// guard. Distinct from the raw `CheckResult` so the message that drives the
+/// plugin's pass/fail status carries the already-gated decision.
+[<NoComparison; NoEquality>]
+type CoverageVerdict =
+    /// Every evaluated file met its floor (or no coverage XML was produced).
+    | Passed
+    /// A full-suite run found real shortfalls — these GATE (exit non-zero).
+    | Failed of CoverageRatchet.Thresholds.FileResult list
+    /// An impact-filtered run produced shortfalls, but it did NOT run every
+    /// project's tests this cycle, so an un-run source file reads `0.0%`
+    /// indistinguishably from a genuine zero. We do NOT gate on a filtered
+    /// run (raise-only); instead we surface a loud notice naming the count so
+    /// the shortfall is visible without a false red. Verdict-reliability
+    /// 2026-06-02 Issue B.
+    | NotGatedFiltered of belowFloorCount: int
+
+type CoverageMsg = CheckDone of CoverageVerdict
+
+/// Decide the gated verdict from a raw ratchet `CheckResult` and whether this
+/// cycle ran the full suite. Pure, so the gating policy is unit-testable
+/// without spinning a daemon. On a full-suite run the ratchet gates normally;
+/// on an impact-filtered run a `SomeFailed` is downgraded to a non-gating
+/// notice because un-run files cannot be distinguished from genuine zeros.
+let internal gateVerdict (ranFullSuite: bool) (result: CheckResult) : CoverageVerdict =
+    match result with
+    | AllPassed -> Passed
+    | SomeFailed results ->
+        if ranFullSuite then
+            Failed results
+        else
+            NotGatedFiltered results.Length
 
 let private pollForFiles (searchDir: string) (maxAttempts: int) (delayMs: int) =
     async {
@@ -92,24 +123,45 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                                 else
                                     runCheck configPath xmlPaths
 
+                            // Raise-only on a passing full-suite run. A filtered run
+                            // never refreshes (it didn't exercise every project, so its
+                            // cobertura would lower the high-watermark for un-run files).
                             if trc.RanFullSuite then
                                 match result with
                                 | AllPassed -> refreshBaselines searchDir
                                 | SomeFailed _ -> ()
 
-                            return CheckDone result
+                            return CheckDone(gateVerdict trc.RanFullSuite result)
                         })
 
                     async { return state }
 
-            | Custom(CheckDone AllPassed) ->
+            | Custom(CheckDone Passed) ->
                 async {
                     ctx.ClearAllErrors()
                     ctx.ReportStatus(PluginStatus.Completed System.DateTime.Now)
                     return Some true
                 }
 
-            | Custom(CheckDone(SomeFailed results)) ->
+            | Custom(CheckDone(NotGatedFiltered belowFloorCount)) ->
+                async {
+                    // Impact-filtered run: do NOT gate. The shortfalls are very likely
+                    // un-run files reading a false 0.0% (no current coverage, stale/missing
+                    // baseline) — indistinguishable in the cobertura data from a genuine
+                    // zero. Clear any prior reds so the verdict is a deterministic ✓ on an
+                    // unchanged commit, and surface a LOUD notice so the gap stays visible.
+                    // A real regression is caught by the next full-suite run, which gates.
+                    ctx.ClearAllErrors()
+
+                    let summary =
+                        $"%d{belowFloorCount} file(s) below floor not gated (impact-filtered run; run a full suite to gate coverage)"
+
+                    ctx.Log $"coverage: %s{summary}"
+                    ctx.ReportStatus(PluginStatus.Completed System.DateTime.Now)
+                    return Some true
+                }
+
+            | Custom(CheckDone(Failed results)) ->
                 async {
                     for r in results do
                         let lineMsg =
