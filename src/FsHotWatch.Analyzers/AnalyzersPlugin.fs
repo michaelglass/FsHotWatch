@@ -25,10 +25,27 @@ type AnalyzersMsg =
 type AnalyzersState =
     { DiagnosticsByFile: Map<AbsFilePath, ErrorEntry list>
       LoadedCount: int
-      RunAnalyzed: int
-      RunFindings: int
-      RunErrors: int
-      RunWarnings: int }
+      RunAnalyzed: int }
+
+/// Render the analyzer run summary from the LIVE per-file diagnostic map — the
+/// SAME `DiagnosticsByFile` set that backs `reportOrClearFile` → ErrorLedger →
+/// the pass/fail verdict for the current cycle.
+///
+/// Verdict-reliability (2026-06-02 Issue A): the summary count must never be a
+/// monotonic accumulator carried across cycles. A prior cycle's 9 findings on a
+/// file that later re-checks clean must drop to 0 — the file's entry in the map
+/// is replaced (with []) when it passes, so summing the map always reflects the
+/// current gated set. `✓` ⇒ `0 findings`; any non-zero count ⇒ the verdict gates.
+let internal summarize (analyzed: int) (diagnosticsByFile: Map<AbsFilePath, ErrorEntry list>) : string =
+    // Materialize once, then reuse the canonical DiagnosticCounts.ofEntries
+    // (single fold) for the severity tally — the same counter every other
+    // plugin/IPC path routes through. `findings` is the total across ALL
+    // severities (incl. Info/Hint), so it stays its own count.
+    let allEntries = diagnosticsByFile |> Map.toList |> List.collect snd
+    let counts = DiagnosticCounts.ofEntries allEntries
+    let findings = List.length allEntries
+
+    $"analyzed %d{analyzed} files, %d{findings} findings (%d{counts.Errors} errors, %d{counts.Warnings} warnings)"
 
 /// Assembly-name prefixes we always skip when loading analyzers. Analyzer
 /// packages (e.g. FSharpLintAnalyzerShim) ship bundled BCL/FCS deps that aren't
@@ -203,10 +220,7 @@ let internal createWithSlowHook
       Init =
         { DiagnosticsByFile = Map.empty
           LoadedCount = loadedCount
-          RunAnalyzed = 0
-          RunFindings = 0
-          RunErrors = 0
-          RunWarnings = 0 }
+          RunAnalyzed = 0 }
       Update =
         fun ctx state event ->
             async {
@@ -335,36 +349,20 @@ let internal createWithSlowHook
                         // cache for FileChecked.
                         PluginCtxHelpers.reportOrClearFile ctx fileStr entries
 
+                        // Replace (not merge) this file's entry so a re-check that
+                        // passes drops to []; the summary derives from the resulting
+                        // live map, never a cross-cycle accumulator (Issue A).
                         let updated = state.DiagnosticsByFile |> Map.add result.File entries
-
-                        let newErrors =
-                            entries
-                            |> List.filter (fun e -> e.Severity = DiagnosticSeverity.Error)
-                            |> List.length
-
-                        let newWarnings =
-                            entries
-                            |> List.filter (fun e -> e.Severity = DiagnosticSeverity.Warning)
-                            |> List.length
-
                         let analyzed = state.RunAnalyzed + 1
-                        let findings = state.RunFindings + entries.Length
-                        let errors = state.RunErrors + newErrors
-                        let warnings = state.RunWarnings + newWarnings
 
                         ctx.EndSubtask PrimarySubtaskKey
 
-                        PluginCtxHelpers.completeWith
-                            ctx
-                            $"analyzed %d{analyzed} files, %d{findings} findings (%d{errors} errors, %d{warnings} warnings)"
+                        PluginCtxHelpers.completeWith ctx (summarize analyzed updated)
 
                         return
                             { state with
                                 DiagnosticsByFile = updated
-                                RunAnalyzed = analyzed
-                                RunFindings = findings
-                                RunErrors = errors
-                                RunWarnings = warnings }
+                                RunAnalyzed = analyzed }
                     | Choice3Of3 errMsg ->
                         // Crash — same logic as old Custom AnalysisFailed handler.
                         ctx.ReportErrors fileStr [ ErrorEntry.error $"Analyzer crashed: %s{errMsg}" ]
@@ -372,36 +370,22 @@ let internal createWithSlowHook
                         PluginCtxHelpers.completeWith ctx $"analyzer crashed on {Path.GetFileName fileStr}"
                         return state
                 | Custom(AnalysisComplete(file, entries)) ->
+                    // Report/clear so the gated ledger set and the summary agree, and
+                    // replace this file's map entry so the summary reflects the current
+                    // cycle — not a cross-cycle accumulator (Issue A).
+                    PluginCtxHelpers.reportOrClearFile ctx file entries
+
                     let updated = state.DiagnosticsByFile |> Map.add (AbsFilePath.create file) entries
-
-                    let newErrors =
-                        entries
-                        |> List.filter (fun e -> e.Severity = DiagnosticSeverity.Error)
-                        |> List.length
-
-                    let newWarnings =
-                        entries
-                        |> List.filter (fun e -> e.Severity = DiagnosticSeverity.Warning)
-                        |> List.length
-
                     let analyzed = state.RunAnalyzed + 1
-                    let findings = state.RunFindings + entries.Length
-                    let errors = state.RunErrors + newErrors
-                    let warnings = state.RunWarnings + newWarnings
 
                     ctx.EndSubtask PrimarySubtaskKey
 
-                    PluginCtxHelpers.completeWith
-                        ctx
-                        $"analyzed %d{analyzed} files, %d{findings} findings (%d{errors} errors, %d{warnings} warnings)"
+                    PluginCtxHelpers.completeWith ctx (summarize analyzed updated)
 
                     return
                         { state with
                             DiagnosticsByFile = updated
-                            RunAnalyzed = analyzed
-                            RunFindings = findings
-                            RunErrors = errors
-                            RunWarnings = warnings }
+                            RunAnalyzed = analyzed }
                 | Custom(AnalysisFailed(file, error)) ->
                     ctx.ReportErrors file [ ErrorEntry.error $"Analyzer crashed: %s{error}" ]
 
