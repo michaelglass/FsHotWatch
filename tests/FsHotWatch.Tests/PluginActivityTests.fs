@@ -1,7 +1,6 @@
 module FsHotWatch.Tests.PluginActivityTests
 
 open System
-open System.Threading.Tasks
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
@@ -139,21 +138,70 @@ let ``ResetRun clears current subtasks, activity, summary override but keeps his
     test <@ List.isEmpty (s.GetActivityTail("p")) @>
     test <@ (s.GetHistory("p")).Length = 1 @>
 
+// Deterministic, single-threaded replacement for the cap-eviction coverage.
+// Drives enforceGlobalCap's main eviction path (PluginActivity.fs ~lines
+// 112-138) every run: pushes history entries of KNOWN size from a single
+// thread until the 2 MB cap is exceeded, then asserts the cap held and the
+// oldest entries were evicted in StartedAt order. The flaky concurrent-stress
+// variant lives in FsHotWatch.IntegrationTests; this is the deterministic
+// counterpart (no cross-lock recheck races).
 [<Fact(Timeout = 15000)>]
-let ``2 MB global cap evicts oldest history entries across plugins`` () =
+let ``global cap evicts oldest history entries first (single-threaded, deterministic)`` () =
     let s = State()
-    let big = String('x', 10_000)
-    let mutable total = 0
+    // ~80 KB per record (40_000-char string * 2 bytes/char). 2 MB / 80 KB ≈ 26
+    // records, so 80 records forces many evictions deterministically.
+    let big = String('x', 40_000)
+    let baseTime = DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
 
-    // Push enough history to exceed cap across two plugins
-    for i in 1..200 do
-        let plugin = if i % 2 = 0 then "a" else "b"
-        s.Log(plugin, big)
-        let now = DateTime.UtcNow.AddMilliseconds(float i)
-        s.RecordTerminal(plugin, CompletedRun, now, now.AddMilliseconds(1.0))
-        total <- total + 1
+    for i in 1..80 do
+        s.Log("p", big)
+        let started = baseTime.AddSeconds(float i)
+        s.RecordTerminal("p", CompletedRun, started, started.AddMilliseconds(1.0))
 
+    // Cap held.
     test <@ s.TotalByteSize <= 2 * 1024 * 1024 @>
+
+    let hist = s.GetHistory("p")
+    let histLen = hist.Length
+    // Some records were evicted (cap forced it) but not all.
+    test <@ histLen > 0 && histLen < 80 @>
+
+    // Surviving records are the newest contiguous run; the oldest survivor's
+    // StartedAt is strictly later than the very first pushed record, proving
+    // eviction happened oldest-first.
+    let firstPushed = baseTime.AddSeconds(1.0)
+    let lastPushed = baseTime.AddSeconds(80.0)
+    let oldestSurvivor = (List.head hist).StartedAt
+    let newestSurvivor = (List.last hist).StartedAt
+    let evictedOldestFirst = oldestSurvivor > firstPushed
+    test <@ evictedOldestFirst @>
+
+    // History is in ascending StartedAt order (oldest first), confirming FIFO
+    // eviction left a contiguous newest window ending at the last pushed record.
+    let starts = hist |> List.map (fun r -> r.StartedAt)
+    let ascending = starts = List.sort starts
+    test <@ ascending @>
+    test <@ newestSurvivor = lastPushed @>
+
+// Direct test of the SetNextTerminalOutcome → RecordTerminal override: the
+// next terminal record must use the override outcome, not the one passed to
+// RecordTerminal. Drives the OutcomeOverride branch in RecordTerminal
+// deterministically via the public API.
+[<Fact(Timeout = 15000)>]
+let ``SetNextTerminalOutcome overrides the outcome of the next RecordTerminal`` () =
+    let s = State()
+    s.SetNextTerminalOutcome("p", TimedOut "forced")
+    let now = DateTime.UtcNow
+    // Pass CompletedRun, but the override must win.
+    s.RecordTerminal("p", CompletedRun, now, now.AddMilliseconds(1.0))
+    let r = List.head (s.GetHistory("p"))
+
+    test
+        <@
+            match r.Outcome with
+            | TimedOut msg -> msg = "forced"
+            | _ -> false
+        @>
 
 [<Fact(Timeout = 15000)>]
 let ``RecordTerminal twice does not leak state from first run into second`` () =
@@ -217,18 +265,22 @@ let ``UpdateSubtask is a no-op when key not present`` () =
     s.UpdateSubtask("p", "missing", "label")
     test <@ List.isEmpty (s.GetSubtasks("p")) @>
 
+// The concurrent-stress test (100 Task.Run workers hammering
+// StartSubtask/EndSubtask) lives in
+// FsHotWatch.IntegrationTests/PluginActivityConcurrencyTests.fs. Its hits on
+// the cross-lock branches fire flakily under load, which made the unit-suite
+// line coverage of PluginActivity.fs jitter; it is behavior-tested there
+// (no coverage package) instead.
+
 [<Fact(Timeout = 15000)>]
-let ``Thread-safe under concurrent StartSubtask EndSubtask calls`` () =
+let ``StartSubtask then EndSubtask sequentially leaves no open subtasks`` () =
+    // Deterministic single-threaded analogue of the moved concurrency test:
+    // every Start is matched by an End, so no subtasks remain.
     let s = State()
 
-    let tasks =
-        [| for i in 1..100 ->
-               Task.Run(
-                   System.Action(fun () ->
-                       let k = sprintf "k%d" i
-                       s.StartSubtask("p", k, sprintf "l%d" i)
-                       s.EndSubtask("p", k))
-               ) |]
+    for i in 1..100 do
+        let k = sprintf "k%d" i
+        s.StartSubtask("p", k, sprintf "l%d" i)
+        s.EndSubtask("p", k)
 
-    Task.WaitAll(tasks)
     test <@ List.isEmpty (s.GetSubtasks("p")) @>
