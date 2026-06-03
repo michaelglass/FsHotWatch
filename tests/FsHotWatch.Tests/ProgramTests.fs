@@ -1,3 +1,4 @@
+[<Xunit.Collection(FsHotWatch.Tests.TestHelpers.LogGlobalCollectionName)>]
 module FsHotWatch.Tests.ProgramTests
 
 open System
