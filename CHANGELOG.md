@@ -4,6 +4,29 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### Daemon: auto-recovering deps-freshness gate before FCS analysis
+
+When a project's restored dependency state (`obj/project.assets.json`) goes
+stale relative to its declared deps — a `PackageReference` added without a
+`dotnet restore`, or a restore that half-completed — FCS otherwise emits a
+phantom error-storm (`namespace`/`type not found` across the whole project)
+that looks like broken code but is really a stale restore. The daemon now
+catches that state before type-checking, and recovers from it automatically
+where it can.
+
+#### Added
+- **Deps-freshness gate (`FsHotWatch.DepsFreshness`).** Before FCS analysis the
+  daemon compares each project's restored-assets mtime against its declared
+  dependency files (`.fsproj`, `Directory.Packages.props` /
+  `Directory.Build.props`, `paket.lock` / `paket.dependencies`,
+  `.config/dotnet-tools.json`). On a staleness signal it first attempts a
+  **one-shot restore to recover automatically**; only if recovery fails does it
+  **fail fast with a single actionable diagnostic**, instead of letting the
+  type-checker produce a misleading "namespace not found" storm. Detection and
+  orchestration are pure (injected restore runner + freshness probe), unit-tested
+  without shelling out or touching FCS. See
+  `docs/plans/2026-06-02-deps-freshness-gate.md`.
+
 ### Dependencies: refresh external packages
 
 Routine maintenance bump of external (non-FsHotWatch) NuGet dependencies to
@@ -16,6 +39,9 @@ coverage) stay green; no public API change.
 - `StreamJsonRpc` 2.24.84 → 2.24.92 (IPC).
 - `Microsoft.SourceLink.GitHub` 10.0.203 → 10.0.300 (all packable projects).
 - `Microsoft.Testing.Extensions.CodeCoverage` 18.6.2 → 18.7.0 (test).
+- `CommandTree` 0.6.1 → 0.6.2 (CLI) — picks up the revision-stamping target fix,
+  so building `fshw` outside a VCS repo (e.g. a `.git`-less jj sub-workspace) no
+  longer emits `MSB3073` warnings.
 - Pinned transitives advanced to current patched releases:
   `System.Security.Cryptography.Xml` 10.0.7 → 10.0.8 and
   `Nerdbank.MessagePack` 1.1.62 → 1.2.4 (both still cover their respective
