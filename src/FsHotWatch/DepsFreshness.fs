@@ -31,13 +31,11 @@ let compareFreshness (assetsMtime: DateTime option) (depFileMtimes: DateTime lis
     match assetsMtime with
     | None -> Stale
     | Some assets ->
-        match depFileMtimes with
-        | [] -> Fresh
-        | mtimes ->
-            if mtimes |> List.exists (fun m -> m > assets) then
-                Stale
-            else
-                Fresh
+        // List.exists over [] is false, so no-dep-files correctly yields Fresh.
+        if depFileMtimes |> List.exists (fun m -> m > assets) then
+            Stale
+        else
+            Fresh
 
 /// Names of dependency-declaring files that live alongside / above a project.
 /// `*.fsproj` is handled separately (it is the project file itself).
@@ -101,49 +99,35 @@ let assetsPath (fsprojPath: string) : string =
 /// post-restore "did recovery actually produce assets?" check.
 let assetsPresent (fsprojPath: string) : bool = File.Exists(assetsPath fsprojPath)
 
+/// Read a file's last-write mtime (UTC), or None when it does not exist.
+let private tryMtime (path: string) : DateTime option =
+    if File.Exists path then
+        Some(File.GetLastWriteTimeUtc path)
+    else
+        None
+
 /// Disk-backed freshness probe for one project. Reads the assets mtime and the
 /// dep-file mtimes, then defers to the pure `compareFreshness`.
 let detectProjectFreshness (repoRoot: string) (fsprojPath: string) : Freshness =
-    let assets = assetsPath fsprojPath
-
-    let assetsMtime =
-        if File.Exists assets then
-            Some(File.GetLastWriteTimeUtc assets)
-        else
-            None
-
-    let depMtimes =
-        dependencyFiles fsprojPath repoRoot
-        |> List.choose (fun f ->
-            if File.Exists f then
-                Some(File.GetLastWriteTimeUtc f)
-            else
-                None)
-
+    let assetsMtime = tryMtime (assetsPath fsprojPath)
+    let depMtimes = dependencyFiles fsprojPath repoRoot |> List.choose tryMtime
     compareFreshness assetsMtime depMtimes
 
-/// A signature of the stale state recovery was last attempted for, so the same
-/// unchanged stale state does not re-trigger a restore on the next cycle.
-/// Bumping a dep file changes the signature and re-arms recovery.
-type private StaleSignature = int64
-
 /// Compute the stale signature for a project: max dep-file mtime ticks (0 when
-/// no dep files exist). A new bump moves this forward, re-arming recovery.
-let internal staleSignature (repoRoot: string) (fsprojPath: string) : StaleSignature =
+/// no dep files exist). This debounces recovery — the same unchanged stale state
+/// keeps the same signature (no re-restore), while bumping a dep file moves it
+/// forward and re-arms recovery.
+let internal staleSignature (repoRoot: string) (fsprojPath: string) : int64 =
     dependencyFiles fsprojPath repoRoot
-    |> List.choose (fun f ->
-        if File.Exists f then
-            Some(File.GetLastWriteTimeUtc(f).Ticks)
-        else
-            None)
+    |> List.choose tryMtime
     |> function
         | [] -> 0L
-        | ticks -> List.max ticks
+        | mtimes -> mtimes |> List.map (fun m -> m.Ticks) |> List.max
 
 /// Debounce tracker: remembers, per project, the last stale signature recovery
 /// was attempted for. Thread-safe; shared across scan cycles by the daemon.
 type RecoveryTracker() =
-    let attempted = ConcurrentDictionary<string, StaleSignature>()
+    let attempted = ConcurrentDictionary<string, int64>()
 
     /// True when a restore should be attempted for this (project, signature) —
     /// i.e. we have not already attempted recovery for this exact stale state.
@@ -244,11 +228,18 @@ let evaluateProject
                 let msg, detail = restoreFailureMessage proj outcome
                 FailFast(msg, detail)
 
+/// Per-step restore timeout. A hung `dotnet`/`paket` restore (seen in practice:
+/// a `paket restore` wedged ~17 min at 0% CPU) would otherwise block the whole
+/// scan indefinitely; bounding each step surfaces it as a `TimedOut` fail-fast
+/// instead. Generous enough for a cold restore of a large solution.
+let restoreStepTimeout = TimeSpan.FromMinutes 5.0
+
 /// Production restore runner. Runs `dotnet restore` in the project directory,
 /// then `dotnet paket restore` when a `paket.dependencies` is in scope and
 /// `dotnet tool restore` when a `.config/dotnet-tools.json` is in scope. The
-/// first non-success short-circuits and is returned. Uses ProcessHelper so
-/// stdout/stderr are drained concurrently (no deadlock).
+/// first non-success short-circuits and is returned. Each step is bounded by
+/// `restoreStepTimeout`. Uses ProcessHelper so stdout/stderr are drained
+/// concurrently (no deadlock).
 let productionRestoreRunner (repoRoot: string) : RestoreRunner =
     fun fsprojPath ->
         let projDir = Path.GetDirectoryName(fsprojPath: string)
@@ -262,21 +253,18 @@ let productionRestoreRunner (repoRoot: string) : RestoreRunner =
             [ yield ("restore", $"restore \"%s{fsprojPath}\"")
               if hasName "paket.dependencies" then
                   yield ("paket-restore", "paket restore")
-              if
-                  depFiles
-                  |> List.exists (fun f -> f.EndsWith("dotnet-tools.json", StringComparison.OrdinalIgnoreCase))
-              then
+              if hasName "dotnet-tools.json" then
                   yield ("tool-restore", "tool restore") ]
 
+        // Run each step in order; the first non-success short-circuits and is
+        // returned. A fully-successful chain returns `Succeeded ""` (the final
+        // step's stdout is not used by the caller — it only matches `Succeeded _`).
         let rec run remaining =
             match remaining with
             | [] -> Succeeded ""
             | (_label, args) :: rest ->
-                match runProcess "dotnet" args projDir [] with
-                | Succeeded _ as ok ->
-                    match rest with
-                    | [] -> ok
-                    | _ -> run rest
+                match runProcessWithTimeout "dotnet" args projDir [] restoreStepTimeout with
+                | Succeeded _ -> run rest
                 | other -> other
 
         run steps
