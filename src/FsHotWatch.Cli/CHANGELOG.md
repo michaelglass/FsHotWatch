@@ -4,6 +4,8 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+## 0.8.0-alpha.17 - 2026-06-03
+
 - chore: bump CommandTree 0.6.1 → 0.6.2 — picks up the revision-stamping target fix, so building `fshw` outside a VCS repo (e.g. a `.git`-less jj sub-workspace) no longer emits `MSB3073` warnings.
 
 ## 0.8.0-alpha.16 - 2026-06-02
