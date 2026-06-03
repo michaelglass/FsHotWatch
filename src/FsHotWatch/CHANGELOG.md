@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- feat: auto-recovering deps-freshness gate before FCS analysis. When a project's `obj/project.assets.json` is stale relative to its declared deps (a `PackageReference` added without `dotnet restore`, or a half-completed restore), the daemon detects it *before* type-checking, attempts a one-shot `dotnet`/`paket`/`tool restore` to recover automatically, and only if recovery fails reports a single actionable `deps` diagnostic — instead of letting FCS emit a phantom "namespace/type not found" error-storm. Detection and orchestration are pure and unit-tested (`FsHotWatch.DepsFreshness`: `compareFreshness`, `dependencyFiles`, `evaluateProject`, `RecoveryTracker`); each restore step is bounded by a 5-minute timeout so a hung restore fails fast rather than wedging the scan.
+
 ## 0.8.0-alpha.16 - 2026-06-02
 
 - feat: TestsDeferred result case — a test project that never ran (apphost not yet produced) is reported as deferred ("waiting on build"), non-passing, instead of a false-green pass; the aggregate verdict/exit code can no longer be green when tests didn't actually run.
