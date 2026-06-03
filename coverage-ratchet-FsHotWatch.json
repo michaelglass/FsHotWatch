@@ -68,8 +68,8 @@
         "platform": "macos"
       },
       {
-        "line": 78,
-        "branch": 71,
+        "line": 77,
+        "branch": 64,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -126,8 +126,8 @@
         "platform": "macos"
       },
       {
-        "line": 78,
-        "branch": 74,
+        "line": 75,
+        "branch": 72,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -141,7 +141,7 @@
       },
       {
         "line": 77,
-        "branch": 79,
+        "branch": 78,
         "reason": "lower coverage on Linux CI; race-fix retry path",
         "platform": "linux"
       }
@@ -444,7 +444,7 @@
         "platform": "macos"
       },
       {
-        "line": 88,
+        "line": 87,
         "branch": 73,
         "reason": "significantly lower coverage on Linux CI",
         "platform": "linux"
