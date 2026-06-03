@@ -392,35 +392,43 @@ let ``analyzers handler times out when work exceeds TimeoutSec`` () =
         | other -> Assert.Fail $"Expected TimedOut, got {other}"
     | None -> Assert.Fail "Expected LastRun record"
 
-[<Fact(Timeout = 1000)>]
+// These pure synchronous micro-tests (prefix matching, reflection ctor probes)
+// complete in microseconds; the Fact(Timeout) is only a backstop against a
+// hypothetical hang. The former 1000ms cap was tight enough that on a slow /
+// loaded CI runner JIT + parallel-class contention could push a single test
+// past 1s and CANCEL it (observed: `default knownNonAnalyzerPrefixes does not
+// match real analyzer packages` canceled at 1s 973ms). Raised to the suite's
+// standard 15000ms — still bounds a true infinite loop, no longer flakes under
+// load.
+[<Fact(Timeout = 15000)>]
 let ``isKnownNonAnalyzerPrefix returns true when name has matching prefix`` () =
     test <@ isKnownNonAnalyzerPrefix [| "System."; "Microsoft." |] "System.Text.Json" @>
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 15000)>]
 let ``isKnownNonAnalyzerPrefix returns false when no prefix matches`` () =
     test <@ not (isKnownNonAnalyzerPrefix [| "System."; "Microsoft." |] "ExampleAnalyzer") @>
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 15000)>]
 let ``isKnownNonAnalyzerPrefix is case-sensitive`` () =
     // StringComparison.Ordinal — "system." does not match "System."
     test <@ not (isKnownNonAnalyzerPrefix [| "System." |] "system.text.json") @>
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 15000)>]
 let ``isKnownNonAnalyzerPrefix with empty prefix array returns false`` () =
     test <@ not (isKnownNonAnalyzerPrefix [||] "System.Something") @>
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 15000)>]
 let ``default knownNonAnalyzerPrefixes excludes common BCL assemblies`` () =
     test <@ isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes "System.Collections" @>
     test <@ isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes "Microsoft.Extensions.Logging" @>
     test <@ isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes "FSharp.Core" @>
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 15000)>]
 let ``default knownNonAnalyzerPrefixes does not match real analyzer packages`` () =
     test <@ not (isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes "ExampleAnalyzer") @>
     test <@ not (isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes "FSharpLint.Core") @>
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 15000)>]
 let ``buildAnalyzerProjectOptions returns null when apoCtor is None`` () =
     // Matches the code path hit when the loaded SDK's AnalyzerProjectOptions
     // parameter type exposes no public constructors.
@@ -434,7 +442,7 @@ type private FakeProjectOptions() =
 
 type private FailingCtorTarget(_v: int) = class end
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 15000)>]
 let ``buildAnalyzerProjectOptions returns null when ctor invocation throws`` () =
     // A constructor whose signature doesn't match the 7-arg shape we invoke
     // with will throw at Invoke time; the helper must swallow the exception
