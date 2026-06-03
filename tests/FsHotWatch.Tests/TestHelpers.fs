@@ -175,6 +175,15 @@ let waitForSettled (host: FsHotWatch.PluginHost.PluginHost) (pluginName: string)
             | _ -> true)
         timeoutMs
 
+/// Poll until every registered plugin has drained its mailbox (no plugin
+/// busy), with a timeout. This is the correct synchronization after emitting
+/// events like `BatchChecked`/`FileChecked` that persist as a side-effect
+/// WITHOUT a status transition: `beginAwaitNextTerminal` hangs the full
+/// timeout on those (it waits for a Completed/Failed transition that never
+/// fires), whereas quiescence returns the instant the handler finishes.
+let waitForQuiescent (host: FsHotWatch.PluginHost.PluginHost) (timeoutMs: int) =
+    waitUntil (fun () -> not (host.AnyPluginBusy())) timeoutMs
+
 /// Create a plugin that records BuildCompleted events.
 /// Returns (getBuildResult, handler) where getBuildResult() returns the captured result.
 let buildRecorder () =

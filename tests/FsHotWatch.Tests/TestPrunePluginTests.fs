@@ -26,6 +26,22 @@ let private waitForPluginIdle (host: PluginHost) (pluginName: string) (timeoutSe
 let private waitForPluginTerminal (host: PluginHost) (pluginName: string) (timeoutSecs: float) =
     waitForTerminalStatus host pluginName (int (timeoutSecs * 1000.0))
 
+/// Emit a FileChecked event and wait for the plugin mailbox to drain.
+/// FileChecked persists symbol analysis as an in-handler side-effect with no
+/// status transition, so quiescence — not `beginAwaitNextTerminal`, which
+/// would hang the full timeout waiting for a Completed/Failed that never
+/// fires — is the correct (and fast) synchronization.
+let private emitFileAndQuiesce (host: PluginHost) (result: FileCheckResult) =
+    host.EmitFileChecked result
+    waitForQuiescent host 10000
+
+/// Emit a BatchChecked cohort-complete signal over `files` and wait for the
+/// plugin mailbox to drain. Like FileChecked, the flush is an in-handler
+/// side-effect with no status transition.
+let private emitBatchAndQuiesce (host: PluginHost) (files: string list) =
+    host.EmitBatchChecked(fakeBatchChecked files)
+    waitForQuiescent host 10000
+
 /// Stand up a test-prune plugin around a single one-project test config whose
 /// command is `sh -c "touch <sentinel>"`. Returns `(host, sentinel)`.
 let private withSingleProjectHarness (tmpDir: string) (projectName: string) =
@@ -1280,9 +1296,7 @@ let computeTest () =
 
         // Drive a BatchChecked so the symbol DB is flushed from
         // PendingAnalysis.
-        let firstBatch = beginAwaitNextTerminal host "test-prune"
-        host.EmitBatchChecked(fakeBatchChecked [ libFile; testsFile ])
-        firstBatch.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        emitBatchAndQuiesce host [ libFile; testsFile ]
 
         // Modify compute's body — content hash changes but signature does not.
         let libSource2 =
@@ -1436,9 +1450,7 @@ let testOtherStuff () =
         // BatchChecked drives the flush of accumulated PendingAnalysis to
         // the symbol DB so the subsequent edited-file FileChecked has stored
         // rows to diff against.
-        let firstBatch = beginAwaitNextTerminal host "test-prune"
-        host.EmitBatchChecked(fakeBatchChecked [ libFile; testsFile ])
-        firstBatch.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        emitBatchAndQuiesce host [ libFile; testsFile ]
 
         // Now change the type: add a new field
         let libSource2 =
@@ -1699,9 +1711,7 @@ let lazyComputeTest () =
 
         // BatchChecked drives the flush of accumulated PendingAnalysis to
         // the symbol DB.
-        let firstBatch = beginAwaitNextTerminal host "test-prune"
-        host.EmitBatchChecked(fakeBatchChecked [ libFile; testsFile ])
-        firstBatch.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        emitBatchAndQuiesce host [ libFile; testsFile ]
 
         // Now mutate the symbol and emit a single FileChecked. We do NOT
         // emit BuildCompleted afterward — affected-tests must be answered
@@ -2855,19 +2865,10 @@ let cleanTest () = ()
         host.EmitBuildCompleted(BuildSucceeded)
         buildAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
-        // Use `beginAwaitNextTerminal` (not `waitForPluginTerminal`) for the
-        // FileChecked wait — the plugin already returned to terminal state
-        // after the build's test run, so `waitForPluginTerminal` would early-
-        // return against the prior terminal before this event is processed.
-        let fileAwait = beginAwaitNextTerminal host "test-prune"
-        host.EmitFileChecked(result)
-        fileAwait.Wait(TimeSpan.FromSeconds 10.0) |> ignore
-
+        emitFileAndQuiesce host result
         // BatchChecked drives the cohort-complete flush that persists
         // accumulated FileChecked analysis to the DB.
-        let batchAwait = beginAwaitNextTerminal host "test-prune"
-        host.EmitBatchChecked(fakeBatchChecked [ cleanFile ])
-        batchAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        emitBatchAndQuiesce host [ cleanFile ]
 
         // Symbols MUST be in DB.
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
@@ -2938,9 +2939,7 @@ let cleanTest () = ()
         waitForPluginTerminal host "test-prune" 10.0
 
         // Cohort-complete signal — no BuildCompleted ever fires.
-        let batchAwait = beginAwaitNextTerminal host "test-prune"
-        host.EmitBatchChecked(fakeBatchChecked [ cleanFile ])
-        batchAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        emitBatchAndQuiesce host [ cleanFile ]
 
         // Symbols MUST be in DB after BatchChecked, even without a
         // subsequent BuildCompleted.
@@ -3023,13 +3022,8 @@ let coldBootTest () = ()
         host1.EmitBuildCompleted(BuildSucceeded)
         phase1Build.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
-        let phase1FcsAwait = beginAwaitNextTerminal host1 "test-prune"
-        host1.EmitFileChecked(cleanResult)
-        phase1FcsAwait.Wait(TimeSpan.FromSeconds 10.0) |> ignore
-
-        let phase1Batch = beginAwaitNextTerminal host1 "test-prune"
-        host1.EmitBatchChecked(fakeBatchChecked [ file ])
-        phase1Batch.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        emitFileAndQuiesce host1 cleanResult
+        emitBatchAndQuiesce host1 [ file ]
 
         // Verify Phase 1 populated DB.
         let mutable phase1Tests: TestMethodInfo list = []
@@ -3094,9 +3088,7 @@ let badTypeUse : int = "wrong-type"
         host2.EmitBuildCompleted(BuildSucceeded)
         phase2Build.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
-        let phase2FcsAwait = beginAwaitNextTerminal host2 "test-prune"
-        host2.EmitFileChecked(brokenResult)
-        phase2FcsAwait.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+        emitFileAndQuiesce host2 brokenResult
 
         // Item 3 contract: prior clean record from Phase 1 survives a dirty
         // Phase 2 FileChecked.
@@ -3202,9 +3194,7 @@ let phaseBTest () = ()
         host.EmitBuildCompleted(BuildSucceeded)
         buildAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
-        let fcsAwait = beginAwaitNextTerminal host "test-prune"
-        host.EmitFileChecked(result)
-        fcsAwait.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+        emitFileAndQuiesce host result
 
         // Load-bearing: ChangedFiles must NOT include relPath. Stored=empty,
         // current=N would produce N changes without the gate; with the gate
@@ -3351,14 +3341,8 @@ let ``Item 3: post-BuildCompleted clean FileChecked → sidecar stamped clean`` 
         host.EmitBuildCompleted(BuildSucceeded)
         buildAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
 
-        // Then FileChecked. `beginAwaitNextTerminal` (NOT `waitForPluginTerminal`)
-        // because the plugin is already in a terminal state after the build's
-        // test run completed; `waitForPluginTerminal` would return immediately
-        // against the prior terminal status, before this FileChecked is
-        // actually processed.
-        let fileAwait = beginAwaitNextTerminal host "test-prune"
-        host.EmitFileChecked(result)
-        fileAwait.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+        // Then FileChecked.
+        emitFileAndQuiesce host result
 
         // Item 3 promotion: sidecar now records the file clean.
         let freshness = FsHotWatch.TestPrune.FileFreshness.load tmpDir
@@ -3411,9 +3395,7 @@ let bad : int = "not-an-int"
         test
             <@ FsHotWatch.TestPrune.TestPrunePlugin.hasFcsErrors Set.empty dirtyResult.Source dirtyResult.CheckResults @>
 
-        let dirtyAwait = beginAwaitNextTerminal host "test-prune"
-        host.EmitFileChecked(dirtyResult)
-        dirtyAwait.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+        emitFileAndQuiesce host dirtyResult
 
         // Phase 2: same file, clean source. Re-check via a fresh pipeline so
         // FCS reanalyzes against the new source.
@@ -3441,9 +3423,7 @@ let bad : int = "not-an-int"
                 )
             @>
 
-        let cleanAwait = beginAwaitNextTerminal host "test-prune"
-        host.EmitFileChecked(cleanResult)
-        cleanAwait.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+        emitFileAndQuiesce host cleanResult
 
         // No BuildCompleted has fired in this session. Even though the latest
         // FCS check is clean, Item 3 refuses to promote — sidecar stays dirty.
