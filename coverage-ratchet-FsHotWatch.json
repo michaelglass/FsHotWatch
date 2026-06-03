@@ -141,7 +141,7 @@
       },
       {
         "line": 77,
-        "branch": 79,
+        "branch": 78,
         "reason": "lower coverage on Linux CI; race-fix retry path",
         "platform": "linux"
       }
@@ -458,7 +458,7 @@
         "platform": "macos"
       },
       {
-        "line": 93,
+        "line": 95,
         "branch": 100,
         "reason": "conservative floor (cannot observe Linux locally): kept at the historical Linux value \u2014 ProcessHelper has a real macOS-only path (DOTNET_HOST_PATH symlink resolution) so Linux runs ~6pp below macOS (cf. BuildPlugin 94/88). Racy timeout-kill drain test lives in FsHotWatch.IntegrationTests. Tighten from a green Linux CI run if desired",
         "platform": "linux"
