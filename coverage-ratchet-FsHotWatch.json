@@ -4,13 +4,13 @@
       {
         "line": 75,
         "branch": 70,
-        "reason": "FCS analyzer paths in IntegrationTests (excluded); \u00a72a + lifecycle + \u00a71 fcs-signature add untested branches; line drifts 74-76% across runs",
+        "reason": "FCS analyzer paths in IntegrationTests (excluded); \u00A72a \u002B lifecycle \u002B \u00A71 fcs-signature add untested branches; line drifts 74-76% across runs",
         "platform": "macos"
       },
       {
-        "line": 72,
+        "line": 80,
         "branch": 70,
-        "reason": "reflection-based CliContext branches vary by platform; parse-only path + knownNonAnalyzerPrefixes filter both add untested branches on Linux",
+        "reason": "reflection-based CliContext branches vary by platform; parse-only path \u002B knownNonAnalyzerPrefixes filter both add untested branches on Linux",
         "platform": "linux"
       }
     ],
@@ -35,8 +35,8 @@
         "platform": "macos"
       },
       {
-        "line": 88,
-        "branch": 78,
+        "line": 94,
+        "branch": 86,
         "reason": "BuildInputsHasher unit-tested",
         "platform": "linux"
       }
@@ -50,13 +50,13 @@
       {
         "line": 80,
         "branch": 50,
-        "reason": "\u00a71 fcsCheckSignature adds branches (FullCheck null guard, try/with around Diagnostics access) not exercised without a real FSharpCheckFileResults; integration tests would cover but live in IntegrationTests (excluded)",
+        "reason": "\u00A71 fcsCheckSignature adds branches (FullCheck null guard, try/with around Diagnostics access) not exercised without a real FSharpCheckFileResults; integration tests would cover but live in IntegrationTests (excluded)",
         "platform": "macos"
       },
       {
-        "line": 72,
-        "branch": 40,
-        "reason": "\u00a71 fcsCheckSignature: see macos reason",
+        "line": 80,
+        "branch": 50,
+        "reason": "\u00A71 fcsCheckSignature: see macos reason",
         "platform": "linux"
       }
     ],
@@ -68,8 +68,8 @@
         "platform": "macos"
       },
       {
-        "line": 78,
-        "branch": 69,
+        "line": 77,
+        "branch": 64,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -101,15 +101,23 @@
       },
       {
         "line": 97,
-        "branch": 65,
+        "branch": 66,
         "platform": "linux"
       }
     ],
-    "CoveragePlugin.fs": {
-      "line": 79,
-      "branch": 40,
-      "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)"
-    },
+    "CoveragePlugin.fs": [
+      {
+        "line": 79,
+        "branch": 40,
+        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
+        "platform": "macos"
+      },
+      {
+        "line": 83,
+        "branch": 57,
+        "platform": "linux"
+      }
+    ],
     "Daemon.fs": [
       {
         "line": 75,
@@ -118,8 +126,8 @@
         "platform": "macos"
       },
       {
-        "line": 74,
-        "branch": 62,
+        "line": 75,
+        "branch": 72,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -128,12 +136,12 @@
       {
         "line": 77,
         "branch": 79,
-        "reason": "loosened 2026-04-24 + 2026-04-26 race-fix retry-resolution path adds untested live-system warning branch",
+        "reason": "loosened 2026-04-24 \u002B 2026-04-26 race-fix retry-resolution path adds untested live-system warning branch",
         "platform": "macos"
       },
       {
-        "line": 70,
-        "branch": 65,
+        "line": 77,
+        "branch": 79,
         "reason": "lower coverage on Linux CI; race-fix retry path",
         "platform": "linux"
       }
@@ -142,11 +150,11 @@
       {
         "line": 68,
         "branch": 59,
-        "reason": "honest floor (2026-06-03): unit tests cover the pure freshness/orchestration paths (compareFreshness, evaluateProject, dependencyFiles, detectProjectFreshness) but deliberately NOT productionRestoreRunner, which shells `dotnet restore`/`paket restore`/`tool restore` — exercising it would be a slow nondeterministic integration test. Stable at line=68.2% branch=59.1% (13/22) across baseline runs. The file had no ratchet entry when added, so coverageratchet failed it against the strict default whenever the cobertura report included it (the per-run report file-set is itself flaky under daemon load); pinning an honest floor makes it pass deterministically wherever it appears, without ExcludeFromCodeCoverage.",
+        "reason": "honest floor (2026-06-03): unit tests cover the pure freshness/orchestration paths (compareFreshness, evaluateProject, dependencyFiles, detectProjectFreshness) but deliberately NOT productionRestoreRunner, which shells \u0060dotnet restore\u0060/\u0060paket restore\u0060/\u0060tool restore\u0060 \u2014 exercising it would be a slow nondeterministic integration test. Stable at line=68.2% branch=59.1% (13/22) across baseline runs. The file had no ratchet entry when added, so coverageratchet failed it against the strict default whenever the cobertura report included it (the per-run report file-set is itself flaky under daemon load); pinning an honest floor makes it pass deterministically wherever it appears, without ExcludeFromCodeCoverage.",
         "platform": "macos"
       },
       {
-        "line": 68,
+        "line": 73,
         "branch": 59,
         "reason": "see macos reason; productionRestoreRunner shell-out paths are not unit-tested by design",
         "platform": "linux"
@@ -160,7 +168,7 @@
         "platform": "macos"
       },
       {
-        "line": 95,
+        "line": 98,
         "branch": 95,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "linux"
@@ -168,7 +176,7 @@
     ],
     "Events.fs": [
       {
-        "line": 94,
+        "line": 96,
         "branch": 100,
         "reason": "loosened: inline helpers (isTerminal/isQuiescent) not tracked in source file",
         "platform": "linux"
@@ -214,15 +222,23 @@
       },
       {
         "line": 100,
-        "branch": 75,
+        "branch": 85,
         "platform": "linux"
       }
     ],
-    "FileFreshness.fs": {
-      "line": 90,
-      "branch": 88,
-      "reason": "loosened automatically"
-    },
+    "FileFreshness.fs": [
+      {
+        "line": 90,
+        "branch": 88,
+        "reason": "loosened automatically",
+        "platform": "macos"
+      },
+      {
+        "line": 90,
+        "branch": 88,
+        "platform": "linux"
+      }
+    ],
     "FileTaskCache.fs": [
       {
         "line": 93,
@@ -231,8 +247,8 @@
         "platform": "macos"
       },
       {
-        "line": 78,
-        "branch": 67,
+        "line": 94,
+        "branch": 82,
         "reason": "lower branch coverage on Linux CI",
         "platform": "linux"
       }
@@ -258,7 +274,7 @@
         "platform": "macos"
       },
       {
-        "line": 89,
+        "line": 98,
         "branch": 100,
         "reason": "lower line coverage on Linux CI",
         "platform": "linux"
@@ -298,8 +314,8 @@
         "platform": "macos"
       },
       {
-        "line": 83,
-        "branch": 68,
+        "line": 84,
+        "branch": 73,
         "reason": "lower line coverage on Linux CI",
         "platform": "linux"
       }
@@ -326,8 +342,8 @@
         "platform": "macos"
       },
       {
-        "line": 86,
-        "branch": 64,
+        "line": 87,
+        "branch": 65,
         "platform": "linux"
       }
     ],
@@ -349,13 +365,13 @@
       {
         "line": 90,
         "branch": 72,
-        "reason": "loosened 2026-04-26 \u00a72a: cache-key construction adds match-with-when branches; lint timeout/failure/error paths covered via integration tests, not unit tests",
+        "reason": "loosened 2026-04-26 \u00A72a: cache-key construction adds match-with-when branches; lint timeout/failure/error paths covered via integration tests, not unit tests",
         "platform": "macos"
       },
       {
         "line": 90,
         "branch": 72,
-        "reason": "lower line coverage on Linux CI; branch threshold matches macOS post \u00a72a",
+        "reason": "lower line coverage on Linux CI; branch threshold matches macOS post \u00A72a",
         "platform": "linux"
       }
     ],
@@ -382,12 +398,12 @@
       {
         "line": 96,
         "branch": 69,
-        "reason": "exception-handling branches + IgnoreFilterCache reload paths that fire inconsistently across runs",
+        "reason": "exception-handling branches \u002B IgnoreFilterCache reload paths that fire inconsistently across runs",
         "platform": "macos"
       },
       {
         "line": 96,
-        "branch": 68,
+        "branch": 69,
         "reason": "exception-handling branches for missing .gitignore/.fantomasignore files",
         "platform": "linux"
       }
@@ -396,11 +412,11 @@
       {
         "line": 86,
         "branch": 71,
-        "reason": "stable floor: enforceGlobalCap concurrent recheck races + the concurrent lock branches (~lines 112-138) are intentionally NOT unit-covered \u2014 behavior-tested in FsHotWatch.IntegrationTests (concurrent-stress + cross-plugin cap tests); deterministic because the racy timing/concurrency tests live there, not here. Observed stable 86.8% line / 71.4% branch across 3 runs; pinned 1pp below observed line floor",
+        "reason": "stable floor: enforceGlobalCap concurrent recheck races \u002B the concurrent lock branches (~lines 112-138) are intentionally NOT unit-covered \u2014 behavior-tested in FsHotWatch.IntegrationTests (concurrent-stress \u002B cross-plugin cap tests); deterministic because the racy timing/concurrency tests live there, not here. Observed stable 86.8% line / 71.4% branch across 3 runs; pinned 1pp below observed line floor",
         "platform": "macos"
       },
       {
-        "line": 86,
+        "line": 87,
         "branch": 71,
         "reason": "deterministic remainder is platform-independent \u2014 converged to the macOS floor; racy concurrency/cap paths live in FsHotWatch.IntegrationTests (no coverage), so the unit metric is the same on Linux. Observed stable 86.8% line / 71.4% branch",
         "platform": "linux"
@@ -414,8 +430,8 @@
         "platform": "macos"
       },
       {
-        "line": 93,
-        "branch": 82,
+        "line": 96,
+        "branch": 87,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -428,8 +444,8 @@
         "platform": "macos"
       },
       {
-        "line": 84,
-        "branch": 64,
+        "line": 87,
+        "branch": 73,
         "reason": "significantly lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -442,7 +458,7 @@
         "platform": "macos"
       },
       {
-        "line": 87,
+        "line": 93,
         "branch": 100,
         "reason": "conservative floor (cannot observe Linux locally): kept at the historical Linux value \u2014 ProcessHelper has a real macOS-only path (DOTNET_HOST_PATH symlink resolution) so Linux runs ~6pp below macOS (cf. BuildPlugin 94/88). Racy timeout-kill drain test lives in FsHotWatch.IntegrationTests. Tighten from a green Linux CI run if desired",
         "platform": "linux"
@@ -456,8 +472,8 @@
         "platform": "macos"
       },
       {
-        "line": 69,
-        "branch": 63,
+        "line": 84,
+        "branch": 70,
         "platform": "linux"
       }
     ],
@@ -469,8 +485,8 @@
         "platform": "macos"
       },
       {
-        "line": 67,
-        "branch": 53,
+        "line": 72,
+        "branch": 60,
         "reason": "CLI entry point, different coverage on Linux CI",
         "platform": "linux"
       }
@@ -483,8 +499,8 @@
         "platform": "macos"
       },
       {
-        "line": 86,
-        "branch": 69,
+        "line": 89,
+        "branch": 75,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -498,7 +514,7 @@
       },
       {
         "line": 96,
-        "branch": 91,
+        "branch": 92,
         "reason": "loosened 2026-04-29: post artifact-freshness contract removed transitive-invalidation paths from Linux coverage",
         "platform": "linux"
       }
@@ -516,8 +532,8 @@
         "platform": "macos"
       },
       {
-        "line": 53,
-        "branch": 50,
+        "line": 59,
+        "branch": 53,
         "reason": "lower coverage on Linux CI",
         "platform": "linux"
       }
@@ -562,8 +578,8 @@
         "platform": "macos"
       },
       {
-        "line": 81,
-        "branch": 55,
+        "line": 83,
+        "branch": 60,
         "reason": "higher line coverage on Linux CI (no FSEvents)",
         "platform": "linux"
       }
