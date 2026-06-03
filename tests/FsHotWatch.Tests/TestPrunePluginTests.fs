@@ -1026,7 +1026,14 @@ let private emitFileAndWait
             10000
     }
 
-[<Fact(Timeout = 15000)>]
+// Generous xUnit cap: this test drives real FCS analysis (emitFileAndWait,
+// 10s condition-based cap) then waits for the plugin terminal (12s cap). On a
+// fast machine both resolve in <1s, but FCS cold-start on a slow/loaded CI
+// runner can take >15s — the previous 15000ms Fact cap fired mid-progress and
+// the run was CANCELED. The internal waits stay condition-based (they fail fast
+// on a genuine hang); only the hard xUnit cap is raised so a slow-but-
+// progressing run can finish.
+[<Fact(Timeout = 60000)>]
 let ``FileChecked reports Completed when testConfigs provided (analysis done, awaiting build)`` () =
     withTempDir "tp-no-complete-real" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
@@ -1066,7 +1073,10 @@ let ``FileChecked reports Completed when testConfigs provided (analysis done, aw
         | Completed _ -> ()
         | other -> Assert.Fail($"Expected Completed after FileChecked analysis, got: %A{other}"))
 
-[<Fact(Timeout = 15000)>]
+// Generous xUnit cap (real FCS via emitFileAndWait + 12s terminal wait =
+// 22s internal budget). Same slow-runner cancellation risk as the testConfigs
+// sibling above; internal waits remain condition-based.
+[<Fact(Timeout = 60000)>]
 let ``FileChecked reports Completed when no testConfigs (success path)`` () =
     withTempDir "tp-complete-real" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "test.db")
@@ -1177,7 +1187,13 @@ let beta () = ()
         test <@ testMethods |> List.exists (fun t -> t.TestMethod = "alpha") @>
         test <@ testMethods |> List.exists (fun t -> t.TestMethod = "beta") @>)
 
-[<Fact(Timeout = 20000)>]
+// Generous xUnit cap: real FCS (getScriptOptions + multiple CheckFile) plus
+// several condition-based waits (build/batch terminal 20s each, idle 10s,
+// affected-tests poll 5s) whose summed budget already exceeds 20s. On a slow
+// runner the 20000ms Fact cap fired before the legitimately-slow FCS work
+// finished. Internal condition-based waits keep their own caps (fail fast on a
+// real hang); the xUnit cap is raised so a slow-but-progressing run completes.
+[<Fact(Timeout = 60000)>]
 let ``after a symbol change, affected-tests identifies the dependent test`` () =
     withTempDir "tp-sym" (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
@@ -1302,7 +1318,11 @@ let compute (x: int) = x + 2
 // as ``after a symbol change`` — affected-tests returns "[]" after a type
 // change that should flag dependent tests. Same root cause: dependency edges
 // not produced by the current symbol-diff path.
-[<Fact(Timeout = 20000)>]
+// Generous xUnit cap: real FCS over two files plus three 20s terminal waits
+// and two 10s/5s polls — internal budget far exceeds 20s, so the old 20000ms
+// Fact cap canceled slow-but-progressing CI runs. Internal waits stay
+// condition-based.
+[<Fact(Timeout = 60000)>]
 let ``cross-file type change only runs affected test classes`` () =
     // End-to-end test: change Lib.fsx type -> affected-tests identifies dependent tests -> only those classes run
     withTempDir "tp-e2e" (fun tmpDir ->
@@ -1468,7 +1488,11 @@ let validate (cfg: Config) = cfg.Value.Length > 0
         test <@ capturedArgs.Contains("--filter-class") @>
         test <@ capturedArgs.Contains("Tests") @>)
 
-[<Fact(Timeout = 20000)>]
+// Generous xUnit cap: chains a 12s terminal wait, a 5s settle wait, and an 8s
+// waitForAllTerminal task (25s internal budget). The previous 20000ms Fact cap
+// could fire before the (condition-based) stability window resolved on a slow
+// runner. Internal waits stay condition-based and fail fast on a real hang.
+[<Fact(Timeout = 60000)>]
 let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and tests finish`` () =
     withTempDir "tp-hang" (fun tmpDir ->
         let configs =
@@ -1592,7 +1616,11 @@ let ``FileChecked with no detected symbol changes leaves ChangedSymbols empty`` 
         test <@ result.Value = "[]" @>
         test <@ not (result.Value.Contains("myTest")) @>)
 
-[<Fact(Timeout = 20000)>]
+// Generous xUnit cap: real FCS over two files plus 20s build + 10s idle + 20s
+// batch terminal waits and a 5s affected-tests poll. Internal budget exceeds
+// 20s, so the old 20000ms Fact cap canceled slow CI runs mid-progress. Internal
+// waits stay condition-based.
+[<Fact(Timeout = 60000)>]
 let ``affected-tests computes lazily on demand from ChangedSymbols`` () =
     // Locks in the post-migration contract: FileChecked accumulates
     // state.ChangedSymbols but does NOT eagerly QueryAffectedTests; the IPC
