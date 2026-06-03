@@ -4,6 +4,8 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+- chore: bump CommandTree 0.6.1 → 0.6.2 — picks up the revision-stamping target fix, so building `fshw` outside a VCS repo (e.g. a `.git`-less jj sub-workspace) no longer emits `MSB3073` warnings.
+
 ## 0.8.0-alpha.16 - 2026-06-02
 
 - feat: strict CLI parsing (CommandTree 0.6.1) — invalid input (unknown flags/commands) now fails hard with a clear error, the nearest subcommand's help, and a non-zero exit, uniformly and even outside a jj/git repo (previously masked by the repo-root check). Unknown top-level commands are still forwarded to the daemon for plugin resolution and only fail hard when genuinely unrecognized.
