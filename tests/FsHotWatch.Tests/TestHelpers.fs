@@ -464,3 +464,60 @@ let withSeededTestEnv (prefix: string) (relPath: string) (source: string) (body:
               SeededSymbols = seededSymbols }
 
         body env)
+
+// ----------------------------------------------------------------------------
+// Log-global capture + serialization.
+//
+// `FsHotWatch.Logging.logLevel`/`verbose` are module-level mutables and
+// `System.Console.Error` is process-wide. Several test modules need to set a
+// log level and capture stderr to assert on log output. Under xUnit parallel
+// execution these globals race across test classes: module A's `setLogLevel`
+// or `Console.SetError` lands between module B's set and assert, so B reads the
+// wrong level / captures the wrong writer and fails nondeterministically.
+//
+// Guard: every module that touches these globals carries
+// `[<Collection(LogGlobalCollectionName)>]`, a DisableParallelization
+// collection (see below). That serializes ONLY those modules with respect to
+// each other; the ~40 other test modules keep running in parallel. Each site
+// keeps its own save-level / SetError / restore-in-`finally` dance (now safe
+// because no other mutator runs concurrently).
+//
+// De-globalizing `Logging` (threading an injected level through every
+// `log`/`info`/`warn` call in the daemon, plugins, and ledger) would be far
+// more invasive and would churn the public API surface that `check-api`
+// guards, so the surgical serialized-collection approach is used instead —
+// mirroring the existing `MacFsEvents` DisableParallelization collection.
+// ----------------------------------------------------------------------------
+
+/// Name of the serialized collection that groups every test class touching the
+/// logging globals or `Console.Error`. A literal so it can be used in the
+/// `[<Collection(...)>]` / `[<CollectionDefinition(...)>]` attributes.
+[<Literal>]
+let LogGlobalCollectionName = "LogGlobal"
+
+/// xUnit collection that serializes every test class touching the logging
+/// globals (`Logging.logLevel`/`verbose`) or `Console.Error`. Parallelization
+/// is disabled so these classes never run concurrently with one another.
+[<Xunit.CollectionDefinition(LogGlobalCollectionName, DisableParallelization = true)>]
+type LogGlobalCollection() = class end
+
+// ----------------------------------------------------------------------------
+// Real-filesystem-watch serialization.
+//
+// Tests that exercise a live `FileSystemWatcher` (waiting on an OS file-change
+// event) are timing-dependent: under heavy parallel CPU load the OS can take
+// several seconds to deliver the event, blowing the test's `signal.Wait`
+// budget and flaking nondeterministically (e.g. the DaemonConfig
+// `watchConfigFile`/`watchRepoConfigFile` tests). This mirrors the existing
+// `MacFsEvents` DisableParallelization collection: serialize the real-watcher
+// tests so they don't compete with the rest of the suite (or each other) for
+// file-watch delivery while the machine is saturated.
+// ----------------------------------------------------------------------------
+
+/// Name of the serialized collection grouping tests that wait on a live
+/// `FileSystemWatcher` OS event.
+[<Literal>]
+let FileWatchCollectionName = "FileWatch"
+
+[<Xunit.CollectionDefinition(FileWatchCollectionName, DisableParallelization = true)>]
+type FileWatchCollection() = class end
