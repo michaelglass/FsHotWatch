@@ -280,6 +280,13 @@ let ``regression: FileChecked replays from cache on second emission with same co
     let cacheKeyFn = handler.CacheKey.Value
     let event = FileChecked(fakeResult "/tmp/test/Replay.fs")
     let computedKey = cacheKeyFn event
+    // The framework writes the cache entry in `runAndCache` AFTER the plugin
+    // reports terminal status (ReportStatus → GetStatus is what
+    // waitForTerminalStatus observes, then `cache.Set` runs). So terminal
+    // status happens-before the cache write only by a small window; poll the
+    // cache itself (the real postcondition) rather than reading once and racing
+    // that window.
+    waitUntil (fun () -> (cacheIface.TryGet key computedKey.Value).IsSome) 15000
     test <@ (cacheIface.TryGet key computedKey.Value).IsSome @>
 
     // Verify hit count by computing keys again (should be the same).
@@ -318,6 +325,10 @@ let ``regression: FileChecked with TaskCache writes a cache entry on terminal st
     let computedKey = cacheKeyFn event
 
     test <@ computedKey.IsSome @>
+    // Cache write lags terminal status (see the Replay test): the framework's
+    // `cache.Set` runs after the plugin's ReportStatus that waitForTerminalStatus
+    // observed. Poll the cache (the real postcondition) instead of reading once.
+    waitUntil (fun () -> (cacheIface.TryGet key computedKey.Value).IsSome) 15000
     let result = cacheIface.TryGet key computedKey.Value
     test <@ result.IsSome @>
 
