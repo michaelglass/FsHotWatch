@@ -1008,45 +1008,76 @@ let ``countPlugins returns 0 for stripped config`` () =
 
 // --- watchConfigFile ---
 
-[<Fact(Timeout = 20000)>]
-let ``watchConfigFile invokes callback when .fshw.json is written`` () =
-    withTempDir "cfg-watch-write" (fun tmpDir ->
-        let configPath = Path.Combine(tmpDir, ".fshw.json")
-        File.WriteAllText(configPath, "{}")
-
-        use signal = new System.Threading.ManualResetEventSlim(false)
-        let observed = ref ""
-
-        use _watcher =
-            watchConfigFile configPath (fun reason ->
-                observed.Value <- reason
-                signal.Set())
-
-        // Give the FSW a moment to become active.
-        System.Threading.Thread.Sleep(100)
-
-        File.WriteAllText(configPath, """{"lint": false}""")
-
-        Assert.True(signal.Wait(5000), "expected watcher callback within 5s")
-        test <@ observed.Value.Contains("config") @>)
-
 [<Fact(Timeout = 15000)>]
 let ``watchRepoConfigFile returns no-op disposable when no config file exists`` () =
+    // No live OS event is awaited here (it asserts the callback does NOT fire),
+    // so it stays a parallel module-level fact — only the tests that block on a
+    // real FileSystemWatcher delivery are serialized (see RealWatchTests below).
     withTempDir "cfg-watch-none" (fun tmpDir ->
         let mutable called = false
         use w = watchRepoConfigFile tmpDir (fun _ -> called <- true)
         System.Threading.Thread.Sleep(50)
         test <@ not called @>)
 
-[<Fact(Timeout = 20000)>]
-let ``watchRepoConfigFile watches existing config file`` () =
-    withTempDir "cfg-watch-existing" (fun tmpDir ->
-        File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), "{}")
-        use signal = new System.Threading.ManualResetEventSlim(false)
-        use _w = watchRepoConfigFile tmpDir (fun _ -> signal.Set())
-        System.Threading.Thread.Sleep(100)
-        File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), """{"lint": false}""")
-        Assert.True(signal.Wait(5000), "expected callback within 5s"))
+// The next three tests block on a live `FileSystemWatcher` OS event. Under
+// heavy parallel load the OS can take >5s to deliver, so they're grouped into
+// the FileWatch DisableParallelization collection (mirrors MacFsEventsTests)
+// to keep delivery deterministic instead of racing the saturated suite.
+[<Collection(FileWatchCollectionName)>]
+type RealWatchTests() =
+
+    [<Fact(Timeout = 20000)>]
+    member _.``watchConfigFile invokes callback when .fshw.json is written``() =
+        withTempDir "cfg-watch-write" (fun tmpDir ->
+            let configPath = Path.Combine(tmpDir, ".fshw.json")
+            File.WriteAllText(configPath, "{}")
+
+            use signal = new System.Threading.ManualResetEventSlim(false)
+            let observed = ref ""
+
+            use _watcher =
+                watchConfigFile configPath (fun reason ->
+                    observed.Value <- reason
+                    signal.Set())
+
+            // Give the FSW a moment to become active.
+            System.Threading.Thread.Sleep(100)
+
+            File.WriteAllText(configPath, """{"lint": false}""")
+
+            Assert.True(signal.Wait(5000), "expected watcher callback within 5s")
+            test <@ observed.Value.Contains("config") @>)
+
+    [<Fact(Timeout = 20000)>]
+    member _.``watchRepoConfigFile watches existing config file``() =
+        withTempDir "cfg-watch-existing" (fun tmpDir ->
+            File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), "{}")
+            use signal = new System.Threading.ManualResetEventSlim(false)
+            use _w = watchRepoConfigFile tmpDir (fun _ -> signal.Set())
+            System.Threading.Thread.Sleep(100)
+            File.WriteAllText(Path.Combine(tmpDir, ".fshw.json"), """{"lint": false}""")
+            Assert.True(signal.Wait(5000), "expected callback within 5s"))
+
+    [<Fact(Timeout = 20000)>]
+    member _.``watchConfigFile reports invalid reason when new contents fail to parse``() =
+        withTempDir "cfg-watch-invalid" (fun tmpDir ->
+            let configPath = Path.Combine(tmpDir, ".fshw.json")
+            File.WriteAllText(configPath, "{}")
+
+            use signal = new System.Threading.ManualResetEventSlim(false)
+            let observed = ref ""
+
+            use _watcher =
+                watchConfigFile configPath (fun reason ->
+                    observed.Value <- reason
+                    signal.Set())
+
+            System.Threading.Thread.Sleep(100)
+
+            File.WriteAllText(configPath, "{not valid json")
+
+            Assert.True(signal.Wait(5000), "expected watcher callback within 5s")
+            Assert.Contains("invalid", observed.Value))
 
 [<Fact(Timeout = 15000)>]
 let ``invokeOnChangeWith routes onChange exception to logError sink (F3)`` () =
@@ -1078,27 +1109,6 @@ let ``invokeOnChangeWith does not invoke logError on success (F3)`` () =
 
     test <@ called = "edit-ok" @>
     test <@ captured.Count = 0 @>
-
-[<Fact(Timeout = 20000)>]
-let ``watchConfigFile reports invalid reason when new contents fail to parse`` () =
-    withTempDir "cfg-watch-invalid" (fun tmpDir ->
-        let configPath = Path.Combine(tmpDir, ".fshw.json")
-        File.WriteAllText(configPath, "{}")
-
-        use signal = new System.Threading.ManualResetEventSlim(false)
-        let observed = ref ""
-
-        use _watcher =
-            watchConfigFile configPath (fun reason ->
-                observed.Value <- reason
-                signal.Set())
-
-        System.Threading.Thread.Sleep(100)
-
-        File.WriteAllText(configPath, "{not valid json")
-
-        Assert.True(signal.Wait(5000), "expected watcher callback within 5s")
-        Assert.Contains("invalid", observed.Value))
 
 // --- parseConfig: timeoutSec ---
 
