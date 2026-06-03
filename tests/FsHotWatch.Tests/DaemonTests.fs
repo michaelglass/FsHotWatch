@@ -693,32 +693,39 @@ let ``DiscoverAndRegisterProjects warns when no projects are discovered`` () =
 // isTruthyEnv tests
 // ============================================================================
 
-[<Fact(Timeout = 1000)>]
+// The isTruthyEnv / countReferences / dumpProjectOptions tests below are pure
+// synchronous micro-tests (env reads, string counting, small file writes) that
+// finish in microseconds. Their Fact(Timeout) is only a backstop against a
+// hypothetical hang. The former 1000ms cap was tight enough to be CANCELED on a
+// slow / loaded CI runner (JIT + parallel-class contention), so it's raised to
+// the suite's standard 15000ms — still bounds a true infinite loop without
+// flaking under load.
+[<Fact(Timeout = 15000)>]
 let ``isTruthyEnv returns false when unset`` () =
     let var = "FSHW_TEST_TRUTHY_" + string (Guid.NewGuid())
     test <@ isTruthyEnv var = false @>
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 15000)>]
 let ``isTruthyEnv returns false for empty string`` () =
     let var = "FSHW_TEST_TRUTHY_" + string (Guid.NewGuid())
     withEnv var (Some "") (fun () -> test <@ isTruthyEnv var = false @>)
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 15000)>]
 let ``isTruthyEnv returns false for 0`` () =
     let var = "FSHW_TEST_TRUTHY_" + string (Guid.NewGuid())
     withEnv var (Some "0") (fun () -> test <@ isTruthyEnv var = false @>)
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 15000)>]
 let ``isTruthyEnv returns false for false case-insensitive`` () =
     let var = "FSHW_TEST_TRUTHY_" + string (Guid.NewGuid())
     withEnv var (Some "FaLsE") (fun () -> test <@ isTruthyEnv var = false @>)
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 15000)>]
 let ``isTruthyEnv returns true for 1`` () =
     let var = "FSHW_TEST_TRUTHY_" + string (Guid.NewGuid())
     withEnv var (Some "1") (fun () -> test <@ isTruthyEnv var = true @>)
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 15000)>]
 let ``isTruthyEnv trims whitespace`` () =
     let var = "FSHW_TEST_TRUTHY_" + string (Guid.NewGuid())
     withEnv var (Some "  true  ") (fun () -> test <@ isTruthyEnv var = true @>)
@@ -727,12 +734,12 @@ let ``isTruthyEnv trims whitespace`` () =
 // countReferences tests
 // ============================================================================
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 15000)>]
 let ``countReferences counts -r: prefixes`` () =
     let opts = [| "-r:/a.dll"; "--nowarn:42"; "-r:/b.dll"; "-r:/c.dll" |]
     test <@ countReferences opts = 3 @>
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 15000)>]
 let ``countReferences returns 0 when no references`` () =
     test <@ countReferences [| "--nowarn:42" |] = 0 @>
     test <@ countReferences [||] = 0 @>
@@ -741,7 +748,7 @@ let ``countReferences returns 0 when no references`` () =
 // dumpProjectOptions tests
 // ============================================================================
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 15000)>]
 let ``dumpProjectOptions writes options file`` () =
     withTempDir "dump-opts" (fun tmp ->
         let opts =
@@ -757,14 +764,14 @@ let ``dumpProjectOptions writes options file`` () =
         test <@ written.Contains "-r:/nuget/A.dll" @>
         test <@ written.Contains "--nowarn:42" @>)
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 15000)>]
 let ``dumpProjectOptions handles empty options`` () =
     withTempDir "dump-opts" (fun tmp ->
         let opts = makeProjectOptions "/tmp/Empty.fsproj" [] []
         dumpProjectOptions tmp opts
         test <@ File.Exists(Path.Combine(tmp, "Empty.opts.txt")) @>)
 
-[<Fact(Timeout = 1000)>]
+[<Fact(Timeout = 15000)>]
 let ``dumpProjectOptions swallows IO errors`` () =
     // logDir does not exist and is not a directory — WriteAllLines will fail.
     let bogusDir =
