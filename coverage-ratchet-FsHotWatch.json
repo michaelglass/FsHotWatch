@@ -138,6 +138,20 @@
         "platform": "linux"
       }
     ],
+    "DepsFreshness.fs": [
+      {
+        "line": 68,
+        "branch": 59,
+        "reason": "honest floor (2026-06-03): unit tests cover the pure freshness/orchestration paths (compareFreshness, evaluateProject, dependencyFiles, detectProjectFreshness) but deliberately NOT productionRestoreRunner, which shells `dotnet restore`/`paket restore`/`tool restore` — exercising it would be a slow nondeterministic integration test. Stable at line=68.2% branch=59.1% (13/22) across baseline runs. The file had no ratchet entry when added, so coverageratchet failed it against the strict default whenever the cobertura report included it (the per-run report file-set is itself flaky under daemon load); pinning an honest floor makes it pass deterministically wherever it appears, without ExcludeFromCodeCoverage.",
+        "platform": "macos"
+      },
+      {
+        "line": 68,
+        "branch": 59,
+        "reason": "see macos reason; productionRestoreRunner shell-out paths are not unit-tested by design",
+        "platform": "linux"
+      }
+    ],
     "ErrorLedger.fs": [
       {
         "line": 96,
