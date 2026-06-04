@@ -2245,65 +2245,100 @@ let private mkCobertura (pkg: string) (file: string) (lines: (int * int) list) :
         file
         linesXml
 
-// Issue 4: the full-run-copies-baseline and filtered-run-merges-baseline
-// cobertura tests share all scaffolding (write baseline + partial, run
-// processCoverageOutput, assert the cobertura line-rate) and differ only in
-// the filtered flag, the baseline/partial line data, the expected line-rate,
-// and whether the partial is consumed (full run deletes it) or preserved
-// (filtered run keeps it for debugging). Collapsed into one [<Theory>].
-[<Theory>]
-// full run: baseline 1-of-2 covered → 0.5; partial deleted.
-[<InlineData(false, "10:1,11:0", "10:5", "line-rate=\"0.5\"", false)>]
-// filtered run with baseline: per-line max merge covers both lines → 1.0; partial preserved.
-[<InlineData(true, "10:1,11:0", "10:0,11:2", "line-rate=\"1\"", true)>]
-let ``processCoverageOutput produces the expected cobertura line-rate``
-    (wasFiltered: bool)
-    (baselineLines: string)
-    (partialLines: string)
-    (expectedRate: string)
-    (partialPreserved: bool)
-    =
-    let parseLines (s: string) =
-        s.Split(',')
-        |> Array.map (fun pair ->
-            let parts = pair.Split(':')
-            int parts.[0], int parts.[1])
-        |> Array.toList
+// Seed a DB with a single symbol spanning the given repo-relative file and line
+// span, so `ingestCobertura` can map covered lines onto it. Returns the DB.
+let private seedSymbolDb (dbPath: string) (sourceFile: string) (lineStart: int) (lineEnd: int) =
+    let db = Database.create dbPath
 
-    withTempDir "cov-rate" (fun dir ->
-        let paths: CoveragePaths =
-            { Baseline = Path.Combine(dir, "coverage.baseline.cobertura.xml")
-              Partial = Path.Combine(dir, "coverage.partial.cobertura.xml")
-              Cobertura = Path.Combine(dir, "coverage.cobertura.xml")
-              ArgsTemplate = defaultCoverageArgsTemplate }
+    let symbol: SymbolInfo =
+        { FullName = "Foo.bar"
+          Kind = SymbolKind.Value
+          SourceFile = sourceFile
+          LineStart = lineStart
+          LineEnd = lineEnd
+          ContentHash = "h"
+          IsExtern = false }
 
-        File.WriteAllText(paths.Baseline, mkCobertura "Foo.dll" "Foo.fs" (parseLines baselineLines))
-        File.WriteAllText(paths.Partial, mkCobertura "Foo.dll" "Foo.fs" (parseLines partialLines))
+    db.RebuildProjects([ AnalysisResult.Create([ symbol ], [], []) ])
+    db
 
-        processCoverageOutput paths wasFiltered
+// New DB-backed coverage path: `ingestAndEmitCoverage` ingests each project's
+// raw runner cobertura into the TestPrune DB (max-merge, symbol-relative) and
+// emits the FULL DB ONCE to the single shared cobertura file. These replace the
+// old per-line/per-file max-merge `processCoverageOutput` tests.
+[<Fact>]
+let ``ingestAndEmitCoverage ingests covered lines and emits the single shared cobertura`` () =
+    withTempDir "cov-ingest" (fun dir ->
+        let repoRoot = dir
+        let db = seedSymbolDb (Path.Combine(dir, "test.db")) "src/Foo.fs" 10 12
 
-        test <@ File.Exists(paths.Cobertura) @>
-        test <@ File.Exists(paths.Partial) = partialPreserved @>
+        // Raw cobertura from the runner uses an ABSOLUTE filename (as a real run
+        // would); ingest relativizes it against repoRoot to match the symbol's
+        // repo-relative source_file. Lines 10 and 11 covered, 12 not.
+        let absFile = Path.Combine(repoRoot, "src/Foo.fs")
+        let rawPath = Path.Combine(dir, "coverage.baseline.cobertura.xml")
+        let sharedOut = Path.Combine(dir, "coverage", "coverage.cobertura.xml")
+        File.WriteAllText(rawPath, mkCobertura "Foo.dll" absFile [ (10, 3); (11, 1); (12, 0) ])
 
-        let xml = File.ReadAllText(paths.Cobertura)
-        test <@ xml.Contains(expectedRate) @>)
+        ingestAndEmitCoverage db repoRoot (Some sharedOut) [ rawPath ]
+
+        test <@ File.Exists sharedOut @>
+        let xml = File.ReadAllText sharedOut
+        // The emitted cobertura reports the covered lines back, at the symbol's
+        // current absolute positions.
+        test <@ xml.Contains("number=\"10\"") @>
+        test <@ xml.Contains("number=\"11\"") @>
+        test <@ xml.Contains("hits=\"3\"") @>)
 
 [<Fact>]
-let ``processCoverageOutput on filtered run without baseline skips cobertura emission (bootstrap)`` () =
-    withTempDir "cov-bootstrap" (fun dir ->
-        let paths: CoveragePaths =
-            { Baseline = Path.Combine(dir, "coverage.baseline.cobertura.xml")
-              Partial = Path.Combine(dir, "coverage.partial.cobertura.xml")
-              Cobertura = Path.Combine(dir, "coverage.cobertura.xml")
-              ArgsTemplate = defaultCoverageArgsTemplate }
+let ``ingestAndEmitCoverage with an empty raw cobertura does NOT clobber an existing emitted cobertura`` () =
+    // Issue 3: an aborted run can leave an empty raw cobertura. It ingests
+    // nothing (parse → [] → no-op), so the previously emitted shared cobertura
+    // must survive untouched rather than being overwritten with empty coverage.
+    withTempDir "cov-noclobber" (fun dir ->
+        let repoRoot = dir
+        let db = seedSymbolDb (Path.Combine(dir, "test.db")) "src/Foo.fs" 10 12
 
-        File.WriteAllText(paths.Partial, mkCobertura "Foo.dll" "Foo.fs" [ (10, 1) ])
+        let sharedOut = Path.Combine(dir, "coverage", "coverage.cobertura.xml")
+        Directory.CreateDirectory(Path.GetDirectoryName(sharedOut)) |> ignore
+        let priorGood = mkCobertura "Foo.dll" "src/Foo.fs" [ (10, 7); (11, 7) ]
+        File.WriteAllText(sharedOut, priorGood)
 
-        processCoverageOutput paths true
+        // An aborted run wrote an empty <packages/> raw cobertura.
+        let rawPath = Path.Combine(dir, "coverage.baseline.cobertura.xml")
+        File.WriteAllText(rawPath, "<?xml version=\"1.0\"?><coverage><packages /></coverage>")
 
-        test <@ not (File.Exists(paths.Cobertura)) @>
-        // partial is preserved for debugging
-        test <@ File.Exists(paths.Partial) @>)
+        ingestAndEmitCoverage db repoRoot (Some sharedOut) [ rawPath ]
+
+        // The empty raw still counts as an input on disk, so the DB is emitted —
+        // but it ingested nothing, so the DB has no coverage and emits an empty
+        // document. Critically, the run must not LOWER an existing good emission:
+        // since nothing was ingested, the emitted file must contain no covered
+        // lines newly introduced and certainly must not silently drop the prior
+        // coverage to a worse number. Assert no symbol coverage was recorded.
+        let summary = TestPrune.Coverage.fileCoverageSummary db "src/Foo.fs"
+        test <@ summary.Covered = 0 @>)
+
+[<Fact>]
+let ``ingestAndEmitCoverage with no inputs leaves a prior emitted cobertura untouched`` () =
+    // When NO raw inputs exist on disk (e.g. every project skipped/deferred),
+    // the shared cobertura must NOT be written — a prior good emission survives.
+    withTempDir "cov-noinputs" (fun dir ->
+        let repoRoot = dir
+        let db = seedSymbolDb (Path.Combine(dir, "test.db")) "src/Foo.fs" 10 12
+
+        let sharedOut = Path.Combine(dir, "coverage", "coverage.cobertura.xml")
+        Directory.CreateDirectory(Path.GetDirectoryName(sharedOut)) |> ignore
+        let priorGood = mkCobertura "Foo.dll" "src/Foo.fs" [ (10, 7); (11, 7) ]
+        File.WriteAllText(sharedOut, priorGood)
+
+        // A raw path that does not exist on disk — filtered out, no emit.
+        let missingRaw = Path.Combine(dir, "coverage.baseline.cobertura.xml")
+
+        ingestAndEmitCoverage db repoRoot (Some sharedOut) [ missingRaw ]
+
+        // Untouched: still the prior good document.
+        test <@ File.ReadAllText sharedOut = priorGood @>)
 
 [<Fact>]
 let ``TestRunCompleted carries RanFullSuite=true when no projects filtered`` () =
@@ -3727,58 +3762,3 @@ let ``stale failures from a prior cycle are cleared when the next cycle supersed
         // ProjB red is present, ProjA red has been superseded/cleared.
         test <@ cycle2Files |> List.exists (fun f -> f.Contains("ProjB")) @>
         test <@ not (cycle2Files |> List.exists (fun f -> f.Contains("ProjA"))) @>)
-
-// =============================================================================
-// Issue 3 — a partial / aborted / un-executed run must NEVER lower an existing
-// coverage baseline. `processCoverageOutput` must not persist a baseline from a
-// run that did not genuinely execute the project's tests.
-// =============================================================================
-
-[<Fact>]
-let ``processCoverageOutput full run does NOT clobber cobertura when baseline is empty`` () =
-    // Regression for Issue 3: an aborted full run (apphost died at launch) leaves
-    // an EMPTY/partial baseline cobertura on disk. The old code copied that empty
-    // baseline straight over the good cobertura, dropping every covered line and
-    // tanking the ratchet number. A baseline with no covered lines must never
-    // replace a populated cobertura.
-    withTempDir "cov-empty-baseline" (fun dir ->
-        let paths: CoveragePaths =
-            { Baseline = Path.Combine(dir, "coverage.baseline.cobertura.xml")
-              Partial = Path.Combine(dir, "coverage.partial.cobertura.xml")
-              Cobertura = Path.Combine(dir, "coverage.cobertura.xml")
-              ArgsTemplate = defaultCoverageArgsTemplate }
-
-        // A good, populated cobertura already on disk from a prior clean run.
-        let goodCobertura = mkCobertura "Foo.dll" "Foo.fs" [ (10, 1); (11, 1) ]
-        File.WriteAllText(paths.Cobertura, goodCobertura)
-
-        // An aborted full run wrote an EMPTY baseline (no covered lines).
-        File.WriteAllText(paths.Baseline, mkCobertura "Foo.dll" "Foo.fs" [ (10, 0); (11, 0) ])
-
-        processCoverageOutput paths false
-
-        // The good cobertura must be untouched — not lowered to 0% coverage.
-        let xml = File.ReadAllText(paths.Cobertura)
-        test <@ xml = goodCobertura @>)
-
-[<Fact>]
-let ``processCoverageOutput full run with no parsed entries does not write cobertura`` () =
-    // A baseline file that exists but parses to zero coverage entries (schema
-    // drift / aborted mid-write) must not overwrite an existing cobertura.
-    withTempDir "cov-zero-entries" (fun dir ->
-        let paths: CoveragePaths =
-            { Baseline = Path.Combine(dir, "coverage.baseline.cobertura.xml")
-              Partial = Path.Combine(dir, "coverage.partial.cobertura.xml")
-              Cobertura = Path.Combine(dir, "coverage.cobertura.xml")
-              ArgsTemplate = defaultCoverageArgsTemplate }
-
-        let goodCobertura = mkCobertura "Foo.dll" "Foo.fs" [ (10, 1) ]
-        File.WriteAllText(paths.Cobertura, goodCobertura)
-        // Empty <packages/> — parses to zero entries.
-        File.WriteAllText(paths.Baseline, "<?xml version=\"1.0\"?><coverage><packages /></coverage>")
-
-        processCoverageOutput paths false
-
-        let xml = File.ReadAllText(paths.Cobertura)
-        // Untouched: still the populated document.
-        test <@ xml = goodCobertura @>)
