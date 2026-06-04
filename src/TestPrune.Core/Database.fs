@@ -1104,6 +1104,73 @@ type Database(dbPath: string) =
             cmd.Parameters.AddWithValue("@h", hits) |> ignore
             cmd.ExecuteNonQuery() |> ignore
 
+    /// Ingest many `(sourceFile, line, hits)` rows in ONE connection + transaction,
+    /// reusing a single lookup command and a single upsert command across every row.
+    /// This is the hot path for cobertura ingest (a report has hundreds of thousands
+    /// of lines); calling `RecordCoverage` per row would instead open ~3 connections
+    /// per line. Semantics are identical to `RecordCoverage`: each line attaches to its
+    /// nearest preceding declaration and is max-merged symbol-relative; a line with no
+    /// preceding symbol is skipped. Returns `(ingested, skipped)`.
+    member _.RecordCoverageBatch(rows: (string * int * int) seq) : int * int =
+        use conn = openConnection dbPath
+        use txn = conn.BeginTransaction()
+
+        use findCmd = conn.CreateCommand()
+        findCmd.Transaction <- txn
+
+        findCmd.CommandText <-
+            """
+            SELECT id, line_start FROM symbols
+            WHERE source_file = @f AND line_start <= @l
+            ORDER BY line_start DESC
+            LIMIT 1
+            """
+
+        let pFindFile = findCmd.Parameters.Add("@f", SqliteType.Text)
+        let pFindLine = findCmd.Parameters.Add("@l", SqliteType.Integer)
+
+        use insCmd = conn.CreateCommand()
+        insCmd.Transaction <- txn
+
+        insCmd.CommandText <-
+            """
+            INSERT INTO coverage_points (symbol_id, line_offset, kind, hits)
+            VALUES (@s, @o, 'line', @h)
+            ON CONFLICT(symbol_id, line_offset, kind)
+            DO UPDATE SET hits = MAX(hits, excluded.hits)
+            """
+
+        let pInsSym = insCmd.Parameters.Add("@s", SqliteType.Integer)
+        let pInsOff = insCmd.Parameters.Add("@o", SqliteType.Integer)
+        let pInsHits = insCmd.Parameters.Add("@h", SqliteType.Integer)
+
+        let mutable ingested = 0
+        let mutable skipped = 0
+
+        for (sourceFile, line, hits) in rows do
+            pFindFile.Value <- sourceFile
+            pFindLine.Value <- line
+
+            let resolved =
+                use reader = findCmd.ExecuteReader()
+
+                if reader.Read() then
+                    Some(reader.GetInt64(0), reader.GetInt32(1))
+                else
+                    None
+
+            match resolved with
+            | Some(symbolId, lineStart) ->
+                pInsSym.Value <- symbolId
+                pInsOff.Value <- line - lineStart
+                pInsHits.Value <- hits
+                insCmd.ExecuteNonQuery() |> ignore
+                ingested <- ingested + 1
+            | None -> skipped <- skipped + 1
+
+        txn.Commit()
+        (ingested, skipped)
+
     /// Get all stored line-coverage points for a source file as `(absoluteLine, hits)`.
     /// The absolute line is DERIVED from each symbol's CURRENT `line_start`, so a symbol
     /// that moved since ingest reports its coverage at the new location automatically.
@@ -1141,13 +1208,3 @@ type Database(dbPath: string) =
 
         use reader = cmd.ExecuteReader()
         readAll reader (fun r -> r.GetString(0))
-
-    /// Delete all coverage points for a symbol. Called when a symbol's content changes
-    /// (its `content_hash` differs) so stale coverage doesn't survive an edit; the
-    /// impact re-run re-ingests fresh coverage for it.
-    member _.PurgeCoverageForSymbol(symbolId: int64) : unit =
-        use conn = openConnection dbPath
-        use cmd = conn.CreateCommand()
-        cmd.CommandText <- "DELETE FROM coverage_points WHERE symbol_id = @s"
-        cmd.Parameters.AddWithValue("@s", symbolId) |> ignore
-        cmd.ExecuteNonQuery() |> ignore

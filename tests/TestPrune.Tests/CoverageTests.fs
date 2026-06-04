@@ -83,21 +83,6 @@ module ``Max-merge on record`` =
             db.RecordCoverage("Foo.fs", 15, 2)
             test <@ db.GetFileCoverage "Foo.fs" = [ (15, 5) ] @>)
 
-module ``Purge`` =
-
-    [<Fact>]
-    let ``purge removes a symbol's coverage`` () =
-        withDb (fun db ->
-            seedSymbol db "Foo.bar" "Foo.fs" 10 20
-            db.RecordCoverage("Foo.fs", 15, 3)
-            db.RecordCoverage("Foo.fs", 16, 4)
-
-            match db.FindSymbolContainingLine("Foo.fs", 15) with
-            | Some(symbolId, _) -> db.PurgeCoverageForSymbol symbolId
-            | None -> failwith "expected to find the seeded symbol"
-
-            test <@ db.GetFileCoverage "Foo.fs" |> List.isEmpty @>)
-
 module ``Cobertura ingest`` =
 
     /// Build a minimal Cobertura document from a sequence of `<class>` blocks, each

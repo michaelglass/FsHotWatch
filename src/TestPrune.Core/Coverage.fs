@@ -65,38 +65,27 @@ let parseCobertura (xml: string) : (string * int * int) list =
 /// filename is assumed already repo-relative (or test paths chosen to match) and
 /// is used verbatim. Either way separators are normalized to the DB's form.
 let private normalizeFilename (repoRoot: string option) (filename: string) =
-    let rel =
-        match repoRoot with
-        | Some root when Path.IsPathRooted filename -> Path.GetRelativePath(root, filename)
-        | _ -> filename
+    // GetRelativePath emits the platform separator — the same convention
+    // AstAnalyzer.normalizeSymbolPaths used when indexing, so the result matches.
+    match repoRoot with
+    | Some root when Path.IsPathRooted filename -> Path.GetRelativePath(root, filename)
+    | _ -> filename
 
-    // Match the separator convention used when symbols were indexed. GetRelativePath
-    // emits the platform separator, which is what normalizeSymbolPaths produced too,
-    // so we leave it as the platform default rather than forcing '/'.
-    rel
-
-/// Ingest a Cobertura document into `db.coverage_points`. For each parsed
-/// `(file, line, hits)` we normalize the path and call `db.RecordCoverage`, which
-/// max-merges by `(symbol_id, line_offset)`. A line with no containing symbol is
-/// skipped (per-file fallback is a later phase). Returns how many rows mapped to a
-/// symbol (`Ingested`) vs were skipped for lack of one (`Skipped`).
+/// Ingest a Cobertura document into `db.coverage_points`. Parses every
+/// `(file, line, hits)`, normalizes the path, and hands the whole batch to
+/// `db.RecordCoverageBatch` (one connection + transaction), which max-merges each
+/// line symbol-relative by `(symbol_id, line_offset)`. A line with no preceding
+/// symbol is skipped (per-file fallback is a later phase). Returns how many rows
+/// mapped to a symbol (`Ingested`) vs were skipped for lack of one (`Skipped`).
 ///
 /// `repoRoot` (optional): when the cobertura `filename`s are absolute paths from a
 /// real run, pass the repo root so they relativize to match `symbols.source_file`.
 let ingestCobertura (db: Database) (repoRoot: string option) (xml: string) : {| Ingested: int; Skipped: int |} =
-    let rows = parseCobertura xml
+    let rows =
+        parseCobertura xml
+        |> List.map (fun (file, line, hits) -> (normalizeFilename repoRoot file, line, hits))
 
-    let mutable ingested = 0
-    let mutable skipped = 0
-
-    for (file, line, hits) in rows do
-        let normalized = normalizeFilename repoRoot file
-
-        match db.FindSymbolContainingLine(normalized, line) with
-        | Some _ ->
-            db.RecordCoverage(normalized, line, hits)
-            ingested <- ingested + 1
-        | None -> skipped <- skipped + 1
+    let ingested, skipped = db.RecordCoverageBatch rows
 
     {| Ingested = ingested
        Skipped = skipped |}
@@ -108,8 +97,6 @@ let ingestCobertura (db: Database) (repoRoot: string option) (xml: string) : {| 
 /// is never stale and needs no remap pass. The document round-trips cleanly through
 /// `parseCobertura` (same `(file, line, hits)` set it was built from).
 let emitCobertura (db: Database) : string =
-    let xn (s: string) = XName.Get s
-
     let classes =
         db.GetCoveredFiles()
         |> List.map (fun file ->
