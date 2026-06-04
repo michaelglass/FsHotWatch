@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- refactor: the coverage check no longer maintains its own per-file max-merged
+  baselines — `mergeIntoBaselines`/`refreshBaselines` are retired. The TestPrune DB is
+  now the single source of truth (it max-merges symbol-relative and ages out stale
+  lines on edit), so the plugin simply checks the one cobertura emitted from the DB.
+  The gating policy (full-suite gates; impact-filtered runs notify without gating) is
+  unchanged.
+
 ## 0.7.0-alpha.10 - 2026-06-02
 
 - fix: impact-filtered (partial) test runs no longer produce a false coverage red — coverage is no longer reported as failing from a stale/partial baseline when only a subset of tests ran.

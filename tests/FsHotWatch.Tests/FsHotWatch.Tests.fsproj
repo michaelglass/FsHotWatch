@@ -32,7 +32,6 @@
     <Compile Include="DaemonTests.fs" />
     <Compile Include="IpcTests.fs" />
     <Compile Include="IpcPayloadTests.fs" />
-    <Compile Include="CoverageMergeTests.fs" />
     <Compile Include="TestPrunePluginTests.fs" />
     <Compile Include="FileFreshnessTests.fs" />
     <Compile Include="FlakinessTests.fs" />
