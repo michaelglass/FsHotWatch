@@ -15,27 +15,47 @@ open FsHotWatch.PluginActivity
 open FsHotWatch.PluginFramework
 open FsHotWatch.StringHelpers
 open TestPrune.AstAnalyzer
+open TestPrune.Coverage
 open TestPrune.Database
 open TestPrune.Extensions
 open TestPrune.ImpactAnalysis
 open TestPrune.SymbolDiff
 
-/// Per-project coverage artifact paths + the command-line template used to
-/// produce them. The plugin writes Cobertura XML to Baseline (full run) or
-/// Partial (impact-filtered run), then merges into the Cobertura XML consumed
-/// by downstream tooling (coverageratchet). Callers (DaemonConfig) decide the
-/// directory layout and the arg template; the plugin treats the paths as
-/// opaque absolute paths and substitutes `{output}` in `ArgsTemplate`.
+/// Per-project raw cobertura written by a FULL (unfiltered) test run.
+[<Literal>]
+let BaselineName = "coverage.baseline.cobertura.xml"
+
+/// Per-project raw cobertura written by an impact-FILTERED test run.
+[<Literal>]
+let PartialName = "coverage.partial.cobertura.xml"
+
+/// The single shared cobertura emitted from the full TestPrune DB and consumed
+/// by downstream gating (coverageratchet).
+[<Literal>]
+let CoberturaName = "coverage.cobertura.xml"
+
+/// Per-project raw-coverage artifact paths + the command-line template used to
+/// produce them. The runner writes Cobertura XML to `Baseline` (full run) or
+/// `Partial` (impact-filtered run); the plugin ingests whichever this run wrote
+/// into the TestPrune DB and emits the whole DB once to `Cobertura`. Callers
+/// (DaemonConfig) decide the directory layout and the arg template; the plugin
+/// treats the paths as opaque absolute paths and substitutes `{output}` in
+/// `ArgsTemplate`.
 ///
 /// The file format is Cobertura regardless of `ArgsTemplate` — the template
 /// is responsible for telling its runner to write Cobertura to `{output}`.
 /// For Microsoft Testing Platform, use `defaultCoverageArgsTemplate`; for
 /// other runners (coverlet.collector, AltCover, OpenCover) supply your own.
 type CoveragePaths =
-    { Baseline: string
-      Partial: string
-      Cobertura: string
-      ArgsTemplate: string }
+    {
+        Baseline: string
+        Partial: string
+        /// The SHARED cobertura the plugin emits the whole DB to — set identically
+        /// for every project by DaemonConfig (the DB unions coverage across them),
+        /// so the daemon writes one run-wide artifact, not one per project.
+        Cobertura: string
+        ArgsTemplate: string
+    }
 
 /// Default coverage args template for Microsoft Testing Platform hosts
 /// (xUnit v3, MSTest v3 — anything invoked as `dotnet run --project <test>
@@ -66,73 +86,50 @@ let buildCoverageArgs (paths: CoveragePaths) (wasFiltered: bool) : string =
 
     paths.ArgsTemplate.Replace(OutputPlaceholder, target)
 
-/// After a test run completes, collapse the coverlet JSON output into a
-/// Cobertura document downstream tools can read. Behavior depends on whether
-/// this was a full or filtered run:
+/// Serially ingest each project's raw runner cobertura into the TestPrune DB
+/// (symbol-relative, max-merged across all test projects), then emit the FULL
+/// DB ONCE to a single shared cobertura file that downstream gating reads.
 ///
-/// - Full run: the fresh baseline cobertura becomes the authoritative coverage
-///   snapshot. Copy it to the final cobertura path and delete any stale
-///   partial file so a subsequent filtered run starts clean.
-/// - Filtered run, no baseline on disk: bootstrap — skip final cobertura entirely.
-///   Downstream gating (coverageratchet) that reads the cobertura file will
-///   see no file, which is the intended "no baseline yet" signal.
-/// - Filtered run with baseline: merge per-line max, emit final cobertura. Keep
-///   partial on disk for debugging.
-let processCoverageOutput (paths: CoveragePaths) (wasFiltered: bool) : unit =
-    // MTP's cobertura shape is stable but empty parsed data from a non-empty
-    // file is the warning signal — emit a log so silent coverage collapse is
-    // at least visible in the daemon log.
-    let parseAndCheck path =
-        let raw = File.ReadAllText(path)
-        let data = CoverageMerge.parse raw
-
-        if Map.isEmpty data && raw.Trim().Length > 0 then
-            Logging.warn "test-prune" $"coverage: parsed 0 entries from %s{path} (cobertura schema drift?)"
-
-        data
-
-    // Issue 3: a baseline counts as "really executed" only if it carries at
-    // least one COVERED line (hits > 0). An aborted full run (apphost died at
-    // launch) can leave an empty or all-zero baseline on disk; persisting it
-    // would drop every covered line and tank the ratchet.
-    // `CoverageMerge.coveredLineCount` lets the full-run branch refuse to
-    // overwrite a good cobertura with such a degenerate baseline; it is the
-    // same helper `toCobertura` uses to compute `lines-covered`.
+/// `inputs` is the list of `(rawCoberturaPath, sharedCoberturaOutputPath)`
+/// tuples collected from each project that ran with coverage; the output path
+/// is identical for every project (DaemonConfig points every project at one
+/// shared file), so emitting once at the end is the single source of truth.
+///
+/// Invariants preserved from the old per-line merge:
+/// - An empty / aborted raw cobertura parses to zero rows → ingests nothing →
+///   cannot clobber the DB or the emitted file (Issue 3).
+/// - If NO raw inputs exist on disk, the shared cobertura is NOT written, so a
+///   prior good emission is never overwritten with nothing.
+let internal ingestAndEmitCoverage
+    (db: Database)
+    (repoRoot: string)
+    (coverageOutput: string option)
+    (rawPaths: string list)
+    : unit =
     try
-        if not wasFiltered then
-            if File.Exists(paths.Baseline) then
-                let baseline = parseAndCheck paths.Baseline
+        let existing = rawPaths |> List.filter File.Exists
 
-                // Only promote the fresh baseline to the authoritative cobertura
-                // when it actually covered something. An empty/all-zero baseline
-                // is the signature of an aborted run — leaving the prior good
-                // cobertura untouched is strictly safer than lowering it.
-                if CoverageMerge.coveredLineCount baseline > 0 then
-                    let xml = CoverageMerge.toCobertura baseline
-                    File.WriteAllText(paths.Cobertura, xml)
-                else
-                    Logging.warn
-                        "test-prune"
-                        $"coverage: full-run baseline %s{paths.Baseline} has no covered lines — refusing to overwrite %s{paths.Cobertura} (treating as aborted/partial run)"
+        for rawPath in existing do
+            let raw = File.ReadAllText rawPath
+            let result = ingestCobertura db (Some repoRoot) raw
 
-            if File.Exists(paths.Partial) then
-                File.Delete(paths.Partial)
-        // Bootstrap: no baseline yet, partial can't produce a faithful
-        // Cobertura on its own. Leave everything as-is so downstream
-        // ratchets skip (or fail with a clear "missing file" message
-        // that prompts the user to run a full test).
-        else if not (File.Exists(paths.Baseline)) then
-            Logging.info "test-prune" "coverage: skipping cobertura emit (no baseline — run a full test first)"
-        else if File.Exists(paths.Partial) then
-            let baseline = parseAndCheck paths.Baseline
-            let partial = parseAndCheck paths.Partial
-            let merged = CoverageMerge.mergePerLineMax baseline partial
-            let xml = CoverageMerge.toCobertura merged
-            File.WriteAllText(paths.Cobertura, xml)
-        else
-            // Filtered run produced no partial (e.g. test skipped entirely);
-            // nothing to merge. Leave existing cobertura alone.
-            ()
+            if result.Ingested = 0 && raw.Trim().Length > 0 then
+                Logging.warn
+                    "test-prune"
+                    $"coverage: ingested 0 rows from %s{rawPath} (no symbol matched any covered line — schema drift or path mismatch?)"
+
+        // Emit the whole DB to the single shared cobertura — but only when this run
+        // actually produced coverage, so a no-op run never clobbers a prior emit.
+        match existing, coverageOutput with
+        | [], _
+        | _, None -> ()
+        | _, Some out ->
+            let dir = Path.GetDirectoryName(out)
+
+            if not (String.IsNullOrEmpty dir) then
+                Directory.CreateDirectory(dir) |> ignore
+
+            File.WriteAllText(out, emitCobertura db)
     with ex ->
         Logging.error "test-prune" $"coverage post-processing failed: %s{ex.Message}"
 
@@ -472,6 +469,7 @@ let private testRunsDir (repoRoot: string) =
     Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-runs")
 
 let private executeTests
+    (db: Database)
     (ctx: PluginCtx<'msg> option)
     (repoRoot: string)
     (beforeRun: (unit -> unit) option)
@@ -517,6 +515,17 @@ let private executeTests
         // carried by TestRunCompleted (and returned to non-daemon callers).
         let mutable cumulative: Map<string, TestResult> = Map.empty
         let accumulatorLock = obj ()
+
+        // Raw-cobertura ingest inputs collected across the parallel per-project
+        // runs. Each entry is (rawCoberturaPathThisProjectWrote,
+        // sharedCoberturaOutputPath). Ingest+emit runs SERIALLY after
+        // Async.Parallel completes so concurrent group completions never race on
+        // the DB write or the single shared output file.
+        let mutable coverageRawPaths: string list = []
+        // Every project's CoveragePaths.Cobertura is the same run-wide shared path;
+        // captured once so the DB is emitted to a single file after the run.
+        let mutable coverageOutput: string option = None
+        let coverageRawPathsLock = obj ()
 
         let foldAndEmit (groupOutput: (string * TestResult) list) =
             lock accumulatorLock (fun () ->
@@ -764,13 +773,21 @@ let private executeTests
                                     TestsTimedOut(output, after, wasFiltered, projectElapsed)
                                 | ProcessOutcome.Failed _ -> TestsFailed(output, wasFiltered, projectElapsed)
 
-                            // Post-test coverage step: merge or convert the coverlet JSON
-                            // output into the Cobertura file downstream consumers read.
-                            // Issue 3: a run that never executed (apphost missing) must
-                            // NOT touch the baseline/cobertura — a partial/empty file
-                            // would otherwise lower the per-line coverage.
+                            // Post-test coverage step: collect this project's raw
+                            // runner cobertura for SERIAL ingest after Async.Parallel
+                            // (a parallel DB write + shared-file write would race).
+                            // Issue 3: a run that never executed (apphost missing)
+                            // contributes NO input — a partial/empty file must not
+                            // lower coverage. An empty/aborted raw cobertura that IS
+                            // collected ingests nothing (parse → [] → no-op), so it
+                            // also can't clobber the emitted file.
                             match projectCoveragePaths with
-                            | Some paths when not apphostMissing -> processCoverageOutput paths wasFiltered
+                            | Some paths when not apphostMissing ->
+                                let rawPath = if wasFiltered then paths.Partial else paths.Baseline
+
+                                lock coverageRawPathsLock (fun () ->
+                                    coverageRawPaths <- rawPath :: coverageRawPaths
+                                    coverageOutput <- Some paths.Cobertura)
                             | _ -> ()
 
                             // Per-test flakiness tracking: parse the CTRF report this run
@@ -807,6 +824,17 @@ let private executeTests
         // `cumulative` (populated under the lock inside foldAndEmit) is the
         // canonical run-wide aggregate.
         groupResults |> ignore
+
+        // Coverage: now that ALL projects have finished, serially ingest each
+        // project's raw runner cobertura into the TestPrune DB (max-merged,
+        // symbol-relative) and emit the FULL DB ONCE to the single shared
+        // cobertura file. Done here, outside Async.Parallel, so there is no
+        // DB-write contention and no file-write race on the shared output.
+        let collectedRawPaths, sharedOutput =
+            lock coverageRawPathsLock (fun () -> List.rev coverageRawPaths, coverageOutput)
+
+        ingestAndEmitCoverage db repoRoot sharedOutput collectedRawPaths
+
         sw.Stop()
 
         let finalResults = lock accumulatorLock (fun () -> cumulative)
@@ -1130,7 +1158,16 @@ let create
                             Logging.info "test-prune" $"Affected classes for %s{proj}: %A{classes}"
 
                     let! results, started, completed =
-                        executeTests (Some ctx) repoRoot beforeRun coveragePaths afterRun configs affectedByProject None
+                        executeTests
+                            db
+                            (Some ctx)
+                            repoRoot
+                            beforeRun
+                            coveragePaths
+                            afterRun
+                            configs
+                            affectedByProject
+                            None
 
                     // executeTests still emits per-group TestProgress live; the
                     // synchronous handler emits Started + Completed for the
@@ -1295,6 +1332,7 @@ let create
                                     | Ok configs ->
                                         let! results, started, completed =
                                             executeTests
+                                                db
                                                 None
                                                 repoRoot
                                                 beforeRun
