@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- chore: bundle the DB-backed coverage plugins (FsHotWatch.TestPrune 0.7.0-alpha.17,
+  FsHotWatch.Coverage 0.7.0-alpha.11). No CLI API change; republished so the `fshw`
+  tool's bundled plugins carry TestPrune-native single-source coverage.
+
 ## 0.8.0-alpha.17 - 2026-06-03
 
 - feat: auto-recovering deps-freshness gate before FCS analysis. When a project's `obj/project.assets.json` is stale relative to its declared deps (a `PackageReference` added without `dotnet restore`, or a half-completed restore), the daemon detects it *before* type-checking, attempts a one-shot `dotnet`/`paket`/`tool restore` to recover automatically, and only if recovery fails reports a single actionable `deps` diagnostic — instead of letting FCS emit a phantom "namespace/type not found" error-storm. Detection and orchestration are pure and unit-tested (`FsHotWatch.DepsFreshness`: `compareFreshness`, `dependencyFiles`, `evaluateProject`, `RecoveryTracker`); each restore step is bounded by a 5-minute timeout so a hung restore fails fast rather than wedging the scan.
