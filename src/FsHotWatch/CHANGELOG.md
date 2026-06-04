@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.18 - 2026-06-04
+
 - chore: bundle the DB-backed coverage plugins (FsHotWatch.TestPrune 0.7.0-alpha.17,
   FsHotWatch.Coverage 0.7.0-alpha.11). No CLI API change; republished so the `fshw`
   tool's bundled plugins carry TestPrune-native single-source coverage.
