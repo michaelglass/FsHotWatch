@@ -4,6 +4,10 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+- chore: republish to bundle the DB-backed coverage plugins (FsHotWatch.TestPrune
+  0.7.0-alpha.17, FsHotWatch.Coverage 0.7.0-alpha.11) so `dotnet fshw` carries
+  TestPrune-native single-source coverage. No CLI-facing changes.
+
 ## 0.8.0-alpha.17 - 2026-06-03
 
 - chore: bump CommandTree 0.6.1 → 0.6.2 — picks up the revision-stamping target fix, so building `fshw` outside a VCS repo (e.g. a `.git`-less jj sub-workspace) no longer emits `MSB3073` warnings.
