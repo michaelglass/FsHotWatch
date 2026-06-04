@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.11 - 2026-06-04
+
 - refactor: the coverage check no longer maintains its own per-file max-merged
   baselines — `mergeIntoBaselines`/`refreshBaselines` are retired. The TestPrune DB is
   now the single source of truth (it max-merges symbol-relative and ages out stale
