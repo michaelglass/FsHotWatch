@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.17 - 2026-06-04
+
 - feat: coverage is now stored end-to-end in the TestPrune DB — edit-aware and
   symbol-relative — instead of a blind per-line max-merge. After each test run the
   plugin ingests each project's raw cobertura into the DB (via TestPrune.Core's new
