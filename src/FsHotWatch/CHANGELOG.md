@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- chore: bundle FsHotWatch.TestPrune 0.7.0-alpha.18 (cold-start coverage no longer
+  clobbers prior coverage while the symbol graph is still indexing). No CLI API change;
+  republished so `dotnet fshw` carries the fix.
+
 ## 0.8.0-alpha.18 - 2026-06-04
 
 - chore: bundle the DB-backed coverage plugins (FsHotWatch.TestPrune 0.7.0-alpha.17,

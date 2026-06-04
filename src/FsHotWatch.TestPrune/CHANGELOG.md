@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: cold-start coverage no longer clobbers a prior good emission. On the first run
+  after a schema bump recreates the TestPrune DB, the daemon is still indexing, so a
+  covered file may not have symbols yet and its coverage lines can't be attributed.
+  `ingestAndEmitCoverage` now detects an incomplete symbol graph (most lines unmapped)
+  and SKIPS the emit rather than overwriting prior coverage with a partial snapshot; the
+  DB persists and max-merges, so a later warm run emits in full.
+
 ## 0.7.0-alpha.17 - 2026-06-04
 
 - feat: coverage is now stored end-to-end in the TestPrune DB — edit-aware and
