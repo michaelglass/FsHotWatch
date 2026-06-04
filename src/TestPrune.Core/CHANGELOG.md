@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- feat: TestPrune-native edit-aware coverage. Coverage from a Cobertura report is
+  stored in the symbol DB keyed by `(symbol, line_offset)` instead of absolute line,
+  so it survives source edits — a symbol that moves keeps its coverage (lines
+  re-derive from the symbol's current `line_start`), and a symbol whose content
+  changes has its coverage purged on the next `RebuildProjects`. New public API: the
+  `TestPrune.Coverage` module (`parseCobertura`, `ingestCobertura`, `emitCobertura`,
+  `fileCoverageSummary`) and `Database` members `RecordCoverage`, `RecordCoverageBatch`,
+  `FindSymbolContainingLine`, `GetFileCoverage`, `GetCoveredFiles`. Each covered line
+  is attributed to its nearest preceding declaration (TestPrune symbols are
+  declaration-point markers), and a whole report ingests in a single transaction.
+
 ## 4.0.3 - 2026-06-02
 
 - fix: the AST impact analyzer no longer aborts on un-nameable F# symbols. `FSharpEntity.FullName`/`TryFullName` can throw (`NullReferenceException` in compiled projects, `InvalidOperationException` in scripts) on symbols such as anonymous-record projections; these are now caught and the offending edge is skipped, so a single un-nameable symbol degrades impact selection slightly instead of crashing the whole analysis pass.

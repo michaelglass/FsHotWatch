@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- chore: version bump alongside TestPrune.Core 4.1.0 (which adds edit-aware coverage
+  storage). No `test-prune` CLI-facing changes — the coverage API is library-level.
+
 ## 4.0.3 - 2026-06-02
 
 - fix: `test-prune` impact analysis no longer crashes on un-nameable F# symbols (e.g. anonymous-record projections) in analyzed sources — the AST walk skips the un-nameable symbol and continues (via TestPrune.Core).
