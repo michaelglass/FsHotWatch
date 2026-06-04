@@ -2341,6 +2341,57 @@ let ``ingestAndEmitCoverage with no inputs leaves a prior emitted cobertura unto
         test <@ File.ReadAllText sharedOut = priorGood @>)
 
 [<Fact>]
+let ``ingestAndEmitCoverage does NOT clobber prior coverage when the symbol graph is incomplete`` () =
+    // Cold start (the first run after a schema bump recreated the TestPrune DB, before the
+    // daemon's scan reached the covered files): the covered file has no symbols yet, so its
+    // lines can't map. Emitting the DB now would write a partial cobertura that DROPS that
+    // file's coverage entirely, clobbering a prior good emission and failing the ratchet.
+    // The plugin must SKIP the emit until the graph is populated; the DB persists, so a
+    // later warm run emits in full.
+    withTempDir "cov-coldstart" (fun dir ->
+        let repoRoot = dir
+        // The DB only knows an unrelated, already-indexed file — NOT the covered one.
+        let db = seedSymbolDb (Path.Combine(dir, "test.db")) "src/Indexed.fs" 1 5
+
+        let sharedOut = Path.Combine(dir, "coverage", "coverage.cobertura.xml")
+        Directory.CreateDirectory(Path.GetDirectoryName(sharedOut)) |> ignore
+        // A prior warm run emitted full, honest coverage for Embeddings.fs.
+        let priorGood =
+            mkCobertura "Intelligence.dll" "src/Embeddings.fs" [ (10, 3); (11, 3); (12, 1) ]
+
+        File.WriteAllText(sharedOut, priorGood)
+
+        // This run's raw cobertura covers Embeddings.fs, but the DB has no symbols for it
+        // yet → every line is skipped.
+        let absFile = Path.Combine(repoRoot, "src/Embeddings.fs")
+        let rawPath = Path.Combine(dir, "coverage.baseline.cobertura.xml")
+        File.WriteAllText(rawPath, mkCobertura "Intelligence.dll" absFile [ (10, 3); (11, 3); (12, 1) ])
+
+        ingestAndEmitCoverage db repoRoot (Some sharedOut) [ rawPath ]
+
+        // The prior good emission must survive untouched — NOT be overwritten with a
+        // partial snapshot that dropped Embeddings.fs.
+        test <@ File.ReadAllText sharedOut = priorGood @>)
+
+[<Fact>]
+let ``ingestAndEmitCoverage emits when the symbol graph maps the bulk of lines (warm)`` () =
+    // The complement: once the covered file IS indexed, the lines map and the emit proceeds.
+    withTempDir "cov-warm" (fun dir ->
+        let repoRoot = dir
+        let db = seedSymbolDb (Path.Combine(dir, "test.db")) "src/Embeddings.fs" 10 12
+
+        let sharedOut = Path.Combine(dir, "coverage", "coverage.cobertura.xml")
+        let absFile = Path.Combine(repoRoot, "src/Embeddings.fs")
+        let rawPath = Path.Combine(dir, "coverage.baseline.cobertura.xml")
+        File.WriteAllText(rawPath, mkCobertura "Intelligence.dll" absFile [ (10, 3); (11, 1); (12, 0) ])
+
+        ingestAndEmitCoverage db repoRoot (Some sharedOut) [ rawPath ]
+
+        test <@ File.Exists sharedOut @>
+        let xml = File.ReadAllText sharedOut
+        test <@ xml.Contains("Embeddings.fs") && xml.Contains("number=\"10\"") @>)
+
+[<Fact>]
 let ``TestRunCompleted carries RanFullSuite=true when no projects filtered`` () =
     let evt =
         { RunId = System.Guid.NewGuid()

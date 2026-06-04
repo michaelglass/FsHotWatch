@@ -109,20 +109,35 @@ let internal ingestAndEmitCoverage
     try
         let existing = rawPaths |> List.filter File.Exists
 
+        let mutable totalIngested = 0
+        let mutable totalSkipped = 0
+
         for rawPath in existing do
             let raw = File.ReadAllText rawPath
             let result = ingestCobertura db (Some repoRoot) raw
+            totalIngested <- totalIngested + result.Ingested
+            totalSkipped <- totalSkipped + result.Skipped
 
-            if result.Ingested = 0 && raw.Trim().Length > 0 then
-                Logging.warn
-                    "test-prune"
-                    $"coverage: ingested 0 rows from %s{rawPath} (no symbol matched any covered line — schema drift or path mismatch?)"
+        // Cold-start guard. If most coverage lines found NO containing symbol, the symbol
+        // graph is still being indexed — e.g. the FIRST run after a schema bump recreated
+        // the TestPrune DB, before the daemon's scan reached the covered files. Emitting now
+        // would write a partial cobertura that DROPS every not-yet-indexed file's coverage,
+        // clobbering a prior good emission and failing the ratchet. So skip the emit; the DB
+        // persists and max-merges, so a later warm run emits in full. A healthy run maps the
+        // vast majority of lines (the only misses are rare inter-symbol lines), so requiring
+        // at least half to map cleanly separates "still indexing" from a real run.
+        let totalRows = totalIngested + totalSkipped
+        let graphIncomplete = totalRows > 0 && totalIngested < totalSkipped
 
         // Emit the whole DB to the single shared cobertura — but only when this run
         // actually produced coverage, so a no-op run never clobbers a prior emit.
         match existing, coverageOutput with
         | [], _
         | _, None -> ()
+        | _, Some _ when graphIncomplete ->
+            Logging.warn
+                "test-prune"
+                $"coverage: only %d{totalIngested} of %d{totalRows} lines mapped to a symbol — the symbol graph looks incomplete (still indexing?). Skipping the coverage emit to avoid overwriting prior coverage with a partial snapshot; it will emit in full once warm."
         | _, Some out ->
             let dir = Path.GetDirectoryName(out)
 
