@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.1.0 - 2026-06-04
+
 - chore: version bump alongside TestPrune.Core 4.1.0 (which adds edit-aware coverage
   storage). No `test-prune` CLI-facing changes — the coverage API is library-level.
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.1.0 - 2026-06-04
+
 - feat: TestPrune-native edit-aware coverage. Coverage from a Cobertura report is
   stored in the symbol DB keyed by `(symbol, line_offset)` instead of absolute line,
   so it survives source edits — a symbol that moves keeps its coverage (lines
