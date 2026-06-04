@@ -4,6 +4,9 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+- chore: republish to bundle FsHotWatch.TestPrune 0.7.0-alpha.18 (cold-start coverage
+  clobber fix) so `dotnet fshw` carries it. No CLI-facing changes.
+
 ## 0.8.0-alpha.18 - 2026-06-04
 
 - chore: republish to bundle the DB-backed coverage plugins (FsHotWatch.TestPrune
