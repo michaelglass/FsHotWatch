@@ -826,11 +826,22 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
 
                     Some
                         { FsHotWatch.TestPrune.TestPrunePlugin.CoveragePaths.Baseline =
-                            Path.GetFullPath(Path.Combine(outputDir, FsHotWatch.TestPrune.CoverageMerge.BaselineName))
+                            Path.GetFullPath(
+                                Path.Combine(outputDir, FsHotWatch.TestPrune.TestPrunePlugin.BaselineName)
+                            )
                           Partial =
-                            Path.GetFullPath(Path.Combine(outputDir, FsHotWatch.TestPrune.CoverageMerge.PartialName))
+                            Path.GetFullPath(Path.Combine(outputDir, FsHotWatch.TestPrune.TestPrunePlugin.PartialName))
+                          // Single SHARED cobertura for EVERY project: the TestPrune DB
+                          // unions coverage across all test projects, then emits once to
+                          // this one file (no per-project subdir) — what coverageratchet checks.
                           Cobertura =
-                            Path.GetFullPath(Path.Combine(outputDir, FsHotWatch.TestPrune.CoverageMerge.CoberturaName))
+                            Path.GetFullPath(
+                                Path.Combine(
+                                    repoRoot,
+                                    t.CoverageDir,
+                                    FsHotWatch.TestPrune.TestPrunePlugin.CoberturaName
+                                )
+                            )
                           ArgsTemplate = argsTemplate })
 
         // Extension factories — invoked by the plugin with its own DB, so the
