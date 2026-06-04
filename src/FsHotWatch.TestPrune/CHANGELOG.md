@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: coverage is now stored end-to-end in the TestPrune DB — edit-aware and
+  symbol-relative — instead of a blind per-line max-merge. After each test run the
+  plugin ingests each project's raw cobertura into the DB (via TestPrune.Core's new
+  coverage API) and emits the full DB once to a single shared cobertura, which the
+  coverage plugin checks. This eliminates the stale-line accumulation that inflated
+  per-file coverage baselines over successive edits. Requires TestPrune.Core 4.1.0.
+- refactor: removed the line-keyed `CoverageMerge` parse/merge/emit logic (kept only
+  the artifact filename constants); the TestPrune DB is now the single source of truth.
+
 ## 0.7.0-alpha.16 - 2026-06-02
 
 - fix: cold-start apphost-missing is no longer a spurious test FAILED — detected structurally (File.Exists on the apphost) and surfaced as "waiting on build" with a one-shot retry.
