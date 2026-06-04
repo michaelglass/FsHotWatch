@@ -15,6 +15,11 @@
       "branch": 100,
       "reason": "loosened: marker attributes \u2014 no runtime logic to cover"
     },
+    "Coverage.fs": {
+      "line": 98,
+      "branch": 87,
+      "reason": "Cobertura parse/ingest/emit for TestPrune-native coverage. The two uncovered branches are the defensive isNull-root guard after XDocument.Parse, which always yields a root (or throws) for the well-formed reports MS emits, so it cannot be reproducibly exercised. Pinned at the honest achieved floor rather than excluded."
+    },
     "Database.fs": {
       "line": 98,
       "branch": 70,

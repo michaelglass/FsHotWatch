@@ -68,6 +68,14 @@ let private schema =
         PRIMARY KEY (symbol_id, attribute_name, args_json)
     );
 
+    CREATE TABLE IF NOT EXISTS coverage_points (
+        symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+        line_offset INTEGER NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'line',
+        hits INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (symbol_id, line_offset, kind)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_symbols_by_file ON symbols (source_file);
     CREATE INDEX IF NOT EXISTS idx_symbols_by_parent ON symbols (parent_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_deps_to ON dependencies (to_symbol_id);
@@ -76,6 +84,7 @@ let private schema =
     CREATE INDEX IF NOT EXISTS idx_events_run_id ON analysis_events(run_id);
     CREATE INDEX IF NOT EXISTS idx_events_type ON analysis_events(event_type);
     CREATE INDEX IF NOT EXISTS idx_symbol_attrs_by_symbol ON symbol_attributes (symbol_id);
+    CREATE INDEX IF NOT EXISTS idx_coverage_by_symbol ON coverage_points (symbol_id);
     """
 
 let private symbolKindToString (kind: SymbolKind) =
@@ -173,8 +182,13 @@ let private openConnection (dbPath: string) =
 ///          v4 DBs don't have the column and UPDATEs would throw "no column named
 ///          parent_symbol_id". Consumers that care about upgrade-in-place can do a
 ///          full re-index after upgrade.
+/// v6     — added `coverage_points` table (edit-aware coverage storage keyed by
+///          `(symbol_id, line_offset)` so coverage survives source edits — a moved
+///          symbol's coverage follows via the derived `line_start + line_offset`,
+///          a changed symbol's coverage is purged). Bump forces recreate — legacy
+///          v5 DBs don't have the table and INSERTs would throw "no such table".
 [<Literal>]
-let private SchemaVersion = 5
+let private SchemaVersion = 6
 
 /// Delete the SQLite database file at `dbPath` along with its WAL mode
 /// sidecars (`-wal`, `-shm`). Deleting only the main file leaves stale
@@ -360,6 +374,37 @@ type Database(dbPath: string) =
                 cmd.Parameters["@contentHash"].Value <- sym.ContentHash
                 cmd.Parameters["@isExtern"].Value <- if sym.IsExtern then 1 else 0
                 cmd.Parameters["@indexedAt"].Value <- now
+
+            // Coverage invalidation (Phase 4): BEFORE the upsert overwrites each symbol's
+            // stored content_hash, compare the incoming hash to the existing one. If a row
+            // already exists for this full_name and its content CHANGED (hash differs), its
+            // stored coverage offsets are computed against the old body and are now invalid,
+            // so purge them — the impact re-run re-ingests fresh coverage. A MOVED symbol
+            // (same content_hash, shifted line_start) keeps its coverage: offsets are stable
+            // and GetFileCoverage re-derives the absolute line from the new line_start
+            // (Bug A). New symbols (no stored row) and removed symbols (CASCADE via the
+            // coverage_points FK on the orphan DELETE below) need nothing here.
+            use purgeCovCmd = conn.CreateCommand()
+            purgeCovCmd.Transaction <- txn
+
+            purgeCovCmd.CommandText <-
+                """
+                DELETE FROM coverage_points
+                WHERE symbol_id IN (
+                    SELECT id FROM symbols
+                    WHERE full_name = @fullName AND content_hash <> @contentHash
+                )
+                """
+
+            let pPurgeFullName = purgeCovCmd.Parameters.Add("@fullName", SqliteType.Text)
+            let pPurgeHash = purgeCovCmd.Parameters.Add("@contentHash", SqliteType.Text)
+
+            for result in results do
+                for sym in result.Symbols do
+                    if not sym.IsExtern then
+                        pPurgeFullName.Value <- sym.FullName
+                        pPurgeHash.Value <- sym.ContentHash
+                        purgeCovCmd.ExecuteNonQuery() |> ignore
 
             for result in results do
                 for sym in result.Symbols do
@@ -1001,3 +1046,102 @@ type Database(dbPath: string) =
               TestProject = r.GetString(1)
               TestClass = r.GetString(2)
               TestMethod = r.GetString(3) })
+
+    /// Find the innermost symbol whose `[line_start, line_end]` contains `line` in the
+    /// given source file. Returns `(symbol_id, line_start)` of the SMALLEST such symbol
+    /// (so coverage attaches to the most specific member, not its enclosing module/type),
+    /// or None when no symbol spans the line.
+    member _.FindSymbolContainingLine(sourceFile: string, line: int) : (int64 * int) option =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            """
+            SELECT id, line_start FROM symbols
+            WHERE source_file = @f AND line_start <= @l AND line_end >= @l
+            ORDER BY (line_end - line_start) ASC
+            LIMIT 1
+            """
+
+        cmd.Parameters.AddWithValue("@f", sourceFile) |> ignore
+        cmd.Parameters.AddWithValue("@l", line) |> ignore
+
+        use reader = cmd.ExecuteReader()
+
+        if reader.Read() then
+            Some(reader.GetInt64(0), reader.GetInt32(1))
+        else
+            None
+
+    /// Record `hits` for an absolute `(file, line)` coverage point. Resolves the
+    /// innermost containing symbol and stores the hit symbol-relative as
+    /// `(symbol_id, line - line_start)`, max-merging with any existing value so a
+    /// partial run can never lower a previously-observed hit count. If no symbol
+    /// spans the line it is a no-op (per-file fallback is a later phase).
+    member this.RecordCoverage(sourceFile: string, line: int, hits: int) : unit =
+        match this.FindSymbolContainingLine(sourceFile, line) with
+        | None -> ()
+        | Some(symbolId, lineStart) ->
+            use conn = openConnection dbPath
+            use cmd = conn.CreateCommand()
+
+            cmd.CommandText <-
+                """
+                INSERT INTO coverage_points (symbol_id, line_offset, kind, hits)
+                VALUES (@s, @o, 'line', @h)
+                ON CONFLICT(symbol_id, line_offset, kind)
+                DO UPDATE SET hits = MAX(hits, excluded.hits)
+                """
+
+            cmd.Parameters.AddWithValue("@s", symbolId) |> ignore
+            cmd.Parameters.AddWithValue("@o", line - lineStart) |> ignore
+            cmd.Parameters.AddWithValue("@h", hits) |> ignore
+            cmd.ExecuteNonQuery() |> ignore
+
+    /// Get all stored line-coverage points for a source file as `(absoluteLine, hits)`.
+    /// The absolute line is DERIVED from each symbol's CURRENT `line_start`, so a symbol
+    /// that moved since ingest reports its coverage at the new location automatically.
+    member _.GetFileCoverage(sourceFile: string) : (int * int) list =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            """
+            SELECT s.line_start + cp.line_offset AS line, cp.hits
+            FROM coverage_points cp
+            JOIN symbols s ON s.id = cp.symbol_id
+            WHERE s.source_file = @f AND cp.kind = 'line'
+            ORDER BY line
+            """
+
+        cmd.Parameters.AddWithValue("@f", sourceFile) |> ignore
+
+        use reader = cmd.ExecuteReader()
+        readAll reader (fun r -> r.GetInt32(0), r.GetInt32(1))
+
+    /// Return every distinct source file that has at least one stored coverage point.
+    /// Used to enumerate the files to emit a current cobertura report for.
+    member _.GetCoveredFiles() : string list =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            """
+            SELECT DISTINCT s.source_file
+            FROM symbols s
+            JOIN coverage_points cp ON cp.symbol_id = s.id
+            ORDER BY s.source_file
+            """
+
+        use reader = cmd.ExecuteReader()
+        readAll reader (fun r -> r.GetString(0))
+
+    /// Delete all coverage points for a symbol. Called when a symbol's content changes
+    /// (its `content_hash` differs) so stale coverage doesn't survive an edit; the
+    /// impact re-run re-ingests fresh coverage for it.
+    member _.PurgeCoverageForSymbol(symbolId: int64) : unit =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- "DELETE FROM coverage_points WHERE symbol_id = @s"
+        cmd.Parameters.AddWithValue("@s", symbolId) |> ignore
+        cmd.ExecuteNonQuery() |> ignore

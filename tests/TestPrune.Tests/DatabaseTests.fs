@@ -2020,7 +2020,7 @@ module ``Schema version migration`` =
 
             let symbols = db.GetSymbolsInFile "src/Lib.fs"
             test <@ symbols.Length = 1 @>
-            test <@ getUserVersion path = 5 @>
+            test <@ getUserVersion path = 6 @>
         finally
             cleanupDb path
 

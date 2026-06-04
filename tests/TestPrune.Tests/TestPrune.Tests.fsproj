@@ -19,6 +19,7 @@
     <Compile Include="FcsTests.fs" />
     <Compile Include="AstAnalyzerTests.fs" />
     <Compile Include="DatabaseTests.fs" />
+    <Compile Include="CoverageTests.fs" />
     <Compile Include="DiffParserTests.fs" />
     <Compile Include="SymbolDiffTests.fs" />
     <Compile Include="ImpactAnalysisTests.fs" />
