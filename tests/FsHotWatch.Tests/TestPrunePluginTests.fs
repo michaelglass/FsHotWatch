@@ -2392,6 +2392,14 @@ let ``ingestAndEmitCoverage emits when the symbol graph maps the bulk of lines (
         test <@ xml.Contains("Embeddings.fs") && xml.Contains("number=\"10\"") @>)
 
 [<Fact>]
+let ``symbolGraphLooksIncomplete: true below half mapped, false at/above half and when empty`` () =
+    test <@ symbolGraphLooksIncomplete 10 90 @> // 10% mapped → still indexing
+    test <@ symbolGraphLooksIncomplete 49 51 @> // just under half
+    test <@ not (symbolGraphLooksIncomplete 50 50) @> // exactly half maps → real run
+    test <@ not (symbolGraphLooksIncomplete 96 4) @> // healthy run
+    test <@ not (symbolGraphLooksIncomplete 0 0) @> // nothing ingested → not "incomplete"
+
+[<Fact>]
 let ``TestRunCompleted carries RanFullSuite=true when no projects filtered`` () =
     let evt =
         { RunId = System.Guid.NewGuid()
