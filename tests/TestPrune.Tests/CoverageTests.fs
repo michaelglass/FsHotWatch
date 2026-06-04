@@ -143,18 +143,19 @@ module ``Cobertura ingest`` =
             test <@ summary = {| Ingested = 2; Skipped = 0 |} @>
             test <@ db.GetFileCoverage "Foo.fs" = [ (12, 3); (15, 0) ] @>)
 
-    // (c) a line with no containing symbol is skipped, not crashed.
+    // (c) a line BEFORE the file's first declaration has no preceding symbol — skipped, not crashed.
     [<Fact>]
-    let ``ingest skips lines outside any symbol`` () =
+    let ``ingest skips lines before the first symbol`` () =
         withDb (fun db ->
             seedSymbol db "Foo.bar" "Foo.fs" 10 20
 
-            let xml = cobertura [ "Foo.fs", [ (12, 1); (999, 4) ] ]
+            // line 12 attaches to Foo.bar (nearest preceding decl at 10); line 5 precedes it → skipped.
+            let xml = cobertura [ "Foo.fs", [ (12, 1); (5, 4) ] ]
             let summary = ingestCobertura db None xml
 
             test <@ summary.Ingested = 1 @>
             test <@ summary.Skipped >= 1 @>
-            // Only the in-range line was stored.
+            // Only the attributable line was stored.
             test <@ db.GetFileCoverage "Foo.fs" = [ (12, 1) ] @>)
 
     // (d) max-merge through ingest: the same line in two <class> blocks (hits 1 and 4)
@@ -388,17 +389,22 @@ module ``Edge cases`` =
     // --- Database coverage members: the "no row" / None branches ---
 
     [<Fact>]
-    let ``FindSymbolContainingLine returns None when no symbol spans the line`` () =
+    let ``FindSymbolContainingLine returns None before the first symbol or in an unknown file`` () =
         withDb (fun db ->
             seedSymbol db "Foo.bar" "Foo.fs" 10 20
-            test <@ db.FindSymbolContainingLine("Foo.fs", 999) = None @>
-            test <@ db.FindSymbolContainingLine("Other.fs", 15) = None @>)
+            // A line that PRECEDES the file's first declaration has no preceding symbol.
+            test <@ db.FindSymbolContainingLine("Foo.fs", 5) = None @>
+            // A file with no symbols at all.
+            test <@ db.FindSymbolContainingLine("Other.fs", 15) = None @>
+            // A line at/after the declaration attaches to it (nearest preceding), even far below.
+            test <@ db.FindSymbolContainingLine("Foo.fs", 999) |> Option.isSome @>)
 
     [<Fact>]
-    let ``RecordCoverage on a line with no containing symbol is a no-op`` () =
+    let ``RecordCoverage on a line before the first symbol is a no-op`` () =
         withDb (fun db ->
             seedSymbol db "Foo.bar" "Foo.fs" 10 20
-            db.RecordCoverage("Foo.fs", 999, 5)
+            // Line 5 precedes Foo.bar's declaration at line 10 → no preceding symbol → no-op.
+            db.RecordCoverage("Foo.fs", 5, 5)
             test <@ db.GetFileCoverage "Foo.fs" |> List.isEmpty @>)
 
     [<Fact>]

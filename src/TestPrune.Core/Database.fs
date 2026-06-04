@@ -1047,10 +1047,16 @@ type Database(dbPath: string) =
               TestClass = r.GetString(2)
               TestMethod = r.GetString(3) })
 
-    /// Find the innermost symbol whose `[line_start, line_end]` contains `line` in the
-    /// given source file. Returns `(symbol_id, line_start)` of the SMALLEST such symbol
-    /// (so coverage attaches to the most specific member, not its enclosing module/type),
-    /// or None when no symbol spans the line.
+    /// Find the symbol a coverage `line` belongs to in `sourceFile`: the symbol whose
+    /// declaration most-recently PRECEDES the line (largest `line_start <= line`).
+    ///
+    /// TestPrune stores symbols as declaration-point markers (`line_end = line_start`),
+    /// not body spans, so a strict `line_start <= line <= line_end` containment test only
+    /// matches lines that land exactly on a declaration. Instead we attribute each line to
+    /// the nearest preceding declaration — symbols tile the file, and a line belongs to the
+    /// binding it falls under. A later/inner declaration has a larger `line_start`, so this
+    /// naturally picks the innermost (most specific) enclosing symbol. Returns
+    /// `(symbol_id, line_start)`, or None only when the line precedes the file's first symbol.
     member _.FindSymbolContainingLine(sourceFile: string, line: int) : (int64 * int) option =
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()
@@ -1058,8 +1064,8 @@ type Database(dbPath: string) =
         cmd.CommandText <-
             """
             SELECT id, line_start FROM symbols
-            WHERE source_file = @f AND line_start <= @l AND line_end >= @l
-            ORDER BY (line_end - line_start) ASC
+            WHERE source_file = @f AND line_start <= @l
+            ORDER BY line_start DESC
             LIMIT 1
             """
 
