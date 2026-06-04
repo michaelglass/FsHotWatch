@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.18 - 2026-06-04
+
 - fix: cold-start coverage no longer clobbers a prior good emission. On the first run
   after a schema bump recreates the TestPrune DB, the daemon is still indexing, so a
   covered file may not have symbols yet and its coverage lines can't be attributed.
