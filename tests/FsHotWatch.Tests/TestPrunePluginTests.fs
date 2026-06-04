@@ -42,6 +42,16 @@ let private emitBatchAndQuiesce (host: PluginHost) (files: string list) =
     host.EmitBatchChecked(fakeBatchChecked files)
     waitForQuiescent host 10000
 
+/// Emit a successful BuildCompleted and wait for the plugin to reach a
+/// terminal status. Unlike FileChecked/BatchChecked, this handler spawns the
+/// test run via `Async.Start`, so the work outlives the message handler and
+/// quiescence could return before the run finishes — a terminal await is the
+/// correct sync here.
+let private emitBuildAndWaitTerminal (host: PluginHost) =
+    let await = beginAwaitNextTerminal host "test-prune"
+    host.EmitBuildCompleted(BuildSucceeded)
+    await.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
 /// Stand up a test-prune plugin around a single one-project test config whose
 /// command is `sh -c "touch <sentinel>"`. Returns `(host, sentinel)`.
 let private withSingleProjectHarness (tmpDir: string) (projectName: string) =
@@ -1269,9 +1279,7 @@ let computeTest () =
         // events are allowed to promote the freshness sidecar to clean.
         // Mirrors fshw's real cold-scan pipeline (BuildPlugin terminal
         // gates FCS tier dispatch).
-        let firstBuild = beginAwaitNextTerminal host "test-prune"
-        host.EmitBuildCompleted(BuildSucceeded)
-        firstBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        emitBuildAndWaitTerminal host
 
         // Initial index: both files analysed, edges written to DB.
         let libResult =
@@ -1424,9 +1432,7 @@ let testOtherStuff () =
         // Item 3 ordering: BuildCompleted FIRST so subsequent FileCheckeds
         // promote the freshness sidecar to clean. Mirrors fshw's real
         // cold-scan pipeline.
-        let firstBuild = beginAwaitNextTerminal host "test-prune"
-        host.EmitBuildCompleted(BuildSucceeded)
-        firstBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        emitBuildAndWaitTerminal host
 
         // Emit lib file
         let libResult =
@@ -1486,9 +1492,7 @@ let validate (cfg: Config) = cfg.Value.Length > 0
         test <@ affectedTests.Contains("testValidateFalse") @>
         test <@ not (affectedTests.Contains("testOtherStuff")) @>
 
-        let secondBuild = beginAwaitNextTerminal host "test-prune"
-        host.EmitBuildCompleted(BuildSucceeded)
-        secondBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        emitBuildAndWaitTerminal host
 
         // Verify that the test command was invoked with the correct filter
         let capturedArgs =
@@ -1694,9 +1698,7 @@ let lazyComputeTest () =
         // Item 3 ordering: BuildCompleted FIRST so the seed FileCheckeds
         // can promote the freshness sidecar to clean. (Mirrors fshw's real
         // cold-scan: BuildPlugin terminal gates FCS tier checks.)
-        let firstBuild = beginAwaitNextTerminal host "test-prune"
-        host.EmitBuildCompleted(BuildSucceeded)
-        firstBuild.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        emitBuildAndWaitTerminal host
 
         // Seed the DB with the initial baseline.
         match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
@@ -2798,9 +2800,7 @@ let badTypeUse : int = "not-an-int"
         waitForPluginTerminal host "test-prune" 10.0
 
         // Drive a flush via BuildSucceeded.
-        let buildAwait = beginAwaitNextTerminal host "test-prune"
-        host.EmitBuildCompleted(BuildSucceeded)
-        buildAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        emitBuildAndWaitTerminal host
 
         // NEW contract: symbols ARE in the DB (gate no longer withholds the write).
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
@@ -2861,9 +2861,7 @@ let cleanTest () = ()
         // scan — BuildPlugin's terminal status gates FCS tier checks). The
         // sidecar's `markClean` only fires for FileChecked events that arrive
         // AFTER BuildCompleted has been observed in this session.
-        let buildAwait = beginAwaitNextTerminal host "test-prune"
-        host.EmitBuildCompleted(BuildSucceeded)
-        buildAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        emitBuildAndWaitTerminal host
 
         emitFileAndQuiesce host result
         // BatchChecked drives the cohort-complete flush that persists
@@ -3018,9 +3016,7 @@ let coldBootTest () = ()
         // BatchChecked drives the flush. Mirrors the real fshw cold-scan
         // pipeline (BuildPlugin terminal gates FCS tier checks). Only this
         // ordering allows the sidecar to stamp `fcsClean = true`.
-        let phase1Build = beginAwaitNextTerminal host1 "test-prune"
-        host1.EmitBuildCompleted(BuildSucceeded)
-        phase1Build.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        emitBuildAndWaitTerminal host1
 
         emitFileAndQuiesce host1 cleanResult
         emitBatchAndQuiesce host1 [ file ]
@@ -3084,9 +3080,7 @@ let badTypeUse : int = "wrong-type"
         // diagnostics. The trade-off is intentional — cold-start reliability
         // over correctness on user-broke-their-code transients. The next
         // genuine clean check refreshes the timestamp.
-        let phase2Build = beginAwaitNextTerminal host2 "test-prune"
-        host2.EmitBuildCompleted(BuildSucceeded)
-        phase2Build.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        emitBuildAndWaitTerminal host2
 
         emitFileAndQuiesce host2 brokenResult
 
@@ -3190,9 +3184,7 @@ let phaseBTest () = ()
 
         // Item 3 ordering: BuildSucceeded first so the FileChecked that
         // follows is allowed to promote the sidecar to clean.
-        let buildAwait = beginAwaitNextTerminal host "test-prune"
-        host.EmitBuildCompleted(BuildSucceeded)
-        buildAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        emitBuildAndWaitTerminal host
 
         emitFileAndQuiesce host result
 
@@ -3337,9 +3329,7 @@ let ``Item 3: post-BuildCompleted clean FileChecked → sidecar stamped clean`` 
             |> Option.defaultWith (fun () -> failwith "CheckFile returned None")
 
         // Build first.
-        let buildAwait = beginAwaitNextTerminal host "test-prune"
-        host.EmitBuildCompleted(BuildSucceeded)
-        buildAwait.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+        emitBuildAndWaitTerminal host
 
         // Then FileChecked.
         emitFileAndQuiesce host result
