@@ -31,7 +31,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="CoverageMerge.fs" />
     <Compile Include="Flakiness.fs" />
     <Compile Include="FileFreshness.fs" />
     <Compile Include="TestPrunePlugin.fs" />
@@ -44,6 +43,6 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.300" PrivateAssets="All" />
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
-    <PackageReference Include="TestPrune.Core" Version="4.0.3" />
+    <PackageReference Include="TestPrune.Core" Version="4.1.0" />
   </ItemGroup>
 </Project>

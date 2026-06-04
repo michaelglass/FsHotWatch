@@ -4,7 +4,6 @@ open FsHotWatch.ErrorLedger
 open FsHotWatch.Events
 open FsHotWatch.PluginFramework
 open CoverageRatchet.Cobertura
-open CoverageRatchet.Merge
 open CoverageRatchet.Thresholds
 open CoverageRatchet.Ratchet
 
@@ -81,7 +80,6 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                       else
                           configPath
 
-                  mergeIntoBaselines searchDir
                   let xmlPaths = findCoverageFiles searchDir
 
                   if List.isEmpty xmlPaths then
@@ -114,7 +112,6 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                     ctx.RunExclusive
                         "coverage-check"
                         (async {
-                            mergeIntoBaselines searchDir
                             let! xmlPaths = pollForFiles searchDir 50 100
 
                             let result =
@@ -123,14 +120,10 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                                 else
                                     runCheck configPath xmlPaths
 
-                            // Raise-only on a passing full-suite run. A filtered run
-                            // never refreshes (it didn't exercise every project, so its
-                            // cobertura would lower the high-watermark for un-run files).
-                            if trc.RanFullSuite then
-                                match result with
-                                | AllPassed -> refreshBaselines searchDir
-                                | SomeFailed _ -> ()
-
+                            // The TestPrune DB is the coverage high-watermark now:
+                            // each run ingests into it (max-merge across projects)
+                            // and emits the single shared cobertura. There is no
+                            // separate baseline to refresh here.
                             return CheckDone(gateVerdict trc.RanFullSuite result)
                         })
 
