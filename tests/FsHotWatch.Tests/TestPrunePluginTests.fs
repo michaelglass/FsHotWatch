@@ -2400,6 +2400,26 @@ let ``symbolGraphLooksIncomplete: true below half mapped, false at/above half an
     test <@ not (symbolGraphLooksIncomplete 0 0) @> // nothing ingested → not "incomplete"
 
 [<Fact>]
+let ``clearFcsCheckCache removes the cache json files and reports the count`` () =
+    withTempDir "fcs-cache" (fun repoRoot ->
+        let cacheDir = Path.Combine(repoRoot, ".fshw", "cache")
+        Directory.CreateDirectory(cacheDir) |> ignore
+        File.WriteAllText(Path.Combine(cacheDir, "a.json"), "{}")
+        File.WriteAllText(Path.Combine(cacheDir, "b.json"), "{}")
+        // A non-json sibling must survive — we only clear FCS check-cache entries.
+        File.WriteAllText(Path.Combine(cacheDir, "keep.txt"), "x")
+
+        let cleared = clearFcsCheckCache repoRoot
+
+        test <@ cleared = 2 @>
+        test <@ not (File.Exists(Path.Combine(cacheDir, "a.json"))) @>
+        test <@ File.Exists(Path.Combine(cacheDir, "keep.txt")) @>)
+
+[<Fact>]
+let ``clearFcsCheckCache is a no-op when there is no cache dir`` () =
+    withTempDir "fcs-nocache" (fun repoRoot -> test <@ clearFcsCheckCache repoRoot = 0 @>)
+
+[<Fact>]
 let ``TestRunCompleted carries RanFullSuite=true when no projects filtered`` () =
     let evt =
         { RunId = System.Guid.NewGuid()
