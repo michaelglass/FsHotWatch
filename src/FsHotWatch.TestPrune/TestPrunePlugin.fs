@@ -1007,6 +1007,26 @@ let internal tryRepairSchemaDrift (dbPath: string) (ex: exn) =
                 "test-prune"
                 $"Could not delete stale cache DB %s{dbPath}: %s{deleteEx.Message}. Delete it manually and restart the daemon."
 
+/// Delete the FCS check cache (`.fshw/cache/*.json`) for `repoRoot`, returning the number
+/// of entries removed. Called when the TestPrune symbol DB was recreated (a schema bump):
+/// the persisted FCS cache would otherwise let unchanged files hit the cache and SKIP
+/// re-checking, so their symbols never re-flush into the freshly-emptied DB — leaving the
+/// symbol graph (and therefore coverage + impact analysis) permanently partial. Clearing it
+/// forces the next scan to re-check, and thus re-index, every file. Pure path logic so it
+/// is unit-testable without a daemon.
+let internal clearFcsCheckCache (repoRoot: string) : int =
+    let cacheDir = Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "cache")
+
+    if Directory.Exists cacheDir then
+        let files = Directory.GetFiles(cacheDir, "*.json")
+
+        for f in files do
+            File.Delete f
+
+        files.Length
+    else
+        0
+
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
 /// need a `RouteStore`/`SymbolStore` derive it from the same DB the plugin
@@ -1022,6 +1042,21 @@ let create
     (coveragePaths: (string -> CoveragePaths option) option)
     =
     let db = Database.create dbPath
+
+    // The symbol DB was just recreated (schema bump deleted the old one). The FCS check
+    // cache is now stale: cache-hit files would skip re-checking and never re-flush their
+    // symbols into the empty DB, leaving the graph (and coverage/impact analysis) partial.
+    // Clear it so the next scan re-checks — and re-indexes — every file.
+    if db.WasRecreated then
+        try
+            let cleared = clearFcsCheckCache repoRoot
+
+            Logging.warn
+                "test-prune"
+                $"TestPrune DB was recreated (schema change) — cleared %d{cleared} FCS check-cache entries so every file re-indexes on this scan."
+        with ex ->
+            Logging.error "test-prune" $"failed to clear the FCS check cache after a DB recreate: %s{ex.Message}"
+
     let extensions = buildExtensions |> Option.map (fun f -> f db)
 
     let tryRepairSchemaDrift ex = tryRepairSchemaDrift dbPath ex
