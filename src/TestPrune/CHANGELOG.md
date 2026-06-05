@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.2.0 - 2026-06-05
+
 - chore: bundle TestPrune.Core 4.2.0 (`Database.WasRecreated`, which lets downstream
   consumers invalidate stale sibling caches after a schema-bump DB rebuild). No change
   to CLI behavior.

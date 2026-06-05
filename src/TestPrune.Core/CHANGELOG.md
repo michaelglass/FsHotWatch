@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.2.0 - 2026-06-05
+
 - feat: `Database.WasRecreated` reports whether the on-disk DB was freshly created,
   or recreated because its schema version no longer matched, as opposed to a
   compatible reopen. This lets consumers detect a silent schema-bump rebuild — where
