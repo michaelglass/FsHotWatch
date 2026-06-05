@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.19 - 2026-06-05
+
 - fix: when a schema bump recreates the TestPrune DB, the plugin now clears the FCS
   check-cache so every file re-indexes on the next scan. Previously the recreated DB
   started empty while the on-disk check-cache survived, so cache-hit files were skipped
