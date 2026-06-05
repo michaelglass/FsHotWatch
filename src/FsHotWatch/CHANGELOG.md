@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.20 - 2026-06-05
+
 - chore: bundle FsHotWatch.TestPrune 0.7.0-alpha.19 (clears the FCS check-cache after a
   schema-bump DB recreate, so the symbol graph re-indexes fully instead of staying
   partial). No core API change; republished so the bundled tool ships the fix.
