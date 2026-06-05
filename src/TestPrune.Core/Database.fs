@@ -214,8 +214,13 @@ let private hasUserTables (conn: SqliteConnection) =
     cmd.ExecuteScalar() :?> int64 > 0L
 
 /// Open a connection, deleting and recreating the database if the schema
-/// version is incompatible.
-let private openCheckedConnection (dbPath: string) =
+/// version is incompatible. Returns `(connection, wasFresh)` where `wasFresh`
+/// is true when the database had no usable prior state this open — either the
+/// file did not exist, or an incompatible schema forced a delete+recreate. A
+/// consumer that derives its own state from this DB's contents (e.g. a separate
+/// FCS check cache) can use `wasFresh` to invalidate that state, since a fresh
+/// DB has lost all symbols a stale sibling cache would assume are still indexed.
+let private openCheckedConnection (dbPath: string) : SqliteConnection * bool =
     if File.Exists(dbPath) then
         let conn = openConnection dbPath
         use cmd = conn.CreateCommand()
@@ -243,18 +248,22 @@ let private openCheckedConnection (dbPath: string) =
             SqliteConnection.ClearPool(conn)
             conn.Dispose()
             deleteCacheFiles dbPath
-            openConnection dbPath
+            (openConnection dbPath, true)
         else
-            conn
+            (conn, false)
     else
-        openConnection dbPath
+        // First-ever creation: no prior symbols, so any sibling cache is stale too.
+        (openConnection dbPath, true)
 
 /// SQLite-backed dependency graph storage.
 type Database(dbPath: string) =
     let warnedUnknownKinds = HashSet<string>()
+    let mutable wasRecreated = false
 
     do
-        use conn = openCheckedConnection dbPath
+        let openedConn, fresh = openCheckedConnection dbPath
+        wasRecreated <- fresh
+        use conn = openedConn
         use cmd = conn.CreateCommand()
         cmd.CommandText <- schema
         cmd.ExecuteNonQuery() |> ignore
@@ -270,6 +279,13 @@ type Database(dbPath: string) =
             use setCmd = conn.CreateCommand()
             setCmd.CommandText <- $"PRAGMA user_version = %d{SchemaVersion};"
             setCmd.ExecuteNonQuery() |> ignore
+
+    /// True when this DB had no usable prior state when opened — the file did not exist,
+    /// or an incompatible schema (a `SchemaVersion` bump) forced a delete+recreate. A
+    /// consumer with a sibling cache derived from this DB's symbols (e.g. an FCS check
+    /// cache that decides which files to re-index) should invalidate it when this is true:
+    /// the recreated DB has lost every symbol the stale cache assumes is still indexed.
+    member _.WasRecreated = wasRecreated
 
     /// Create a Database instance, initializing the schema if needed.
     static member create(dbPath: string) = Database(dbPath)

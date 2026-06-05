@@ -1905,6 +1905,32 @@ module ``Schema version migration`` =
             cleanupDb path
 
     [<Fact>]
+    let ``WasRecreated reports fresh create and schema-bump recreate, not a compatible reopen`` () =
+        // Consumers with a sibling cache (e.g. FsHotWatch's FCS check cache) invalidate it
+        // when WasRecreated is true — a recreated DB has lost the symbols the cache assumes
+        // are still indexed.
+        let path = tempDbPath ()
+
+        try
+            // First-ever create (no file existed) → fresh.
+            let db = Database.create path
+            test <@ db.WasRecreated @>
+            db.RebuildProjects([ standardGraph ])
+
+            // Re-open at the current, compatible version → NOT recreated; symbols survive.
+            let db2 = Database.create path
+            test <@ not db2.WasRecreated @>
+            test <@ (db2.GetSymbolsInFile "src/Lib.fs").Length = 1 @>
+
+            // Stamp an incompatible older version → next open delete+recreates → fresh again.
+            setUserVersion path 1
+            let db3 = Database.create path
+            test <@ db3.WasRecreated @>
+            test <@ db3.GetSymbolsInFile "src/Lib.fs" |> List.isEmpty @>
+        finally
+            cleanupDb path
+
+    [<Fact>]
     let ``preserves database when schema version is newer than SchemaVersion`` () =
         // Forward-compat: a newer daemon stamped v999 on the same DB file.
         // An older consumer MUST NOT wipe it — the newer schema has additive

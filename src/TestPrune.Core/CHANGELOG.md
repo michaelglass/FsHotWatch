@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: `Database.WasRecreated` reports whether the on-disk DB was freshly created,
+  or recreated because its schema version no longer matched, as opposed to a
+  compatible reopen. This lets consumers detect a silent schema-bump rebuild — where
+  the symbol graph is wiped to empty — and invalidate sibling caches keyed to the old
+  graph. Without it, an external check-cache that short-circuits re-indexing keeps
+  skipping files after a schema change, leaving the symbol graph permanently partial.
+
 ## 4.1.0 - 2026-06-04
 
 - feat: TestPrune-native edit-aware coverage. Coverage from a Cobertura report is
