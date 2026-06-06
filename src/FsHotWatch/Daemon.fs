@@ -1157,7 +1157,8 @@ type Daemon
         _fcsSuppressedCodes: Set<int>,
         lifetime: CancellationTokenSource,
         formatAllFn: (unit -> Async<string>) option,
-        excludePatterns: string list
+        excludePatterns: string list,
+        idleTrimTimer: IDisposable option
     ) =
 
     let mutable disposed = false
@@ -1196,6 +1197,7 @@ type Daemon
                 // AsyncLocal current one — Dispose may run from a different
                 // async context than the one that installed it.
                 processRegistry.KillAll()
+                idleTrimTimer |> Option.iter (fun t -> t.Dispose())
                 lifetime.Cancel()
                 lifetime.Dispose()
                 (watcher :> IDisposable).Dispose()
@@ -1598,6 +1600,14 @@ module Daemon =
             /// Extra file patterns from FileCommandPlugin configs that the watcher
             /// should monitor beyond the default F# source/project set.
             ExtraWatchPatterns: FilePattern list
+            /// Idle-trim threshold in minutes. When the daemon has been idle (no
+            /// file events, no running work) for this long, the FCS root caches
+            /// are released so the GC can reclaim the managed entries plus the
+            /// native reader state they root. `0` (the default) disables the
+            /// feature entirely — no timer is created. The next file event
+            /// re-warms naturally (slower first check after a long idle is the
+            /// accepted trade). Experimental: see `IdleTrim`.
+            IdleTrimMin: int
         }
 
     module DaemonOptions =
@@ -1606,7 +1616,8 @@ module Daemon =
               CacheKeyProvider = None
               FcsSuppressedCodes = None
               ExcludePatterns = []
-              ExtraWatchPatterns = [] }
+              ExtraWatchPatterns = []
+              IdleTrimMin = 0 }
 
     /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
     /// `None` resolves to `Set.empty` — fshw deliberately ships no built-in
@@ -1830,6 +1841,37 @@ module Daemon =
             let formatAllViaAgent () =
                 changeAgent.PostAndAsyncReply(Choice2Of2)
 
+            // Idle-trim scheduler (experimental). When idleTrimMin > 0 a
+            // periodic timer releases FCS's strong cache roots after the daemon
+            // has been idle (no events, no running work) for the configured
+            // window, letting the GC reclaim managed entries plus the native
+            // reader state they root. Activity is read from the host
+            // (LastActivityAt is bumped on every event dispatch + status
+            // transition) and "busy" from AnyPluginBusy, so the scheduler reuses
+            // the daemon's existing tracking rather than duplicating it. The
+            // decision logic lives in the pure, unit-tested `IdleTrim` module.
+            let idleTrimTimer: IDisposable option =
+                if opts.IdleTrimMin <= 0 || isNull (box checker) then
+                    None
+                else
+                    // The trim itself, the per-tick decision, and the logging are
+                    // all in the unit-tested `IdleTrim` module; here we only inject
+                    // the live effects (clock, host busy/activity, FCS clear, log).
+                    let deps: IdleTrim.IdleTrimDeps =
+                        { Threshold = System.TimeSpan.FromMinutes(float opts.IdleTrimMin)
+                          Now = fun () -> System.DateTime.UtcNow
+                          Busy = host.AnyPluginBusy
+                          LastActivityTicks = fun () -> host.LastActivityAt().Ticks
+                          Trim = checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients
+                          Log =
+                            fun level message ->
+                                match level with
+                                | "error" -> Logging.error "trim" message
+                                | _ -> Logging.info "trim" message }
+
+                    let timer = IdleTrim.createTimer deps opts.IdleTrimMin
+                    Some(timer :> IDisposable)
+
             new Daemon(
                 host,
                 watcher,
@@ -1844,7 +1886,8 @@ module Daemon =
                 fcsSuppressedCodes,
                 lifetime,
                 Some formatAllViaAgent,
-                excludePatterns
+                excludePatterns,
+                idleTrimTimer
             )
         with _ ->
             lifetime.Dispose()

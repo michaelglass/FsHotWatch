@@ -28,7 +28,8 @@ let private defaults: DaemonConfiguration =
       Coverage = None
       Exclude = []
       LogDir = "logs"
-      TimeoutSec = None }
+      TimeoutSec = None
+      IdleTrimMin = 0 }
 
 // --- parseConfig: empty JSON ---
 
@@ -66,6 +67,23 @@ let ``parseConfig logDir custom value overrides default`` () =
 let ``parseConfig logDir absolute path is preserved`` () =
     let config = parseConfig """{"logDir": "/var/log/fshw"}""" defaults
     test <@ config.LogDir = "/var/log/fshw" @>
+
+// --- parseConfig: idleTrimMin ---
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig idleTrimMin defaults to 0 when absent`` () =
+    let config = parseConfig "{}" defaults
+    test <@ config.IdleTrimMin = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig idleTrimMin reads numeric value`` () =
+    let config = parseConfig """{"idleTrimMin": 2}""" defaults
+    test <@ config.IdleTrimMin = 2 @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig idleTrimMin ignores non-numeric value`` () =
+    let config = parseConfig """{"idleTrimMin": "nope"}""" defaults
+    test <@ config.IdleTrimMin = 0 @>
 
 // --- parseConfig: exclude ---
 

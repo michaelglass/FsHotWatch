@@ -138,6 +138,11 @@ type DaemonConfiguration =
         LogDir: string
         /// Global default timeout (seconds). Used when no per-entry override set.
         TimeoutSec: int option
+        /// Idle-trim threshold in minutes. When > 0 the daemon releases FCS root
+        /// caches after this many minutes of idleness (no events, no running
+        /// work) so the GC can reclaim them. `0` (default) disables it.
+        /// Experimental memory optimization.
+        IdleTrimMin: int
     }
 
 let private defaultConfigFor (repoRoot: string) =
@@ -157,7 +162,8 @@ let private defaultConfigFor (repoRoot: string) =
       Coverage = None
       Exclude = []
       LogDir = "logs"
-      TimeoutSec = None }
+      TimeoutSec = None
+      IdleTrimMin = 0 }
 
 /// Raised when `.fshw.json` cannot be read, parsed, or validated.
 /// Carries a user-facing message.
@@ -513,6 +519,11 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | true, v when v.ValueKind = JsonValueKind.Number -> Some(v.GetInt32())
         | _ -> defaults.TimeoutSec
 
+    let idleTrimMin =
+        match root.TryGetProperty("idleTrimMin") with
+        | true, v when v.ValueKind = JsonValueKind.Number -> v.GetInt32()
+        | _ -> defaults.IdleTrimMin
+
     { Build = build
       Format = format
       Lint = lint
@@ -523,7 +534,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       Coverage = coverage
       Exclude = exclude
       LogDir = logDir
-      TimeoutSec = timeoutSec }
+      TimeoutSec = timeoutSec
+      IdleTrimMin = idleTrimMin }
 
 /// Strip a config down to a minimal base for run-once subcommands.
 /// Disables all plugins except format preprocessor. Caller overrides specific fields.

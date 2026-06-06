@@ -76,6 +76,7 @@
     <Compile Include="DepsFreshness.fs" />
     <Compile Include="CheckPipeline.fs" />
     <Compile Include="Ipc.fs" />
+    <Compile Include="IdleTrim.fs" />
     <Compile Include="Daemon.fs" />
   </ItemGroup>
 
