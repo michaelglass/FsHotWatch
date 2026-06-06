@@ -27,6 +27,36 @@ parity.
   `TransparentCompiler` path (`useTransparentCompiler = true`), which never
   reads it, so the value had no effect.
 
+### Daemon: fix silent truncation of cold scans (cancelled-check race)
+
+During a cold scan the BuildPlugin's `dotnet build` touches `obj/**/ref/*.dll`;
+the watcher fires, `processBatch` re-checks the affected files, and
+`CancelPreviousCheck` cancels the scan-side in-flight check of the *same* file. A
+cancelled check surfaces as `None`, and the scan emit loop silently dropped it
+(`| None -> ()`). The dropped files were never reported to NOR cleared from the
+ErrorLedger, so a scan could report **green** while diagnostics for hundreds of
+never-checked files were missing — observed as `Checked 103 files … skipped 46`
+on a 742-file registration with exit 0 and a known diagnostic absent from
+`check` output.
+
+#### Fixed
+- **Scan now retries cancelled/aborted/failed checks** within a bounded budget
+  (3 retry rounds per tier). The retry re-invokes the same per-file check, which
+  re-reads current disk content via `CancelPreviousCheck` — so a newer user edit
+  that legitimately superseded an in-flight check is observed on retry (not
+  duplicated), preserving the cancellation ordering guarantee. The common
+  single-race case converges to all files checked.
+- **Incomplete scans no longer present as clean.** If files remain unchecked
+  after the retry budget, the scan-complete state carries the unchecked count;
+  daemon status renders `incomplete: N files checked, M unchecked …` (a non-ok
+  condition) instead of `complete: …`, and the scan log line gains an
+  `, unchecked M` suffix. The existing `Checked N files (T tiers), skipped M`
+  prefix is preserved for external tooling that greps it.
+
+#### Changed
+- `ScanState.ScanComplete` now carries `unchecked: int`
+  (`ScanComplete of total * unchecked * elapsed`).
+
 ### Daemon: auto-recovering deps-freshness gate before FCS analysis
 
 When a project's restored dependency state (`obj/project.assets.json`) goes
