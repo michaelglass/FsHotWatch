@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- feat: `fshw dead-code` — runs TestPrune's unreachable-symbol analysis against the daemon's .fshw/test-impact.db (same semantics as the standalone test-prune CLI: --entry/--include-tests/--verbose), no DB copying needed.
+
 ## 0.8.0-alpha.20 - 2026-06-05
 
 - chore: bundle FsHotWatch.TestPrune 0.7.0-alpha.19 (clears the FCS check-cache after a

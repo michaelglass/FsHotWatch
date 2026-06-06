@@ -2,7 +2,7 @@
   "overrides": {
     "AnalyzersPlugin.fs": [
       {
-        "line": 75,
+        "line": 81,
         "branch": 70,
         "reason": "FCS analyzer paths in IntegrationTests (excluded); \u00A72a \u002B lifecycle \u002B \u00A71 fcs-signature add untested branches; line drifts 74-76% across runs",
         "platform": "macos"
@@ -107,8 +107,8 @@
     ],
     "CoveragePlugin.fs": [
       {
-        "line": 79,
-        "branch": 40,
+        "line": 83,
+        "branch": 50,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -121,7 +121,7 @@
     "Daemon.fs": [
       {
         "line": 75,
-        "branch": 71,
+        "branch": 74,
         "reason": "drifts 74-76%; pinned to floor (scoped-invalidation branches in processBatch are integration-tested, excluded from coverage)",
         "platform": "macos"
       },
@@ -146,9 +146,14 @@
         "platform": "linux"
       }
     ],
+    "DeadCode.fs": {
+      "line": 86,
+      "branch": 75,
+      "reason": "loosened automatically"
+    },
     "DepsFreshness.fs": [
       {
-        "line": 68,
+        "line": 73,
         "branch": 59,
         "reason": "honest floor (2026-06-03): unit tests cover the pure freshness/orchestration paths (compareFreshness, evaluateProject, dependencyFiles, detectProjectFreshness) but deliberately NOT productionRestoreRunner, which shells \u0060dotnet restore\u0060/\u0060paket restore\u0060/\u0060tool restore\u0060 \u2014 exercising it would be a slow nondeterministic integration test. Stable at line=68.2% branch=59.1% (13/22) across baseline runs. The file had no ratchet entry when added, so coverageratchet failed it against the strict default whenever the cobertura report included it (the per-run report file-set is itself flaky under daemon load); pinning an honest floor makes it pass deterministically wherever it appears, without ExcludeFromCodeCoverage.",
         "platform": "macos"
@@ -162,7 +167,7 @@
     ],
     "ErrorLedger.fs": [
       {
-        "line": 96,
+        "line": 98,
         "branch": 95,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
@@ -182,7 +187,7 @@
         "platform": "linux"
       },
       {
-        "line": 95,
+        "line": 96,
         "branch": 100,
         "reason": "loosened automatically"
       }
@@ -216,7 +221,7 @@
     "FileErrorReporter.fs": [
       {
         "line": 100,
-        "branch": 75,
+        "branch": 85,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -241,8 +246,8 @@
     ],
     "FileTaskCache.fs": [
       {
-        "line": 93,
-        "branch": 77,
+        "line": 94,
+        "branch": 82,
         "reason": "ratchet 2026-04-30 (commit 45124f9e): observed 93.1/77.9 stable across 8 CI runs; tightened from very loose 78/67 floor (15pp / 11pp drift from observed)",
         "platform": "macos"
       },
@@ -308,8 +313,8 @@
     ],
     "Ipc.fs": [
       {
-        "line": 83,
-        "branch": 68,
+        "line": 84,
+        "branch": 73,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -452,7 +457,7 @@
     ],
     "ProcessHelper.fs": [
       {
-        "line": 92,
+        "line": 93,
         "branch": 100,
         "reason": "stable floor: kill-on-timeout drain race-handling (~lines 157-196: Kill catch arm, post-kill Task.WaitAll drain catch, stdout/stderr IsCompletedSuccessfully else-branches) is intentionally NOT unit-covered \u2014 behavior-tested in FsHotWatch.IntegrationTests; deterministic because the sleep-30 timeout test lives there. Observed stable 93.1% line across runs; pinned 1pp below with jitter margin",
         "platform": "macos"
@@ -479,8 +484,8 @@
     ],
     "Program.fs": [
       {
-        "line": 68,
-        "branch": 58,
+        "line": 71,
+        "branch": 60,
         "reason": "CLI entry point; line drifts 66-68% and branch drifts 53-54% across runs \u2014 pin to floor; auto-ratchet bumps to ceiling and breaks CI on the next unlucky run",
         "platform": "macos"
       },
