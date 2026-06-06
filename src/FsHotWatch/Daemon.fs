@@ -1271,7 +1271,14 @@ type Daemon
         | Scanning(total, completed, _) ->
             let pct = if total > 0 then completed * 100 / total else 0
             $"scanning: %d{completed}/%d{total} files (%d{pct}%%)"
-        | ScanComplete(total, elapsed) -> $"complete: %d{total} files checked in %.1f{elapsed.TotalSeconds}s"
+        | ScanComplete(total, unchecked, elapsed) ->
+            if unchecked > 0 then
+                // Non-ok: a truncated scan must not present as clean. The
+                // checked count is (total - unchecked) so the discrepancy is
+                // explicit to an agent/user reading status or check output.
+                $"incomplete: %d{total - unchecked} files checked, %d{unchecked} unchecked in %.1f{elapsed.TotalSeconds}s"
+            else
+                $"complete: %d{total} files checked in %.1f{elapsed.TotalSeconds}s"
 
     /// Run the daemon with IPC server on the given pipe name.
     /// Discovers projects, performs initial scan, then watches for changes.
@@ -1349,6 +1356,67 @@ type Daemon
                 (this :> IDisposable).Dispose()
         }
 
+/// Drive per-file checks with a bounded retry on `None` results.
+///
+/// Why this exists — the cold-scan silent-truncation race: while the initial
+/// scan runs its FCS tiers, the BuildPlugin's `dotnet build` touches
+/// `obj/**/ref/*.dll`; the watcher fires, `processBatch` re-checks the affected
+/// files, and `CancelPreviousCheck` cancels the scan-side in-flight check of the
+/// same file. A cancelled check surfaces as `None` from the pipeline, and the
+/// scan emit loop used to silently drop `None` (`| None -> ()`) — so a scan
+/// could report green while the ErrorLedger never saw diagnostics for the
+/// dropped files (neither reported NOR cleared).
+///
+/// This helper closes that hole: files whose `check` returned `None` are
+/// re-enqueued and re-checked, up to `maxRetries` additional rounds. The retry
+/// calls the SAME `check` thunk, which (via `CheckFile`/`CheckFileWithOptions`
+/// → `CancelPreviousCheck`) re-reads current disk content — so a NEWER user edit
+/// that legitimately superseded the in-flight check is observed on retry rather
+/// than duplicated, preserving CancelPreviousCheck's ordering guarantee. Each
+/// file is emitted at most once (only when its check returns `Some`).
+///
+/// Returns the number of files STILL unchecked after the budget is exhausted
+/// (a file under continuous concurrent edit, or a hard failure). The caller
+/// must surface a non-zero count as a non-ok scan condition — see `performScan`
+/// / `ScanComplete` — so a truncated scan cannot be read as clean.
+///
+/// Pure of FCS and disk: `check` is injected, making the retry/convergence and
+/// honest-completion invariants unit-testable at the narrowest seam.
+let internal runChecksWithRetry
+    (maxRetries: int)
+    (check: AbsFilePath -> Async<'r option>)
+    (emit: 'r -> unit)
+    (files: AbsFilePath list)
+    : Async<int> =
+    async {
+        let mutable pending = files
+        let mutable round = 0
+
+        // Initial pass plus up to `maxRetries` retry rounds over the residual
+        // `None` set. Converges (pending shrinks or we hit the budget).
+        while not pending.IsEmpty && round <= maxRetries do
+            let! results =
+                pending
+                |> List.map (fun file ->
+                    async {
+                        let! r = check file
+                        return file, r
+                    })
+                |> Async.Parallel
+
+            let mutable stillPending = []
+
+            for file, result in results do
+                match result with
+                | Some r -> emit r
+                | None -> stillPending <- file :: stillPending
+
+            pending <- List.rev stillPending
+            round <- round + 1
+
+        return pending.Length
+    }
+
 /// Execute the full scan logic, returning the updated agent state.
 let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: ScanAgentState) (ct: CancellationToken) =
     async {
@@ -1382,6 +1450,12 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
         let scanStartedAt = System.DateTime.UtcNow
         let mutable scanState: ScanState = Scanning(total, 0, scanStartedAt)
         let dispatchedFiles = ResizeArray<AbsFilePath>()
+        // Files whose check never returned Some, even after the bounded
+        // scan-retry budget (the silent-truncation race: a scan-side check
+        // cancelled by processBatch's same-file re-check, or a hard failure).
+        // Surfaced in the scan-complete state and log so a truncated scan can
+        // never read as clean. See `runChecksWithRetry`.
+        let mutable uncheckedCount = 0
 
         if not files.IsEmpty then
             // Run preprocessors (e.g., formatter) before dispatching
@@ -1415,8 +1489,20 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
             // Check files in parallel tiers based on project dependency graph
             let tiers = graph.GetParallelTiers()
 
+            // Bounded retry budget for cancelled/aborted/failed scan checks.
+            // The common case (a single processBatch race per file) converges
+            // in one retry; the budget caps work for files under continuous
+            // concurrent edit, which are then honestly reported as unchecked.
+            let scanRetryBudget = 3
+
             for tier in tiers do
-                let tierChecks = ResizeArray<Async<FileCheckResult option>>()
+                // Resolve each checkable file in the tier to its check thunk,
+                // honouring the deps-freshness gate and per-project options.
+                // The thunk is re-runnable (an Async description), so
+                // runChecksWithRetry can re-invoke it on a cancelled result —
+                // re-reading current disk content (invariant 3).
+                let tierThunks =
+                    System.Collections.Generic.Dictionary<AbsFilePath, Async<FileCheckResult option>>()
 
                 for proj in tier do
                     let projPath = AbsProjectPath.value proj
@@ -1436,31 +1522,38 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
                         match pipeline.GetProjectOptions(projPath) with
                         | Some options ->
                             for file in projFiles do
-                                tierChecks.Add(pipeline.CheckFileWithOptions(AbsFilePath.create file, options, ct))
+                                let absFile = AbsFilePath.create file
+                                tierThunks[absFile] <- pipeline.CheckFileWithOptions(absFile, options, ct)
                         | None ->
                             for file in projFiles do
-                                tierChecks.Add(pipeline.CheckFile(AbsFilePath.create file, ct))
+                                let absFile = AbsFilePath.create file
+                                tierThunks[absFile] <- pipeline.CheckFile(absFile, ct)
                     else
                         skippedCount <- skippedCount + projFiles.Length
 
-                let! results = tierChecks |> Seq.toList |> Async.Parallel
+                let tierFiles = tierThunks.Keys |> Seq.toList
 
-                for result in results do
-                    match result with
-                    | Some checkResult ->
-                        checkedCount <- checkedCount + 1
-                        dispatchedFiles.Add(checkResult.File)
-                        host.EmitFileChecked(checkResult)
-                        reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
-                    | None -> ()
-
+                let emitChecked (checkResult: FileCheckResult) =
+                    checkedCount <- checkedCount + 1
+                    dispatchedFiles.Add(checkResult.File)
+                    host.EmitFileChecked(checkResult)
+                    reportFcsDiagnostics ctx.FcsSuppressedCodes host checkResult
                     completed <- completed + 1
                     scanState <- Scanning(total, completed, System.DateTime.UtcNow)
 
-            Logging.info "scan" $"Checked %d{checkedCount} files (%d{tiers.Length} tiers), skipped %d{skippedCount}"
+                let! tierUnchecked = runChecksWithRetry scanRetryBudget (fun f -> tierThunks[f]) emitChecked tierFiles
+
+                uncheckedCount <- uncheckedCount + tierUnchecked
+
+            // Keep the existing "Checked N files (T tiers), skipped M" prefix
+            // intact (external tooling greps it); append the unchecked count so
+            // a truncated scan is never silently green in the log either.
+            Logging.info
+                "scan"
+                $"Checked %d{checkedCount} files (%d{tiers.Length} tiers), skipped %d{skippedCount}, unchecked %d{uncheckedCount}"
 
         sw.Stop()
-        let finalScanState = ScanComplete(total, sw.Elapsed)
+        let finalScanState = ScanComplete(total, uncheckedCount, sw.Elapsed)
         let newGeneration = state.Generation + 1L
 
         // Emit BatchChecked *before* SignalGeneration so WaitForScanGeneration
