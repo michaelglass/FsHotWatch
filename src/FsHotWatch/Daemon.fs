@@ -1762,7 +1762,6 @@ module Daemon =
     let create (repoRoot: string) (opts: DaemonOptions) =
         let checker =
             FSharpChecker.Create(
-                projectCacheSize = 200,
                 keepAssemblyContents = true,
                 keepAllBackgroundResolutions = true,
                 parallelReferenceResolution = true,

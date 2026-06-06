@@ -4,6 +4,29 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### Daemon: ship `System.GC.ConserveMemory=9` default
+
+The daemon keeps `FSharpChecker` and its FCS caches warm, which generates a
+large amount of collectable managed churn above the live working set. Left to
+the default GC policy, that churn accumulates into multiple gigabytes of
+retained heap. The CLI now bakes `System.GC.ConserveMemory=9` into its
+`runtimeconfig.json`, which in benchmarks cut the daemon's steady footprint by
+~25-40% (settled ~3.0GB vs 3.9-4.4GB; peak 5.0 vs 5.9-7.8GB against a
+32-project solution) with no measurable cost to scan speed or diagnostic
+parity.
+
+#### Changed
+- **`FsHotWatch.Cli` runtime config.** Added the `System.GC.ConserveMemory=9`
+  `RuntimeHostConfigurationOption` so the daemon runs with conservative GC by
+  default. Override per-process with the `DOTNET_GCConserveMemory` environment
+  variable (`0`-`9`), which takes precedence over the baked-in default.
+
+#### Removed
+- **Dead `projectCacheSize` argument.** Dropped the `projectCacheSize = 200`
+  argument from the daemon's `FSharpChecker.Create` call. It is ignored by the
+  `TransparentCompiler` path (`useTransparentCompiler = true`), which never
+  reads it, so the value had no effect.
+
 ### Daemon: auto-recovering deps-freshness gate before FCS analysis
 
 When a project's restored dependency state (`obj/project.assets.json`) goes
