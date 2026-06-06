@@ -496,6 +496,51 @@ let ``Daemon.create creates a working daemon with real checker`` () =
         test <@ task.IsCompleted @>
         test <@ daemon.RepoRoot = tmpDir @>)
 
+[<Fact(Timeout = 15000)>]
+let ``Daemon.create with idleTrimMin set wires the trim timer and disposes cleanly`` () =
+    // Exercises the idle-trim timer construction path (real checker, IdleTrimMin > 0)
+    // and confirms Dispose tears the timer down without error. The trim itself
+    // fires after 2min idle, far beyond this test's lifetime, so we only verify
+    // construction + clean shutdown here; the decision logic is unit-tested in
+    // IdleTrimTests.
+    withTempDir "daemon-idle-trim" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let cts = new CancellationTokenSource()
+
+        let daemon =
+            Daemon.create
+                tmpDir
+                { Daemon.DaemonOptions.defaults with
+                    IdleTrimMin = 2 }
+
+        let task = Async.StartAsTask(daemon.Run(cts.Token))
+        daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+        cts.Cancel()
+
+        try
+            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+        with :? AggregateException ->
+            ()
+
+        test <@ task.IsCompleted @>)
+
+[<Fact(Timeout = 15000)>]
+let ``Daemon.createWith null checker ignores idleTrimMin (no timer)`` () =
+    // The null-checker test daemon performs no FCS analysis, so there's nothing
+    // to trim — the timer must not be created even when IdleTrimMin > 0.
+    withTempDir "daemon-idle-trim-null" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+        let daemon =
+            Daemon.createWith
+                nullChecker
+                tmpDir
+                { Daemon.DaemonOptions.defaults with
+                    IdleTrimMin = 2 }
+
+        // Construction succeeds and Dispose is clean (no timer to dispose).
+        (daemon :> IDisposable).Dispose())
+
 [<Fact(Timeout = 20000)>]
 let ``daemon RunWithIpc starts and stops cleanly`` () =
     withTempDir "daemon-ipc" (fun tmpDir ->

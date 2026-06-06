@@ -15,6 +15,9 @@ NuGet.Config
 [Ll]og/
 [Ll]ogs/
 
+# Experimental bench publish output (idle-trim experiment)
+bench-out/
+
 # .NET
 *.user
 *.rsuser

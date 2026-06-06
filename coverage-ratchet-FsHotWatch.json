@@ -280,6 +280,20 @@
         "platform": "linux"
       }
     ],
+    "IdleTrim.fs": [
+      {
+        "line": 84,
+        "branch": 100,
+        "reason": "experimental idle-trim scheduler; decision logic (shouldTrim/tick) + the runTick callback + createTimer enable-log are unit-tested directly. The one uncovered line is createTimer's onTick lambda body, which only executes when the live 30s System.Threading.Timer actually fires — not exercised in unit tests; its callee runTick is fully covered.",
+        "platform": "macos"
+      },
+      {
+        "line": 84,
+        "branch": 100,
+        "reason": "experimental idle-trim scheduler; onTick lambda only runs on a live timer tick, its callee runTick is fully covered",
+        "platform": "linux"
+      }
+    ],
     "InMemoryCheckCache.fs": [
       {
         "line": 95,

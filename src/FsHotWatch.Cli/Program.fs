@@ -1181,7 +1181,8 @@ let main args =
                             CacheBackend = backend
                             CacheKeyProvider = keyProvider
                             ExcludePatterns = config.Exclude
-                            ExtraWatchPatterns = fileCommandPatterns }
+                            ExtraWatchPatterns = fileCommandPatterns
+                            IdleTrimMin = config.IdleTrimMin }
 
                 executeCommand createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
             // ROOT-level unknown command: the dynamic plugin-passthrough. Forward the
