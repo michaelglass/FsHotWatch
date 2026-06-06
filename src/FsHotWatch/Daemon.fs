@@ -1598,6 +1598,13 @@ module Daemon =
             /// Extra file patterns from FileCommandPlugin configs that the watcher
             /// should monitor beyond the default F# source/project set.
             ExtraWatchPatterns: FilePattern list
+            /// EXPERIMENTAL: supply FCS with pointers into memory-mapped DLL
+            /// images via `tryGetMetadataSnapshot` instead of letting it copy
+            /// metadata into private native buffers. Converts private dirty
+            /// memory into file-backed shared pages. Defaults to `true` for this
+            /// experiment build. Can be force-disabled at the daemon level via
+            /// the `FSHW_MMAP_METADATA=0` env var.
+            MmapMetadata: bool
         }
 
     module DaemonOptions =
@@ -1606,7 +1613,8 @@ module Daemon =
               CacheKeyProvider = None
               FcsSuppressedCodes = None
               ExcludePatterns = []
-              ExtraWatchPatterns = [] }
+              ExtraWatchPatterns = []
+              MmapMetadata = true }
 
     /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
     /// `None` resolves to `Set.empty` — fshw deliberately ships no built-in
@@ -1850,13 +1858,39 @@ module Daemon =
             lifetime.Dispose()
             reraise ()
 
+    /// Resolve whether the experimental mmap-metadata hook should be installed.
+    /// `FSHW_MMAP_METADATA=0` (or `false`) force-disables it regardless of the
+    /// configured option; anything else honours `opts.MmapMetadata`.
+    let internal resolveMmapMetadata (opts: DaemonOptions) : bool =
+        match Environment.GetEnvironmentVariable("FSHW_MMAP_METADATA") with
+        | "0"
+        | "false"
+        | "False"
+        | "FALSE" -> false
+        | _ -> opts.MmapMetadata
+
     /// Create a new daemon for the given repository root with a warm FSharpChecker.
     /// Pass `DaemonOptions.defaults` and override only the fields you need.
     let create (repoRoot: string) (opts: DaemonOptions) =
+        let useMmap = resolveMmapMetadata opts
+
+        // EXPERIMENTAL: when enabled, hand FCS pointers into memory-mapped DLL
+        // images (file-backed shared pages) instead of letting it copy metadata
+        // into private dirty native buffers. See MetadataSnapshots. Passed as an
+        // F# `option` to the optional `?tryGetMetadataSnapshot` param, so a single
+        // `Create` call covers both enabled (Some) and disabled (None) cases.
+        let snapshotHook: (string * System.DateTime -> (obj * nativeint * int) option) option =
+            if useMmap then
+                Logging.info "mmap-metadata" "Memory-mapped metadata snapshots ENABLED (experimental)"
+                Some MetadataSnapshots.tryGetSnapshot
+            else
+                None
+
         let checker =
             FSharpChecker.Create(
                 keepAssemblyContents = true,
                 keepAllBackgroundResolutions = true,
+                ?tryGetMetadataSnapshot = snapshotHook,
                 parallelReferenceResolution = true,
                 useTransparentCompiler = true
             )

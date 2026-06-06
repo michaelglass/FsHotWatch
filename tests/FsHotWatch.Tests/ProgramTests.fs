@@ -23,7 +23,8 @@ let private fakeConfig: DaemonConfiguration =
       Coverage = None
       Exclude = []
       LogDir = "logs"
-      TimeoutSec = None }
+      TimeoutSec = None
+      MmapMetadata = true }
 
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }

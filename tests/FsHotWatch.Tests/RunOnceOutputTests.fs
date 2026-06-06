@@ -352,7 +352,8 @@ let ``runOnceAndReport returns 2 when no projects are discovered`` () =
               Coverage = None
               Exclude = []
               LogDir = "logs"
-              TimeoutSec = None }
+              TimeoutSec = None
+              MmapMetadata = true }
 
         let exitCode = runOnceAndReport (fun _ -> "") false createDaemon tmpDir config None
 
