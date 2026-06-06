@@ -250,3 +250,9 @@ FsHotWatch stores check result caches and the TestPrune database in `.fshw/` at 
 The cache directory contains:
 - `cache/` — Cached FCS check results for faster cold starts
 - `test-impact.db` — TestPrune dependency analysis database
+
+### Memory
+
+The daemon keeps `FSharpChecker` and its FCS caches warm, which produces a large amount of collectable managed churn on top of the live working set. To keep that churn from accumulating, the CLI ships with `System.GC.ConserveMemory=9` baked into its `runtimeconfig.json`. In benchmarks this cut the daemon's steady memory footprint by ~25-40% with no measurable impact on scan speed or diagnostics.
+
+To override the GC setting for a single daemon process, set the `DOTNET_GCConserveMemory` environment variable (a value from `0` for no conservation to `9` for the most aggressive); the environment variable takes precedence over the baked-in default.
