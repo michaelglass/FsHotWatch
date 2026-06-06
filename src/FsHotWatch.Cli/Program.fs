@@ -90,6 +90,17 @@ type CoverageCommand =
     | [<Cmd("Delete coverage baseline + partial JSON so the next full run rebuilds from scratch",
             Name = "refresh-baseline")>] RefreshBaseline
 
+/// Flags for `fshw dead-code`. Mirrors the standalone `test-prune dead-code`
+/// CLI: `--entry` is repeatable and REPLACES the defaults when given;
+/// `--include-tests` widens the report to test-file symbols. The standalone
+/// CLI's `--verbose` (show why each symbol is unreachable) is driven by this
+/// CLI's existing GLOBAL `-v/--verbose` flag — CommandTree rejects a command
+/// flag that collides with a global, and the global already means "more detail".
+type DeadCodeFlag =
+    | [<CmdFlag(Description = "Entry-point name pattern (repeatable; replaces the defaults: *.main, *.Program.*, *.Routes.*, *.Scheduler.*)");
+        CmdArg("pattern")>] Entry of string
+    | [<CmdFlag(Description = "Include symbols from test files in the report", Name = "include-tests")>] IncludeTests
+
 type Command =
     | [<CmdExample("", "--no-cache"); Cmd("Start the daemon")>] Start
     | [<Cmd("Stop the daemon")>] Stop
@@ -113,6 +124,9 @@ type Command =
     | [<Cmd("Generate initial config")>] Init
     | [<Cmd("Configuration commands")>] Config of ConfigCommand
     | [<Cmd("Coverage commands")>] Coverage of CoverageCommand
+    | [<CmdExample("", "--include-tests", "--entry *.Cli.* --entry *.Worker.*");
+        Cmd("Report unreachable symbols from entry points (TestPrune dead-code analysis over the daemon DB)",
+            Name = "dead-code")>] DeadCode of DeadCodeFlag list
     | [<Cmd("Install fish completions")>] Completions
 
 type GlobalFlag =
@@ -481,17 +495,24 @@ let private ensureDaemon
 
 /// Options assembled from parsed global flags.
 type GlobalOptions =
-    { NoCache: bool
-      NoWarnFail: bool
-      AgentMode: bool
-      CompactMode: bool
-      DaemonExtraArgs: string }
+    {
+        NoCache: bool
+        NoWarnFail: bool
+        AgentMode: bool
+        CompactMode: bool
+        /// Global `-v/--verbose` was set. Drives debug logging AND `dead-code`'s
+        /// "why is this unreachable" reasons (the standalone test-prune CLI spells
+        /// the latter as its own `--verbose`; here the global flag carries it).
+        Verbose: bool
+        DaemonExtraArgs: string
+    }
 
 let defaultGlobalOptions =
     { NoCache = false
       NoWarnFail = false
       AgentMode = false
       CompactMode = false
+      Verbose = false
       DaemonExtraArgs = "" }
 
 /// Delete a file, swallowing any exception. F9 (audit 2026-05-02): in a bulk
@@ -568,6 +589,7 @@ let executeCommand
         | Init
         | Config _
         | Coverage _
+        | DeadCode _
         | Completions -> false
 
     // Only pre-check when we're about to launch (or have launched) a fresh
@@ -970,6 +992,25 @@ let executeCommand
                     printfn "  %s" p
 
             0
+        | DeadCode flags ->
+            // Reads the daemon's symbol DB directly (no IPC, no running daemon).
+            // `--entry` repeats and REPLACES the defaults; `--include-tests`
+            // widens the report; the global `-v/--verbose` adds unreachability
+            // reasons (matching the standalone test-prune CLI's `--verbose`).
+            let entryPatterns =
+                flags
+                |> List.choose (function
+                    | Entry p -> Some p
+                    | _ -> None)
+
+            let includeTests = flags |> List.contains IncludeTests
+
+            let opts: FsHotWatch.Cli.DeadCode.DeadCodeOptions =
+                { EntryPatterns = FsHotWatch.Cli.DeadCode.resolveEntryPatterns entryPatterns
+                  IncludeTests = includeTests
+                  Verbose = opts.Verbose }
+
+            FsHotWatch.Cli.DeadCode.runDefault repoRoot opts
         | Completions ->
             FishCompletions.writeToFile commandTree cliName
             eprintfn "%s" $"%s{Color.green}✓%s{Color.reset} Fish completions installed"
@@ -1035,7 +1076,7 @@ let applyGlobalFlags (globals: GlobalFlag list) : GlobalOptions =
         match flag with
         | Verbose ->
             FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Debug
-            opts, "--verbose" :: parts
+            { opts with Verbose = true }, "--verbose" :: parts
         | LogLevel level ->
             match level with
             | "error" -> FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
