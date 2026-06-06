@@ -2731,3 +2731,138 @@ let ``scoped: changing a project re-checks its dependent (correctness over warmt
                 ()
         finally
             (daemon :> IDisposable).Dispose())
+
+// ===========================================================================
+// EXPERIMENT REPRO: does the mmap tryGetMetadataSnapshot hook break FCS?
+// ===========================================================================
+
+let private mmapMakeChecker (hook: (string * DateTime -> (obj * nativeint * int) option) option) =
+    FSharpChecker.Create(
+        keepAssemblyContents = true,
+        keepAllBackgroundResolutions = true,
+        ?tryGetMetadataSnapshot = hook,
+        parallelReferenceResolution = true,
+        useTransparentCompiler = true
+    )
+
+let private mmapRunCheck (withHook: bool) =
+    let hookCalls = ref 0
+    let hookSomes = ref 0
+    let sanity = System.Collections.Generic.List<string>()
+
+    FsHotWatch.MetadataSnapshots.clear ()
+
+    let wrapped (path: string, mtime: DateTime) : (obj * nativeint * int) option =
+        Interlocked.Increment(hookCalls) |> ignore
+
+        match FsHotWatch.MetadataSnapshots.tryGetSnapshot (path, mtime) with
+        | Some(holder, ptr, len) ->
+            Interlocked.Increment(hookSomes) |> ignore
+            let fileLen = (FileInfo(path)).Length
+
+            let mzOk =
+                try
+                    let b0 = System.Runtime.InteropServices.Marshal.ReadByte(ptr, 0)
+                    let b1 = System.Runtime.InteropServices.Marshal.ReadByte(ptr, 1)
+                    (char b0, char b1) = ('M', 'Z')
+                with _ ->
+                    false
+
+            if sanity.Count < 6 then
+                lock sanity (fun () ->
+                    sanity.Add(
+                        sprintf
+                            "%s len=%d fileLen=%d lenMatch=%b MZ=%b"
+                            (Path.GetFileName path)
+                            len
+                            fileLen
+                            (int64 len = fileLen)
+                            mzOk
+                    ))
+
+            Some(holder, ptr, len)
+        | None -> None
+
+    let hook = if withHook then Some wrapped else None
+    let checker = mmapMakeChecker hook
+    // CRITICAL: the IL module reader cache (ilModuleReaderCache1/2) is a PROCESS-
+    // GLOBAL static in FCS. If a prior checker already read a reference with the
+    // default byte-copy reader, a later checker reuses that cached reader and
+    // NEVER consults our snapshot hook. Clear it so this run reads references cold.
+    checker.InvalidateAll()
+
+    withTempDir "fshw-mmap-repro" (fun tmpDir ->
+        let fooPath = Path.Combine(tmpDir, "Foo.fs")
+        let barPath = Path.Combine(tmpDir, "Bar.fs")
+        File.WriteAllText(fooPath, "module Foo\nlet add (x: int) (y: int) = x + y\n")
+        File.WriteAllText(barPath, "module Bar\nlet result = Foo.missingFunction 1 2\n")
+
+        let sourceText = SourceText.ofString (File.ReadAllText fooPath)
+
+        let projOptions, _ =
+            checker.GetProjectOptionsFromScript(fooPath, sourceText, assumeDotNetFramework = false)
+            |> Async.RunSynchronously
+
+        let projOptions =
+            { projOptions with
+                SourceFiles = [| fooPath; barPath |] }
+
+        let refCount =
+            projOptions.OtherOptions
+            |> Array.filter (fun o -> o.StartsWith "-r:")
+            |> Array.length
+
+        let barText = SourceText.ofString (File.ReadAllText barPath)
+
+        let parseResults, answer =
+            checker.ParseAndCheckFileInProject(barPath, 0, barText, projOptions)
+            |> Async.RunSynchronously
+
+        let answerStr, diagCount, diagMsgs =
+            match answer with
+            | FSharpCheckFileAnswer.Aborted -> "Aborted", 0, [||]
+            | FSharpCheckFileAnswer.Succeeded cr ->
+                "Succeeded",
+                cr.Diagnostics.Length,
+                (cr.Diagnostics
+                 |> Array.map (fun d -> sprintf "[%A] %s" d.Severity (d.Message.Replace("\n", " "))))
+
+        printfn "=== mmap repro withHook=%b ===" withHook
+
+        printfn
+            "  refs=%d answer=%s diagCount=%d parseDiag=%d hookCalls=%d hookSomes=%d"
+            refCount
+            answerStr
+            diagCount
+            parseResults.Diagnostics.Length
+            hookCalls.Value
+            hookSomes.Value
+
+        for pd in parseResults.Diagnostics |> Array.truncate 6 do
+            printfn "  parseDiag: [%A] %s" pd.Severity (pd.Message.Replace("\n", " "))
+
+        for s in sanity do
+            printfn "  [hook] %s" s
+
+        for m in diagMsgs do
+            printfn "  diag: %s" m
+
+        answerStr, diagCount, diagMsgs, hookCalls.Value, hookSomes.Value)
+
+[<Fact(Timeout = 120000)>]
+let ``mmap repro: hook checker must match no-hook diagnostics`` () =
+    // Run the hook variant FIRST (cold global IL reader cache) so the hook is
+    // actually exercised; each mmapRunCheck also InvalidateAll()s its own checker.
+    let hookAnswer, hookDiag, hookMsgs, hookCalls, hookSomes = mmapRunCheck true
+    let baseAnswer, baseDiag, baseMsgs, _, _ = mmapRunCheck false
+
+    printfn "SUMMARY baseline: %s diag=%d" baseAnswer baseDiag
+    printfn "SUMMARY withHook: %s diag=%d (hookCalls=%d hookSomes=%d)" hookAnswer hookDiag hookCalls hookSomes
+
+    test <@ baseAnswer = "Succeeded" @>
+    test <@ baseDiag >= 1 @>
+    test <@ baseMsgs |> Array.exists (fun m -> m.Contains "missingFunction") @>
+    test <@ hookCalls >= 1 @>
+    test <@ hookAnswer = baseAnswer @>
+    test <@ hookDiag = baseDiag @>
+    test <@ hookMsgs |> Array.exists (fun m -> m.Contains "missingFunction") @>

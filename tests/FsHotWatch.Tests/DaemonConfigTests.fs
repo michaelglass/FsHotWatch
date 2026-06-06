@@ -28,7 +28,8 @@ let private defaults: DaemonConfiguration =
       Coverage = None
       Exclude = []
       LogDir = "logs"
-      TimeoutSec = None }
+      TimeoutSec = None
+      MmapMetadata = true }
 
 // --- parseConfig: empty JSON ---
 
@@ -66,6 +67,24 @@ let ``parseConfig logDir custom value overrides default`` () =
 let ``parseConfig logDir absolute path is preserved`` () =
     let config = parseConfig """{"logDir": "/var/log/fshw"}""" defaults
     test <@ config.LogDir = "/var/log/fshw" @>
+
+// --- parseConfig: mmapMetadata ---
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig mmapMetadata true is honored`` () =
+    let config = parseConfig """{"mmapMetadata": true}""" defaults
+    test <@ config.MmapMetadata = true @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig mmapMetadata false disables the experiment`` () =
+    let config = parseConfig """{"mmapMetadata": false}""" defaults
+    test <@ config.MmapMetadata = false @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig mmapMetadata absent falls back to default`` () =
+    // defaults.MmapMetadata is true; a non-bool value is ignored too.
+    let config = parseConfig """{"mmapMetadata": "nonsense"}""" defaults
+    test <@ config.MmapMetadata = true @>
 
 // --- parseConfig: exclude ---
 
@@ -1277,3 +1296,68 @@ let ``resolveExistingPathsWithRetry handles empty input without sleeping`` () =
     let result = resolveExistingPathsWithRetry dirExists sleep []
     test <@ List.isEmpty result @>
     test <@ sleepCount = 0 @>
+
+// --- resolveMmapMetadata: env-var override ---
+// These mutate the process-global FSHW_MMAP_METADATA env var, so they're grouped
+// into a DisableParallelization collection to avoid racing each other.
+
+[<CollectionDefinition("MmapMetadataEnv", DisableParallelization = true)>]
+type MmapMetadataEnvCollection() = class end
+
+[<Collection("MmapMetadataEnv")>]
+type ResolveMmapMetadataTests() =
+
+    let withEnv (value: string) (f: unit -> unit) =
+        System.Environment.SetEnvironmentVariable("FSHW_MMAP_METADATA", value)
+
+        try
+            f ()
+        finally
+            System.Environment.SetEnvironmentVariable("FSHW_MMAP_METADATA", null)
+
+    [<Fact(Timeout = 15000)>]
+    member _.``honors option when env var unset``() =
+        withEnv null (fun () ->
+            test
+                <@
+                    Daemon.resolveMmapMetadata
+                        { Daemon.DaemonOptions.defaults with
+                            MmapMetadata = true } = true
+                @>
+
+            test
+                <@
+                    Daemon.resolveMmapMetadata
+                        { Daemon.DaemonOptions.defaults with
+                            MmapMetadata = false } = false
+                @>)
+
+    [<Fact(Timeout = 15000)>]
+    member _.``env var 0 force-disables even when option is true``() =
+        withEnv "0" (fun () ->
+            test
+                <@
+                    Daemon.resolveMmapMetadata
+                        { Daemon.DaemonOptions.defaults with
+                            MmapMetadata = true } = false
+                @>)
+
+    [<Fact(Timeout = 15000)>]
+    member _.``env var false force-disables``() =
+        withEnv "false" (fun () ->
+            test
+                <@
+                    Daemon.resolveMmapMetadata
+                        { Daemon.DaemonOptions.defaults with
+                            MmapMetadata = true } = false
+                @>)
+
+    [<Fact(Timeout = 15000)>]
+    member _.``unrecognized env value falls through to option``() =
+        withEnv "1" (fun () ->
+            test
+                <@
+                    Daemon.resolveMmapMetadata
+                        { Daemon.DaemonOptions.defaults with
+                            MmapMetadata = true } = true
+                @>)

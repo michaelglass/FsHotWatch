@@ -83,3 +83,6 @@ docs/plans/
 cache-events.log
 .claude/scheduled_tasks.lock
 .ci-runs/
+
+# Experimental memory-benchmark publish output (mmap-metadata spike)
+bench-out/

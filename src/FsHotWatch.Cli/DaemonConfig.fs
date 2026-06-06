@@ -138,6 +138,12 @@ type DaemonConfiguration =
         LogDir: string
         /// Global default timeout (seconds). Used when no per-entry override set.
         TimeoutSec: int option
+        /// EXPERIMENTAL: hand FCS memory-mapped DLL images via
+        /// `tryGetMetadataSnapshot` instead of byte-copying metadata into
+        /// private native buffers. `.fshw.json` key `"mmapMetadata"`; defaults
+        /// to `true` for this experiment build. Force-disable at runtime with
+        /// `FSHW_MMAP_METADATA=0`.
+        MmapMetadata: bool
     }
 
 let private defaultConfigFor (repoRoot: string) =
@@ -157,7 +163,8 @@ let private defaultConfigFor (repoRoot: string) =
       Coverage = None
       Exclude = []
       LogDir = "logs"
-      TimeoutSec = None }
+      TimeoutSec = None
+      MmapMetadata = true }
 
 /// Raised when `.fshw.json` cannot be read, parsed, or validated.
 /// Carries a user-facing message.
@@ -513,6 +520,12 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | true, v when v.ValueKind = JsonValueKind.Number -> Some(v.GetInt32())
         | _ -> defaults.TimeoutSec
 
+    let mmapMetadata =
+        match root.TryGetProperty("mmapMetadata") with
+        | true, v when v.ValueKind = JsonValueKind.True -> true
+        | true, v when v.ValueKind = JsonValueKind.False -> false
+        | _ -> defaults.MmapMetadata
+
     { Build = build
       Format = format
       Lint = lint
@@ -523,7 +536,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       Coverage = coverage
       Exclude = exclude
       LogDir = logDir
-      TimeoutSec = timeoutSec }
+      TimeoutSec = timeoutSec
+      MmapMetadata = mmapMetadata }
 
 /// Strip a config down to a minimal base for run-once subcommands.
 /// Disables all plugins except format preprocessor. Caller overrides specific fields.
