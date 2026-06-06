@@ -25,6 +25,13 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!-- Daemon holds FCS caches; without this the GC retains GBs of collectable churn.
+             Benchmarked ~25-40% footprint reduction at no throughput cost (2026-06).
+             Users can override per-process with the DOTNET_GCConserveMemory env var. -->
+        <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="9" />
+    </ItemGroup>
+
+    <ItemGroup>
         <Compile Include="DaemonConfig.fs" />
         <Compile Include="InitConfig.fs" />
         <Compile Include="RunOnceOutput.fs" />
