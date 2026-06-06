@@ -611,10 +611,101 @@ let ``FormatScanStatus returns complete for ScanComplete`` () =
     withTempDir "daemon" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
         let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
-        daemon.SetScanState(ScanComplete(70, TimeSpan.FromSeconds(15.5)))
+        daemon.SetScanState(ScanComplete(70, 0, TimeSpan.FromSeconds(15.5)))
         let status = daemon.FormatScanStatus()
         test <@ status.Contains("70 files") @>
         test <@ status.Contains("15.5s") @>)
+
+// --- runChecksWithRetry tests (scan silent-truncation race fix) ---
+//
+// Invariant 1 (no silent truncation): files whose check returns None
+// (cancelled/aborted/failed) are retried within a bounded budget and the
+// common cancellation case converges to all files checked.
+// Invariant 2 (honest completion): files still None after the retry budget are
+// reported as an unchecked count so the scan cannot present as clean.
+// Invariant 3 (no regression): retry re-invokes the SAME check function, so a
+// newer user edit superseding an in-flight check is observed (the retry reads
+// current content); a file that is genuinely still cancelled stays counted.
+
+[<Fact(Timeout = 15000)>]
+let ``runChecksWithRetry returns zero unchecked when all files check first pass`` () =
+    let files = [ "/a.fs"; "/b.fs"; "/c.fs" ] |> List.map AbsFilePath.create
+    let emitted = System.Collections.Concurrent.ConcurrentBag<int>()
+    let check (_: AbsFilePath) = async { return Some 1 }
+
+    let unchecked =
+        runChecksWithRetry 3 check (fun r -> emitted.Add r) files
+        |> Async.RunSynchronously
+
+    test <@ unchecked = 0 @>
+    test <@ emitted.Count = 3 @>
+
+[<Fact(Timeout = 15000)>]
+let ``runChecksWithRetry retries a transiently-cancelled file until it converges`` () =
+    // /b.fs returns None on its first attempt (simulating a same-file
+    // CancelPreviousCheck race) then Some on retry — must converge to 0 unchecked.
+    let attempts = System.Collections.Concurrent.ConcurrentDictionary<string, int>()
+
+    let check (f: AbsFilePath) =
+        async {
+            let path = AbsFilePath.value f
+            let n = attempts.AddOrUpdate(path, 1, fun _ c -> c + 1)
+
+            if path = "/b.fs" && n = 1 then
+                return None
+            else
+                return Some 1
+        }
+
+    let emitted = System.Collections.Concurrent.ConcurrentBag<int>()
+    let files = [ "/a.fs"; "/b.fs"; "/c.fs" ] |> List.map AbsFilePath.create
+
+    let unchecked =
+        runChecksWithRetry 3 check (fun r -> emitted.Add r) files
+        |> Async.RunSynchronously
+
+    test <@ unchecked = 0 @>
+    // Every file emitted exactly once (no duplicate emit for the converged file).
+    test <@ emitted.Count = 3 @>
+    test <@ attempts["/b.fs"] = 2 @>
+    // Files that succeeded first pass are NOT re-checked on the retry round.
+    test <@ attempts["/a.fs"] = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``runChecksWithRetry reports persistently-cancelled files as unchecked`` () =
+    // /b.fs always returns None (a file under continuous concurrent edit, or a
+    // hard failure): after the retry budget it must be surfaced as unchecked,
+    // not silently dropped — honest completion.
+    let attempts = System.Collections.Concurrent.ConcurrentDictionary<string, int>()
+
+    let check (f: AbsFilePath) =
+        async {
+            let path = AbsFilePath.value f
+            attempts.AddOrUpdate(path, 1, fun _ c -> c + 1) |> ignore
+            return (if path = "/b.fs" then None else Some 1)
+        }
+
+    let files = [ "/a.fs"; "/b.fs"; "/c.fs" ] |> List.map AbsFilePath.create
+
+    let unchecked =
+        runChecksWithRetry 2 check (fun _ -> ()) files |> Async.RunSynchronously
+
+    test <@ unchecked = 1 @>
+    // Bounded: 1 initial attempt + 2 retries = 3 total for the failing file.
+    test <@ attempts["/b.fs"] = 3 @>
+    // Succeeding files are only attempted once.
+    test <@ attempts["/a.fs"] = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``FormatScanStatus surfaces unchecked count as non-ok for incomplete ScanComplete`` () =
+    withTempDir "daemon" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
+        daemon.SetScanState(ScanComplete(70, 5, TimeSpan.FromSeconds(15.5)))
+        let status = daemon.FormatScanStatus()
+        // Must not read as clean: surfaces the unchecked files explicitly.
+        test <@ status.Contains("5") @>
+        test <@ status.ToLowerInvariant().Contains("unchecked") @>)
 
 // Pins the invariant the agent migration must preserve: once ScanAll's
 // reply lands, the scan state is observable as ScanComplete (not stale ScanIdle)
