@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.22 - 2026-06-07
+
 - fix: spawned `dotnet build` (and any other child process) no longer inherits the
   `MSBUILD_EXE_PATH` / `MSBuildExtensionsPath` / `MSBuildSDKsPath` variables that
   Ionide.ProjInfo writes into the daemon's own environment during in-process project
