@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.2.1 - 2026-06-07
+
 - feat: `Database.SchemaVersion` is now public. External read-only consumers (e.g.
   FsHotWatch's `fshw dead-code`) probe a live DB's `PRAGMA user_version` against it
   before opening, since `Database.create`'s recreate-on-mismatch self-healing would
