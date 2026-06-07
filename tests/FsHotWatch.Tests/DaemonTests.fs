@@ -515,6 +515,62 @@ let ``daemon RunWithIpc starts and stops cleanly`` () =
         test <@ task.IsCompleted @>)
 
 [<Fact(Timeout = 20000)>]
+let ``daemon RunWithIpc with idle-exit threshold arms the timer and stops cleanly`` () =
+    // Exercises the RunWithIpc idle-exit timer construction path (IdleExitMin
+    // Some) and confirms the daemon still starts/stops cleanly with the timer
+    // armed. The 30min threshold is far beyond the test lifetime, so the timer
+    // never fires here; the firing decision is unit-tested in IdleExitTests.
+    withTempDir "daemon-idle-exit" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let cts = new CancellationTokenSource()
+        let pipeName = $"fshw-test-{Guid.NewGuid():N}"
+
+        let daemon =
+            Daemon.createWith
+                nullChecker
+                tmpDir
+                { Daemon.DaemonOptions.defaults with
+                    IdleExitMin = Some 30 }
+
+        let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
+        daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+        cts.Cancel()
+
+        try
+            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+        with :? AggregateException ->
+            ()
+
+        test <@ task.IsCompleted @>)
+
+[<Fact(Timeout = 20000)>]
+let ``daemon RunWithIpc without idle-exit threshold creates no timer and stops cleanly`` () =
+    // IdleExitMin None → no timer is constructed (the no-op disposable branch);
+    // the daemon starts and stops cleanly as before.
+    withTempDir "daemon-idle-exit-off" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let cts = new CancellationTokenSource()
+        let pipeName = $"fshw-test-{Guid.NewGuid():N}"
+
+        let daemon =
+            Daemon.createWith
+                nullChecker
+                tmpDir
+                { Daemon.DaemonOptions.defaults with
+                    IdleExitMin = None }
+
+        let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
+        daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+        cts.Cancel()
+
+        try
+            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+        with :? AggregateException ->
+            ()
+
+        test <@ task.IsCompleted @>)
+
+[<Fact(Timeout = 20000)>]
 let ``daemon RunWithIpc responds to IPC queries`` () =
     withTempDir "daemon-ipc" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore

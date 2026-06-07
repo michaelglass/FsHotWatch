@@ -15,6 +15,9 @@ NuGet.Config
 [Ll]og/
 [Ll]ogs/
 
+# Bench publish output (idle-exit smoke / benchmarking)
+bench-out/
+
 # .NET
 *.user
 *.rsuser

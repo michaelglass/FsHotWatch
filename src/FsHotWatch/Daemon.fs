@@ -1157,7 +1157,8 @@ type Daemon
         _fcsSuppressedCodes: Set<int>,
         lifetime: CancellationTokenSource,
         formatAllFn: (unit -> Async<string>) option,
-        excludePatterns: string list
+        excludePatterns: string list,
+        idleExitMin: int option
     ) =
 
     let mutable disposed = false
@@ -1324,6 +1325,34 @@ type Daemon
                       RerunPlugin = rerunPlugin }
 
                 let ipcTask = Async.StartAsTask(IpcServer.start pipeName rpcConfig cts)
+
+                // Idle-exit scheduler. When a threshold is configured, arm a 30s
+                // timer that gracefully shuts the daemon down (the SAME
+                // `cts.Cancel()` path the IPC Shutdown request uses — see
+                // `rpcConfig.RequestShutdown`) once the daemon has been idle for
+                // the window. Cancelling `cts` unblocks the wait below, runs this
+                // method's `finally` (Dispose: KillAll + lifetime.Cancel +
+                // watcher dispose), and lets the CLI clean up the pidfile — a
+                // fully graceful exit, no `Environment.Exit`. The decision logic
+                // lives in the pure, unit-tested `IdleExit` module; here we inject
+                // the live clock/busy/activity + the shutdown action. The next
+                // `fshw` command auto-restarts the daemon, so this is transparent.
+                use _idleExitTimer: IDisposable =
+                    match idleExitMin with
+                    | Some minutes when minutes > 0 ->
+                        let deps: IdleExit.IdleExitDeps =
+                            { Threshold = System.TimeSpan.FromMinutes(float minutes)
+                              Now = fun () -> System.DateTime.UtcNow
+                              Busy = host.AnyPluginBusy
+                              LastActivityAt = host.LastActivityAt
+                              Shutdown = fun () -> cts.Cancel()
+                              Log = fun message -> Logging.info "idle-exit" message }
+
+                        IdleExit.createTimer deps :> IDisposable
+                    | _ ->
+                        // No-op disposable when idle-exit is off.
+                        { new IDisposable with
+                            member _.Dispose() = () }
 
                 cancellationTokenRef.Value <- cts.Token
                 ready.Set()
@@ -1598,6 +1627,13 @@ module Daemon =
             /// Extra file patterns from FileCommandPlugin configs that the watcher
             /// should monitor beyond the default F# source/project set.
             ExtraWatchPatterns: FilePattern list
+            /// Resolved idle-exit threshold in minutes. `Some n` arms a 30s timer
+            /// that gracefully shuts the daemon down after `n` minutes of
+            /// idleness (no events, no running work); the next `fshw` command
+            /// auto-restarts. `None` (the default) disables it — no timer is
+            /// created. Resolution from the `idleExitMin` config + repo path is
+            /// done by the caller (`IdleExit.resolveThreshold`).
+            IdleExitMin: int option
         }
 
     module DaemonOptions =
@@ -1606,7 +1642,8 @@ module Daemon =
               CacheKeyProvider = None
               FcsSuppressedCodes = None
               ExcludePatterns = []
-              ExtraWatchPatterns = [] }
+              ExtraWatchPatterns = []
+              IdleExitMin = None }
 
     /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
     /// `None` resolves to `Set.empty` — fshw deliberately ships no built-in
@@ -1844,7 +1881,8 @@ module Daemon =
                 fcsSuppressedCodes,
                 lifetime,
                 Some formatAllViaAgent,
-                excludePatterns
+                excludePatterns,
+                opts.IdleExitMin
             )
         with _ ->
             lifetime.Dispose()

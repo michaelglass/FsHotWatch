@@ -247,7 +247,8 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
               Coverage = None
               Exclude = []
               LogDir = "logs"
-              TimeoutSec = None }
+              TimeoutSec = None
+              IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
 
         let deleted = FsHotWatch.Cli.Program.refreshCoverageBaseline tmp config
         // 4 files total: 2 projects × (baseline + partial)
@@ -723,7 +724,8 @@ let private fakeConfig: DaemonConfiguration =
       Coverage = None
       Exclude = []
       LogDir = "logs"
-      TimeoutSec = None }
+      TimeoutSec = None
+      IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
 
 /// Structured plugin-status JSON in the shape expected by parsePluginStatuses
 /// (object per plugin, not a bare string). Using the bare-string shape made the
@@ -1832,19 +1834,47 @@ let ``executeCommand Errors returns 1 when daemon startup fails`` () =
 // --- computeLaunchCommand tests ---
 
 [<Fact(Timeout = 15000)>]
-let ``computeLaunchCommand with dotnet process path returns dotnet tool run`` () =
-    let (exe, prefix) = computeLaunchCommand "/usr/local/bin/dotnet"
+let ``computeLaunchCommand: dotnet with no entry assembly falls back to tool run`` () =
+    let (exe, prefix) = computeLaunchCommand "/usr/local/bin/dotnet" None
     test <@ exe = "/usr/local/bin/dotnet" @>
     test <@ prefix.Contains("fshw") @>
 
 [<Fact(Timeout = 15000)>]
-let ``computeLaunchCommand with native exe returns exe directly`` () =
-    let (exe, prefix) = computeLaunchCommand "/usr/local/bin/fs-hot-watch"
+let ``computeLaunchCommand: native exe returns exe directly`` () =
+    let (exe, prefix) = computeLaunchCommand "/usr/local/bin/fs-hot-watch" None
     test <@ exe = "/usr/local/bin/fs-hot-watch" @>
     test <@ prefix = "" @>
 
 [<Fact(Timeout = 15000)>]
-let ``computeLaunchCommand with dotnet.exe on Windows returns dotnet tool run`` () =
-    let (exe, prefix) = computeLaunchCommand """C:\Program Files\dotnet\dotnet.exe"""
+let ``computeLaunchCommand: dotnet.exe on Windows with no entry assembly falls back to tool run`` () =
+    let (exe, prefix) =
+        computeLaunchCommand """C:\Program Files\dotnet\dotnet.exe""" None
+
     test <@ exe = """C:\Program Files\dotnet\dotnet.exe""" @>
+    test <@ prefix.Contains("fshw") @>
+
+[<Fact(Timeout = 15000)>]
+let ``computeLaunchCommand: dotnet with a real local dll spawns that same dll, not the pinned tool`` () =
+    // Use this test assembly's own dll as an existing .dll path on disk.
+    let dll = System.Reflection.Assembly.GetExecutingAssembly().Location
+    test <@ dll.ToLowerInvariant().EndsWith(".dll") && File.Exists dll @>
+
+    let (exe, prefix) = computeLaunchCommand "/usr/local/bin/dotnet" (Some dll)
+    test <@ exe = "/usr/local/bin/dotnet" @>
+    // The launch must reference the dll directly (quoted), NOT `tool run`.
+    test <@ prefix = $"\"%s{dll}\" " @>
+    test <@ not (prefix.Contains "tool run") @>
+
+[<Fact(Timeout = 15000)>]
+let ``computeLaunchCommand: dotnet with a nonexistent dll path falls back to tool run`` () =
+    let bogus = "/no/such/path/FsHotWatch.Cli.dll"
+    let (exe, prefix) = computeLaunchCommand "/usr/local/bin/dotnet" (Some bogus)
+    test <@ exe = "/usr/local/bin/dotnet" @>
+    test <@ prefix.Contains("fshw") @>
+
+[<Fact(Timeout = 15000)>]
+let ``computeLaunchCommand: dotnet with empty entry-assembly location falls back to tool run`` () =
+    // Single-file / shim publish reports an empty GetEntryAssembly().Location.
+    let (exe, prefix) = computeLaunchCommand "/usr/local/bin/dotnet" (Some "")
+    test <@ exe = "/usr/local/bin/dotnet" @>
     test <@ prefix.Contains("fshw") @>
