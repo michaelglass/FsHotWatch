@@ -1216,13 +1216,19 @@ let main args =
                     |> List.map FsHotWatch.Watcher.FilePattern.parse
 
                 let createDaemon (root: string) =
+                    // Resolve the idle-exit threshold from the `idleExitMin`
+                    // config + this daemon's repo path (AUTO-on for
+                    // `/.workspaces/` checkouts). `None` leaves the timer off.
+                    let idleExitMin = FsHotWatch.IdleExit.resolveThreshold config.IdleExitMin root
+
                     Daemon.create
                         root
                         { Daemon.DaemonOptions.defaults with
                             CacheBackend = backend
                             CacheKeyProvider = keyProvider
                             ExcludePatterns = config.Exclude
-                            ExtraWatchPatterns = fileCommandPatterns }
+                            ExtraWatchPatterns = fileCommandPatterns
+                            IdleExitMin = idleExitMin }
 
                 executeCommand createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
             // ROOT-level unknown command: the dynamic plugin-passthrough. Forward the

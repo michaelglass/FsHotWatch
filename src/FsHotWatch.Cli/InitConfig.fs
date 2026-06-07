@@ -95,7 +95,8 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
       Coverage = None
       Exclude = []
       LogDir = "logs"
-      TimeoutSec = None }
+      TimeoutSec = None
+      IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
 
 /// Serialize a DaemonConfiguration to a pretty-printed JSON string.
 let serializeConfig (config: DaemonConfiguration) : string =

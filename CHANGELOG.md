@@ -4,6 +4,31 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### Daemon: idle-exit — quit after a configurable idle period
+
+An idle daemon still holds a large warm working set (mostly FCS-rooted native
+memory, ~2.8-3.1 GB). With one daemon per jj workspace, idle workspace daemons
+waste gigabytes between bursts of work. The daemon can now shut itself down
+after a configurable idle period to reclaim that memory. This is transparent:
+the next `fshw` command auto-starts a fresh daemon and the file-backed check
+cache survives restarts, so the next `check` pays one auto-start plus a
+mostly-cache-hit scan. Shutdown is the daemon's normal graceful path (the same
+`cts.Cancel()` the IPC `stop` request uses — clean pid/lock release and plugin
+disposal), guarded by an atomic fire-once latch so it can never fire twice.
+
+#### Added
+- **`idleExitMin` config key** in `.fshw.json` (`number | false`):
+  - **absent → AUTO mode**: enabled with a 30-minute threshold **iff** the repo
+    root path contains a `/.workspaces/` segment (non-default jj workspaces);
+    disabled otherwise — the default/main workspace daemon never auto-quits.
+  - **`0` or `false`**: disabled everywhere (explicit opt-out, overrides AUTO).
+  - **positive integer `N`**: enabled with an `N`-minute threshold regardless of
+    path (explicit opt-in, even for the default workspace).
+
+  The daemon only exits when idle (no file events, no running plugin work) for
+  the full window; work in flight at the threshold defers the exit to a later
+  check.
+
 ### Daemon: ship `System.GC.ConserveMemory=9` default
 
 The daemon keeps `FSharpChecker` and its FCS caches warm, which generates a
