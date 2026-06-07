@@ -163,16 +163,47 @@ let private renderBlock mode warningsAreFailures statuses =
     renderLines mode warningsAreFailures statuses |> String.concat "\n"
 
 /// Compute the launch command for re-starting the daemon.
-/// Returns (exe, argPrefix) where argPrefix is prepended to "start" when launching.
-/// When running as a dotnet tool, Environment.ProcessPath is the dotnet binary itself,
-/// so we need to reconstruct "dotnet tool run fs-hot-watch" as the command.
-let computeLaunchCommand (processPath: string) : string * string =
+/// Returns (exe, argPrefix) where argPrefix is prepended to "start" when launching
+/// (i.e. the daemon spawn becomes `exe argPrefix start`).
+///
+/// `processPath` is `Environment.ProcessPath` and `entryAssemblyDll` is
+/// `Assembly.GetEntryAssembly().Location` (passed in so this stays pure/testable).
+///
+/// Three cases:
+///   1. Native single-file exe (processPath is not `dotnet`): launch it directly.
+///   2. `dotnet <local-dll>` (processPath is `dotnet`, entry-assembly location is
+///      a real `.dll` path): spawn THAT SAME DLL — `dotnet "<dll>" start`. This
+///      makes a local dev build dogfood itself; reconstructing `tool run fshw`
+///      here would silently launch the PINNED tool instead of the running build
+///      (the real 2026-06-05 mis-diagnosis). Note the dll path is quoted because
+///      it may contain spaces, and the caller appends `start` after a space.
+///      The published dotnet tool ALSO resolves a real dll path
+///      (`~/.nuget/packages/fshotwatch.cli/<ver>/.../FsHotWatch.Cli.dll`), so this
+///      branch spawns that dll directly for the tool too — equivalent to and more
+///      precise than `tool run fshw` (no tool-resolution indirection).
+///   3. `dotnet` but no usable entry-assembly path (single-file/tool-shim where
+///      `GetEntryAssembly().Location` is empty): fall back to `tool run fshw`.
+let computeLaunchCommand (processPath: string) (entryAssemblyDll: string option) : string * string =
     let lowerPath = processPath.ToLowerInvariant()
+    let isDotnet = lowerPath.EndsWith("dotnet") || lowerPath.EndsWith("dotnet.exe")
 
-    if lowerPath.EndsWith("dotnet") || lowerPath.EndsWith("dotnet.exe") then
-        (processPath, $"tool run %s{cliName} ")
-    else
+    if not isDotnet then
+        // Native single-file exe — launch it directly.
         (processPath, "")
+    else
+        match entryAssemblyDll with
+        | Some dll when
+            not (String.IsNullOrWhiteSpace dll)
+            && dll.ToLowerInvariant().EndsWith(".dll")
+            && File.Exists dll
+            ->
+            // `dotnet <dll>` — spawn that same dll so a local build dogfoods itself
+            // (and the published tool spawns its own resolved dll, not a re-resolve).
+            (processPath, $"\"%s{dll}\" ")
+        | _ ->
+            // No usable entry-assembly path (single-file / shim) — fall back to the
+            // tool-run form so the published tool still launches.
+            (processPath, $"tool run %s{cliName} ")
 
 /// Walk up from startDir looking for .jj or .git directory.
 let findRepoRoot (startDir: string) =
@@ -258,7 +289,12 @@ let defaultIpcOps: IpcOps =
       IsRunning = IpcClient.isRunning
       LaunchDaemon =
         fun repoRoot extraArgs logFile ->
-            let (exe, toolPrefix) = computeLaunchCommand Environment.ProcessPath
+            let entryDll =
+                System.Reflection.Assembly.GetEntryAssembly()
+                |> Option.ofObj
+                |> Option.map (fun a -> a.Location)
+
+            let (exe, toolPrefix) = computeLaunchCommand Environment.ProcessPath entryDll
 
             let psi =
                 System.Diagnostics.ProcessStartInfo(

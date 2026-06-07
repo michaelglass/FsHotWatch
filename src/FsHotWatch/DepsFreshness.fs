@@ -45,50 +45,65 @@ let private ancestorDepFileNames =
       "paket.lock"
       "paket.dependencies" ]
 
-/// Enumerate the dependency-declaring files that govern `fsprojPath`, walking
-/// from the project directory up to (and including) `repoRoot` for the
-/// ancestor-scoped files (MSBuild import + paket / dotnet-tools semantics) and
-/// always including the project's own `.fsproj`. Only files that exist on disk
-/// are returned. The nearest match per name wins so we don't double-count the
-/// same logical file from multiple levels.
-let dependencyFiles (fsprojPath: string) (repoRoot: string) : string list =
+/// Directories from a project's directory up to (and including) `repoRoot`.
+/// Stops if the project dir is not under root (defensive — then just the
+/// project directory is scanned). Shared by the dep-file enumeration and the
+/// tools-manifest probe so both walk the same ancestor chain.
+let private ancestorDirs (fsprojPath: string) (repoRoot: string) : string list =
     let projDir = Path.GetFullPath(Path.GetDirectoryName(fsprojPath: string))
     let root = Path.GetFullPath(repoRoot)
 
-    // Directories from projDir up to root (inclusive). Stops if projDir is not
-    // under root (defensive — then just the project directory is scanned).
-    let dirs =
-        let rec walk (dir: string) acc =
-            let acc = dir :: acc
+    let rec walk (dir: string) acc =
+        let acc = dir :: acc
 
-            if String.Equals(dir, root, StringComparison.Ordinal) then
+        if String.Equals(dir, root, StringComparison.Ordinal) then
+            acc
+        else
+            let parent = Path.GetDirectoryName(dir)
+
+            if
+                String.IsNullOrEmpty parent
+                || String.Equals(parent, dir, StringComparison.Ordinal)
+            then
                 acc
             else
-                let parent = Path.GetDirectoryName(dir)
+                walk parent acc
 
-                if
-                    String.IsNullOrEmpty parent
-                    || String.Equals(parent, dir, StringComparison.Ordinal)
-                then
-                    acc
-                else
-                    walk parent acc
+    walk projDir [] |> List.rev
 
-        walk projDir [] |> List.rev
+/// Enumerate the dependency-declaring files that govern `fsprojPath`, walking
+/// from the project directory up to (and including) `repoRoot` for the
+/// ancestor-scoped files (MSBuild import + paket semantics) and always including
+/// the project's own `.fsproj`. Only files that exist on disk are returned. The
+/// nearest match per name wins so we don't double-count the same logical file
+/// from multiple levels.
+///
+/// `.config/dotnet-tools.json` is deliberately NOT included: a project's
+/// `obj/project.assets.json` is derived only from the fsproj + paket/nuget
+/// inputs — the dotnet-tools manifest never participates in a project's package
+/// graph. Counting it here made every project look stale on any dotnet-tool
+/// version bump, triggering per-project restore recovery and skipped scans.
+/// (See `toolsManifest` below for the restore-runner's separate, freshness-
+/// independent need to know whether a tool manifest is in scope.)
+let dependencyFiles (fsprojPath: string) (repoRoot: string) : string list =
+    let dirs = ancestorDirs fsprojPath repoRoot
 
     let ancestorMatches =
         ancestorDepFileNames
         |> List.choose (fun name -> dirs |> List.map (fun d -> Path.Combine(d, name)) |> List.tryFind File.Exists)
 
-    let toolsJson =
-        dirs
-        |> List.map (fun d -> Path.Combine(d, ".config", "dotnet-tools.json"))
-        |> List.tryFind File.Exists
-        |> Option.toList
-
     let projFile = if File.Exists fsprojPath then [ fsprojPath ] else []
 
-    projFile @ ancestorMatches @ toolsJson
+    projFile @ ancestorMatches
+
+/// The nearest `.config/dotnet-tools.json` governing `fsprojPath`, if any.
+/// Used ONLY by the restore runner to decide whether to run `dotnet tool
+/// restore` — it is intentionally absent from `dependencyFiles` because it does
+/// not affect a project's package graph / assets freshness.
+let toolsManifest (fsprojPath: string) (repoRoot: string) : string option =
+    ancestorDirs fsprojPath repoRoot
+    |> List.map (fun d -> Path.Combine(d, ".config", "dotnet-tools.json"))
+    |> List.tryFind File.Exists
 
 /// Absolute path to a project's restored assets file.
 let assetsPath (fsprojPath: string) : string =
@@ -253,7 +268,10 @@ let productionRestoreRunner (repoRoot: string) : RestoreRunner =
             [ yield ("restore", $"restore \"%s{fsprojPath}\"")
               if hasName "paket.dependencies" then
                   yield ("paket-restore", "paket restore")
-              if hasName "dotnet-tools.json" then
+              // The tools manifest is not a freshness dep input, so it is probed
+              // separately from `dependencyFiles` — but a stale-recovery restore
+              // should still refresh the tool manifest when one is in scope.
+              if (toolsManifest fsprojPath repoRoot).IsSome then
                   yield ("tool-restore", "tool restore") ]
 
         // Run each step in order; the first non-success short-circuits and is

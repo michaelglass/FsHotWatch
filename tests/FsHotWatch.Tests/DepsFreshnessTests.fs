@@ -58,19 +58,53 @@ let private touch (path: string) =
     File.WriteAllText(path, "x")
 
 [<Fact(Timeout = 5000)>]
-let ``dependencyFiles: includes own fsproj and ancestor props + tools`` () =
+let ``dependencyFiles: includes own fsproj and ancestor props`` () =
     withTempDir "deps-enum" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
         let fsproj = Path.Combine(projDir, "Proj.fsproj")
         touch fsproj
         touch (Path.Combine(root, "Directory.Packages.props"))
-        touch (Path.Combine(root, ".config", "dotnet-tools.json"))
 
         let found = dependencyFiles fsproj root |> List.map Path.GetFileName |> Set.ofList
 
         test <@ found.Contains "Proj.fsproj" @>
-        test <@ found.Contains "Directory.Packages.props" @>
-        test <@ found.Contains "dotnet-tools.json" @>)
+        test <@ found.Contains "Directory.Packages.props" @>)
+
+[<Fact(Timeout = 5000)>]
+let ``dependencyFiles: excludes .config/dotnet-tools.json (not a package-graph input)`` () =
+    withTempDir "deps-no-tools" (fun root ->
+        let projDir = Path.Combine(root, "src", "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        touch fsproj
+        touch (Path.Combine(root, ".config", "dotnet-tools.json"))
+
+        let found = dependencyFiles fsproj root |> List.map Path.GetFileName |> Set.ofList
+
+        test <@ not (found.Contains "dotnet-tools.json") @>)
+
+/// Regression for the production false-stale: bumping `.config/dotnet-tools.json`
+/// (a dotnet-tool version bump) must NOT make a project look stale. The assets
+/// are newer than every real dependency input but older than a freshly-touched
+/// tools manifest; the project must still evaluate Fresh.
+[<Fact(Timeout = 5000)>]
+let ``detectProjectFreshness: assets older than dotnet-tools.json but newer than real deps is Fresh`` () =
+    withTempDir "deps-tools-bump" (fun root ->
+        let projDir = Path.Combine(root, "src", "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        let assets = Path.Combine(projDir, "obj", "project.assets.json")
+        let toolsJson = Path.Combine(root, ".config", "dotnet-tools.json")
+
+        // Real dep inputs first, then assets (so assets are newer than all of them).
+        touch fsproj
+        touch (Path.Combine(root, "Directory.Packages.props"))
+        touch assets
+
+        // Now bump the tools manifest so it is the newest file of all.
+        System.Threading.Thread.Sleep 10
+        touch toolsJson
+        test <@ File.GetLastWriteTimeUtc toolsJson > File.GetLastWriteTimeUtc assets @>
+
+        test <@ detectProjectFreshness root fsproj = Fresh @>)
 
 [<Fact(Timeout = 5000)>]
 let ``dependencyFiles: nearest Directory.Build.props wins, no double-count`` () =
@@ -94,6 +128,66 @@ let ``dependencyFiles: nearest Directory.Build.props wins, no double-count`` () 
                     Path.Combine(projDir, "Directory.Build.props")
                 )
             @>)
+
+// ---- tools manifest (restore-runner probe, NOT a freshness dep) ----
+
+[<Fact(Timeout = 5000)>]
+let ``toolsManifest: finds nearest .config/dotnet-tools.json in the ancestor chain`` () =
+    withTempDir "deps-tools-find" (fun root ->
+        let projDir = Path.Combine(root, "src", "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        touch fsproj
+        let toolsJson = Path.Combine(root, ".config", "dotnet-tools.json")
+        touch toolsJson
+
+        match toolsManifest fsproj root with
+        | Some found -> test <@ Path.GetFullPath found = Path.GetFullPath toolsJson @>
+        | None -> failwith "expected the tools manifest to be found")
+
+[<Fact(Timeout = 5000)>]
+let ``toolsManifest: nearest wins when present at multiple levels`` () =
+    withTempDir "deps-tools-nearest" (fun root ->
+        let projDir = Path.Combine(root, "src", "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        touch fsproj
+        touch (Path.Combine(root, ".config", "dotnet-tools.json"))
+        let nearest = Path.Combine(projDir, ".config", "dotnet-tools.json")
+        touch nearest
+
+        match toolsManifest fsproj root with
+        | Some found -> test <@ Path.GetFullPath found = Path.GetFullPath nearest @>
+        | None -> failwith "expected the tools manifest to be found")
+
+[<Fact(Timeout = 5000)>]
+let ``toolsManifest: None when no manifest exists`` () =
+    withTempDir "deps-tools-none" (fun root ->
+        let projDir = Path.Combine(root, "src", "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        touch fsproj
+        test <@ (toolsManifest fsproj root).IsNone @>)
+
+/// Defensive branch: when the project is NOT under `repoRoot`, the ancestor walk
+/// climbs to the filesystem root instead of stopping at repoRoot. It must still
+/// terminate (not loop) and find an ancestor manifest, exercising the
+/// IsNullOrEmpty/parent==dir sentinel that the under-root happy path skips.
+[<Fact(Timeout = 5000)>]
+let ``toolsManifest: project not under repoRoot still walks to filesystem root and terminates`` () =
+    withTempDir "deps-tools-unrooted" (fun projParent ->
+        let projDir = Path.Combine(projParent, "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        touch fsproj
+        // A manifest right next to the project so the walk finds something.
+        let toolsJson = Path.Combine(projDir, ".config", "dotnet-tools.json")
+        touch toolsJson
+
+        // repoRoot is a sibling directory the project is NOT under, forcing the
+        // walk past it up to the filesystem root.
+        let unrelatedRoot = Path.Combine(projParent, "elsewhere")
+        Directory.CreateDirectory unrelatedRoot |> ignore
+
+        match toolsManifest fsproj unrelatedRoot with
+        | Some found -> test <@ Path.GetFullPath found = Path.GetFullPath toolsJson @>
+        | None -> failwith "expected the tools manifest to be found via the FS-root walk")
 
 // ---- disk-backed probe ----
 
