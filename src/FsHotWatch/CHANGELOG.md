@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- feat: memory-pressure FCS-cache trim (`pressureTrimPct` in `.fshw.json`). An **active** daemon on a memory-starved machine now releases its warm FCS root caches in place (the ~2.9 GB FCS-rooted native working set drops to ~390 MB post-GC; caches re-warm transparently on the next check, diagnostics parity preserved) instead of holding them. A 30s timer reads `GC.GetGCMemoryInfo()` and trims when `MemoryLoadBytes` reaches the configured percentage of `HighMemoryLoadThresholdBytes`, with a 5-minute re-arm cooldown and busy-deferral (deferral doesn't consume the cooldown). Absent → enabled at `100`%; `0`/`false` → disabled; positive `N` → `N`% of the GC high-load threshold. Complements idle-exit, which covers *quiet* daemons.
+
 ## 0.8.0-alpha.22 - 2026-06-07
 
 - fix: spawned `dotnet build` (and any other child process) no longer inherits the
