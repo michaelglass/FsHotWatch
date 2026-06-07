@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: spawned `dotnet build` (and any other child process) no longer inherits the
+  `MSBUILD_EXE_PATH` / `MSBuildExtensionsPath` / `MSBuildSDKsPath` variables that
+  Ionide.ProjInfo writes into the daemon's own environment during in-process project
+  evaluation. On a multi-SDK machine those leaked vars pinned the child's MSBuild to a
+  different (or incomplete) SDK band than the muxer resolved, so the implicit restore
+  failed with exit 1 and zero diagnostics — surfacing as the long-standing
+  `fshw check --run-once` "Build FAILED / 0 Error(s)" while a plain-shell `dotnet build`
+  of the same tree was clean. `ProcessHelper.runProcessWithTimeout` now strips these keys
+  before every spawn (same treatment as the arch-specific `DOTNET_ROOT_*` keys);
+  caller-supplied overrides still win. See docs/leaked-msbuild-env-bug.md.
+
 ## 0.8.0-alpha.21 - 2026-06-06
 
 - feat: `fshw dead-code` — runs TestPrune's unreachable-symbol analysis against the daemon's .fshw/test-impact.db (same semantics as the standalone test-prune CLI: --entry/--include-tests/--verbose), no DB copying needed.
