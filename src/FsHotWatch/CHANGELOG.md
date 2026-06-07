@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- chore: republish so the bundled `fshw` carries the CLI's dead-code schema-probe fix
+  (now sourced from TestPrune.Core's public `Database.SchemaVersion`, 4.2.1). Also folds
+  in an internal `ProcessHelper` refactor unifying the child-env sanitization lists into
+  one `sanitizedChildEnvKeys`. No core API change.
+
 ## 0.8.0-alpha.22 - 2026-06-07
 
 - fix: spawned `dotnet build` (and any other child process) no longer inherits the
