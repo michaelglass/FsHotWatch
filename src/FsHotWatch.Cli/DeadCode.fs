@@ -146,7 +146,7 @@ let run
     (repoRoot: string)
     (opts: DeadCodeOptions)
     : int =
-    let dbPath = Path.Combine(repoRoot, ".fshw", "test-impact.db")
+    let dbPath = Path.Combine(repoRoot, DbRelativePath)
 
     if not (fileExists dbPath) then
         eprint missingDbMessage
