@@ -4,6 +4,8 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+## 0.8.0-alpha.23 - 2026-06-07
+
 - fix: `fshw dead-code`'s schema-compatibility probe now sources its expected version
   from TestPrune.Core's public `Database.SchemaVersion` (4.2.1) instead of a hardcoded
   copy — the probe moves in lockstep with the bundled Core, so a future schema bump
