@@ -77,7 +77,6 @@
     <Compile Include="CheckPipeline.fs" />
     <Compile Include="Ipc.fs" />
     <Compile Include="IdleExit.fs" />
-    <Compile Include="PressureTrim.fs" />
     <Compile Include="Daemon.fs" />
   </ItemGroup>
 
