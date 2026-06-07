@@ -189,6 +189,7 @@ Create `.fshw.json` in your repo root. All fields are optional — sensible defa
 | `fileCommands` | `array` | `[]` | Custom commands triggered by file patterns. |
 | `timeoutSec` | `int` | — | Global default per-task timeout in seconds. Used when a plugin/project has no per-entry override. |
 | `idleExitMin` | `int \| false` | *auto* | Minutes of idleness after which the daemon shuts itself down to reclaim memory. See [Idle exit](#idle-exit). |
+| `pressureTrimPct` | `int \| false` | `100` | Release the daemon's warm FCS caches when system memory load reaches this percentage of the GC's high-load threshold. See [Memory-pressure trim](#memory-pressure-trim). |
 
 **Per-task timeouts.** Any of `build[]`, `tests.projects[]`, and `fileCommands[]` entries may set their own `timeoutSec` to override the global default. When a task exceeds its timeout, the daemon kills the child process tree, records the run with outcome `timed out` (distinct `⏱` glyph in the UI, `timed-out` token in agent mode), and stays running — the next change retriggers normally.
 
@@ -283,4 +284,31 @@ Configure it with the `idleExitMin` key in `.fshw.json`:
 ```jsonc
 // Explicit opt-out: never auto-quit, even in a /.workspaces/ checkout.
 { "idleExitMin": false }
+```
+
+### Memory-pressure trim
+
+[Idle exit](#idle-exit) reclaims memory from daemons that have gone *quiet*. Memory-pressure trim covers the other case: an **active** daemon on a memory-starved machine. Rather than shutting down, it releases the daemon's warm FCS root caches (the ~2.9 GB of FCS-rooted native working set) in place; the caches re-warm transparently on the next check, with diagnostics parity preserved. The trim only fires when the machine is genuinely under memory pressure, so it stays warm the rest of the time.
+
+The trigger reads the runtime's own memory signal (`GC.GetGCMemoryInfo()`): it fires when `MemoryLoadBytes` reaches the configured percentage of `HighMemoryLoadThresholdBytes` (the level at which the GC itself considers the system high-loaded). After a trim, a 5-minute cooldown must elapse before another can fire, regardless of pressure, so a sustained-pressure machine doesn't thrash the caches every poll. A trim is also deferred (no cooldown consumed) while plugin work is in flight.
+
+Configure it with the `pressureTrimPct` key in `.fshw.json`:
+
+- **Key absent → enabled at `100`%** — trim exactly when the GC considers the system high-memory-loaded. On by default because it only acts under genuine starvation.
+- **`0` or `false` → disabled.**
+- **Positive integer `N` → enabled at `N`% of the GC high-load threshold** (`80` trims earlier, `120` only beyond the GC's threshold).
+
+```jsonc
+// Default: omit the key. Trims at 100% of the GC high-load threshold.
+{}
+```
+
+```jsonc
+// Trim earlier — at 80% of the GC high-load threshold.
+{ "pressureTrimPct": 80 }
+```
+
+```jsonc
+// Disabled: never trim under pressure.
+{ "pressureTrimPct": false }
 ```

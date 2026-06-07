@@ -89,6 +89,44 @@ let ``parseConfig idleExitMin non-numeric string yields Absent`` () =
     let config = parseConfig """{"idleExitMin": "nope"}""" defaults
     test <@ config.IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent @>
 
+// --- parseConfig: pressureTrimPct ---
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig pressureTrimPct absent yields Absent (default-enabled)`` () =
+    let config = parseConfig "{}" defaults
+    test <@ config.PressureTrimPct = FsHotWatch.PressureTrim.PressureTrimConfig.Absent @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig pressureTrimPct positive yields Pct`` () =
+    let config = parseConfig """{"pressureTrimPct": 80}""" defaults
+    test <@ config.PressureTrimPct = FsHotWatch.PressureTrim.PressureTrimConfig.Pct 80 @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig pressureTrimPct zero yields Disabled`` () =
+    let config = parseConfig """{"pressureTrimPct": 0}""" defaults
+    test <@ config.PressureTrimPct = FsHotWatch.PressureTrim.PressureTrimConfig.Disabled @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig pressureTrimPct false yields Disabled`` () =
+    let config = parseConfig """{"pressureTrimPct": false}""" defaults
+    test <@ config.PressureTrimPct = FsHotWatch.PressureTrim.PressureTrimConfig.Disabled @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig pressureTrimPct negative yields Disabled`` () =
+    let config = parseConfig """{"pressureTrimPct": -10}""" defaults
+    test <@ config.PressureTrimPct = FsHotWatch.PressureTrim.PressureTrimConfig.Disabled @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig pressureTrimPct true yields Disabled`` () =
+    let config = parseConfig """{"pressureTrimPct": true}""" defaults
+    test <@ config.PressureTrimPct = FsHotWatch.PressureTrim.PressureTrimConfig.Disabled @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig pressureTrimPct non-numeric string yields Absent`` () =
+    // A garbage value falls through to the default (Absent / default-enabled).
+    let config = parseConfig """{"pressureTrimPct": "nope"}""" defaults
+    test <@ config.PressureTrimPct = FsHotWatch.PressureTrim.PressureTrimConfig.Absent @>
+
 // --- parseConfig: exclude ---
 
 [<Fact(Timeout = 15000)>]
