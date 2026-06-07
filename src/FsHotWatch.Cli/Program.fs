@@ -1257,10 +1257,13 @@ let main args =
                     // `/.workspaces/` checkouts). `None` leaves the timer off.
                     let idleExitMin = FsHotWatch.IdleExit.resolveThreshold config.IdleExitMin root
 
-                    // Resolve the memory-pressure trim percentage from the
-                    // `pressureTrimPct` config (default-enabled at 100%). `None`
-                    // leaves the pressure-trim timer off.
-                    let pressureTrimPct = FsHotWatch.PressureTrim.resolvePct config.PressureTrimPct
+                    // Resolve the pressure floor from `pressureIdleFloorMin`
+                    // (default-on at 2 min). Under memory pressure this shortens
+                    // an already-eligible idle window to `min(idleExitMin, floor)`;
+                    // `None` disables pressure-shortening. It never makes a
+                    // non-eligible daemon (e.g. the default workspace) eligible.
+                    let pressureIdleFloorMin =
+                        FsHotWatch.IdleExit.resolvePressureFloor config.PressureIdleFloorMin
 
                     Daemon.create
                         root
@@ -1270,7 +1273,7 @@ let main args =
                             ExcludePatterns = config.Exclude
                             ExtraWatchPatterns = fileCommandPatterns
                             IdleExitMin = idleExitMin
-                            PressureTrimPct = pressureTrimPct }
+                            PressureIdleFloorMin = pressureIdleFloorMin }
 
                 executeCommand createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
             // ROOT-level unknown command: the dynamic plugin-passthrough. Forward the

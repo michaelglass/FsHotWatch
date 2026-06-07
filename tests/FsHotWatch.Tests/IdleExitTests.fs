@@ -123,6 +123,51 @@ let ``non-positive explicit N resolves to None`` () =
     test <@ resolveThreshold (IdleExitConfig.Minutes 0) "/dev/repo/.workspaces/x" = None @>
     test <@ resolveThreshold (IdleExitConfig.Minutes -3) "/dev/repo/.workspaces/x" = None @>
 
+// --- resolvePressureFloor ---
+
+[<Fact>]
+let ``pressure floor absent resolves to default 2`` () =
+    test <@ resolvePressureFloor PressureFloorConfig.Absent = Some 2 @>
+
+[<Fact>]
+let ``pressure floor disabled resolves to None`` () =
+    test <@ resolvePressureFloor PressureFloorConfig.Disabled = None @>
+
+[<Fact>]
+let ``pressure floor positive N resolves to Some N`` () =
+    test <@ resolvePressureFloor (PressureFloorConfig.Minutes 5) = Some 5 @>
+
+[<Fact>]
+let ``pressure floor non-positive N resolves to None`` () =
+    test <@ resolvePressureFloor (PressureFloorConfig.Minutes 0) = None @>
+    test <@ resolvePressureFloor (PressureFloorConfig.Minutes -3) = None @>
+
+// --- effectiveThreshold (pressure shortens an eligible window only) ---
+
+[<Fact>]
+let ``not eligible stays None even under pressure`` () =
+    // The default/main workspace (baseThreshold None) is exempt under pressure:
+    // pressure NEVER creates a window. Explicit product decision.
+    test <@ effectiveThreshold None true (Some 2) = None @>
+    test <@ effectiveThreshold None false (Some 2) = None @>
+
+[<Fact>]
+let ``eligible without pressure uses the base window`` () =
+    test <@ effectiveThreshold (Some 30) false (Some 2) = Some 30 @>
+
+[<Fact>]
+let ``eligible under pressure shortens to min(base, floor)`` () =
+    test <@ effectiveThreshold (Some 30) true (Some 2) = Some 2 @>
+
+[<Fact>]
+let ``floor never lengthens a window already smaller`` () =
+    // Some 1 + pressure + floor 2 → min(1,2) = 1.
+    test <@ effectiveThreshold (Some 1) true (Some 2) = Some 1 @>
+
+[<Fact>]
+let ``floor disabled ignores pressure and uses the base window`` () =
+    test <@ effectiveThreshold (Some 30) true None = Some 30 @>
+
 // --- runTick wiring (injected effects) ---
 
 let private makeDeps (idleMinutes: float) (busy: bool) =
@@ -131,7 +176,9 @@ let private makeDeps (idleMinutes: float) (busy: bool) =
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { Threshold = threshold
+        { BaseThresholdMin = 30
+          PressureFloorMin = Some 2
+          Pressure = fun () -> false
           Now = fun () -> now
           Busy = fun () -> busy
           LastActivityAt = fun () -> now.AddMinutes(-idleMinutes)
@@ -169,7 +216,9 @@ let ``runTick defers when busy then fires when free`` () =
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { Threshold = threshold
+        { BaseThresholdMin = 30
+          PressureFloorMin = Some 2
+          Pressure = fun () -> false
           Now = fun () -> now
           Busy = fun () -> busy.Value
           LastActivityAt = fun () -> now.AddMinutes(-31.0)
@@ -186,6 +235,65 @@ let ``runTick defers when busy then fires when free`` () =
     busy.Value <- false
     test <@ runTick deps latch = true @>
     test <@ shutdownCalls.Value = 1 @>
+
+// --- runTick: pressure shortens the effective window ---
+
+let private makePressureDeps (idleMinutes: float) (pressure: bool ref) (floor: int option) =
+    let shutdownCalls = ref 0
+    let logs = ResizeArray<string>()
+    let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
+
+    let deps: IdleExitDeps =
+        { BaseThresholdMin = 30
+          PressureFloorMin = floor
+          Pressure = fun () -> pressure.Value
+          Now = fun () -> now
+          Busy = fun () -> false
+          LastActivityAt = fun () -> now.AddMinutes(-idleMinutes)
+          Shutdown = fun () -> Interlocked.Increment(shutdownCalls) |> ignore
+          Log = fun msg -> lock logs (fun () -> logs.Add msg) }
+
+    deps, shutdownCalls, logs
+
+[<Fact>]
+let ``runTick under pressure fires at the 2min floor, not before`` () =
+    // Base 30min, floor 2min, idle 1min, under pressure → 1 < 2 → no fire.
+    let deps, shutdownCalls, _ = makePressureDeps 1.0 (ref true) (Some 2)
+    test <@ runTick deps (FireLatch.create ()) = false @>
+    test <@ shutdownCalls.Value = 0 @>
+
+[<Fact>]
+let ``runTick under pressure fires at the floor boundary`` () =
+    // idle 2min == floor → fires (well below the 30min base).
+    let deps, shutdownCalls, logs = makePressureDeps 2.0 (ref true) (Some 2)
+    test <@ runTick deps (FireLatch.create ()) = true @>
+    test <@ shutdownCalls.Value = 1 @>
+    test <@ logs |> Seq.exists (fun m -> m.Contains "memory pressure shortened") @>
+
+[<Fact>]
+let ``runTick re-evaluates pressure each tick - subsiding restores the full window`` () =
+    // idle 2min, floor 2min. Under pressure → fires at 2min; but with pressure
+    // OFF the same idle (2min < 30min base) must NOT fire — pressure is a live
+    // read, not latched.
+    let pressure = ref false
+    let deps, shutdownCalls, _ = makePressureDeps 2.0 pressure (Some 2)
+    let latch = FireLatch.create ()
+
+    // No pressure: 2min idle is well under the 30min base → defer.
+    test <@ runTick deps latch = false @>
+    test <@ shutdownCalls.Value = 0 @>
+
+    // Pressure rises: effective window drops to 2min → fires now.
+    pressure.Value <- true
+    test <@ runTick deps latch = true @>
+    test <@ shutdownCalls.Value = 1 @>
+
+[<Fact>]
+let ``runTick with floor disabled ignores pressure`` () =
+    // Floor None, idle 2min, under pressure → still uses the 30min base → defer.
+    let deps, shutdownCalls, _ = makePressureDeps 2.0 (ref true) None
+    test <@ runTick deps (FireLatch.create ()) = false @>
+    test <@ shutdownCalls.Value = 0 @>
 
 [<Fact>]
 let ``runTick fires shutdown at most once across concurrent ticks`` () =
@@ -204,7 +312,9 @@ let ``runTick swallows a throwing shutdown without escaping`` () =
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { Threshold = threshold
+        { BaseThresholdMin = 30
+          PressureFloorMin = Some 2
+          Pressure = fun () -> false
           Now = fun () -> now
           Busy = fun () -> false
           LastActivityAt = fun () -> now.AddMinutes(-31.0)
@@ -227,7 +337,9 @@ let ``createTimer logs the enable line and is disposable`` () =
     let now = DateTime(2026, 6, 7, 12, 0, 0, DateTimeKind.Utc)
 
     let deps: IdleExitDeps =
-        { Threshold = threshold
+        { BaseThresholdMin = 30
+          PressureFloorMin = Some 2
+          Pressure = fun () -> false
           // Activity is "now" so the timer never fires within the test window.
           Now = fun () -> now
           Busy = fun () -> false

@@ -497,87 +497,6 @@ let ``Daemon.create creates a working daemon with real checker`` () =
         test <@ daemon.RepoRoot = tmpDir @>)
 
 [<Fact(Timeout = 20000)>]
-let ``Daemon.create with pressure-trim enabled arms the timer and disposes cleanly`` () =
-    // Real checker so the pressure-trim timer branch is actually taken (it's
-    // skipped on a null checker). The 100% threshold won't fire within the test
-    // lifetime; we only confirm the timer is constructed and disposed cleanly.
-    // The firing decision/atomicity is unit-tested in PressureTrimTests.
-    withTempDir "daemon-pressure-trim" (fun tmpDir ->
-        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let cts = new CancellationTokenSource()
-
-        let daemon =
-            Daemon.create
-                tmpDir
-                { Daemon.DaemonOptions.defaults with
-                    PressureTrimPct = Some 100 }
-
-        let task = Async.StartAsTask(daemon.Run(cts.Token))
-        daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
-        cts.Cancel()
-
-        try
-            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
-        with :? AggregateException ->
-            ()
-
-        // Dispose runs the pressure-trim timer's Dispose via the daemon.
-        (daemon :> IDisposable).Dispose()
-        test <@ task.IsCompleted @>)
-
-[<Fact(Timeout = 15000)>]
-let ``Daemon.createWith pressure-trim and a null checker skips the timer cleanly`` () =
-    // PressureTrimPct set but a null checker → the guard skips timer creation
-    // (no FCS to trim); the daemon still starts and stops cleanly.
-    withTempDir "daemon-pressure-trim-null" (fun tmpDir ->
-        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let cts = new CancellationTokenSource()
-
-        let daemon =
-            Daemon.createWith
-                nullChecker
-                tmpDir
-                { Daemon.DaemonOptions.defaults with
-                    PressureTrimPct = Some 100 }
-
-        let task = Async.StartAsTask(daemon.Run(cts.Token))
-        daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
-        cts.Cancel()
-
-        try
-            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
-        with :? AggregateException ->
-            ()
-
-        (daemon :> IDisposable).Dispose()
-        test <@ task.IsCompleted @>)
-
-[<Fact(Timeout = 15000)>]
-let ``Daemon.createWith pressure-trim disabled creates no timer and disposes cleanly`` () =
-    withTempDir "daemon-pressure-trim-off" (fun tmpDir ->
-        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let cts = new CancellationTokenSource()
-
-        let daemon =
-            Daemon.createWith
-                nullChecker
-                tmpDir
-                { Daemon.DaemonOptions.defaults with
-                    PressureTrimPct = None }
-
-        let task = Async.StartAsTask(daemon.Run(cts.Token))
-        daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
-        cts.Cancel()
-
-        try
-            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
-        with :? AggregateException ->
-            ()
-
-        (daemon :> IDisposable).Dispose()
-        test <@ task.IsCompleted @>)
-
-[<Fact(Timeout = 20000)>]
 let ``daemon RunWithIpc starts and stops cleanly`` () =
     withTempDir "daemon-ipc" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -611,7 +530,37 @@ let ``daemon RunWithIpc with idle-exit threshold arms the timer and stops cleanl
                 nullChecker
                 tmpDir
                 { Daemon.DaemonOptions.defaults with
-                    IdleExitMin = Some 30 }
+                    IdleExitMin = Some 30
+                    PressureIdleFloorMin = Some 2 }
+
+        let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
+        daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+        cts.Cancel()
+
+        try
+            task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+        with :? AggregateException ->
+            ()
+
+        test <@ task.IsCompleted @>)
+
+[<Fact(Timeout = 20000)>]
+let ``daemon RunWithIpc idle-exit with pressure floor disabled arms the timer and stops cleanly`` () =
+    // PressureIdleFloorMin None → pressure-shortening off, full window only. The
+    // idle-exit timer still arms (IdleExitMin Some) and the daemon stops cleanly.
+    // The pressure decision is unit-tested in IdleExitTests.
+    withTempDir "daemon-idle-exit-nofloor" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+        let cts = new CancellationTokenSource()
+        let pipeName = $"fshw-test-{Guid.NewGuid():N}"
+
+        let daemon =
+            Daemon.createWith
+                nullChecker
+                tmpDir
+                { Daemon.DaemonOptions.defaults with
+                    IdleExitMin = Some 30
+                    PressureIdleFloorMin = None }
 
         let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
         daemon.Ready.Wait(TimeSpan.FromSeconds(10.0)) |> ignore

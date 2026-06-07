@@ -341,7 +341,7 @@ let defaultTestConfig () : FsHotWatch.Cli.DaemonConfig.DaemonConfiguration =
       LogDir = "logs"
       TimeoutSec = None
       IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent
-      PressureTrimPct = FsHotWatch.PressureTrim.PressureTrimConfig.Absent }
+      PressureIdleFloorMin = FsHotWatch.IdleExit.PressureFloorConfig.Absent }
 
 /// Create an ErrorEntry for tests.
 let errorEntry msg (sev: FsHotWatch.ErrorLedger.DiagnosticSeverity) : FsHotWatch.ErrorLedger.ErrorEntry =
