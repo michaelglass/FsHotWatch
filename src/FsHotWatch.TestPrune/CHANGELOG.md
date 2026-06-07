@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: a FAILED test verdict is no longer served from the task cache as a current
+  result ("green tree read as red"). The cache key for a completed test run is
+  derived from changed symbols + commit, which does NOT pin the test OUTCOME — so a
+  failing run and a later passing run on the same tree shared a key. Caching the
+  failure let the framework replay a stale red on a now-green tree, surviving daemon
+  restarts via the on-disk cache. The plugin now returns a `None` cache key for any
+  non-passing `TestsFinished`, making failures uncacheable (always re-run on the next
+  matching event); fully-passing runs still cache for the green fast-path. The
+  BuildCompleted merkle salt is bumped `v1`→`v2` so entries written by the prior
+  failure-caching code are orphaned without a manual cache wipe.
+
 ## 0.7.0-alpha.19 - 2026-06-05
 
 - fix: when a schema bump recreates the TestPrune DB, the plugin now clears the FCS
