@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: the deps-freshness gate no longer counts .config/dotnet-tools.json as a dependency input — a dotnet-tool bump no longer false-stales every project into restore-recovery/skipped scans
+
 ## 0.8.0-alpha.21 - 2026-06-06
 
 - feat: `fshw dead-code` — runs TestPrune's unreachable-symbol analysis against the daemon's .fshw/test-impact.db (same semantics as the standalone test-prune CLI: --entry/--include-tests/--verbose), no DB copying needed.
