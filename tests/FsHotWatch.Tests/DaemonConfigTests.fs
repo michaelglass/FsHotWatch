@@ -89,43 +89,43 @@ let ``parseConfig idleExitMin non-numeric string yields Absent`` () =
     let config = parseConfig """{"idleExitMin": "nope"}""" defaults
     test <@ config.IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent @>
 
-// --- parseConfig: pressureTrimPct ---
+// --- parseConfig: pressureIdleFloorMin ---
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig pressureTrimPct absent yields Absent (default-enabled)`` () =
+let ``parseConfig pressureIdleFloorMin absent yields Absent (default 2)`` () =
     let config = parseConfig "{}" defaults
-    test <@ config.PressureTrimPct = FsHotWatch.PressureTrim.PressureTrimConfig.Absent @>
+    test <@ config.PressureIdleFloorMin = FsHotWatch.IdleExit.PressureFloorConfig.Absent @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig pressureTrimPct positive yields Pct`` () =
-    let config = parseConfig """{"pressureTrimPct": 80}""" defaults
-    test <@ config.PressureTrimPct = FsHotWatch.PressureTrim.PressureTrimConfig.Pct 80 @>
+let ``parseConfig pressureIdleFloorMin positive yields Minutes`` () =
+    let config = parseConfig """{"pressureIdleFloorMin": 5}""" defaults
+    test <@ config.PressureIdleFloorMin = FsHotWatch.IdleExit.PressureFloorConfig.Minutes 5 @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig pressureTrimPct zero yields Disabled`` () =
-    let config = parseConfig """{"pressureTrimPct": 0}""" defaults
-    test <@ config.PressureTrimPct = FsHotWatch.PressureTrim.PressureTrimConfig.Disabled @>
+let ``parseConfig pressureIdleFloorMin zero yields Disabled`` () =
+    let config = parseConfig """{"pressureIdleFloorMin": 0}""" defaults
+    test <@ config.PressureIdleFloorMin = FsHotWatch.IdleExit.PressureFloorConfig.Disabled @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig pressureTrimPct false yields Disabled`` () =
-    let config = parseConfig """{"pressureTrimPct": false}""" defaults
-    test <@ config.PressureTrimPct = FsHotWatch.PressureTrim.PressureTrimConfig.Disabled @>
+let ``parseConfig pressureIdleFloorMin false yields Disabled`` () =
+    let config = parseConfig """{"pressureIdleFloorMin": false}""" defaults
+    test <@ config.PressureIdleFloorMin = FsHotWatch.IdleExit.PressureFloorConfig.Disabled @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig pressureTrimPct negative yields Disabled`` () =
-    let config = parseConfig """{"pressureTrimPct": -10}""" defaults
-    test <@ config.PressureTrimPct = FsHotWatch.PressureTrim.PressureTrimConfig.Disabled @>
+let ``parseConfig pressureIdleFloorMin negative yields Disabled`` () =
+    let config = parseConfig """{"pressureIdleFloorMin": -10}""" defaults
+    test <@ config.PressureIdleFloorMin = FsHotWatch.IdleExit.PressureFloorConfig.Disabled @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig pressureTrimPct true yields Disabled`` () =
-    let config = parseConfig """{"pressureTrimPct": true}""" defaults
-    test <@ config.PressureTrimPct = FsHotWatch.PressureTrim.PressureTrimConfig.Disabled @>
+let ``parseConfig pressureIdleFloorMin true yields Disabled`` () =
+    let config = parseConfig """{"pressureIdleFloorMin": true}""" defaults
+    test <@ config.PressureIdleFloorMin = FsHotWatch.IdleExit.PressureFloorConfig.Disabled @>
 
 [<Fact(Timeout = 15000)>]
-let ``parseConfig pressureTrimPct non-numeric string yields Absent`` () =
-    // A garbage value falls through to the default (Absent / default-enabled).
-    let config = parseConfig """{"pressureTrimPct": "nope"}""" defaults
-    test <@ config.PressureTrimPct = FsHotWatch.PressureTrim.PressureTrimConfig.Absent @>
+let ``parseConfig pressureIdleFloorMin non-numeric string yields Absent`` () =
+    // A garbage value falls through to the default (Absent / default 2).
+    let config = parseConfig """{"pressureIdleFloorMin": "nope"}""" defaults
+    test <@ config.PressureIdleFloorMin = FsHotWatch.IdleExit.PressureFloorConfig.Absent @>
 
 // --- parseConfig: exclude ---
 
