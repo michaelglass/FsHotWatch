@@ -1928,14 +1928,37 @@ let create
                     |> String.concat "|"
                     |> FsHotWatch.CheckCache.sha256Hex
 
+                // AUTOMATION-5: salt bumped v1→v2 so any entry written by the
+                // prior code (which cached FAILED test verdicts and could replay
+                // them on a now-green tree) can never match a key computed here.
+                // Orphans legacy poison on disk without needing a manual cache wipe.
                 FsHotWatch.TaskCache.merkleCacheKey
-                    [ "plugin-version", "test-prune-merkle-v1"
+                    [ "plugin-version", "test-prune-merkle-v2"
                       "event", "BuildCompleted"
                       "changed-symbols", symbolsHash
                       "build-outcome", "succeeded" ]
 
             match event with
             | BuildCompleted BuildSucceeded -> Some(buildCompletedKey ())
+            | Custom(TestsFinished(_, completed)) ->
+                // AUTOMATION-5 (2026-06-07): a FAILED test outcome must never be
+                // served from cache as a current verdict. Unlike BuildPlugin —
+                // whose result is a pure function of its content-merkle inputs, so
+                // replaying a cached failure on an identical tree is correct — a
+                // test outcome is NOT pinned by the changed-symbols merkle: the same
+                // key recurs after the tree is fixed (or for a flaky test), and a
+                // cached `Failed` would then replay as a stale red on a green tree
+                // ("green tree read as red"). Field evidence: an 08:35 failure
+                // replayed at 10:19/10:49 and through four deploy-preflights on a
+                // `failed: 0` tree. Returning None here makes a non-passing run
+                // UNCACHEABLE, so `runAndCache` skips the write and the next
+                // matching BuildCompleted finds no poisoned entry and re-runs.
+                // A fully-passing run still caches (key matches BuildSucceeded) and
+                // replays cleanly — the desired green fast-path.
+                if completed.Results |> Map.forall (fun _ r -> TestResult.isPassed r) then
+                    Some(buildCompletedKey ())
+                else
+                    None
             | BuildCompleted(BuildFailed errs) ->
                 let symbolsHash =
                     Volatile.Read(&changedSymbolsRef)
@@ -1945,13 +1968,14 @@ let create
                     |> FsHotWatch.CheckCache.sha256Hex
 
                 Some(
+                    // AUTOMATION-5: salt bumped v1→v2 in lockstep with the
+                    // BuildSucceeded key so the two never split across versions.
                     FsHotWatch.TaskCache.merkleCacheKey
-                        [ "plugin-version", "test-prune-merkle-v1"
+                        [ "plugin-version", "test-prune-merkle-v2"
                           "event", "BuildCompleted"
                           "changed-symbols", symbolsHash
                           "build-outcome", "failed:" + String.concat "|" (List.sort errs) ]
                 )
-            | Custom(TestsFinished _) -> Some(buildCompletedKey ())
             | FileChecked r ->
                 // §1: fcs-signature captures cross-file FCS state so symbol
                 // changes upstream invalidate this file's cached symbol-diff.
