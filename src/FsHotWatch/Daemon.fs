@@ -600,6 +600,12 @@ type internal BatchContext =
         /// analysis. `None` disables the gate (test daemons with a null
         /// checker). See `DepsFreshness.evaluateProject`.
         DepsGate: (string -> DepsFreshness.GateResult) option
+        /// Cold-scan-in-progress flag. `performScan` brackets its body with
+        /// `ScanInProgress.enter`/`exit`; the pressure-trim timer's busy guard
+        /// reads it (composed with `host.AnyPluginBusy`) so a trim DEFERS while a
+        /// cold scan is building FCS caches directly (the scan drives FCS, not a
+        /// plugin, so `AnyPluginBusy` alone misses it). See `PressureTrim`.
+        ScanInProgress: PressureTrim.ScanInProgress
     }
 
 /// Process a batch of debounced file changes: filter, re-discover projects if needed,
@@ -1165,7 +1171,8 @@ type Daemon
         lifetime: CancellationTokenSource,
         formatAllFn: (unit -> Async<string>) option,
         excludePatterns: string list,
-        idleExitMin: int option
+        idleExitMin: int option,
+        pressureTrimTimer: IDisposable option
     ) =
 
     let mutable disposed = false
@@ -1204,6 +1211,7 @@ type Daemon
                 // AsyncLocal current one — Dispose may run from a different
                 // async context than the one that installed it.
                 processRegistry.KillAll()
+                pressureTrimTimer |> Option.iter (fun t -> t.Dispose())
                 lifetime.Cancel()
                 lifetime.Dispose()
                 (watcher :> IDisposable).Dispose()
@@ -1456,6 +1464,14 @@ let internal runChecksWithRetry
 /// Execute the full scan logic, returning the updated agent state.
 let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: ScanAgentState) (ct: CancellationToken) =
     async {
+        // Mark a cold scan as in-flight for the whole body. `use` clears it on
+        // scope exit — including cancellation/failure — via the disposable
+        // returned by `ScanInProgress.enterScope`. The pressure-trim timer's
+        // busy guard reads this and DEFERS the trim while the scan is building
+        // FCS caches directly: trimming mid-scan wipes the caches the scan is
+        // creating, which the scan then has to rebuild. See `PressureTrim`.
+        use _scanGuard = PressureTrim.ScanInProgress.enterScope ctx.ScanInProgress
+
         let host = ctx.Host
         let pipeline = ctx.Pipeline
         let graph = ctx.Graph
@@ -1641,6 +1657,14 @@ module Daemon =
             /// created. Resolution from the `idleExitMin` config + repo path is
             /// done by the caller (`IdleExit.resolveThreshold`).
             IdleExitMin: int option
+            /// Resolved memory-pressure trim percentage. `Some n` arms a 30s
+            /// timer that releases the FCS root caches whenever system memory
+            /// load reaches `n`% of the GC's high-load threshold (with a 5min
+            /// cooldown and busy-deferral); `None` (the default) disables it — no
+            /// timer is created. Resolution from the `pressureTrimPct` config is
+            /// done by the caller (`PressureTrim.resolvePct`). The trim re-warms
+            /// transparently on the next check.
+            PressureTrimPct: int option
         }
 
     module DaemonOptions =
@@ -1650,7 +1674,8 @@ module Daemon =
               FcsSuppressedCodes = None
               ExcludePatterns = []
               ExtraWatchPatterns = []
-              IdleExitMin = None }
+              IdleExitMin = None
+              PressureTrimPct = None }
 
     /// Resolve the configured FCS-suppression option to the runtime `Set<int>`.
     /// `None` resolves to `Set.empty` — fshw deliberately ships no built-in
@@ -1709,6 +1734,11 @@ module Daemon =
 
             let daemonCtRef = ref CancellationToken.None
 
+            // Shared cold-scan-in-progress flag: set by `performScan` for the
+            // duration of a scan, read by the pressure-trim timer's busy guard so
+            // a trim defers while a cold scan is building FCS caches directly.
+            let scanInProgress = PressureTrim.ScanInProgress.create ()
+
             let delayForChange change =
                 match change with
                 | ProjectChanged _
@@ -1758,7 +1788,8 @@ module Daemon =
                                 DepsFreshness.assetsPresent
                                 runner
                                 tracker
-                                projPath) }
+                                projPath)
+                  ScanInProgress = scanInProgress }
 
             let formatAllAndSuppress (suppressed: Set<string>) (replyChannel: AsyncReplyChannel<string>) =
                 let files = pipeline.GetAllRegisteredFiles() |> List.map AbsFilePath.value
@@ -1874,6 +1905,40 @@ module Daemon =
             let formatAllViaAgent () =
                 changeAgent.PostAndAsyncReply(Choice2Of2)
 
+            // Memory-pressure trim scheduler. When pressureTrimPct is set a 30s
+            // timer releases FCS's strong cache roots whenever system memory load
+            // reaches the configured fraction of the GC's high-load threshold,
+            // letting the GC reclaim the managed entries plus the native reader
+            // state they root. Busy ticks defer; a 5min cooldown re-arms after a
+            // fire. The decision/atomicity live in the pure, unit-tested
+            // `PressureTrim` module — here we only inject the live effects (clock,
+            // GC memory signal, host busy, FCS clear, log). Wired here (rather
+            // than in RunWithIpc like idle-exit) because it needs the `checker`;
+            // disposed with the daemon. A null checker (test daemons) skips it.
+            let pressureTrimTimer: IDisposable option =
+                match opts.PressureTrimPct with
+                | Some pct when pct > 0 && not (isNull (box checker)) ->
+                    let deps: PressureTrim.PressureTrimDeps =
+                        { Pct = pct
+                          Now = fun () -> System.DateTime.UtcNow
+                          ReadMemory =
+                            fun () ->
+                                let info = System.GC.GetGCMemoryInfo()
+                                (info.MemoryLoadBytes, info.HighMemoryLoadThresholdBytes)
+                          // DEFER while ANY plugin/check is running OR a cold scan
+                          // is in flight. The cold scan drives FCS directly (not
+                          // through a plugin), so `AnyPluginBusy` alone misses it
+                          // — without the scan-aware OR a trim could fire mid-scan
+                          // and wipe the caches the scan is actively building.
+                          Busy =
+                            PressureTrim.composeBusy host.AnyPluginBusy (fun () ->
+                                PressureTrim.ScanInProgress.isScanning scanInProgress)
+                          Trim = checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients
+                          Log = fun message -> Logging.info "pressure-trim" message }
+
+                    Some(PressureTrim.createTimer deps :> IDisposable)
+                | _ -> None
+
             new Daemon(
                 host,
                 watcher,
@@ -1889,7 +1954,8 @@ module Daemon =
                 lifetime,
                 Some formatAllViaAgent,
                 excludePatterns,
-                opts.IdleExitMin
+                opts.IdleExitMin,
+                pressureTrimTimer
             )
         with _ ->
             lifetime.Dispose()
