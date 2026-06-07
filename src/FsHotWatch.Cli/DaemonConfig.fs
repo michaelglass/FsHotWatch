@@ -138,6 +138,11 @@ type DaemonConfiguration =
         LogDir: string
         /// Global default timeout (seconds). Used when no per-entry override set.
         TimeoutSec: int option
+        /// Idle-exit configuration from the `idleExitMin` key. Absent → AUTO
+        /// (enabled at 30min only for non-default `/.workspaces/` checkouts);
+        /// `0`/`false` → disabled everywhere; positive N → enabled at N minutes
+        /// everywhere. See `FsHotWatch.IdleExit`.
+        IdleExitMin: IdleExit.IdleExitConfig
     }
 
 let private defaultConfigFor (repoRoot: string) =
@@ -157,7 +162,8 @@ let private defaultConfigFor (repoRoot: string) =
       Coverage = None
       Exclude = []
       LogDir = "logs"
-      TimeoutSec = None }
+      TimeoutSec = None
+      IdleExitMin = IdleExit.IdleExitConfig.Absent }
 
 /// Raised when `.fshw.json` cannot be read, parsed, or validated.
 /// Carries a user-facing message.
@@ -513,6 +519,25 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | true, v when v.ValueKind = JsonValueKind.Number -> Some(v.GetInt32())
         | _ -> defaults.TimeoutSec
 
+    // `idleExitMin`: absent → AUTO; `0` or `false` → disabled; positive N →
+    // enabled at N minutes. A non-numeric/non-false value (or a non-positive
+    // number) is treated as disabled rather than silently auto-enabling.
+    let idleExitMin =
+        match root.TryGetProperty("idleExitMin") with
+        | true, v when v.ValueKind = JsonValueKind.Number ->
+            let n = v.GetInt32()
+
+            if n > 0 then
+                IdleExit.IdleExitConfig.Minutes n
+            else
+                IdleExit.IdleExitConfig.Disabled
+        | true, v when v.ValueKind = JsonValueKind.False -> IdleExit.IdleExitConfig.Disabled
+        | true, v when v.ValueKind = JsonValueKind.True ->
+            // `true` is not a valid threshold; treat as disabled (no implicit
+            // window). Documented as `number | false` in the README.
+            IdleExit.IdleExitConfig.Disabled
+        | _ -> defaults.IdleExitMin
+
     { Build = build
       Format = format
       Lint = lint
@@ -523,7 +548,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       Coverage = coverage
       Exclude = exclude
       LogDir = logDir
-      TimeoutSec = timeoutSec }
+      TimeoutSec = timeoutSec
+      IdleExitMin = idleExitMin }
 
 /// Strip a config down to a minimal base for run-once subcommands.
 /// Disables all plugins except format preprocessor. Caller overrides specific fields.
