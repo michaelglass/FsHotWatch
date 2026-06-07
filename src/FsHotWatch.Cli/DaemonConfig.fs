@@ -143,6 +143,12 @@ type DaemonConfiguration =
         /// `0`/`false` → disabled everywhere; positive N → enabled at N minutes
         /// everywhere. See `FsHotWatch.IdleExit`.
         IdleExitMin: IdleExit.IdleExitConfig
+        /// Memory-pressure FCS-cache-trim configuration from the
+        /// `pressureTrimPct` key. Absent → ENABLED at 100% of the GC high-load
+        /// threshold (this feature only acts under genuine memory starvation, so
+        /// it is on by default); `0`/`false` → disabled; positive N → enabled at
+        /// N% of the GC threshold. See `FsHotWatch.PressureTrim`.
+        PressureTrimPct: PressureTrim.PressureTrimConfig
     }
 
 let private defaultConfigFor (repoRoot: string) =
@@ -163,7 +169,8 @@ let private defaultConfigFor (repoRoot: string) =
       Exclude = []
       LogDir = "logs"
       TimeoutSec = None
-      IdleExitMin = IdleExit.IdleExitConfig.Absent }
+      IdleExitMin = IdleExit.IdleExitConfig.Absent
+      PressureTrimPct = PressureTrim.PressureTrimConfig.Absent }
 
 /// Raised when `.fshw.json` cannot be read, parsed, or validated.
 /// Carries a user-facing message.
@@ -538,6 +545,27 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             IdleExit.IdleExitConfig.Disabled
         | _ -> defaults.IdleExitMin
 
+    // `pressureTrimPct`: absent → default-enabled at 100% (the feature only acts
+    // under genuine memory pressure, so on-by-default is safe); `0` or `false` →
+    // disabled; positive N → enabled at N% of the GC high-load threshold. A
+    // non-numeric/non-false value (or a non-positive number) is treated as
+    // disabled rather than silently enabling at a surprising percentage.
+    let pressureTrimPct =
+        match root.TryGetProperty("pressureTrimPct") with
+        | true, v when v.ValueKind = JsonValueKind.Number ->
+            let n = v.GetInt32()
+
+            if n > 0 then
+                PressureTrim.PressureTrimConfig.Pct n
+            else
+                PressureTrim.PressureTrimConfig.Disabled
+        | true, v when v.ValueKind = JsonValueKind.False -> PressureTrim.PressureTrimConfig.Disabled
+        | true, v when v.ValueKind = JsonValueKind.True ->
+            // `true` is not a valid percentage; treat as disabled (no implicit
+            // value). Documented as `number | false` in the README.
+            PressureTrim.PressureTrimConfig.Disabled
+        | _ -> defaults.PressureTrimPct
+
     { Build = build
       Format = format
       Lint = lint
@@ -549,7 +577,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       Exclude = exclude
       LogDir = logDir
       TimeoutSec = timeoutSec
-      IdleExitMin = idleExitMin }
+      IdleExitMin = idleExitMin
+      PressureTrimPct = pressureTrimPct }
 
 /// Strip a config down to a minimal base for run-once subcommands.
 /// Disables all plugins except format preprocessor. Caller overrides specific fields.

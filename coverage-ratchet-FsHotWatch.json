@@ -610,6 +610,20 @@
         "reason": "idle-exit scheduler. Pure decision (shouldFire), the atomic FireLatch (incl. the 10k-thread fire-once test), resolveThreshold, isNonDefaultWorkspace, and runTick (fire / defer-on-busy / below-threshold / throwing-shutdown) are all unit-tested directly. The two uncovered lines are non-deterministic under unit tests: L149 is createTimer's onTick lambda body, which only runs when the live 30s System.Threading.Timer actually fires (its callee runTick is fully covered); L132 is runTick's tryFire-loser branch, reachable only when a concurrent tick wins the atomic CompareExchange first (exercised by the concurrency test but not hit on every instrumented run).",
         "platform": "linux"
       }
+    ],
+    "PressureTrim.fs": [
+      {
+        "line": 95,
+        "branch": 100,
+        "reason": "memory-pressure FCS-cache-trim scheduler. Pure decision (shouldTrim: below/at/above threshold, pct 80/100/120 semantics, zero-threshold guard, busy-defer, within/after/at-boundary cooldown), the atomic CooldownLatch (incl. the 10k-thread claim-once test), resolvePct, and runTick (fire / defer-without-consuming-cooldown / sustained-pressure-cooldown / re-fire-after-cooldown / concurrent-once / throwing-trim / throwing-memory-reader) are all unit-tested directly. The remaining uncovered line is createTimer's onTick lambda body, which only runs when the live 30s System.Threading.Timer actually fires (its callee runTick is fully covered).",
+        "platform": "macos"
+      },
+      {
+        "line": 95,
+        "branch": 100,
+        "reason": "memory-pressure FCS-cache-trim scheduler. Pure decision (shouldTrim: below/at/above threshold, pct 80/100/120 semantics, zero-threshold guard, busy-defer, within/after/at-boundary cooldown), the atomic CooldownLatch (incl. the 10k-thread claim-once test), resolvePct, and runTick (fire / defer-without-consuming-cooldown / sustained-pressure-cooldown / re-fire-after-cooldown / concurrent-once / throwing-trim / throwing-memory-reader) are all unit-tested directly. The remaining uncovered line is createTimer's onTick lambda body, which only runs when the live 30s System.Threading.Timer actually fires (its callee runTick is fully covered).",
+        "platform": "linux"
+      }
     ]
   }
 }
