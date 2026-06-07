@@ -126,18 +126,11 @@ let ``serializeConfig produces valid JSON with build and tests`` () =
     let parsed =
         parseConfig
             json
-            { DaemonConfiguration.Build = None
-              Format = Off
-              Lint = false
-              Cache = NoCache
-              Analyzers = None
-              Tests = None
-              FileCommands = []
-              Coverage = None
-              Exclude = []
-              LogDir = "logs"
-              TimeoutSec = None
-              IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+            { defaultTestConfig () with
+                Build = None
+                Format = Off
+                Lint = false
+                Cache = NoCache }
 
     test <@ parsed.Build.IsSome @>
     test <@ parsed.Format = Auto @>
@@ -147,18 +140,8 @@ let ``serializeConfig produces valid JSON with build and tests`` () =
 [<Fact(Timeout = 15000)>]
 let ``serializeConfig with no build omits build section`` () =
     let config =
-        { Build = None
-          Format = Auto
-          Lint = true
-          Cache = FileBackend
-          Analyzers = None
-          Tests = None
-          FileCommands = []
-          Coverage = None
-          Exclude = []
-          LogDir = "logs"
-          TimeoutSec = None
-          IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+        { defaultTestConfig () with
+            Build = None }
 
 
     let json = serializeConfig config
@@ -167,18 +150,8 @@ let ``serializeConfig with no build omits build section`` () =
 [<Fact(Timeout = 15000)>]
 let ``serializeConfig with empty build list omits build section`` () =
     let config =
-        { Build = Some []
-          Format = Auto
-          Lint = true
-          Cache = FileBackend
-          Analyzers = None
-          Tests = None
-          FileCommands = []
-          Coverage = None
-          Exclude = []
-          LogDir = "logs"
-          TimeoutSec = None
-          IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+        { defaultTestConfig () with
+            Build = Some [] }
 
 
     let json = serializeConfig config
@@ -187,29 +160,19 @@ let ``serializeConfig with empty build list omits build section`` () =
 [<Fact(Timeout = 15000)>]
 let ``serializeConfig with multiple builds writes array`` () =
     let config =
-        { Build =
-            Some
-                [ {| Command = "dotnet"
-                     Args = "build src/A"
-                     BuildTemplate = None
-                     DependsOn = []
-                     TimeoutSec = None |}
-                  {| Command = "dotnet"
-                     Args = "build src/B"
-                     BuildTemplate = None
-                     DependsOn = []
-                     TimeoutSec = None |} ]
-          Format = Auto
-          Lint = true
-          Cache = FileBackend
-          Analyzers = None
-          Tests = None
-          FileCommands = []
-          Coverage = None
-          Exclude = []
-          LogDir = "logs"
-          TimeoutSec = None
-          IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+        { defaultTestConfig () with
+            Build =
+                Some
+                    [ {| Command = "dotnet"
+                         Args = "build src/A"
+                         BuildTemplate = None
+                         DependsOn = []
+                         TimeoutSec = None |}
+                      {| Command = "dotnet"
+                         Args = "build src/B"
+                         BuildTemplate = None
+                         DependsOn = []
+                         TimeoutSec = None |} ] }
 
 
     let json = serializeConfig config
@@ -219,18 +182,9 @@ let ``serializeConfig with multiple builds writes array`` () =
 [<Fact(Timeout = 15000)>]
 let ``serializeConfig format Off writes false`` () =
     let config =
-        { Build = None
-          Format = Off
-          Lint = true
-          Cache = FileBackend
-          Analyzers = None
-          Tests = None
-          FileCommands = []
-          Coverage = None
-          Exclude = []
-          LogDir = "logs"
-          TimeoutSec = None
-          IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+        { defaultTestConfig () with
+            Build = None
+            Format = Off }
 
 
     let json = serializeConfig config
@@ -238,36 +192,19 @@ let ``serializeConfig format Off writes false`` () =
     let parsed =
         parseConfig
             json
-            { Build = None
-              Format = Auto
-              Lint = false
-              Cache = NoCache
-              Analyzers = None
-              Tests = None
-              FileCommands = []
-              Coverage = None
-              Exclude = []
-              LogDir = "logs"
-              TimeoutSec = None
-              IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+            { defaultTestConfig () with
+                Build = None
+                Lint = false
+                Cache = NoCache }
 
     test <@ parsed.Format = Off @>
 
 [<Fact(Timeout = 15000)>]
 let ``serializeConfig format Check writes check string`` () =
     let config =
-        { Build = None
-          Format = Check
-          Lint = true
-          Cache = FileBackend
-          Analyzers = None
-          Tests = None
-          FileCommands = []
-          Coverage = None
-          Exclude = []
-          LogDir = "logs"
-          TimeoutSec = None
-          IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+        { defaultTestConfig () with
+            Build = None
+            Format = Check }
 
 
     let json = serializeConfig config
@@ -275,36 +212,20 @@ let ``serializeConfig format Check writes check string`` () =
     let parsed =
         parseConfig
             json
-            { Build = None
-              Format = Off
-              Lint = false
-              Cache = NoCache
-              Analyzers = None
-              Tests = None
-              FileCommands = []
-              Coverage = None
-              Exclude = []
-              LogDir = "logs"
-              TimeoutSec = None
-              IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+            { defaultTestConfig () with
+                Build = None
+                Format = Off
+                Lint = false
+                Cache = NoCache }
 
     test <@ parsed.Format = Check @>
 
 [<Fact(Timeout = 15000)>]
 let ``serializeConfig cache InMemoryOnly writes memory`` () =
     let config =
-        { Build = None
-          Format = Auto
-          Lint = true
-          Cache = InMemoryOnly 100
-          Analyzers = None
-          Tests = None
-          FileCommands = []
-          Coverage = None
-          Exclude = []
-          LogDir = "logs"
-          TimeoutSec = None
-          IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+        { defaultTestConfig () with
+            Build = None
+            Cache = InMemoryOnly 100 }
 
 
     let json = serializeConfig config
@@ -313,18 +234,9 @@ let ``serializeConfig cache InMemoryOnly writes memory`` () =
 [<Fact(Timeout = 15000)>]
 let ``serializeConfig cache NoCache writes false`` () =
     let config =
-        { Build = None
-          Format = Auto
-          Lint = true
-          Cache = NoCache
-          Analyzers = None
-          Tests = None
-          FileCommands = []
-          Coverage = None
-          Exclude = []
-          LogDir = "logs"
-          TimeoutSec = None
-          IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+        { defaultTestConfig () with
+            Build = None
+            Cache = NoCache }
 
 
     let json = serializeConfig config
@@ -332,36 +244,18 @@ let ``serializeConfig cache NoCache writes false`` () =
     let parsed =
         parseConfig
             json
-            { Build = None
-              Format = Off
-              Lint = false
-              Cache = FileBackend
-              Analyzers = None
-              Tests = None
-              FileCommands = []
-              Coverage = None
-              Exclude = []
-              LogDir = "logs"
-              TimeoutSec = None
-              IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+            { defaultTestConfig () with
+                Build = None
+                Format = Off
+                Lint = false }
 
     test <@ parsed.Cache = NoCache @>
 
 [<Fact(Timeout = 15000)>]
 let ``serializeConfig with no tests omits tests section`` () =
     let config =
-        { Build = None
-          Format = Auto
-          Lint = true
-          Cache = FileBackend
-          Analyzers = None
-          Tests = None
-          FileCommands = []
-          Coverage = None
-          Exclude = []
-          LogDir = "logs"
-          TimeoutSec = None
-          IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+        { defaultTestConfig () with
+            Build = None }
 
 
     let json = serializeConfig config
@@ -370,23 +264,14 @@ let ``serializeConfig with no tests omits tests section`` () =
 [<Fact(Timeout = 15000)>]
 let ``serializeConfig with empty test projects omits tests section`` () =
     let config =
-        { Build = None
-          Format = Auto
-          Lint = true
-          Cache = FileBackend
-          Analyzers = None
-          Tests =
-            Some
-                {| BeforeRun = None
-                   Extensions = []
-                   Projects = []
-                   CoverageDir = "coverage" |}
-          FileCommands = []
-          Coverage = None
-          Exclude = []
-          LogDir = "logs"
-          TimeoutSec = None
-          IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+        { defaultTestConfig () with
+            Build = None
+            Tests =
+                Some
+                    {| BeforeRun = None
+                       Extensions = []
+                       Projects = []
+                       CoverageDir = "coverage" |} }
 
 
     let json = serializeConfig config
@@ -397,33 +282,24 @@ let ``serializeConfig with empty test projects omits tests section`` () =
 [<Fact(Timeout = 15000)>]
 let ``serializeConfig test project without filterTemplate omits it`` () =
     let config =
-        { Build = None
-          Format = Auto
-          Lint = true
-          Cache = FileBackend
-          Analyzers = None
-          Tests =
-            Some
-                {| BeforeRun = None
-                   Extensions = []
-                   Projects =
-                    [ { Project = "MyTests"
-                        Command = "dotnet"
-                        Args = "test"
-                        Group = "default"
-                        Environment = []
-                        FilterTemplate = None
-                        ClassJoin = " "
-                        Coverage = true
-                        CoverageArgsTemplate = None
-                        TimeoutSec = None } ]
-                   CoverageDir = "coverage" |}
-          FileCommands = []
-          Coverage = None
-          Exclude = []
-          LogDir = "logs"
-          TimeoutSec = None
-          IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+        { defaultTestConfig () with
+            Build = None
+            Tests =
+                Some
+                    {| BeforeRun = None
+                       Extensions = []
+                       Projects =
+                        [ { Project = "MyTests"
+                            Command = "dotnet"
+                            Args = "test"
+                            Group = "default"
+                            Environment = []
+                            FilterTemplate = None
+                            ClassJoin = " "
+                            Coverage = true
+                            CoverageArgsTemplate = None
+                            TimeoutSec = None } ]
+                       CoverageDir = "coverage" |} }
 
 
     let json = serializeConfig config

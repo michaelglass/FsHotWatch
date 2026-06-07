@@ -11,25 +11,7 @@ open FsHotWatch.Tests.TestHelpers
 
 // --- Helper: defaults with known cache backend ---
 
-let private defaults: DaemonConfiguration =
-    { Build =
-        Some
-            [ {| Command = "dotnet"
-                 Args = "build"
-                 BuildTemplate = None
-                 DependsOn = []
-                 TimeoutSec = None |} ]
-      Format = Auto
-      Lint = true
-      Cache = FileBackend
-      Analyzers = None
-      Tests = None
-      FileCommands = []
-      Coverage = None
-      Exclude = []
-      LogDir = "logs"
-      TimeoutSec = None
-      IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+let private defaults: DaemonConfiguration = defaultTestConfig ()
 
 // --- parseConfig: empty JSON ---
 
