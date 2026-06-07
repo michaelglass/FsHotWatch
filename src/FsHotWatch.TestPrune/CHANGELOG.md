@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.20 - 2026-06-07
+
 - chore: bump TestPrune.Core 4.2.0 -> 4.2.1 (picks up the now-public `Database.SchemaVersion`). No behavior change.
 
 ## 0.7.0-alpha.19 - 2026-06-05
