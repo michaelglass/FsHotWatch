@@ -189,7 +189,7 @@ Create `.fshw.json` in your repo root. All fields are optional — sensible defa
 | `fileCommands` | `array` | `[]` | Custom commands triggered by file patterns. |
 | `timeoutSec` | `int` | — | Global default per-task timeout in seconds. Used when a plugin/project has no per-entry override. |
 | `idleExitMin` | `int \| false` | *auto* | Minutes of idleness after which the daemon shuts itself down to reclaim memory. See [Idle exit](#idle-exit). |
-| `pressureTrimPct` | `int \| false` | `100` | Release the daemon's warm FCS caches when system memory load reaches this percentage of the GC's high-load threshold. See [Memory-pressure trim](#memory-pressure-trim). |
+| `pressureIdleFloorMin` | `int \| false` | `2` | Under memory pressure, shorten an already-eligible idle-exit window to this many minutes (`min(idleExitMin, this)`). See [Pressure-shortened idle exit](#pressure-shortened-idle-exit). |
 
 **Per-task timeouts.** Any of `build[]`, `tests.projects[]`, and `fileCommands[]` entries may set their own `timeoutSec` to override the global default. When a task exceeds its timeout, the daemon kills the child process tree, records the run with outcome `timed out` (distinct `⏱` glyph in the UI, `timed-out` token in agent mode), and stays running — the next change retriggers normally.
 
@@ -286,29 +286,33 @@ Configure it with the `idleExitMin` key in `.fshw.json`:
 { "idleExitMin": false }
 ```
 
-### Memory-pressure trim
+### Pressure-shortened idle exit
 
-[Idle exit](#idle-exit) reclaims memory from daemons that have gone *quiet*. Memory-pressure trim covers the other case: an **active** daemon on a memory-starved machine. Rather than shutting down, it releases the daemon's warm FCS root caches (the ~2.9 GB of FCS-rooted native working set) in place; the caches re-warm transparently on the next check, with diagnostics parity preserved. The trim only fires when the machine is genuinely under memory pressure, so it stays warm the rest of the time.
+[Idle exit](#idle-exit) reclaims memory from daemons that have gone *quiet*, but on its default schedule (30 min for workspace daemons). When the machine is under genuine memory pressure, waiting the full window is too slow — you want idle daemons gone *now*. Memory pressure therefore feeds into idle exit as an input: while the machine is tight, an already-eligible daemon's idle window is shortened to `min(idleExitMin, pressureIdleFloorMin)`, so a 30-min workspace daemon quits after just 2 min of idleness.
 
-The trigger reads the runtime's own memory signal (`GC.GetGCMemoryInfo()`): it fires when `MemoryLoadBytes` reaches the configured percentage of `HighMemoryLoadThresholdBytes` (the level at which the GC itself considers the system high-loaded). After a trim, a 5-minute cooldown must elapse before another can fire, regardless of pressure, so a sustained-pressure machine doesn't thrash the caches every poll. A trim is also deferred (no cooldown consumed) while plugin work is in flight.
+Pressure is the runtime GC's own high-load mark — it's "true" when `GC.GetGCMemoryInfo().MemoryLoadBytes` reaches `HighMemoryLoadThresholdBytes` (no percentage knob). It's re-evaluated on every 30s tick, not latched: if pressure subsides before the daemon goes idle long enough, the full window is restored.
 
-Configure it with the `pressureTrimPct` key in `.fshw.json`:
+Crucially, **pressure only ever *shortens* an already-applicable window — it never *creates* one**. The default/main workspace (whose `idleExitMin` resolves to "off") stays exempt under pressure, exactly as it does normally. Only daemons that would already quit on idle (a `/.workspaces/` checkout, or an explicit `idleExitMin N`) quit *faster* under pressure.
 
-- **Key absent → enabled at `100`%** — trim exactly when the GC considers the system high-memory-loaded. On by default because it only acts under genuine starvation.
-- **`0` or `false` → disabled.**
-- **Positive integer `N` → enabled at `N`% of the GC high-load threshold** (`80` trims earlier, `120` only beyond the GC's threshold).
+Why shorten-and-quit rather than trim caches in place? An in-place trim of the FCS caches keeps ~400 MB plus the whole process resident, yet the *next* edit still pays a full cold FCS rebuild — because the file-backed [check cache](#cache-directory) survives a trim and a restart equally. So quitting strictly dominates: it reclaims everything and the return cost is the same cold rebuild either way. (An earlier iteration shipped an in-place `pressureTrimPct` trim; it was reversed for this reason. See `docs/adr-005-pressure-feeds-idle-exit.md`.)
+
+Configure it with the `pressureIdleFloorMin` key in `.fshw.json`:
+
+- **Key absent → floor at `2` minutes** (default-on).
+- **`0` or `false` → pressure-shortening disabled** — a daemon under pressure waits its full idle-exit window, same as no pressure.
+- **Positive integer `N` → floor at `N` minutes** under pressure.
 
 ```jsonc
-// Default: omit the key. Trims at 100% of the GC high-load threshold.
+// Default: omit the key. Under pressure, eligible daemons quit after 2min idle.
 {}
 ```
 
 ```jsonc
-// Trim earlier — at 80% of the GC high-load threshold.
-{ "pressureTrimPct": 80 }
+// More aggressive: quit after 1min idle under pressure.
+{ "pressureIdleFloorMin": 1 }
 ```
 
 ```jsonc
-// Disabled: never trim under pressure.
-{ "pressureTrimPct": false }
+// Disabled: pressure never shortens the window; use idleExitMin as-is.
+{ "pressureIdleFloorMin": false }
 ```

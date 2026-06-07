@@ -599,29 +599,15 @@
     ],
     "IdleExit.fs": [
       {
-        "line": 94,
-        "branch": 100,
-        "reason": "idle-exit scheduler. Pure decision (shouldFire), the atomic FireLatch (incl. the 10k-thread fire-once test), resolveThreshold, isNonDefaultWorkspace, and runTick (fire / defer-on-busy / below-threshold / throwing-shutdown) are all unit-tested directly. The two uncovered lines are non-deterministic under unit tests: L149 is createTimer's onTick lambda body, which only runs when the live 30s System.Threading.Timer actually fires (its callee runTick is fully covered); L132 is runTick's tryFire-loser branch, reachable only when a concurrent tick wins the atomic CompareExchange first (exercised by the concurrency test but not hit on every instrumented run).",
+        "line": 92,
+        "branch": 89,
+        "reason": "idle-exit scheduler (now pressure-aware). Pure decisions (shouldFire, effectiveThreshold: not-eligible-stays-exempt-under-pressure, min(base,floor), floor-never-lengthens, floor-disabled), resolveThreshold, resolvePressureFloor, isNonDefaultWorkspace, the atomic FireLatch (incl. the 10k-thread fire-once test), and runTick (fire / defer-on-busy / below-threshold / pressure-shortens-to-floor / pressure-re-evaluated-each-tick / floor-disabled-ignores-pressure / throwing-shutdown) are all unit-tested directly. The uncovered lines are non-deterministic or live-effect-only: readGcPressure (L67-68) is the live GC.GetGCMemoryInfo() read, injected as a function and stubbed in tests (same pattern as the deleted PressureTrim ReadMemory); createTimer's onTick lambda (L245) only runs when the live 30s System.Threading.Timer fires (its callee runTick is fully covered); runTick's tryFire-loser branch (L223) is reachable only when a concurrent tick wins the atomic CompareExchange first (exercised by the concurrency test but not hit on every instrumented run).",
         "platform": "macos"
       },
       {
-        "line": 94,
-        "branch": 100,
-        "reason": "idle-exit scheduler. Pure decision (shouldFire), the atomic FireLatch (incl. the 10k-thread fire-once test), resolveThreshold, isNonDefaultWorkspace, and runTick (fire / defer-on-busy / below-threshold / throwing-shutdown) are all unit-tested directly. The two uncovered lines are non-deterministic under unit tests: L149 is createTimer's onTick lambda body, which only runs when the live 30s System.Threading.Timer actually fires (its callee runTick is fully covered); L132 is runTick's tryFire-loser branch, reachable only when a concurrent tick wins the atomic CompareExchange first (exercised by the concurrency test but not hit on every instrumented run).",
-        "platform": "linux"
-      }
-    ],
-    "PressureTrim.fs": [
-      {
-        "line": 95,
-        "branch": 100,
-        "reason": "memory-pressure FCS-cache-trim scheduler. Pure decision (shouldTrim: below/at/above threshold, pct 80/100/120 semantics, zero-threshold guard, busy-defer, within/after/at-boundary cooldown), the atomic CooldownLatch (incl. the 10k-thread claim-once test), resolvePct, and runTick (fire / defer-without-consuming-cooldown / sustained-pressure-cooldown / re-fire-after-cooldown / concurrent-once / throwing-trim / throwing-memory-reader) are all unit-tested directly. The remaining uncovered line is createTimer's onTick lambda body, which only runs when the live 30s System.Threading.Timer actually fires (its callee runTick is fully covered).",
-        "platform": "macos"
-      },
-      {
-        "line": 95,
-        "branch": 100,
-        "reason": "memory-pressure FCS-cache-trim scheduler. Pure decision (shouldTrim: below/at/above threshold, pct 80/100/120 semantics, zero-threshold guard, busy-defer, within/after/at-boundary cooldown), the atomic CooldownLatch (incl. the 10k-thread claim-once test), resolvePct, and runTick (fire / defer-without-consuming-cooldown / sustained-pressure-cooldown / re-fire-after-cooldown / concurrent-once / throwing-trim / throwing-memory-reader) are all unit-tested directly. The remaining uncovered line is createTimer's onTick lambda body, which only runs when the live 30s System.Threading.Timer actually fires (its callee runTick is fully covered).",
+        "line": 92,
+        "branch": 89,
+        "reason": "idle-exit scheduler (now pressure-aware). Pure decisions (shouldFire, effectiveThreshold: not-eligible-stays-exempt-under-pressure, min(base,floor), floor-never-lengthens, floor-disabled), resolveThreshold, resolvePressureFloor, isNonDefaultWorkspace, the atomic FireLatch (incl. the 10k-thread fire-once test), and runTick (fire / defer-on-busy / below-threshold / pressure-shortens-to-floor / pressure-re-evaluated-each-tick / floor-disabled-ignores-pressure / throwing-shutdown) are all unit-tested directly. The uncovered lines are non-deterministic or live-effect-only: readGcPressure (L67-68) is the live GC.GetGCMemoryInfo() read, injected as a function and stubbed in tests (same pattern as the deleted PressureTrim ReadMemory); createTimer's onTick lambda (L245) only runs when the live 30s System.Threading.Timer fires (its callee runTick is fully covered); runTick's tryFire-loser branch (L223) is reachable only when a concurrent tick wins the atomic CompareExchange first (exercised by the concurrency test but not hit on every instrumented run).",
         "platform": "linux"
       }
     ]
