@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- chore: bump TestPrune.Core 4.2.0 -> 4.2.1 (picks up the now-public `Database.SchemaVersion`). No behavior change.
+
 ## 0.7.0-alpha.19 - 2026-06-05
 
 - fix: when a schema bump recreates the TestPrune DB, the plugin now clears the FCS
