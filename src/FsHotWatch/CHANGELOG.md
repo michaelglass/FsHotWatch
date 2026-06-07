@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `ErrorLedger` now accepts an optional `logError: string -> string -> unit` sink
+  (defaults to the process-global `Logging.error`/stderr) used when a reporter throws.
+  The failure log is emitted on the ledger's MailboxProcessor agent thread, so a
+  `Console.Error` capture in tests raced any concurrent `Console.SetError`; the
+  injectable sink lets callers (notably tests) observe reporter failures without
+  touching process-global console state. No behavior change at the default.
+
 ## 0.8.0-alpha.23 - 2026-06-07
 
 - chore: republish so the bundled `fshw` carries the CLI's dead-code schema-probe fix

@@ -363,10 +363,14 @@ let ``ErrorLedger logs reporter exception with stack trace (F11)`` () =
     // exactly when we'd want to debug a misbehaving reporter. After the fix,
     // the log includes the exception type name (and stack-trace text from
     // ToString()), so the reporter is debuggable from logs alone.
-    let original = FsHotWatch.Logging.logLevel
-    let sb = System.Text.StringBuilder()
-    let writer = new System.IO.StringWriter(sb)
-    let prevErr = System.Console.Error
+    //
+    // De-flake (2026-06-07): the ledger emits this log on its MailboxProcessor
+    // agent thread, so the previous `Console.SetError` capture raced any
+    // concurrent `Console.SetError` in the suite (the redirect could land
+    // between this test's set and the agent's emit, stealing the line). We now
+    // inject a log sink into the ledger and assert on it directly — no
+    // process-global state, no race.
+    let logged = System.Collections.Concurrent.ConcurrentQueue<string * string>()
 
     let throwingReporter =
         { new IErrorReporter with
@@ -377,19 +381,17 @@ let ``ErrorLedger logs reporter exception with stack trace (F11)`` () =
             member _.ClearPlugin _ = ()
             member _.ClearAll() = () }
 
-    try
-        System.Console.SetError(writer)
-        FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
-        let ledger = ErrorLedger([ throwingReporter ])
-        ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
-        ledger.GetAll() |> ignore
-        writer.Flush()
-        let output = sb.ToString()
-        test <@ output.Contains("error-ledger") @>
-        test <@ output.Contains("InvalidOperationException") @>
-    finally
-        System.Console.SetError(prevErr)
-        FsHotWatch.Logging.setLogLevel original
+    let ledger =
+        ErrorLedger([ throwingReporter ], logError = (fun tag msg -> logged.Enqueue(tag, msg)))
+
+    ledger.Report("lint", "/src/A.fs", [ entry "bad" DiagnosticSeverity.Warning 1 ])
+    ledger.GetAll() |> ignore // sync barrier: the agent has run notifyReporters
+
+    let output =
+        logged |> Seq.map (fun (tag, msg) -> $"%s{tag} %s{msg}") |> String.concat "\n"
+
+    test <@ output.Contains("error-ledger") @>
+    test <@ output.Contains("InvalidOperationException") @>
 
 [<Fact(Timeout = 15000)>]
 let ``ErrorLedger reporter throwing on Report yields non-clean verdict with synthetic error`` () =

@@ -161,8 +161,17 @@ let private tryAcceptVersion key (v: int64) (state: LedgerState) =
 /// is re-checked and passes. Thread-safe via MailboxProcessor agent.
 /// Supports optional version-guarded updates: when a version is provided,
 /// stale updates (version < last accepted) are silently ignored.
-type ErrorLedger(?reporters: IErrorReporter list) =
+type ErrorLedger(?reporters: IErrorReporter list, ?logError: string -> string -> unit) =
     let reporters = defaultArg reporters []
+
+    // Reporter-failure log sink: defaults to the process-global `Logging.error`
+    // (stderr), but is injectable so callers — notably tests asserting the
+    // failure is logged — can capture it WITHOUT redirecting process-global
+    // `System.Console.Error`. The emission happens on the MailboxProcessor agent
+    // thread (during `Report` processing), so a `Console.Error` capture would
+    // race any concurrent `Console.SetError`; an injected sink removes that
+    // global-state dependency entirely.
+    let logError = defaultArg logError Logging.error
 
     // F11 (audit 2026-05-02): IErrorReporter is a third-party-extension
     // boundary — implementations are user-supplied and may raise anything.
@@ -182,7 +191,7 @@ type ErrorLedger(?reporters: IErrorReporter list) =
             try
                 action r
             with ex ->
-                Logging.error "error-ledger" $"Reporter failed: %s{ex.ToString()}"
+                logError "error-ledger" $"Reporter failed: %s{ex.ToString()}"
                 failures <- ex :: failures
 
         List.rev failures
