@@ -342,18 +342,11 @@ let ``runOnceAndReport returns 2 when no projects are discovered`` () =
             Daemon.createWith nullChecker root Daemon.DaemonOptions.defaults
 
         let config: DaemonConfiguration =
-            { Build = None
-              Format = Off
-              Lint = false
-              Cache = NoCache
-              Analyzers = None
-              Tests = None
-              FileCommands = []
-              Coverage = None
-              Exclude = []
-              LogDir = "logs"
-              TimeoutSec = None
-              IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+            { defaultTestConfig () with
+                Build = None
+                Format = Off
+                Lint = false
+                Cache = NoCache }
 
         let exitCode = runOnceAndReport (fun _ -> "") false createDaemon tmpDir config None
 

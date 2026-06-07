@@ -310,6 +310,38 @@ let testRunCompletedRecorder () =
 
     ((fun () -> received |> Seq.toList), handler)
 
+/// A fully-populated `DaemonConfiguration` with deterministic, env-independent
+/// values for tests. The single source of truth for the record's shape: every
+/// test that needs a config builds on this via record-update
+/// (`{ defaultTestConfig () with Tests = ... }`) and overrides only the fields
+/// it cares about. Adding a new config field is then a one-line edit here rather
+/// than ~20 mechanical edits across the test suite.
+///
+/// Values mirror the product defaults (`DaemonConfig.defaultConfigFor`) except
+/// where determinism matters: `Cache = FileBackend` is set explicitly (the
+/// product default is `detectDefaultCacheBackend`, which today always returns
+/// `FileBackend` but is env-probing in principle), so config-shape tests stay
+/// stable regardless of environment.
+let defaultTestConfig () : FsHotWatch.Cli.DaemonConfig.DaemonConfiguration =
+    { Build =
+        Some
+            [ {| Command = "dotnet"
+                 Args = "build"
+                 BuildTemplate = None
+                 DependsOn = []
+                 TimeoutSec = None |} ]
+      Format = FsHotWatch.Cli.DaemonConfig.Auto
+      Lint = true
+      Cache = FsHotWatch.Cli.DaemonConfig.FileBackend
+      Analyzers = None
+      Tests = None
+      FileCommands = []
+      Coverage = None
+      Exclude = []
+      LogDir = "logs"
+      TimeoutSec = None
+      IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+
 /// Create an ErrorEntry for tests.
 let errorEntry msg (sev: FsHotWatch.ErrorLedger.DiagnosticSeverity) : FsHotWatch.ErrorLedger.ErrorEntry =
     { Message = msg
