@@ -12,6 +12,7 @@
   of the same tree was clean. `ProcessHelper.runProcessWithTimeout` now strips these keys
   before every spawn (same treatment as the arch-specific `DOTNET_ROOT_*` keys);
   caller-supplied overrides still win. See docs/leaked-msbuild-env-bug.md.
+- fix: the deps-freshness gate no longer counts .config/dotnet-tools.json as a dependency input — a dotnet-tool bump no longer false-stales every project into restore-recovery/skipped scans
 
 ## 0.8.0-alpha.21 - 2026-06-06
 
