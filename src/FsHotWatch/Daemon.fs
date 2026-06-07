@@ -815,6 +815,13 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
                         dispatchedFiles.Add(checkResult.File)
                         ctx.Host.EmitFileChecked(checkResult)
                         reportFcsDiagnostics ctx.FcsSuppressedCodes ctx.Host checkResult
+                    // Unlike the cold scan (see `runChecksWithRetry`), the batch
+                    // path does NOT retry a cancelled (`None`) check. Batch
+                    // cancellations are self-healing: `CancelPreviousCheck` only
+                    // cancels an in-flight check when a NEWER event's check of the
+                    // same file supersedes it, so that newer check (or the next
+                    // debounced batch) covers the file. The cold scan has no such
+                    // later event, which is why the retry lives there, not here.
                     | None -> ()
 
             for tier in tiers do

@@ -646,18 +646,11 @@ let ``parseConfig + registration + TestRunCompleted fires coverage-ratchet-style
         """{"fileCommands": [{"name": "cov-r", "afterTests": ["ProjA"], "command": "echo", "args": "ok"}]}"""
 
     let defaults: FsHotWatch.Cli.DaemonConfig.DaemonConfiguration =
-        { Build = None
-          Format = FsHotWatch.Cli.DaemonConfig.Off
-          Lint = false
-          Cache = FsHotWatch.Cli.DaemonConfig.NoCache
-          Analyzers = None
-          Tests = None
-          FileCommands = []
-          Coverage = None
-          Exclude = []
-          LogDir = "logs"
-          TimeoutSec = None
-          IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+        { defaultTestConfig () with
+            Build = None
+            Format = FsHotWatch.Cli.DaemonConfig.Off
+            Lint = false
+            Cache = FsHotWatch.Cli.DaemonConfig.NoCache }
 
     let config = FsHotWatch.Cli.DaemonConfig.parseConfig json defaults
     test <@ config.FileCommands.Length = 1 @>

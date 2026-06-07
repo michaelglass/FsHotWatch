@@ -13,18 +13,11 @@ open FsHotWatch.Tests.TestHelpers
 // --- Helper: shared fake config and IPC ---
 
 let private fakeConfig: DaemonConfiguration =
-    { Build = None
-      Format = Off
-      Lint = false
-      Cache = FsHotWatch.Cli.DaemonConfig.NoCache
-      Analyzers = None
-      Tests = None
-      FileCommands = []
-      Coverage = None
-      Exclude = []
-      LogDir = "logs"
-      TimeoutSec = None
-      IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+    { defaultTestConfig () with
+        Build = None
+        Format = Off
+        Lint = false
+        Cache = FsHotWatch.Cli.DaemonConfig.NoCache }
 
 let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }

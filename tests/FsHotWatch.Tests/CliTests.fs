@@ -232,23 +232,17 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
         writeFiles "ProjOptOut"
 
         let config: DaemonConfiguration =
-            { Build = None
-              Format = FormatMode.Off
-              Lint = false
-              Cache = CacheBackendConfig.NoCache
-              Analyzers = None
-              Tests =
-                Some
-                    {| BeforeRun = None
-                       Extensions = []
-                       Projects = [ makeProj "ProjA" true; makeProj "ProjB" true; makeProj "ProjOptOut" false ]
-                       CoverageDir = covDir |}
-              FileCommands = []
-              Coverage = None
-              Exclude = []
-              LogDir = "logs"
-              TimeoutSec = None
-              IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+            { defaultTestConfig () with
+                Build = None
+                Format = FormatMode.Off
+                Lint = false
+                Cache = CacheBackendConfig.NoCache
+                Tests =
+                    Some
+                        {| BeforeRun = None
+                           Extensions = []
+                           Projects = [ makeProj "ProjA" true; makeProj "ProjB" true; makeProj "ProjOptOut" false ]
+                           CoverageDir = covDir |} }
 
         let deleted = FsHotWatch.Cli.Program.refreshCoverageBaseline tmp config
         // 4 files total: 2 projects × (baseline + partial)
@@ -714,18 +708,11 @@ let ``CLI command proxying works against running daemon`` () =
 // --- executeCommand with fake IPC tests ---
 
 let private fakeConfig: DaemonConfiguration =
-    { Build = None
-      Format = Off
-      Lint = false
-      Cache = FsHotWatch.Cli.DaemonConfig.NoCache
-      Analyzers = None
-      Tests = None
-      FileCommands = []
-      Coverage = None
-      Exclude = []
-      LogDir = "logs"
-      TimeoutSec = None
-      IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
+    { defaultTestConfig () with
+        Build = None
+        Format = Off
+        Lint = false
+        Cache = FsHotWatch.Cli.DaemonConfig.NoCache }
 
 /// Structured plugin-status JSON in the shape expected by parsePluginStatuses
 /// (object per plugin, not a bare string). Using the bare-string shape made the
