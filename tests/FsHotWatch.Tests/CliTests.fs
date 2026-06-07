@@ -247,7 +247,8 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
               Coverage = None
               Exclude = []
               LogDir = "logs"
-              TimeoutSec = None }
+              TimeoutSec = None
+              IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
 
         let deleted = FsHotWatch.Cli.Program.refreshCoverageBaseline tmp config
         // 4 files total: 2 projects × (baseline + partial)
@@ -723,7 +724,8 @@ let private fakeConfig: DaemonConfiguration =
       Coverage = None
       Exclude = []
       LogDir = "logs"
-      TimeoutSec = None }
+      TimeoutSec = None
+      IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
 
 /// Structured plugin-status JSON in the shape expected by parsePluginStatuses
 /// (object per plugin, not a bare string). Using the bare-string shape made the
