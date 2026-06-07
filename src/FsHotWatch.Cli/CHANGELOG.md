@@ -4,6 +4,8 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+## 0.8.0-alpha.22 - 2026-06-07
+
 - fix: a CLI invoked as 'dotnet <local-dll>' now spawns that same DLL as the daemon instead of silently launching the pinned 'dotnet tool run fshw' — local daemon builds dogfood correctly
 
 ## 0.8.0-alpha.21 - 2026-06-06
