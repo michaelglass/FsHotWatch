@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- chore: release alongside TestPrune.Core (public `Database.SchemaVersion` for external
+  read-only compatibility probes). No CLI-facing changes.
+
 ## 4.2.0 - 2026-06-05
 
 - chore: bundle TestPrune.Core 4.2.0 (`Database.WasRecreated`, which lets downstream

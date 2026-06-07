@@ -187,8 +187,15 @@ let private openConnection (dbPath: string) =
 ///          symbol's coverage follows via the derived `line_start + line_offset`,
 ///          a changed symbol's coverage is purged). Bump forces recreate — legacy
 ///          v5 DBs don't have the table and INSERTs would throw "no such table".
+///
+/// Public so external read-only consumers (e.g. FsHotWatch's `fshw dead-code`)
+/// can probe a live DB's `PRAGMA user_version` for compatibility BEFORE opening
+/// via `Database.create` — whose recreate-on-mismatch self-healing would wipe a
+/// daemon's symbol graph. A consumer hardcoding this value instead would have its
+/// protection silently invert when this constant bumps: an old-version DB would
+/// pass the stale probe and then be recreated by the newer open path.
 [<Literal>]
-let private SchemaVersion = 6
+let SchemaVersion = 6
 
 /// Delete the SQLite database file at `dbPath` along with its WAL mode
 /// sidecars (`-wal`, `-shm`). Deleting only the main file leaves stale

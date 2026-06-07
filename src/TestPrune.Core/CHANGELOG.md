@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `Database.SchemaVersion` is now public. External read-only consumers (e.g.
+  FsHotWatch's `fshw dead-code`) probe a live DB's `PRAGMA user_version` against it
+  before opening, since `Database.create`'s recreate-on-mismatch self-healing would
+  wipe a daemon's symbol graph; a hardcoded copy of the constant silently inverts
+  that protection whenever the schema bumps.
+
 ## 4.2.0 - 2026-06-05
 
 - feat: `Database.WasRecreated` reports whether the on-disk DB was freshly created,
