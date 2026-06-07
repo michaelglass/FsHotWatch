@@ -188,6 +188,7 @@ Create `.fshw.json` in your repo root. All fields are optional — sensible defa
 | `analyzers` | `object` | — | F# Analyzers SDK integration. |
 | `fileCommands` | `array` | `[]` | Custom commands triggered by file patterns. |
 | `timeoutSec` | `int` | — | Global default per-task timeout in seconds. Used when a plugin/project has no per-entry override. |
+| `idleExitMin` | `int \| false` | *auto* | Minutes of idleness after which the daemon shuts itself down to reclaim memory. See [Idle exit](#idle-exit). |
 
 **Per-task timeouts.** Any of `build[]`, `tests.projects[]`, and `fileCommands[]` entries may set their own `timeoutSec` to override the global default. When a task exceeds its timeout, the daemon kills the child process tree, records the run with outcome `timed out` (distinct `⏱` glyph in the UI, `timed-out` token in agent mode), and stays running — the next change retriggers normally.
 
@@ -256,3 +257,30 @@ The cache directory contains:
 The daemon keeps `FSharpChecker` and its FCS caches warm, which produces a large amount of collectable managed churn on top of the live working set. To keep that churn from accumulating, the CLI ships with `System.GC.ConserveMemory=9` baked into its `runtimeconfig.json`. In benchmarks this cut the daemon's steady memory footprint by ~25-40% with no measurable impact on scan speed or diagnostics.
 
 To override the GC setting for a single daemon process, set the `DOTNET_GCConserveMemory` environment variable (a value from `0` for no conservation to `9` for the most aggressive); the environment variable takes precedence over the baked-in default.
+
+### Idle exit
+
+Even with conservative GC, an idle daemon still holds a large warm working set (mostly FCS-rooted native memory) — on the order of ~2.8-3.1 GB. When you run **one daemon per [jj workspace](#parallel-work--jj-workspaces)**, idle workspace daemons can waste several gigabytes between bursts of work.
+
+The daemon can shut itself down after a configurable idle period to reclaim that memory. This is transparent to CLI consumers: the next `fshw` command auto-starts a fresh daemon, and the file-backed check cache survives restarts, so the next `fshw check` pays only one auto-start plus a mostly-cache-hit scan. The daemon only exits when it has been idle (no file events, no running plugin work) for the full window — if work is in flight at the threshold, it defers to a later check.
+
+Configure it with the `idleExitMin` key in `.fshw.json`:
+
+- **Key absent → AUTO mode.** Enabled with a 30-minute threshold **if and only if** the repo root path contains a `/.workspaces/` segment (the convention for non-default jj workspaces in this ecosystem). The default/main workspace daemon never auto-quits.
+- **`0` or `false` → disabled everywhere** (explicit opt-out, overrides AUTO).
+- **Positive integer `N` → enabled with an `N`-minute threshold regardless of path** (explicit opt-in, even for the default workspace).
+
+```jsonc
+// AUTO (the default): omit the key. Auto-on at 30min only for /.workspaces/ checkouts.
+{}
+```
+
+```jsonc
+// Explicit opt-in: quit after 15 minutes idle, in ANY workspace (including the default).
+{ "idleExitMin": 15 }
+```
+
+```jsonc
+// Explicit opt-out: never auto-quit, even in a /.workspaces/ checkout.
+{ "idleExitMin": false }
+```

@@ -28,7 +28,8 @@ let private defaults: DaemonConfiguration =
       Coverage = None
       Exclude = []
       LogDir = "logs"
-      TimeoutSec = None }
+      TimeoutSec = None
+      IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent }
 
 // --- parseConfig: empty JSON ---
 
@@ -66,6 +67,45 @@ let ``parseConfig logDir custom value overrides default`` () =
 let ``parseConfig logDir absolute path is preserved`` () =
     let config = parseConfig """{"logDir": "/var/log/fshw"}""" defaults
     test <@ config.LogDir = "/var/log/fshw" @>
+
+// --- parseConfig: idleExitMin ---
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig idleExitMin absent yields Absent (AUTO)`` () =
+    let config = parseConfig "{}" defaults
+    test <@ config.IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig idleExitMin positive yields Minutes`` () =
+    let config = parseConfig """{"idleExitMin": 45}""" defaults
+    test <@ config.IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Minutes 45 @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig idleExitMin zero yields Disabled`` () =
+    let config = parseConfig """{"idleExitMin": 0}""" defaults
+    test <@ config.IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Disabled @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig idleExitMin false yields Disabled`` () =
+    let config = parseConfig """{"idleExitMin": false}""" defaults
+    test <@ config.IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Disabled @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig idleExitMin negative yields Disabled`` () =
+    let config = parseConfig """{"idleExitMin": -5}""" defaults
+    test <@ config.IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Disabled @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig idleExitMin true yields Disabled`` () =
+    // `true` is not a valid threshold; treated as disabled (no implicit window).
+    let config = parseConfig """{"idleExitMin": true}""" defaults
+    test <@ config.IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Disabled @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig idleExitMin non-numeric string yields Absent`` () =
+    // A garbage value falls through to the default (Absent / AUTO).
+    let config = parseConfig """{"idleExitMin": "nope"}""" defaults
+    test <@ config.IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent @>
 
 // --- parseConfig: exclude ---
 

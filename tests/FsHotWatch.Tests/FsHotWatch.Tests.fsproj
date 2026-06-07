@@ -30,6 +30,7 @@
     <Compile Include="MacFsEventsTests.fs" />
     <Compile Include="WatcherTests.fs" />
     <Compile Include="DaemonTests.fs" />
+    <Compile Include="IdleExitTests.fs" />
     <Compile Include="IpcTests.fs" />
     <Compile Include="IpcPayloadTests.fs" />
     <Compile Include="TestPrunePluginTests.fs" />
