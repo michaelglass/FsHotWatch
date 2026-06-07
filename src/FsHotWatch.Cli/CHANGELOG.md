@@ -4,6 +4,11 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+- fix: `fshw dead-code`'s schema-compatibility probe now sources its expected version
+  from TestPrune.Core's public `Database.SchemaVersion` (4.2.1) instead of a hardcoded
+  copy — the probe moves in lockstep with the bundled Core, so a future schema bump
+  can no longer silently invert the wipe-protection.
+
 ## 0.8.0-alpha.22 - 2026-06-07
 
 - fix: a CLI invoked as 'dotnet <local-dll>' now spawns that same DLL as the daemon instead of silently launching the pinned 'dotnet tool run fshw' — local daemon builds dogfood correctly

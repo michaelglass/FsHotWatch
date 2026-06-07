@@ -43,6 +43,6 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.300" PrivateAssets="All" />
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
-    <PackageReference Include="TestPrune.Core" Version="4.2.0" />
+    <PackageReference Include="TestPrune.Core" Version="4.2.1" />
   </ItemGroup>
 </Project>

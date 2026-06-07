@@ -28,8 +28,13 @@ let DbRelativePath = ".fshw/test-impact.db"
 /// the entire symbol graph. We therefore probe `user_version` ourselves BEFORE
 /// opening and refuse to touch an incompatible DB. Forward-compatible (newer or
 /// equal) versions, and the pre-versioning `0` marker, are tolerated.
+///
+/// Sourced from TestPrune.Core (public since 4.2.1) rather than hardcoded, so the
+/// probe moves in lockstep with the bundled Core: a stale local copy would silently
+/// invert the protection on a schema bump (an old DB passes the stale probe, then
+/// the newer open path recreates it — exactly what the probe exists to prevent).
 [<Literal>]
-let ExpectedSchemaVersion = 6
+let ExpectedSchemaVersion = TestPrune.Database.SchemaVersion
 
 /// Resolved options for a `dead-code` run.
 type DeadCodeOptions =
