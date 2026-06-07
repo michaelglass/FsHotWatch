@@ -68,33 +68,46 @@ let isDotnetCommand (command: string) =
     let basename = System.IO.Path.GetFileName(command)
     basename = "dotnet" || basename = "dotnet.exe"
 
-/// Arch-specific DOTNET_ROOT keys the .NET host writes into its parent's
+/// Env keys that are only meaningful to the parent's in-process hosts (the
+/// .NET host, the in-process MSBuild ProjInfo stood up) and poison spawned
+/// children if inherited. We strip them unconditionally on every spawn:
+/// they're a no-op for non-dotnet children, and a spawned `dotnet` re-resolves
+/// the correct values from its own argv[0] / SDK. Caller-supplied overrides
+/// still win — the strip runs before the env overlay.
+///
+/// Per-category rationale:
+///
+/// Arch-specific DOTNET_ROOT_* — the .NET host writes these into its parent's
 /// env from argv[0]'s dir so child apphosts inherit the same runtime. On
 /// Nix-wrapped SDKs (and similar shims) that dir lacks
 /// shared/Microsoft.NETCore.App, so any child dotnet trusts the value and
-/// fails to find the runtime. We strip these unconditionally on every
-/// spawn: they're meaningful only to the .NET host, so dropping them is a
-/// no-op for non-dotnet children, and any later dotnet invocation
+/// fails to find the runtime. Meaningful only to the .NET host, so dropping
+/// them is a no-op for non-dotnet children, and any later dotnet invocation
 /// re-resolves correctly from its own argv[0].
-let private dotnetArchRootKeys =
-    [ "DOTNET_ROOT_ARM64"; "DOTNET_ROOT_X64"; "DOTNET_ROOT_X86" ]
-
-/// MSBuild discovery env keys that Ionide.ProjInfo (`Init.init`) writes into
-/// the daemon's OWN process environment to make in-process design-time project
+///
+/// Ionide.ProjInfo MSBuild discovery (MSBUILD_EXE_PATH / MSBuildExtensionsPath
+/// / MSBuildSDKsPath) — Ionide.ProjInfo (`Init.init`) writes these into the
+/// daemon's OWN process environment to make in-process design-time project
 /// evaluation work. They pin MSBuild at the SDK band ProjInfo selected at
 /// startup. Process.Start inherits the full parent env, so leaving them set
 /// poisons every spawned `dotnet build`: the child's MSBuild is forced to that
 /// band's MSBuild.dll / Sdks dir even though the muxer may resolve a different
 /// (or, on a multi-SDK box, an incomplete) band — restore-graph generation
 /// then fails with exit 1 and ZERO diagnostics ("Build FAILED / 0 Error(s)"),
-/// while a plain-shell `dotnet build` of the same tree is clean. We strip
-/// these unconditionally on every spawn (same rationale as dotnetArchRootKeys):
-/// they're meaningful only to an in-process MSBuild host, so dropping them is a
-/// no-op for non-dotnet children, and a spawned dotnet re-resolves MSBuild
-/// correctly from its own SDK. A caller passing one explicitly still wins
-/// (overlay happens after the strip). See docs/leaked-msbuild-env-bug.md.
-let private leakedMSBuildEnvKeys =
-    [ "MSBUILD_EXE_PATH"; "MSBuildExtensionsPath"; "MSBuildSDKsPath" ]
+/// while a plain-shell `dotnet build` of the same tree is clean. Meaningful
+/// only to an in-process MSBuild host, so dropping them is a no-op for
+/// non-dotnet children, and a spawned dotnet re-resolves MSBuild correctly
+/// from its own SDK. See docs/leaked-msbuild-env-bug.md.
+let private sanitizedChildEnvKeys =
+    [
+      // arch-specific DOTNET_ROOT_*
+      "DOTNET_ROOT_ARM64"
+      "DOTNET_ROOT_X64"
+      "DOTNET_ROOT_X86"
+      // Ionide.ProjInfo MSBuild discovery
+      "MSBUILD_EXE_PATH"
+      "MSBuildExtensionsPath"
+      "MSBuildSDKsPath" ]
 
 /// Merge `MSBUILDDISABLENODEREUSE=1` into the env when the command is `dotnet`
 /// and the caller hasn't already set the key. See docs/msbuild-node-reuse-bug.md.
@@ -126,10 +139,7 @@ let runProcessWithTimeout
     psi.WorkingDirectory <- workDir
 
     // Strip before overlay so a caller-supplied entry in `env` survives.
-    for key in dotnetArchRootKeys do
-        psi.Environment.Remove(key) |> ignore
-
-    for key in leakedMSBuildEnvKeys do
+    for key in sanitizedChildEnvKeys do
         psi.Environment.Remove(key) |> ignore
 
     for (key, value) in mergeDotnetEnv command env do

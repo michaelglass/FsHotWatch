@@ -150,19 +150,14 @@ let ``runProcess strip respects caller-supplied DOTNET_ROOT_ARM64 override`` () 
 // Stripping these on every spawn lets the child re-resolve MSBuild from its
 // own SDK, matching a clean shell. Caller-supplied overrides still win.
 
-[<Fact(Timeout = 20000)>]
-let ``runProcess strips leaked MSBUILD_EXE_PATH unconditionally`` () =
-    withEnv "MSBUILD_EXE_PATH" (Some "/poisoned/sdk/MSBuild.dll") (fun () ->
-        runProcess "sh" (echoEnv "MSBUILD_EXE_PATH") "." [] |> expectStdout "")
-
-[<Fact(Timeout = 20000)>]
-let ``runProcess strips leaked MSBuildExtensionsPath and MSBuildSDKsPath too`` () =
-    withEnv "MSBuildExtensionsPath" (Some "/poisoned/sdk/") (fun () ->
-        withEnv "MSBuildSDKsPath" (Some "/poisoned/sdk/Sdks") (fun () ->
-            let args =
-                "-c \"printf %s:%s \\\"$MSBuildExtensionsPath\\\" \\\"$MSBuildSDKsPath\\\"\""
-
-            runProcess "sh" args "." [] |> expectStdout ":"))
+// Each leaked MSBuild discovery key is stripped to empty in the child env,
+// regardless of which one the parent leaked.
+[<Theory(Timeout = 20000)>]
+[<InlineData("MSBUILD_EXE_PATH")>]
+[<InlineData("MSBuildExtensionsPath")>]
+[<InlineData("MSBuildSDKsPath")>]
+let ``runProcess strips leaked MSBuild discovery key unconditionally`` (key: string) =
+    withEnv key (Some "/poisoned/sdk/leaked") (fun () -> runProcess "sh" (echoEnv key) "." [] |> expectStdout "")
 
 [<Fact(Timeout = 20000)>]
 let ``runProcess strip respects caller-supplied MSBUILD_EXE_PATH override`` () =
