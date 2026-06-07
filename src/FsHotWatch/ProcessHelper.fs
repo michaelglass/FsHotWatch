@@ -79,6 +79,23 @@ let isDotnetCommand (command: string) =
 let private dotnetArchRootKeys =
     [ "DOTNET_ROOT_ARM64"; "DOTNET_ROOT_X64"; "DOTNET_ROOT_X86" ]
 
+/// MSBuild discovery env keys that Ionide.ProjInfo (`Init.init`) writes into
+/// the daemon's OWN process environment to make in-process design-time project
+/// evaluation work. They pin MSBuild at the SDK band ProjInfo selected at
+/// startup. Process.Start inherits the full parent env, so leaving them set
+/// poisons every spawned `dotnet build`: the child's MSBuild is forced to that
+/// band's MSBuild.dll / Sdks dir even though the muxer may resolve a different
+/// (or, on a multi-SDK box, an incomplete) band — restore-graph generation
+/// then fails with exit 1 and ZERO diagnostics ("Build FAILED / 0 Error(s)"),
+/// while a plain-shell `dotnet build` of the same tree is clean. We strip
+/// these unconditionally on every spawn (same rationale as dotnetArchRootKeys):
+/// they're meaningful only to an in-process MSBuild host, so dropping them is a
+/// no-op for non-dotnet children, and a spawned dotnet re-resolves MSBuild
+/// correctly from its own SDK. A caller passing one explicitly still wins
+/// (overlay happens after the strip). See docs/leaked-msbuild-env-bug.md.
+let private leakedMSBuildEnvKeys =
+    [ "MSBUILD_EXE_PATH"; "MSBuildExtensionsPath"; "MSBuildSDKsPath" ]
+
 /// Merge `MSBUILDDISABLENODEREUSE=1` into the env when the command is `dotnet`
 /// and the caller hasn't already set the key. See docs/msbuild-node-reuse-bug.md.
 let mergeDotnetEnv (command: string) (env: (string * string) list) : (string * string) list =
@@ -110,6 +127,9 @@ let runProcessWithTimeout
 
     // Strip before overlay so a caller-supplied entry in `env` survives.
     for key in dotnetArchRootKeys do
+        psi.Environment.Remove(key) |> ignore
+
+    for key in leakedMSBuildEnvKeys do
         psi.Environment.Remove(key) |> ignore
 
     for (key, value) in mergeDotnetEnv command env do

@@ -138,6 +138,40 @@ let ``runProcess strip respects caller-supplied DOTNET_ROOT_ARM64 override`` () 
         runProcess "sh" (echoEnv "DOTNET_ROOT_ARM64") "." [ "DOTNET_ROOT_ARM64", explicitValue ]
         |> expectStdout explicitValue)
 
+// Leaked-MSBuild-env contract — see the strip in
+// ProcessHelper.runProcessWithTimeout for the scenario that motivated it.
+// The daemon calls Ionide.ProjInfo.Init.init for in-process design-time
+// project evaluation, which writes MSBUILD_EXE_PATH / MSBuildExtensionsPath /
+// MSBuildSDKsPath into the daemon's OWN process environment, pinning them at a
+// specific SDK band's MSBuild. Process.Start inherits the full parent env, so
+// a spawned `dotnet build` then runs MSBuild from a possibly-different (or
+// incomplete) SDK band than the muxer resolves — the restore-graph sub-build
+// fails with exit 1 and ZERO diagnostics ("Build FAILED / 0 Error(s)").
+// Stripping these on every spawn lets the child re-resolve MSBuild from its
+// own SDK, matching a clean shell. Caller-supplied overrides still win.
+
+[<Fact(Timeout = 20000)>]
+let ``runProcess strips leaked MSBUILD_EXE_PATH unconditionally`` () =
+    withEnv "MSBUILD_EXE_PATH" (Some "/poisoned/sdk/MSBuild.dll") (fun () ->
+        runProcess "sh" (echoEnv "MSBUILD_EXE_PATH") "." [] |> expectStdout "")
+
+[<Fact(Timeout = 20000)>]
+let ``runProcess strips leaked MSBuildExtensionsPath and MSBuildSDKsPath too`` () =
+    withEnv "MSBuildExtensionsPath" (Some "/poisoned/sdk/") (fun () ->
+        withEnv "MSBuildSDKsPath" (Some "/poisoned/sdk/Sdks") (fun () ->
+            let args =
+                "-c \"printf %s:%s \\\"$MSBuildExtensionsPath\\\" \\\"$MSBuildSDKsPath\\\"\""
+
+            runProcess "sh" args "." [] |> expectStdout ":"))
+
+[<Fact(Timeout = 20000)>]
+let ``runProcess strip respects caller-supplied MSBUILD_EXE_PATH override`` () =
+    let explicitValue = "/explicit/correct-" + Guid.NewGuid().ToString("N")
+
+    withEnv "MSBUILD_EXE_PATH" (Some "/inherited/poisoned/MSBuild.dll") (fun () ->
+        runProcess "sh" (echoEnv "MSBUILD_EXE_PATH") "." [ "MSBUILD_EXE_PATH", explicitValue ]
+        |> expectStdout explicitValue)
+
 // DOTNET_HOST_PATH realpath contract — see realpath block in
 // runProcessWithTimeout for the nix-wrapped-SDK scenario that motivated it.
 // The .NET muxer reads DOTNET_HOST_PATH literally and computes
