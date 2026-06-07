@@ -1257,6 +1257,11 @@ let main args =
                     // `/.workspaces/` checkouts). `None` leaves the timer off.
                     let idleExitMin = FsHotWatch.IdleExit.resolveThreshold config.IdleExitMin root
 
+                    // Resolve the memory-pressure trim percentage from the
+                    // `pressureTrimPct` config (default-enabled at 100%). `None`
+                    // leaves the pressure-trim timer off.
+                    let pressureTrimPct = FsHotWatch.PressureTrim.resolvePct config.PressureTrimPct
+
                     Daemon.create
                         root
                         { Daemon.DaemonOptions.defaults with
@@ -1264,7 +1269,8 @@ let main args =
                             CacheKeyProvider = keyProvider
                             ExcludePatterns = config.Exclude
                             ExtraWatchPatterns = fileCommandPatterns
-                            IdleExitMin = idleExitMin }
+                            IdleExitMin = idleExitMin
+                            PressureTrimPct = pressureTrimPct }
 
                 executeCommand createDaemon defaultIpcOps repoRoot pipeName command opts config 30.0
             // ROOT-level unknown command: the dynamic plugin-passthrough. Forward the
