@@ -21,6 +21,13 @@
 
 ## 0.8.0-alpha.22 - 2026-06-07
 
+- feat: idle-exit — a daemon quits gracefully after a configurable idle period, freeing
+  100% of its footprint; the next `fshw` command auto-restarts it (the file-backed check
+  cache survives, so the rescan is mostly cache hits). `idleExitMin` in `.fshw.json`:
+  absent → AUTO (30 min, but only for `/.workspaces/` checkouts — the default/main
+  workspace never auto-quits); `0`/`false` → disabled; positive `N` → `N` min in any
+  workspace. See docs/adr-004. (Entry restored 2026-06-07: shipped in alpha.22 but the
+  CHANGELOG line was lost in a merge.)
 - fix: spawned `dotnet build` (and any other child process) no longer inherits the
   `MSBUILD_EXE_PATH` / `MSBuildExtensionsPath` / `MSBuildSDKsPath` variables that
   Ionide.ProjInfo writes into the daemon's own environment during in-process project
@@ -36,6 +43,17 @@
 ## 0.8.0-alpha.21 - 2026-06-06
 
 - feat: `fshw dead-code` — runs TestPrune's unreachable-symbol analysis against the daemon's .fshw/test-impact.db (same semantics as the standalone test-prune CLI: --entry/--include-tests/--verbose), no DB copying needed.
+- feat: the CLI now ships `System.GC.ConserveMemory=9` in its runtimeconfig, cutting the
+  daemon's steady memory footprint ~25–40% (benchmarked: settled ~3.0 GB vs 3.9–4.4 GB,
+  peak 5.0 vs 5.9–7.8 GB against a 32-project solution) at no scan-speed or diagnostics
+  cost. Override per-process with the `DOTNET_GCConserveMemory` env var. Also dropped the
+  dead `projectCacheSize` arg (ignored by the TransparentCompiler). See docs/adr-003.
+- fix: cold scans no longer silently truncate. A build touching `obj/**/ref/*.dll` could
+  cancel in-flight scan checks (`CancelPreviousCheck`); cancelled checks surfaced as
+  `None` and were dropped, so a scan could report green with a shrunken diagnostic set.
+  The scan now retries cancelled/aborted checks (bounded) and surfaces any still-unchecked
+  count as a non-ok `incomplete:` condition in status + the scan log line.
+  (Both entries restored 2026-06-07: shipped in alpha.21 but the CHANGELOG lines were lost in a merge.)
 
 ## 0.8.0-alpha.20 - 2026-06-05
 
