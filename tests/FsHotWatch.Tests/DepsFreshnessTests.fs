@@ -224,9 +224,53 @@ let ``detectProjectFreshness: assets older than fsproj is Stale`` () =
         File.SetLastWriteTimeUtc(fsproj, DateTime.UtcNow)
         test <@ detectProjectFreshness root fsproj = Stale @>)
 
+// ---- content-aware stale signature (mtime is not a content oracle) ----
+
+/// Bug class (rsync -a / cp -p / git checkout restore an OLD mtime while changing
+/// CONTENT): a signature keyed on max dep-file mtime ticks is byte-identical
+/// after a content rewrite that preserves mtime, so debounce recovery never
+/// re-arms. The signature must reflect dep-file CONTENT, mirroring the
+/// BuildInputsHasher / CheckCache.TimestampCacheKeyProvider content-hash
+/// precedent. See docs/adr-008-mtime-is-not-a-content-oracle.md.
+[<Fact(Timeout = 5000)>]
+let ``staleSignature: differs when a dep file's content changes but mtime is preserved (rsync -a)`` () =
+    withTempDir "deps-sig-content" (fun root ->
+        let projDir = Path.Combine(root, "src", "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        touch fsproj
+        let lockFile = Path.Combine(root, "paket.lock")
+        File.WriteAllText(lockFile, "NUGET\n  remote: x\n    PackageA (1.0)\n")
+
+        // Pin both files' mtimes so a content rewrite can preserve them exactly.
+        let pinned = DateTime(2026, 6, 1, 12, 0, 0, DateTimeKind.Utc)
+        File.SetLastWriteTimeUtc(fsproj, pinned)
+        File.SetLastWriteTimeUtc(lockFile, pinned)
+
+        let before = staleSignature root fsproj
+
+        // Rewrite content, then restore the EXACT old mtime (what rsync -a does).
+        File.WriteAllText(lockFile, "NUGET\n  remote: x\n    PackageA (2.0)\n")
+        File.SetLastWriteTimeUtc(lockFile, pinned)
+        test <@ File.GetLastWriteTimeUtc lockFile = pinned @>
+
+        let after = staleSignature root fsproj
+        test <@ before <> after @>)
+
+[<Fact(Timeout = 5000)>]
+let ``staleSignature: stable across repeated computes when nothing changes`` () =
+    withTempDir "deps-sig-stable" (fun root ->
+        let projDir = Path.Combine(root, "src", "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        touch fsproj
+        File.WriteAllText(Path.Combine(root, "paket.lock"), "lock-content")
+
+        let first = staleSignature root fsproj
+        let second = staleSignature root fsproj
+        test <@ first = second @>)
+
 // ---- orchestration: evaluateProject ----
 
-let private sigZero (_: string) = 0L
+let private sigZero (_: string) = "sig-0"
 let private assetsYes (_: string) = true
 let private assetsNo (_: string) = false
 let private succeedingRunner: RestoreRunner = fun _ -> Succeeded "restored"
@@ -321,7 +365,7 @@ let ``evaluateProject: a new dep bump re-arms recovery`` () =
             Failed(1, "broken")
 
     // Signature changes between the two attempts (a fresh bump).
-    let sigs = System.Collections.Generic.Queue<int64>([ 1L; 2L ])
+    let sigs = System.Collections.Generic.Queue<string>([ "sig-1"; "sig-2" ])
     let signatureOf (_: string) = sigs.Dequeue()
 
     let tracker = RecoveryTracker()
@@ -334,6 +378,62 @@ let ``evaluateProject: a new dep bump re-arms recovery`` () =
     |> ignore
 
     test <@ runs = 2 @>
+
+/// Content-drift escape hatch: the mtime probe can be fooled into reporting
+/// Fresh by a preserved-mtime dep rewrite (rsync -a). When the dep-content
+/// signature has drifted from the last value recovery proceeded on, the project
+/// must be treated as Stale and re-restored, NOT silently proceeded.
+[<Fact(Timeout = 5000)>]
+let ``evaluateProject: mtime-Fresh but content signature drifted -> restores (not silently Proceed)`` () =
+    let mutable runs = 0
+
+    let runner: RestoreRunner =
+        fun _ ->
+            runs <- runs + 1
+            Succeeded "restored"
+
+    // Two cycles: cycle 1 establishes the fresh baseline; cycle 2 has the SAME
+    // mtime-Fresh probe verdict but a DIFFERENT content signature (preserved-mtime
+    // rewrite) and must re-restore rather than Proceed blindly.
+    let sigs = System.Collections.Generic.Queue<string>([ "fresh-A"; "fresh-B" ])
+    let signatureOf (_: string) = sigs.Dequeue()
+    let tracker = RecoveryTracker()
+    let proj = "P.fsproj"
+
+    let first =
+        evaluateProject (fun _ -> Fresh) signatureOf assetsYes runner tracker proj
+
+    let second =
+        evaluateProject (fun _ -> Fresh) signatureOf assetsYes runner tracker proj
+
+    // First cycle: genuinely fresh, no restore.
+    test <@ first = Proceed @>
+    // Second cycle: same mtime verdict, drifted content -> recovery runs.
+    test <@ runs = 1 @>
+    test <@ second = RecoveredOk @>
+
+[<Fact(Timeout = 5000)>]
+let ``evaluateProject: mtime-Fresh with unchanged content signature stays Proceed (no restore loop)`` () =
+    let mutable runs = 0
+
+    let runner: RestoreRunner =
+        fun _ ->
+            runs <- runs + 1
+            Succeeded "restored"
+
+    let signatureOf (_: string) = "stable-sig"
+    let tracker = RecoveryTracker()
+    let proj = "P.fsproj"
+
+    let first =
+        evaluateProject (fun _ -> Fresh) signatureOf assetsYes runner tracker proj
+
+    let second =
+        evaluateProject (fun _ -> Fresh) signatureOf assetsYes runner tracker proj
+
+    test <@ first = Proceed @>
+    test <@ second = Proceed @>
+    test <@ runs = 0 @>
 
 // ---- daemon-level gate wiring: applyDepsGate ----
 

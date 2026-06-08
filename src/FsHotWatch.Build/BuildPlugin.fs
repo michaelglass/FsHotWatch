@@ -194,6 +194,22 @@ let create
     /// BuildArtifactsStale and downstream plugins (TestPrune) receive a
     /// BuildFailed signal instead of running against artifacts MSBuild's
     /// incremental cache silently failed to update.
+    ///
+    /// mtime IS the right signal HERE (unlike the build-input merkle — Bug 1 —
+    /// and the deps-freshness signature, which are content-hashed because mtime
+    /// lied to them under preserved-mtime rewrites). This guard answers a
+    /// strictly temporal question: "was the DLL regenerated *after* the newest
+    /// source?" — i.e. did MSBuild's incremental cache lie and skip relinking an
+    /// artifact a real edit should have rebuilt. In that failure mode the edit
+    /// bumped the source mtime, so DLL < source is exactly the tell. The
+    /// preserved-mtime content-rewrite class (rsync -a / git checkout) is NOT
+    /// this guard's job: the content-hashed BuildInputsHasher already invalidates
+    /// the build-cache key on a content change with preserved mtime, forcing a
+    /// real rebuild whose fresh DLL then post-dates the (old-mtime) source — so
+    /// this check correctly sees it as fresh. There is no "expected DLL content"
+    /// to hash against, so content-hashing would not even be expressible here;
+    /// the merkle is the content guard, and this is its temporal complement.
+    /// See docs/adr-008-mtime-is-not-a-content-oracle.md.
     let verifyArtifactsFresh () : StaleArtifact list =
         [ for proj in graph.GetAllProjects() do
               match graph.GetCanonicalDllPath(proj) with

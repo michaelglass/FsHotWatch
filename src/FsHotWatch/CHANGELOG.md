@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Deps-freshness signature is now content-hashed instead of keyed on max dep-file mtime ticks. A preserved-mtime dep-file rewrite (`rsync -a` / `cp -p` / branch-switch over `paket.lock` / `Directory.Packages.props`) previously left the signature byte-identical, so debounced restore recovery never re-armed. `evaluateProject` also gains a content-drift cross-check: an mtime-`Fresh` verdict whose content signature drifted from the last fresh baseline is re-restored rather than silently proceeded. `staleSignature` return type changed `int64 → string`; `RecoveryTracker` gains `HasContentDrifted`/`RecordFreshSignature`. See `docs/adr-008-mtime-is-not-a-content-oracle.md`.
 - The daemon's blocking waits (`waitForAllTerminal` and the IPC `WaitForScanGeneration`) now observe the daemon's shutdown `CancellationToken`. Previously, if the daemon was torn down (`fshw stop`, idle-exit, or any `cts.Cancel()`) while an RPC was blocked mid-wait, the wait could resolve cleanly during teardown and the in-flight `check` / `WaitForComplete` / `WaitForScan` RPC would falsely report **success** (or, for in-process callers, hang). The waits now fault with `OperationCanceledException("daemon shutting down")` the moment the shutdown token fires, so the in-flight RPC propagates a failure to the client instead of a false green.
 
 ### Changed
