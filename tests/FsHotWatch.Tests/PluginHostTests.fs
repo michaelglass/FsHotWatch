@@ -705,6 +705,54 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
                    | _ -> false)
         @>
 
+// --- REGRESSION (daemon side): vacuous resolution on an all-Idle host ---
+//
+// The daemon-side `WaitForComplete` path (`waitForVerdict` →
+// `waitForAllTerminalCore requireVerdict=true` → `allPluginsAtRest`). On a cold
+// daemon every registered plugin is Idle and nothing has run, yet the
+// quiescence leg of allPluginsAtRest ("no plugin Running + quiet window") would
+// resolve the wait immediately — the `WaitForComplete` RPC behind a foreground
+// `check`/`errors --wait` then renders an empty ledger as a vacuous exit-0 "No
+// errors". The verdict guard requires at least one plugin to have reached a
+// real terminal state (Completed/Failed) before the host is considered at rest.
+// With no plugin ever running, the verdict wait must NOT resolve via quiescence;
+// it must time out instead. The Idle-tolerant scan-settling path
+// (`waitForAllTerminal`, requireVerdict=false) keeps the original behavior and
+// is covered by `waitForAllTerminal returns within quiescence window ...`.
+[<Fact(Timeout = 20000)>]
+let ``waitForVerdict does not resolve on an all-Idle host (cold start, nothing verified)`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    // Register a plugin but never trigger it: it stays Idle forever. This is the
+    // exact cold-start shape — registered, never run, nothing verified.
+    let handler =
+        { Name = PluginName.create "never-runs"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands = []
+          Subscriptions = PluginSubscriptions.none
+          CacheKey = None
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+    test <@ host.GetAllStatuses() |> Map.forall (fun _ s -> s = Idle) @>
+
+    // A short timeout: if the bug is present, this resolves (completes) almost
+    // immediately via the quiescence leg. With the fix, no terminal plugin
+    // exists, so the only exit is the timeout — the task must fault.
+    let waitTask =
+        waitForVerdict host (TimeSpan.FromSeconds(1.0)) System.Threading.CancellationToken.None
+
+    let faultedWithTimeout =
+        try
+            waitTask.Wait(TimeSpan.FromSeconds(6.0)) |> ignore
+            // Resolved cleanly == the vacuous-green bug is still present.
+            false
+        with :? AggregateException as ex ->
+            ex.InnerExceptions |> Seq.exists (fun e -> e :? TimeoutException)
+
+    test <@ faultedWithTimeout @>
+
 [<Fact(Timeout = 20000)>]
 let ``OnStatusChanged subscriber re-entrantly calling GetAllStatuses does not deadlock`` () =
     // Pins the invariant that statusChanged.Trigger fires OUTSIDE the status agent's
