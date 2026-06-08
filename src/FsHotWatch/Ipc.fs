@@ -113,16 +113,24 @@ let private pluginStatusPayload
 /// Configuration record for DaemonRpcTarget.
 [<NoComparison; NoEquality>]
 type DaemonRpcConfig =
-    { Host: PluginHost
-      RequestShutdown: unit -> unit
-      RequestScan: unit -> unit
-      GetScanStatus: unit -> string
-      GetScanGeneration: unit -> int64
-      TriggerBuild: unit -> Async<unit>
-      FormatAll: unit -> Async<string>
-      WaitForScanGeneration: int64 -> Task<unit>
-      WaitForAllTerminal: TimeSpan -> Task<unit>
-      RerunPlugin: string -> Async<Result<unit, string>> }
+    {
+        Host: PluginHost
+        RequestShutdown: unit -> unit
+        RequestScan: unit -> unit
+        GetScanStatus: unit -> string
+        GetScanGeneration: unit -> int64
+        TriggerBuild: unit -> Async<unit>
+        FormatAll: unit -> Async<string>
+        WaitForScanGeneration: int64 -> Task<unit>
+        WaitForAllTerminal: TimeSpan -> Task<unit>
+        RerunPlugin: string -> Async<Result<unit, string>>
+        /// Request-time count of registered files that currently lack a valid
+        /// full-check result (the completeness signal carried in the check
+        /// response). Computed from the live PluginHost coverage set against the
+        /// pipeline's registered-files denominator — NOT the stale ScanComplete
+        /// snapshot.
+        GetUncheckedCount: unit -> int
+    }
 
 /// RPC target object exposed to clients via StreamJsonRpc.
 type DaemonRpcTarget(config: DaemonRpcConfig) =
@@ -214,10 +222,16 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
             config.Host.GetAllStatuses()
             |> Map.map (fun name status -> pluginStatusPayload config.Host counts name status)
 
+        // `unchecked` is the request-time completeness signal: registered files
+        // that currently lack a valid full-check result. The CLI parses it into
+        // a `Coverage` verdict (0 -> Complete, n>0 -> Incomplete n, absent ->
+        // Unknown). Carried structurally (a number, not a parsed string) so the
+        // verdict can never be misread.
         let result =
             {| count = count
                files = allErrors
-               statuses = statuses |}
+               statuses = statuses
+               unchecked = config.GetUncheckedCount() |}
 
         JsonSerializer.Serialize(result)
 

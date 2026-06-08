@@ -1960,7 +1960,8 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
           FormatAll = fun () -> async { return "formatted 0 files" }
           WaitForScanGeneration = fun _ -> System.Threading.Tasks.Task.FromResult(())
           WaitForAllTerminal = fun _ -> System.Threading.Tasks.Task.FromResult(())
-          RerunPlugin = fun _ -> async { return Result.Ok() } }
+          RerunPlugin = fun _ -> async { return Result.Ok() }
+          GetUncheckedCount = fun () -> 0 }
 
     let makeStatusHandler name (reportFn: PluginCtx<unit> -> unit) =
         { Name = PluginName.create name

@@ -184,3 +184,31 @@ let ``isAllTerminal true when mix of Idle, Completed, Failed`` () =
 [<Fact(Timeout = 15000)>]
 let ``isAllTerminal false on empty map`` () =
     test <@ not (isAllTerminal Map.empty) @>
+
+// --- Coverage parsing (unchecked field on the diagnostics response) ---
+
+[<Fact(Timeout = 15000)>]
+let ``parseDiagnosticsResponse unchecked=0 -> Complete`` () =
+    let json = """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+    let resp = parseDiagnosticsResponse json
+    test <@ resp.Coverage = Complete @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseDiagnosticsResponse unchecked=3 -> Incomplete 3`` () =
+    let json = """{"count":0,"files":{},"statuses":{},"unchecked":3}"""
+    let resp = parseDiagnosticsResponse json
+    test <@ resp.Coverage = Incomplete 3 @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseDiagnosticsResponse missing unchecked field -> Unknown`` () =
+    // Cross-version backstop: an old daemon that doesn't send `unchecked` must
+    // never read as Complete.
+    let json = """{"count":0,"files":{},"statuses":{}}"""
+    let resp = parseDiagnosticsResponse json
+    test <@ resp.Coverage = Unknown @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseDiagnosticsResponse garbage unchecked field -> Unknown`` () =
+    let json = """{"count":0,"files":{},"statuses":{},"unchecked":"banana"}"""
+    let resp = parseDiagnosticsResponse json
+    test <@ resp.Coverage = Unknown @>
