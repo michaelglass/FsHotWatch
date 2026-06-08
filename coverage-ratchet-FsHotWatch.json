@@ -4,13 +4,13 @@
       {
         "line": 81,
         "branch": 70,
-        "reason": "FCS analyzer paths in IntegrationTests (excluded); \u00a72a + lifecycle + \u00a71 fcs-signature add untested branches; line drifts 74-76% across runs",
+        "reason": "FCS analyzer paths in IntegrationTests (excluded); \u00A72a \u002B lifecycle \u002B \u00A71 fcs-signature add untested branches; line drifts 74-76% across runs",
         "platform": "macos"
       },
       {
         "line": 80,
         "branch": 70,
-        "reason": "reflection-based CliContext branches vary by platform; parse-only path + knownNonAnalyzerPrefixes filter both add untested branches on Linux",
+        "reason": "reflection-based CliContext branches vary by platform; parse-only path \u002B knownNonAnalyzerPrefixes filter both add untested branches on Linux",
         "platform": "linux"
       }
     ],
@@ -48,21 +48,21 @@
     },
     "CheckCache.fs": [
       {
-        "line": 80,
-        "branch": 50,
-        "reason": "\u00a71 fcsCheckSignature adds branches (FullCheck null guard, try/with around Diagnostics access) not exercised without a real FSharpCheckFileResults; integration tests would cover but live in IntegrationTests (excluded)",
+        "line": 100,
+        "branch": 91,
+        "reason": "\u00A71 fcsCheckSignature adds branches (FullCheck null guard, try/with around Diagnostics access) not exercised without a real FSharpCheckFileResults; integration tests would cover but live in IntegrationTests (excluded)",
         "platform": "macos"
       },
       {
         "line": 80,
         "branch": 50,
-        "reason": "\u00a71 fcsCheckSignature: see macos reason",
+        "reason": "\u00A71 fcsCheckSignature: see macos reason",
         "platform": "linux"
       }
     ],
     "CheckPipeline.fs": [
       {
-        "line": 79,
+        "line": 80,
         "branch": 64,
         "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor; scoped-rediscovery PrepareForRediscovery(clearCheckCache) branch is integration-tested, pinned below floor",
         "platform": "macos"
@@ -76,8 +76,8 @@
     ],
     "CheckVerdict.fs": [
       {
-        "line": 95,
-        "branch": 92,
+        "line": 96,
+        "branch": 96,
         "reason": "new 2026-06-08: pure converge-then-verdict logic (verdict/exitCode/converge), fully unit-tested in CheckVerdictTests; floor set just below actual (~96%) to tolerate run-to-run noise",
         "platform": "macos"
       },
@@ -134,8 +134,8 @@
     ],
     "Daemon.fs": [
       {
-        "line": 75,
-        "branch": 74,
+        "line": 76,
+        "branch": 75,
         "reason": "drifts 74-76%; pinned to floor (scoped-invalidation branches in processBatch are integration-tested, excluded from coverage)",
         "platform": "macos"
       },
@@ -148,9 +148,9 @@
     ],
     "DaemonConfig.fs": [
       {
-        "line": 76,
-        "branch": 79,
-        "reason": "loosened 2026-04-24 + 2026-04-26 race-fix retry-resolution path adds untested live-system warning branch; 2026-06-04 dipped 77.0->76.9% line when the coveragePaths builder gained the single-shared-cobertura path (DB-native coverage cutover) -- that lambda only runs in live daemon wiring, not unit tests; honest floor",
+        "line": 77,
+        "branch": 80,
+        "reason": "loosened 2026-04-24 \u002B 2026-04-26 race-fix retry-resolution path adds untested live-system warning branch; 2026-06-04 dipped 77.0-\u003E76.9% line when the coveragePaths builder gained the single-shared-cobertura path (DB-native coverage cutover) -- that lambda only runs in live daemon wiring, not unit tests; honest floor",
         "platform": "macos"
       },
       {
@@ -175,9 +175,9 @@
     ],
     "DepsFreshness.fs": [
       {
-        "line": 68,
-        "branch": 59,
-        "reason": "honest floor (updated 2026-06-07): unit tests cover the pure freshness/orchestration paths (compareFreshness, evaluateProject, dependencyFiles, toolsManifest, detectProjectFreshness \u2014 incl. the defensive not-under-repoRoot ancestor walk) but deliberately NOT productionRestoreRunner, which shells `dotnet restore`/`paket restore`/`tool restore` \u2014 exercising it would be a slow nondeterministic integration test. After splitting the ancestor walk into ancestorDirs + a standalone toolsManifest (removing .config/dotnet-tools.json from the deps-freshness inputs so a dotnet-tool bump no longer false-stales projects), observed line=70.1-72.4% branch=60.0-62.5% across runs. The per-run cobertura class-merge for this file is flaky (branch denominator swings 20<->32), so both floors stay below the jittery low end: branch at the proven-stable 59 and line at 68 (the documented stable baseline, well under the observed 70.1-72.4). Pinned without ExcludeFromCodeCoverage so the productionRestoreRunner gap stays visible.",
+        "line": 79,
+        "branch": 63,
+        "reason": "honest floor (updated 2026-06-07): unit tests cover the pure freshness/orchestration paths (compareFreshness, evaluateProject, dependencyFiles, toolsManifest, detectProjectFreshness \u2014 incl. the defensive not-under-repoRoot ancestor walk) but deliberately NOT productionRestoreRunner, which shells \u0060dotnet restore\u0060/\u0060paket restore\u0060/\u0060tool restore\u0060 \u2014 exercising it would be a slow nondeterministic integration test. After splitting the ancestor walk into ancestorDirs \u002B a standalone toolsManifest (removing .config/dotnet-tools.json from the deps-freshness inputs so a dotnet-tool bump no longer false-stales projects), observed line=70.1-72.4% branch=60.0-62.5% across runs. The per-run cobertura class-merge for this file is flaky (branch denominator swings 20\u003C-\u003E32), so both floors stay below the jittery low end: branch at the proven-stable 59 and line at 68 (the documented stable baseline, well under the observed 70.1-72.4). Pinned without ExcludeFromCodeCoverage so the productionRestoreRunner gap stays visible.",
         "platform": "macos"
       },
       {
@@ -296,7 +296,7 @@
     ],
     "FormatCheckPlugin.fs": [
       {
-        "line": 98,
+        "line": 99,
         "branch": 100,
         "platform": "macos"
       },
@@ -304,6 +304,20 @@
         "line": 98,
         "branch": 100,
         "reason": "lower line coverage on Linux CI",
+        "platform": "linux"
+      }
+    ],
+    "IdleExit.fs": [
+      {
+        "line": 90,
+        "branch": 91,
+        "reason": "idle-exit scheduler (now pressure-aware). Pure decisions (shouldFire, effectiveThreshold: not-eligible-stays-exempt-under-pressure, min(base,floor), floor-never-lengthens, floor-disabled), resolveThreshold, resolvePressureFloor, isNonDefaultWorkspace, the atomic FireLatch (incl. the 10k-thread fire-once test), and runTick (fire / defer-on-busy / below-threshold / pressure-shortens-to-floor / pressure-re-evaluated-each-tick / floor-disabled-ignores-pressure / throwing-shutdown) are all unit-tested directly. The uncovered lines are non-deterministic or live-effect-only: readGcPressure (L67-68) is the live GC.GetGCMemoryInfo() read, injected as a function and stubbed in tests (same pattern as the deleted PressureTrim ReadMemory); createTimer\u0027s onTick lambda (L245) only runs when the live 30s System.Threading.Timer fires (its callee runTick is fully covered); runTick\u0027s tryFire-loser branch (L223) is reachable only when a concurrent tick wins the atomic CompareExchange first (exercised by the concurrency test but not hit on every instrumented run).",
+        "platform": "macos"
+      },
+      {
+        "line": 90,
+        "branch": 89,
+        "reason": "idle-exit scheduler (now pressure-aware). Pure decisions (shouldFire, effectiveThreshold: not-eligible-stays-exempt-under-pressure, min(base,floor), floor-never-lengthens, floor-disabled), resolveThreshold, resolvePressureFloor, isNonDefaultWorkspace, the atomic FireLatch (incl. the 10k-thread fire-once test), and runTick (fire / defer-on-busy / below-threshold / pressure-shortens-to-floor / pressure-re-evaluated-each-tick / floor-disabled-ignores-pressure / throwing-shutdown) are all unit-tested directly. The uncovered lines are non-deterministic or live-effect-only: readGcPressure (L67-68) is the live GC.GetGCMemoryInfo() read, injected as a function and stubbed in tests (same pattern as the deleted PressureTrim ReadMemory); createTimer\u0027s onTick lambda (L245) only runs when the live 30s System.Threading.Timer fires (its callee runTick is fully covered); runTick\u0027s tryFire-loser branch (L223) is reachable only when a concurrent tick wins the atomic CompareExchange first (exercised by the concurrency test but not hit on every instrumented run).",
         "platform": "linux"
       }
     ],
@@ -349,9 +363,9 @@
     ],
     "IpcOutput.fs": [
       {
-        "line": 69,
+        "line": 71,
         "branch": 36,
-        "reason": "honest floor 2026-06-08 for the converge-then-verdict orchestration in pollAndRender/pollUntilTerminal/rescan/reread (lines ~196-285): live-IPC + interactive-console code (real spinners, Console cursor moves, Thread.Sleep, UI.fail reporting) that drives real IpcOps and so is not unit-testable. The PURE verdict + convergence logic it delegates to is in CheckVerdict.fs at 96%+ coverage; this orchestration shell is deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage. Was 75 before the bigger function lowered the percentage.",
+        "reason": "honest floor 2026-06-08 for the converge-then-verdict orchestration in pollAndRender/pollUntilTerminal/rescan/reread (lines ~196-285): live-IPC \u002B interactive-console code (real spinners, Console cursor moves, Thread.Sleep, UI.fail reporting) that drives real IpcOps and so is not unit-testable. The PURE verdict \u002B convergence logic it delegates to is in CheckVerdict.fs at 96%\u002B coverage; this orchestration shell is deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage. Was 75 before the bigger function lowered the percentage.",
         "platform": "macos"
       },
       {
@@ -364,7 +378,7 @@
     "IpcParsing.fs": [
       {
         "line": 87,
-        "branch": 65,
+        "branch": 66,
         "reason": "loosened: legacy-parser removal shifted coverage percentages",
         "platform": "macos"
       },
@@ -392,13 +406,13 @@
       {
         "line": 90,
         "branch": 72,
-        "reason": "loosened 2026-04-26 \u00a72a: cache-key construction adds match-with-when branches; lint timeout/failure/error paths covered via integration tests, not unit tests",
+        "reason": "loosened 2026-04-26 \u00A72a: cache-key construction adds match-with-when branches; lint timeout/failure/error paths covered via integration tests, not unit tests",
         "platform": "macos"
       },
       {
         "line": 90,
         "branch": 72,
-        "reason": "lower line coverage on Linux CI; branch threshold matches macOS post \u00a72a",
+        "reason": "lower line coverage on Linux CI; branch threshold matches macOS post \u00A72a",
         "platform": "linux"
       }
     ],
@@ -425,7 +439,7 @@
       {
         "line": 96,
         "branch": 69,
-        "reason": "exception-handling branches + IgnoreFilterCache reload paths that fire inconsistently across runs",
+        "reason": "exception-handling branches \u002B IgnoreFilterCache reload paths that fire inconsistently across runs",
         "platform": "macos"
       },
       {
@@ -439,7 +453,7 @@
       {
         "line": 86,
         "branch": 71,
-        "reason": "stable floor: enforceGlobalCap concurrent recheck races + the concurrent lock branches (~lines 112-138) are intentionally NOT unit-covered \u2014 behavior-tested in FsHotWatch.IntegrationTests (concurrent-stress + cross-plugin cap tests); deterministic because the racy timing/concurrency tests live there, not here. Observed stable 86.8% line / 71.4% branch across 3 runs; pinned 1pp below observed line floor",
+        "reason": "stable floor: enforceGlobalCap concurrent recheck races \u002B the concurrent lock branches (~lines 112-138) are intentionally NOT unit-covered \u2014 behavior-tested in FsHotWatch.IntegrationTests (concurrent-stress \u002B cross-plugin cap tests); deterministic because the racy timing/concurrency tests live there, not here. Observed stable 86.8% line / 71.4% branch across 3 runs; pinned 1pp below observed line floor",
         "platform": "macos"
       },
       {
@@ -451,8 +465,8 @@
     ],
     "PluginFramework.fs": [
       {
-        "line": 96,
-        "branch": 87,
+        "line": 97,
+        "branch": 92,
         "reason": "ratchet 2026-04-30 (commit 45124f9e): observed 96.5/87.8 stable across 8 CI runs post coverage-fix series; tightened from 93/82 (gives 1pp safety margin for jitter)",
         "platform": "macos"
       },
@@ -465,8 +479,8 @@
     ],
     "PluginHost.fs": [
       {
-        "line": 87,
-        "branch": 73,
+        "line": 88,
+        "branch": 78,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
         "platform": "macos"
       },
@@ -506,9 +520,9 @@
     ],
     "Program.fs": [
       {
-        "line": 66,
-        "branch": 53,
-        "reason": "CLI entry point; line drifts 66-68% and branch drifts 53-54% across runs \u2014 pin to floor; auto-ratchet bumps to ceiling and breaks CI on the next unlucky run idle-exit daemon-start glue (resolveThreshold call in createDaemon) added a few uncovered lines, nudging the macOS run from 71.0% to 70.9% \u2014 daemon-start path, not unit-testable; floor lowered to 70 to absorb it. Pressure-idle (2026-06-07) adds further createDaemon glue (resolvePressureFloor + pressureIdleFloorMin threading), same untestable daemon-start path; line floor pinned to the documented 66% drift-floor and branch to 53% so normal drift no longer reds the gate.",
+        "line": 74,
+        "branch": 58,
+        "reason": "CLI entry point; line drifts 66-68% and branch drifts 53-54% across runs \u2014 pin to floor; auto-ratchet bumps to ceiling and breaks CI on the next unlucky run idle-exit daemon-start glue (resolveThreshold call in createDaemon) added a few uncovered lines, nudging the macOS run from 71.0% to 70.9% \u2014 daemon-start path, not unit-testable; floor lowered to 70 to absorb it. Pressure-idle (2026-06-07) adds further createDaemon glue (resolvePressureFloor \u002B pressureIdleFloorMin threading), same untestable daemon-start path; line floor pinned to the documented 66% drift-floor and branch to 53% so normal drift no longer reds the gate.",
         "platform": "macos"
       },
       {
@@ -608,20 +622,6 @@
         "line": 83,
         "branch": 60,
         "reason": "higher line coverage on Linux CI (no FSEvents)",
-        "platform": "linux"
-      }
-    ],
-    "IdleExit.fs": [
-      {
-        "line": 90,
-        "branch": 89,
-        "reason": "idle-exit scheduler (now pressure-aware). Pure decisions (shouldFire, effectiveThreshold: not-eligible-stays-exempt-under-pressure, min(base,floor), floor-never-lengthens, floor-disabled), resolveThreshold, resolvePressureFloor, isNonDefaultWorkspace, the atomic FireLatch (incl. the 10k-thread fire-once test), and runTick (fire / defer-on-busy / below-threshold / pressure-shortens-to-floor / pressure-re-evaluated-each-tick / floor-disabled-ignores-pressure / throwing-shutdown) are all unit-tested directly. The uncovered lines are non-deterministic or live-effect-only: readGcPressure (L67-68) is the live GC.GetGCMemoryInfo() read, injected as a function and stubbed in tests (same pattern as the deleted PressureTrim ReadMemory); createTimer's onTick lambda (L245) only runs when the live 30s System.Threading.Timer fires (its callee runTick is fully covered); runTick's tryFire-loser branch (L223) is reachable only when a concurrent tick wins the atomic CompareExchange first (exercised by the concurrency test but not hit on every instrumented run).",
-        "platform": "macos"
-      },
-      {
-        "line": 90,
-        "branch": 89,
-        "reason": "idle-exit scheduler (now pressure-aware). Pure decisions (shouldFire, effectiveThreshold: not-eligible-stays-exempt-under-pressure, min(base,floor), floor-never-lengthens, floor-disabled), resolveThreshold, resolvePressureFloor, isNonDefaultWorkspace, the atomic FireLatch (incl. the 10k-thread fire-once test), and runTick (fire / defer-on-busy / below-threshold / pressure-shortens-to-floor / pressure-re-evaluated-each-tick / floor-disabled-ignores-pressure / throwing-shutdown) are all unit-tested directly. The uncovered lines are non-deterministic or live-effect-only: readGcPressure (L67-68) is the live GC.GetGCMemoryInfo() read, injected as a function and stubbed in tests (same pattern as the deleted PressureTrim ReadMemory); createTimer's onTick lambda (L245) only runs when the live 30s System.Threading.Timer fires (its callee runTick is fully covered); runTick's tryFire-loser branch (L223) is reachable only when a concurrent tick wins the atomic CompareExchange first (exercised by the concurrency test but not hit on every instrumented run).",
         "platform": "linux"
       }
     ]
