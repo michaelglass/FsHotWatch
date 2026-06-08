@@ -782,7 +782,8 @@ let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls
     // GetAllStatuses() inside the handler. If OnStatusChanged fires synchronously
     // inside a MailboxProcessor, GetAllStatuses (which would do PostAndReply to
     // the same agent) will deadlock.
-    let waitTask = waitForAllTerminal host (TimeSpan.FromSeconds(5.0)) ()
+    let waitTask =
+        waitForAllTerminal host (TimeSpan.FromSeconds(5.0)) System.Threading.CancellationToken.None
 
     // Trigger a status change
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
@@ -817,7 +818,9 @@ let ``waitForAllTerminal with TimeSpan.MaxValue does not overflow deadline arith
 
     host.RegisterHandler(handler)
 
-    let waitTask = waitForAllTerminal host TimeSpan.MaxValue ()
+    let waitTask =
+        waitForAllTerminal host TimeSpan.MaxValue System.Threading.CancellationToken.None
+
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
     let completed = waitTask.Wait(TimeSpan.FromSeconds(5.0))
@@ -888,7 +891,9 @@ let ``waitForAllTerminal waits for downstream plugin that hasn't yet picked up i
     host.RegisterHandler(bHandler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    let waitTask = waitForAllTerminal host (TimeSpan.FromSeconds(15.0)) ()
+
+    let waitTask =
+        waitForAllTerminal host (TimeSpan.FromSeconds(15.0)) System.Threading.CancellationToken.None
 
     let completed = waitTask.Wait(TimeSpan.FromSeconds(20.0))
     test <@ completed @>
@@ -992,7 +997,9 @@ let ``waitForAllTerminal does not return while a downstream plugin still has eve
     host.RegisterHandler(bHandler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    let waitTask = waitForAllTerminal host (TimeSpan.FromSeconds(15.0)) ()
+
+    let waitTask =
+        waitForAllTerminal host (TimeSpan.FromSeconds(15.0)) System.Threading.CancellationToken.None
 
     let completed = waitTask.Wait(TimeSpan.FromSeconds(20.0))
     test <@ completed @>
@@ -1093,7 +1100,9 @@ let ``waitForAllTerminal waits for full cascade A -> B -> C`` () =
     host.RegisterHandler(cHandler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    let waitTask = waitForAllTerminal host (TimeSpan.FromSeconds(10.0)) ()
+
+    let waitTask =
+        waitForAllTerminal host (TimeSpan.FromSeconds(10.0)) System.Threading.CancellationToken.None
 
     let completed = waitTask.Wait(TimeSpan.FromSeconds(15.0))
     test <@ completed @>
@@ -1128,7 +1137,9 @@ let ``waitForAllTerminal completes when plugin fails mid-cycle`` () =
     host.RegisterHandler(handler)
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-    let waitTask = waitForAllTerminal host (TimeSpan.FromSeconds(5.0)) ()
+
+    let waitTask =
+        waitForAllTerminal host (TimeSpan.FromSeconds(5.0)) System.Threading.CancellationToken.None
 
     let completed = waitTask.Wait(TimeSpan.FromSeconds(8.0))
     test <@ completed @>
@@ -1161,13 +1172,76 @@ let ``waitForAllTerminal returns within quiescence window when no work is pendin
     host.RegisterHandler(handler)
 
     let started = DateTime.UtcNow
-    let waitTask = waitForAllTerminal host (TimeSpan.FromSeconds(5.0)) ()
+
+    let waitTask =
+        waitForAllTerminal host (TimeSpan.FromSeconds(5.0)) System.Threading.CancellationToken.None
+
     let completed = waitTask.Wait(TimeSpan.FromSeconds(10.0))
     let elapsed = DateTime.UtcNow - started
     test <@ completed @>
     // Should be much faster than the 5s wait timeout — quiescence should fire
     // quickly when nothing is happening. Allow up to 4.9s for slow CI machines.
     test <@ elapsed < TimeSpan.FromSeconds(4.9) @>
+
+[<Fact(Timeout = 20000)>]
+let ``waitForAllTerminal faults with OperationCanceledException when shutdown token fires mid-wait`` () =
+    // Repro: foreground client is blocked in WaitForComplete while the daemon
+    // is closed in the background. The wait must fault so the client exits
+    // non-zero — without this, the RPC could resolve cleanly during teardown
+    // and the foreground process would mistakenly report success.
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    // A plugin that goes Running on FileChanged and never reaches terminal,
+    // so the quiescence window can't fire and the wait stays blocked until
+    // cancellation.
+    let handler =
+        { Name = PluginName.create "blocked"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        ctx.ReportStatus(Running(DateTime.UtcNow))
+                        do! Async.Sleep 60_000
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+
+    use cts = new System.Threading.CancellationTokenSource()
+
+    let waitTask = waitForAllTerminal host TimeSpan.MaxValue cts.Token
+
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    // Give the wait a moment to enter its loop, then trip the shutdown token.
+    Threading.Thread.Sleep(200)
+    cts.Cancel()
+
+    // Async.StartAsTask wraps OperationCanceledException as AggregateException
+    // when the inner async observes a cancelled token via Async.Sleep.
+    let captured: exn option =
+        try
+            waitTask.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+            None
+        with ex ->
+            Some ex
+
+    test <@ captured.IsSome @>
+
+    let inner: exn =
+        match captured.Value with
+        | :? AggregateException as agg -> agg.InnerException
+        | ex -> ex
+
+    test <@ inner :? OperationCanceledException @>
 
 [<Fact(Timeout = 20000)>]
 let ``HasFailingReasons distinguishes warnings from errors`` () =

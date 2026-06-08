@@ -808,7 +808,7 @@ let ``WaitForComplete times out when plugin stays Running`` () =
 
     let config =
         { defaultRpcConfig host with
-            WaitForAllTerminal = fun timeout -> waitForAllTerminal host timeout () }
+            WaitForAllTerminal = fun timeout -> waitForAllTerminal host timeout System.Threading.CancellationToken.None }
 
     let target = DaemonRpcTarget(config)
 
@@ -818,6 +818,92 @@ let ``WaitForComplete times out when plugin stays Running`` () =
         |> Async.RunSynchronously
 
     test <@ ex.Message.Contains("timed out") @>
+
+[<Fact(Timeout = 30000)>]
+let ``WaitForComplete client observes failure when daemon is shut down mid-wait`` () =
+    // Drives the real IPC over a real named pipe: client blocks in
+    // WaitForComplete on a stuck-Running plugin, we cancel the server CTS,
+    // the client must observe a failure within a bounded time. Catches
+    // regressions where the daemon-side wait stops observing the shutdown
+    // token and the client hangs (in-process callers) or races OS pipe
+    // teardown for a clean exit.
+    let pipeName = $"fshw-test-{Guid.NewGuid():N}"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let handler =
+        { Name = PluginName.create "stuck-plugin"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ -> ctx.ReportStatus(Running(since = System.DateTime(2025, 1, 1)))
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("stuck-plugin") with
+            | Some(Running _) -> true
+            | _ -> false)
+        5000
+
+    let cts = new CancellationTokenSource()
+
+    let config =
+        { defaultRpcConfig host with
+            RequestShutdown = fun () -> cts.Cancel()
+            WaitForAllTerminal = fun timeout -> waitForAllTerminal host timeout cts.Token }
+
+    let serverTask = Async.StartAsTask(IpcServer.start pipeName config cts)
+    waitForServer pipeName
+
+    try
+        let clientTask =
+            Async.StartAsTask(
+                async {
+                    try
+                        let! result = IpcClient.waitForComplete pipeName 0
+                        return Choice1Of2 result
+                    with ex ->
+                        return Choice2Of2 ex
+                }
+            )
+
+        // Give the client time to establish the connection and enter the wait.
+        Thread.Sleep(500)
+        test <@ not clientTask.IsCompleted @>
+
+        // Simulate daemon shutdown.
+        cts.Cancel()
+
+        // The contract: the client must observe a failure within a bounded
+        // time. 8 seconds is generous — production teardown is sub-second.
+        let completed = clientTask.Wait(TimeSpan.FromSeconds(8.0))
+        test <@ completed @>
+
+        match clientTask.Result with
+        | Choice1Of2 result ->
+            // Silent success would let `fshw errors --wait` exit 0 even though
+            // the daemon went away. That's the bug we want to prevent.
+            failwithf "client returned success after daemon shutdown: %s" result
+        | Choice2Of2 _ -> ()
+    finally
+        cts.Cancel()
+
+        try
+            serverTask.Wait(TimeSpan.FromSeconds(3.0)) |> ignore
+        with _ ->
+            ()
 
 [<Fact(Timeout = 20000)>]
 let ``repeated scan force via IPC increments generation each time`` () =
@@ -864,6 +950,71 @@ let ``repeated scan force via IPC increments generation each time`` () =
 
         try
             task.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
+        with _ ->
+            ()
+
+        if System.IO.Directory.Exists tmpDir then
+            System.IO.Directory.Delete(tmpDir, true)
+
+[<Fact(Timeout = 30000)>]
+let ``WaitForScan client observes failure when daemon is shut down mid-wait`` () =
+    // Companion to the WaitForComplete shutdown test, for the OTHER blocking
+    // wait: a real daemon over a real pipe, a client parked in WaitForScan for
+    // a generation that will never arrive (no scan is triggered), then the
+    // daemon's CTS is cancelled. The client must observe a failure — without
+    // the shutdown-token race in WaitForScanGeneration, the RPC could resolve
+    // cleanly during teardown and `fshw scan --wait` would exit 0 even though
+    // the daemon went away.
+    let tmpDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"fshw-scanwait-{Guid.NewGuid():N}")
+
+    System.IO.Directory.CreateDirectory(System.IO.Path.Combine(tmpDir, "src"))
+    |> ignore
+
+    let pipeName = FsHotWatch.Cli.Program.computePipeName tmpDir
+    let cts = new CancellationTokenSource()
+
+    let daemon =
+        Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+
+    let serverTask = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
+    waitForServer pipeName
+
+    // Let the initial scan settle so the next WaitForScan genuinely blocks.
+    IpcClient.waitForScan pipeName -1L |> Async.RunSynchronously |> ignore
+    let currentGen = daemon.GetScanGeneration()
+
+    try
+        // Park in WaitForScan for a generation past the current one. No scan is
+        // triggered, so this only unblocks on shutdown.
+        let clientTask =
+            Async.StartAsTask(
+                async {
+                    try
+                        let! result = IpcClient.waitForScan pipeName currentGen
+                        return Choice1Of2 result
+                    with ex ->
+                        return Choice2Of2 ex
+                }
+            )
+
+        Thread.Sleep(500)
+        test <@ not clientTask.IsCompleted @>
+
+        // Simulate daemon shutdown.
+        cts.Cancel()
+
+        let completed = clientTask.Wait(TimeSpan.FromSeconds(8.0))
+        test <@ completed @>
+
+        match clientTask.Result with
+        | Choice1Of2 result -> failwithf "client returned success after daemon shutdown: %s" result
+        | Choice2Of2 _ -> ()
+    finally
+        cts.Cancel()
+
+        try
+            serverTask.Wait(TimeSpan.FromSeconds(5.0)) |> ignore
         with _ ->
             ()
 

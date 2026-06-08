@@ -925,6 +925,11 @@ let formatPluginWait
 let internal waitForAllTerminalQuiescenceWindow =
     System.TimeSpan.FromMilliseconds(200.0)
 
+/// Sentinel message for shutdown-driven cancellation. Anything that surfaces
+/// this is a daemon-teardown event, not a plugin failure.
+[<Literal>]
+let internal daemonShuttingDownMessage = "daemon shutting down"
+
 /// Wait for all plugins to settle. A plugin "settles" when:
 ///   1. It's in a non-Running status (Idle / Completed / Failed) AND its
 ///      work-cycle generation has advanced past the snapshot taken at call
@@ -942,7 +947,13 @@ let internal waitForAllTerminalQuiescenceWindow =
 /// and a downstream plugin's mailbox actually picking up the BuildCompleted
 /// event and transitioning into Running. Times out with TimeoutException
 /// after the specified timeout.
-let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) () : Task<unit> =
+///
+/// `ct` is the daemon's shutdown token. When it fires mid-wait, the returned
+/// task faults with OperationCanceledException so the in-flight WaitForComplete
+/// RPC propagates to the client as an error — without this, foreground
+/// processes blocked on the daemon could either hang (in-process callers) or
+/// race the OS pipe teardown for a clean exit.
+let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) (ct: CancellationToken) : Task<unit> =
     // TimeSpan.MaxValue signals "no timeout"; adding it to UtcNow overflows, so skip
     // deadline computation entirely in that case and rely on the MaxValue guard in loop.
     let deadline =
@@ -1048,6 +1059,11 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
 
     let rec loop () =
         async {
+            // Catches the race between cancellation and the first Async.Sleep —
+            // see waitForAllTerminal's doc-comment for the full contract.
+            if ct.IsCancellationRequested then
+                raise (System.OperationCanceledException(daemonShuttingDownMessage, ct))
+
             if timeout <> System.TimeSpan.MaxValue && System.DateTime.UtcNow >= deadline then
                 let detail = formatTimeoutDetail ()
 
@@ -1069,7 +1085,7 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) ()
                 return! loop ()
         }
 
-    loop () |> Async.StartAsTask
+    Async.StartAsTask(loop (), cancellationToken = ct)
 
 /// Wait for a single named plugin to leave Running. Returns immediately if the
 /// plugin is not registered or is already terminal. Polling-based; bounded by
@@ -1278,7 +1294,7 @@ type Daemon
             do! this.ScanAll()
 
             do!
-                waitForAllTerminal host (System.TimeSpan.FromMinutes(30.0)) ()
+                waitForAllTerminal host (System.TimeSpan.FromMinutes(30.0)) lifetime.Token
                 |> Async.AwaitTask
 
             return host.GetAllStatuses()
@@ -1356,8 +1372,27 @@ type Daemon
                       TriggerBuild = triggerBuild
                       FormatAll = formatAll
                       WaitForScanGeneration =
-                        fun afterGen -> scanSignal.WaitForGeneration(afterGen, this.GetScanGeneration())
-                      WaitForAllTerminal = fun timeout -> waitForAllTerminal host timeout ()
+                        fun afterGen ->
+                            // Race the scan-signal waiter against daemon shutdown so
+                            // `fshw stop` faults the in-flight RPC. The linked CTS
+                            // is disposed on every path so the inner `Task.Delay`'s
+                            // registration on `cts.Token` doesn't outlive the call.
+                            task {
+                                use linked = CancellationTokenSource.CreateLinkedTokenSource(cts.Token)
+
+                                let waiter =
+                                    scanSignal.WaitForGeneration(afterGen, this.GetScanGeneration()) :> Task
+
+                                let cancel = Task.Delay(System.Threading.Timeout.Infinite, linked.Token)
+                                let! winner = Task.WhenAny([| waiter; cancel |])
+
+                                if obj.ReferenceEquals(winner, cancel) then
+                                    raise (System.OperationCanceledException(daemonShuttingDownMessage, cts.Token))
+
+                                linked.Cancel()
+                                return ()
+                            }
+                      WaitForAllTerminal = fun timeout -> waitForAllTerminal host timeout cts.Token
                       RerunPlugin = rerunPlugin
                       GetUncheckedCount = getUncheckedCount }
 

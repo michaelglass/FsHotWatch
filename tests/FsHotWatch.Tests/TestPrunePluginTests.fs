@@ -1559,7 +1559,8 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
 
         // 3. WaitForComplete should resolve within a few seconds (1s stability + margin).
         //    Before the fix, the plugin stayed Running indefinitely after this FileChecked.
-        let waitTask = waitForAllTerminal host (System.TimeSpan.FromSeconds(5.0)) ()
+        let waitTask =
+            waitForAllTerminal host (System.TimeSpan.FromSeconds(5.0)) System.Threading.CancellationToken.None
 
         let completed = waitTask.Wait(System.TimeSpan.FromSeconds(8.0))
 
