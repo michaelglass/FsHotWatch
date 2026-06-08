@@ -953,7 +953,25 @@ let internal daemonShuttingDownMessage = "daemon shutting down"
 /// RPC propagates to the client as an error — without this, foreground
 /// processes blocked on the daemon could either hang (in-process callers) or
 /// race the OS pipe teardown for a clean exit.
-let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) (ct: CancellationToken) : Task<unit> =
+///
+/// `requireVerdict`: when true (the `WaitForComplete` verdict path) the host is
+/// only considered "at rest" once at least one plugin has reached a real
+/// terminal state (Completed/Failed) — a cold, all-Idle host (nothing verified)
+/// must NOT resolve as clean, or `WaitForComplete` reports a vacuous "No
+/// errors" exit-0 on a daemon that has simply never run. Instead the wait keeps
+/// blocking until a real verdict arrives, faulting on shutdown/timeout. When
+/// false (the in-process `RunOnce`/scan-settling path, and every other caller)
+/// an all-Idle host is tolerated, preserving the original quiescence semantics
+/// for plugins that legitimately have no work this cycle (and so cannot hang on
+/// a never-run plugin). Note `allPluginsAdvancedToTerminal` already requires
+/// Completed/Failed for every plugin, so the guard only constrains the
+/// quiescence (`allPluginsAtRest`) path.
+let internal waitForAllTerminalCore
+    (host: PluginHost)
+    (timeout: System.TimeSpan)
+    (requireVerdict: bool)
+    (ct: CancellationToken)
+    : Task<unit> =
     // TimeSpan.MaxValue signals "no timeout"; adding it to UtcNow overflows, so skip
     // deadline computation entirely in that case and rely on the MaxValue guard in loop.
     let deadline =
@@ -1055,6 +1073,14 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) (c
                match s with
                | Running _ -> false
                | _ -> true)
+        // Verdict guard: on the WaitForComplete path at least ONE plugin must
+        // have reached a real terminal state (Completed/Failed). On a cold
+        // daemon every plugin is Idle and nothing has been verified, yet "no
+        // Running + quiescent" would otherwise resolve the wait immediately —
+        // making WaitForComplete report a vacuous clean exit-0. An all-Idle host
+        // is NOT at rest for verdict purposes; it has simply never run.
+        && (not requireVerdict
+            || statuses |> Map.exists (fun _ s -> PluginStatus.isTerminal s))
         && isQuiescent ()
 
     let rec loop () =
@@ -1086,6 +1112,21 @@ let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) (c
         }
 
     Async.StartAsTask(loop (), cancellationToken = ct)
+
+/// Settling wait that tolerates an all-Idle host (no plugin needed work this
+/// cycle). This is the original `waitForAllTerminal` behavior, preserved for the
+/// in-process `RunOnce`/scan path and every existing caller — it must never hang
+/// on a legitimately never-run plugin. Defers to `waitForAllTerminalCore` with
+/// `requireVerdict=false`.
+let internal waitForAllTerminal (host: PluginHost) (timeout: System.TimeSpan) (ct: CancellationToken) : Task<unit> =
+    waitForAllTerminalCore host timeout false ct
+
+/// Verdict-bearing wait used ONLY by the `WaitForComplete` RPC path: resolves
+/// only once at least one plugin has produced a real verdict (Completed/Failed),
+/// so a cold/never-ran daemon does not report a vacuous clean. Defers to
+/// `waitForAllTerminalCore` with `requireVerdict=true`.
+let internal waitForVerdict (host: PluginHost) (timeout: System.TimeSpan) (ct: CancellationToken) : Task<unit> =
+    waitForAllTerminalCore host timeout true ct
 
 /// Wait for a single named plugin to leave Running. Returns immediately if the
 /// plugin is not registered or is already terminal. Polling-based; bounded by
@@ -1294,6 +1335,9 @@ type Daemon
             do! this.ScanAll()
 
             do!
+                // The in-process scan-settling path tolerates an all-Idle host
+                // (plugins with no work this cycle); it must never hang on a
+                // legitimately never-run plugin (requireVerdict=false).
                 waitForAllTerminal host (System.TimeSpan.FromMinutes(30.0)) lifetime.Token
                 |> Async.AwaitTask
 
@@ -1392,7 +1436,10 @@ type Daemon
                                 linked.Cancel()
                                 return ()
                             }
-                      WaitForAllTerminal = fun timeout -> waitForAllTerminal host timeout cts.Token
+                      // requireVerdict=true: this is the WaitForComplete RPC
+                      // path — it must not report a vacuous clean on a cold /
+                      // never-ran daemon (block until a real verdict).
+                      WaitForAllTerminal = fun timeout -> waitForVerdict host timeout cts.Token
                       RerunPlugin = rerunPlugin
                       GetUncheckedCount = getUncheckedCount }
 
