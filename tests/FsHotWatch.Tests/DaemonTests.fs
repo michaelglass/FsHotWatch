@@ -692,15 +692,26 @@ let ``FormatScanStatus returns progress for Scanning`` () =
         test <@ status.Contains("5/10") @>
         test <@ status.Contains("50%") @>)
 
+// FormatScanStatus now reads completeness LIVE (registered minus currently-
+// checked) rather than from a frozen ScanComplete snapshot, so the count can no
+// longer be injected through ScanState. The pure render function is unit-tested
+// directly instead — same string shapes, live-supplied numbers.
+
 [<Fact(Timeout = 15000)>]
-let ``FormatScanStatus returns complete for ScanComplete`` () =
-    withTempDir "daemon" (fun tmpDir ->
-        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
-        daemon.SetScanState(ScanComplete(70, 0, TimeSpan.FromSeconds(15.5)))
-        let status = daemon.FormatScanStatus()
-        test <@ status.Contains("70 files") @>
-        test <@ status.Contains("15.5s") @>)
+let ``formatScanStatusWith renders idle for ScanIdle`` () =
+    test <@ formatScanStatusWith 0 0 ScanIdle = "idle" @>
+
+[<Fact(Timeout = 15000)>]
+let ``formatScanStatusWith renders scanning progress`` () =
+    let status = formatScanStatusWith 0 0 (Scanning(10, 5, DateTime.UtcNow))
+
+    test <@ status = "scanning: 5/10 files (50%)" @>
+
+[<Fact(Timeout = 15000)>]
+let ``formatScanStatusWith renders complete when nothing unchecked`` () =
+    let status = formatScanStatusWith 70 0 (ScanComplete(TimeSpan.FromSeconds(15.5)))
+
+    test <@ status = "complete: 70 files checked in 15.5s" @>
 
 // --- runChecksWithRetry tests (scan silent-truncation race fix) ---
 //
@@ -783,15 +794,13 @@ let ``runChecksWithRetry reports persistently-cancelled files as unchecked`` () 
     test <@ attempts["/a.fs"] = 1 @>
 
 [<Fact(Timeout = 15000)>]
-let ``FormatScanStatus surfaces unchecked count as non-ok for incomplete ScanComplete`` () =
-    withTempDir "daemon" (fun tmpDir ->
-        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-        let daemon = Daemon.createWith nullChecker tmpDir Daemon.DaemonOptions.defaults
-        daemon.SetScanState(ScanComplete(70, 5, TimeSpan.FromSeconds(15.5)))
-        let status = daemon.FormatScanStatus()
-        // Must not read as clean: surfaces the unchecked files explicitly.
-        test <@ status.Contains("5") @>
-        test <@ status.ToLowerInvariant().Contains("unchecked") @>)
+let ``formatScanStatusWith surfaces unchecked count as non-ok when incomplete`` () =
+    let status = formatScanStatusWith 70 5 (ScanComplete(TimeSpan.FromSeconds(15.5)))
+
+    // Must not read as clean: surfaces the unchecked files explicitly, with the
+    // checked count as (registered - unchecked).
+    test <@ status = "incomplete: 65 files checked, 5 unchecked in 15.5s" @>
+    test <@ status.ToLowerInvariant().Contains("unchecked") @>
 
 // Pins the invariant the agent migration must preserve: once ScanAll's
 // reply lands, the scan state is observable as ScanComplete (not stale ScanIdle)

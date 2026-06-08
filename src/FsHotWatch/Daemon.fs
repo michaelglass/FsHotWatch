@@ -1146,6 +1146,27 @@ let internal waitForPluginTerminalIfRunning
     : Async<unit> =
     waitForPluginTerminalIfRunningWith host.GetStatus pluginName timeout
 
+/// Render a scan-state line from a LIVE completeness reading. `registered` and
+/// `unchecked` come from the host's coverage set at read time (registered minus
+/// currently-checked), so the rendered `complete:`/`incomplete:` numbers never
+/// rot after incremental edits. The exact string formats are load-bearing:
+/// `status`/`WaitForScan`/external tooling greps `complete:`/`incomplete:`/
+/// `scanning:` — only the SOURCE of the numbers changed, not the shapes.
+let internal formatScanStatusWith (registered: int) (unchecked: int) (scanState: ScanState) : string =
+    match scanState with
+    | ScanIdle -> "idle"
+    | Scanning(total, completed, _) ->
+        let pct = if total > 0 then completed * 100 / total else 0
+        $"scanning: %d{completed}/%d{total} files (%d{pct}%%)"
+    | ScanComplete elapsed ->
+        if unchecked > 0 then
+            // Non-ok: a truncated or stale-incomplete scan must not present as
+            // clean. The checked count is (registered - unchecked) so the
+            // discrepancy is explicit to an agent/user reading status output.
+            $"incomplete: %d{registered - unchecked} files checked, %d{unchecked} unchecked in %.1f{elapsed.TotalSeconds}s"
+        else
+            $"complete: %d{registered} files checked in %.1f{elapsed.TotalSeconds}s"
+
 /// The daemon ties together a warm FSharpChecker, file watcher, check pipeline, and plugin host.
 /// It runs until the provided CancellationToken is cancelled.
 type Daemon
@@ -1179,6 +1200,18 @@ type Daemon
     // registry for its full lifetime.
     let processRegistry = ProcessRegistry.Registry()
     do ProcessRegistry.install processRegistry |> ignore
+
+    /// The single live-coverage computation reused by every "incomplete" consumer
+    /// (`status`/`WaitForScan`/logs via FormatScanStatus, and `check` via the
+    /// IPC GetUncheckedCount closure). Both `host` and `pipeline` are in scope
+    /// here, which is why it lives at this seam. Returns
+    /// (registeredCount, uncheckedCount) where unchecked = registered files that
+    /// currently lack a valid FULL check in the host's live coverage set. The
+    /// pipeline's registered-files denominator already excludes generated
+    /// obj/bin files.
+    let liveCoverage () =
+        let registered = pipeline.GetAllRegisteredFiles()
+        registered.Length, registered |> List.filter (host.IsFileChecked >> not) |> List.length
 
     /// The plugin host that manages plugin lifecycle and event dispatch.
     member _.Host = host
@@ -1271,23 +1304,13 @@ type Daemon
     member _.DiscoverAndRegisterProjects() =
         discoverAndRegisterProjects repoRoot workspaceLoader graph pipeline excludePatterns true
 
-    /// Format scan state as a human-readable string.
+    /// Format scan state as a human-readable string. Completeness is read LIVE
+    /// from the host's coverage set (registered minus currently-checked) so the
+    /// rendered numbers agree with `fshw check` and never rot after incremental
+    /// edits — only the `ScanComplete` marker comes from the scan agent.
     member _.FormatScanStatus() =
-        let scanState = getScanStatus scanAgent
-
-        match scanState with
-        | ScanIdle -> "idle"
-        | Scanning(total, completed, _) ->
-            let pct = if total > 0 then completed * 100 / total else 0
-            $"scanning: %d{completed}/%d{total} files (%d{pct}%%)"
-        | ScanComplete(total, unchecked, elapsed) ->
-            if unchecked > 0 then
-                // Non-ok: a truncated scan must not present as clean. The
-                // checked count is (total - unchecked) so the discrepancy is
-                // explicit to an agent/user reading status or check output.
-                $"incomplete: %d{total - unchecked} files checked, %d{unchecked} unchecked in %.1f{elapsed.TotalSeconds}s"
-            else
-                $"complete: %d{total} files checked in %.1f{elapsed.TotalSeconds}s"
+        let (registered, unchecked) = liveCoverage ()
+        formatScanStatusWith registered unchecked (getScanStatus scanAgent)
 
     /// Run the daemon with IPC server on the given pipe name.
     /// Discovers projects, performs initial scan, then watches for changes.
@@ -1319,15 +1342,10 @@ type Daemon
                 let rerunPlugin (name: string) =
                     async { return host.RerunFileCommandPlugin(name) }
 
-                // Request-time completeness signal: registered files (the
-                // pipeline's denominator already excludes generated obj/bin
-                // files) that currently lack a valid FULL check in the host's
-                // live coverage set. Both pipeline and host are in scope here,
-                // which is why the closure is constructed at this seam.
-                let getUncheckedCount () =
-                    pipeline.GetAllRegisteredFiles()
-                    |> List.filter (host.IsFileChecked >> not)
-                    |> List.length
+                // Request-time completeness signal for `check`'s exit code. ONE
+                // definition of "registered minus checked" — shared with
+                // FormatScanStatus via the daemon-level `liveCoverage`.
+                let getUncheckedCount () = snd (liveCoverage ())
 
                 let rpcConfig: DaemonRpcConfig =
                     { Host = host
@@ -1608,7 +1626,7 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
                 $"Checked %d{checkedCount} files (%d{tiers.Length} tiers), skipped %d{skippedCount}, unchecked %d{uncheckedCount}"
 
         sw.Stop()
-        let finalScanState = ScanComplete(total, uncheckedCount, sw.Elapsed)
+        let finalScanState = ScanComplete(sw.Elapsed)
         let newGeneration = state.Generation + 1L
 
         // Emit BatchChecked *before* SignalGeneration so WaitForScanGeneration

@@ -271,12 +271,12 @@ type ScanState =
     | ScanIdle
     /// Scan is running.
     | Scanning of total: int * completed: int * startedAt: System.DateTime
-    /// Scan completed. `unchecked` is the number of registered files whose FCS
-    /// check could not be obtained even after the bounded scan-retry budget
-    /// (cancelled/aborted/failed). A non-zero `unchecked` means the scan is NOT
-    /// clean — consumers must surface it as a non-ok condition rather than
-    /// treating the scan as fully complete.
-    | ScanComplete of total: int * unchecked: int * elapsed: System.TimeSpan
+    /// Scan completed and took `elapsed` wall-clock time. This is only a marker
+    /// that a scan finished; completeness (registered vs. currently-checked) is
+    /// always computed LIVE from the host's coverage set at read time, never
+    /// frozen into this snapshot — so an incremental edit + re-check after a scan
+    /// keeps `status`/`check` in agreement instead of rotting a stale count.
+    | ScanComplete of elapsed: System.TimeSpan
 
 /// Outcome of a command execution.
 type CommandOutcome =
