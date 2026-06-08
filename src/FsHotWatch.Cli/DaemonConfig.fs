@@ -527,45 +527,36 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | true, v when v.ValueKind = JsonValueKind.Number -> Some(v.GetInt32())
         | _ -> defaults.TimeoutSec
 
-    // `idleExitMin`: absent → AUTO; `0` or `false` → disabled; positive N →
-    // enabled at N minutes. A non-numeric/non-false value (or a non-positive
-    // number) is treated as disabled rather than silently auto-enabling.
+    // Parse a `number | false` tristate, shared by the two idle-exit windows:
+    // positive N → `minutes N`; a non-positive number / `false` / `true` →
+    // `disabled` (`true` is rejected rather than treated as an implicit window —
+    // documented as `number | false`); absent or any other kind → `fallback`.
+    let parseTristateMinutes (key: string) (minutes: int -> 'a) (disabled: 'a) (fallback: 'a) : 'a =
+        match root.TryGetProperty(key) with
+        | true, v when v.ValueKind = JsonValueKind.Number ->
+            let n = v.GetInt32()
+            if n > 0 then minutes n else disabled
+        | true, v when v.ValueKind = JsonValueKind.False -> disabled
+        | true, v when v.ValueKind = JsonValueKind.True -> disabled
+        | _ -> fallback
+
+    // `idleExitMin`: absent → AUTO (30min for /.workspaces/ checkouts);
+    // `0`/`false` → disabled; positive N → N minutes in any workspace.
     let idleExitMin =
-        match root.TryGetProperty("idleExitMin") with
-        | true, v when v.ValueKind = JsonValueKind.Number ->
-            let n = v.GetInt32()
-
-            if n > 0 then
-                IdleExit.IdleExitConfig.Minutes n
-            else
-                IdleExit.IdleExitConfig.Disabled
-        | true, v when v.ValueKind = JsonValueKind.False -> IdleExit.IdleExitConfig.Disabled
-        | true, v when v.ValueKind = JsonValueKind.True ->
-            // `true` is not a valid threshold; treat as disabled (no implicit
-            // window). Documented as `number | false` in the README.
+        parseTristateMinutes
+            "idleExitMin"
+            IdleExit.IdleExitConfig.Minutes
             IdleExit.IdleExitConfig.Disabled
-        | _ -> defaults.IdleExitMin
+            defaults.IdleExitMin
 
-    // `pressureIdleFloorMin`: absent → default-on at 2 min; `0` or `false` →
-    // pressure-shortening disabled; positive N → floor at N min. A
-    // non-numeric/non-false value (or a non-positive number) is treated as
-    // disabled rather than silently picking a surprising floor. Mirrors the
-    // `idleExitMin` parse shape.
+    // `pressureIdleFloorMin`: absent → default-on at 2min; `0`/`false` →
+    // pressure-shortening disabled; positive N → floor at N min.
     let pressureIdleFloorMin =
-        match root.TryGetProperty("pressureIdleFloorMin") with
-        | true, v when v.ValueKind = JsonValueKind.Number ->
-            let n = v.GetInt32()
-
-            if n > 0 then
-                IdleExit.PressureFloorConfig.Minutes n
-            else
-                IdleExit.PressureFloorConfig.Disabled
-        | true, v when v.ValueKind = JsonValueKind.False -> IdleExit.PressureFloorConfig.Disabled
-        | true, v when v.ValueKind = JsonValueKind.True ->
-            // `true` is not a valid floor; treat as disabled (no implicit value).
-            // Documented as `number | false` in the README.
+        parseTristateMinutes
+            "pressureIdleFloorMin"
+            IdleExit.PressureFloorConfig.Minutes
             IdleExit.PressureFloorConfig.Disabled
-        | _ -> defaults.PressureIdleFloorMin
+            defaults.PressureIdleFloorMin
 
     { Build = build
       Format = format
