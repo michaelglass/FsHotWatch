@@ -4,6 +4,15 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+- **breaking:** retired the `build`, `test`, `lint`, `analyze`, `format-check`, and `errors`
+  subcommands, collapsing the CLI to two verbs that matter: **`check`** (the gate — runs every
+  plugin, waits for genuine completion, and exits non-zero on failures or unconfirmed
+  completeness) and **`status`** (the observer — reports the daemon's current state without
+  triggering a run). Replacements: `fshw build`/`test`/`lint`/`analyze`/`format-check`/`errors`
+  → `fshw check`; inspect one plugin with `fshw status <plugin>`; re-fire one with
+  `fshw rerun <plugin>`. `check`'s converge-then-verdict completeness/exit-code semantics are
+  unchanged — this is purely a surface collapse.
+
 ## 0.8.0-alpha.23 - 2026-06-07
 
 - fix: `fshw dead-code`'s schema-compatibility probe now sources its expected version

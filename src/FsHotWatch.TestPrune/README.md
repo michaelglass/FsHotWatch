@@ -48,7 +48,7 @@ In `.fshw.json`:
 | `projects[].project` | `string` | `"unknown"` | Project name (for filtering and display). |
 | `projects[].command` | `string` | `"dotnet"` | Test runner command. |
 | `projects[].args` | `string` | `"test --project <name>"` | Arguments to the test runner. |
-| `projects[].group` | `string` | `"default"` | Group name (for running subsets via `fshw test -p`). |
+| `projects[].group` | `string` | `"default"` | Group name (for organizing/filtering test projects). |
 | `projects[].environment` | `object` | `{}` | Extra environment variables as `"KEY": "VALUE"` pairs. |
 | `projects[].filterTemplate` | `string` | -- | Template for class-based filtering. `{classes}` is replaced with affected test class names. |
 | `projects[].classJoin` | `string` | `" "` | Separator for joining class names in the filter. |
@@ -56,16 +56,13 @@ In `.fshw.json`:
 ## CLI
 
 ```bash
-# Run all affected tests
-fshw test
+# Run the gate — TestPrune runs the affected tests as part of it
+fshw check
 
-# Run tests for a specific project group
-fshw test -p MyApp.Tests
+# Rerun a specific slice for investigation (bypasses impact analysis)
+fshw test-rerun --filter-class "*MyApp.Tests*"
 
-# Run only previously-failed tests
-fshw test --only-failed
-
-# Query which tests are affected by recent changes
+# Query which tests are affected by recent changes (plugin command)
 fshw affected-tests
 
 # Reset coverage baseline — next full run rebuilds coverage.baseline.json

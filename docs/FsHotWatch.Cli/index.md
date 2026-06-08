@@ -13,34 +13,38 @@ dotnet tool install -g FsHotWatch.Cli
 ## Quick start
 
 ```bash
-# Run all checks (scan, build, lint, errors)
+# The one gate: run every check (build + lint + analyze + test + format-check)
+# and report every error. Triggers a full run and blocks until it's done.
 fshw check
 
 # Start daemon in foreground (useful for debugging)
 fshw start
 
-# Check plugin statuses
+# Observe plugin statuses / accumulated errors WITHOUT triggering a run
 fshw status
 ```
+
+`fshw check` is the single gate — it folds the old per-plugin verbs
+(`build`, `test`, `lint`, `analyze`, `format-check`, `errors`) into one
+command. It runs every plugin, waits for genuine completion, and exits
+non-zero on failures (exit 1) or when completeness cannot be confirmed
+(exit 2). `fshw status` is the read-only observer: it reports the daemon's
+current state without triggering anything.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
+| `check [--run-once]` | **The gate.** Run every plugin (build + lint + analyze + test + format-check), wait for genuine completion, and report every error. Exits 0 (clean), 1 (failures), or 2 (completeness unconfirmed). `--run-once` uses an ephemeral daemon (for CI). |
+| `status [plugin]` | **The observer.** Show the daemon's current plugin statuses and accumulated errors WITHOUT triggering a run. Optionally filter to one plugin. |
 | `start` | Start daemon in foreground (auto-scans on boot, Ctrl+C to stop). |
 | `stop` | Gracefully stop the running daemon. |
 | `scan` | Re-scan all files. |
-| `scan-status` | Check scan progress without blocking. |
-| `status [plugin]` | Show plugin statuses. Optionally filter to one plugin. |
-| `build` | Trigger a build and wait for completion. |
-| `test [opts]` | Run all tests downstream of recent changes (test-prune impact analysis). Options: `--run-once`. |
 | `test-rerun [opts]` | Rerun a slice of tests through the daemon, bypassing impact analysis. Options: `--filter-class <pattern>`, `--filter-trait <name=value>`. Daemon-only. |
-| `format` | Run Fantomas formatter on all files. |
-| `lint` | Run FSharpLint on all files and report warnings. |
-| `errors` | Show current errors from all plugins. |
-| `check` | Full check: scan all files, wait for plugins, then report errors. |
+| `format [--run-once]` | Run the Fantomas formatter on all files. |
+| `rerun <plugin>` | Force a single plugin to re-run, clearing its cached state. |
 | `config check` | Validate `.fshw.json` without starting the daemon. Exits `0` on valid config, `2` on parse/validation error. |
-| `invalidate-cache <file>` | Clear cache for a file and re-check it. |
+| `dead-code [opts]` | Report unreachable symbols from entry points (TestPrune dead-code analysis). |
 | `<command> [args]` | Run any plugin-registered command (e.g. `diagnostics`). |
 
 ## Options
@@ -54,8 +58,8 @@ fshw status
 ## Examples
 
 ```bash
-# Run everything downstream of recent changes (impact-filtered by test-prune)
-fshw test
+# Run the full gate (build + lint + analyze + test + format-check) and report errors
+fshw check
 
 # Rerun a single test class for investigation (xUnit v3 wildcards supported)
 fshw test-rerun --filter-class "*CryptoTests*"

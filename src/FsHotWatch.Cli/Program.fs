@@ -53,37 +53,6 @@ module RerunFilter =
             | FilterTrait t -> $"--filter-trait %s{quoteTrait t}")
         |> String.concat " "
 
-type ErrorsFlag =
-    | [<CmdFlag(Short = "w", Description = "Block until every plugin reaches a terminal state")>] Wait
-    | [<CmdFlag(Description = "Timeout in seconds for --wait"); CmdArg("seconds", Default = "600")>] Timeout of int
-
-/// Normalized wait policy parsed from ErrorsFlag list. Prevents the impossible
-/// states allowed by the raw flag list (e.g. --timeout without --wait, negative timeout).
-[<RequireQualifiedAccess>]
-type WaitMode =
-    | NoWait
-    | WaitFor of TimeSpan
-
-module WaitMode =
-    let defaultTimeout = TimeSpan.FromSeconds(600.0)
-
-    /// Parse raw flags to a normalized WaitMode. Returns an error message on invalid combinations.
-    let fromFlags (flags: ErrorsFlag list) : Result<WaitMode, string> =
-        let wait = flags |> List.contains Wait
-
-        let timeout =
-            flags
-            |> List.tryPick (function
-                | Timeout s -> Some s
-                | _ -> None)
-
-        match wait, timeout with
-        | false, Some _ -> Error "--timeout requires --wait"
-        | false, None -> Ok WaitMode.NoWait
-        | true, None -> Ok(WaitMode.WaitFor defaultTimeout)
-        | true, Some s when s <= 0 -> Error "--timeout must be a positive number of seconds"
-        | true, Some s -> Ok(WaitMode.WaitFor(TimeSpan.FromSeconds(float s)))
-
 type ConfigCommand = | [<Cmd("Validate .fshw.json without starting the daemon")>] Check
 
 type CoverageCommand =
@@ -105,18 +74,12 @@ type Command =
     | [<CmdExample("", "--no-cache"); Cmd("Start the daemon")>] Start
     | [<Cmd("Stop the daemon")>] Stop
     | [<CmdExample("", "--run-once"); Cmd("Run all checks")>] Check of RunFlag list
-    | [<CmdExample("", "--run-once"); Cmd("Build the project")>] Build of RunFlag list
-    | [<CmdExample("", "--run-once"); Cmd("Run tests")>] Test of RunFlag list
     | [<CmdExample("--filter-class *CryptoTests*", "--filter-trait Category=Browser");
         Cmd("Rerun tests with an xUnit v3 --filter-class / --filter-trait slice", Name = "test-rerun")>] TestRerun of
         RerunFlag list
     | [<CmdExample("", "--run-once"); Cmd("Format code")>] Format of RunFlag list
-    | [<Cmd("Show lint results from daemon")>] Lint of RunFlag list
-    | [<Cmd("Show format-check results from daemon", Name = "format-check")>] FormatCheck of RunFlag list
-    | [<Cmd("Show analyzer results from daemon")>] Analyze of RunFlag list
     | [<CmdArg("plugin name (optional)"); CmdExample("", "build", "test-prune"); Cmd("Show current status")>] Status of
         plugin: string option
-    | [<CmdExample("", "--wait", "--wait --timeout 60"); Cmd("Show accumulated errors")>] Errors of ErrorsFlag list
     | [<Cmd("Scan for file changes")>] Scan
     | [<CmdArg("plugin name");
         CmdExample("build", "test-prune", "analyzers");
@@ -617,14 +580,8 @@ let executeCommand
         match command with
         | Start
         | Check _
-        | Build _
-        | Test _
         | TestRerun _
         | Format _
-        | Lint _
-        | Analyze _
-        | FormatCheck _
-        | Errors _
         | Rerun _ -> true
         | Stop
         | Scan
@@ -810,56 +767,6 @@ let executeCommand
 
                     eprintfn "%s" output
                     IpcOutput.exitCodeFromResponse noWarnFail scoped)
-        | Build flags when isRunOnce flags ->
-            let buildConfig =
-                { stripConfig config with
-                    Build = config.Build }
-
-
-
-            RunOnceOutput.runOnceAndReport
-                (renderBlock mode (not noWarnFail))
-                noWarnFail
-                createDaemon
-                repoRoot
-                buildConfig
-                (Some "build")
-        | Build flags ->
-
-
-            withDaemon (fun () ->
-                let result =
-                    if UI.isInteractive then
-                        UI.withSpinner "Building" (fun () -> ipc.TriggerBuild pipeName |> Async.RunSynchronously)
-                    else
-                        eprintfn "  Building..."
-                        ipc.TriggerBuild pipeName |> Async.RunSynchronously
-
-                IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
-        | Test flags when isRunOnce flags ->
-            let testConfig =
-                { stripConfig config with
-                    Build = config.Build
-                    Tests = config.Tests }
-
-            RunOnceOutput.runOnceAndReport
-                (renderBlock mode (not noWarnFail))
-                noWarnFail
-                createDaemon
-                repoRoot
-                testConfig
-                (Some "test-prune")
-        | Test _ ->
-            withDaemon (fun () ->
-                let result =
-                    if UI.isInteractive then
-                        UI.withSpinner "Running tests" (fun () ->
-                            ipc.RunCommand pipeName "run-tests" "{}" |> Async.RunSynchronously)
-                    else
-                        eprintfn "  Running tests..."
-                        ipc.RunCommand pipeName "run-tests" "{}" |> Async.RunSynchronously
-
-                IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
         | TestRerun flags ->
             // Filter knobs live here, not on `fshw test`, so the
             // forward-progress contract (everything downstream runs) stays intact.
@@ -904,84 +811,6 @@ let executeCommand
                         ipc.FormatAll pipeName |> Async.RunSynchronously
 
                 IpcOutput.renderIpcResult mode (renderLines mode (not noWarnFail)) noWarnFail result)
-        | Lint flags when isRunOnce flags ->
-            let lintConfig = { stripConfig config with Lint = true }
-
-
-            RunOnceOutput.runOnceAndReport
-                (renderBlock mode (not noWarnFail))
-                noWarnFail
-                createDaemon
-                repoRoot
-                lintConfig
-                (Some "lint")
-        | Lint flags -> queryPluginWith (mode) "lint"
-        | Analyze flags when isRunOnce flags ->
-            let analyzeConfig =
-                { stripConfig config with
-                    Analyzers = config.Analyzers }
-
-
-
-            RunOnceOutput.runOnceAndReport
-                (renderBlock mode (not noWarnFail))
-                noWarnFail
-                createDaemon
-                repoRoot
-                analyzeConfig
-                (Some "analyzers")
-        | Analyze flags -> queryPluginWith (mode) "analyzers"
-        | FormatCheck flags when isRunOnce flags ->
-            let formatCheckConfig =
-                { stripConfig config with
-                    Format = FormatMode.Check }
-
-
-
-            RunOnceOutput.runOnceAndReport
-                (renderBlock mode (not noWarnFail))
-                noWarnFail
-                createDaemon
-                repoRoot
-                formatCheckConfig
-                (Some "format-check")
-        | FormatCheck flags -> queryPluginWith (mode) "format-check"
-        | Errors flags ->
-
-
-            match WaitMode.fromFlags flags with
-            | Error msg ->
-                eprintfn "fshw errors: %s" msg
-                2
-            | Ok waitMode ->
-                withDaemonAndIpc (fun () ->
-                    let waitResult =
-                        match waitMode with
-                        | WaitMode.NoWait -> Ok()
-                        | WaitMode.WaitFor timeout ->
-                            try
-                                let timeoutMs = int timeout.TotalMilliseconds
-                                ipc.WaitForComplete pipeName timeoutMs |> Async.RunSynchronously |> ignore
-                                Ok()
-                            with
-                            | :? TimeoutException as ex -> Error ex.Message
-                            | ex ->
-                                let inner = unwrapIpcException ex
-                                Error $"daemon stopped or died before wait completed: %s{inner.Message}"
-
-                    match waitResult with
-                    | Error msg ->
-                        eprintfn "fshw errors --wait: %s" msg
-                        2
-                    | Ok() ->
-                        let errorsJson = ipc.GetDiagnostics pipeName "" |> Async.RunSynchronously
-                        let resp = IpcParsing.parseDiagnosticsResponse errorsJson
-
-                        eprintfn
-                            "%s"
-                            (IpcOutput.formatDiagnosticsResponse mode (renderLines mode (not noWarnFail)) resp)
-
-                        IpcOutput.exitCodeFromResponse noWarnFail resp)
         | Rerun pluginName ->
             withDaemonAndIpc (fun () ->
                 let result =

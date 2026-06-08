@@ -491,15 +491,7 @@ let ``agent banner lists expected commands`` () =
     let lines = agentAll [ "build", okStatus None ]
     let banner = lines.[0]
 
-    [ "check"
-      "build"
-      "test"
-      "lint"
-      "analyze"
-      "format"
-      "format-check"
-      "errors"
-      "status" ]
+    [ "check"; "status"; "format"; "scan"; "rerun" ]
     |> List.iter (fun cmd -> test <@ banner.Contains cmd @>)
 
 [<Fact(Timeout = 15000)>]
@@ -606,11 +598,11 @@ let ``agent emits no ANSI escapes`` () =
 // ----- next-step rules -----
 
 [<Fact(Timeout = 15000)>]
-let ``agent next is errors --wait when any plugin is running`` () =
+let ``agent next is check when any plugin is running`` () =
     let statuses = [ "build", failStatus "compile error"; "test", runningStatus () ]
 
     let lines = agentAll statuses
-    test <@ List.last lines = "next: fshw --agent errors --wait" @>
+    test <@ List.last lines = "next: fshw --agent check" @>
 
 [<Fact(Timeout = 15000)>]
 let ``agent next is build when build failed even if others also failed`` () =
@@ -620,7 +612,7 @@ let ``agent next is build when build failed even if others also failed`` () =
           "lint", failStatus "warnings" ]
 
     let lines = agentAll statuses
-    test <@ List.last lines = "next: fshw --agent build" @>
+    test <@ List.last lines = "next: fshw --agent status build" @>
 
 [<Fact(Timeout = 15000)>]
 let ``agent next is test when build ok but test failed`` () =
@@ -630,7 +622,7 @@ let ``agent next is test when build ok but test failed`` () =
           "lint", failStatus "warnings" ]
 
     let lines = agentAll statuses
-    test <@ List.last lines = "next: fshw --agent test" @>
+    test <@ List.last lines = "next: fshw --agent status test" @>
 
 [<Fact(Timeout = 15000)>]
 let ``agent next picks lint before analyze when both fail`` () =
@@ -640,7 +632,7 @@ let ``agent next picks lint before analyze when both fail`` () =
           "coverage", failStatus "low" ]
 
     let lines = agentAll statuses
-    test <@ List.last lines = "next: fshw --agent lint" @>
+    test <@ List.last lines = "next: fshw --agent status lint" @>
 
 [<Fact(Timeout = 15000)>]
 let ``agent next picks analyze before format-check and coverage`` () =
@@ -650,7 +642,7 @@ let ``agent next picks analyze before format-check and coverage`` () =
           "analyze", failStatus "bad" ]
 
     let lines = agentAll statuses
-    test <@ List.last lines = "next: fshw --agent analyze" @>
+    test <@ List.last lines = "next: fshw --agent status analyze" @>
 
 [<Fact(Timeout = 15000)>]
 let ``agent next picks format-check before coverage`` () =
@@ -658,14 +650,14 @@ let ``agent next picks format-check before coverage`` () =
         [ "coverage", failStatus "low"; "format-check", failStatus "unformatted" ]
 
     let lines = agentAll statuses
-    test <@ List.last lines = "next: fshw --agent format-check" @>
+    test <@ List.last lines = "next: fshw --agent status format-check" @>
 
 [<Fact(Timeout = 15000)>]
-let ``agent next is errors when only warnings and warningsAreFailures=true`` () =
+let ``agent next is status when only warnings and warningsAreFailures=true`` () =
     let statuses = [ "build", okStatus None; "lint", warnStatus () ]
 
     let lines = agentAll statuses
-    test <@ List.last lines = "next: fshw --agent errors" @>
+    test <@ List.last lines = "next: fshw --agent status" @>
 
 [<Fact(Timeout = 15000)>]
 let ``agent next is done when warnings present but warningsAreFailures=false`` () =
