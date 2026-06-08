@@ -22,6 +22,7 @@ jobs:
       # sibling TestPrune.Core sources leak into the cobertura XML at 0%.
       # Relative path — the workflow's `dotnet test` runs from the repo root.
       test-extra-args: '--coverage-settings coverage.settings'
-      # Host FSharpLint via AnalyzersPlugin to reuse the warm FSharpChecker
-      # instead of spawning a fresh compiler per project.
-      lint-cmd: 'dotnet run --project src/FsHotWatch.Cli --no-build -- analyze --run-once'
+      # `check --run-once` is the single gate after the verb collapse — it runs
+      # the AnalyzersPlugin (hosting FSharpLint on the warm FSharpChecker) along
+      # with the rest of the plugins. The old per-plugin `analyze` verb is retired.
+      lint-cmd: 'dotnet run --project src/FsHotWatch.Cli --no-build -- check --run-once'
