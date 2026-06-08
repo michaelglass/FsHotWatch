@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.21 - 2026-06-08
+
 - fix: a FAILED test verdict is no longer served from the task cache as a current
   result ("green tree read as red"). The cache key for a completed test run is
   derived from changed symbols + commit, which does NOT pin the test OUTCOME — so a

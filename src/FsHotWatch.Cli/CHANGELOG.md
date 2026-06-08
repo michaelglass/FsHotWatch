@@ -4,6 +4,8 @@ Note: CLI versions release together with the core package under the `core-v` tag
 
 ## Unreleased
 
+## 0.8.0-alpha.24 - 2026-06-08
+
 - **breaking:** retired the `build`, `test`, `lint`, `analyze`, `format-check`, and `errors`
   subcommands, collapsing the CLI to two verbs that matter: **`check`** (the gate — runs every
   plugin, waits for genuine completion, and exits non-zero on failures or unconfirmed

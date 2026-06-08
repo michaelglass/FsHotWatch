@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.24 - 2026-06-08
+
 ### Performance
 
 - The plugin dispatch loop computes each event's task-cache key once and threads the single value to both the cache lookup (`tryReplayCache`) and the store (`runAndCache`). Previously `cacheKeyFn event` was called twice per dispatch; for BuildPlugin that key is a full content-hash of the project graph, so a cache miss paid two SHA-256 passes per trigger. Threading one value also guarantees the lookup key equals the store key by construction.
