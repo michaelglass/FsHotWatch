@@ -33,6 +33,21 @@ let private waitForIpcServer (pipeName: string) =
 let tree = FsHotWatch.Cli.Program.commandTree
 let spec = FsHotWatch.Cli.Program.globalSpec
 
+/// A currently-valid leaf command name, DERIVED from the command tree rather
+/// than hard-coded. The tests below only need "some known command" to attach a
+/// bad/help flag to; naming a specific verb meant they broke whenever that verb
+/// was retired (the `test`→`check` churn during the verb collapse bit these
+/// twice). Deriving the first leaf (a plain command, not a subcommand group)
+/// keeps them fresh across any future verb changes.
+let private someKnownCommand =
+    match tree with
+    | Group g ->
+        g.Children
+        |> List.pick (function
+            | Leaf _ as node -> Some(CommandTree.name node)
+            | Group _ -> None)
+    | Leaf _ -> failwith "expected a command group at the CLI root"
+
 [<Fact(Timeout = 15000)>]
 let ``parse empty args returns HelpRequested`` () =
     match CommandTree.parse tree [||] with
@@ -214,21 +229,21 @@ let private captureStderr (f: unit -> 'a) : string * 'a =
         Console.SetError(original)
 
 [<Fact(Timeout = 15000)>]
-let ``reportParseError on check --all renders unknown-flag error plus check help and exits non-zero`` () =
-    // `--all` is not a flag on `fshw check` → UnknownFlag. This is the case the
-    // repo-owner wants to stop being masked when run outside a repo.
+let ``reportParseError on a known command with a bad flag renders the error plus help and exits non-zero`` () =
+    // `--all` is not a flag on any known command → UnknownFlag. This is the case
+    // the repo-owner wants to stop being masked when run outside a repo.
     let err =
-        match spec.Parse [| "check"; "--all" |] with
+        match spec.Parse [| someKnownCommand; "--all" |] with
         | Error e -> e
-        | Ok _ -> failwith "expected a parse error for `check --all`"
+        | Ok _ -> failwith $"expected a parse error for `{someKnownCommand} --all`"
 
     let stderr, exitCode = captureStderr (fun () -> reportParseError err)
 
     test <@ exitCode <> 0 @>
     // Mentions the offending flag...
     test <@ stderr.Contains("--all") @>
-    // ...and renders the `check` command's own help (its description appears).
-    test <@ stderr.ToLowerInvariant().Contains("run all checks") @>
+    // ...and renders the command's own help (the command name appears).
+    test <@ stderr.Contains(someKnownCommand) @>
 
 [<Fact(Timeout = 15000)>]
 let ``reportParseError on a nested unknown command fails hard with non-zero exit`` () =
@@ -251,7 +266,7 @@ let ``reportParseError on a nested unknown command fails hard with non-zero exit
 let ``reportParseError returns 0 for HelpRequested`` () =
     // isError is false for Help/Version — informational, exit zero.
     let err =
-        match spec.Parse [| "check"; "--help" |] with
+        match spec.Parse [| someKnownCommand; "--help" |] with
         | Error e -> e
         | Ok _ -> failwith "expected HelpRequested"
 
@@ -272,7 +287,7 @@ let ``classifyParse Ok yields RunCommand`` () =
 [<Fact(Timeout = 15000)>]
 let ``classifyParse help yields RepoIndependent 0`` () =
     let _, dispatch =
-        captureStderr (fun () -> classifyParse (spec.Parse [| "check"; "--help" |]))
+        captureStderr (fun () -> classifyParse (spec.Parse [| someKnownCommand; "--help" |]))
 
     test <@ dispatch = RepoIndependent 0 @>
 
@@ -286,7 +301,7 @@ let ``classifyParse version yields RepoIndependent 0`` () =
 [<Fact(Timeout = 15000)>]
 let ``classifyParse unknown flag yields RepoIndependent non-zero (not masked, no repo needed)`` () =
     let stderr, dispatch =
-        captureStderr (fun () -> classifyParse (spec.Parse [| "check"; "--all" |]))
+        captureStderr (fun () -> classifyParse (spec.Parse [| someKnownCommand; "--all" |]))
 
     match dispatch with
     | RepoIndependent code -> test <@ code <> 0 @>
