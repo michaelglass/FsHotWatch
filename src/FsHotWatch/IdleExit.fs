@@ -69,25 +69,19 @@ let readGcPressure () : bool =
     info.HighMemoryLoadThresholdBytes > 0L
     && info.MemoryLoadBytes >= info.HighMemoryLoadThresholdBytes
 
-/// Pure: the effective idle-exit window (in minutes) given the base threshold,
-/// the current pressure state, and the resolved pressure floor.
+/// Pure: shorten an already-eligible idle window (in minutes) under memory
+/// pressure. Eligibility (the default/main workspace being exempt) is decided
+/// upstream by `resolveThreshold`; by the time we have a `baseThreshold: int`
+/// the daemon is eligible, so pressure here only SHORTENS, never creates, a
+/// window.
 ///
-/// - When not idle-exit-eligible (`baseThreshold = None`), pressure NEVER makes
-///   it eligible — the default/main workspace stays exempt under pressure. This
-///   is the explicit product decision: pressure only SHORTENS an already-
-///   applicable window; it never creates one.
-/// - When eligible (`Some n`) and under pressure with a floor (`Some f`), the
-///   window becomes `min(n, f)` — the floor never LENGTHENS a window already
-///   smaller than it.
-/// - When not under pressure, or the floor is disabled (`None`), the base
-///   threshold is used unchanged.
-let effectiveThreshold (baseThreshold: int option) (pressure: bool) (pressureFloor: int option) : int option =
-    match baseThreshold with
-    | None -> None
-    | Some n ->
-        match pressure, pressureFloor with
-        | true, Some f -> Some(min n f)
-        | _ -> Some n
+/// - Under pressure with a floor (`Some f`): `min(base, f)` — the floor never
+///   LENGTHENS a window already smaller than it.
+/// - Not under pressure, or floor disabled (`None`): `base` unchanged.
+let effectiveThreshold (baseThreshold: int) (pressure: bool) (pressureFloor: int option) : int =
+    match pressure, pressureFloor with
+    | true, Some f -> min baseThreshold f
+    | _ -> baseThreshold
 
 /// True when `repoRoot` is a non-default jj workspace — i.e. the path contains a
 /// `/.workspaces/` segment (the ecosystem convention for non-default checkouts).
@@ -198,11 +192,10 @@ let runTick (deps: IdleExitDeps) (latch: FireLatch) : bool =
         let idleFor = deps.Now() - deps.LastActivityAt()
         let busy = deps.Busy()
         let pressure = deps.Pressure()
-        // BaseThresholdMin is always > 0 here (createTimer is only wired for a
-        // Some-resolved threshold), so effectiveThreshold returns Some.
+        // BaseThresholdMin is always > 0 here — createTimer is only wired once
+        // resolveThreshold returned Some, so the daemon is already eligible.
         let effectiveMin =
-            effectiveThreshold (Some deps.BaseThresholdMin) pressure deps.PressureFloorMin
-            |> Option.defaultValue deps.BaseThresholdMin
+            effectiveThreshold deps.BaseThresholdMin pressure deps.PressureFloorMin
 
         let threshold = TimeSpan.FromMinutes(float effectiveMin)
 
