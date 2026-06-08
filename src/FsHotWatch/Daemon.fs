@@ -524,14 +524,6 @@ let private getScanStatus (ScanAgent agent) =
 let private setScanStatus (ScanAgent agent) state =
     agent.PostAndReply(fun ch -> SetState(state, ch))
 
-let private isTerminal (s: PluginStatus) =
-    match s with
-    | Running _ -> false
-    | _ -> true
-
-let private allTerminal (statuses: Map<string, PluginStatus>) =
-    not statuses.IsEmpty && statuses |> Map.forall (fun _ s -> isTerminal s)
-
 /// F13 (audit 2026-05-02): centralized failure handler for daemon batch/scan
 /// steps. `processBatch` and `performScan` transitively call FCS, MSBuild, and
 /// arbitrary plugin Update functions — there isn't a smaller exception type
