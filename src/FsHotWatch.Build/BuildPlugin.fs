@@ -99,26 +99,37 @@ let internal computeBuildCacheKey
           "depends-on", String.concat "," (List.sort dependsOn)
           "inputs", inputsHash ]
 
-/// §2a: build all-inputs merkle. Hashes content of every source file the
-/// project graph knows about, plus every .fsproj. mtime-cached for amortized
-/// O(changed) cost after the first call.
+/// §2a: build all-inputs merkle. Hashes the on-disk CONTENT of every source
+/// file the project graph knows about, plus every .fsproj.
+///
+/// Bug 1 (mtime-preserved content rewrite): a previous implementation memoized
+/// the content hash under `(path, mtimeTicks)`. `rsync -a`/`cp -p`/`tar -x`/a
+/// git checkout that restores an old mtime all change CONTENT while PRESERVING
+/// mtime, so the `(path, mtime)` key was unchanged → the memo returned the
+/// STALE content hash → the build merkle never moved → the build-plugin task
+/// cache replayed a stale `BuildDone` (an FS1178 phantom) forever. mtime is NOT
+/// a safe proxy for content equality, so the memo is gone: every input is
+/// content-hashed each Compute.
+///
+/// Perf tradeoff: each Compute reads+hashes every input rather than skipping
+/// unchanged (path, mtime) tuples. Compute runs once per build trigger (not per
+/// file event) over `graph.GetAllFiles()`; for the repo sizes fshw targets the
+/// SHA-256 over source text is dominated by the actual `dotnet build` it gates.
+/// Correctness (never serving a stale verdict) outranks the micro-optimization
+/// the memo bought — a memo keyed on (path, size, mtime) would still be fooled
+/// by a same-size, mtime-preserved rewrite, which is exactly the class of bug
+/// this fixes.
 type internal BuildInputsHasher(graph: FsHotWatch.ProjectGraph.IProjectGraphReader) =
-    // (path, mtimeTicks) -> contentHash
-    let cache =
-        System.Collections.Concurrent.ConcurrentDictionary<string * int64, string>()
-
     // Honest "missing" sentinel for non-existent files; let real IO exceptions
     // (UnauthorizedAccessException, IOException for locked files, etc.) propagate
     // up to decideBuildOutcome instead of folding "read-error" into the merkle.
-    // The old swallow could collapse same-path entries to (path, 0L) → "read-error",
-    // producing a stable-looking but poisoned cache key that silently under-builds.
     let hashFile (path: string) : string option =
         if not (File.Exists path) then
             None
         else
-            let mtime = File.GetLastWriteTimeUtc(path).Ticks // let real exns propagate
-
-            Some(cache.GetOrAdd((path, mtime), fun _ -> FsHotWatch.CheckCache.sha256Hex (File.ReadAllText path)))
+            // Content hash, every time — mtime is never trusted to prove
+            // content equality (let real IO exns propagate).
+            Some(FsHotWatch.CheckCache.sha256Hex (File.ReadAllText path))
 
     member _.Compute() : string =
         let sourceFiles = graph.GetAllFiles() |> List.map AbsFilePath.value

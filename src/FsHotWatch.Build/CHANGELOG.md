@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: content-hash build inputs so mtime-preserving edits invalidate the cache. `BuildInputsHasher.hashFile` previously memoized the content hash under `(path, mtime)`; an `rsync -a` / `cp -p` / branch-switch / in-place rewrite that preserves mtime returned the stale hash, so the build merkle never moved and a stale `BuildDone` (an FS1178 phantom) replayed forever. Every input is now content-hashed on each Compute — mtime is never trusted as a content oracle.
+
 ## 0.7.0-alpha.12 - 2026-05-28
 
 - chore: refresh transitive dependencies (CommandTree 0.5.1, CoverageRatchet.Core 0.1.0-alpha.2, TestPrune.Core 4.0.2, FSharpLintAnalyzerShim 0.3.0-alpha.3 via the lint shim).

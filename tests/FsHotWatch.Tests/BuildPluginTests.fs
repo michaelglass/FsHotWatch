@@ -842,11 +842,19 @@ let ``BuildInputsHasher propagates IOException from unreadable file`` () =
                     ())
 
 [<Fact(Timeout = 15000)>]
-let ``BuildInputsHasher caches by (path, mtime): repeated computes hash once`` () =
-    // The cache is keyed on (path, mtimeTicks). Mutating content while
-    // preserving mtime must return the previously-cached hash, proving the
-    // factory ran exactly once for that (path, mtime) tuple.
-    withTempDir "binhasher-cache-hit" (fun tmpDir ->
+let ``BuildInputsHasher merkle is stable across repeat computes when content is unchanged`` () =
+    // UPDATED (Bug 1): this test previously asserted that mutating content while
+    // preserving mtime returns the SAME merkle ("caches by (path, mtime):
+    // repeated computes hash once", `first = second` after a content rewrite).
+    // That enshrined the very bug that produced the FS1178 phantom — the merkle
+    // is supposed to track on-disk CONTENT, and (path, mtime) is not a safe
+    // proxy for it. The mtime-preserved content rewrite is now covered by
+    // `... hash differs when content changes but mtime is preserved (rsync -a)`.
+    //
+    // The legitimate invariant the merkle must satisfy is idempotence: hashing
+    // the SAME on-disk content repeatedly yields the SAME merkle (so an
+    // unchanged tree produces a stable cache key). That is what this asserts.
+    withTempDir "binhasher-stable" (fun tmpDir ->
         let f = System.IO.Path.Combine(tmpDir, "A.fs")
         System.IO.File.WriteAllText(f, "let a = 1")
         let mtime = System.IO.File.GetLastWriteTimeUtc(f)
@@ -854,13 +862,63 @@ let ``BuildInputsHasher caches by (path, mtime): repeated computes hash once`` (
         let h = BuildInputsHasher(stubGraph [ f ] [])
         let first = h.Compute()
 
-        // Overwrite content but pin mtime to the original value.
-        System.IO.File.WriteAllText(f, "let a = 999_completely_different")
-        System.IO.File.SetLastWriteTimeUtc(f, mtime)
-
+        // Content is NOT changed; mtime is left as-is. Repeat computes must agree.
         let second = h.Compute()
-        // Same merkle: the cache returned the original hash without re-reading.
-        test <@ first = second @>)
+        System.IO.File.SetLastWriteTimeUtc(f, mtime)
+        let third = h.Compute()
+
+        // Stable merkle for unchanged content — the correctness-preserving
+        // property (not "mtime hides content changes").
+        test <@ first = second @>
+        test <@ second = third @>)
+
+// --- REGRESSION (Bug 1): stale FCS phantom from mtime-preserved content rewrite ---
+//
+// Production incident (thellma/intelligence, 3rd recurrence, ~30 min to
+// diagnose): vendored F# source under a gitignored `paket-files/.../sqlhydra/`
+// dir is compiled as part of the build graph. After the vendored files were
+// rewritten on disk by `rsync` (which with `-a`/`--times` PRESERVES the source
+// mtime), the build plugin kept compiling a CACHED OLD VERSION — reporting
+// `FS1178: type 'Provider' is not structurally comparable` for a type that does
+// not exist anywhere in the on-disk source (verified by grep; `diff -r` against
+// a known-good checkout was byte-identical). ~1700 cascading errors across 392
+// files. `fshw scan` did NOT clear it; only `fshw stop` + cold rebuild did.
+//
+// Root cause: `BuildInputsHasher.hashFile` caches `(path, mtimeTicks) ->
+// contentHash`. When content changes but mtime does NOT (mtime-preserving
+// rsync, `cp -p`, `tar` extraction, git checkout that restores an old mtime),
+// the cache returns the STALE hash, the build merkle key is unchanged, and the
+// build-plugin task cache replays a stale `BuildDone` forever. The gitignored
+// path is also outside the watch set, so no FileChanged event ever fires to
+// invalidate it either — hence "stale forever".
+//
+// Fix: the input merkle reflects on-disk CONTENT, not (path, mtime). mtime is
+// never trusted to prove content equality (size + mtime, or content re-hash on
+// size/mtime ambiguity, would all still be fooled by a same-size mtime-preserved
+// rewrite — only a content hash is safe).
+
+[<Fact(Timeout = 15000)>]
+let ``BuildInputsHasher hash differs when content changes but mtime is preserved (rsync -a)`` () =
+    withTempDir "binhasher-mtime-preserved" (fun tmpDir ->
+        let f = System.IO.Path.Combine(tmpDir, "Vendored.fs")
+        System.IO.File.WriteAllText(f, "type Provider = { X: int }")
+        let originalMtime = System.IO.File.GetLastWriteTimeUtc(f)
+
+        let h = BuildInputsHasher(stubGraph [ f ] [])
+        let before = h.Compute()
+
+        // Simulate `rsync -a` over the vendored file: content is rewritten to a
+        // genuinely different definition, but the mtime is restored to the
+        // source's (preserved) value — exactly what bit downstream.
+        System.IO.File.WriteAllText(f, "type SomethingElse = { Y: string }")
+        System.IO.File.SetLastWriteTimeUtc(f, originalMtime)
+
+        let after = h.Compute()
+
+        // The merkle MUST reflect the new on-disk content. If it does not, the
+        // build cache key is stable across a real content change and a stale
+        // BuildDone replays forever (the FS1178 phantom).
+        test <@ before <> after @>)
 
 [<Fact(Timeout = 15000)>]
 let ``BuildInputsHasher mtime cache returns stable hash across repeat calls`` () =
