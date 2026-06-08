@@ -384,7 +384,14 @@ let private ensureAndQueryErrors
                 noWarnFail
                 (fun () -> ipc.WaitForScan pipeName -1L |> Async.RunSynchronously)
                 (fun () -> ipc.GetStatus pipeName |> Async.RunSynchronously)
-                (fun () -> ipc.GetDiagnostics pipeName pluginFilter |> Async.RunSynchronously))
+                (fun () -> ipc.GetDiagnostics pipeName pluginFilter |> Async.RunSynchronously)
+                // Convergence re-scan: start a scan and block until it (and the
+                // plugins it triggers) settle, so the next GetDiagnostics read
+                // reflects the fresh scan. `Scan` returns "scan started:<gen>";
+                // `WaitForScan -1L` waits for the next completion.
+                (fun () ->
+                    ipc.Scan pipeName |> Async.RunSynchronously |> ignore
+                    ipc.WaitForScan pipeName -1L |> Async.RunSynchronously))
 
 /// Compute a hash of the config file + CLI binary for staleness detection (injectable).
 let computeConfigHashWith (fileOps: FileOps) (repoRoot: string) (exePath: string) =

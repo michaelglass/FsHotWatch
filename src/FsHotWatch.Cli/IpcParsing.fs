@@ -17,11 +17,28 @@ type DiagnosticEntry =
 
 type ParsedPluginStatus = RunOnceOutput.ParsedPluginStatus
 
-/// Parsed GetDiagnostics response.
+/// Whether the daemon has fully checked every file it's responsible for, as of
+/// the moment the diagnostics response was produced.
+///
+/// `Unknown` is the cross-version / parse-gap backstop: a daemon that doesn't
+/// send the `unchecked` field (old build), or a response whose field can't be
+/// parsed, yields `Unknown` — which MUST NOT be treated as `Complete`. This is
+/// what makes a false 0 exit code unrepresentable.
+type Coverage =
+    /// Every registered file holds a valid full-check result.
+    | Complete
+    /// `unchecked` registered files lack a valid full-check result.
+    | Incomplete of unchecked: int
+    /// Coverage data was absent or unparseable. Never treated as complete.
+    | Unknown
+
+/// Parsed GetDiagnostics response. `Coverage` is a REQUIRED field of the parsed
+/// shape (not optional) so a verdict can never be computed without it.
 type DiagnosticsResponse =
     { Count: int
       Files: Map<string, DiagnosticEntry list>
-      Statuses: Map<string, ParsedPluginStatus> }
+      Statuses: Map<string, ParsedPluginStatus>
+      Coverage: Coverage }
 
 let private tryParseUtcOpt (s: string) : DateTime option =
     match DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal) with
@@ -210,9 +227,23 @@ let parseDiagnosticsResponse (json: string) : DiagnosticsResponse =
             |> Map.ofList
         | false, _ -> Map.empty
 
+    // Coverage backstop (requirement #2): a present, numeric `unchecked` field
+    // maps to Complete (0) or Incomplete n (>0); a MISSING or non-numeric field
+    // maps to Unknown — never Complete. So an old daemon that doesn't send the
+    // field, or a schema/parse gap, can never read as green.
+    let coverage =
+        match root.TryGetProperty("unchecked") with
+        | true, v when v.ValueKind = JsonValueKind.Number ->
+            match v.TryGetInt32() with
+            | true, 0 -> Complete
+            | true, n when n > 0 -> Incomplete n
+            | _ -> Unknown
+        | _ -> Unknown
+
     { Count = count
       Files = files
-      Statuses = statuses }
+      Statuses = statuses
+      Coverage = coverage }
 
 /// Check if all statuses are quiescent (Completed, Failed, or Idle).
 /// Returns false for empty maps (no plugins registered yet).

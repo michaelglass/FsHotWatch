@@ -1319,6 +1319,16 @@ type Daemon
                 let rerunPlugin (name: string) =
                     async { return host.RerunFileCommandPlugin(name) }
 
+                // Request-time completeness signal: registered files (the
+                // pipeline's denominator already excludes generated obj/bin
+                // files) that currently lack a valid FULL check in the host's
+                // live coverage set. Both pipeline and host are in scope here,
+                // which is why the closure is constructed at this seam.
+                let getUncheckedCount () =
+                    pipeline.GetAllRegisteredFiles()
+                    |> List.filter (host.IsFileChecked >> not)
+                    |> List.length
+
                 let rpcConfig: DaemonRpcConfig =
                     { Host = host
                       RequestShutdown = fun () -> cts.Cancel()
@@ -1330,7 +1340,8 @@ type Daemon
                       WaitForScanGeneration =
                         fun afterGen -> scanSignal.WaitForGeneration(afterGen, this.GetScanGeneration())
                       WaitForAllTerminal = fun timeout -> waitForAllTerminal host timeout ()
-                      RerunPlugin = rerunPlugin }
+                      RerunPlugin = rerunPlugin
+                      GetUncheckedCount = getUncheckedCount }
 
                 let ipcTask = Async.StartAsTask(IpcServer.start pipeName rpcConfig cts)
 

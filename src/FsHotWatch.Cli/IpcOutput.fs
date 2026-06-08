@@ -71,10 +71,12 @@ let formatDiagnosticsResponse
         sb.Append(RunOnceOutput.formatErrors errorMap) |> ignore
         sb.ToString().TrimEnd('\n', '\r')
 
-/// Determine exit code from a DiagnosticsResponse.
-/// Returns non-zero if any plugin is Failed, or if the ledger has failing entries.
-/// When noWarnFail is true, only errors (not warnings) in the ledger trigger a non-zero exit code.
-let exitCodeFromResponse (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
+/// True if a DiagnosticsResponse contains failures: any plugin Failed, or any
+/// error/warning-severity diagnostic (warnings respecting noWarnFail). This is
+/// the single source of truth for "did check find real problems"; both
+/// `exitCodeFromResponse` and the converge-then-verdict path reuse it so the two
+/// can't drift.
+let hasFailures (noWarnFail: bool) (resp: DiagnosticsResponse) : bool =
     let anyPluginFailed =
         resp.Statuses
         |> Map.exists (fun _ parsed ->
@@ -92,7 +94,13 @@ let exitCodeFromResponse (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
     let failCount =
         resp.Files |> Map.toSeq |> Seq.collect snd |> Seq.filter isFailure |> Seq.length
 
-    if anyPluginFailed || failCount > 0 then 1 else 0
+    anyPluginFailed || failCount > 0
+
+/// Determine exit code from a DiagnosticsResponse.
+/// Returns non-zero if any plugin is Failed, or if the ledger has failing entries.
+/// When noWarnFail is true, only errors (not warnings) in the ledger trigger a non-zero exit code.
+let exitCodeFromResponse (noWarnFail: bool) (resp: DiagnosticsResponse) : int =
+    if hasFailures noWarnFail resp then 1 else 0
 
 /// Render a generic IPC result (status JSON or plain text).
 let renderIpcResult
@@ -174,23 +182,19 @@ let renderIpcResult
 
                         if hasFailed then 1 else 0
 
-/// Poll daemon status, render live progress, then format final errors.
-/// Returns exit code (0 = no errors, 1 = errors).
-/// `renderStatuses` is injected so callers choose the progress renderer (compact/verbose).
-let pollAndRender
-    (mode: ProgressRenderer.RenderMode)
-    (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
-    (noWarnFail: bool)
-    (waitForScan: unit -> string)
-    (getStatus: unit -> string)
-    (getErrors: unit -> string)
-    : int =
-    if UI.isInteractive then
-        UI.withSpinnerQuiet "Scanning" (fun () -> waitForScan () |> ignore)
-    else
-        eprintfn "  Scanning..."
-        waitForScan () |> ignore
+/// Maximum convergence attempts for an incomplete-but-clean check. Each attempt
+/// forces a re-scan and re-reads coverage; the loop stops early on failures,
+/// completion, or no-progress. 3 is enough to clear a transient cancellation
+/// race while staying bounded for a genuinely un-completable check.
+[<Literal>]
+let MaxConvergeAttempts = 3
 
+/// Poll plugin statuses until all terminal, rendering live progress. Pure of the
+/// scan trigger — the caller decides whether/when to wait for a scan first.
+let private pollUntilTerminal
+    (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
+    (getStatus: unit -> string)
+    : unit =
     let mutable prevLineCount = 0
     let mutable prevRendered = ""
     let mutable allDone = false
@@ -222,8 +226,60 @@ let pollAndRender
         for _ in 1..prevLineCount do
             Console.Error.Write("\x1b[A\x1b[2K")
 
-    let errorsJson = getErrors ()
-    let resp = parseDiagnosticsResponse errorsJson
-    let output = formatDiagnosticsResponse mode renderStatuses resp
-    eprintfn "%s" output
-    exitCodeFromResponse noWarnFail resp
+/// Poll daemon status, render live progress, then decide a converge-then-verdict
+/// outcome and return its exit code (0 = complete & clean, 1 = failures found,
+/// 2 = completeness unachievable). `renderStatuses` is injected so callers choose
+/// the progress renderer (compact/verbose). `triggerScan` forces a fresh scan
+/// and is invoked only on the convergence path (incomplete coverage, no failures).
+let pollAndRender
+    (mode: ProgressRenderer.RenderMode)
+    (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
+    (noWarnFail: bool)
+    (waitForScan: unit -> string)
+    (getStatus: unit -> string)
+    (getErrors: unit -> string)
+    (triggerScan: unit -> string)
+    : int =
+    if UI.isInteractive then
+        UI.withSpinnerQuiet "Scanning" (fun () -> waitForScan () |> ignore)
+    else
+        eprintfn "  Scanning..."
+        waitForScan () |> ignore
+
+    pollUntilTerminal renderStatuses getStatus
+
+    // First read: diagnostics + coverage after the daemon has settled.
+    let firstResp = parseDiagnosticsResponse (getErrors ())
+    let firstOutput = formatDiagnosticsResponse mode renderStatuses firstResp
+    eprintfn "%s" firstOutput
+
+    // Force a fresh scan and re-settle (the convergence loop's "try to FIX, not
+    // just report" step). Invoked only when the first read is incomplete-but-clean.
+    let rescan () : unit =
+        if UI.isInteractive then
+            UI.withSpinnerQuiet "Re-scanning (incomplete)" (fun () -> triggerScan () |> ignore)
+        else
+            eprintfn "  Re-scanning (incomplete check)..."
+            triggerScan () |> ignore
+
+        pollUntilTerminal renderStatuses getStatus
+
+    // Re-read diagnostics + coverage and render. Called after each rescan.
+    let reread () : bool * Coverage =
+        let resp = parseDiagnosticsResponse (getErrors ())
+        let output = formatDiagnosticsResponse mode renderStatuses resp
+        eprintfn "%s" output
+        (hasFailures noWarnFail resp, resp.Coverage)
+
+    let outcome =
+        CheckVerdict.converge MaxConvergeAttempts rescan reread (hasFailures noWarnFail firstResp, firstResp.Coverage)
+
+    match outcome with
+    | CheckVerdict.CheckOutcome.Incomplete n when n > 0 ->
+        UI.fail $"Check incomplete: %d{n} file(s) could not be checked after %d{MaxConvergeAttempts} re-scan attempt(s)"
+    | CheckVerdict.CheckOutcome.Incomplete _ ->
+        UI.fail $"Check incomplete: coverage could not be confirmed after %d{MaxConvergeAttempts} re-scan attempt(s)"
+    | CheckVerdict.CheckOutcome.Clean
+    | CheckVerdict.CheckOutcome.FailuresFound -> ()
+
+    CheckVerdict.exitCode outcome
