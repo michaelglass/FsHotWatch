@@ -142,31 +142,26 @@ let ``pressure floor non-positive N resolves to None`` () =
     test <@ resolvePressureFloor (PressureFloorConfig.Minutes 0) = None @>
     test <@ resolvePressureFloor (PressureFloorConfig.Minutes -3) = None @>
 
-// --- effectiveThreshold (pressure shortens an eligible window only) ---
-
-[<Fact>]
-let ``not eligible stays None even under pressure`` () =
-    // The default/main workspace (baseThreshold None) is exempt under pressure:
-    // pressure NEVER creates a window. Explicit product decision.
-    test <@ effectiveThreshold None true (Some 2) = None @>
-    test <@ effectiveThreshold None false (Some 2) = None @>
+// --- effectiveThreshold (pressure shortens an already-eligible window) ---
+// Eligibility (default/main workspace exempt → no window at all) is owned and
+// tested by resolveThreshold above; effectiveThreshold only sees eligible ints.
 
 [<Fact>]
 let ``eligible without pressure uses the base window`` () =
-    test <@ effectiveThreshold (Some 30) false (Some 2) = Some 30 @>
+    test <@ effectiveThreshold 30 false (Some 2) = 30 @>
 
 [<Fact>]
 let ``eligible under pressure shortens to min(base, floor)`` () =
-    test <@ effectiveThreshold (Some 30) true (Some 2) = Some 2 @>
+    test <@ effectiveThreshold 30 true (Some 2) = 2 @>
 
 [<Fact>]
 let ``floor never lengthens a window already smaller`` () =
-    // Some 1 + pressure + floor 2 → min(1,2) = 1.
-    test <@ effectiveThreshold (Some 1) true (Some 2) = Some 1 @>
+    // base 1 + pressure + floor 2 → min(1,2) = 1.
+    test <@ effectiveThreshold 1 true (Some 2) = 1 @>
 
 [<Fact>]
 let ``floor disabled ignores pressure and uses the base window`` () =
-    test <@ effectiveThreshold (Some 30) true None = Some 30 @>
+    test <@ effectiveThreshold 30 true None = 30 @>
 
 // --- runTick wiring (injected effects) ---
 
