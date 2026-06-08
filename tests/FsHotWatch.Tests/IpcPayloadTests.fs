@@ -15,7 +15,7 @@ open FsHotWatch.Tests.TestHelpers
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
 
-let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
+let private rpcConfigWithUnchecked (unchecked: int) (host: PluginHost) : DaemonRpcConfig =
     { Host = host
       RequestShutdown = ignore
       RequestScan = ignore
@@ -25,7 +25,10 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       FormatAll = fun () -> async { return "" }
       WaitForScanGeneration = fun _ -> Task.FromResult(())
       WaitForAllTerminal = fun _ -> Task.FromResult(())
-      RerunPlugin = fun _ -> async { return Result.Ok() } }
+      RerunPlugin = fun _ -> async { return Result.Ok() }
+      GetUncheckedCount = fun () -> unchecked }
+
+let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig = rpcConfigWithUnchecked 0 host
 
 let private completedHandler (name: string) (action: PluginCtx<unit> -> Async<unit>) =
     { Name = PluginName.create name
@@ -153,3 +156,19 @@ let ``GetDiagnostics payload exposes structured per-plugin statuses`` () =
     test <@ d.LastRun.IsSome @>
     test <@ d.LastRun.Value.Summary = Some "ok" @>
     test <@ d.LastRun.Value.ActivityTail = [ "hello" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``GetDiagnostics payload carries unchecked count -> Complete coverage`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let target = DaemonRpcTarget(rpcConfigWithUnchecked 0 host)
+    let json = target.GetDiagnostics("")
+    let resp = parseDiagnosticsResponse json
+    test <@ resp.Coverage = Complete @>
+
+[<Fact(Timeout = 15000)>]
+let ``GetDiagnostics payload carries nonzero unchecked count -> Incomplete coverage`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let target = DaemonRpcTarget(rpcConfigWithUnchecked 4 host)
+    let json = target.GetDiagnostics("")
+    let resp = parseDiagnosticsResponse json
+    test <@ resp.Coverage = Incomplete 4 @>

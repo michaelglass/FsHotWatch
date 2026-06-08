@@ -1635,7 +1635,10 @@ let ``executeCommand FormatCheck uses format-check filter not format`` () =
                 fun _ filter ->
                     async {
                         errorFilter <- filter
-                        return """{"count": 0}"""
+                        // unchecked:0 = complete coverage (a real daemon always
+                        // sends this; without it the response reads as Unknown
+                        // and `check` would enter convergence).
+                        return """{"count": 0, "unchecked": 0}"""
                     } }
 
     let result =
@@ -1662,7 +1665,7 @@ let ``executeCommand Lint scans waits and gets lint errors`` () =
                 fun _ filter ->
                     async {
                         errorFilter <- filter
-                        return """{"count": 0}"""
+                        return """{"count": 0, "unchecked": 0}"""
                     } }
 
     let result =
@@ -1730,7 +1733,7 @@ let ``executeCommand Check waits for scan and returns errors`` () =
                 fun _ _ ->
                     async {
                         getErrorsCalled <- true
-                        return """{"count": 0}"""
+                        return """{"count": 0, "unchecked": 0}"""
                     } }
 
     let result =

@@ -37,7 +37,8 @@ let private defaultRpcConfig (host: PluginHost) : DaemonRpcConfig =
       FormatAll = fun () -> async { return "formatted 0 files" }
       WaitForScanGeneration = fun _ -> Task.FromResult(())
       WaitForAllTerminal = fun _ -> Task.FromResult(())
-      RerunPlugin = fun _ -> async { return Result.Ok() } }
+      RerunPlugin = fun _ -> async { return Result.Ok() }
+      GetUncheckedCount = fun () -> 0 }
 
 [<Fact(Timeout = 15000)>]
 let ``server responds to GetStatus`` () =
