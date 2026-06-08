@@ -501,6 +501,20 @@ let ``ProjectChanged removes the changed file from the checked set`` () =
     test <@ not (host.IsFileChecked f) @>
 
 [<Fact(Timeout = 15000)>]
+let ``SolutionChanged clears the entire checked set`` () =
+    // A solution-level change can retarget every file's options, so nothing is
+    // known-checked afterward (and removed files must not linger in the set).
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let a = AbsFilePath.create "/tmp/cov/S1.fs"
+    let b = AbsFilePath.create "/tmp/cov/S2.fs"
+    host.EmitFileChecked(fullCheckResult "/tmp/cov/S1.fs")
+    host.EmitFileChecked(fullCheckResult "/tmp/cov/S2.fs")
+    test <@ host.IsFileChecked a && host.IsFileChecked b @>
+    host.EmitFileChanged(SolutionChanged)
+    test <@ not (host.IsFileChecked a) && not (host.IsFileChecked b) @>
+    test <@ host.CheckedFileCount() = 0 @>
+
+[<Fact(Timeout = 15000)>]
 let ``unchecked count = registered minus checked`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
