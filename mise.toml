@@ -12,31 +12,25 @@ description = "Restore local dotnet tools"
 run = "dotnet tool restore"
 
 # === Daemon-backed tasks ===
-# These auto-start the daemon if not running, then block until done.
+# `check` is the single daemon-backed gate (build + lint + analyze + test +
+# format-check folded into one). The old per-plugin verbs (build/test/lint/
+# errors/format-check) were retired — use `fshw check` to gate and `fshw status`
+# to observe. `build` here just compiles the CLI binary so the `--no-build`
+# daemon-backed tasks below have something to run.
 
 [tasks.build]
-description = "Build via daemon"
-run = "dotnet run --project src/FsHotWatch.Cli --no-build -- build"
-depends = ["build"]
-
-[tasks.test]
-description = "Run tests via daemon"
-run = "dotnet run --project src/FsHotWatch.Cli --no-build -- test"
-depends = ["build"]
+description = "Compile the CLI binary (so --no-build daemon tasks can run)"
+run = "dotnet build src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj"
+depends = ["restore"]
 
 [tasks.format]
 description = "Format code via daemon"
 run = "dotnet run --project src/FsHotWatch.Cli --no-build -- format"
 depends = ["build"]
 
-[tasks.lint]
-description = "Lint via daemon"
-run = "dotnet run --project src/FsHotWatch.Cli --no-build -- lint"
-depends = ["build"]
-
-[tasks.errors]
-description = "Show accumulated errors"
-run = "dotnet run --project src/FsHotWatch.Cli --no-build -- errors"
+[tasks.status]
+description = "Show current status / accumulated errors from the daemon (no run triggered)"
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- status"
 depends = ["build"]
 
 [tasks.check]
@@ -80,16 +74,6 @@ depends = ["restore"]
 description = "Run integration tests (FCS / analyzers / lint / format / build end-to-end). No coverage."
 run = "dotnet test --project tests/FsHotWatch.IntegrationTests/FsHotWatch.IntegrationTests.fsproj"
 depends = ["restore"]
-
-[tasks.format-check]
-description = "Check formatting (single pass)"
-run = "dotnet run --project src/FsHotWatch.Cli --no-build -- format-check --run-once"
-depends = ["build"]
-
-[tasks.lint-direct]
-description = "Run linter (single pass)"
-run = "dotnet run --project src/FsHotWatch.Cli --no-build -- lint --run-once"
-depends = ["build"]
 
 [tasks.coverage-check]
 description = "Check per-file coverage meets minimum threshold"

@@ -34,14 +34,14 @@ Set `"lint": false` to disable. The plugin automatically loads
 ## CLI
 
 ```bash
-# Run linter on all files and show warnings
-fshw lint
+# Run the full gate (lint is part of it) and show warnings
+fshw check
 
-# Query lint warning count
+# Inspect just the lint plugin without triggering a run
+fshw status lint
+
+# Query lint warning count (plugin command)
 fshw warnings
-
-# Show all errors (including lint warnings)
-fshw errors
 ```
 
 ## Programmatic usage

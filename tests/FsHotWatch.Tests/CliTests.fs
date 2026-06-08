@@ -56,22 +56,6 @@ let ``parse check --run-once returns Check RunOnce`` () =
     test <@ CommandTree.parse tree [| "check"; "--run-once" |] = Ok(Check [ RunOnce ]) @>
 
 [<Fact(Timeout = 15000)>]
-let ``parse build returns Build with no flags`` () =
-    test <@ CommandTree.parse tree [| "build" |] = Ok(Build []) @>
-
-[<Fact(Timeout = 15000)>]
-let ``parse build --run-once returns Build RunOnce`` () =
-    test <@ CommandTree.parse tree [| "build"; "--run-once" |] = Ok(Build [ RunOnce ]) @>
-
-[<Fact(Timeout = 15000)>]
-let ``parse test returns Test with no flags`` () =
-    test <@ CommandTree.parse tree [| "test" |] = Ok(Test []) @>
-
-[<Fact(Timeout = 15000)>]
-let ``parse test --run-once returns Test RunOnce`` () =
-    test <@ CommandTree.parse tree [| "test"; "--run-once" |] = Ok(Test [ RunOnce ]) @>
-
-[<Fact(Timeout = 15000)>]
 let ``parse test-rerun returns TestRerun with no flags`` () =
     test <@ CommandTree.parse tree [| "test-rerun" |] = Ok(TestRerun []) @>
 
@@ -105,22 +89,6 @@ let ``parse format returns Format with no flags`` () =
     test <@ CommandTree.parse tree [| "format" |] = Ok(Format []) @>
 
 [<Fact(Timeout = 15000)>]
-let ``parse lint returns Lint with no flags`` () =
-    test <@ CommandTree.parse tree [| "lint" |] = Ok(Lint []) @>
-
-[<Fact(Timeout = 15000)>]
-let ``parse lint --run-once returns Lint RunOnce`` () =
-    test <@ CommandTree.parse tree [| "lint"; "--run-once" |] = Ok(Lint [ RunOnce ]) @>
-
-[<Fact(Timeout = 15000)>]
-let ``parse format-check returns FormatCheck with no flags`` () =
-    test <@ CommandTree.parse tree [| "format-check" |] = Ok(FormatCheck []) @>
-
-[<Fact(Timeout = 15000)>]
-let ``parse analyze returns Analyze with no flags`` () =
-    test <@ CommandTree.parse tree [| "analyze" |] = Ok(Analyze []) @>
-
-[<Fact(Timeout = 15000)>]
 let ``parse status returns Status None`` () =
     test <@ CommandTree.parse tree [| "status" |] = Ok(Status None) @>
 
@@ -133,58 +101,6 @@ let ``parse scan returns Scan`` () =
     match CommandTree.parse tree [| "scan" |] with
     | Ok Scan -> ()
     | other -> failwith $"Expected Ok Scan, got %A{other}"
-
-[<Fact(Timeout = 15000)>]
-let ``parse errors returns Errors`` () =
-    test <@ CommandTree.parse tree [| "errors" |] = Ok(Errors []) @>
-
-[<Fact(Timeout = 15000)>]
-let ``parse errors --wait returns Errors with Wait flag`` () =
-    test <@ CommandTree.parse tree [| "errors"; "--wait" |] = Ok(Errors [ Wait ]) @>
-
-[<Fact(Timeout = 15000)>]
-let ``parse errors --timeout returns Errors with Timeout flag`` () =
-    test <@ CommandTree.parse tree [| "errors"; "--timeout"; "30" |] = Ok(Errors [ Timeout 30 ]) @>
-
-[<Fact(Timeout = 15000)>]
-let ``parse errors --wait --timeout combines both flags`` () =
-    match CommandTree.parse tree [| "errors"; "--wait"; "--timeout"; "45" |] with
-    | Ok(Errors flags) ->
-        test <@ flags |> List.contains Wait @>
-        test <@ flags |> List.contains (Timeout 45) @>
-    | other -> failwith $"Expected Ok(Errors [Wait; Timeout 45]), got %A{other}"
-
-// --- WaitMode.fromFlags (pure normalization) ---
-
-[<Fact(Timeout = 15000)>]
-let ``WaitMode.fromFlags empty is NoWait`` () =
-    test <@ WaitMode.fromFlags [] = Ok WaitMode.NoWait @>
-
-[<Fact(Timeout = 15000)>]
-let ``WaitMode.fromFlags Wait uses default timeout`` () =
-    test <@ WaitMode.fromFlags [ Wait ] = Ok(WaitMode.WaitFor WaitMode.defaultTimeout) @>
-
-[<Fact(Timeout = 15000)>]
-let ``WaitMode.fromFlags Wait with Timeout uses supplied seconds`` () =
-    test <@ WaitMode.fromFlags [ Wait; Timeout 30 ] = Ok(WaitMode.WaitFor(TimeSpan.FromSeconds 30.0)) @>
-
-[<Fact(Timeout = 15000)>]
-let ``WaitMode.fromFlags Timeout without Wait is rejected`` () =
-    match WaitMode.fromFlags [ Timeout 30 ] with
-    | Error msg -> test <@ msg.Contains("--wait") @>
-    | Ok _ -> failwith "expected Error"
-
-[<Fact(Timeout = 15000)>]
-let ``WaitMode.fromFlags rejects zero timeout`` () =
-    match WaitMode.fromFlags [ Wait; Timeout 0 ] with
-    | Error msg -> test <@ msg.Contains("positive") @>
-    | Ok _ -> failwith "expected Error"
-
-[<Fact(Timeout = 15000)>]
-let ``WaitMode.fromFlags rejects negative timeout`` () =
-    match WaitMode.fromFlags [ Wait; Timeout -5 ] with
-    | Error msg -> test <@ msg.Contains("positive") @>
-    | Ok _ -> failwith "expected Error"
 
 [<Fact(Timeout = 15000)>]
 let ``parse rerun <name> returns Rerun`` () =
@@ -298,21 +214,21 @@ let private captureStderr (f: unit -> 'a) : string * 'a =
         Console.SetError(original)
 
 [<Fact(Timeout = 15000)>]
-let ``reportParseError on test --all renders unknown-flag error plus test help and exits non-zero`` () =
-    // `--all` is not a flag on `fshw test` → UnknownFlag. This is the case the
+let ``reportParseError on check --all renders unknown-flag error plus check help and exits non-zero`` () =
+    // `--all` is not a flag on `fshw check` → UnknownFlag. This is the case the
     // repo-owner wants to stop being masked when run outside a repo.
     let err =
-        match spec.Parse [| "test"; "--all" |] with
+        match spec.Parse [| "check"; "--all" |] with
         | Error e -> e
-        | Ok _ -> failwith "expected a parse error for `test --all`"
+        | Ok _ -> failwith "expected a parse error for `check --all`"
 
     let stderr, exitCode = captureStderr (fun () -> reportParseError err)
 
     test <@ exitCode <> 0 @>
     // Mentions the offending flag...
     test <@ stderr.Contains("--all") @>
-    // ...and renders the `test` command's own help (its description appears).
-    test <@ stderr.ToLowerInvariant().Contains("run tests") @>
+    // ...and renders the `check` command's own help (its description appears).
+    test <@ stderr.ToLowerInvariant().Contains("run all checks") @>
 
 [<Fact(Timeout = 15000)>]
 let ``reportParseError on a nested unknown command fails hard with non-zero exit`` () =
@@ -335,7 +251,7 @@ let ``reportParseError on a nested unknown command fails hard with non-zero exit
 let ``reportParseError returns 0 for HelpRequested`` () =
     // isError is false for Help/Version — informational, exit zero.
     let err =
-        match spec.Parse [| "test"; "--help" |] with
+        match spec.Parse [| "check"; "--help" |] with
         | Error e -> e
         | Ok _ -> failwith "expected HelpRequested"
 
@@ -356,7 +272,7 @@ let ``classifyParse Ok yields RunCommand`` () =
 [<Fact(Timeout = 15000)>]
 let ``classifyParse help yields RepoIndependent 0`` () =
     let _, dispatch =
-        captureStderr (fun () -> classifyParse (spec.Parse [| "test"; "--help" |]))
+        captureStderr (fun () -> classifyParse (spec.Parse [| "check"; "--help" |]))
 
     test <@ dispatch = RepoIndependent 0 @>
 
@@ -370,7 +286,7 @@ let ``classifyParse version yields RepoIndependent 0`` () =
 [<Fact(Timeout = 15000)>]
 let ``classifyParse unknown flag yields RepoIndependent non-zero (not masked, no repo needed)`` () =
     let stderr, dispatch =
-        captureStderr (fun () -> classifyParse (spec.Parse [| "test"; "--all" |]))
+        captureStderr (fun () -> classifyParse (spec.Parse [| "check"; "--all" |]))
 
     match dispatch with
     | RepoIndependent code -> test <@ code <> 0 @>
@@ -424,9 +340,9 @@ let ``globalSpec parse with --log-level returns LogLevel flag`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``globalSpec parse with --no-cache returns NoCache flag`` () =
-    match spec.Parse [| "--no-cache"; "build" |] with
-    | Ok(globals, Build []) -> test <@ globals = [ NoCache ] @>
-    | other -> failwith $"Expected Ok(NoCache, Build []), got %A{other}"
+    match spec.Parse [| "--no-cache"; "check" |] with
+    | Ok(globals, Check []) -> test <@ globals = [ NoCache ] @>
+    | other -> failwith $"Expected Ok(NoCache, Check []), got %A{other}"
 
 [<Fact(Timeout = 15000)>]
 let ``globalSpec parse with multiple global flags`` () =
@@ -736,6 +652,10 @@ let private fakeIpc () : IpcOps =
       IsRunning = fun _ -> true
       LaunchDaemon = fun _ _ _ -> () }
 
+/// Run `executeCommand` with the common test defaults.
+let private exec (ipc: IpcOps) (command: Command) : int =
+    executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" command defaultGlobalOptions fakeConfig 30.0
+
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Stop calls shutdown`` () =
     let mutable running = true
@@ -752,24 +672,14 @@ let ``executeCommand Stop calls shutdown`` () =
                         return "shutting down"
                     } }
 
-    let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Stop defaultGlobalOptions fakeConfig 30.0
+    let result = exec ipc Stop
 
     test <@ result = 0 @>
     test <@ called @>
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Config Check prints OK and returns 0`` () =
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            (fakeIpc ())
-            "/tmp"
-            "pipe"
-            (Config ConfigCommand.Check)
-            defaultGlobalOptions
-            fakeConfig
-            30.0
+    let result = exec (fakeIpc ()) (Config ConfigCommand.Check)
 
     test <@ result = 0 @>
 
@@ -779,16 +689,7 @@ let ``parse config check returns Config ConfigCommand.Check`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Status returns 0`` () =
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            (fakeIpc ())
-            "/tmp"
-            "pipe"
-            (Status None)
-            defaultGlobalOptions
-            fakeConfig
-            30.0
+    let result = exec (fakeIpc ()) (Status None)
 
     test <@ result = 0 @>
 
@@ -906,8 +807,7 @@ let ``executeCommand Scan calls scan IPC`` () =
                         return "scan started"
                     } }
 
-    let result =
-        executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" Scan defaultGlobalOptions fakeConfig 30.0
+    let result = exec ipc Scan
 
     test <@ result = 0 @>
     test <@ called @>
@@ -927,16 +827,7 @@ let ``executeCommand Status with plugin name queries GetDiagnostics for that plu
                             """{"count": 0, "files": {}, "statuses": {"lint": {"status": {"tag": "running", "since": "2026-01-01T00:00:00Z"}, "subtasks": [], "activityTail": [], "lastRun": null, "diagnostics": {"errors": 0, "warnings": 0}}}}"""
                     } }
 
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Status(Some "lint"))
-            defaultGlobalOptions
-            fakeConfig
-            30.0
+    let result = exec ipc (Status(Some "lint"))
 
     test <@ result = 0 @>
     test <@ calledWith = "lint" @>
@@ -1001,64 +892,6 @@ let ``executeCommand Check exits 2 when no projects are discovered`` () =
         test <@ not launched @>)
 
 [<Fact(Timeout = 15000)>]
-let ``executeCommand Build exits 2 when no projects are discovered`` () =
-    withTempDir "cli-build-zero-projects" (fun tmpDir ->
-        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-
-        let mutable launched = false
-
-        let ipc =
-            { fakeIpc () with
-                IsRunning = fun _ -> false
-                LaunchDaemon = fun _ _ _ -> launched <- true }
-
-        let exitCode =
-            executeCommand
-                (fun _ -> Unchecked.defaultof<_>)
-                ipc
-                tmpDir
-                "fshw-test-pipe"
-                (Build [])
-                defaultGlobalOptions
-                fakeConfig
-                30.0
-
-        test <@ exitCode = 2 @>
-        test <@ not launched @>)
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Test exits 2 when no projects are discovered`` () =
-    // Regression guard for the zero-projects fail-fast contract on the
-    // `Test` command — same shape as Check/Build above. `Test` is in the
-    // CLI's needsProjects list (Program.fs `executeCommand`) and must
-    // propagate exit code 2 when project discovery would yield zero
-    // .fsproj files, instead of launching a daemon that exits 2 itself
-    // and surfaces as "Failed to start daemon" + exit 1.
-    withTempDir "cli-test-zero-projects" (fun tmpDir ->
-        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
-
-        let mutable launched = false
-
-        let ipc =
-            { fakeIpc () with
-                IsRunning = fun _ -> false
-                LaunchDaemon = fun _ _ _ -> launched <- true }
-
-        let exitCode =
-            executeCommand
-                (fun _ -> Unchecked.defaultof<_>)
-                ipc
-                tmpDir
-                "fshw-test-pipe"
-                (Test [])
-                defaultGlobalOptions
-                fakeConfig
-                30.0
-
-        test <@ exitCode = 2 @>
-        test <@ not launched @>)
-
-[<Fact(Timeout = 15000)>]
 let ``executeCommand Start with fake daemon throws on null daemon`` () =
     // Use a unique temp dir to avoid writing the test process PID to /tmp/.fshw/daemon.pid
     // where killStaleDaemon from other tests would read it and kill the test process.
@@ -1098,16 +931,7 @@ let ``executeCommand returns 1 when IPC fails`` () =
         { fakeIpc () with
             GetDiagnostics = fun _ _ -> async { return failwith "connection refused" } }
 
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Status None)
-            defaultGlobalOptions
-            fakeConfig
-            30.0
+    let result = exec ipc (Status None)
 
     test <@ result = 1 @>
 
@@ -1136,68 +960,6 @@ let ``decideDaemonAction starts fresh when not running even with matching hash``
 // --- exit code paths via executeCommand ---
 
 [<Fact(Timeout = 15000)>]
-let ``executeCommand Errors with count 0 returns exit code 0`` () =
-    let ipc =
-        { fakeIpc () with
-            GetDiagnostics = fun _ _ -> async { return """{"count": 0}""" } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Errors [])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 0 @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Errors with count 5 returns exit code 1`` () =
-    let ipc =
-        { fakeIpc () with
-            GetDiagnostics =
-                fun _ _ ->
-                    async {
-                        return
-                            """{"count": 5, "files": {"src/Foo.fs": [{"plugin":"check","message":"err","severity":"error","line":1,"column":1}]}, "statuses": {}}"""
-                    } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Errors [])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 1 @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Errors with IPC failure returns exit code 1`` () =
-    let ipc =
-        { fakeIpc () with
-            GetDiagnostics = fun _ _ -> async { return failwith "connection refused" } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Errors [])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 1 @>
-
-[<Fact(Timeout = 15000)>]
 let ``executeCommand Check returns exit code 1 when daemon dies during poll`` () =
     // `check` polls GetStatus in a loop until plugins are terminal. If the
     // daemon dies (or is gracefully stopped) mid-poll the RPC throws and we
@@ -1207,292 +969,11 @@ let ``executeCommand Check returns exit code 1 when daemon dies during poll`` ()
             WaitForScan = fun _ _ -> async { return "idle" }
             GetStatus = fun _ -> async { return failwith "pipe is broken" } }
 
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Check [])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
+    let result = exec ipc (Check [])
 
     test <@ result = 1 @>
 
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Errors --wait blocks on WaitForComplete before reading diagnostics`` () =
-    let mutable waitCalled = false
-    let mutable waitFinishedBeforeDiagnostics = false
-    let mutable diagnosticsCalled = false
-
-    let ipc =
-        { fakeIpc () with
-            WaitForComplete =
-                fun _ _ ->
-                    async {
-                        waitCalled <- true
-                        return "{}"
-                    }
-            GetDiagnostics =
-                fun _ _ ->
-                    async {
-                        diagnosticsCalled <- true
-                        waitFinishedBeforeDiagnostics <- waitCalled
-                        return """{"count": 0}"""
-                    } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Errors [ Wait ])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 0 @>
-    test <@ waitCalled @>
-    test <@ diagnosticsCalled @>
-    test <@ waitFinishedBeforeDiagnostics @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Errors without --wait does not call WaitForComplete`` () =
-    let mutable waitCalled = false
-
-    let ipc =
-        { fakeIpc () with
-            WaitForComplete =
-                fun _ _ ->
-                    async {
-                        waitCalled <- true
-                        return "{}"
-                    } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Errors [])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 0 @>
-    test <@ not waitCalled @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Errors --wait returns exit code 2 when WaitForComplete times out`` () =
-    // The daemon raises TimeoutException when its internal deadline fires; we simulate that
-    // directly here rather than blocking past a client-side timeout.
-    let ipc =
-        { fakeIpc () with
-            WaitForComplete =
-                fun _ _ -> async { return raise (TimeoutException("WaitForComplete timed out — still running: plug")) }
-            GetDiagnostics = fun _ _ -> async { return """{"count": 0}""" } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Errors [ Wait; Timeout 1 ])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 2 @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Errors --wait returns exit code 2 when daemon dies mid-wait`` () =
-    // Simulates the daemon being gracefully stopped (or crashing) while a client
-    // is blocked in WaitForComplete: the RPC stream breaks and the StreamJsonRpc
-    // call throws an IOException-shaped error. The waiter must surface a non-zero
-    // exit so wait-based scripts (`fshw errors --wait`, etc.) don't
-    // silently succeed when the daemon disappears.
-    let ipc =
-        { fakeIpc () with
-            WaitForComplete = fun _ _ -> async { return raise (System.IO.IOException("pipe is broken")) }
-            GetDiagnostics = fun _ _ -> async { return """{"count": 0}""" } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Errors [ Wait ])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 2 @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Errors --wait returns exit code 1 when diagnostics report errors`` () =
-    let ipc =
-        { fakeIpc () with
-            WaitForComplete = fun _ _ -> async { return "{}" }
-            GetDiagnostics =
-                fun _ _ ->
-                    async {
-                        return
-                            """{"count": 1, "files": {"src/Foo.fs": [{"plugin":"check","message":"err","severity":"error","line":1,"column":1}]}, "statuses": {}}"""
-                    } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Errors [ Wait ])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 1 @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Errors with invalid flag combination exits 2 without touching daemon`` () =
-    let mutable launched = false
-
-    let ipc =
-        { fakeIpc () with
-            LaunchDaemon = fun _ _ _ -> launched <- true
-            IsRunning = fun _ -> false }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Errors [ Timeout 30 ])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 2 @>
-    test <@ not launched @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Build with status passed returns exit code 0`` () =
-    let ipc =
-        { fakeIpc () with
-            TriggerBuild = fun _ -> async { return """{"status": "passed"}""" } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Build [])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 0 @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Build with status failed returns exit code 1`` () =
-    let ipc =
-        { fakeIpc () with
-            TriggerBuild = fun _ -> async { return """{"status": "failed"}""" } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Build [])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 1 @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Build with plain text returns exit code 0`` () =
-    let ipc =
-        { fakeIpc () with
-            TriggerBuild = fun _ -> async { return "build completed successfully" } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Build [])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 0 @>
-
-// --- executeCommand for Build, Test, Format, Lint, Errors, Check ---
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Build calls triggerBuild`` () =
-    let mutable called = false
-
-    let ipc =
-        { fakeIpc () with
-            TriggerBuild =
-                fun _ ->
-                    async {
-                        called <- true
-                        return """{"count": 0}"""
-                    } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Build [])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 0 @>
-    test <@ called @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Test calls runCommand with run-tests`` () =
-    let mutable cmdName = ""
-
-    let ipc =
-        { fakeIpc () with
-            RunCommand =
-                fun _ cmd _ ->
-                    async {
-                        cmdName <- cmd
-                        return """{"status": "passed"}"""
-                    } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Test [])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 0 @>
-    test <@ cmdName = "run-tests" @>
+// --- executeCommand for TestRerun, Format, Check ---
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand TestRerun with no flags calls run-tests with empty payload`` () =
@@ -1508,16 +989,7 @@ let ``executeCommand TestRerun with no flags calls run-tests with empty payload`
                         return """{"status": "passed"}"""
                     } }
 
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (TestRerun [])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
+    let result = exec ipc (TestRerun [])
 
     test <@ result = 0 @>
     test <@ capturedArgs = "{}" @>
@@ -1535,16 +1007,7 @@ let ``executeCommand TestRerun --filter-class forwards filter to run-tests IPC``
                         return """{"status": "passed"}"""
                     } }
 
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (TestRerun [ FilterClass "*CryptoTests*" ])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
+    let result = exec ipc (TestRerun [ FilterClass "*CryptoTests*" ])
 
     test <@ result = 0 @>
     test <@ capturedArgs.Contains("--filter-class") @>
@@ -1563,16 +1026,7 @@ let ``executeCommand TestRerun --filter-trait forwards filter to run-tests IPC``
                         return """{"status": "passed"}"""
                     } }
 
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (TestRerun [ FilterTrait "Category=Browser" ])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
+    let result = exec ipc (TestRerun [ FilterTrait "Category=Browser" ])
 
     test <@ result = 0 @>
     test <@ capturedArgs.Contains("--filter-trait") @>
@@ -1611,100 +1065,7 @@ let ``executeCommand Format calls formatAll`` () =
                         return "formatted 3 files"
                     } }
 
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Format [])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 0 @>
-    test <@ called @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand FormatCheck uses format-check filter not format`` () =
-    let mutable errorFilter = ""
-
-    let ipc =
-        { fakeIpc () with
-            GetDiagnostics =
-                fun _ filter ->
-                    async {
-                        errorFilter <- filter
-                        // unchecked:0 = complete coverage (a real daemon always
-                        // sends this; without it the response reads as Unknown
-                        // and `check` would enter convergence).
-                        return """{"count": 0, "unchecked": 0}"""
-                    } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (FormatCheck [])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 0 @>
-    test <@ errorFilter = "format-check" @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Lint scans waits and gets lint errors`` () =
-    let mutable errorFilter = ""
-
-    let ipc =
-        { fakeIpc () with
-            GetDiagnostics =
-                fun _ filter ->
-                    async {
-                        errorFilter <- filter
-                        return """{"count": 0, "unchecked": 0}"""
-                    } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Lint [])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
-
-    test <@ result = 0 @>
-    test <@ errorFilter = "lint" @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Errors calls getErrors`` () =
-    let mutable called = false
-
-    let ipc =
-        { fakeIpc () with
-            GetDiagnostics =
-                fun _ _ ->
-                    async {
-                        called <- true
-                        return """{"count": 0}"""
-                    } }
-
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Errors [])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
+    let result = exec ipc (Format [])
 
     test <@ result = 0 @>
     test <@ called @>
@@ -1736,16 +1097,7 @@ let ``executeCommand Check waits for scan and returns errors`` () =
                         return """{"count": 0, "unchecked": 0}"""
                     } }
 
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Check [])
-            defaultGlobalOptions
-            fakeConfig
-            30.0
+    let result = exec ipc (Check [])
 
     test <@ result = 0 @>
     test <@ waitForScanCalled @>
@@ -1767,16 +1119,7 @@ let ``executeCommand Rerun calls rerunPlugin with plugin name`` () =
                         return """{}"""
                     } }
 
-    let result =
-        executeCommand
-            (fun _ -> Unchecked.defaultof<_>)
-            ipc
-            "/tmp"
-            "pipe"
-            (Rerun "coverage-ratchet")
-            defaultGlobalOptions
-            fakeConfig
-            30.0
+    let result = exec ipc (Rerun "coverage-ratchet")
 
     test <@ result = 0 @>
     test <@ calledWithName = "coverage-ratchet" @>
@@ -1804,22 +1147,6 @@ let private withStartupFailure command =
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Check returns 1 when daemon startup fails`` () =
     test <@ withStartupFailure (Check []) = 1 @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Build returns 1 when daemon startup fails`` () =
-    test <@ withStartupFailure (Build []) = 1 @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Test returns 1 when daemon startup fails`` () =
-    test <@ withStartupFailure (Test []) = 1 @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Lint returns 1 when daemon startup fails`` () =
-    test <@ withStartupFailure (Lint []) = 1 @>
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Errors returns 1 when daemon startup fails`` () =
-    test <@ withStartupFailure (Errors []) = 1 @>
 
 // --- computeLaunchCommand tests ---
 

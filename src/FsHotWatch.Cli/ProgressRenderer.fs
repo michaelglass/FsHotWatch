@@ -313,8 +313,7 @@ let private renderVerbose
 /// Agent-mode rendering. Line-oriented, ANSI-free, parseable output with a
 /// trailing `next:` hint.
 module private Agent =
-    let banner =
-        "# fshw agent mode | cmds: check build test lint analyze format format-check errors status"
+    let banner = "# fshw agent mode | cmds: check status format scan rerun"
 
     /// Terminal state for a plugin as seen by an agent consumer. `None` from
     /// `stateToken` means "omit this plugin from output" (idle with no history).
@@ -432,18 +431,18 @@ module private Agent =
             | Some State.TimedOut -> true
             | _ -> false
 
+        // The collapsed CLI: `check` is the only gate (it re-runs every plugin
+        // and blocks until done), `status` is the only observer. Point agents at
+        // `status <plugin>` to inspect a specific failure without triggering a
+        // run, or `check` to re-run the whole gate and block on the result.
         if Set.contains State.Running activeStates then
-            "next: fshw --agent errors --wait"
-        elif isFail "build" then
-            "next: fshw --agent build"
-        elif isFail "test" then
-            "next: fshw --agent test"
+            "next: fshw --agent check"
         else
-            let priority = [ "lint"; "analyze"; "format-check"; "coverage" ]
+            let priority = [ "build"; "test"; "lint"; "analyze"; "format-check"; "coverage" ]
 
             match priority |> List.tryFind isFail with
-            | Some p -> $"next: fshw --agent %s{p}"
-            | None when Set.contains State.Warn activeStates && warningsAreFailures -> "next: fshw --agent errors"
+            | Some p -> $"next: fshw --agent status %s{p}"
+            | None when Set.contains State.Warn activeStates && warningsAreFailures -> "next: fshw --agent status"
             | None -> "next: done"
 
     /// Render full Agent-mode output: banner, per-plugin lines, next-step line.

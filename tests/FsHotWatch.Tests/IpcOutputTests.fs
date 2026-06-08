@@ -72,40 +72,6 @@ let ``formatDiagnosticsResponse with errors shows count summary`` () =
     test <@ output.Contains("1 error(s), 1 warning(s) in 2 file(s)") @>
 
 [<Fact(Timeout = 15000)>]
-let ``isAllTerminal returns false for empty map`` () =
-    test <@ not (isAllTerminal Map.empty) @>
-
-[<Fact(Timeout = 15000)>]
-let ``isAllTerminal returns true when all completed or failed`` () =
-    let statuses =
-        Map.ofList
-            [ "build", Completed System.DateTime.UtcNow
-              "lint", Failed("x", System.DateTime.UtcNow) ]
-
-    test <@ isAllTerminal statuses @>
-
-[<Fact(Timeout = 15000)>]
-let ``isAllTerminal returns true when some plugins are idle`` () =
-    let statuses =
-        Map.ofList [ "build", Completed System.DateTime.UtcNow; "file-cmd", Idle ]
-
-    test <@ isAllTerminal statuses @>
-
-[<Fact(Timeout = 15000)>]
-let ``isAllTerminal returns true when all plugins are idle`` () =
-    let statuses = Map.ofList [ "file-cmd", Idle ]
-    test <@ isAllTerminal statuses @>
-
-[<Fact(Timeout = 15000)>]
-let ``isAllTerminal returns false when any running`` () =
-    let statuses =
-        Map.ofList
-            [ "build", Completed System.DateTime.UtcNow
-              "lint", Running System.DateTime.UtcNow ]
-
-    test <@ not (isAllTerminal statuses) @>
-
-[<Fact(Timeout = 15000)>]
 let ``exitCodeFromResponse returns 0 for count 0`` () =
     let resp =
         { Count = 0
@@ -283,21 +249,17 @@ let ``exitCodeFromResponse ignores info-severity entries`` () =
 
 // --- Regression: parsePluginStatuses format drift ---
 //
-// pollAndRender's isAllTerminal returns false on an empty statuses map, which
-// loops forever at 200ms intervals. If parsePluginStatuses rejects the GetStatus
-// JSON shape (e.g. fakeIpc returning `{"plugin": "Completed at ..."}` with a
-// bare-string value instead of the real `{"plugin": {"status": "..."}}` object
-// shape), the parse yields an empty map and pollAndRender hangs. This hung the
-// full test suite and `mise run check` for 40+ minutes before being caught.
+// If parsePluginStatuses rejects the GetStatus JSON shape (e.g. a fixture
+// returning `{"plugin": "Completed at ..."}` with a bare-string value instead of
+// the real `{"plugin": {"status": "..."}}` object shape), the parse silently
+// yields an empty map — which once hung a status-polling consumer for 40+ minutes
+// before being caught. These tests pin the accepted vs rejected wire shapes.
 
 [<Fact(Timeout = 15000)>]
 let ``parsePluginStatuses rejects bare-string values and returns empty`` () =
-    // The old broken fakeIpc shape — documents why that shape must never appear
-    // in test fixtures: empty parse -> isAllTerminal false -> pollAndRender hang.
     let json = """{"plugin": "Completed at 2026-01-01T00:00:00Z"}"""
     let parsed = parsePluginStatuses json
     test <@ Map.isEmpty parsed @>
-    test <@ not (isAllTerminal (statusOnly parsed)) @>
 
 [<Fact(Timeout = 15000)>]
 let ``parsePluginStatuses accepts object-valued entries with status field`` () =
@@ -307,4 +269,3 @@ let ``parsePluginStatuses accepts object-valued entries with status field`` () =
 
     let parsed = parsePluginStatuses json
     test <@ Map.containsKey "plugin" parsed @>
-    test <@ isAllTerminal (statusOnly parsed) @>

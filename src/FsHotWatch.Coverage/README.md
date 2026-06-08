@@ -16,7 +16,7 @@ below the minimum.
 2. Tests produce `coverage.cobertura.xml` reports under `searchDir`
 3. CoveragePlugin receives `TestRunCompleted`
 4. It merges partial-run coverage with the baseline, then parses the Cobertura XML
-5. Files below their per-file threshold are reported as errors via `fshw errors`
+5. Files below their per-file threshold are reported as errors (surfaced by `fshw check` / `fshw status`)
 
 ## Configuration
 
@@ -49,8 +49,8 @@ fshw coverage-status
 # Update thresholds to match current coverage (ratchet up)
 fshw coverage-ratchet
 
-# Show all errors (including coverage violations)
-fshw errors
+# Show all errors (including coverage violations) without triggering a run
+fshw status
 ```
 
 ## Programmatic usage

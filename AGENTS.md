@@ -14,17 +14,20 @@ wait ~500ms before querying.
 - `-q` / `--compact` — terse human output
 - `--verbose` — full output
 
-Placement-independent (`fshw -a errors` ≡ `fshw errors -a`).
+Placement-independent (`fshw -a check` ≡ `fshw check -a`).
+
+There are two verbs that matter: **`check`** is the gate (it triggers a full
+run and blocks until done; exit 0 = green), and **`status`** is the observer
+(it reports current state without triggering anything). The old per-plugin
+verbs (`build`, `test`, `lint`, `analyze`, `format-check`, `errors`) were
+folded into these two.
 
 ## Workflows
 
-**Did my edit break anything?**
-`fshw -a errors`. Exit 0 = clean.
+**Did my edit break anything? / Confirm clean before claiming done.**
+`fshw -a check`. It runs every plugin and blocks until done. Exit 0 = green; 1 = failures; 2 = completeness unconfirmed.
 
-**Confirm clean before claiming done.**
-`fshw check` forces a full re-run. Exit 0 = green.
-
-**A plugin looks unhappy in `errors` / `status`.**
+**A plugin looks unhappy — inspect without re-running.**
 `fshw -a status` lists `name: state` per plugin (`ok` / `fail` / `warn` / `running`). Drill in with `fshw status <plugin>` (`build`, `test-prune`, `analyzers`, `lint`, `format`).
 
 **Test failed — was it flaky?**

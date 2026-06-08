@@ -23,12 +23,7 @@ let private fakeIpc () : IpcOps =
     { Shutdown = fun _ -> async { return "shutting down" }
       Scan = fun _ -> async { return "scan started" }
       ScanStatus = fun _ -> async { return "idle" }
-      GetStatus =
-        fun _ ->
-            async {
-                return
-                    """{"plugin": {"status": {"tag": "completed", "at": "2026-01-01T00:00:00Z"}, "subtasks": [], "activityTail": [], "lastRun": null}}"""
-            }
+      GetStatus = fun _ -> async { return "{}" }
       GetPluginStatus = fun _ _ -> async { return "{}" }
       RunCommand = fun _ name _ -> async { return FsHotWatch.Ipc.unknownCommandReply name }
       GetDiagnostics = fun _ _ -> async { return """{"count": 0, "files": {}}""" }
@@ -649,13 +644,6 @@ let private assertFailsWhenDaemonDown (cmd: Command) =
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Format returns 1 when daemon startup fails`` () = assertFailsWhenDaemonDown (Format [])
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand FormatCheck returns 1 when daemon startup fails`` () =
-    assertFailsWhenDaemonDown (FormatCheck [])
-
-[<Fact(Timeout = 15000)>]
-let ``executeCommand Analyze returns 1 when daemon startup fails`` () = assertFailsWhenDaemonDown (Analyze [])
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Rerun returns 1 when daemon startup fails`` () =
