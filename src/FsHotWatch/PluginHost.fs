@@ -245,17 +245,16 @@ type PluginHost
     /// Side effect on the live coverage set: each changed source/project file is
     /// removed from `checkedFiles` so it counts as unchecked until its next
     /// successful FULL check re-adds it (via `EmitFileChecked`). A `SolutionChanged`
-    /// carries no specific files; the subsequent full re-discovery + re-scan
-    /// re-emits every file as `SourceChanged`, which clears them then.
+    /// can add, remove, or retarget projects — invalidating every file's options —
+    /// so nothing is treated as known-checked until the following re-scan re-adds
+    /// each file. Clearing the whole set also prevents removed files from lingering.
     member _.EmitFileChanged(change: FileChangeKind) =
-        let changedFiles =
-            match change with
-            | SourceChanged files
-            | ProjectChanged files -> files
-            | SolutionChanged -> []
-
-        for f in changedFiles do
-            checkedFiles.TryRemove(AbsFilePath.create f) |> ignore
+        match change with
+        | SourceChanged files
+        | ProjectChanged files ->
+            for f in files do
+                checkedFiles.TryRemove(AbsFilePath.create f) |> ignore
+        | SolutionChanged -> checkedFiles.Clear()
 
         dispatchToAll (PluginFramework.DispatchFileChanged change)
 
