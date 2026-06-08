@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Performance
+
+- The plugin dispatch loop computes each event's task-cache key once and threads the single value to both the cache lookup (`tryReplayCache`) and the store (`runAndCache`). Previously `cacheKeyFn event` was called twice per dispatch; for BuildPlugin that key is a full content-hash of the project graph, so a cache miss paid two SHA-256 passes per trigger. Threading one value also guarantees the lookup key equals the store key by construction.
+
 ### Fixed
 
 - Deps-freshness signature is now content-hashed instead of keyed on max dep-file mtime ticks. A preserved-mtime dep-file rewrite (`rsync -a` / `cp -p` / branch-switch over `paket.lock` / `Directory.Packages.props`) previously left the signature byte-identical, so debounced restore recovery never re-armed. `evaluateProject` also gains a content-drift cross-check: an mtime-`Fresh` verdict whose content signature drifted from the last fresh baseline is re-restored rather than silently proceeded. `staleSignature` return type changed `int64 → string`; `RecoveryTracker` gains `HasContentDrifted`/`RecordFreshSignature`. See `docs/adr-008-mtime-is-not-a-content-oracle.md`.
