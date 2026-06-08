@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- The daemon's blocking waits (`waitForAllTerminal` and the IPC `WaitForScanGeneration`) now observe the daemon's shutdown `CancellationToken`. Previously, if the daemon was torn down (`fshw stop`, idle-exit, or any `cts.Cancel()`) while an RPC was blocked mid-wait, the wait could resolve cleanly during teardown and the in-flight `check` / `WaitForComplete` / `WaitForScan` RPC would falsely report **success** (or, for in-process callers, hang). The waits now fault with `OperationCanceledException("daemon shutting down")` the moment the shutdown token fires, so the in-flight RPC propagates a failure to the client instead of a false green.
+
 ### Changed
 
 - `status`, `WaitForScan`, and the daemon logs now report **live** completeness — registered files minus the ones currently lacking a valid full type-check — instead of a frozen scan-end snapshot. They are computed from the same coverage signal `fshw check` uses, so the `complete:`/`incomplete:` line always agrees with `check` and no longer rots when an incremental edit + re-check fixes a file after the scan finished. Mechanically, `ScanState.ScanComplete` dropped its `total`/`unchecked` snapshot counts (it now only carries `elapsed`); both consumers read one shared `liveCoverage` (registered minus checked) at request time. The rendered string formats are unchanged.
