@@ -2531,6 +2531,142 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
 
         test <@ hasCompleted @>)
 
+// =============================================================================
+// AUTOMATION-5 — a FAILED test verdict must never be served from the task cache.
+// Root cause: the §2a merkle key (changed-symbols + commit) does NOT pin the
+// test OUTCOME, so a failing run and a later passing run on the same tree share
+// a key. Caching the failure let `tryReplayCache` replay a stale red on a now-
+// green tree ("green tree read as red"), surviving daemon restarts via the
+// on-disk cache. Fix: `Custom(TestsFinished)` returns a `None` cache key when
+// any project did not pass, making the failure UNCACHEABLE.
+// =============================================================================
+
+[<Fact(Timeout = 15000)>]
+let ``AUTOMATION-5: TestPrune CacheKey is None for a failing TestsFinished, Some for an all-pass`` () =
+    // Unit-pins the root-cause decision: the plugin's own CacheKey function must
+    // refuse to produce a key for a non-passing outcome (so the framework never
+    // writes the poisoned entry), while still keying an all-pass run for the
+    // green fast-path.
+    let handler = create ":memory:" "/tmp" None None None None None
+    let cacheKeyFn = handler.CacheKey.Value
+
+    let started: TestRunStarted =
+        { RunId = Guid.NewGuid()
+          StartedAt = DateTime.UtcNow }
+
+    let completedWith (results: (string * TestResult) list) : TestRunCompleted =
+        { RunId = started.RunId
+          TotalElapsed = TimeSpan.Zero
+          Outcome = Normal
+          Results = Map.ofList results
+          RanFullSuite = true }
+
+    let failing =
+        Custom(
+            TestsFinished(
+                started,
+                completedWith
+                    [ "ProjA", TestsPassed("ok", false, TimeSpan.Zero)
+                      "ProjB", TestsFailed("boom", false, TimeSpan.Zero) ]
+            )
+        )
+
+    let passing =
+        Custom(
+            TestsFinished(
+                started,
+                completedWith
+                    [ "ProjA", TestsPassed("ok", false, TimeSpan.Zero)
+                      "ProjB", TestsPassed("ok", false, TimeSpan.Zero) ]
+            )
+        )
+
+    // A timed-out / deferred project is also non-green and must be uncacheable.
+    let timedOut =
+        Custom(
+            TestsFinished(
+                started,
+                completedWith [ "ProjA", TestsTimedOut("slow", TimeSpan.FromSeconds 1.0, false, TimeSpan.Zero) ]
+            )
+        )
+
+    test <@ (cacheKeyFn failing).IsNone @>
+    test <@ (cacheKeyFn timedOut).IsNone @>
+    test <@ (cacheKeyFn passing).IsSome @>
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-5: a failed test run is not cached, so a later run on the same key is a miss and reports green`` () =
+    // End-to-end replay-suppression test exercising the real task cache.
+    //
+    // Cycle 1 (FAIL) via BuildCompleted: cold-start runs the suite; flag present
+    //   → `sh` exits 1 → TestsFinished(failed). The cache-replay bug operates at
+    //   the framework level BEFORE Update runs, keyed by the BuildCompleted
+    //   merkle. The root-cause assertion is therefore: after a FAILING cycle, NO
+    //   entry exists under that key — so a subsequent BuildCompleted can only be
+    //   a cache MISS (re-run), never a replay of the stale red ("green tree read
+    //   as red"). On the broken code the Failed status + red diagnostics were
+    //   cached here and replayed on the next matching key.
+    //
+    // Cycle 2 (PASS) via the `run-tests` command: flag removed. `run-tests`
+    //   forces a real re-run (a warm BuildCompleted with no changed symbols would
+    //   take the impact "skip" path and not actually re-execute), so this proves
+    //   the tree now genuinely reports green and the ledger clears.
+    withTempDir "tp-fail-not-cached" (fun tmpDir ->
+        let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
+        let cacheIface = cache :> FsHotWatch.TaskCache.ITaskCache
+        let host = PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = cacheIface)
+
+        let flag = Path.Combine(tmpDir, "fail")
+
+        let configs =
+            [ { Project = "FlipProj"
+                Command = "sh"
+                Args = $"-c \"if [ -f {flag} ]; then exit 1; else exit 0; fi\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let handler = create dbPath tmpDir (Some configs) None None None None
+        host.RegisterHandler(handler)
+
+        let key: FsHotWatch.TaskCache.CompositeKey = { Plugin = "test-prune"; File = None }
+        let cacheKeyFn = handler.CacheKey.Value
+        let computedKey = (cacheKeyFn (BuildCompleted BuildSucceeded)).Value
+
+        // --- Cycle 1: FAIL (cold BuildCompleted runs the suite) ---
+        File.WriteAllText(flag, "")
+        let await1 = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        await1.Wait(TimeSpan.FromSeconds 12.0) |> ignore
+
+        // Status is non-green and the ledger holds a red after cycle 1.
+        match host.GetStatus("test-prune") with
+        | Some(Failed _) -> ()
+        | other -> Assert.Fail($"cycle 1 expected Failed status, got %A{other}")
+
+        test <@ host.HasFailingReasons(warningsAreFailures = true) @>
+
+        // ROOT CAUSE: the failing outcome must NOT have been written to the cache,
+        // so the matching BuildCompleted key is a guaranteed miss (no stale replay).
+        test <@ (cacheIface.TryGet key computedKey).IsNone @>
+
+        // --- Cycle 2: PASS (run-tests forces a real re-run) ---
+        File.Delete(flag)
+        let await2 = beginAwaitNextTerminal host "test-prune"
+        host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously |> ignore
+        await2.Wait(TimeSpan.FromSeconds 12.0) |> ignore
+
+        // Re-ran and reports green; the cycle-1 red is gone (cleared, not replayed).
+        match host.GetStatus("test-prune") with
+        | Some(Completed _) -> ()
+        | other -> Assert.Fail($"cycle 2 expected Completed (green) status, got %A{other}")
+
+        test <@ not (host.HasFailingReasons(warningsAreFailures = true)) @>
+        test <@ host.GetErrorsByPlugin("test-prune") |> Map.isEmpty @>)
+
 // NOTE: ``run summary names the slowest project when 2+ projects ran`` was moved
 // to FsHotWatch.IntegrationTests — it spawns two real sh subprocesses with a
 // 1-second sleep dependency to assert "slowest" ordering, and the 5-second
