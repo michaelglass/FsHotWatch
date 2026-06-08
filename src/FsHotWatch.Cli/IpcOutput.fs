@@ -240,11 +240,17 @@ let pollAndRender
     (getErrors: unit -> string)
     (triggerScan: unit -> string)
     : int =
-    if UI.isInteractive then
-        UI.withSpinnerQuiet "Scanning" (fun () -> waitForScan () |> ignore)
-    else
-        eprintfn "  Scanning..."
-        waitForScan () |> ignore
+    // Run `fn` under a spinner when interactive, else announce it with a plain
+    // console line first. Centralizes the interactive/non-interactive split so
+    // the scan and re-scan steps don't each repeat the branch.
+    let withProgress (spinnerLabel: string) (consoleLabel: string) (fn: unit -> unit) =
+        if UI.isInteractive then
+            UI.withSpinnerQuiet spinnerLabel fn
+        else
+            eprintfn "  %s" consoleLabel
+            fn ()
+
+    withProgress "Scanning" "Scanning..." (fun () -> waitForScan () |> ignore)
 
     pollUntilTerminal renderStatuses getStatus
 
@@ -256,12 +262,7 @@ let pollAndRender
     // Force a fresh scan and re-settle (the convergence loop's "try to FIX, not
     // just report" step). Invoked only when the first read is incomplete-but-clean.
     let rescan () : unit =
-        if UI.isInteractive then
-            UI.withSpinnerQuiet "Re-scanning (incomplete)" (fun () -> triggerScan () |> ignore)
-        else
-            eprintfn "  Re-scanning (incomplete check)..."
-            triggerScan () |> ignore
-
+        withProgress "Re-scanning (incomplete)" "Re-scanning (incomplete check)..." (fun () -> triggerScan () |> ignore)
         pollUntilTerminal renderStatuses getStatus
 
     // Re-read diagnostics + coverage and render. Called after each rescan.
@@ -275,10 +276,14 @@ let pollAndRender
         CheckVerdict.converge MaxConvergeAttempts rescan reread (hasFailures noWarnFail firstResp, firstResp.Coverage)
 
     match outcome with
-    | CheckVerdict.CheckOutcome.Incomplete n when n > 0 ->
-        UI.fail $"Check incomplete: %d{n} file(s) could not be checked after %d{MaxConvergeAttempts} re-scan attempt(s)"
-    | CheckVerdict.CheckOutcome.Incomplete _ ->
-        UI.fail $"Check incomplete: coverage could not be confirmed after %d{MaxConvergeAttempts} re-scan attempt(s)"
+    | CheckVerdict.CheckOutcome.Incomplete n ->
+        let detail =
+            if n > 0 then
+                $"%d{n} file(s) could not be checked"
+            else
+                "coverage could not be confirmed"
+
+        UI.fail $"Check incomplete: {detail} after %d{MaxConvergeAttempts} re-scan attempt(s)"
     | CheckVerdict.CheckOutcome.Clean
     | CheckVerdict.CheckOutcome.FailuresFound -> ()
 
