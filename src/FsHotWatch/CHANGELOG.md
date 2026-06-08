@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- `status`, `WaitForScan`, and the daemon logs now report **live** completeness — registered files minus the ones currently lacking a valid full type-check — instead of a frozen scan-end snapshot. They are computed from the same coverage signal `fshw check` uses, so the `complete:`/`incomplete:` line always agrees with `check` and no longer rots when an incremental edit + re-check fixes a file after the scan finished. Mechanically, `ScanState.ScanComplete` dropped its `total`/`unchecked` snapshot counts (it now only carries `elapsed`); both consumers read one shared `liveCoverage` (registered minus checked) at request time. The rendered string formats are unchanged.
+
 ### Added
 
 - feat: `fshw check` now converges on incompleteness instead of reporting it. After the daemon settles, `check` reads diagnostics **and a live coverage signal** (how many registered files currently lack a valid full type-check result). If failures are found it short-circuits to **exit 1** immediately (real problems are reported now, not re-scanned away). If coverage is complete and clean → **exit 0**. If the check is incomplete but otherwise clean, `check` tries to **fix** it: it forces a bounded series of re-scans (up to 3), re-reading coverage each time, and stops early on completion, on a newly-surfaced failure, or when the unchecked count stops shrinking. Only a genuinely un-completable check returns the new **exit 2**. Structurally, the verdict is a total function over an explicit outcome type and coverage is a *required* input: a daemon that doesn't report coverage (old build / parse gap) is treated as `Unknown`, which enters convergence and can never read as a false green 0. The daemon-side signal is a live "checked files" set in `PluginHost` (a full check via `EmitFileChecked` adds a file; a file change via `EmitFileChanged` removes it), exposed over IPC as an `unchecked` field on the check response.
