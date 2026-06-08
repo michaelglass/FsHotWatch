@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.12 - 2026-06-08
+
 - docs: README now refers to the collapsed CLI verbs — coverage violations are surfaced by `fshw check` (the gate) and inspected with `fshw status`, replacing the retired `fshw errors` verb.
 
 ## 0.7.0-alpha.11 - 2026-06-04
