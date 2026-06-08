@@ -27,6 +27,13 @@ let pluginName = "deps"
 /// Pure freshness comparator. Stale when assets are missing, or older than any
 /// dependency-declaring file. No dep files → Fresh (nothing can invalidate the
 /// assets). Exposed for unit testing without disk.
+///
+/// This is an mtime-based FAST PATH, not a content oracle: a preserved-mtime dep
+/// rewrite (rsync -a / git checkout) leaves a changed `paket.lock` looking older
+/// than the assets, so this would report Fresh. That residual gap is closed by
+/// `evaluateProject`'s content-drift cross-check against the content-hashed
+/// `staleSignature` — a `Fresh` verdict here whose dep-content signature drifted
+/// is still re-restored. See docs/adr-008-mtime-is-not-a-content-oracle.md.
 let compareFreshness (assetsMtime: DateTime option) (depFileMtimes: DateTime list) : Freshness =
     match assetsMtime with
     | None -> Stale
@@ -128,34 +135,69 @@ let detectProjectFreshness (repoRoot: string) (fsprojPath: string) : Freshness =
     let depMtimes = dependencyFiles fsprojPath repoRoot |> List.choose tryMtime
     compareFreshness assetsMtime depMtimes
 
-/// Compute the stale signature for a project: max dep-file mtime ticks (0 when
-/// no dep files exist). This debounces recovery — the same unchanged stale state
-/// keeps the same signature (no re-restore), while bumping a dep file moves it
-/// forward and re-arms recovery.
-let internal staleSignature (repoRoot: string) (fsprojPath: string) : int64 =
-    dependencyFiles fsprojPath repoRoot
-    |> List.choose tryMtime
-    |> function
-        | [] -> 0L
-        | mtimes -> mtimes |> List.map (fun m -> m.Ticks) |> List.max
+/// Compute the stale signature for a project: a content hash over every
+/// dependency file (path + on-disk bytes). This debounces recovery — the same
+/// unchanged stale state keeps the same signature (no re-restore), while ANY
+/// content change to a dep file moves it forward and re-arms recovery.
+///
+/// mtime is NOT a content oracle: the previous implementation used max dep-file
+/// mtime ticks, which `rsync -a`/`cp -p`/`tar -x`/a git checkout that restores
+/// an old mtime leaves byte-identical after a content rewrite — so a genuinely
+/// changed `paket.lock`/`Directory.Packages.props` would never re-arm recovery.
+/// Content-hashing matches the BuildInputsHasher (Bug 1) and
+/// CheckCache.TimestampCacheKeyProvider precedents. See
+/// docs/adr-008-mtime-is-not-a-content-oracle.md.
+let internal staleSignature (repoRoot: string) (fsprojPath: string) : string =
+    let parts =
+        dependencyFiles fsprojPath repoRoot
+        |> List.sort
+        |> List.map (fun path ->
+            let hash =
+                try
+                    FsHotWatch.CheckCache.sha256Hex (File.ReadAllText path)
+                with _ ->
+                    // A dep file that vanished between enumeration and read, or a
+                    // transient lock: fold a distinct sentinel rather than a real
+                    // hash so the state is still observably different.
+                    "unreadable"
+
+            $"%s{path}@%s{hash}")
+
+    FsHotWatch.CheckCache.sha256Hex (String.concat "\n" parts)
 
 /// Debounce tracker: remembers, per project, the last stale signature recovery
 /// was attempted for. Thread-safe; shared across scan cycles by the daemon.
 type RecoveryTracker() =
-    let attempted = ConcurrentDictionary<string, int64>()
+    let attempted = ConcurrentDictionary<string, string>()
+    let freshSignatures = ConcurrentDictionary<string, string>()
 
     /// True when a restore should be attempted for this (project, signature) —
     /// i.e. we have not already attempted recovery for this exact stale state.
-    member _.ShouldAttempt(proj: string, sig_: int64) : bool =
+    member _.ShouldAttempt(proj: string, sig_: string) : bool =
         match attempted.TryGetValue proj with
         | true, prev -> prev <> sig_
         | false, _ -> true
 
     /// Record that recovery was attempted for (project, signature).
-    member _.MarkAttempted(proj: string, sig_: int64) = attempted[proj] <- sig_
+    member _.MarkAttempted(proj: string, sig_: string) = attempted[proj] <- sig_
+
+    /// True when the dep-content signature differs from the last one this project
+    /// was observed Fresh / recovered at. A first sighting is NOT drift (nothing
+    /// to compare against yet). This is the content-aware escape hatch for the
+    /// mtime probe, which a preserved-mtime dep rewrite can fool into reporting
+    /// Fresh. See docs/adr-008-mtime-is-not-a-content-oracle.md.
+    member _.HasContentDrifted(proj: string, sig_: string) : bool =
+        match freshSignatures.TryGetValue proj with
+        | true, prev -> prev <> sig_
+        | false, _ -> false
+
+    /// Record the dep-content signature a project was last observed fresh at, so
+    /// a later preserved-mtime content change is detectable as drift.
+    member _.RecordFreshSignature(proj: string, sig_: string) = freshSignatures[proj] <- sig_
 
     /// Forget any recorded attempt for a project (e.g. after it recovered) so a
-    /// future regression is treated freshly.
+    /// future regression is treated freshly. The fresh-content baseline is kept
+    /// so subsequent drift remains detectable.
     member _.Clear(proj: string) = attempted.TryRemove proj |> ignore
 
 /// Injected restore runner: given a project directory, runs the restore and
@@ -208,22 +250,26 @@ let private restoreFailureMessage (proj: string) (outcome: ProcessOutcome) : str
 /// whenever the trigger was a benign `.fsproj` source-list edit rather than a
 /// dependency bump. The only post-success failure is assets *still missing
 /// entirely* (restore couldn't produce them) — a genuine broken state.
+///
+/// Content-drift escape hatch: the `probe` is mtime-based (assets vs dep
+/// mtimes) and a preserved-mtime dep rewrite (rsync -a / git checkout) can fool
+/// it into reporting Fresh while the dep CONTENT actually changed. So a
+/// `Fresh` verdict is cross-checked against the dep-content signature: if it
+/// drifted from the value the project was last observed fresh/recovered at, we
+/// treat it as Stale (debounced like any other stale state) rather than
+/// proceeding on an artifact built against different deps. See
+/// docs/adr-008-mtime-is-not-a-content-oracle.md.
 let evaluateProject
     (probe: string -> Freshness)
-    (signatureOf: string -> int64)
+    (signatureOf: string -> string)
     (assetsPresent: string -> bool)
     (runner: RestoreRunner)
     (tracker: RecoveryTracker)
     (proj: string)
     : GateResult =
-    match probe proj with
-    | Fresh ->
-        // Healthy: forget any prior attempt so a future regression re-arms.
-        tracker.Clear proj
-        Proceed
-    | Stale ->
-        let sig_ = signatureOf proj
-
+    // Shared stale handling: debounce, attempt restore, record the new fresh
+    // content baseline on success so subsequent drift is detectable.
+    let handleStale (sig_: string) : GateResult =
         if not (tracker.ShouldAttempt(proj, sig_)) then
             SkipAlreadyAttempted
         else
@@ -234,6 +280,7 @@ let evaluateProject
             | Succeeded _ ->
                 if assetsPresent proj then
                     tracker.Clear proj
+                    tracker.RecordFreshSignature(proj, sig_)
                     RecoveredOk
                 else
                     let msg, detail = restoreFailureMessage proj outcome
@@ -242,6 +289,21 @@ let evaluateProject
             | TimedOut _ ->
                 let msg, detail = restoreFailureMessage proj outcome
                 FailFast(msg, detail)
+
+    let sig_ = signatureOf proj
+
+    match probe proj with
+    | Fresh when tracker.HasContentDrifted(proj, sig_) ->
+        // mtime says fresh, but dep content changed under a preserved mtime —
+        // re-restore against the real current deps.
+        handleStale sig_
+    | Fresh ->
+        // Genuinely healthy: forget any prior attempt so a future regression
+        // re-arms, and record the content baseline for drift detection.
+        tracker.Clear proj
+        tracker.RecordFreshSignature(proj, sig_)
+        Proceed
+    | Stale -> handleStale sig_
 
 /// Per-step restore timeout. A hung `dotnet`/`paket` restore (seen in practice:
 /// a `paket restore` wedged ~17 min at 0% CPU) would otherwise block the whole
