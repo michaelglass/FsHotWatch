@@ -442,6 +442,83 @@ let ``EmitFileChecked dispatches to framework plugin handlers`` () =
     test <@ ref1.Value @>
     test <@ ref2.Value @>
 
+// ----------------------------------------------------------------------------
+// Live "checked files" coverage set. The choke point both the cold scan and the
+// incremental path flow through is `EmitFileChecked`; a FULL check adds the file
+// to the set, ParseOnly does not, and a `EmitFileChanged` removes the changed
+// file (an edited-but-not-yet-rechecked file correctly counts as unchecked).
+// `GetUncheckedCount` in Daemon.fs is `registered minus checked` using
+// `IsFileChecked`.
+// ----------------------------------------------------------------------------
+
+let private fullCheckResult (file: string) : FileCheckResult =
+    { File = AbsFilePath.create file
+      Source = ""
+      ParseResults = Unchecked.defaultof<_>
+      CheckResults = FullCheck(Unchecked.defaultof<_>)
+      ProjectOptions = Unchecked.defaultof<_>
+      Version = 0L }
+
+let private parseOnlyResult (file: string) : FileCheckResult =
+    { File = AbsFilePath.create file
+      Source = ""
+      ParseResults = Unchecked.defaultof<_>
+      CheckResults = ParseOnly
+      ProjectOptions = Unchecked.defaultof<_>
+      Version = 0L }
+
+[<Fact(Timeout = 15000)>]
+let ``EmitFileChecked with FullCheck marks the file checked`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let f = AbsFilePath.create "/tmp/cov/A.fs"
+    test <@ not (host.IsFileChecked f) @>
+    host.EmitFileChecked(fullCheckResult "/tmp/cov/A.fs")
+    test <@ host.IsFileChecked f @>
+
+[<Fact(Timeout = 15000)>]
+let ``EmitFileChecked with ParseOnly does NOT mark the file checked`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let f = AbsFilePath.create "/tmp/cov/B.fs"
+    host.EmitFileChecked(parseOnlyResult "/tmp/cov/B.fs")
+    test <@ not (host.IsFileChecked f) @>
+
+[<Fact(Timeout = 15000)>]
+let ``EmitFileChanged removes a previously-checked file from the set`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let f = AbsFilePath.create "/tmp/cov/C.fs"
+    host.EmitFileChecked(fullCheckResult "/tmp/cov/C.fs")
+    test <@ host.IsFileChecked f @>
+    host.EmitFileChanged(SourceChanged [ "/tmp/cov/C.fs" ])
+    test <@ not (host.IsFileChecked f) @>
+
+[<Fact(Timeout = 15000)>]
+let ``ProjectChanged removes the changed file from the checked set`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+    let f = AbsFilePath.create "/tmp/cov/D.fs"
+    host.EmitFileChecked(fullCheckResult "/tmp/cov/D.fs")
+    test <@ host.IsFileChecked f @>
+    host.EmitFileChanged(ProjectChanged [ "/tmp/cov/D.fs" ])
+    test <@ not (host.IsFileChecked f) @>
+
+[<Fact(Timeout = 15000)>]
+let ``unchecked count = registered minus checked`` () =
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let registered =
+        [ AbsFilePath.create "/tmp/cov/E1.fs"
+          AbsFilePath.create "/tmp/cov/E2.fs"
+          AbsFilePath.create "/tmp/cov/E3.fs" ]
+
+    let unchecked () =
+        registered |> List.filter (host.IsFileChecked >> not) |> List.length
+
+    test <@ unchecked () = 3 @>
+    host.EmitFileChecked(fullCheckResult "/tmp/cov/E1.fs")
+    host.EmitFileChecked(fullCheckResult "/tmp/cov/E2.fs")
+    test <@ unchecked () = 1 @>
+    host.EmitFileChecked(fullCheckResult "/tmp/cov/E3.fs")
+    test <@ unchecked () = 0 @>
+
 [<Fact(Timeout = 15000)>]
 let ``preprocessor exception sets Failed status`` () =
     let host = PluginHost.create nullChecker "/tmp/test"

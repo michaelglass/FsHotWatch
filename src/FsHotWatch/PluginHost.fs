@@ -48,6 +48,21 @@ type PluginHost
     let mutable lastActivityAtTicks = System.DateTime.UtcNow.Ticks
     let pluginGenerations = ConcurrentDictionary<string, int64>()
 
+    // Live "checked files" coverage set: the set of files that currently hold a
+    // valid FULL type-check result. Used as a request-time completeness signal
+    // (NOT the stale ScanComplete snapshot — incremental checks update it too).
+    //
+    // Both the cold scan and the incremental batch path flow through
+    // `EmitFileChecked`, so adding on a FULL check there covers both. A file
+    // change / invalidation flows through `EmitFileChanged`, so removing the
+    // changed files there means an edited-but-not-yet-rechecked file correctly
+    // counts as unchecked until its next successful FULL check re-adds it.
+    //
+    // `unit`-valued so it acts as a thread-safe set; membership ops are O(1) —
+    // this is the hot check path. The daemon computes the unchecked count as
+    // `registered minus checked` via `IsFileChecked`.
+    let checkedFiles = ConcurrentDictionary<AbsFilePath, unit>()
+
     let touchActivity () =
         System.Threading.Volatile.Write(&lastActivityAtTicks, System.DateTime.UtcNow.Ticks)
 
@@ -226,7 +241,22 @@ type PluginHost
         modifiedFiles |> List.distinct
 
     /// Emit a file change event to all registered plugins.
+    ///
+    /// Side effect on the live coverage set: each changed source/project file is
+    /// removed from `checkedFiles` so it counts as unchecked until its next
+    /// successful FULL check re-adds it (via `EmitFileChecked`). A `SolutionChanged`
+    /// carries no specific files; the subsequent full re-discovery + re-scan
+    /// re-emits every file as `SourceChanged`, which clears them then.
     member _.EmitFileChanged(change: FileChangeKind) =
+        let changedFiles =
+            match change with
+            | SourceChanged files
+            | ProjectChanged files -> files
+            | SolutionChanged -> []
+
+        for f in changedFiles do
+            checkedFiles.TryRemove(AbsFilePath.create f) |> ignore
+
         dispatchToAll (PluginFramework.DispatchFileChanged change)
 
     /// Emit a build completed event to all registered plugins.
@@ -242,8 +272,27 @@ type PluginHost
         ledger.Clear(pluginName, filePath, ?version = version)
 
     /// Emit a file checked event to all registered plugins.
+    ///
+    /// Side effect on the live coverage set: a FULL check result adds the file to
+    /// `checkedFiles`. A ParseOnly/aborted check does NOT count as checked — the
+    /// file stays unchecked until a full check succeeds.
     member _.EmitFileChecked(result: FileCheckResult) =
+        match result.CheckResults with
+        | FullCheck _ -> checkedFiles[result.File] <- ()
+        | ParseOnly -> ()
+
         dispatchToAll (PluginFramework.DispatchFileChecked result)
+
+    /// True if `file` currently holds a valid FULL type-check result (i.e. a
+    /// `FullCheck` was emitted for it via `EmitFileChecked` and it hasn't been
+    /// invalidated by a subsequent `EmitFileChanged`). The daemon's
+    /// `GetUncheckedCount` is `registered files minus those for which this is
+    /// true`.
+    member _.IsFileChecked(file: AbsFilePath) : bool = checkedFiles.ContainsKey(file)
+
+    /// Count of files that currently hold a valid FULL type-check result.
+    /// Diagnostic counterpart to `IsFileChecked`.
+    member _.CheckedFileCount() : int = checkedFiles.Count
 
     /// Emit a batch-checked event to all registered plugins. Fired by the
     /// daemon once after a defined cohort of `FileChecked` events has finished

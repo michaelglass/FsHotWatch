@@ -110,7 +110,8 @@ let ``exitCodeFromResponse returns 0 for count 0`` () =
     let resp =
         { Count = 0
           Files = Map.empty
-          Statuses = Map.empty }
+          Statuses = Map.empty
+          Coverage = Complete }
 
     test <@ exitCodeFromResponse false resp = 0 @>
 
@@ -127,7 +128,8 @@ let ``exitCodeFromResponse returns 1 for errors`` () =
                       Line = 1
                       Column = 0
                       Detail = None } ] ]
-          Statuses = Map.empty }
+          Statuses = Map.empty
+          Coverage = Complete }
 
     test <@ exitCodeFromResponse false resp = 1 @>
 
@@ -144,7 +146,8 @@ let ``exitCodeFromResponse with noWarnFail ignores warnings`` () =
                       Line = 1
                       Column = 0
                       Detail = None } ] ]
-          Statuses = Map.empty }
+          Statuses = Map.empty
+          Coverage = Complete }
 
     test <@ exitCodeFromResponse true resp = 0 @>
 
@@ -161,7 +164,8 @@ let ``exitCodeFromResponse without noWarnFail fails on warnings`` () =
                       Line = 1
                       Column = 0
                       Detail = None } ] ]
-          Statuses = Map.empty }
+          Statuses = Map.empty
+          Coverage = Complete }
 
     test <@ exitCodeFromResponse false resp = 1 @>
 
@@ -272,7 +276,8 @@ let ``exitCodeFromResponse ignores info-severity entries`` () =
                       Line = 3
                       Column = 0
                       Detail = None } ] ]
-          Statuses = Map.empty }
+          Statuses = Map.empty
+          Coverage = Complete }
 
     test <@ exitCodeFromResponse false resp = 0 @>
 
