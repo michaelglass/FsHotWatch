@@ -495,6 +495,98 @@ let ``pre-populated cache replays on the very first dispatch`` () =
     }
     |> Async.RunSynchronously
 
+// --- Cache key computed ONCE per dispatched event (lookup + store share it) ---
+
+[<Fact(Timeout = 20000)>]
+let ``cache key is computed exactly once per dispatched event on a cache miss`` () =
+    // Perf regression guard: the framework used to call `cacheKeyFn event` twice
+    // per dispatch — once in tryReplayCache (LOOKUP) and once in runAndCache
+    // (STORE). For BuildPlugin that key is a full content-hash of the project
+    // graph, so a miss (common while editing) paid TWO SHA-256 passes per
+    // trigger. The dispatch loop now computes the key ONCE and threads the single
+    // value to both lookup and store. On a miss (empty cache) the handler runs,
+    // reports a terminal status, and the result is stored — exercising both the
+    // lookup and store paths — yet the key function must fire only once.
+    async {
+        let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+        let cacheKey = ContentHash.create "k"
+        let pluginNameStr = "key-once-miss"
+        let keyCalls = ref 0
+        let mutable registeredCmd: CommandHandler option = None
+
+        let handler: PluginHandler<unit, unit> =
+            { Name = PluginName.create pluginNameStr
+              Init = ()
+              Update =
+                fun ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged _ -> ctx.ReportStatus(Completed System.DateTime.UtcNow)
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = [ "drain", fun _ctx _state _args -> async { return "ok" } ]
+              Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey =
+                Some(fun _ ->
+                    System.Threading.Interlocked.Increment(keyCalls) |> ignore
+                    Some cacheKey)
+              Teardown = None }
+
+        let reg =
+            registerHandler (servicesWithCache cache (fun (_, cmd) -> registeredCmd <- Some cmd)) handler
+
+        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
+        let! _ = registeredCmd.Value [||]
+        // Miss: handler ran AND result was stored, but the key was computed once.
+        test <@ !keyCalls = 1 @>
+    }
+    |> Async.RunSynchronously
+
+[<Fact(Timeout = 20000)>]
+let ``cache key is computed exactly once per dispatched event on a cache hit`` () =
+    // On a hit the lookup path replays and the store path is never reached, so
+    // even the old code computed the key once here. This pins that the
+    // once-per-event threading does not accidentally recompute on the hit path.
+    async {
+        let cache = TaskCache.InMemoryTaskCache() :> TaskCache.ITaskCache
+        let cacheKey = ContentHash.create "k"
+        let pluginNameStr = "key-once-hit"
+        let compKey: TaskCache.CompositeKey = { Plugin = pluginNameStr; File = None }
+
+        cache.Set
+            compKey
+            cacheKey
+            { CacheKey = cacheKey
+              Errors = []
+              Status = Completed System.DateTime.UtcNow
+              EmittedEvents = [] }
+
+        let keyCalls = ref 0
+        let mutable registeredCmd: CommandHandler option = None
+
+        let handler: PluginHandler<unit, unit> =
+            { Name = PluginName.create pluginNameStr
+              Init = ()
+              Update = fun _ctx state _event -> async { return state }
+              Commands = [ "drain", fun _ctx _state _args -> async { return "ok" } ]
+              Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey =
+                Some(fun _ ->
+                    System.Threading.Interlocked.Increment(keyCalls) |> ignore
+                    Some cacheKey)
+              Teardown = None }
+
+        let reg =
+            registerHandler (servicesWithCache cache (fun (_, cmd) -> registeredCmd <- Some cmd)) handler
+
+        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/repo/A.fs" ]))
+        let! _ = registeredCmd.Value [||]
+        test <@ !keyCalls = 1 @>
+    }
+    |> Async.RunSynchronously
+
 // --- RunExclusive primitive: per-handler single-flight (always-Drop) ---
 
 /// Drive RunExclusive end-to-end via the agent: each FileChanged dispatch invokes

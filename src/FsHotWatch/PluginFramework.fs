@@ -324,73 +324,76 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                     /// signalled by `BatchChecked`, every subsequent
                     /// cacheable event (`BuildCompleted`, etc.) sees a fully
                     /// populated key and the gate is gone.
-                    let tryReplayCache (event: PluginEvent<'Msg>) =
-                        match services.TaskCache, handler.CacheKey with
-                        | Some cache, Some cacheKeyFn ->
-                            match cacheKeyFn event with
-                            | Some cacheKey ->
-                                let compKey = compositeKey event
-                                let lookupResult = cache.TryGet compKey cacheKey
-                                // §2a measurement A: per-plugin hit/miss counts. Filter post-hoc.
-                                let pluginName = PluginName.value handler.Name
+                    /// `cacheKeyOpt` is the key for this event, computed ONCE by
+                    /// the dispatch loop and threaded here so the lookup and the
+                    /// later store share the exact same value (computing a
+                    /// BuildPlugin key is a full content-hash of the project
+                    /// graph — recomputing per call doubled that cost per
+                    /// trigger). Threading the single value is also strictly
+                    /// safer than recomputing: lookup key ≡ store key by
+                    /// construction.
+                    let tryReplayCache (event: PluginEvent<'Msg>) (cacheKeyOpt: ContentHash option) =
+                        match services.TaskCache, cacheKeyOpt with
+                        | Some cache, Some cacheKey ->
+                            let compKey = compositeKey event
+                            let lookupResult = cache.TryGet compKey cacheKey
+                            // §2a measurement A: per-plugin hit/miss counts. Filter post-hoc.
+                            let pluginName = PluginName.value handler.Name
 
-                                FsHotWatch.Logging.debug
-                                    "task-cache"
-                                    $"plugin=%s{pluginName} hit=%b{lookupResult.IsSome}"
+                            FsHotWatch.Logging.debug "task-cache" $"plugin=%s{pluginName} hit=%b{lookupResult.IsSome}"
 
-                                match lookupResult with
-                                | Some result ->
-                                    // Clear stale errors before replay
-                                    match event with
-                                    | FileChecked r -> services.ClearErrors handler.Name (AbsFilePath.value r.File)
-                                    | _ -> services.ClearPlugin handler.Name
+                            match lookupResult with
+                            | Some result ->
+                                // Clear stale errors before replay
+                                match event with
+                                | FileChecked r -> services.ClearErrors handler.Name (AbsFilePath.value r.File)
+                                | _ -> services.ClearPlugin handler.Name
 
-                                    // Replay errors
-                                    for (file, entries) in result.Errors do
-                                        if file = "*" then
-                                            services.ClearPlugin handler.Name
-                                        elif entries.IsEmpty then
-                                            services.ClearErrors handler.Name file
-                                        else
-                                            services.ReportErrors handler.Name file entries
+                                // Replay errors
+                                for (file, entries) in result.Errors do
+                                    if file = "*" then
+                                        services.ClearPlugin handler.Name
+                                    elif entries.IsEmpty then
+                                        services.ClearErrors handler.Name file
+                                    else
+                                        services.ReportErrors handler.Name file entries
 
-                                    // Replay status. Rewrite the timestamp to now: the cached
-                                    // status carries the ORIGINAL run's terminal time (often a
-                                    // prior session). If a `Running since=now` had been set in
-                                    // this session, the activity log's RecordTerminal would
-                                    // compute `elapsed = cached_at - now` and produce nonsense
-                                    // (negative) elapsed. From this session's POV, the work
-                                    // "completed" instantly via cache replay.
-                                    let nowAt = System.DateTime.UtcNow
+                                // Replay status. Rewrite the timestamp to now: the cached
+                                // status carries the ORIGINAL run's terminal time (often a
+                                // prior session). If a `Running since=now` had been set in
+                                // this session, the activity log's RecordTerminal would
+                                // compute `elapsed = cached_at - now` and produce nonsense
+                                // (negative) elapsed. From this session's POV, the work
+                                // "completed" instantly via cache replay.
+                                let nowAt = System.DateTime.UtcNow
 
-                                    let replayStatus =
-                                        match result.Status with
-                                        | Completed _ -> Completed nowAt
-                                        | Failed(err, _) -> Failed(err, nowAt)
-                                        | s -> s
+                                let replayStatus =
+                                    match result.Status with
+                                    | Completed _ -> Completed nowAt
+                                    | Failed(err, _) -> Failed(err, nowAt)
+                                    | s -> s
 
-                                    services.ReportStatus handler.Name replayStatus
+                                services.ReportStatus handler.Name replayStatus
 
-                                    // Replay emitted events. Cached test-lifecycle events carry the
-                                    // ORIGINAL run's RunId, which would cause RunId-based dedup (e.g.
-                                    // FileCommand) to skip the replay as if it were the same run. Swap
-                                    // in a single fresh RunId shared across the three test events so
-                                    // the cache hit looks like a distinct run.
-                                    let freshRunId = System.Lazy<System.Guid>(System.Guid.NewGuid)
+                                // Replay emitted events. Cached test-lifecycle events carry the
+                                // ORIGINAL run's RunId, which would cause RunId-based dedup (e.g.
+                                // FileCommand) to skip the replay as if it were the same run. Swap
+                                // in a single fresh RunId shared across the three test events so
+                                // the cache hit looks like a distinct run.
+                                let freshRunId = System.Lazy<System.Guid>(System.Guid.NewGuid)
 
-                                    for emitted in result.EmittedEvents do
-                                        match emitted with
-                                        | TaskCache.CachedBuildCompleted r -> services.EmitBuildCompleted r
-                                        | TaskCache.CachedTestRunStarted r ->
-                                            services.EmitTestRunStarted { r with RunId = freshRunId.Value }
-                                        | TaskCache.CachedTestProgress r ->
-                                            services.EmitTestProgress { r with RunId = freshRunId.Value }
-                                        | TaskCache.CachedTestRunCompleted r ->
-                                            services.EmitTestRunCompleted { r with RunId = freshRunId.Value }
-                                        | TaskCache.CachedCommandCompleted r -> services.EmitCommandCompleted r
+                                for emitted in result.EmittedEvents do
+                                    match emitted with
+                                    | TaskCache.CachedBuildCompleted r -> services.EmitBuildCompleted r
+                                    | TaskCache.CachedTestRunStarted r ->
+                                        services.EmitTestRunStarted { r with RunId = freshRunId.Value }
+                                    | TaskCache.CachedTestProgress r ->
+                                        services.EmitTestProgress { r with RunId = freshRunId.Value }
+                                    | TaskCache.CachedTestRunCompleted r ->
+                                        services.EmitTestRunCompleted { r with RunId = freshRunId.Value }
+                                    | TaskCache.CachedCommandCompleted r -> services.EmitCommandCompleted r
 
-                                    true
-                                | None -> false
+                                true
                             | None -> false
                         | _ -> false
 
@@ -411,89 +414,88 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                         }
 
                     /// Run Update with a capturing context that records side effects, then store in cache if terminal.
-                    let runAndCache (event: PluginEvent<'Msg>) (state: 'State) =
+                    /// `cacheKeyOpt` is the same key the preceding `tryReplayCache`
+                    /// lookup used (computed once per event in the dispatch loop)
+                    /// — never recompute it here.
+                    let runAndCache (event: PluginEvent<'Msg>) (state: 'State) (cacheKeyOpt: ContentHash option) =
                         async {
-                            match services.TaskCache, handler.CacheKey with
-                            | Some cache, Some cacheKeyFn ->
-                                match cacheKeyFn event with
-                                | Some cacheKey ->
-                                    let capturedErrors = ResizeArray<string * ErrorEntry list>()
-                                    let capturedEvents = ResizeArray<TaskCache.CachedEvent>()
-                                    let mutable capturedStatus: PluginStatus option = None
+                            match services.TaskCache, cacheKeyOpt with
+                            | Some cache, Some cacheKey ->
+                                let capturedErrors = ResizeArray<string * ErrorEntry list>()
+                                let capturedEvents = ResizeArray<TaskCache.CachedEvent>()
+                                let mutable capturedStatus: PluginStatus option = None
 
-                                    let capturingCtx =
-                                        { ReportStatus =
-                                            fun s ->
-                                                capturedStatus <- Some s
-                                                services.ReportStatus handler.Name s
-                                          ReportErrors =
-                                            fun file entries ->
-                                                capturedErrors.Add(file, entries)
-                                                services.ReportErrors handler.Name file entries
-                                          ClearErrors =
-                                            fun file ->
-                                                capturedErrors.Add(file, [])
-                                                services.ClearErrors handler.Name file
-                                          ClearAllErrors =
-                                            fun () ->
-                                                capturedErrors.Add("*", [])
-                                                services.ClearPlugin handler.Name
-                                          EmitBuildCompleted =
-                                            fun r ->
-                                                capturedEvents.Add(TaskCache.CachedBuildCompleted r)
-                                                services.EmitBuildCompleted r
-                                          EmitTestRunStarted =
-                                            fun r ->
-                                                capturedEvents.Add(TaskCache.CachedTestRunStarted r)
-                                                services.EmitTestRunStarted r
-                                          EmitTestProgress =
-                                            fun r ->
-                                                capturedEvents.Add(TaskCache.CachedTestProgress r)
-                                                services.EmitTestProgress r
-                                          EmitTestRunCompleted =
-                                            fun r ->
-                                                capturedEvents.Add(TaskCache.CachedTestRunCompleted r)
-                                                services.EmitTestRunCompleted r
-                                          EmitCommandCompleted =
-                                            fun r ->
-                                                capturedEvents.Add(TaskCache.CachedCommandCompleted r)
-                                                services.EmitCommandCompleted r
-                                          Checker = services.Checker
-                                          RepoRoot = services.RepoRoot
-                                          Post = post
-                                          StartSubtask = fun key label -> services.StartSubtask handler.Name key label
-                                          UpdateSubtask =
-                                            fun key label -> services.UpdateSubtask handler.Name key label
-                                          EndSubtask = fun key -> services.EndSubtask handler.Name key
-                                          Log = fun msg -> services.Log handler.Name msg
-                                          CompleteWithSummary = fun s -> services.SetSummary handler.Name s
-                                          CompleteWithTimeout =
-                                            fun reason ->
-                                                services.SetSummary handler.Name $"timed out after {reason}"
-                                                services.SetNextTerminalOutcome handler.Name (TimedOut reason)
-                                          RunExclusive = runExclusive
-                                          IsRunning = isRunning
-                                          FcsSuppressedCodes = services.FcsSuppressedCodes }
+                                let capturingCtx =
+                                    { ReportStatus =
+                                        fun s ->
+                                            capturedStatus <- Some s
+                                            services.ReportStatus handler.Name s
+                                      ReportErrors =
+                                        fun file entries ->
+                                            capturedErrors.Add(file, entries)
+                                            services.ReportErrors handler.Name file entries
+                                      ClearErrors =
+                                        fun file ->
+                                            capturedErrors.Add(file, [])
+                                            services.ClearErrors handler.Name file
+                                      ClearAllErrors =
+                                        fun () ->
+                                            capturedErrors.Add("*", [])
+                                            services.ClearPlugin handler.Name
+                                      EmitBuildCompleted =
+                                        fun r ->
+                                            capturedEvents.Add(TaskCache.CachedBuildCompleted r)
+                                            services.EmitBuildCompleted r
+                                      EmitTestRunStarted =
+                                        fun r ->
+                                            capturedEvents.Add(TaskCache.CachedTestRunStarted r)
+                                            services.EmitTestRunStarted r
+                                      EmitTestProgress =
+                                        fun r ->
+                                            capturedEvents.Add(TaskCache.CachedTestProgress r)
+                                            services.EmitTestProgress r
+                                      EmitTestRunCompleted =
+                                        fun r ->
+                                            capturedEvents.Add(TaskCache.CachedTestRunCompleted r)
+                                            services.EmitTestRunCompleted r
+                                      EmitCommandCompleted =
+                                        fun r ->
+                                            capturedEvents.Add(TaskCache.CachedCommandCompleted r)
+                                            services.EmitCommandCompleted r
+                                      Checker = services.Checker
+                                      RepoRoot = services.RepoRoot
+                                      Post = post
+                                      StartSubtask = fun key label -> services.StartSubtask handler.Name key label
+                                      UpdateSubtask = fun key label -> services.UpdateSubtask handler.Name key label
+                                      EndSubtask = fun key -> services.EndSubtask handler.Name key
+                                      Log = fun msg -> services.Log handler.Name msg
+                                      CompleteWithSummary = fun s -> services.SetSummary handler.Name s
+                                      CompleteWithTimeout =
+                                        fun reason ->
+                                            services.SetSummary handler.Name $"timed out after {reason}"
+                                            services.SetNextTerminalOutcome handler.Name (TimedOut reason)
+                                      RunExclusive = runExclusive
+                                      IsRunning = isRunning
+                                      FcsSuppressedCodes = services.FcsSuppressedCodes }
 
-                                    let! nextState = safeUpdate capturingCtx state event
+                                let! nextState = safeUpdate capturingCtx state event
 
-                                    // Only cache when status reached a terminal state
-                                    match capturedStatus with
-                                    | Some(Completed _ as s)
-                                    | Some(Failed _ as s) ->
-                                        let compKey = compositeKey event
+                                // Only cache when status reached a terminal state
+                                match capturedStatus with
+                                | Some(Completed _ as s)
+                                | Some(Failed _ as s) ->
+                                    let compKey = compositeKey event
 
-                                        let result: TaskCache.TaskCacheResult =
-                                            { CacheKey = cacheKey
-                                              Errors = capturedErrors |> Seq.toList
-                                              Status = s
-                                              EmittedEvents = capturedEvents |> Seq.toList }
+                                    let result: TaskCache.TaskCacheResult =
+                                        { CacheKey = cacheKey
+                                          Errors = capturedErrors |> Seq.toList
+                                          Status = s
+                                          EmittedEvents = capturedEvents |> Seq.toList }
 
-                                        cache.Set compKey cacheKey result
-                                    | _ -> ()
+                                    cache.Set compKey cacheKey result
+                                | _ -> ()
 
-                                    return nextState
-                                | None -> return! safeUpdate ctx state event
+                                return nextState
                             | _ -> return! safeUpdate ctx state event
                         }
 
@@ -506,13 +508,25 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 ch.Reply(state)
                                 return! loop state
                             | Choice1Of2 event ->
+                                // Compute the cache key ONCE per dispatched event and thread the
+                                // single value to both the lookup (tryReplayCache) and the store
+                                // (runAndCache). The framework used to call `cacheKeyFn event`
+                                // twice per dispatch; for BuildPlugin that key is a full
+                                // content-hash of the project graph, so a miss paid two SHA-256
+                                // passes per trigger. Threading one value also guarantees the
+                                // lookup key equals the store key by construction.
+                                let cacheKeyOpt =
+                                    match handler.CacheKey with
+                                    | Some cacheKeyFn -> cacheKeyFn event
+                                    | None -> None
+
                                 let! nextState =
                                     async {
                                         try
-                                            if tryReplayCache event then
+                                            if tryReplayCache event cacheKeyOpt then
                                                 return state
                                             else
-                                                return! runAndCache event state
+                                                return! runAndCache event state cacheKeyOpt
                                         finally
                                             // Decrement only after the handler
                                             // (or cache replay) finishes — until
