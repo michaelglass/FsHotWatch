@@ -260,6 +260,30 @@ let internal buildFilterArgs (config: TestConfig) (classesByProject: Map<string,
         Logging.info "test-prune" $"Filter: %s{result}"
         Some result
 
+/// Microsoft.Testing.Platform exit code for "no tests matched / zero tests ran".
+[<Literal>]
+let internal zeroTestsExitCode = 8
+
+/// True when a *filtered* run matched no tests in this project. An explicit
+/// `--filter-*` passthrough (run-tests / test-rerun) is fanned out to EVERY test
+/// project; a project that has no test matching the filter runs zero tests and
+/// the runner exits non-zero (MTP uses exit code 8, `ZeroTests`). That is NOT a
+/// test failure — the tests simply don't exist for this filter — so it must be
+/// treated like an impact-skip (passed/filtered, contributing no coverage),
+/// exactly as a template-filtered project with no affected classes already is.
+///
+/// Gated on `wasFiltered`: an UNFILTERED project that runs zero tests is a real
+/// problem (misconfigured runner, empty suite) and must still surface, so this
+/// returns false for it. Detection is structural (the canonical exit code) with
+/// a text fallback for runners that exit non-zero without emitting code 8 but
+/// still print MTP's zero-tests summary line.
+let internal isZeroTestsUnderFilter (wasFiltered: bool) (outcome: ProcessOutcome) : bool =
+    wasFiltered
+    && match outcome with
+       | ProcessOutcome.Failed(code, _) when code = zeroTestsExitCode -> true
+       | ProcessOutcome.Failed(_, output) -> output.Contains("Zero tests ran", StringComparison.OrdinalIgnoreCase)
+       | _ -> false
+
 /// Issue 2 — STRUCTURAL apphost-missing detection. On a cold daemon a
 /// `dotnet run --project <proj> --no-build` can be launched before the build
 /// plugin produced that project's apphost binary; `dotnet run` then fails to
@@ -716,6 +740,11 @@ let private executeTests
                             // via the same structural-with-fallback check.
                             let apphostMissing = detectApphostMissing processResult
 
+                            // A filtered run that matched zero tests in this project is
+                            // not a failure (see `isZeroTestsUnderFilter`) — treat it
+                            // like an impact-skip.
+                            let zeroTestsUnderFilter = isZeroTestsUnderFilter wasFiltered processResult
+
                             let success = isSucceeded processResult
                             let output = outputOf processResult
 
@@ -725,6 +754,12 @@ let private executeTests
                                 Logging.warn
                                     "test-prune"
                                     $"%s{config.Project}: apphost still missing after retry — surfacing as 'waiting on build', not FAILED (this is a build-ordering issue, never a test failure)"
+                            elif zeroTestsUnderFilter then
+                                logToCtx $"{config.Project}: no tests matched the filter — skipped"
+
+                                Logging.info
+                                    "test-prune"
+                                    $"%s{config.Project}: no tests matched the active filter — skipped, not FAILED (a filtered run that selects nothing here is not a test failure)"
                             elif success then
                                 logToCtx $"{config.Project}: passed"
                                 Logging.info "test-prune" $"%s{config.Project}: PASSED"
@@ -732,7 +767,7 @@ let private executeTests
                                 logToCtx $"{config.Project}: failed"
                                 Logging.error "test-prune" $"%s{config.Project}: FAILED"
 
-                            if not success && not apphostMissing then
+                            if not success && not apphostMissing && not zeroTestsUnderFilter then
                                 try
                                     let logDir = testRunsDir repoRoot
                                     Directory.CreateDirectory(logDir) |> ignore
@@ -782,6 +817,14 @@ let private executeTests
                                     // and `wasFiltered` reports true for it, so it
                                     // never lowers a coverage baseline (Issue 3).
                                     TestsDeferred "apphost not produced; tests did not run"
+                                | _ when zeroTestsUnderFilter ->
+                                    // A filtered run matched no tests here. Record it
+                                    // like an impact-skip: passed + filtered (so it
+                                    // counts toward a green verdict and contributes no
+                                    // coverage), NOT TestsFailed. Without this, a
+                                    // `--filter-*` passthrough fanned out across every
+                                    // project reports the non-matching ones as failures.
+                                    TestsPassed(output, true, projectElapsed)
                                 | ProcessOutcome.Succeeded _ -> TestsPassed(output, wasFiltered, projectElapsed)
                                 | ProcessOutcome.TimedOut(after, _) ->
                                     TestsTimedOut(output, after, wasFiltered, projectElapsed)
