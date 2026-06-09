@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.22 - 2026-06-09
+
 - fix: a filtered test run (`run-tests` / `test-rerun --filter-class` / `--filter-trait`)
   no longer reports projects that contain no matching test as FAILED. The raw
   passthrough filter is fanned out to every test project; a project with no test
