@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "core-v*"
+      - "cli-v*"
       - "testprune-v*"
       - "analyzers-v*"
       - "lint-v*"
@@ -16,7 +17,7 @@ permissions:
   contents: write
   id-token: write
 
-# --- core (FsHotWatch + FsHotWatch.Cli) ---
+# --- core (FsHotWatch) ---
 
 jobs:
   release-core:
@@ -26,13 +27,41 @@ jobs:
       package-name: FsHotWatch
       tag-prefix: core-v
       fsproj-path: src/FsHotWatch/FsHotWatch.fsproj
-      extra-fsproj-paths: src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj
     permissions:
       contents: write
 
   publish-core:
     if: startsWith(github.ref, 'refs/tags/core-v')
     needs: release-core
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nuget-packages
+          path: ./artifacts
+      - uses: nuget/login@v1
+        id: nuget-login
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - run: dotnet nuget push ./artifacts/*.nupkg --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  # --- cli (FsHotWatch.Cli, own cli-v tag; bundles the plugins) ---
+
+  release-cli:
+    if: startsWith(github.ref, 'refs/tags/cli-v')
+    uses: michaelglass/MichaelsWackyFsPackageTools/.github/workflows/michaels-wacky-release.yml@main
+    with:
+      package-name: FsHotWatch.Cli
+      tag-prefix: cli-v
+      fsproj-path: src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj
+    permissions:
+      contents: write
+
+  publish-cli:
+    if: startsWith(github.ref, 'refs/tags/cli-v')
+    needs: release-cli
     runs-on: ubuntu-latest
     permissions:
       id-token: write

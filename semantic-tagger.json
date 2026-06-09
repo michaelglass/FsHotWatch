@@ -3,8 +3,12 @@
     {
       "name": "FsHotWatch",
       "fsproj": "src/FsHotWatch/FsHotWatch.fsproj",
-      "tagPrefix": "core-v",
-      "fsProjsSharingSameTag": ["src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj"]
+      "tagPrefix": "core-v"
+    },
+    {
+      "name": "FsHotWatch.Cli",
+      "fsproj": "src/FsHotWatch.Cli/FsHotWatch.Cli.fsproj",
+      "tagPrefix": "cli-v"
     },
     {
       "name": "FsHotWatch.Build",
