@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- fix: a filtered test run (`run-tests` / `test-rerun --filter-class` / `--filter-trait`)
+  no longer reports projects that contain no matching test as FAILED. The raw
+  passthrough filter is fanned out to every test project; a project with no test
+  matching the filter runs zero tests and the runner exits non-zero (Microsoft
+  Testing Platform exit code 8, "Zero tests ran"), which was interpreted as a test
+  failure — producing bogus aggregates like "5 failed: Analyzers, Build, Database,
+  Unit" when only one project actually had the targeted class. Such a zero-match
+  filtered run is now classified as passed/skipped (like a template-filtered project
+  with no affected classes), contributing no coverage. Detection is structural (the
+  canonical exit code) with a text fallback for runners that exit non-zero without
+  emitting code 8. Gated on `wasFiltered`, so an UNFILTERED project that runs zero
+  tests (empty suite, misconfigured runner) still surfaces as a failure.
+
 ## 0.7.0-alpha.21 - 2026-06-08
 
 - fix: a FAILED test verdict is no longer served from the task cache as a current

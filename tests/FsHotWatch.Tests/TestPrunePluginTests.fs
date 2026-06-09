@@ -1851,6 +1851,59 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
 
         test <@ changedAfterAst.Value.Contains(env.RelPath) @>)
 
+// --- isZeroTestsUnderFilter unit tests ---
+//
+// Regression coverage for the bug where `test-rerun --filter-class X` (a raw
+// passthrough filter fanned out to EVERY test project) reported every project
+// WITHOUT a matching test as "failed", because the runner exits non-zero
+// (MTP exit code 8 / "Zero tests ran") and that was interpreted as a failure.
+
+[<Fact(Timeout = 15000)>]
+let ``isZeroTestsUnderFilter true for filtered run with MTP zero-tests exit code`` () =
+    let outcome =
+        FsHotWatch.ProcessHelper.ProcessOutcome.Failed(zeroTestsExitCode, "Test run summary: Zero tests ran")
+
+    test <@ isZeroTestsUnderFilter true outcome @>
+
+[<Fact(Timeout = 15000)>]
+let ``isZeroTestsUnderFilter true for filtered run whose output reports zero tests (non-8 exit)`` () =
+    // Fallback path: a runner that exits non-zero without the canonical code 8
+    // but still prints MTP's zero-tests summary line.
+    let outcome =
+        FsHotWatch.ProcessHelper.ProcessOutcome.Failed(
+            1,
+            "...\nZero tests ran - Foo.Tests.dll (net10.0|arm64)\n  total: 0"
+        )
+
+    test <@ isZeroTestsUnderFilter true outcome @>
+
+[<Fact(Timeout = 15000)>]
+let ``isZeroTestsUnderFilter false for UNFILTERED run even with zero-tests exit`` () =
+    // An unfiltered project that runs zero tests is a real problem (empty suite,
+    // misconfigured runner) and must still surface — not be silently skipped.
+    let outcome =
+        FsHotWatch.ProcessHelper.ProcessOutcome.Failed(zeroTestsExitCode, "Zero tests ran")
+
+    test <@ not (isZeroTestsUnderFilter false outcome) @>
+
+[<Fact(Timeout = 15000)>]
+let ``isZeroTestsUnderFilter false for a genuine test failure under filter`` () =
+    let outcome =
+        FsHotWatch.ProcessHelper.ProcessOutcome.Failed(
+            2,
+            "failed Foo.Bar\nTest run summary: Failed!\n  total: 3\n  failed: 1\n  succeeded: 2"
+        )
+
+    test <@ not (isZeroTestsUnderFilter true outcome) @>
+
+[<Fact(Timeout = 15000)>]
+let ``isZeroTestsUnderFilter false for a passing filtered run`` () =
+    let outcome =
+        FsHotWatch.ProcessHelper.ProcessOutcome.Succeeded
+            "Test run summary: Passed!\n  total: 4\n  failed: 0\n  succeeded: 4"
+
+    test <@ not (isZeroTestsUnderFilter true outcome) @>
+
 // --- buildFilterArgs unit tests ---
 
 [<Fact(Timeout = 15000)>]
