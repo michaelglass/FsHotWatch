@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.15 - 2026-06-09
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.7.0-alpha.14 - 2026-06-02
 
 - fix: the analyzer summary no longer reports a phantom finding/error count — the `N findings (N errors, …)` line now reflects real diagnostics, so a genuinely clean run can't display a non-zero error count that corresponds to no actual finding (a false-green in the display).
