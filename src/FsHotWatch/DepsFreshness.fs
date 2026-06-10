@@ -334,56 +334,84 @@ let internal paketGroupsFromLock (lockPath: string) : string list =
     with _ ->
         [ "Main" ]
 
-/// Production restore runner. Runs `dotnet restore` in the project directory,
-/// then `dotnet paket restore` when a `paket.dependencies` is in scope and
+/// One step in a project's restore sequence: the `dotnet` sub-command `args` to
+/// run (e.g. `restore "<fsproj>"`, `paket restore --group Main`, `tool restore`),
+/// a `purpose` label for diagnostics, and the working directory the step runs in.
+/// The executable is always `dotnet`, so it is not carried per-step.
+type RestoreStep =
+    { Purpose: string
+      Args: string
+      WorkingDir: string }
+
+/// Pure composition of the ordered restore steps for a project — the branchy
+/// "which steps, in what order, with what args" decision, separated from process
+/// execution so it is unit-testable without shelling out. `productionRestoreRunner`
+/// composes this with `runRestoreSteps`.
+///
+/// Ordering & inclusion (unchanged from the shell-out it was extracted from):
+///   1. always `dotnet restore "<fsproj>"` in the project directory;
+///   2. when a `paket.dependencies` is in scope, one `dotnet paket restore
+///      --group <g>` per group enumerated from the in-scope `paket.lock` (via
+///      `paketGroupsFromLock`, falling back to just `Main` when no lock is found).
+///      Passing an explicit `--group` makes paket skip its full-repo
+///      project-discovery walk (`FindAllProjects`), which otherwise recurses
+///      forever through symlink loops such as a Nix `.devenv` profile's macOS-SDK
+///      ncurses links (a bare `paket restore` wedged on exactly that). Per-project
+///      reference injection — for repos that use `paket.references` — is already
+///      handled by the `restore` step above via Paket.Restore.targets'
+///      `paket restore --project`.
+///   3. when a `.config/dotnet-tools.json` is in scope, a final `dotnet tool
+///      restore`. The tools manifest is not a freshness dep input, so it is probed
+///      separately from `dependencyFiles` — but a stale-recovery restore should
+///      still refresh the tool manifest when one is in scope.
+let internal restoreSteps (repoRoot: string) (fsprojPath: string) : RestoreStep list =
+    let projDir = Path.GetDirectoryName(fsprojPath: string)
+    let depFiles = dependencyFiles fsprojPath repoRoot
+
+    let hasName (name: string) =
+        depFiles
+        |> List.exists (fun f -> String.Equals(Path.GetFileName f, name, StringComparison.OrdinalIgnoreCase))
+
+    let step purpose args =
+        { Purpose = purpose
+          Args = args
+          WorkingDir = projDir }
+
+    [ yield step "restore" $"restore \"%s{fsprojPath}\""
+      if hasName "paket.dependencies" then
+          let groups =
+              depFiles
+              |> List.tryFind (fun f ->
+                  String.Equals(Path.GetFileName f, "paket.lock", StringComparison.OrdinalIgnoreCase))
+              |> Option.map paketGroupsFromLock
+              |> Option.defaultValue [ "Main" ]
+
+          for g in groups do
+              yield step "paket-restore" $"paket restore --group %s{g}"
+      if (toolsManifest fsprojPath repoRoot).IsSome then
+          yield step "tool-restore" "tool restore" ]
+
+/// Execute an ordered list of restore steps. Each step runs `dotnet <args>` in
+/// its working directory, bounded by `restoreStepTimeout`. The first non-success
+/// short-circuits and is returned; a fully-successful chain returns `Succeeded ""`
+/// (the final step's stdout is not used by the caller — it only matches
+/// `Succeeded _`). Uses ProcessHelper so stdout/stderr are drained concurrently
+/// (no deadlock).
+let private runRestoreSteps (steps: RestoreStep list) : ProcessOutcome =
+    let rec run remaining =
+        match remaining with
+        | [] -> Succeeded ""
+        | step :: rest ->
+            match runProcessWithTimeout "dotnet" step.Args step.WorkingDir [] restoreStepTimeout with
+            | Succeeded _ -> run rest
+            | other -> other
+
+    run steps
+
+/// Production restore runner. Composes the pure `restoreSteps` plan with
+/// `runRestoreSteps`: `dotnet restore` in the project directory, then per-group
+/// `dotnet paket restore` when a `paket.dependencies` is in scope, then
 /// `dotnet tool restore` when a `.config/dotnet-tools.json` is in scope. The
-/// first non-success short-circuits and is returned. Each step is bounded by
-/// `restoreStepTimeout`. Uses ProcessHelper so stdout/stderr are drained
-/// concurrently (no deadlock).
+/// first non-success short-circuits and is returned.
 let productionRestoreRunner (repoRoot: string) : RestoreRunner =
-    fun fsprojPath ->
-        let projDir = Path.GetDirectoryName(fsprojPath: string)
-        let depFiles = dependencyFiles fsprojPath repoRoot
-
-        let hasName (name: string) =
-            depFiles
-            |> List.exists (fun f -> String.Equals(Path.GetFileName f, name, StringComparison.OrdinalIgnoreCase))
-
-        let steps =
-            [ yield ("restore", $"restore \"%s{fsprojPath}\"")
-              if hasName "paket.dependencies" then
-                  // Restore paket sources/git-deps PER GROUP. Passing an explicit
-                  // `--group` makes paket skip its full-repo project-discovery walk
-                  // (`FindAllProjects`), which otherwise recurses forever through
-                  // symlink loops such as a Nix `.devenv` profile's macOS-SDK ncurses
-                  // links (a bare `paket restore` wedged on exactly that). Per-project
-                  // reference injection — for repos that use `paket.references` — is
-                  // already handled by the `restore` step above via
-                  // Paket.Restore.targets' `paket restore --project`.
-                  let groups =
-                      depFiles
-                      |> List.tryFind (fun f ->
-                          String.Equals(Path.GetFileName f, "paket.lock", StringComparison.OrdinalIgnoreCase))
-                      |> Option.map paketGroupsFromLock
-                      |> Option.defaultValue [ "Main" ]
-
-                  for g in groups do
-                      yield ("paket-restore", $"paket restore --group %s{g}")
-              // The tools manifest is not a freshness dep input, so it is probed
-              // separately from `dependencyFiles` — but a stale-recovery restore
-              // should still refresh the tool manifest when one is in scope.
-              if (toolsManifest fsprojPath repoRoot).IsSome then
-                  yield ("tool-restore", "tool restore") ]
-
-        // Run each step in order; the first non-success short-circuits and is
-        // returned. A fully-successful chain returns `Succeeded ""` (the final
-        // step's stdout is not used by the caller — it only matches `Succeeded _`).
-        let rec run remaining =
-            match remaining with
-            | [] -> Succeeded ""
-            | (_label, args) :: rest ->
-                match runProcessWithTimeout "dotnet" args projDir [] restoreStepTimeout with
-                | Succeeded _ -> run rest
-                | other -> other
-
-        run steps
+    fun fsprojPath -> restoreSteps repoRoot fsprojPath |> runRestoreSteps
