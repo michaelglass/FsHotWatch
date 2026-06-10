@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.26 - 2026-06-10
+
 ### Changed
 
 - Extracted the post-kill output-drain tail into an internal `ProcessHelper.drainedOrEmpty`
