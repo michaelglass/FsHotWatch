@@ -311,6 +311,29 @@ let evaluateProject
 /// instead. Generous enough for a cold restore of a large solution.
 let restoreStepTimeout = TimeSpan.FromMinutes 5.0
 
+/// Group names declared in a `paket.lock`. The first/implicit group is always
+/// "Main" (it has no `GROUP` header); any additional groups appear as
+/// `GROUP <Name>` lines. Used to restore paket sources/git-deps per group, which
+/// lets `paket restore` skip its full-repo project-discovery walk. Falls back to
+/// just "Main" when the lock is missing/unreadable.
+let internal paketGroupsFromLock (lockPath: string) : string list =
+    try
+        let explicit =
+            File.ReadAllLines lockPath
+            |> Array.choose (fun line ->
+                let t = line.Trim()
+
+                if t.StartsWith("GROUP ", StringComparison.OrdinalIgnoreCase) then
+                    Some(t.Substring(6).Trim())
+                else
+                    None)
+            |> Array.filter (fun g -> g <> "")
+            |> Array.toList
+
+        "Main" :: explicit
+    with _ ->
+        [ "Main" ]
+
 /// Production restore runner. Runs `dotnet restore` in the project directory,
 /// then `dotnet paket restore` when a `paket.dependencies` is in scope and
 /// `dotnet tool restore` when a `.config/dotnet-tools.json` is in scope. The
@@ -329,7 +352,23 @@ let productionRestoreRunner (repoRoot: string) : RestoreRunner =
         let steps =
             [ yield ("restore", $"restore \"%s{fsprojPath}\"")
               if hasName "paket.dependencies" then
-                  yield ("paket-restore", "paket restore")
+                  // Restore paket sources/git-deps PER GROUP. Passing an explicit
+                  // `--group` makes paket skip its full-repo project-discovery walk
+                  // (`FindAllProjects`), which otherwise recurses forever through
+                  // symlink loops such as a Nix `.devenv` profile's macOS-SDK ncurses
+                  // links (a bare `paket restore` wedged on exactly that). Per-project
+                  // reference injection — for repos that use `paket.references` — is
+                  // already handled by the `restore` step above via
+                  // Paket.Restore.targets' `paket restore --project`.
+                  let groups =
+                      depFiles
+                      |> List.tryFind (fun f ->
+                          String.Equals(Path.GetFileName f, "paket.lock", StringComparison.OrdinalIgnoreCase))
+                      |> Option.map paketGroupsFromLock
+                      |> Option.defaultValue [ "Main" ]
+
+                  for g in groups do
+                      yield ("paket-restore", $"paket restore --group %s{g}")
               // The tools manifest is not a freshness dep input, so it is probed
               // separately from `dependencyFiles` — but a stale-recovery restore
               // should still refresh the tool manifest when one is in scope.

@@ -491,3 +491,37 @@ let ``applyDepsGate: RecoveredOk proceeds and clears prior diagnostic`` () =
 
     test <@ proceed @>
     test <@ host.GetErrorsByPlugin pluginName |> Map.isEmpty @>
+
+// ---- paketGroupsFromLock (drives the per-group, walk-free paket restore) ----
+
+[<Fact(Timeout = 5000)>]
+let ``paketGroupsFromLock: lock with no GROUP headers yields just Main`` () =
+    let dir = Path.Combine(Path.GetTempPath(), "fshw-groups-" + Guid.NewGuid().ToString("N"))
+    Directory.CreateDirectory dir |> ignore
+    let lockPath = Path.Combine(dir, "paket.lock")
+
+    try
+        File.WriteAllText(lockPath, "NUGET\n  remote: https://api.nuget.org/v3/index.json\n    FSharp.Core (8.0.0)\n")
+        test <@ paketGroupsFromLock lockPath = [ "Main" ] @>
+    finally
+        Directory.Delete(dir, true)
+
+[<Fact(Timeout = 5000)>]
+let ``paketGroupsFromLock: explicit GROUP headers are returned after Main`` () =
+    let dir = Path.Combine(Path.GetTempPath(), "fshw-groups-" + Guid.NewGuid().ToString("N"))
+    Directory.CreateDirectory dir |> ignore
+    let lockPath = Path.Combine(dir, "paket.lock")
+
+    try
+        File.WriteAllText(
+            lockPath,
+            "NUGET\n  remote: r\n    A (1.0)\nGROUP Build\nNUGET\n  remote: r\n    B (2.0)\nGROUP Test\nNUGET\n    C (3.0)\n"
+        )
+
+        test <@ paketGroupsFromLock lockPath = [ "Main"; "Build"; "Test" ] @>
+    finally
+        Directory.Delete(dir, true)
+
+[<Fact(Timeout = 5000)>]
+let ``paketGroupsFromLock: missing lock falls back to Main`` () =
+    test <@ paketGroupsFromLock "/no/such/dir/paket.lock" = [ "Main" ] @>
