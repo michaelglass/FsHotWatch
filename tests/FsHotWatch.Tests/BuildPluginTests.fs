@@ -631,6 +631,13 @@ let ``regression: BuildPlugin writes a cache entry on terminal Custom BuildDone`
     let computedKey = cacheKeyFn (FileChanged(SourceChanged [ "src/Lib.fs" ]))
     test <@ computedKey.IsSome @>
 
+    // The framework writes the cache entry (`cache.Set`) AFTER the handler's
+    // Update fully returns, whereas `waitForTerminalStatus` observes the
+    // terminal status reported *inside* that Update — so the entry can lag the
+    // status by a scheduling quantum under load. Poll-until-deadline for the
+    // entry instead of reading once (deterministic write, just not yet visible
+    // the instant the status flips).
+    waitUntil (fun () -> (cacheIface.TryGet key computedKey.Value).IsSome) 5000
     let result = cacheIface.TryGet key computedKey.Value
     test <@ result.IsSome @>
     // EmittedEvents should include the BuildCompleted that the synchronous

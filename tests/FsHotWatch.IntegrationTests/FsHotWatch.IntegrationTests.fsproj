@@ -22,6 +22,7 @@
     <Compile Include="ProcessHelperTimeoutTests.fs" />
     <Compile Include="PluginActivityConcurrencyTests.fs" />
     <Compile Include="PluginTimeoutTests.fs" />
+    <Compile Include="TestPruneStormTests.fs" />
     <Compile Include="IntegrationTests.fs" />
   </ItemGroup>
 

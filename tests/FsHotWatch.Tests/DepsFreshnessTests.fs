@@ -529,3 +529,120 @@ let ``paketGroupsFromLock: explicit GROUP headers are returned after Main`` () =
 [<Fact(Timeout = 5000)>]
 let ``paketGroupsFromLock: missing lock falls back to Main`` () =
     test <@ paketGroupsFromLock "/no/such/dir/paket.lock" = [ "Main" ] @>
+
+// ---- restoreSteps (pure restore-step composition extracted from the runner) ----
+//
+// These pin the branchy "which steps, in what order, with what args" decision
+// that productionRestoreRunner used to fold into its shell-out loop — now
+// unit-testable without invoking `dotnet`/`paket`. Real paket.lock-shaped content
+// drives the per-group enumeration.
+
+/// A `paket.lock` body with the given explicit GROUP headers (Main is implicit).
+let private lockWithGroups (groups: string list) =
+    let mainBody =
+        "NUGET\n  remote: https://api.nuget.org/v3/index.json\n    FSharp.Core (8.0.0)\n"
+
+    let groupBodies =
+        groups
+        |> List.map (fun g -> $"GROUP %s{g}\nNUGET\n  remote: r\n    Pkg{g} (1.0)\n")
+        |> String.concat ""
+
+    mainBody + groupBodies
+
+[<Fact(Timeout = 5000)>]
+let ``restoreSteps: no-paket project yields just the dotnet restore step`` () =
+    withTempDir "deps-steps-nopaket" (fun root ->
+        let projDir = Path.Combine(root, "src", "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        touch fsproj
+
+        let steps = restoreSteps root fsproj
+
+        test <@ steps |> List.map (fun s -> s.Purpose) = [ "restore" ] @>
+        // The lone step restores the fsproj from the project directory.
+        let only = List.exactlyOne steps
+        test <@ only.Args = $"restore \"%s{fsproj}\"" @>
+        test <@ Path.GetFullPath only.WorkingDir = Path.GetFullPath projDir @>)
+
+[<Fact(Timeout = 5000)>]
+let ``restoreSteps: paket project with Main+Build groups yields per-group steps in order`` () =
+    withTempDir "deps-steps-groups" (fun root ->
+        let projDir = Path.Combine(root, "src", "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        touch fsproj
+        touch (Path.Combine(root, "paket.dependencies"))
+        File.WriteAllText(Path.Combine(root, "paket.lock"), lockWithGroups [ "Build" ])
+
+        let steps = restoreSteps root fsproj
+
+        // dotnet restore first, then one paket-restore per group (Main, then Build).
+        test <@ steps |> List.map (fun s -> s.Purpose) = [ "restore"; "paket-restore"; "paket-restore" ] @>
+
+        let paketArgs =
+            steps
+            |> List.filter (fun s -> s.Purpose = "paket-restore")
+            |> List.map (fun s -> s.Args)
+
+        test <@ paketArgs = [ "paket restore --group Main"; "paket restore --group Build" ] @>)
+
+[<Fact(Timeout = 5000)>]
+let ``restoreSteps: paket.dependencies present but lock missing falls back to Main only`` () =
+    withTempDir "deps-steps-nolock" (fun root ->
+        let projDir = Path.Combine(root, "src", "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        touch fsproj
+        // paket.dependencies in scope, but NO paket.lock → just the Main group.
+        touch (Path.Combine(root, "paket.dependencies"))
+
+        let steps = restoreSteps root fsproj
+
+        let paketArgs =
+            steps
+            |> List.filter (fun s -> s.Purpose = "paket-restore")
+            |> List.map (fun s -> s.Args)
+
+        test <@ paketArgs = [ "paket restore --group Main" ] @>)
+
+[<Fact(Timeout = 5000)>]
+let ``restoreSteps: tools manifest in scope appends a tool-restore step last`` () =
+    withTempDir "deps-steps-tool" (fun root ->
+        let projDir = Path.Combine(root, "src", "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        touch fsproj
+        touch (Path.Combine(root, ".config", "dotnet-tools.json"))
+
+        let steps = restoreSteps root fsproj
+
+        // No paket here → restore then tool-restore, with tool-restore LAST.
+        test <@ steps |> List.map (fun s -> s.Purpose) = [ "restore"; "tool-restore" ] @>
+        let last = List.last steps
+        test <@ last.Purpose = "tool-restore" @>
+        test <@ last.Args = "tool restore" @>)
+
+[<Fact(Timeout = 5000)>]
+let ``restoreSteps: full stack (paket groups + tools) orders restore, per-group paket, then tool-restore`` () =
+    withTempDir "deps-steps-full" (fun root ->
+        let projDir = Path.Combine(root, "src", "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        touch fsproj
+        touch (Path.Combine(root, "paket.dependencies"))
+        File.WriteAllText(Path.Combine(root, "paket.lock"), lockWithGroups [ "Build"; "Test" ])
+        touch (Path.Combine(root, ".config", "dotnet-tools.json"))
+
+        let steps = restoreSteps root fsproj
+
+        test
+            <@
+                steps |> List.map (fun s -> s.Purpose) = [ "restore"
+                                                           "paket-restore" // Main
+                                                           "paket-restore" // Build
+                                                           "paket-restore" // Test
+                                                           "tool-restore" ]
+            @>
+
+        // Every step runs `dotnet <args>` from the project directory.
+        test
+            <@
+                steps
+                |> List.forall (fun s -> Path.GetFullPath s.WorkingDir = Path.GetFullPath projDir)
+            @>)
