@@ -188,28 +188,8 @@ let ``build-status command returns failed after failed build`` () =
     let doc = JsonDocument.Parse(result.Value)
     Assert.Equal("failed", doc.RootElement.GetProperty("status").GetString())
 
-[<Fact(Timeout = 15000)>]
-let ``build plugin honors timeoutSec and records TimedOut outcome`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let handler =
-        BuildPlugin.create "sleep" "10" [] (ProjectGraph()) [] None [] (Some 1)
-
-    host.RegisterHandler(handler)
-    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
-
-    waitForTerminalStatus host "build" 8000
-
-    let history = host.GetHistory("build")
-    test <@ not history.IsEmpty @>
-    let last = List.last history
-
-    test
-        <@
-            match last.Outcome with
-            | TimedOut _ -> true
-            | _ -> false
-        @>
+// ``build plugin honors timeoutSec and records TimedOut outcome`` moved to
+// FsHotWatch.IntegrationTests/PluginTimeoutTests.fs (coverage-deterministic; rationale there).
 
 [<Fact(Timeout = 20000)>]
 let ``build plugin reports Failed status on failed build`` () =

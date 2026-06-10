@@ -1,9 +1,31 @@
 module FsHotWatch.Tests.ProcessHelperTests
 
 open System
+open System.Threading.Tasks
 open Xunit
 open FsHotWatch.ProcessHelper
 open FsHotWatch.Tests.TestHelpers
+
+// --- drainedOrEmpty: post-kill drain tail (internal, via InternalsVisibleTo) ---
+// The timeout-kill call sites are exercised end-to-end in
+// FsHotWatch.IntegrationTests; these deterministic unit tests pin both arms so
+// the pure decision (completed -> value, anything else -> "") stays covered in
+// the unit metric without depending on OS scheduling.
+
+[<Fact(Timeout = 5000)>]
+let ``drainedOrEmpty returns the value of a completed task`` () =
+    Assert.Equal("hello", drainedOrEmpty (Task.FromResult "hello"))
+
+[<Fact(Timeout = 5000)>]
+let ``drainedOrEmpty returns empty for a never-completing task`` () =
+    let tcs = TaskCompletionSource<string>()
+    Assert.Equal("", drainedOrEmpty tcs.Task)
+
+[<Fact(Timeout = 5000)>]
+let ``drainedOrEmpty returns empty for a faulted task`` () =
+    let tcs = TaskCompletionSource<string>()
+    tcs.SetException(InvalidOperationException "boom")
+    Assert.Equal("", drainedOrEmpty tcs.Task)
 
 [<Fact(Timeout = 20000)>]
 let ``runProcessWithTimeout returns Succeeded when fast`` () =
