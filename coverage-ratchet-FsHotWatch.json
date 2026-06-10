@@ -182,7 +182,7 @@
       },
       {
         "line": 68,
-        "branch": 59,
+        "branch": 46,
         "reason": "see macos reason; productionRestoreRunner shell-out paths are not unit-tested by design",
         "platform": "linux"
       }
