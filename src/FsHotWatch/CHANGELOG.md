@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Changed
+
+- `DepsFreshness.productionRestoreRunner` now composes a pure, internal `restoreSteps` plan
+  with a thin `runRestoreSteps` executor (behavior, ordering, and per-step timeouts unchanged).
+  `restoreSteps repoRoot fsproj` returns the ordered list of `RestoreStep` records (`Purpose`,
+  `Args`, `WorkingDir`) — `dotnet restore` first, then one `dotnet paket restore --group <g>`
+  per group enumerated from the in-scope `paket.lock` (via `paketGroupsFromLock`, falling back
+  to `Main` when no lock is found), then `dotnet tool restore` when a `.config/dotnet-tools.json`
+  is in scope. Extracting the branchy "which steps, in what order, with what args" decision from
+  the process shell-out makes it unit-testable without invoking `dotnet`/`paket`; the
+  DepsFreshness.fs coverage floor rose accordingly (macOS line 72→91, branch 46→83).
+
 ## 0.8.0-alpha.26 - 2026-06-10
 
 ### Changed
