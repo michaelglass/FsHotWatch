@@ -21,6 +21,7 @@
     <Compile Include="../FsHotWatch.Tests/TestHelpers.fs" Link="TestHelpers.fs" />
     <Compile Include="ProcessHelperTimeoutTests.fs" />
     <Compile Include="PluginActivityConcurrencyTests.fs" />
+    <Compile Include="PluginTimeoutTests.fs" />
     <Compile Include="IntegrationTests.fs" />
   </ItemGroup>
 

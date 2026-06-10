@@ -4,6 +4,16 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### Deterministic unit-suite coverage under machine load
+
+The coverage ratchet no longer flakes when the machine is busy: the two
+real-subprocess plugin timeout tests moved to the coverage-excluded integration
+suite, the post-kill drain tail was extracted into an internal
+`ProcessHelper.drainedOrEmpty` helper with direct deterministic tests, and the
+absent-key `EndSubtask` arm gained a direct test. Per-file line coverage is now
+identical run-to-run (quiet or loaded) and ratchet floors are settled to the
+stable actuals.
+
 ### Daemon: idle-exit — quit after a configurable idle period
 
 An idle daemon still holds a large warm working set (mostly FCS-rooted native

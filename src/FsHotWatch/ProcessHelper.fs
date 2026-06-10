@@ -62,6 +62,15 @@ let isExpectedDrainException (ex: exn) : bool =
     | :? ObjectDisposedException -> true
     | _ -> false
 
+/// Result of a read task after the bounded post-kill drain: its value if it
+/// completed successfully, otherwise "". A task that is still running, faulted,
+/// or cancelled when the drain window elapses yields "" — we never block on
+/// `.Result` here. Extracted so the else-arm is deterministically covered by a
+/// unit test; the real call sites are reached only on the OS-scheduling-
+/// sensitive timeout-kill path (covered end-to-end in IntegrationTests).
+let internal drainedOrEmpty (t: Task<string>) : string =
+    if t.IsCompletedSuccessfully then t.Result else ""
+
 /// True when the command will spawn `dotnet` (matching `dotnet`, `dotnet.exe`,
 /// or paths ending in either). Used to inject MSBUILDDISABLENODEREUSE.
 let isDotnetCommand (command: string) =
@@ -211,17 +220,8 @@ let runProcessWithTimeout
             with _ ->
                 ()
 
-            let stdout =
-                if stdoutTask.IsCompletedSuccessfully then
-                    stdoutTask.Result
-                else
-                    ""
-
-            let stderr =
-                if stderrTask.IsCompletedSuccessfully then
-                    stderrTask.Result
-                else
-                    ""
+            let stdout = drainedOrEmpty stdoutTask
+            let stderr = drainedOrEmpty stderrTask
 
             TimedOut(timeout, $"%s{stdout}\n%s{stderr}".Trim())
         else

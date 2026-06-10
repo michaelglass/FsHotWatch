@@ -21,6 +21,22 @@ let ``EndSubtask removes the subtask`` () =
     test <@ List.isEmpty (s.GetSubtasks("p")) @>
 
 [<Fact(Timeout = 15000)>]
+let ``EndSubtask for an absent key while Recording is a no-op`` () =
+    // Covers EndSubtask's `| _ -> ()` absent-key arm (PluginActivity.fs L202):
+    // StartSubtask puts the plugin in Recording with key "k1", then EndSubtask
+    // for the different (absent) key "k2" must hit the TryGetValue-miss arm
+    // without throwing and without disturbing the open subtask. In production
+    // this arm is reached only via a thread race (PluginCtxHelpers.withSubtask's
+    // finally-EndSubtask landing after RecordTerminal/ResetRun cleared the
+    // subtask); this direct test makes that coverage deterministic.
+    let s = State()
+    s.StartSubtask("p", "k1", "label 1")
+    s.EndSubtask("p", "k2")
+    let tasks = s.GetSubtasks("p")
+    test <@ tasks |> List.exists (fun t -> t.Key = "k1" && t.Label = "label 1") @>
+    test <@ tasks.Length = 1 @>
+
+[<Fact(Timeout = 15000)>]
 let ``Log appends in order to activity tail`` () =
     let s = State()
     s.Log("p", "one")

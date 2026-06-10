@@ -269,41 +269,8 @@ let ``command reports Failed status on command failure`` () =
             | _ -> false
         @>
 
-[<Fact(Timeout = 15000)>]
-let ``FileCommandPlugin honors timeoutSec and records TimedOut`` () =
-    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-
-    let handler =
-        create
-            (FsHotWatch.PluginFramework.PluginName.create "slow-cmd")
-            (fileTrigger (fun _ -> true))
-            "sleep"
-            "10"
-            "/tmp"
-            (Some 1)
-
-    host.RegisterHandler(handler)
-    host.EmitFileChanged(SourceChanged [ "file.txt" ])
-
-    waitUntil
-        (fun () ->
-            match host.GetStatus("slow-cmd") with
-            | Some(Failed _) -> true
-            | _ -> false)
-        8000
-
-    let history = host.GetHistory("slow-cmd")
-    test <@ not history.IsEmpty @>
-    let last = List.last history
-
-    test
-        <@
-            match last.Outcome with
-            | TimedOut _ -> true
-            | _ -> false
-        @>
-
-    test <@ host.HasFailingReasons(warningsAreFailures = true) @>
+// ``FileCommandPlugin honors timeoutSec and records TimedOut`` moved to
+// FsHotWatch.IntegrationTests/PluginTimeoutTests.fs (coverage-deterministic; rationale there).
 
 [<Fact(Timeout = 15000)>]
 let ``command reports Failed status on exception`` () =
