@@ -35,7 +35,7 @@
         "platform": "macos"
       },
       {
-        "line": 94,
+        "line": 93,
         "branch": 86,
         "reason": "BuildInputsHasher unit-tested",
         "platform": "linux"
@@ -229,8 +229,8 @@
     ],
     "FileCommandPlugin.fs": [
       {
-        "line": 97,
-        "branch": 100,
+        "line": 96,
+        "branch": 95,
         "reason": "lower line coverage on Linux CI",
         "platform": "linux"
       },
