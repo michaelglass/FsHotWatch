@@ -496,7 +496,9 @@ let ``applyDepsGate: RecoveredOk proceeds and clears prior diagnostic`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``paketGroupsFromLock: lock with no GROUP headers yields just Main`` () =
-    let dir = Path.Combine(Path.GetTempPath(), "fshw-groups-" + Guid.NewGuid().ToString("N"))
+    let dir =
+        Path.Combine(Path.GetTempPath(), "fshw-groups-" + Guid.NewGuid().ToString("N"))
+
     Directory.CreateDirectory dir |> ignore
     let lockPath = Path.Combine(dir, "paket.lock")
 
@@ -508,7 +510,9 @@ let ``paketGroupsFromLock: lock with no GROUP headers yields just Main`` () =
 
 [<Fact(Timeout = 5000)>]
 let ``paketGroupsFromLock: explicit GROUP headers are returned after Main`` () =
-    let dir = Path.Combine(Path.GetTempPath(), "fshw-groups-" + Guid.NewGuid().ToString("N"))
+    let dir =
+        Path.Combine(Path.GetTempPath(), "fshw-groups-" + Guid.NewGuid().ToString("N"))
+
     Directory.CreateDirectory dir |> ignore
     let lockPath = Path.Combine(dir, "paket.lock")
 
