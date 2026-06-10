@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- Extracted the post-kill output-drain tail into an internal `ProcessHelper.drainedOrEmpty`
+  helper (behavior unchanged). Part of making unit-suite coverage deterministic under machine
+  load: the two real-subprocess plugin timeout tests moved to the coverage-excluded integration
+  suite and ratchet floors are settled to stable actuals.
+
 ## 0.8.0-alpha.25 - 2026-06-10
 
 ### Fixed
