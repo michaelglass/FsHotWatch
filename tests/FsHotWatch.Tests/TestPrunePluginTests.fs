@@ -936,59 +936,14 @@ let ``RerunQueued path records previous run outcome to history before starting r
         // rerun produces its own entry is incidental.
         test <@ firstFailed @>)
 
-[<Fact(Timeout = 30000)>]
-let ``PendingRerun storm: plugin reaches terminal state after BuildCompleted hammering subsides`` () =
-    withTempDir "tp-rerun-storm" (fun tmpDir ->
-        // Stress the PendingRerun loop: while a test run is in flight, fire
-        // additional BuildCompleted events so the plugin sets PendingRerun on
-        // each one. After we stop emitting builds, the plugin must eventually
-        // drain its queued reruns and settle on a terminal status.
-        //
-        // Reproduces the user-reported "stuck Running" symptom against a
-        // continuous BuildCompleted storm: if any code path leaves
-        // PendingRerun set but never schedules a rerun, or schedules a rerun
-        // whose TestsFinished never fires terminal, the plugin sits in
-        // Running indefinitely.
-        let configs =
-            [ { Project = "FastTests"
-                Command = "sh"
-                Args = "-c \"sleep 0.3; exit 0\""
-                Group = "default"
-                Environment = []
-                FilterTemplate = None
-                ClassJoin = " "
-                TimeoutSec = None } ]
-
-        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = create ":memory:" tmpDir (Some configs) None None None None
-        host.RegisterHandler(handler)
-
-        // Fire many BuildCompleteds in quick succession. The first transitions
-        // Idle → Running and starts the test run. Subsequent ones land mid-run
-        // and set PendingRerun (each new one re-sets it, idempotent). After the
-        // initial run finishes the rerun branch fires; another batch of builds
-        // will re-arm PendingRerun, and so on.
-        for _ in 1..6 do
-            host.EmitBuildCompleted(BuildSucceeded)
-            // Tiny sleep so they don't all coalesce into the inbox before the
-            // first one transitions to Running. Without this the first 6 land
-            // before any RunExclusive starts, which trivially passes.
-            Thread.Sleep(80)
-
-        // Allow the rerun loop to keep cycling, then stop emitting. Within a
-        // reasonable settle window (test run = 0.3s, leaving generous slack),
-        // the plugin must reach a terminal status.
-        waitForPluginTerminal host "test-prune" 20.0
-
-        let finalStatus = host.GetStatus("test-prune")
-
-        let isTerminal =
-            match finalStatus with
-            | Some(Completed _)
-            | Some(Failed _) -> true
-            | _ -> false
-
-        test <@ isTerminal @>)
+// ``PendingRerun storm: plugin reaches terminal state after BuildCompleted hammering subsides``
+// moved to FsHotWatch.IntegrationTests/TestPruneStormTests.fs — it is a genuine
+// convergence-under-load stress test (fires a burst of BuildCompleted events at a
+// live test run and asserts EVENTUAL settling), not a fixed-window behavior test.
+// Its terminal-settle timing is scheduler-dependent, so under CPU load it flaked
+// in the unit suite (runner exit 2). Lives in the coverage-excluded integration
+// suite per the house "move convergence-under-load tests out of the unit metric"
+// rule; full rationale at the new site.
 
 // Inline FactAttribute so test detection works without xUnit assemblies in script options.
 // Uses module-level [<Fact>] functions — the pattern that analyzeSource reliably detects
@@ -2573,6 +2528,12 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
         let computedKey = cacheKeyFn (BuildCompleted BuildSucceeded)
         test <@ computedKey.IsSome @>
 
+        // The framework's `cache.Set` runs AFTER the handler's Update returns,
+        // while `waitForTerminalStatus` observes the terminal status reported
+        // *inside* that Update — so under load the entry can lag the status by a
+        // scheduling quantum. Poll-until-deadline for the entry rather than
+        // reading once (the write is deterministic, just not instantly visible).
+        waitUntil (fun () -> (cacheIface.TryGet key computedKey.Value).IsSome) 5000
         let result = cacheIface.TryGet key computedKey.Value
         test <@ result.IsSome @>
 
