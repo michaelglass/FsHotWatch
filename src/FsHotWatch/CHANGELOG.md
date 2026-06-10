@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.25 - 2026-06-10
+
 ### Fixed
 
 - Deps-freshness recovery no longer runs a bare `dotnet paket restore`. Bare `paket restore` is paket's full-repo `AllProjects` mode: it walks every project directory (`FindAllProjects`) to inject references, following directory symlinks with no cycle detection. A self-referential symlink loop — e.g. the macOS-SDK `ncurses` links inside a Nix `.devenv` profile — made it recurse forever, wedging the restore until the per-step timeout and failing the deps gate. Recovery now restores **per group** (`paket restore --group <g>`, enumerated from `paket.lock` via the new `paketGroupsFromLock`): passing an explicit group makes paket skip the project-discovery walk while still restoring that group's sources/git-dependencies. Per-project reference injection (for repos using `paket.references`) is already handled by the preceding `dotnet restore <fsproj>` step via `Paket.Restore.targets`' `paket restore --project`.

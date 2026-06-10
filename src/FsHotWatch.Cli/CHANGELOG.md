@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.26 - 2026-06-10
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.8.0-alpha.25 - 2026-06-09
 
 - chore: rebuild to bundle updated dependencies
