@@ -255,6 +255,7 @@ FsHotWatch stores check result caches and the TestPrune database in `.fshw/` at 
 The cache directory contains:
 - `cache/` — Cached FCS check results for faster cold starts
 - `test-impact.db` — TestPrune dependency analysis database
+- `test-prune/` — TestPrune sidecar state: `file-freshness.json` (FCS-clean stamps) and `pending-verification.json` (the needs-testing queue — symbols a green test run hasn't yet verified)
 
 ### Memory
 

@@ -20,6 +20,18 @@ depend on which symbols, so it can tell you exactly what to re-run.
 5. If `testConfigs` are provided, it runs only the affected tests
 6. It emits `TestCompleted` for downstream plugins (like Coverage)
 
+### The needs-testing queue (why "nothing to test" is trustworthy)
+
+Every changed symbol enters a durable queue
+(`.fshw/test-prune/pending-verification.json`) and leaves it **only when a
+test run that covered it completes green**. A run that fails, aborts (e.g. a
+failing `beforeRun` hook), or never executes commits nothing — those symbols
+stay queued and keep selecting tests until a covering run passes, across
+daemon restarts. The "no affected tests — skip" fast path and cached green
+replays are both gated on this queue being empty, so a green verdict always
+means "test-equivalent to the last green run", never "tests didn't happen to
+run". The queue can only err toward over-testing.
+
 ## Configuration
 
 In `.fshw.json`:

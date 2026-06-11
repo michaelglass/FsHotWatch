@@ -4,6 +4,20 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### The test gate can no longer go green without running the tests
+
+`fshw check` could report "No errors" while executing zero tests: TestPrune's
+impact baseline advanced on symbol ANALYSIS, not on tests passing, so a run
+that aborted (e.g. a failing test `beforeRun` hook) or failed still absorbed
+the symbols it never verified — a later check then found "0 affected tests"
+and exited 0. TestPrune now keeps a durable needs-testing queue
+(`.fshw/test-prune/pending-verification.json`); a symbol leaves it only when a
+covering test run completes green. Aborted runs report Failed instead of
+green, the "nothing to test" fast path requires the persisted queue to be
+empty, a cached green can only replay for a queue-empty state, and a daemon
+restart re-flags anything still unverified. The sidecar is written once per
+analysis batch, so the per-file hot path gains no I/O.
+
 ### Deterministic unit-suite coverage under machine load
 
 The coverage ratchet no longer flakes when the machine is busy: the two
