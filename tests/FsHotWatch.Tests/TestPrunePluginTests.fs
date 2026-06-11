@@ -68,13 +68,13 @@ let private withSingleProjectHarness (tmpDir: string) (projectName: string) =
             TimeoutSec = None } ]
 
     let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-    let handler = create ":memory:" tmpDir (Some configs) None None None None
+    let handler = create ":memory:" tmpDir (Some configs) None None None None []
     host.RegisterHandler(handler)
     host, sentinel
 
 [<Fact(Timeout = 15000)>]
 let ``plugin has correct name`` () =
-    let handler = create ":memory:" "/tmp" None None None None None
+    let handler = create ":memory:" "/tmp" None None None None None []
     test <@ handler.Name = FsHotWatch.PluginFramework.PluginName.create "test-prune" @>
 
 [<Fact(Timeout = 15000)>]
@@ -82,7 +82,7 @@ let ``testprune subscribes to BatchChecked`` () =
     // Item 3 (corrected): TestPrune retains FileChecked for per-file
     // accumulation AND adds BatchChecked as the cohort-complete flush
     // signal. Both subscriptions must be present.
-    let handler = create ":memory:" "/tmp" None None None None None
+    let handler = create ":memory:" "/tmp" None None None None None []
 
     test <@ handler.Subscriptions.Contains(FsHotWatch.PluginFramework.SubscribeFileChecked) @>
     test <@ handler.Subscriptions.Contains(FsHotWatch.PluginFramework.SubscribeBatchChecked) @>
@@ -94,7 +94,7 @@ let ``affected-tests command returns empty array when no files checked`` () =
     // ChangedSymbols is empty so the SQL query is skipped and "[]" is returned.
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create ":memory:" "/tmp" None None None None None
+    let handler = create ":memory:" "/tmp" None None None None None []
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously
@@ -105,7 +105,7 @@ let ``affected-tests command returns empty array when no files checked`` () =
 let ``changed-files command returns empty list when no files checked`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create ":memory:" "/tmp" None None None None None
+    let handler = create ":memory:" "/tmp" None None None None None []
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("changed-files", [||]) |> Async.RunSynchronously
@@ -116,7 +116,7 @@ let ``changed-files command returns empty list when no files checked`` () =
 let ``test-prune error path sets Failed status on null check results`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create ":memory:" "/tmp" None None None None None
+    let handler = create ":memory:" "/tmp" None None None None None []
     host.RegisterHandler(handler)
 
     let fakeResult =
@@ -153,7 +153,7 @@ let ``changed-files tracks files after emit with valid relative path`` () =
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        let handler = create dbPath tmpDir None None None None None
+        let handler = create dbPath tmpDir None None None None None []
         host.RegisterHandler(handler)
 
         let fakeFile = Path.Combine(tmpDir, "src", "Lib.fs")
@@ -179,7 +179,7 @@ let ``duplicate file checks do not duplicate in changed-files list`` () =
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        let handler = create dbPath tmpDir None None None None None
+        let handler = create dbPath tmpDir None None None None None []
         host.RegisterHandler(handler)
 
         let fakeFile = Path.Combine(tmpDir, "Dup.fs")
@@ -202,7 +202,7 @@ let ``duplicate file checks do not duplicate in changed-files list`` () =
 let ``test-results command returns not run initially`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
 
-    let handler = create ":memory:" "/tmp" None None None None None
+    let handler = create ":memory:" "/tmp" None None None None None []
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("test-results", [||]) |> Async.RunSynchronously
@@ -223,7 +223,7 @@ let ``plugin with testConfigs subscribes to OnBuildCompleted`` () =
             ClassJoin = " "
             TimeoutSec = None } ]
 
-    let handler = create ":memory:" "/tmp" (Some configs) None None None None
+    let handler = create ":memory:" "/tmp" (Some configs) None None None None []
 
     host.RegisterHandler(handler)
 
@@ -258,7 +258,7 @@ let ``extension is invoked via AnalyzeEdges during test run`` () =
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
         let handler =
-            create ":memory:" tmpDir (Some configs) (Some(fun _db -> [ fakeExtension ])) None None None
+            create ":memory:" tmpDir (Some configs) (Some(fun _db -> [ fakeExtension ])) None None None []
 
         host.RegisterHandler(handler)
 
@@ -294,7 +294,7 @@ let ``extension error is caught and does not crash plugin`` () =
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
         let handler =
-            create ":memory:" tmpDir (Some configs) (Some(fun _db -> [ failingExtension ])) None None None
+            create ":memory:" tmpDir (Some configs) (Some(fun _db -> [ failingExtension ])) None None None []
 
         host.RegisterHandler(handler)
 
@@ -372,7 +372,7 @@ let ``database read-before-write preserves previous symbols for diffing`` () =
 let ``FileChecked never transitions plugin to Running status`` () =
     withTempDir "tp-no-running" (fun tmpDir ->
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = create ":memory:" tmpDir None None None None None
+        let handler = create ":memory:" tmpDir None None None None None []
         host.RegisterHandler(handler)
 
         let observedRunning = ref false
@@ -420,7 +420,7 @@ let ``FileChecked does not set Running status`` () =
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        let handler = create dbPath tmpDir (Some configs) None None None None
+        let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
         let fakeFile = Path.Combine(tmpDir, "Lib.fs")
@@ -483,7 +483,7 @@ let ``FileChecked exception while tests running surfaces Failed via framework sa
                 TimeoutSec = None } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = create dbPath tmpDir (Some configs) None None None None
+        let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
         // Subscribe to Failed *before* triggering anything — avoids the race
@@ -534,7 +534,7 @@ let ``FileChecked sets Failed status on analysis error`` () =
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        let handler = create dbPath tmpDir None None None None None
+        let handler = create dbPath tmpDir None None None None None []
         host.RegisterHandler(handler)
 
         let fakeFile = Path.Combine(tmpDir, "Lib.fs")
@@ -574,7 +574,7 @@ let ``FileChecked replaces test-run Completed status with error state`` () =
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
         host.RegisterHandler(handler)
 
@@ -629,7 +629,7 @@ let ``run-tests command runs all projects and returns results`` () =
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
         host.RegisterHandler(handler)
 
@@ -664,7 +664,7 @@ let ``run-tests with project filter runs only named project`` () =
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
         host.RegisterHandler(handler)
 
@@ -691,7 +691,7 @@ let ``run-tests with filter passes raw filter args through to the test command``
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
         host.RegisterHandler(handler)
 
@@ -731,7 +731,7 @@ let ``run-tests with only-failed reruns failed projects`` () =
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
         host.RegisterHandler(handler)
 
@@ -752,7 +752,7 @@ let ``run-tests with only-failed reruns failed projects`` () =
 [<Fact(Timeout = 15000)>]
 let ``run-tests not registered when no testConfigs`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
-    let handler = create ":memory:" "/tmp" None None None None None
+    let handler = create ":memory:" "/tmp" None None None None None []
     host.RegisterHandler(handler)
 
     let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
@@ -779,7 +779,7 @@ let ``run-tests emits TestRunCompleted so other plugins see the run`` () =
 [<Fact(Timeout = 15000)>]
 let ``dispose is callable`` () =
     // Framework-managed plugins don't need explicit dispose, but verify create doesn't throw
-    let _handler = create ":memory:" "/tmp" None None None None None
+    let _handler = create ":memory:" "/tmp" None None None None None []
     ()
 
 [<Fact(Timeout = 15000)>]
@@ -827,7 +827,7 @@ let ``test failures are reported to error ledger`` () =
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
         host.RegisterHandler(handler)
 
@@ -854,7 +854,7 @@ let ``test errors are cleared when all tests pass`` () =
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
         host.RegisterHandler(handler)
 
@@ -898,7 +898,7 @@ let ``RerunQueued path records previous run outcome to history before starting r
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
         host.RegisterHandler(handler)
 
@@ -1033,7 +1033,7 @@ let ``FileChecked reports Completed when testConfigs provided (analysis done, aw
         let pipeline = CheckPipeline(checker)
         let host = PluginHost.create checker tmpDir
 
-        let handler = create dbPath tmpDir (Some configs) None None None None
+        let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
         let testFile = Path.Combine(tmpDir, "MyTests.fsx")
@@ -1067,7 +1067,7 @@ let ``FileChecked reports Completed when no testConfigs (success path)`` () =
         let host = PluginHost.create checker tmpDir
 
         // No testConfigs — analysis-only mode
-        let handler = create dbPath tmpDir None None None None None
+        let handler = create dbPath tmpDir None None None None None []
         host.RegisterHandler(handler)
 
         let testFile = Path.Combine(tmpDir, "MyLib.fsx")
@@ -1128,7 +1128,7 @@ let beta () = ()
                 ClassJoin = " "
                 TimeoutSec = None } ]
 
-        let handler = create dbPath tmpDir (Some testConfigs) None None None None
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None []
 
         host.RegisterHandler(handler)
 
@@ -1217,7 +1217,7 @@ let computeTest () =
                 ClassJoin = " "
                 TimeoutSec = None } ]
 
-        let handler = create dbPath tmpDir (Some testConfigs) None None None None
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None []
 
         host.RegisterHandler(handler)
 
@@ -1332,7 +1332,7 @@ let ``cross-file type change only runs affected test classes`` () =
         let pipeline = CheckPipeline(checker)
         let host = PluginHost.create checker tmpDir
 
-        let handler = create dbPath tmpDir (Some testConfigs) None None None None
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None []
 
         host.RegisterHandler(handler)
 
@@ -1478,7 +1478,7 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
         host.RegisterHandler(handler)
 
@@ -1561,7 +1561,7 @@ let ``FileChecked with no detected symbol changes leaves ChangedSymbols empty`` 
 
         // Create plugin WITHOUT testConfigs (analysis-only mode)
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = create dbPath tmpDir None None None None None
+        let handler = create dbPath tmpDir None None None None None []
         host.RegisterHandler(handler)
 
         // Emit FileChecked with a changed symbol — in the old code this would
@@ -1639,7 +1639,7 @@ let lazyComputeTest () =
                 ClassJoin = " "
                 TimeoutSec = None } ]
 
-        let handler = create dbPath tmpDir (Some testConfigs) None None None None
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None []
         host.RegisterHandler(handler)
 
         let libOptions =
@@ -1715,7 +1715,7 @@ let ``BuildCompleted queries affected tests after flush`` () =
                 TimeoutSec = None } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = create dbPath tmpDir (Some configs) None None None None
+        let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
         // After BuildCompleted with no prior FileChecked, should still work
@@ -1745,7 +1745,7 @@ let ``skip tests when 0 affected classes and not cold start`` () =
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
         let handler =
-            create ":memory:" tmpDir (Some configs) None None (Some(fun _ -> runCount <- runCount + 1)) None
+            create ":memory:" tmpDir (Some configs) None None (Some(fun _ -> runCount <- runCount + 1)) None []
 
         host.RegisterHandler(handler)
 
@@ -1858,6 +1858,151 @@ let ``isZeroTestsUnderFilter false for a passing filtered run`` () =
             "Test run summary: Passed!\n  total: 4\n  failed: 0\n  succeeded: 4"
 
     test <@ not (isZeroTestsUnderFilter true outcome) @>
+
+// =============================================================================
+// FIX 2 — `test-rerun --filter-*` force-executes; zero-match reported DISTINCTLY.
+//
+// `test-rerun` is the explicit force-rerun verb. Two defects it had:
+//   (a) a filtered run that matched NOTHING was recorded as a (filtered) PASS,
+//       indistinguishable from a real green run — so you couldn't tell the
+//       filter selected no test (the "test-rerun didn't actually run" symptom).
+//   (b) it returned an INSTANT non-result ("tests already running") when a
+//       background run held the test slot — no execution, no log.
+// =============================================================================
+
+[<Fact(Timeout = 10000)>]
+let ``isZeroMatchResult / allZeroMatch detect the zero-match marker`` () =
+    let zero = TestsPassed(ZeroMatchMarker + "Zero tests ran", true, TimeSpan.Zero)
+    let realPass = TestsPassed("Passed! total: 4", true, TimeSpan.Zero)
+    let failed = TestsFailed("boom", true, TimeSpan.Zero)
+
+    test <@ isZeroMatchResult zero @>
+    test <@ not (isZeroMatchResult realPass) @>
+    test <@ not (isZeroMatchResult failed) @>
+
+    // allZeroMatch is true only when EVERY project is a zero-match.
+    let allZero =
+        { Results = Map.ofList [ "A", zero; "B", zero ]
+          Elapsed = TimeSpan.Zero }
+
+    let mixed =
+        { Results = Map.ofList [ "A", zero; "B", realPass ]
+          Elapsed = TimeSpan.Zero }
+
+    let emptyRun =
+        { Results = Map.empty
+          Elapsed = TimeSpan.Zero }
+
+    test <@ allZeroMatch allZero @>
+    test <@ not (allZeroMatch mixed) @>
+    test <@ not (allZeroMatch emptyRun) @>
+
+[<Fact(Timeout = 15000)>]
+let ``run-tests with a filter that matches nothing reports no-tests-matched distinctly, not a generic pass`` () =
+    withTempDir "tp-run-nomatch" (fun tmpDir ->
+        // `sh -c "exit 8"` simulates Microsoft Testing Platform's zero-tests
+        // exit (code 8) for a FILTERED project that has no matching test. With a
+        // raw filter present, isZeroTestsUnderFilter classifies this as a
+        // zero-match (passed/filtered) — which FIX 2 now surfaces distinctly.
+        let configs =
+            [ { Project = "NoMatchProj"
+                Command = "sh"
+                Args = "-c \"exit 8\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        let result =
+            host.RunCommand("run-tests", [| """{"filter": "--filter-class *NoSuchClass*"}""" |])
+            |> Async.RunSynchronously
+
+        test <@ result.IsSome @>
+        let doc = JsonDocument.Parse(result.Value)
+        // Run-level distinct signal.
+        test <@ doc.RootElement.GetProperty("noTestsMatched").GetBoolean() @>
+        // Per-project distinct status (not "passed", not "failed").
+        let projects = doc.RootElement.GetProperty("projects")
+        Assert.Equal("no-tests-matched", projects.[0].GetProperty("status").GetString()))
+
+[<Fact(Timeout = 15000)>]
+let ``run-tests with a filter that matches tests executes and reports a real pass (not no-tests-matched)`` () =
+    withTempDir "tp-run-match" (fun tmpDir ->
+        // `echo` exits 0 → a real (filtered) pass, NOT a zero-match.
+        let configs =
+            [ { Project = "MatchProj"
+                Command = "echo"
+                Args = "ran"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        let result =
+            host.RunCommand("run-tests", [| """{"filter": "--filter-class MatchProjTests"}""" |])
+            |> Async.RunSynchronously
+
+        test <@ result.IsSome @>
+        let doc = JsonDocument.Parse(result.Value)
+        // The run actually executed → NOT no-tests-matched.
+        test <@ not (doc.RootElement.GetProperty("noTestsMatched").GetBoolean()) @>
+        let projects = doc.RootElement.GetProperty("projects")
+        Assert.Equal("passed", projects.[0].GetProperty("status").GetString()))
+
+[<Fact(Timeout = 30000)>]
+let ``run-tests force-executes after an in-flight run finishes instead of instantly bailing`` () =
+    // The OLD behavior bailed instantly with {error="tests already running"} when
+    // the `tests` slot was held by a background run. FIX 2 makes `run-tests` WAIT
+    // for the slot to clear, then execute — so an explicit force-rerun always
+    // runs. We hold the slot briefly with a slow background run (BuildCompleted),
+    // fire run-tests concurrently, and assert it ultimately EXECUTES (real
+    // results) rather than returning the instant in-flight error.
+    withTempDir "tp-run-force" (fun tmpDir ->
+        let configs =
+            [ { Project = "SlowProj"
+                // ~1.5s so the slot is genuinely held when run-tests arrives.
+                Command = "sh"
+                Args = "-c \"sleep 1.5\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        // Kick off the background run (holds RunExclusive "tests").
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        // Give the background run a moment to acquire the slot, then force a rerun.
+        Thread.Sleep(300)
+
+        let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
+
+        test <@ result.IsSome @>
+        let doc = JsonDocument.Parse(result.Value)
+        // It must NOT be the instant in-flight error and must have actually run
+        // (a `projects` array present means executeTests produced results).
+        // `fst (TryGetProperty …)` is computed OUTSIDE the Unquote quotation
+        // because the ValueTuple it returns can't appear inside a quotation.
+        let hasError = fst (doc.RootElement.TryGetProperty("error"))
+        let hasProjects = fst (doc.RootElement.TryGetProperty("projects"))
+        test <@ not hasError @>
+        test <@ hasProjects @>
+        let projects = doc.RootElement.GetProperty("projects")
+        Assert.True(projects.GetArrayLength() > 0))
 
 // --- buildFilterArgs unit tests ---
 
@@ -2078,7 +2223,7 @@ let ``executeTests emits a TestProgress per group as groups finish`` () =
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
 
-        let handler = create dbPath tmpDir (Some configs) None None None None
+        let handler = create dbPath tmpDir (Some configs) None None None None []
 
         host.RegisterHandler(handler)
 
@@ -2142,7 +2287,7 @@ let ``full run (no filter) produces TestResult with WasFiltered = false`` () =
                 TimeoutSec = None } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
-        let handler = create dbPath tmpDir (Some configs) None None None None
+        let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
         host.EmitBuildCompleted(BuildSucceeded)
@@ -2480,7 +2625,7 @@ let ``full run (no filter) emits TestRunCompleted with RanFullSuite=true`` () =
                 TimeoutSec = None } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
-        let handler = create dbPath tmpDir (Some configs) None None None None
+        let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
         host.EmitBuildCompleted(BuildSucceeded)
@@ -2515,7 +2660,7 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
                 TimeoutSec = None } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
-        let handler = create dbPath tmpDir (Some configs) None None None None
+        let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
         host.EmitBuildCompleted(BuildSucceeded)
@@ -2562,7 +2707,7 @@ let ``AUTOMATION-5: TestPrune CacheKey is None for a failing TestsFinished, Some
     // refuse to produce a key for a non-passing outcome (so the framework never
     // writes the poisoned entry), while still keying an all-pass run for the
     // green fast-path.
-    let handler = create ":memory:" "/tmp" None None None None None
+    let handler = create ":memory:" "/tmp" None None None None None []
     let cacheKeyFn = handler.CacheKey.Value
 
     let started: TestRunStarted =
@@ -2609,6 +2754,142 @@ let ``AUTOMATION-5: TestPrune CacheKey is None for a failing TestsFinished, Some
     test <@ (cacheKeyFn timedOut).IsNone @>
     test <@ (cacheKeyFn passing).IsSome @>
 
+// =============================================================================
+// tests.dependsOn — external-input cache-key salt.
+// A developer who edits a DB migration changes the TEST database schema but no
+// test SOURCE symbol, so test-prune's symbol-diff merkle is unchanged and a
+// stale verdict replays. Declaring the migration under `tests.dependsOn` salts
+// the BuildCompleted cache key with the migration's content hash, so editing it
+// is a cache MISS → genuine re-run. With NO dependsOn the key must be
+// byte-identical to the pre-feature key (existing caches keep hitting).
+// =============================================================================
+
+[<Fact(Timeout = 15000)>]
+let ``dependsOn: changing a matched file changes the BuildCompleted cache key`` () =
+    withTempDir "tp-dependson-key" (fun tmpDir ->
+        let migrationsDir = Path.Combine(tmpDir, "migrations")
+        Directory.CreateDirectory(migrationsDir) |> ignore
+        let migration = Path.Combine(migrationsDir, "001_init.sql")
+        File.WriteAllText(migration, "CREATE TABLE a (id int);")
+
+        // Same plugin config, salted by a glob that matches the migration.
+        let handler = create ":memory:" tmpDir None None None None None [ "migrations/**" ]
+        let cacheKeyFn = handler.CacheKey.Value
+
+        let keyBefore = (cacheKeyFn (BuildCompleted BuildSucceeded)).Value
+
+        // Edit the migration in place (the exact scenario: schema changed, no
+        // test source touched).
+        File.WriteAllText(migration, "CREATE TABLE a (id int, name text);")
+        let keyAfter = (cacheKeyFn (BuildCompleted BuildSucceeded)).Value
+
+        test <@ keyBefore <> keyAfter @>)
+
+[<Fact(Timeout = 15000)>]
+let ``dependsOn: adding a newly-matched file changes the BuildCompleted cache key`` () =
+    withTempDir "tp-dependson-add" (fun tmpDir ->
+        let migrationsDir = Path.Combine(tmpDir, "migrations")
+        Directory.CreateDirectory(migrationsDir) |> ignore
+        File.WriteAllText(Path.Combine(migrationsDir, "001_init.sql"), "CREATE TABLE a (id int);")
+
+        let handler = create ":memory:" tmpDir None None None None None [ "migrations/**" ]
+        let cacheKeyFn = handler.CacheKey.Value
+
+        let keyBefore = (cacheKeyFn (BuildCompleted BuildSucceeded)).Value
+        // A NEW migration is added — the schema changed even though no test
+        // source did. The salt must move.
+        File.WriteAllText(Path.Combine(migrationsDir, "002_more.sql"), "ALTER TABLE a ADD COLUMN x int;")
+        let keyAfter = (cacheKeyFn (BuildCompleted BuildSucceeded)).Value
+
+        test <@ keyBefore <> keyAfter @>)
+
+[<Fact(Timeout = 15000)>]
+let ``dependsOn: absent config leaves the BuildCompleted key byte-identical to the no-salt key`` () =
+    withTempDir "tp-dependson-absent" (fun tmpDir ->
+        // Even with files on disk that WOULD match a glob, a plugin configured
+        // with NO dependsOn must produce exactly the key it produced before the
+        // feature existed — so pre-existing on-disk caches keep hitting.
+        let migrationsDir = Path.Combine(tmpDir, "migrations")
+        Directory.CreateDirectory(migrationsDir) |> ignore
+        File.WriteAllText(Path.Combine(migrationsDir, "001_init.sql"), "CREATE TABLE a (id int);")
+
+        let salted = create ":memory:" tmpDir None None None None None []
+        let unsalted = create ":memory:" tmpDir None None None None None [] // identical: [] dependsOn
+
+        let kSalted = ((salted.CacheKey.Value) (BuildCompleted BuildSucceeded)).Value
+        let kUnsalted = ((unsalted.CacheKey.Value) (BuildCompleted BuildSucceeded)).Value
+
+        // The two []-configured handlers agree, AND neither includes a depends-on
+        // term — verified structurally below via the helper.
+        test <@ kSalted = kUnsalted @>
+        // And the salt helper returns "" (no entry added) when dependsOn is empty.
+        test <@ externalDependencyHash tmpDir [] = "" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``dependsOn: a glob matching nothing contributes no salt (key equals empty-dependsOn key)`` () =
+    withTempDir "tp-dependson-nomatch" (fun tmpDir ->
+        let handlerEmpty = create ":memory:" tmpDir None None None None None []
+
+        let handlerNoMatch =
+            create ":memory:" tmpDir None None None None None [ "does-not-exist/**" ]
+
+        let kEmpty = ((handlerEmpty.CacheKey.Value) (BuildCompleted BuildSucceeded)).Value
+
+        let kNoMatch =
+            ((handlerNoMatch.CacheKey.Value) (BuildCompleted BuildSucceeded)).Value
+
+        // A glob that matches no file on disk hashes to "" → no salt entry → the
+        // key is identical to the empty-dependsOn key.
+        test <@ kEmpty = kNoMatch @>
+        test <@ externalDependencyHash tmpDir [ "does-not-exist/**" ] = "" @>)
+
+[<Fact(Timeout = 10000)>]
+let ``externalDependencyHash: deterministic and content-sensitive; missing files skipped`` () =
+    withTempDir "tp-dependson-hash" (fun tmpDir ->
+        let dir = Path.Combine(tmpDir, "ext")
+        Directory.CreateDirectory(dir) |> ignore
+        let f1 = Path.Combine(dir, "a.sql")
+        let f2 = Path.Combine(dir, "b.sql")
+        File.WriteAllText(f1, "one")
+        File.WriteAllText(f2, "two")
+
+        let globs = [ "ext/**" ]
+        let h1 = externalDependencyHash tmpDir globs
+        let h2 = externalDependencyHash tmpDir globs
+        // Deterministic across calls (sorted paths, content hash).
+        test <@ h1 = h2 @>
+        test <@ h1 <> "" @>
+
+        // Content change moves the hash.
+        File.WriteAllText(f1, "ONE-changed")
+        let h3 = externalDependencyHash tmpDir globs
+        test <@ h3 <> h1 @>
+
+        // Deleting a matched file moves the hash; a now-empty match set → "".
+        File.Delete f1
+        File.Delete f2
+        let h4 = externalDependencyHash tmpDir globs
+        test <@ h4 = "" @>)
+
+[<Fact(Timeout = 10000)>]
+let ``dependsOnGlobToRegex: ** crosses dirs, * does not, literals match exactly`` () =
+    let m (glob: string) (rel: string) =
+        (dependsOnGlobToRegex glob).IsMatch(rel)
+
+    // ** crosses directory separators (including zero segments).
+    test <@ m "src/Migrations/**" "src/Migrations/001.sql" @>
+    test <@ m "src/Migrations/**" "src/Migrations/sub/002.sql" @>
+    test <@ m "src/Migrations/**" "src/Migrations" @>
+    test <@ not (m "src/Migrations/**" "src/Other/001.sql") @>
+    // single * stays within a path segment.
+    test <@ m "src/*.sql" "src/a.sql" @>
+    test <@ not (m "src/*.sql" "src/sub/a.sql") @>
+    // ? matches exactly one non-separator char.
+    test <@ m "v?.sql" "v1.sql" @>
+    test <@ not (m "v?.sql" "v12.sql") @>
+    // case-insensitive (matches the IgnoreCase option).
+    test <@ m "SRC/**" "src/x.sql" @>
+
 [<Fact(Timeout = 20000)>]
 let ``AUTOMATION-5: a failed test run is not cached, so a later run on the same key is a miss and reports green`` () =
     // End-to-end replay-suppression test exercising the real task cache.
@@ -2644,7 +2925,7 @@ let ``AUTOMATION-5: a failed test run is not cached, so a later run on the same 
                 TimeoutSec = None } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
-        let handler = create dbPath tmpDir (Some configs) None None None None
+        let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
         let key: FsHotWatch.TaskCache.CompositeKey = { Plugin = "test-prune"; File = None }
@@ -2718,7 +2999,7 @@ let ``test-results JSON exposes per-project elapsedMs after a successful run`` (
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
-        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
 
         host.RegisterHandler(handler)
         host.EmitBuildCompleted(BuildSucceeded)
@@ -2788,7 +3069,7 @@ let ``cold-start BuildCompleted with unchanged state replays from task cache`` (
             let dbPath1 = Path.Combine(tmpDir, "tp1.db")
             let host1 = PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = taskCache)
 
-            let handler1 = create dbPath1 tmpDir (Some configs) None None None None
+            let handler1 = create dbPath1 tmpDir (Some configs) None None None None []
 
             host1.RegisterHandler(handler1)
             host1.EmitBuildCompleted(BuildSucceeded)
@@ -2802,7 +3083,7 @@ let ``cold-start BuildCompleted with unchanged state replays from task cache`` (
         let dbPath2 = Path.Combine(tmpDir, "tp2.db")
         let host2 = PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = taskCache)
 
-        let handler2 = create dbPath2 tmpDir (Some configs) None None None None
+        let handler2 = create dbPath2 tmpDir (Some configs) None None None None []
 
         host2.RegisterHandler(handler2)
 
@@ -3032,7 +3313,7 @@ let ``FileChecked with FCS errors persists symbols to DB and stamps sidecar dirt
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
         let host = PluginHost.create checker tmpDir
-        let handler = create dbPath tmpDir (Some testConfigs) None None None None
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None []
         host.RegisterHandler(handler)
 
         let brokenSource =
@@ -3096,7 +3377,7 @@ let ``FileChecked without FCS errors flushes symbols to DB (gate doesn't break c
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
         let host = PluginHost.create checker tmpDir
-        let handler = create dbPath tmpDir (Some testConfigs) None None None None
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None []
         host.RegisterHandler(handler)
 
         let cleanSource =
@@ -3174,7 +3455,7 @@ let ``BatchChecked persists accumulated symbols to DB without a follow-up BuildC
         // No testConfigs — BuildCompleted is unsubscribed; only FileChecked
         // and BatchChecked drive the flush. The BatchChecked subscription is
         // unconditional (independent of testConfigs).
-        let handler = create dbPath tmpDir None None None None None
+        let handler = create dbPath tmpDir None None None None None []
         host.RegisterHandler(handler)
 
         let cleanSource =
@@ -3253,7 +3534,7 @@ let ``cold-boot regression: dirty FCS leaves sidecar dirty so detectChanges fall
 
         // Phase 1: clean check, flush populates DB.
         let host1 = PluginHost.create checker tmpDir
-        let handler1 = create dbPath tmpDir (Some testConfigs) None None None None
+        let handler1 = create dbPath tmpDir (Some testConfigs) None None None None []
         host1.RegisterHandler(handler1)
 
         let cleanSource =
@@ -3335,7 +3616,7 @@ let badTypeUse : int = "wrong-type"
             @>
 
         let host2 = PluginHost.create checker tmpDir
-        let handler2 = create dbPath tmpDir (Some testConfigs) None None None None
+        let handler2 = create dbPath tmpDir (Some testConfigs) None None None None []
         host2.RegisterHandler(handler2)
 
         // Item 3 ordering for Phase 2 too: BuildSucceeded first, then dirty
@@ -3436,7 +3717,7 @@ let phaseBTest () = ()
                 TimeoutSec = None } ]
 
         let host = PluginHost.create checker tmpDir
-        let handler = create dbPath tmpDir (Some testConfigs) None None None None
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None []
         host.RegisterHandler(handler)
 
         let result =
@@ -3525,7 +3806,7 @@ let ``Item 3: pre-BuildCompleted clean FileChecked → sidecar stays dirty`` () 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
         let host = PluginHost.create checker tmpDir
-        let handler = create dbPath tmpDir (Some testConfigs) None None None None
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None []
         host.RegisterHandler(handler)
 
         let cleanSource = "module Pre\nlet n = 1\n"
@@ -3576,7 +3857,7 @@ let ``Item 3: post-BuildCompleted clean FileChecked → sidecar stamped clean`` 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
         let host = PluginHost.create checker tmpDir
-        let handler = create dbPath tmpDir (Some testConfigs) None None None None
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None []
         host.RegisterHandler(handler)
 
         let cleanSource = "module Post\nlet n = 1\n"
@@ -3624,7 +3905,7 @@ let ``Item 3: clean check after prior dirty, still pre-build → stays dirty`` (
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
         let host = PluginHost.create checker tmpDir
-        let handler = create dbPath tmpDir (Some testConfigs) None None None None
+        let handler = create dbPath tmpDir (Some testConfigs) None None None None []
         host.RegisterHandler(handler)
 
         let mixedFile = Path.Combine(tmpDir, "Mixed.fsx")
@@ -3878,7 +4159,7 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
                 TimeoutSec = None } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
         host.EmitBuildCompleted(BuildSucceeded)
@@ -3960,7 +4241,7 @@ let ``stale failures from a prior cycle are cleared when the next cycle supersed
         let configs = [ mk "ProjA" flagA; mk "ProjB" flagB ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
         let ledgerFiles () =
