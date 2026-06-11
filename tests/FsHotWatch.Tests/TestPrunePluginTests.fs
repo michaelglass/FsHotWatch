@@ -1859,6 +1859,151 @@ let ``isZeroTestsUnderFilter false for a passing filtered run`` () =
 
     test <@ not (isZeroTestsUnderFilter true outcome) @>
 
+// =============================================================================
+// FIX 2 — `test-rerun --filter-*` force-executes; zero-match reported DISTINCTLY.
+//
+// `test-rerun` is the explicit force-rerun verb. Two defects it had:
+//   (a) a filtered run that matched NOTHING was recorded as a (filtered) PASS,
+//       indistinguishable from a real green run — so you couldn't tell the
+//       filter selected no test (the "test-rerun didn't actually run" symptom).
+//   (b) it returned an INSTANT non-result ("tests already running") when a
+//       background run held the test slot — no execution, no log.
+// =============================================================================
+
+[<Fact(Timeout = 10000)>]
+let ``isZeroMatchResult / allZeroMatch detect the zero-match marker`` () =
+    let zero = TestsPassed(ZeroMatchMarker + "Zero tests ran", true, TimeSpan.Zero)
+    let realPass = TestsPassed("Passed! total: 4", true, TimeSpan.Zero)
+    let failed = TestsFailed("boom", true, TimeSpan.Zero)
+
+    test <@ isZeroMatchResult zero @>
+    test <@ not (isZeroMatchResult realPass) @>
+    test <@ not (isZeroMatchResult failed) @>
+
+    // allZeroMatch is true only when EVERY project is a zero-match.
+    let allZero =
+        { Results = Map.ofList [ "A", zero; "B", zero ]
+          Elapsed = TimeSpan.Zero }
+
+    let mixed =
+        { Results = Map.ofList [ "A", zero; "B", realPass ]
+          Elapsed = TimeSpan.Zero }
+
+    let emptyRun =
+        { Results = Map.empty
+          Elapsed = TimeSpan.Zero }
+
+    test <@ allZeroMatch allZero @>
+    test <@ not (allZeroMatch mixed) @>
+    test <@ not (allZeroMatch emptyRun) @>
+
+[<Fact(Timeout = 15000)>]
+let ``run-tests with a filter that matches nothing reports no-tests-matched distinctly, not a generic pass`` () =
+    withTempDir "tp-run-nomatch" (fun tmpDir ->
+        // `sh -c "exit 8"` simulates Microsoft Testing Platform's zero-tests
+        // exit (code 8) for a FILTERED project that has no matching test. With a
+        // raw filter present, isZeroTestsUnderFilter classifies this as a
+        // zero-match (passed/filtered) — which FIX 2 now surfaces distinctly.
+        let configs =
+            [ { Project = "NoMatchProj"
+                Command = "sh"
+                Args = "-c \"exit 8\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        let result =
+            host.RunCommand("run-tests", [| """{"filter": "--filter-class *NoSuchClass*"}""" |])
+            |> Async.RunSynchronously
+
+        test <@ result.IsSome @>
+        let doc = JsonDocument.Parse(result.Value)
+        // Run-level distinct signal.
+        test <@ doc.RootElement.GetProperty("noTestsMatched").GetBoolean() @>
+        // Per-project distinct status (not "passed", not "failed").
+        let projects = doc.RootElement.GetProperty("projects")
+        Assert.Equal("no-tests-matched", projects.[0].GetProperty("status").GetString()))
+
+[<Fact(Timeout = 15000)>]
+let ``run-tests with a filter that matches tests executes and reports a real pass (not no-tests-matched)`` () =
+    withTempDir "tp-run-match" (fun tmpDir ->
+        // `echo` exits 0 → a real (filtered) pass, NOT a zero-match.
+        let configs =
+            [ { Project = "MatchProj"
+                Command = "echo"
+                Args = "ran"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        let result =
+            host.RunCommand("run-tests", [| """{"filter": "--filter-class MatchProjTests"}""" |])
+            |> Async.RunSynchronously
+
+        test <@ result.IsSome @>
+        let doc = JsonDocument.Parse(result.Value)
+        // The run actually executed → NOT no-tests-matched.
+        test <@ not (doc.RootElement.GetProperty("noTestsMatched").GetBoolean()) @>
+        let projects = doc.RootElement.GetProperty("projects")
+        Assert.Equal("passed", projects.[0].GetProperty("status").GetString()))
+
+[<Fact(Timeout = 30000)>]
+let ``run-tests force-executes after an in-flight run finishes instead of instantly bailing`` () =
+    // The OLD behavior bailed instantly with {error="tests already running"} when
+    // the `tests` slot was held by a background run. FIX 2 makes `run-tests` WAIT
+    // for the slot to clear, then execute — so an explicit force-rerun always
+    // runs. We hold the slot briefly with a slow background run (BuildCompleted),
+    // fire run-tests concurrently, and assert it ultimately EXECUTES (real
+    // results) rather than returning the instant in-flight error.
+    withTempDir "tp-run-force" (fun tmpDir ->
+        let configs =
+            [ { Project = "SlowProj"
+                // ~1.5s so the slot is genuinely held when run-tests arrives.
+                Command = "sh"
+                Args = "-c \"sleep 1.5\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        // Kick off the background run (holds RunExclusive "tests").
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        // Give the background run a moment to acquire the slot, then force a rerun.
+        Thread.Sleep(300)
+
+        let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
+
+        test <@ result.IsSome @>
+        let doc = JsonDocument.Parse(result.Value)
+        // It must NOT be the instant in-flight error and must have actually run
+        // (a `projects` array present means executeTests produced results).
+        // `fst (TryGetProperty …)` is computed OUTSIDE the Unquote quotation
+        // because the ValueTuple it returns can't appear inside a quotation.
+        let hasError = fst (doc.RootElement.TryGetProperty("error"))
+        let hasProjects = fst (doc.RootElement.TryGetProperty("projects"))
+        test <@ not hasError @>
+        test <@ hasProjects @>
+        let projects = doc.RootElement.GetProperty("projects")
+        Assert.True(projects.GetArrayLength() > 0))
+
 // --- buildFilterArgs unit tests ---
 
 [<Fact(Timeout = 15000)>]

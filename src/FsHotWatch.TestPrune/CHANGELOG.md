@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: the `run-tests` command (`fshw test-rerun --filter-*`) now reports a
+  filtered run that matched ZERO tests DISTINCTLY instead of as a silent pass. A
+  zero-match-under-filter project result is tagged with a stable marker; the
+  command surfaces a run-level `noTestsMatched` flag and a per-project
+  `no-tests-matched` status when every project matched nothing. It also no longer
+  bails instantly when a background run holds the test slot — it waits (bounded)
+  for that run to finish so the explicit force-rerun always executes, and reports
+  a distinct `busy` status only if a run is still in progress after the wait.
+
 - feat: `tests.dependsOn` (repo-root-relative globs) salts the test cache key
   with a content hash of the matched EXTERNAL inputs — DB migrations, generated
   files, schemas — that the symbol-diff merkle can't see. Editing such a file

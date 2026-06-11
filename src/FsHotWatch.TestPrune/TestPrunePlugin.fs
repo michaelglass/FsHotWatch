@@ -34,6 +34,19 @@ let PartialName = "coverage.partial.cobertura.xml"
 [<Literal>]
 let CoberturaName = "coverage.cobertura.xml"
 
+/// Stable first-line sentinel prefixed onto the recorded output of a project
+/// whose FILTERED run matched ZERO tests. `test-rerun --filter-*` fans a raw
+/// filter out to every test project; a project with no matching test runs zero
+/// tests and is recorded as a (filtered) pass so it can't masquerade as a
+/// failure. But a pass is indistinguishable from a REAL pass, which hides the
+/// important "your filter selected nothing" case — making `test-rerun` look
+/// like it force-ran when it ran nothing. This marker lets the `run-tests`
+/// command detect a zero-match project STRUCTURALLY (no fragile re-grep of
+/// runner output) and report `no-tests-matched` distinctly when EVERY project
+/// in a filtered run matched nothing.
+[<Literal>]
+let ZeroMatchMarker = "[fshw:no-tests-matched] "
+
 /// Per-project raw-coverage artifact paths + the command-line template used to
 /// produce them. The runner writes Cobertura XML to `Baseline` (full run) or
 /// `Partial` (impact-filtered run); the plugin ingests whichever this run wrote
@@ -369,6 +382,22 @@ let internal externalDependencyHash (repoRoot: string) (dependsOn: string list) 
 
         FsHotWatch.CheckCache.sha256Hex (sb.ToString())
 
+/// True when this result is a zero-match-under-filter pass (the runner found no
+/// test matching the active `--filter-*`). Detected structurally via the
+/// `ZeroMatchMarker` prefix `executeTests` stamps on such results.
+let internal isZeroMatchResult (result: TestResult) : bool =
+    match result with
+    | TestsPassed(o, _, _) -> o.StartsWith(ZeroMatchMarker, StringComparison.Ordinal)
+    | _ -> false
+
+/// True when a run matched NO tests anywhere: every project was a
+/// zero-match-under-filter pass (and there was at least one project). Lets the
+/// `run-tests` command report `no-tests-matched` distinctly instead of a green
+/// that actually executed nothing — the "test-rerun didn't force" symptom.
+let internal allZeroMatch (results: TestResults) : bool =
+    not results.Results.IsEmpty
+    && results.Results |> Map.forall (fun _ r -> isZeroMatchResult r)
+
 let private formatTestResultsJson (results: TestResults) =
     let projects =
         results.Results
@@ -376,6 +405,11 @@ let private formatTestResultsJson (results: TestResults) =
         |> List.map (fun (name, result) ->
             let (status, output) =
                 match result with
+                // A zero-match-under-filter pass gets a DISTINCT status so a
+                // consumer can tell "ran, all green" from "matched nothing".
+                // Strip the internal marker from the surfaced output.
+                | TestsPassed(o, _, _) when o.StartsWith(ZeroMatchMarker, StringComparison.Ordinal) ->
+                    ("no-tests-matched", o.Substring(ZeroMatchMarker.Length))
                 | TestsPassed(o, _, _) -> ("passed", o)
                 | TestsFailed(o, _, _) -> ("failed", o)
                 | TestsTimedOut(o, _, _, _) -> ("timed-out", o)
@@ -388,6 +422,9 @@ let private formatTestResultsJson (results: TestResults) =
 
     JsonSerializer.Serialize(
         {| elapsed = $"%.1f{results.Elapsed.TotalSeconds}s"
+           // `noTestsMatched` is true iff EVERY project matched zero tests under
+           // the active filter — the run-level distinct signal the CLI renders.
+           noTestsMatched = allZeroMatch results
            projects = projects |}
     )
 
@@ -971,7 +1008,10 @@ let private executeTests
                                     // coverage), NOT TestsFailed. Without this, a
                                     // `--filter-*` passthrough fanned out across every
                                     // project reports the non-matching ones as failures.
-                                    TestsPassed(output, true, projectElapsed)
+                                    // Prefix the ZeroMatchMarker so `run-tests` can tell
+                                    // a zero-match pass apart from a real pass and report
+                                    // `no-tests-matched` distinctly when NOTHING matched.
+                                    TestsPassed(ZeroMatchMarker + output, true, projectElapsed)
                                 | ProcessOutcome.Succeeded _ -> TestsPassed(output, wasFiltered, projectElapsed)
                                 | ProcessOutcome.TimedOut(after, _) ->
                                     TestsTimedOut(output, after, wasFiltered, projectElapsed)
@@ -1507,8 +1547,34 @@ let create
             @ [ "run-tests",
                 fun (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (args: string array) ->
                     async {
+                        // FORCE semantics: `test-rerun` is the explicit "run it now"
+                        // verb, so it must execute regardless of cache state or a
+                        // prior run. The cache is already bypassed (commands call
+                        // `executeTests` directly, never `runAndCache`). The only
+                        // thing that previously made it return an INSTANT non-result
+                        // ("tests already running" — no run, no log) was an in-flight
+                        // background run from a recent BuildCompleted holding the
+                        // `RunExclusive "tests"` slot. Rather than bail instantly,
+                        // WAIT (bounded) for that run to finish, then run — so the
+                        // command always executes. If the slot is still held after
+                        // the wait (a genuinely long run, or a stuck slot), report a
+                        // DISTINCT `busy` status — never a generic verdict that could
+                        // read as a pass/fail the command never produced.
+                        let waitForSlotMs = 120_000
+                        let pollMs = 100
+                        let mutable waitedMs = 0
+
+                        while ctx.IsRunning "tests" && waitedMs < waitForSlotMs do
+                            do! Async.Sleep pollMs
+                            waitedMs <- waitedMs + pollMs
+
                         if ctx.IsRunning "tests" then
-                            return JsonSerializer.Serialize({| error = "tests already running" |})
+                            return
+                                JsonSerializer.Serialize(
+                                    {| status = "busy"
+                                       message =
+                                        $"a test run is still in progress after waiting %d{waitForSlotMs / 1000}s; retry once it finishes" |}
+                                )
                         else
                             try
                                 let argStr = if args.Length > 0 then args.[0].Trim() else "{}"
