@@ -20,6 +20,13 @@ open TestPrune.SymbolDiff
 open FsHotWatch.Daemon
 open FsHotWatch.Tests.TestHelpers
 
+/// An empty launch set for tests that construct `TestsFinished` directly to
+/// exercise CacheKey / status reporting without going through a real run. An
+/// empty launch commits nothing — these tests don't drive the pending queue.
+let private emptyLaunch: TestRunLaunch =
+    { Symbols = Set.empty
+      CoveringProjectsBySymbol = Map.empty }
+
 let private waitForPluginIdle (host: PluginHost) (pluginName: string) (timeoutSecs: float) =
     waitForSettled host pluginName (int (timeoutSecs * 1000.0))
 
@@ -2727,7 +2734,8 @@ let ``AUTOMATION-5: TestPrune CacheKey is None for a failing TestsFinished, Some
                 started,
                 completedWith
                     [ "ProjA", TestsPassed("ok", false, TimeSpan.Zero)
-                      "ProjB", TestsFailed("boom", false, TimeSpan.Zero) ]
+                      "ProjB", TestsFailed("boom", false, TimeSpan.Zero) ],
+                emptyLaunch
             )
         )
 
@@ -2737,7 +2745,8 @@ let ``AUTOMATION-5: TestPrune CacheKey is None for a failing TestsFinished, Some
                 started,
                 completedWith
                     [ "ProjA", TestsPassed("ok", false, TimeSpan.Zero)
-                      "ProjB", TestsPassed("ok", false, TimeSpan.Zero) ]
+                      "ProjB", TestsPassed("ok", false, TimeSpan.Zero) ],
+                emptyLaunch
             )
         )
 
@@ -2746,7 +2755,8 @@ let ``AUTOMATION-5: TestPrune CacheKey is None for a failing TestsFinished, Some
         Custom(
             TestsFinished(
                 started,
-                completedWith [ "ProjA", TestsTimedOut("slow", TimeSpan.FromSeconds 1.0, false, TimeSpan.Zero) ]
+                completedWith [ "ProjA", TestsTimedOut("slow", TimeSpan.FromSeconds 1.0, false, TimeSpan.Zero) ],
+                emptyLaunch
             )
         )
 
@@ -4273,3 +4283,405 @@ let ``stale failures from a prior cycle are cleared when the next cycle supersed
         // ProjB red is present, ProjA red has been superseded/cleared.
         test <@ cycle2Files |> List.exists (fun f -> f.Contains("ProjB")) @>
         test <@ not (cycle2Files |> List.exists (fun f -> f.Contains("ProjA"))) @>)
+
+// =============================================================================
+// Sound test-gate (pending-verification queue). A changed symbol leaves the
+// needs-testing queue ONLY when a test run that covered it completed green.
+// "0 affected tests" must provably mean "test-equivalent to the last green
+// run." These tests pin the three holes the queue closes:
+//   1. Verdict ignored run outcome — an Aborted run false-greened.
+//   2. The queue drained unconditionally — Aborted/failed runs forgot what
+//      still needed testing.
+//   3. No durable queue — a restart absorbed unverified symbols.
+// They drive the plugin through the real BuildCompleted → run → TestsFinished
+// flow, seeding the symbol DB directly (deterministic, no FCS) so a known
+// symbol maps to a test in a known project, and assert against the on-disk
+// `.fshw/test-prune/pending-verification.json` sidecar.
+// =============================================================================
+
+module private PendingQueueHelpers =
+    open FsHotWatch.TestPrune
+
+    /// Seed the symbol DB so `QueryAffectedTests [symbolFullName]` returns a test
+    /// in `testProject` (class `testClass`/method `testMethod`). Mirrors the
+    /// dependency-edge + TestMethodInfo shape the analyzer produces.
+    let seedCoveredSymbol
+        (db: Database)
+        (symbolFullName: string)
+        (sourceFile: string)
+        (testProject: string)
+        (testClass: string)
+        (testMethod: string)
+        =
+        // The production symbol under test.
+        let symbol: SymbolInfo =
+            { FullName = symbolFullName
+              Kind = SymbolKind.Value
+              SourceFile = sourceFile
+              LineStart = 1
+              LineEnd = 1
+              ContentHash = "seed-hash"
+              IsExtern = false }
+
+        // The test method is ALSO a symbol: dependencies.from_symbol_id and
+        // test_methods.symbol_id are NOT-NULL FKs into symbols(id), so without a
+        // row for the test's own full name the edge/test-method are silently
+        // dropped and QueryAffectedTests returns nothing.
+        let testSymbol: SymbolInfo =
+            { FullName = $"{testClass}.{testMethod}"
+              Kind = SymbolKind.Value
+              SourceFile = $"{testClass}.fs"
+              LineStart = 1
+              LineEnd = 1
+              ContentHash = "seed-test-hash"
+              IsExtern = false }
+
+        let tm: TestMethodInfo =
+            { SymbolFullName = $"{testClass}.{testMethod}"
+              TestProject = testProject
+              TestClass = testClass
+              TestMethod = testMethod }
+
+        let analysis =
+            AnalysisResult.Create(
+                [ symbol; testSymbol ],
+                [ { FromSymbol = $"{testClass}.{testMethod}"
+                    ToSymbol = symbolFullName
+                    Kind = DependencyKind.Calls
+                    Source = "core" } ],
+                [ tm ]
+            )
+
+        db.RebuildProjects([ analysis ])
+        // Cross-connection WAL visibility: the plugin opens its OWN
+        // Database.create(dbPath) connection, which a pooled stale snapshot can
+        // hide these writes from. Clear the pool so the plugin's first read sees
+        // the seed (mirrors the existing affected-tests tests' ClearAllPools).
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+
+    /// A test config whose runner passes (exit 0) or fails (exit 1) based on a
+    /// flag file's presence. The class filter is wired so the impact-selected
+    /// class actually runs.
+    let flagConfig (tmpDir: string) (project: string) (flag: string) : TestConfig =
+        { Project = project
+          // exit 1 iff the flag file exists.
+          Command = "sh"
+          Args = $"-c \"if [ -f {flag} ]; then exit 1; else exit 0; fi\""
+          Group = "default"
+          Environment = []
+          FilterTemplate = None
+          ClassJoin = " "
+          TimeoutSec = None }
+
+    /// Current durable pending-verification queue for a repo root.
+    let loadQueue (tmpDir: string) : Set<string> = PendingVerification.load tmpDir
+
+[<Fact(Timeout = 20000)>]
+let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the symbols`` () =
+    // THE pinned incident. A changed symbol is queued; the run's beforeRun hook
+    // throws → executeTests propagates → runTestsWithImpact catches → the
+    // completion carries Outcome = Aborted, Results = Map.empty. Pre-fix, empty
+    // results trivially satisfied "failed = 0 && deferred = 0" → Completed
+    // (false green) AND the queue drained, permanently absorbing the symbol.
+    // Post-fix: status is NON-green (Failed) and the symbol stays queued.
+    withTempDir "tp-incident-abort" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
+
+        // Seed the durable queue so the run launches against it. (A restart that
+        // loaded this queue is the realistic source; here we set it directly.)
+        FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
+
+        let configs =
+            [ PendingQueueHelpers.flagConfig tmpDir "P1" (Path.Combine(tmpDir, "never")) ]
+
+        // beforeRun that always throws.
+        let beforeRun = Some(fun () -> failwith "beforeRun boom")
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create dbPath tmpDir (Some configs) None beforeRun None None []
+        host.RegisterHandler(handler)
+
+        let await = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+
+        // (1) Verdict must NOT be Completed — an aborted run verified nothing.
+        match host.GetStatus("test-prune") with
+        | Some(Completed _) -> Assert.Fail("aborted run was reported as Completed (false green)")
+        | Some(Failed _) -> ()
+        | other -> Assert.Fail($"expected Failed for an aborted run, got %A{other}")
+
+        // (2) The symbol must STILL be queued — a subsequent run re-flags it.
+        let queue = PendingQueueHelpers.loadQueue tmpDir
+        test <@ queue.Contains("Lib.foo") @>)
+
+[<Fact(Timeout = 25000)>]
+let ``partial failure: symbols whose only covering project passed commit; symbols touching a failed project stay queued``
+    ()
+    =
+    // A run covers P1 (passes) and P2 (fails). SymA's tests live only in P1;
+    // SymB's tests live only in P2. SymA must commit (its covering project
+    // passed); SymB must stay queued (its covering project failed). Pre-fix the
+    // whole queue drained on any completion regardless of per-project outcome.
+    withTempDir "tp-partial-fail" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.symA" "A.fs" "P1" "P1Tests" "aTest"
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.symB" "B.fs" "P2" "P2Tests" "bTest"
+
+        FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.symA"; "Lib.symB" ])
+
+        // P1 passes (no flag), P2 fails (flag present).
+        let p2flag = Path.Combine(tmpDir, "p2fail")
+        File.WriteAllText(p2flag, "")
+
+        let configs =
+            [ PendingQueueHelpers.flagConfig tmpDir "P1" (Path.Combine(tmpDir, "never"))
+              PendingQueueHelpers.flagConfig tmpDir "P2" p2flag ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        let await = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        await.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+
+        let queue = PendingQueueHelpers.loadQueue tmpDir
+
+        // symA's only covering project (P1) passed → committed (gone).
+        test <@ not (queue.Contains("Lib.symA")) @>
+        // symB touches P2 which failed → still queued.
+        test <@ queue.Contains("Lib.symB") @>)
+
+[<Fact(Timeout = 30000)>]
+let ``mid-run change: a green run commits only its launch set; a symbol that arrives mid-run stays queued and triggers a rerun``
+    ()
+    =
+    // Run 1 launches against {Lib.foo} and SLEEPS (~1.5s). While it is in flight a
+    // genuine FCS FileChecked lands that changes a second symbol (`bar`), which the
+    // plugin enqueues via the real write-through path, and a mid-run BuildCompleted
+    // sets PendingRerun. Run 1's launch SNAPSHOT was {Lib.foo}, so its green
+    // completion commits ONLY Lib.foo; the mid-run `bar` is NOT in the launch set,
+    // so it survives the commit and the PendingRerun then covers + commits it.
+    // This exercises the real mid-run path (no file-rewrite simulation): the
+    // launch snapshot is captured at dispatch and the commit is launch-set-scoped.
+    withTempDir "tp-midrun" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let libFile = Path.Combine(tmpDir, "Lib.fsx")
+        let testsFile = Path.Combine(tmpDir, "Tests.fsx")
+
+        // Lib exposes `foo` and `bar`; the test file has a test calling each so a
+        // change to either selects its test.
+        let libSource1 = "module Lib\nlet foo (x: int) = x + 1\nlet bar (x: int) = x + 1\n"
+
+        let testsSource =
+            """module Tests
+open Lib
+
+type FactAttribute() = inherit System.Attribute()
+
+[<Fact>]
+let fooTest () = assert (foo 1 = 2)
+
+[<Fact>]
+let barTest () = assert (bar 1 = 2)
+"""
+
+        File.WriteAllText(libFile, libSource1)
+        File.WriteAllText(testsFile, testsSource)
+
+        let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+        let pipeline = CheckPipeline(checker)
+        let host = PluginHost.create checker tmpDir
+
+        // The runner sleeps so the mid-run injection has a window; always passes.
+        let configs =
+            [ { Project = "Lib"
+                Command = "sh"
+                Args = "-c \"sleep 1.5; exit 0\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        let libOptions =
+            getScriptOptions checker libFile libSource1 |> Async.RunSynchronously
+
+        let projOptions =
+            { libOptions with
+                SourceFiles = [| libFile; testsFile |] }
+
+        pipeline.RegisterProject(libFile, projOptions)
+
+        // Index both files (BuildCompleted first so the freshness sidecar can go
+        // clean, then FileChecked for each), then flush to the DB via BatchChecked.
+        emitBuildAndWaitTerminal host
+
+        for f in [ libFile; testsFile ] do
+            match pipeline.CheckFile(AbsFilePath.create f) |> Async.RunSynchronously with
+            | Some r -> host.EmitFileChecked(r)
+            | None -> failwith $"CheckFile failed for {f}"
+
+        waitForPluginIdle host "test-prune" 10.0
+        emitBatchAndQuiesce host [ libFile; testsFile ]
+
+        // Change `foo`'s body so `fooTest` is the affected test, then launch run 1.
+        let libSource2 = "module Lib\nlet foo (x: int) = x + 2\nlet bar (x: int) = x + 1\n"
+        File.WriteAllText(libFile, libSource2)
+
+        match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
+        | Some r -> host.EmitFileChecked(r)
+        | None -> failwith "lib CheckFile (foo change) failed"
+
+        waitForPluginIdle host "test-prune" 10.0
+
+        // Launch run 1 (covers fooTest). It sleeps 1.5s.
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("test-prune") with
+                | Some(Running _) -> true
+                | _ -> false)
+            5000
+
+        // MID-RUN: change `bar`'s body → a real FileChecked enqueues `bar`'s
+        // symbol via the plugin's write-through path, then a BuildCompleted sets
+        // PendingRerun. This all lands while run 1 is still sleeping.
+        let libSource3 = "module Lib\nlet foo (x: int) = x + 2\nlet bar (x: int) = x + 99\n"
+        File.WriteAllText(libFile, libSource3)
+
+        match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
+        | Some r -> host.EmitFileChecked(r)
+        | None -> failwith "lib CheckFile (bar change) failed"
+
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        // Run 1 finishes, then the PendingRerun (covering the mid-run `bar`) runs.
+        // Both passed (the runner always exits 0), so the queue ultimately drains
+        // to empty and the plugin settles green. Wait for that CONVERGED state
+        // (empty queue AND Completed) rather than a single terminal transition —
+        // the rerun re-enters Running between run 1's completion and final settle,
+        // so a one-shot terminal wait races the rerun. The load-bearing invariant
+        // (`bar` is NOT committed by run 1's completion — it only leaves the queue
+        // once the rerun actually covers it green) is what makes the convergence
+        // possible: had run 1 committed its non-launch-set arrival, the rerun
+        // would never have re-tested `bar`.
+        let converged () =
+            let q = PendingQueueHelpers.loadQueue tmpDir
+
+            let green =
+                match host.GetStatus("test-prune") with
+                | Some(Completed _) -> true
+                | _ -> false
+
+            Set.isEmpty q && green
+
+        waitUntil converged 20000
+
+        let queueFinal = PendingQueueHelpers.loadQueue tmpDir
+        test <@ Set.isEmpty queueFinal @>
+
+        match host.GetStatus("test-prune") with
+        | Some(Completed _) -> ()
+        | other -> Assert.Fail($"expected Completed after launch-set commit + rerun drained the queue, got %A{other}"))
+
+[<Fact(Timeout = 20000)>]
+let ``restart persistence: a non-empty queue survives a daemon restart and is re-flagged`` () =
+    // Session 1 queues Lib.foo (covered by P1) but the run never proves it green
+    // (it fails). Session 2 (a fresh plugin instance against the same on-disk
+    // sidecar + DB) must load the queue, re-flag Lib.foo, and run P1 again.
+    // Pre-fix the in-memory queue died with the daemon → restart silent-greened.
+    withTempDir "tp-restart" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
+
+        // Queue Lib.foo on disk (session-1 residue: a symbol never proven green).
+        FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
+
+        // Session 2: a fresh plugin. P1 PASSES this time, so the restart-driven
+        // run should cover Lib.foo, pass, and commit it — proving the symbol was
+        // re-flagged and actually re-tested (not silently absorbed).
+        let ranMarker = Path.Combine(tmpDir, "p1-ran")
+
+        let configs =
+            [ { Project = "P1"
+                Command = "sh"
+                Args = $"-c \"touch {ranMarker}; exit 0\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        let await = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+
+        // The restart re-flagged Lib.foo → P1 actually ran.
+        test <@ File.Exists ranMarker @>
+
+        // P1 passed and covers Lib.foo → it committed (queue now empty).
+        let queue = PendingQueueHelpers.loadQueue tmpDir
+        test <@ not (queue.Contains("Lib.foo")) @>
+
+        // And the verdict is green now that the queue drained.
+        match host.GetStatus("test-prune") with
+        | Some(Completed _) -> ()
+        | other -> Assert.Fail($"expected Completed after the re-flagged symbol tested green, got %A{other}"))
+
+[<Fact(Timeout = 20000)>]
+let ``no-covering-test symbol drops from the queue at flush without wedging it`` () =
+    // A queued symbol with NO covering test must drop immediately at flush time —
+    // nothing to wait for; retaining it would wedge the queue forever (every run
+    // selects zero tests yet the queue never empties → permanent non-green).
+    withTempDir "tp-uncovered" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+        // Seed a COVERED symbol so the DB is non-empty and indexed, plus queue an
+        // UNCOVERED symbol that maps to no test.
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.covered" "Lib.fs" "P1" "P1Tests" "coveredTest"
+
+        FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.uncovered"; "Lib.covered" ])
+
+        let configs =
+            [ { Project = "P1"
+                Command = "sh"
+                Args = "-c \"exit 0\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        let await = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+
+        let queue = PendingQueueHelpers.loadQueue tmpDir
+
+        // The uncovered symbol dropped (no test to wait on); the covered symbol
+        // committed because P1 passed. Queue is empty → not wedged → green.
+        test <@ not (queue.Contains("Lib.uncovered")) @>
+        test <@ not (queue.Contains("Lib.covered")) @>
+        test <@ Set.isEmpty queue @>
+
+        match host.GetStatus("test-prune") with
+        | Some(Completed _) -> ()
+        | other -> Assert.Fail($"expected Completed (queue drained, not wedged), got %A{other}"))
