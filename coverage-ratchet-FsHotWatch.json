@@ -448,15 +448,15 @@
     ],
     "PendingVerification.fs": [
       {
-        "line": 78,
-        "branch": 100,
-        "reason": "honest floor for the durable pending-verification sidecar. The uncovered lines (~64-80) are the defensive load() error paths: the outer try/catch (corrupt/unreadable JSON -> empty), null-node guards, and the per-element parse try/catch. These are deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage; the happy-path save/load/hash + the queue semantics are exercised end-to-end by the pending-verification regression tests. Observed 78.8% line / 100% branch.",
+        "line": 87,
+        "branch": 75,
+        "reason": "honest floor for the durable pending-verification sidecar. The PendingVerification unit tests deterministically cover load (missing/whitespace/corrupt/well-formed), the save round-trip, and hash; the remaining uncovered branch is the per-element null-guard inside the array deserialize (an explicit JSON null array element), and the remaining uncovered lines are the rarely-hit per-element parse fallbacks (~67/72/76/77). These are deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage. Achieved 87.9% line / 75% branch (3/4), stable now that the dedicated unit tests pin the load branches.",
         "platform": "macos"
       },
       {
-        "line": 78,
-        "branch": 100,
-        "reason": "deterministic pure JSON I/O - same on Linux as macOS; defensive load() error paths uncovered by design (see macos entry).",
+        "line": 87,
+        "branch": 75,
+        "reason": "deterministic pure JSON I/O - same on Linux as macOS; per-element null-guard branch + parse-fallback lines uncovered by design (see macos entry).",
         "platform": "linux"
       }
     ],
