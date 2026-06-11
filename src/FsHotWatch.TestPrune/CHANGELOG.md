@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.23 - 2026-06-11
+
 - fix: the `run-tests` command (`fshw test-rerun --filter-*`) now reports a
   filtered run that matched ZERO tests DISTINCTLY instead of as a silent pass. A
   zero-match-under-filter project result is tagged with a stable marker; the

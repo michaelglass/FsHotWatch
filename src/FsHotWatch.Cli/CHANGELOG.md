@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.29 - 2026-06-11
+
 - fix: `test-rerun --filter-class` / `--filter-trait` force-executes the matched
   tests instead of returning an instant non-result. Two changes: (1) when a
   background test run holds the test slot, `run-tests` now WAITS (bounded) for it
