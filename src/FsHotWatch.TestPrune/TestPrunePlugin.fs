@@ -1324,21 +1324,17 @@ let create
     let mutable pendingQueueRef: PendingVerification.Queue =
         PendingVerification.load repoRoot
 
-    /// Add `symbols` to the persisted queue and flush to disk. Called at the
-    /// FileChecked accumulation point BEFORE the analysis flush, so a crash
-    /// between the queue write and the DB rebuild leaves the symbols QUEUED
-    /// (over-testing is the safe direction).
+    /// Add `symbols` to the in-memory queue. Called at the FileChecked
+    /// accumulation point; the durable persist is batched to the flush
+    /// chokepoint (`flushAndQueryAffected` saves BEFORE the analysis flush
+    /// advances the durable snapshot). Crash-safety holds without a per-file
+    /// write: losing un-flushed enqueues also means the analysis snapshot was
+    /// not advanced, so a restart re-DETECTS the same changes and re-enqueues
+    /// them (over-testing is the safe direction).
     let enqueuePending (symbols: string list) =
         if not symbols.IsEmpty then
             let updated = (pendingQueueRef, symbols) ||> List.fold (fun q s -> Set.add s q)
             Volatile.Write(&pendingQueueRef, updated)
-
-            try
-                PendingVerification.save repoRoot updated
-            with ex ->
-                Logging.warn
-                    "test-prune"
-                    $"failed to persist pending-verification queue: %s{ex.Message}; in-memory queue still updated"
 
     /// Remove `symbols` from the persisted queue and flush to disk. Called only
     /// when a covering test run for those symbols completed green (or a symbol
@@ -1359,6 +1355,18 @@ let create
     // Extensions (if any) contribute dependency edges via AnalyzeEdges, written
     // to the DB before QueryAffectedTests so they participate in impact traversal.
     let flushAndQueryAffected (state: TestPruneState) =
+        // Persist the pending queue BEFORE flushPendingAnalysis advances the
+        // durable analysis snapshot: once the snapshot advances, un-persisted
+        // queue entries would no longer be re-detectable after a crash. One
+        // write per flush (vs per FileChecked) — same crash-safety, batch-size
+        // fewer disk writes.
+        try
+            PendingVerification.save repoRoot pendingQueueRef
+        with ex ->
+            Logging.warn
+                "test-prune"
+                $"failed to persist pending-verification queue: %s{ex.Message}; in-memory queue still updated"
+
         let flushedState = flushPendingAnalysis db state
 
         match extensions with
@@ -2487,21 +2495,27 @@ let create
             // this, a green that left symbols queued (a fully-passing FILTERED run
             // that didn't cover every queued symbol) shares the changed-symbols
             // merkle with a later BuildCompleted and could replay a green while
-            // symbols still await verification. Empty queue → empty hash entry,
-            // keeping the empty-queue green fast-path byte-stable.
-            let pendingQueueEntry =
-                match PendingVerification.hash pendingQueueRef with
-                | h when h = PendingVerification.hash PendingVerification.empty -> []
-                | h -> [ "pending-queue", h ]
+            // symbols still await verification. Empty queue → empty entry, keeping
+            // the empty-queue green fast-path key byte-stable. Thunked: FileChecked
+            // — the per-file, highest-frequency probe — never splices this entry,
+            // so the queue is hashed only on the BuildCompleted/TestsFinished paths.
+            let pendingQueueEntry () =
+                if Set.isEmpty pendingQueueRef then
+                    []
+                else
+                    [ "pending-queue", PendingVerification.hash pendingQueueRef ]
+
+            // One definition shared by the BuildSucceeded and BuildFailed keys so
+            // the two branches cannot drift; thunked so probes that never splice it
+            // don't pay the sort/concat/hash.
+            let changedSymbolsHash () =
+                Volatile.Read(&changedSymbolsRef)
+                |> List.distinct
+                |> List.sort
+                |> String.concat "|"
+                |> FsHotWatch.CheckCache.sha256Hex
 
             let buildCompletedKey () =
-                let symbolsHash =
-                    Volatile.Read(&changedSymbolsRef)
-                    |> List.distinct
-                    |> List.sort
-                    |> String.concat "|"
-                    |> FsHotWatch.CheckCache.sha256Hex
-
                 // AUTOMATION-5: salt bumped v1→v2 so any entry written by the
                 // prior code (which cached FAILED test verdicts and could replay
                 // them on a now-green tree) can never match a key computed here.
@@ -2509,9 +2523,9 @@ let create
                 FsHotWatch.TaskCache.merkleCacheKey (
                     [ "plugin-version", "test-prune-merkle-v2"
                       "event", "BuildCompleted"
-                      "changed-symbols", symbolsHash
+                      "changed-symbols", changedSymbolsHash ()
                       "build-outcome", "succeeded" ]
-                    @ pendingQueueEntry
+                    @ pendingQueueEntry ()
                     @ dependsOnEntries
                 )
 
@@ -2551,13 +2565,6 @@ let create
                 else
                     None
             | BuildCompleted(BuildFailed errs) ->
-                let symbolsHash =
-                    Volatile.Read(&changedSymbolsRef)
-                    |> List.distinct
-                    |> List.sort
-                    |> String.concat "|"
-                    |> FsHotWatch.CheckCache.sha256Hex
-
                 Some(
                     // AUTOMATION-5: salt bumped v1→v2 in lockstep with the
                     // BuildSucceeded key so the two never split across versions.
@@ -2567,9 +2574,9 @@ let create
                     FsHotWatch.TaskCache.merkleCacheKey (
                         [ "plugin-version", "test-prune-merkle-v2"
                           "event", "BuildCompleted"
-                          "changed-symbols", symbolsHash
+                          "changed-symbols", changedSymbolsHash ()
                           "build-outcome", "failed:" + String.concat "|" (List.sort errs) ]
-                        @ pendingQueueEntry
+                        @ pendingQueueEntry ()
                         @ dependsOnEntries
                     )
                 )

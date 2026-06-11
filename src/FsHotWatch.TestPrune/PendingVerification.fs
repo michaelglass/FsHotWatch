@@ -81,8 +81,9 @@ let load (repoRoot: string) : Queue =
 
 /// Persist the queue atomically (write to .tmp, rename over the real file).
 /// Sorted so the on-disk form is stable/diffable and a queue-hash is
-/// deterministic. Cheap enough to call on each FileChecked update and at every
-/// commit point at fshw's scale (hundreds-to-low-thousands of symbols).
+/// deterministic. Called at the flush chokepoint (once per analysis batch,
+/// BEFORE the snapshot advance) and at every commit point — not per
+/// FileChecked — so writes scale with batches, not files.
 let save (repoRoot: string) (queue: Queue) : unit =
     let path = sidecarPath repoRoot
     let arr = JsonArray()
