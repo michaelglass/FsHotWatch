@@ -446,6 +446,20 @@
         "platform": "linux"
       }
     ],
+    "PendingVerification.fs": [
+      {
+        "line": 78,
+        "branch": 100,
+        "reason": "honest floor for the durable pending-verification sidecar. The uncovered lines (~64-80) are the defensive load() error paths: the outer try/catch (corrupt/unreadable JSON -> empty), null-node guards, and the per-element parse try/catch. These are deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage; the happy-path save/load/hash + the queue semantics are exercised end-to-end by the pending-verification regression tests. Observed 78.8% line / 100% branch.",
+        "platform": "macos"
+      },
+      {
+        "line": 78,
+        "branch": 100,
+        "reason": "deterministic pure JSON I/O - same on Linux as macOS; defensive load() error paths uncovered by design (see macos entry).",
+        "platform": "linux"
+      }
+    ],
     "PluginActivity.fs": [
       {
         "line": 87,
