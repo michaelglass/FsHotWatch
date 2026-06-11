@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- fix!: the test gate can no longer go green without the tests having actually
+  run ("false green"). A durable needs-testing queue
+  (`.fshw/test-prune/pending-verification.json`) records every changed symbol
+  until a test run that COVERED it completes green. Concretely: runs that abort
+  (e.g. a failing `beforeRun` hook) or fail no longer absorb the symbols they
+  never verified; an Aborted run reports Failed instead of green; "no affected
+  tests — skip" is gated on the persisted queue being empty; zero projects ran
+  with a non-empty queue reports "tests did not run" instead of green; a cached
+  green `TestRunCompleted` can only replay for a state whose queue is empty;
+  and a daemon restart re-flags anything still unverified. Breaking for
+  plugin-message consumers: `TestPruneMsg.TestsFinished` now carries the
+  launch-time queue snapshot (`TestRunLaunch`).
+- chore: the pending-verification sidecar persists once per analysis batch (at
+  the flush chokepoint, before the snapshot advance) rather than on every
+  FileChecked — same crash-safety direction (over-testing), far fewer disk
+  writes.
+
 ## 0.7.0-alpha.23 - 2026-06-11
 
 - fix: the `run-tests` command (`fshw test-rerun --filter-*`) now reports a

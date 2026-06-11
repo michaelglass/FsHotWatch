@@ -74,6 +74,7 @@ daemon.RegisterHandler(
         None                     // beforeRun
         None                     // afterRun
         None                     // coveragePaths
+        []                       // dependsOn — globs of external test inputs (migrations, schemas) that salt the test cache key
 )
 
 // Custom file command — type-check .fsx scripts on save
