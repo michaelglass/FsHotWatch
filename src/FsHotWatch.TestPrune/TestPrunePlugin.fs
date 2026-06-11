@@ -233,7 +233,21 @@ type TestPruneState =
 /// Live `TestProgress` events still fire from the async (per-group, streaming)
 /// because they're not part of cache replay (cache replay skips per-group
 /// progress and goes straight from Started to Completed by design).
-type TestPruneMsg = TestsFinished of started: TestRunStarted * completed: TestRunCompleted
+///
+/// `launch` carries the set the run was LAUNCHED against — the queue snapshot
+/// (`Symbols`) and, per launched symbol, the set of test PROJECTS whose tests
+/// cover it (`CoveringProjectsBySymbol`) — both captured at dispatch time. The
+/// synchronous `Custom(TestsFinished)` handler uses this, NOT the live
+/// `state.AffectedTests`/`state.ChangedSymbols` (which mid-run `BatchChecked`
+/// flushes overwrite), to decide per-symbol green-commit: a symbol leaves the
+/// queue only when EVERY project covering it passed. A symbol with NO covering
+/// projects (empty set) is committed unconditionally at flush time — there's
+/// nothing to wait for. `Symbols` empty for the degenerate zero-affected skip.
+type TestRunLaunch =
+    { Symbols: Set<string>
+      CoveringProjectsBySymbol: Map<string, Set<string>> }
+
+type TestPruneMsg = TestsFinished of started: TestRunStarted * completed: TestRunCompleted * launch: TestRunLaunch
 
 /// Translate a repo-root-relative glob (`*`, `?`, `**`, `/`) into a regex
 /// anchored against a repo-relative path. `**` matches across directory
@@ -1297,6 +1311,50 @@ let create
 
     let tryRepairSchemaDrift ex = tryRepairSchemaDrift dbPath ex
 
+    // Durable "needs-testing" queue (plugin-owned sidecar). The set of changed
+    // symbols not yet proven test-equivalent to the last green run. Loaded once
+    // at construction so a restart with a non-empty queue re-flags those
+    // symbols; updated write-through (in-memory ChangedSymbols stays the hot
+    // view, this is the durable copy). A symbol leaves ONLY when a covering test
+    // run passed (or it has no covering test). See PendingVerification.fs.
+    //
+    // Held in a closure-local mutable cell + Volatile for the same reason
+    // changedSymbolsRef/freshnessRef are — read/written from multiple threads
+    // (mailbox + cache intercept).
+    let mutable pendingQueueRef: PendingVerification.Queue =
+        PendingVerification.load repoRoot
+
+    /// Add `symbols` to the persisted queue and flush to disk. Called at the
+    /// FileChecked accumulation point BEFORE the analysis flush, so a crash
+    /// between the queue write and the DB rebuild leaves the symbols QUEUED
+    /// (over-testing is the safe direction).
+    let enqueuePending (symbols: string list) =
+        if not symbols.IsEmpty then
+            let updated = (pendingQueueRef, symbols) ||> List.fold (fun q s -> Set.add s q)
+            Volatile.Write(&pendingQueueRef, updated)
+
+            try
+                PendingVerification.save repoRoot updated
+            with ex ->
+                Logging.warn
+                    "test-prune"
+                    $"failed to persist pending-verification queue: %s{ex.Message}; in-memory queue still updated"
+
+    /// Remove `symbols` from the persisted queue and flush to disk. Called only
+    /// when a covering test run for those symbols completed green (or a symbol
+    /// has no covering test).
+    let commitPending (symbols: Set<string>) =
+        if not symbols.IsEmpty then
+            let updated = Set.difference pendingQueueRef symbols
+            Volatile.Write(&pendingQueueRef, updated)
+
+            try
+                PendingVerification.save repoRoot updated
+            with ex ->
+                Logging.warn
+                    "test-prune"
+                    $"failed to persist pending-verification queue after commit: %s{ex.Message}; in-memory queue still updated"
+
     // Flush pending analysis to DB and query affected tests from changed symbols.
     // Extensions (if any) contribute dependency edges via AnalyzeEdges, written
     // to the DB before QueryAffectedTests so they participate in impact traversal.
@@ -1328,7 +1386,13 @@ let create
                 db.RebuildProjects([ edgeResult ])
         | _ -> ()
 
-        let symbols = flushedState.ChangedSymbols |> List.distinct
+        // Affected tests must be computed from the WHOLE needs-testing queue —
+        // the in-memory hot view UNION the durable sidecar — not just the latest
+        // diff. The persisted queue holds symbols a green run hasn't yet cleared
+        // (e.g. carried across a restart, or left behind by an Aborted/failed
+        // run); they must keep selecting tests until a covering run passes.
+        let symbols =
+            Set.union pendingQueueRef (Set.ofList flushedState.ChangedSymbols) |> Set.toList
 
         let affectedTests =
             if symbols.IsEmpty then
@@ -1340,7 +1404,33 @@ let create
 
                 affected
 
+        // Drop queued symbols that have NO covering test from the durable queue
+        // immediately: there is nothing for them to wait on, and retaining them
+        // would wedge the queue forever (every future run would re-select zero
+        // tests yet the queue would never empty → permanent non-green). A symbol
+        // is "covered" iff QueryAffectedTests([symbol]) returns at least one test.
+        // Only ever REMOVES from the queue, so it cannot under-test.
+        let uncovered =
+            symbols
+            |> List.filter (fun s -> (db.QueryAffectedTests [ s ]).IsEmpty)
+            |> Set.ofList
+
+        if not (Set.isEmpty uncovered) then
+            Logging.info
+                "test-prune"
+                $"Dropping %d{Set.count uncovered} queued symbol(s) with no covering test from pending-verification queue"
+
+            commitPending uncovered
+
+        // Keep the in-memory hot view aligned with the durable queue so the
+        // ChangedSymbols carried in state (and the cache-key snapshot) don't
+        // re-select the uncovered symbols on the next event.
+        let remainingSymbols =
+            flushedState.ChangedSymbols
+            |> List.filter (fun s -> not (Set.contains s uncovered))
+
         { flushedState with
+            ChangedSymbols = remainingSymbols
             AffectedTests = Analyzed affectedTests }
 
     // Mutable snapshot of ChangedSymbols for the cache key function.
@@ -1372,16 +1462,26 @@ let create
     let hasTestConfigs =
         testConfigs |> Option.map (List.isEmpty >> not) |> Option.defaultValue false
 
+    // Seed the in-memory hot view from the durable queue so a restart with a
+    // non-empty queue re-flags those symbols: the first flushAndQueryAffected
+    // (on cold-scan BatchChecked) then queries them and the next run re-tests
+    // anything not yet proven green. Without this, a restart would diff current
+    // symbols against the already-advanced analysis snapshot → "nothing changed"
+    // → zero tests run → false green (hole #3).
     let initialState =
         { PendingAnalysis = Map.empty
           SymbolSnapshot = Map.empty
           AffectedTests = NotYetAnalyzed
-          ChangedSymbols = []
+          ChangedSymbols = pendingQueueRef |> Set.toList
           ChangedFiles = []
           LastResults = None
           PendingRerun = false
           TestClassFiles = Map.empty
           BuildCompletedInThisSession = false }
+
+    // Keep the cache-key snapshot consistent with the seeded queue from the
+    // very first event (the cache intercept runs before any Update handler).
+    Volatile.Write(&changedSymbolsRef, initialState.ChangedSymbols)
 
     /// Returns the `TestsFinished` message that the framework's RunExclusive
     /// will post back to the agent. The synchronous `Custom(TestsFinished)`
@@ -1394,9 +1494,41 @@ let create
         (ctx: PluginCtx<TestPruneMsg>)
         (configs: TestConfig list)
         (state: TestPruneState)
+        // `hasCachedResults` (state.LastResults.IsSome) means a run already
+        // completed THIS session — i.e. a green baseline exists to be
+        // "test-equivalent" to. The zero-affected skip needs this AS WELL AS an
+        // empty queue: a cold daemon with an empty queue but no prior run has no
+        // baseline yet and must run the full suite once to establish one. See
+        // the skip gate below.
         (hasCachedResults: bool)
         : Async<TestPruneMsg> =
         async {
+            // The queue snapshot this run is LAUNCHED against — the durable
+            // queue UNION the in-memory hot view. Captured here (not read from
+            // state at completion time) because mid-run BatchChecked flushes
+            // mutate both; the synchronous TestsFinished handler commits ONLY
+            // these symbols and leaves mid-run arrivals queued for the rerun.
+            let launchedSymbols = Set.union pendingQueueRef (Set.ofList state.ChangedSymbols)
+
+            // For each launched symbol, the set of test PROJECTS whose tests
+            // cover it. An empty set ⇒ no covering test. Queried per-symbol so
+            // a symbol commits ONLY when every project covering IT passed (a
+            // run-wide union would over-couple unrelated symbols). Empty queue ⇒
+            // no queries.
+            let coveringProjectsBySymbol =
+                launchedSymbols
+                |> Set.toList
+                |> List.map (fun s ->
+                    let projs =
+                        db.QueryAffectedTests [ s ] |> List.map (fun t -> t.TestProject) |> Set.ofList
+
+                    s, projs)
+                |> Map.ofList
+
+            let launch =
+                { Symbols = launchedSymbols
+                  CoveringProjectsBySymbol = coveringProjectsBySymbol }
+
             try
                 // Extension-contributed edges were already written to the DB by
                 // flushAndQueryAffected, so state.AffectedTests already includes tests
@@ -1414,8 +1546,21 @@ let create
 
                 let totalClasses = affectedByProject |> Map.values |> Seq.sumBy List.length
 
-                if totalClasses = 0 && hasCachedResults then
-                    Logging.info "test-prune" "No affected classes — skipping tests (not cold start)"
+                // Gate the zero-affected skip on the PERSISTED queue being empty
+                // (§3c). The queue-empty check is the load-bearing addition: an
+                // empty queue means "test-equivalent to the last green run", so "0
+                // affected tests" is a sound green; a NON-empty queue with 0 affected
+                // classes (covered symbols whose tests aren't indexed yet, etc.) must
+                // run the suite rather than silent-green. `hasCachedResults` is
+                // retained ONLY as the cold-start guard: the very first run of a
+                // session (no baseline yet) must run the full suite to ESTABLISH the
+                // green baseline the empty queue is then equivalent to. Both must
+                // hold to skip — either alone would under-test (queue-empty cold
+                // start) or be unsound (warm with a non-empty queue).
+                if totalClasses = 0 && Set.isEmpty pendingQueueRef && hasCachedResults then
+                    Logging.info
+                        "test-prune"
+                        "No affected classes, empty pending queue, baseline exists — skipping tests"
 
                     // Build a degenerate lifecycle (Started → Completed with empty
                     // Results). The synchronous Custom handler emits both events
@@ -1434,10 +1579,10 @@ let create
                           Results = Map.empty
                           RanFullSuite = true }
 
-                    return TestsFinished(started, completed)
+                    return TestsFinished(started, completed, launch)
                 else
                     if totalClasses = 0 then
-                        Logging.info "test-prune" "No affected classes (cold start) — running all tests"
+                        Logging.info "test-prune" "No affected classes (cold start / pending queue) — running all tests"
                     else
                         for (proj, classes) in affectedByProject |> Map.toList do
                             Logging.info "test-prune" $"Affected classes for %s{proj}: %A{classes}"
@@ -1458,7 +1603,7 @@ let create
                     // synchronous handler emits Started + Completed for the
                     // §2a cache-write capture window.
                     ignore results
-                    return TestsFinished(started, completed)
+                    return TestsFinished(started, completed, launch)
             with ex ->
                 Logging.error "test-prune" $"runTests failed: %s{ex.Message}"
 
@@ -1477,7 +1622,10 @@ let create
                       Results = Map.empty
                       RanFullSuite = true }
 
-                return TestsFinished(started, completed)
+                // launch carries the queue snapshot this aborted run was
+                // launched against; the TestsFinished handler commits NOTHING
+                // for an Aborted outcome, so those symbols stay queued.
+                return TestsFinished(started, completed, launch)
         }
 
     let commands =
@@ -1656,7 +1804,19 @@ let create
                                         // Post rather than EmitTestRunCompleted directly — the
                                         // Custom(TestsFinished) handler also does error reporting and
                                         // status updates that a bare emit call would skip.
-                                        ctx.Post(TestsFinished(started, completed))
+                                        //
+                                        // Empty launch set: `run-tests` is a manual FORCE run
+                                        // (optionally filtered to a subset / only-failed). It is NOT
+                                        // the impact-analysis queue-draining path, and a filtered
+                                        // force-run may not cover every queued symbol — so it commits
+                                        // NOTHING from the pending-verification queue (over-testing is
+                                        // the safe direction). The queue drains through the normal
+                                        // BuildCompleted impact flow.
+                                        let emptyLaunch =
+                                            { Symbols = Set.empty
+                                              CoveringProjectsBySymbol = Map.empty }
+
+                                        ctx.Post(TestsFinished(started, completed, emptyLaunch))
 
                                         return formatTestResultsJson results
                             with ex ->
@@ -1789,6 +1949,16 @@ let create
                         let newChangedSymbols =
                             if not changedNames.IsEmpty then
                                 Logging.info "test-prune" $"Changed symbols: %A{changedNames}"
+
+                                // Write-through to the durable needs-testing queue at the
+                                // SAME point the in-memory hot view accumulates. Persisted
+                                // here (before the BatchChecked analysis flush) so a crash
+                                // between this and the DB rebuild leaves the symbols QUEUED
+                                // — over-testing is the safe direction. They leave the queue
+                                // only when a covering test run passes (TestsFinished) or
+                                // they prove to have no covering test (flushAndQueryAffected).
+                                enqueuePending changedNames
+
                                 (state.ChangedSymbols @ changedNames) |> List.distinct
                             else
                                 state.ChangedSymbols
@@ -1960,7 +2130,7 @@ let create
                                     return stateWithAffected
                     | BuildFailed _ -> return state
 
-                | Custom(TestsFinished(started, completed)) ->
+                | Custom(TestsFinished(started, completed, launch)) ->
                     // §2a: emit lifecycle events synchronously here (inside the framework's
                     // per-event capture window) so they're recorded in the cached
                     // EmittedEvents and re-fired on cache replay. Live per-group
@@ -1990,120 +2160,229 @@ let create
                     if not (testResults.Results |> Map.forall (fun _ r -> TestResult.isPassed r)) then
                         reportTestErrors ctx state.TestClassFiles testResults
 
+                    // Outcome-conditional, per-project green-commit. A launched
+                    // symbol leaves the needs-testing queue ONLY when the run
+                    // genuinely covered it green:
+                    //   - the run did NOT abort (a beforeRun throw / crash gives
+                    //     Outcome = Aborted, Results = Map.empty → commit nothing), AND
+                    //   - EVERY project covering the symbol produced a PASSED result.
+                    // A project counts as passed only if it appears in completed.Results
+                    // with TestResult.isPassed — a covering project ABSENT from the
+                    // results (didn't run this cycle) blocks the commit (we can't claim
+                    // it green). A symbol with NO covering project was already dropped at
+                    // flush time, but if one slipped through it commits here (nothing to
+                    // wait on). Mid-run arrivals are NOT in launch.Symbols, so they stay
+                    // queued and the PendingRerun flow re-runs them.
+                    let aborted =
+                        match completed.Outcome with
+                        | Aborted _ -> true
+                        | Normal -> false
+
+                    let projectPassed (proj: string) =
+                        match Map.tryFind proj completed.Results with
+                        | Some r -> TestResult.isPassed r
+                        | None -> false
+
+                    let committedSymbols =
+                        if aborted then
+                            Set.empty
+                        else
+                            launch.Symbols
+                            |> Set.filter (fun s ->
+                                match Map.tryFind s launch.CoveringProjectsBySymbol with
+                                | Some projs when not (Set.isEmpty projs) -> projs |> Set.forall projectPassed
+                                | _ -> true)
+
+                    if not (Set.isEmpty committedSymbols) then
+                        Logging.info
+                            "test-prune"
+                            $"Committing %d{Set.count committedSymbols} verified symbol(s) — removing from pending-verification queue"
+
+                        commitPending committedSymbols
+
+                    // The in-memory hot view must shed ONLY the committed symbols,
+                    // never the whole list — symbols left in the queue (mid-run
+                    // arrivals, projects that failed/aborted) must keep selecting
+                    // tests until a covering run passes. `queueAfterCommit` is the
+                    // post-commit durable queue; it drives the cleared ChangedSymbols
+                    // and the cache-key snapshot in every return branch below.
+                    let queueAfterCommit = pendingQueueRef
+                    let remainingChangedSymbols = queueAfterCommit |> Set.toList
+
                     // Pushing a terminal Completed/Failed status is what appends the
                     // run to history; both rerun and final-idle branches must call this.
                     let recordRunOutcome (results: TestResults) =
                         let total = results.Results.Count
 
-                        // Non-green = anything not passed. Split into genuine
-                        // failures vs deferred (never-ran) so the verdict can be
-                        // honest: deferred is non-green but is "could not run /
-                        // waiting on build", NOT "failed".
-                        let nonGreen =
-                            results.Results
-                            |> Map.toList
-                            |> List.filter (fun (_, r) -> not (TestResult.isPassed r))
+                        // §3a — verdict hardening: consult completed.Outcome FIRST.
+                        // An Aborted run (beforeRun threw, runner crashed, run
+                        // cancelled) MUST be non-green regardless of result counts —
+                        // empty results trivially satisfy "failed = 0 && deferred = 0"
+                        // and would otherwise false-green. Surface the abort message.
+                        // §3b — a run that executed ZERO projects while the pending
+                        // queue still holds symbols verified nothing: reuse the honest
+                        // "waiting on build (tests did not run)" deferred path rather
+                        // than reporting a green that tested nothing.
+                        let abortMessage =
+                            match completed.Outcome with
+                            | Aborted reason -> Some reason
+                            | Normal -> None
 
-                        let deferredList = nonGreen |> List.filter (fun (_, r) -> TestResult.isDeferred r)
-
-                        let failedList =
-                            nonGreen |> List.filter (fun (_, r) -> not (TestResult.isDeferred r))
-
-                        let failed = failedList.Length
-                        let deferred = deferredList.Length
-                        let passed = total - failed - deferred
-
-                        let anyFiltered =
-                            results.Results |> Map.exists (fun _ r -> TestResult.wasFiltered r)
-
-                        let selectedSuffix = if anyFiltered then "yes" else "no"
-
-                        let timedOutProjects =
-                            failedList
-                            |> List.choose (fun (name, r) -> if TestResult.isTimedOut r then Some name else None)
-
-                        // When 2+ projects ran and at least one has recorded elapsed,
-                        // surface the slowest in the summary so a bottlenecked project
-                        // is visible without having to query test-results JSON.
-                        let slowestSuffix =
-                            if total < 2 then
-                                ""
-                            else
-                                let withElapsed =
-                                    results.Results
-                                    |> Map.toList
-                                    |> List.choose (fun (name, r) ->
-                                        let e = TestResult.elapsed r
-                                        if e > TimeSpan.Zero then Some(name, e) else None)
-
-                                match withElapsed with
-                                | [] -> ""
-                                | _ ->
-                                    let (n, e) = withElapsed |> List.maxBy snd
-                                    $", slowest: %s{n} %.1f{e.TotalSeconds}s"
-
-                        let deferredSuffix =
-                            if deferred > 0 then
-                                $", %d{deferred} waiting on build"
-                            else
-                                ""
-
-                        if not timedOutProjects.IsEmpty then
-                            let names = timedOutProjects |> String.concat ", "
-                            ctx.CompleteWithTimeout $"test project(s): {names}"
+                        match abortMessage with
+                        | Some reason ->
+                            ctx.CompleteWithSummary $"test run aborted: %s{reason}"
 
                             ctx.ReportStatus(
                                 PluginStatus.Failed(
-                                    $"%d{timedOutProjects.Length} timed out: %s{names}",
+                                    $"test run aborted (tests did not run): %s{reason}",
                                     DateTime.UtcNow
                                 )
                             )
-                        else
-                            ctx.CompleteWithSummary
-                                $"%d{passed} passed, %d{failed} failed%s{deferredSuffix} in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})"
+                        | None when total = 0 && not (Set.isEmpty queueAfterCommit) ->
+                            // Zero projects executed but symbols still await
+                            // verification — honest non-green, same wording/path as a
+                            // deferred (never-ran) project.
+                            ctx.CompleteWithSummary "0 projects ran; symbols still awaiting verification"
 
-                            if failed = 0 && deferred = 0 then
-                                ctx.ReportStatus(Completed(DateTime.UtcNow))
-                            elif failed = 0 then
-                                // Issue 1: only deferred projects — nothing FAILED,
-                                // but nothing was verified either. Non-green, with an
-                                // honest "waiting on build" message (never "failed").
-                                let names = deferredList |> List.map fst |> String.concat ", "
+                            ctx.ReportStatus(
+                                PluginStatus.Failed(
+                                    $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)",
+                                    DateTime.UtcNow
+                                )
+                            )
+                        | None ->
+
+                            // Non-green = anything not passed. Split into genuine
+                            // failures vs deferred (never-ran) so the verdict can be
+                            // honest: deferred is non-green but is "could not run /
+                            // waiting on build", NOT "failed".
+                            let nonGreen =
+                                results.Results
+                                |> Map.toList
+                                |> List.filter (fun (_, r) -> not (TestResult.isPassed r))
+
+                            let deferredList = nonGreen |> List.filter (fun (_, r) -> TestResult.isDeferred r)
+
+                            let failedList =
+                                nonGreen |> List.filter (fun (_, r) -> not (TestResult.isDeferred r))
+
+                            let failed = failedList.Length
+                            let deferred = deferredList.Length
+                            let passed = total - failed - deferred
+
+                            let anyFiltered =
+                                results.Results |> Map.exists (fun _ r -> TestResult.wasFiltered r)
+
+                            let selectedSuffix = if anyFiltered then "yes" else "no"
+
+                            let timedOutProjects =
+                                failedList
+                                |> List.choose (fun (name, r) -> if TestResult.isTimedOut r then Some name else None)
+
+                            // When 2+ projects ran and at least one has recorded elapsed,
+                            // surface the slowest in the summary so a bottlenecked project
+                            // is visible without having to query test-results JSON.
+                            let slowestSuffix =
+                                if total < 2 then
+                                    ""
+                                else
+                                    let withElapsed =
+                                        results.Results
+                                        |> Map.toList
+                                        |> List.choose (fun (name, r) ->
+                                            let e = TestResult.elapsed r
+                                            if e > TimeSpan.Zero then Some(name, e) else None)
+
+                                    match withElapsed with
+                                    | [] -> ""
+                                    | _ ->
+                                        let (n, e) = withElapsed |> List.maxBy snd
+                                        $", slowest: %s{n} %.1f{e.TotalSeconds}s"
+
+                            let deferredSuffix =
+                                if deferred > 0 then
+                                    $", %d{deferred} waiting on build"
+                                else
+                                    ""
+
+                            if not timedOutProjects.IsEmpty then
+                                let names = timedOutProjects |> String.concat ", "
+                                ctx.CompleteWithTimeout $"test project(s): {names}"
 
                                 ctx.ReportStatus(
                                     PluginStatus.Failed(
-                                        $"%d{deferred} waiting on build (tests did not run): %s{names}",
+                                        $"%d{timedOutProjects.Length} timed out: %s{names}",
                                         DateTime.UtcNow
                                     )
                                 )
                             else
-                                let names = failedList |> List.map fst |> String.concat ", "
+                                ctx.CompleteWithSummary
+                                    $"%d{passed} passed, %d{failed} failed%s{deferredSuffix} in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})"
 
-                                let deferredNote =
-                                    if deferred > 0 then
-                                        let dn = deferredList |> List.map fst |> String.concat ", "
-                                        $" (%d{deferred} waiting on build: %s{dn})"
-                                    else
-                                        ""
-
-                                ctx.ReportStatus(
-                                    PluginStatus.Failed(
-                                        $"%d{failed} failed: %s{names}%s{deferredNote}",
-                                        DateTime.UtcNow
+                                if failed = 0 && deferred = 0 && Set.isEmpty queueAfterCommit then
+                                    ctx.ReportStatus(Completed(DateTime.UtcNow))
+                                elif failed = 0 && deferred = 0 then
+                                    // Everything that RAN passed, but the pending queue
+                                    // still holds symbols this (e.g. filtered) run did not
+                                    // cover green — NOT test-equivalent to a green run yet.
+                                    // Non-green with the honest "waiting on build" wording;
+                                    // the next BuildCompleted re-selects and runs them.
+                                    ctx.ReportStatus(
+                                        PluginStatus.Failed(
+                                            $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)",
+                                            DateTime.UtcNow
+                                        )
                                     )
-                                )
+                                elif failed = 0 then
+                                    // Issue 1: only deferred projects — nothing FAILED,
+                                    // but nothing was verified either. Non-green, with an
+                                    // honest "waiting on build" message (never "failed").
+                                    let names = deferredList |> List.map fst |> String.concat ", "
+
+                                    ctx.ReportStatus(
+                                        PluginStatus.Failed(
+                                            $"%d{deferred} waiting on build (tests did not run): %s{names}",
+                                            DateTime.UtcNow
+                                        )
+                                    )
+                                else
+                                    let names = failedList |> List.map fst |> String.concat ", "
+
+                                    let deferredNote =
+                                        if deferred > 0 then
+                                            let dn = deferredList |> List.map fst |> String.concat ", "
+                                            $" (%d{deferred} waiting on build: %s{dn})"
+                                        else
+                                            ""
+
+                                    ctx.ReportStatus(
+                                        PluginStatus.Failed(
+                                            $"%d{failed} failed: %s{names}%s{deferredNote}",
+                                            DateTime.UtcNow
+                                        )
+                                    )
 
                     if state.PendingRerun then
                         Logging.info "test-prune" "Re-running tests (queued during previous run)"
 
                         // Flush any new pending analysis against CURRENT state — picking up any
                         // FileChecked symbols that landed between the queueing BuildCompleted
-                        // and now. If the DB errors out here the rerun never happens, so we
-                        // must bail back to idle (capturing testResults) instead of leaving
-                        // PendingRerun stuck and the slot already freed.
+                        // and now. ChangedSymbols is reset to the POST-COMMIT queue
+                        // (committed symbols removed, still-pending + mid-run arrivals
+                        // retained) so the rerun re-selects exactly what hasn't been
+                        // proven green. flushAndQueryAffected unions this with the durable
+                        // queue, so the rerun keeps testing the unverified symbols. If the
+                        // DB errors out here the rerun never happens, so we must bail back
+                        // to idle (capturing testResults) instead of leaving PendingRerun
+                        // stuck and the slot already freed.
                         match
                             (try
-                                Ok(flushAndQueryAffected { state with PendingRerun = false })
+                                Ok(
+                                    flushAndQueryAffected
+                                        { state with
+                                            PendingRerun = false
+                                            ChangedSymbols = remainingChangedSymbols }
+                                )
                              with ex ->
                                  Error ex)
                         with
@@ -2117,11 +2396,11 @@ let create
                                     LastResults = Some testResults
                                     PendingRerun = false
                                     ChangedFiles = []
-                                    ChangedSymbols = []
+                                    ChangedSymbols = remainingChangedSymbols
                                     AffectedTests = Analyzed [] }
                         | Ok rerunState ->
                             recordRunOutcome testResults
-                            Volatile.Write(&changedSymbolsRef, [])
+                            Volatile.Write(&changedSymbolsRef, rerunState.ChangedSymbols)
 
                             ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
 
@@ -2132,19 +2411,25 @@ let create
 
                             match testConfigs with
                             | Some configs when not configs.IsEmpty ->
+                                // A run just completed (LastResults set below), so the
+                                // baseline exists — hasCachedResults = true.
                                 ctx.RunExclusive "tests" (runTestsWithImpact ctx configs rerunState true)
                             | _ -> ()
 
                             return rerunState
                     else
-                        Volatile.Write(&changedSymbolsRef, [])
+                        // Clear ONLY the committed symbols from the hot view; the
+                        // durable queue (post-commit) is the source of truth and is
+                        // mirrored into the cache-key snapshot so a non-empty queue
+                        // keeps a cached green from replaying (see CacheKey below).
+                        Volatile.Write(&changedSymbolsRef, remainingChangedSymbols)
                         recordRunOutcome testResults
 
                         return
                             { state with
                                 LastResults = Some testResults
                                 ChangedFiles = []
-                                ChangedSymbols = []
+                                ChangedSymbols = remainingChangedSymbols
                                 AffectedTests = Analyzed [] }
 
                 | _ -> return state
@@ -2196,6 +2481,19 @@ let create
                 | "" -> []
                 | h -> [ "depends-on", h ]
 
+            // §3d — fold the persisted needs-testing queue hash into the key so a
+            // cached green `TestRunCompleted` can be replayed ONLY for a state whose
+            // pending queue is identical to the one the cached run produced. Without
+            // this, a green that left symbols queued (a fully-passing FILTERED run
+            // that didn't cover every queued symbol) shares the changed-symbols
+            // merkle with a later BuildCompleted and could replay a green while
+            // symbols still await verification. Empty queue → empty hash entry,
+            // keeping the empty-queue green fast-path byte-stable.
+            let pendingQueueEntry =
+                match PendingVerification.hash pendingQueueRef with
+                | h when h = PendingVerification.hash PendingVerification.empty -> []
+                | h -> [ "pending-queue", h ]
+
             let buildCompletedKey () =
                 let symbolsHash =
                     Volatile.Read(&changedSymbolsRef)
@@ -2213,12 +2511,13 @@ let create
                       "event", "BuildCompleted"
                       "changed-symbols", symbolsHash
                       "build-outcome", "succeeded" ]
+                    @ pendingQueueEntry
                     @ dependsOnEntries
                 )
 
             match event with
             | BuildCompleted BuildSucceeded -> Some(buildCompletedKey ())
-            | Custom(TestsFinished(_, completed)) ->
+            | Custom(TestsFinished(_, completed, _)) ->
                 // AUTOMATION-5 (2026-06-07): a FAILED test outcome must never be
                 // served from cache as a current verdict. Unlike BuildPlugin —
                 // whose result is a pure function of its content-merkle inputs, so
@@ -2233,7 +2532,21 @@ let create
                 // matching BuildCompleted finds no poisoned entry and re-runs.
                 // A fully-passing run still caches (key matches BuildSucceeded) and
                 // replays cleanly — the desired green fast-path.
-                if completed.Results |> Map.forall (fun _ r -> TestResult.isPassed r) then
+                //
+                // §3d also requires the queue to be EMPTY for a green to be
+                // cacheable: a green that left symbols queued is not a sound
+                // "safe to skip" verdict, so it must re-run rather than replay.
+                // The Aborted-outcome / abort short-circuit is covered because an
+                // aborted run has empty Results that the all-passed check treats as
+                // trivially passing — so we ALSO gate on a non-Aborted outcome here.
+                let allPassed = completed.Results |> Map.forall (fun _ r -> TestResult.isPassed r)
+
+                let notAborted =
+                    match completed.Outcome with
+                    | Aborted _ -> false
+                    | Normal -> true
+
+                if allPassed && notAborted && Set.isEmpty pendingQueueRef then
                     Some(buildCompletedKey ())
                 else
                     None
@@ -2250,11 +2563,13 @@ let create
                     // BuildSucceeded key so the two never split across versions.
                     // dependsOn salt mirrors the BuildSucceeded key (same
                     // external-input invalidation applies to a failed build).
+                    // pending-queue salt mirrors the BuildSucceeded key too.
                     FsHotWatch.TaskCache.merkleCacheKey (
                         [ "plugin-version", "test-prune-merkle-v2"
                           "event", "BuildCompleted"
                           "changed-symbols", symbolsHash
                           "build-outcome", "failed:" + String.concat "|" (List.sort errs) ]
+                        @ pendingQueueEntry
                         @ dependsOnEntries
                     )
                 )
