@@ -200,6 +200,26 @@ let ``renderIpcResult with test results JSON with failed project returns 1`` () 
     test <@ result = 1 @>
 
 [<Fact(Timeout = 15000)>]
+let ``renderIpcResult with noTestsMatched run returns 0 (distinct, not a failure)`` () =
+    // FIX 2: a filtered run that matched NOTHING is reported distinctly, exit 0,
+    // and must NOT render as "Tests failed" / "Tests passed".
+    let json =
+        """{"elapsed":"0.1s","noTestsMatched":true,"projects":[{"project":"P","status":"no-tests-matched","output":""}]}"""
+
+    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
+    test <@ result = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``renderIpcResult with busy status returns 0 (distinct in-progress, not a verdict)`` () =
+    // FIX 2: the force-rerun waited and a run is still in progress — distinct
+    // non-failure signal, exit 0 so the caller retries rather than seeing red.
+    let json =
+        """{"status":"busy","message":"a test run is still in progress; retry once it finishes"}"""
+
+    let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
+    test <@ result = 0 @>
+
+[<Fact(Timeout = 15000)>]
 let ``formatDiagnosticsResponse hides info-severity entries`` () =
     let json =
         """{"count":1,"files":{"src/Foo.fs":[{"plugin":"fcs","message":"XML comment is not placed on a valid language element.","severity":"info","line":3,"column":0,"detail":null}]},"statuses":{}}"""

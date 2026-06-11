@@ -148,6 +148,18 @@ let renderIpcResult
                 | true, v when v.ValueKind = JsonValueKind.String && v.GetString() = "passed" ->
                     UI.success "Passed"
                     0
+                | true, v when v.ValueKind = JsonValueKind.String && v.GetString() = "busy" ->
+                    // A test run is still in progress (the force-rerun waited and
+                    // gave up). Distinct, non-failure signal — never "Tests failed".
+                    let msg =
+                        match root.TryGetProperty("message") with
+                        | true, m when m.ValueKind = JsonValueKind.String -> m.GetString()
+                        | _ -> "a test run is still in progress; retry once it finishes"
+
+                    UI.warn msg
+                    // exit 0: nothing failed; the caller should retry, not treat
+                    // this as a red verdict.
+                    0
                 | _ ->
 
                     match root.TryGetProperty("projects") with
@@ -159,9 +171,21 @@ let renderIpcResult
                                 | true, s -> s.GetString() = "failed"
                                 | false, _ -> false)
 
+                        // Run-level "matched nothing": every project was a
+                        // zero-match-under-filter pass. Reported DISTINCTLY so a
+                        // `test-rerun --filter-*` that selected no test never looks
+                        // like a real green run that exercised code.
+                        let noTestsMatched =
+                            match root.TryGetProperty("noTestsMatched") with
+                            | true, n -> n.ValueKind = JsonValueKind.True
+                            | false, _ -> false
+
                         if hasFailed then
                             UI.fail "Tests failed"
                             1
+                        elif noTestsMatched then
+                            UI.skip "No tests matched the filter"
+                            0
                         else
                             UI.success "Tests passed"
                             0
