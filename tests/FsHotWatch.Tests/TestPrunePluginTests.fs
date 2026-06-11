@@ -4285,6 +4285,64 @@ let ``stale failures from a prior cycle are cleared when the next cycle supersed
         test <@ not (cycle2Files |> List.exists (fun f -> f.Contains("ProjA"))) @>)
 
 // =============================================================================
+// PendingVerification sidecar — focused, DETERMINISTIC unit tests for the
+// load/save/hash primitives. These pin both sides of every branch in `load`
+// (missing file, whitespace-only, corrupt JSON, well-formed) so the module's
+// branch coverage is stable run-to-run rather than depending on which states
+// the end-to-end queue tests happen to leave the sidecar in.
+// =============================================================================
+
+[<Fact(Timeout = 15000)>]
+let ``PendingVerification: load on a missing file returns the empty queue`` () =
+    withTempDir "pv-missing" (fun tmpDir ->
+        // No sidecar written → File.Exists is false → empty.
+        let q = FsHotWatch.TestPrune.PendingVerification.load tmpDir
+        test <@ Set.isEmpty q @>)
+
+[<Fact(Timeout = 15000)>]
+let ``PendingVerification: save then load round-trips the queue`` () =
+    withTempDir "pv-roundtrip" (fun tmpDir ->
+        let original = Set.ofList [ "Lib.foo"; "Lib.bar"; "Mod.baz" ]
+        FsHotWatch.TestPrune.PendingVerification.save tmpDir original
+        let loaded = FsHotWatch.TestPrune.PendingVerification.load tmpDir
+        test <@ loaded = original @>)
+
+[<Fact(Timeout = 15000)>]
+let ``PendingVerification: save empty then load returns empty`` () =
+    withTempDir "pv-empty" (fun tmpDir ->
+        FsHotWatch.TestPrune.PendingVerification.save tmpDir Set.empty
+        let loaded = FsHotWatch.TestPrune.PendingVerification.load tmpDir
+        test <@ Set.isEmpty loaded @>)
+
+[<Fact(Timeout = 15000)>]
+let ``PendingVerification: load on whitespace-only file returns empty`` () =
+    withTempDir "pv-whitespace" (fun tmpDir ->
+        let path = FsHotWatch.TestPrune.PendingVerification.sidecarPath tmpDir
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.WriteAllText(path, "   \n  ")
+        let loaded = FsHotWatch.TestPrune.PendingVerification.load tmpDir
+        test <@ Set.isEmpty loaded @>)
+
+[<Fact(Timeout = 15000)>]
+let ``PendingVerification: load on corrupt JSON returns empty (no throw)`` () =
+    withTempDir "pv-corrupt" (fun tmpDir ->
+        let path = FsHotWatch.TestPrune.PendingVerification.sidecarPath tmpDir
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.WriteAllText(path, "{ this is not valid json [[[")
+        // Must not throw — a corrupt sidecar self-heals to empty (re-tests on
+        // the next edit) rather than crashing the daemon.
+        let loaded = FsHotWatch.TestPrune.PendingVerification.load tmpDir
+        test <@ Set.isEmpty loaded @>)
+
+[<Fact(Timeout = 15000)>]
+let ``PendingVerification: hash is order-independent and empty-distinct`` () =
+    let pv = FsHotWatch.TestPrune.PendingVerification.hash
+    // Same membership, different insertion order → identical hash.
+    test <@ pv (Set.ofList [ "a"; "b"; "c" ]) = pv (Set.ofList [ "c"; "a"; "b" ]) @>
+    // A non-empty queue hashes differently from the empty queue.
+    test <@ pv (Set.ofList [ "a" ]) <> pv FsHotWatch.TestPrune.PendingVerification.empty @>
+
+// =============================================================================
 // Sound test-gate (pending-verification queue). A changed symbol leaves the
 // needs-testing queue ONLY when a test run that covered it completed green.
 // "0 affected tests" must provably mean "test-equivalent to the last green
