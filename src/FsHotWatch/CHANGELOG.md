@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.27 - 2026-06-11
+
 ### Changed
 
 - `DepsFreshness.productionRestoreRunner` now composes a pure, internal `restoreSteps` plan
