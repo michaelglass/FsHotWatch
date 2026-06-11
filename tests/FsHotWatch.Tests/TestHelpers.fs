@@ -490,7 +490,7 @@ let withSeededTestEnv (prefix: string) (relPath: string) (source: string) (body:
         let host = FsHotWatch.PluginHost.PluginHost.create checker tmpDir
 
         let handler =
-            FsHotWatch.TestPrune.TestPrunePlugin.create dbPath tmpDir None None None None None
+            FsHotWatch.TestPrune.TestPrunePlugin.create dbPath tmpDir None None None None None []
 
         host.RegisterHandler(handler)
 

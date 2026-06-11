@@ -222,6 +222,153 @@ type TestPruneState =
 /// progress and goes straight from Started to Completed by design).
 type TestPruneMsg = TestsFinished of started: TestRunStarted * completed: TestRunCompleted
 
+/// Translate a repo-root-relative glob (`*`, `?`, `**`, `/`) into a regex
+/// anchored against a repo-relative path. `**` matches across directory
+/// separators (including none); a single `*`/`?` does NOT cross `/`. A trailing
+/// `dir/**` also matches `dir` itself (zero segments). Paths are normalised to
+/// `/` before matching so the same config works on every OS.
+let internal dependsOnGlobToRegex (glob: string) : System.Text.RegularExpressions.Regex =
+    // Collapse a trailing `/**` to a sentinel so the leading `/` becomes
+    // optional (`dir/**` matches `dir`, `dir/x`, `dir/x/y`). Done before the
+    // char scan so the `/` isn't emitted as a mandatory literal.
+    let normalized = glob.Replace('\\', '/').TrimStart('/')
+
+    let normalized, trailingDoubleStar =
+        if normalized.EndsWith("/**") then
+            normalized.Substring(0, normalized.Length - 3), true
+        else
+            normalized, false
+
+    let sb = System.Text.StringBuilder()
+    sb.Append('^') |> ignore
+    let mutable i = 0
+
+    while i < normalized.Length do
+        let c = normalized.[i]
+
+        if c = '*' then
+            if i + 1 < normalized.Length && normalized.[i + 1] = '*' then
+                // `**` — match any chars including `/`. A `**/ ` (cross-dir,
+                // zero-or-more leading segments) makes the following separator
+                // optional so `a/**/b` matches `a/b` too.
+                if i + 2 < normalized.Length && normalized.[i + 2] = '/' then
+                    sb.Append("(?:.*/)?") |> ignore
+                    i <- i + 3
+                else
+                    sb.Append(".*") |> ignore
+                    i <- i + 2
+            else
+                // single `*` — any run of non-separator chars
+                sb.Append("[^/]*") |> ignore
+                i <- i + 1
+        elif c = '?' then
+            sb.Append("[^/]") |> ignore
+            i <- i + 1
+        else
+            sb.Append(System.Text.RegularExpressions.Regex.Escape(string c)) |> ignore
+            i <- i + 1
+
+    // Re-attach the trailing `/**`: an OPTIONAL `/<anything>` so the bare dir
+    // and any descendant both match.
+    if trailingDoubleStar then
+        sb.Append("(?:/.*)?") |> ignore
+
+    sb.Append('$') |> ignore
+
+    System.Text.RegularExpressions.Regex(
+        sb.ToString(),
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase
+        ||| System.Text.RegularExpressions.RegexOptions.CultureInvariant
+    )
+
+/// Resolve the on-disk files under `repoRoot` whose repo-relative path matches
+/// any of the `dependsOn` globs. Deterministic: returns sorted, distinct
+/// absolute paths. Globs that match nothing contribute nothing; a glob that is
+/// a plain existing file path resolves to that one file. Directory enumeration
+/// errors are swallowed (best-effort) so a transient IO hiccup can't crash the
+/// cache-key computation.
+let internal resolveDependsOnFiles (repoRoot: string) (dependsOn: string list) : string list =
+    if dependsOn.IsEmpty then
+        []
+    else
+        let rootFull = Path.GetFullPath(repoRoot)
+
+        let toRel (abs: string) =
+            Path.GetRelativePath(rootFull, abs).Replace('\\', '/')
+
+        // A plain glob with no wildcard meta is a direct file reference — resolve
+        // it without walking the whole tree (cheap + handles files outside any
+        // enumerable subdir uniformly).
+        let isLiteral (g: string) =
+            not (g.Contains('*') || g.Contains('?'))
+
+        let literalHits =
+            dependsOn
+            |> List.filter isLiteral
+            |> List.choose (fun g ->
+                let abs =
+                    Path.GetFullPath(Path.Combine(rootFull, g.Replace('\\', '/').TrimStart('/')))
+
+                if File.Exists abs then Some abs else None)
+
+        let globPatterns =
+            dependsOn |> List.filter (isLiteral >> not) |> List.map dependsOnGlobToRegex
+
+        let globHits =
+            if globPatterns.IsEmpty then
+                []
+            elif not (Directory.Exists rootFull) then
+                []
+            else
+                let allFiles =
+                    try
+                        Directory.EnumerateFiles(rootFull, "*", SearchOption.AllDirectories)
+                    with
+                    | :? IOException
+                    | :? UnauthorizedAccessException -> Seq.empty
+
+                allFiles
+                |> Seq.filter (fun abs ->
+                    let rel = toRel abs
+                    globPatterns |> List.exists (fun rx -> rx.IsMatch(rel)))
+                |> Seq.toList
+
+        (literalHits @ globHits) |> List.distinct |> List.sort
+
+/// Deterministic content hash of the files matched by the `dependsOn` globs.
+/// Editing, adding, or deleting a matched file changes this hash, which salts
+/// the test cache key so an external input (a DB migration, a generated file,
+/// a schema) that test-prune's symbol diff can't see still invalidates a stale
+/// cached test verdict. Empty `dependsOn` → empty string (NO salt: the key is
+/// byte-identical to the pre-feature key, so existing caches keep hitting).
+/// Missing files are skipped; a glob matching nothing contributes nothing.
+let internal externalDependencyHash (repoRoot: string) (dependsOn: string list) : string =
+    let files = resolveDependsOnFiles repoRoot dependsOn
+
+    if files.IsEmpty then
+        ""
+    else
+        let sb = System.Text.StringBuilder()
+
+        for path in files do
+            let rel = Path.GetRelativePath(Path.GetFullPath(repoRoot), path).Replace('\\', '/')
+
+            let h =
+                try
+                    FsHotWatch.CheckCache.sha256Hex (System.Text.Encoding.UTF8.GetString(File.ReadAllBytes path))
+                with
+                | :? IOException
+                | :? UnauthorizedAccessException -> "unreadable"
+
+            sb.Append(rel.Length) |> ignore
+            sb.Append(':') |> ignore
+            sb.Append(rel) |> ignore
+            sb.Append('@') |> ignore
+            sb.Append(h) |> ignore
+            sb.Append('\n') |> ignore
+
+        FsHotWatch.CheckCache.sha256Hex (sb.ToString())
+
 let private formatTestResultsJson (results: TestResults) =
     let projects =
         results.Results
@@ -1083,6 +1230,12 @@ let create
     (beforeRun: (unit -> unit) option)
     (afterRun: (TestResults -> unit) option)
     (coveragePaths: (string -> CoveragePaths option) option)
+    // `dependsOn`: repo-root-relative globs naming EXTERNAL inputs (DB
+    // migrations, generated files, schemas) that the symbol-diff cache key can't
+    // see. Their content hash salts the BuildCompleted cache key so editing one
+    // forces a genuine re-run instead of replaying a stale verdict. `[]` → no
+    // salt (key byte-identical to the pre-feature key).
+    (dependsOn: string list)
     =
     let db = Database.create dbPath
 
@@ -1963,6 +2116,20 @@ let create
             // EmittedEvents) and the next BuildCompleted hits via the matching key.
             // TestsFinished only fires after BuildSucceeded (BuildFailed short-circuits
             // earlier), so outcome="succeeded" is correct for the Custom path.
+            // External-dependency salt: a content hash of the files matched by
+            // the configured `dependsOn` globs. Editing a matched file (e.g. a DB
+            // migration that changes the TEST database schema but no test SOURCE)
+            // changes this hash → the key below changes → cache miss → genuine
+            // re-execution on the next BuildCompleted. Empty `dependsOn` → "",
+            // and the entry is OMITTED entirely, so the key stays byte-identical
+            // to the pre-feature key and existing on-disk caches keep hitting.
+            // Computed once per cacheKey invocation (cacheKey runs once per event,
+            // not per file), so the file reads are bounded.
+            let dependsOnEntries =
+                match externalDependencyHash repoRoot dependsOn with
+                | "" -> []
+                | h -> [ "depends-on", h ]
+
             let buildCompletedKey () =
                 let symbolsHash =
                     Volatile.Read(&changedSymbolsRef)
@@ -1975,11 +2142,13 @@ let create
                 // prior code (which cached FAILED test verdicts and could replay
                 // them on a now-green tree) can never match a key computed here.
                 // Orphans legacy poison on disk without needing a manual cache wipe.
-                FsHotWatch.TaskCache.merkleCacheKey
+                FsHotWatch.TaskCache.merkleCacheKey (
                     [ "plugin-version", "test-prune-merkle-v2"
                       "event", "BuildCompleted"
                       "changed-symbols", symbolsHash
                       "build-outcome", "succeeded" ]
+                    @ dependsOnEntries
+                )
 
             match event with
             | BuildCompleted BuildSucceeded -> Some(buildCompletedKey ())
@@ -2013,11 +2182,15 @@ let create
                 Some(
                     // AUTOMATION-5: salt bumped v1→v2 in lockstep with the
                     // BuildSucceeded key so the two never split across versions.
-                    FsHotWatch.TaskCache.merkleCacheKey
+                    // dependsOn salt mirrors the BuildSucceeded key (same
+                    // external-input invalidation applies to a failed build).
+                    FsHotWatch.TaskCache.merkleCacheKey (
                         [ "plugin-version", "test-prune-merkle-v2"
                           "event", "BuildCompleted"
                           "changed-symbols", symbolsHash
                           "build-outcome", "failed:" + String.concat "|" (List.sort errs) ]
+                        @ dependsOnEntries
+                    )
                 )
             | FileChecked r ->
                 // §1: fcs-signature captures cross-file FCS state so symbol
