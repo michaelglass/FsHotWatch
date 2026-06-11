@@ -48,7 +48,7 @@ let ``PendingRerun storm: plugin reaches terminal state after BuildCompleted ham
                 TimeoutSec = None } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
-        let handler = create ":memory:" tmpDir (Some configs) None None None None
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
 
         // Fire many BuildCompleteds in quick succession. The first transitions

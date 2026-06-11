@@ -122,7 +122,8 @@ type DaemonConfiguration =
             {| BeforeRun: string option
                Extensions: TestExtensionConfig list
                Projects: TestProjectConfig list
-               CoverageDir: string |} option
+               CoverageDir: string
+               DependsOn: string list |} option
         FileCommands:
             {| PluginName: string
                Pattern: string option
@@ -413,6 +414,16 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 | true, cd when cd.ValueKind = JsonValueKind.String -> cd.GetString()
                 | _ -> "coverage"
 
+            // `tests.dependsOn`: repo-root-relative globs naming external inputs
+            // (DB migrations, generated files, schemas) that test-prune's
+            // symbol-diff can't see. Mirrors `build.dependsOn`'s string-array
+            // shape. Absent → []  (no salt; cache behaves exactly as before).
+            let dependsOn =
+                match v.TryGetProperty("dependsOn") with
+                | true, arr when arr.ValueKind = JsonValueKind.Array ->
+                    arr.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList
+                | _ -> []
+
             if projects.IsEmpty then
                 None
             else
@@ -420,7 +431,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     {| BeforeRun = beforeRun
                        Extensions = extensions
                        Projects = projects
-                       CoverageDir = coverageDir |}
+                       CoverageDir = coverageDir
+                       DependsOn = dependsOn |}
         | _ -> None
 
     let fileCommands =
@@ -920,7 +932,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         Logging.info "config" $"Registering TestPrunePlugin with %d{testConfigs.Length} test projects"
 
         let handler =
-            create dbPath repoRoot (Some testConfigs) buildExtensions beforeRun None coveragePaths
+            create dbPath repoRoot (Some testConfigs) buildExtensions beforeRun None coveragePaths t.DependsOn
 
         daemon.RegisterHandler(handler)
     | None -> ()

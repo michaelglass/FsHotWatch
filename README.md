@@ -147,6 +147,7 @@ Create `.fshw.json` in your repo root. All fields are optional — sensible defa
   "cache": "file",
   "tests": {
     "beforeRun": "dotnet build",
+    "dependsOn": ["src/MyApp/Database/Migrations/**"],
     "projects": [
       {
         "project": "MyProject.Tests",
@@ -206,6 +207,8 @@ Create `.fshw.json` in your repo root. All fields are optional — sensible defa
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `beforeRun` | `string` | — | Command to run before each test run (e.g. `"dotnet build"`). |
+| `dependsOn` | `string[]` | `[]` | Repo-root-relative globs (`*`, `?`, `**`) naming **external** test inputs the symbol-diff can't see — DB migrations, generated files, schemas. Their content hash salts the test cache key, so editing a matched file forces a genuine test re-run even though no test source symbol changed. Empty → no salt (cache behaves exactly as before). |
+| `coverageDir` | `string` | `"coverage"` | Directory (repo-root-relative) for per-project Cobertura artifacts. |
 | `projects` | `array` | `[]` | List of test project configurations. |
 
 **`tests.projects[]` fields:**

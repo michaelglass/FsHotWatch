@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- fix: the `run-tests` command (`fshw test-rerun --filter-*`) now reports a
+  filtered run that matched ZERO tests DISTINCTLY instead of as a silent pass. A
+  zero-match-under-filter project result is tagged with a stable marker; the
+  command surfaces a run-level `noTestsMatched` flag and a per-project
+  `no-tests-matched` status when every project matched nothing. It also no longer
+  bails instantly when a background run holds the test slot — it waits (bounded)
+  for that run to finish so the explicit force-rerun always executes, and reports
+  a distinct `busy` status only if a run is still in progress after the wait.
+
+- feat: `tests.dependsOn` (repo-root-relative globs) salts the test cache key
+  with a content hash of the matched EXTERNAL inputs — DB migrations, generated
+  files, schemas — that the symbol-diff merkle can't see. Editing such a file
+  (e.g. a migration that changes the test DATABASE schema but no test SOURCE)
+  now changes the BuildCompleted cache key → cache miss → genuine test re-run,
+  instead of replaying a stale verdict. Empty / absent `dependsOn` keeps the key
+  byte-identical to before (existing on-disk caches keep hitting); missing files
+  and zero-match globs contribute no salt. `TestPrunePlugin.create` gains a
+  trailing `dependsOn: string list` parameter (pass `[]` for no external deps).
+
 ## 0.7.0-alpha.22 - 2026-06-09
 
 - fix: a filtered test run (`run-tests` / `test-rerun --filter-class` / `--filter-trait`)

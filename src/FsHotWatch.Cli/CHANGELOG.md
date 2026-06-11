@@ -2,10 +2,21 @@
 
 ## Unreleased
 
+- fix: `test-rerun --filter-class` / `--filter-trait` force-executes the matched
+  tests instead of returning an instant non-result. Two changes: (1) when a
+  background test run holds the test slot, `run-tests` now WAITS (bounded) for it
+  to finish and then runs — rather than bailing instantly with "tests already
+  running" (no run, no log); if a run is still in progress after the wait it
+  reports a DISTINCT `busy` status (exit 0, retry), never a generic verdict.
+  (2) a filtered run that matched NO test anywhere is rendered distinctly as
+  `⏭ No tests matched the filter` (exit 0), instead of a misleading `✓ Tests
+  passed` that looks like a real green run — so you can tell the filter selected
+  nothing. The cache was never consulted on this path, so a stale verdict could
+  not have been replayed; the instant non-result was the in-flight-slot guard.
+
 ## 0.8.0-alpha.28 - 2026-06-11
 
 - chore: rebuild to bundle updated dependencies
-
 
 ## 0.8.0-alpha.27 - 2026-06-10
 
