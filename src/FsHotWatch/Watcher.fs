@@ -163,9 +163,7 @@ module FileWatcher =
                     w.Filter <- FilePattern.toString pattern))
 
         if isMacOS then
-            let dirs =
-                [ Path.Combine(repoRoot, "src"); Path.Combine(repoRoot, "tests") ]
-                |> List.filter Directory.Exists
+            let dirs = Discovery.existingDiscoveryRoots repoRoot
 
             if dirs.IsEmpty then
                 { Disposables = slnWatcher :: extraWatchers }
@@ -199,9 +197,7 @@ module FileWatcher =
                     None
 
             let watchers =
-                [ createFsw (Path.Combine(repoRoot, "src"))
-                  createFsw (Path.Combine(repoRoot, "tests"))
-                  Some slnWatcher ]
+                (Discovery.discoveryRoots repoRoot |> List.map createFsw) @ [ Some slnWatcher ]
                 |> List.choose id
 
             { Disposables = watchers @ extraWatchers }

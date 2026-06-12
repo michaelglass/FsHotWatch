@@ -112,14 +112,18 @@ let internal applyDepsGate
 
 /// Fingerprint fsproj files by path + last-write-time. Used by ScanAll to skip
 /// expensive MSBuild re-evaluation when no project files have changed.
-let private fingerprintFsprojFiles (repoRoot: string) =
-    let searchDirs =
-        [ Path.Combine(repoRoot, "src"); Path.Combine(repoRoot, "tests") ]
-        |> List.filter Directory.Exists
+/// Shares both the discovery roots (`Discovery.findFsprojFiles`) and the
+/// exclude semantics (`PathFilter.isExcludedPath`) with
+/// `discoverAndRegisterProjects`, so the fingerprint tracks exactly the set of
+/// projects discovery would register: an edit to a user-excluded fsproj must
+/// not churn the fingerprint and trigger a spurious full MSBuild
+/// re-evaluation. (With no exclude patterns, `isExcludedPath` reduces to the
+/// generated-path obj/bin filter this function always applied.)
+let internal fingerprintFsprojFiles (repoRoot: string) (excludePatterns: string list) =
+    let isExcluded = PathFilter.isExcludedPath repoRoot excludePatterns
 
-    searchDirs
-    |> List.collect (fun dir -> Directory.GetFiles(dir, "*.fsproj", SearchOption.AllDirectories) |> Array.toList)
-    |> List.filter (fun f -> not (PathFilter.isGeneratedPath f))
+    Discovery.findFsprojFiles repoRoot
+    |> List.filter (fun f -> not (isExcluded f))
     |> List.map (fun f -> f, File.GetLastWriteTimeUtc(f).Ticks)
     |> Set.ofList
 
@@ -178,15 +182,8 @@ let private discoverAndRegisterProjects
     async {
         let isExcluded = PathFilter.isExcludedPath repoRoot excludePatterns
 
-        let searchDirs =
-            [ Path.Combine(repoRoot, "src"); Path.Combine(repoRoot, "tests") ]
-            |> List.filter Directory.Exists
-
         let fsprojFiles =
-            searchDirs
-            |> List.collect (fun dir ->
-                Directory.GetFiles(dir, "*.fsproj", SearchOption.AllDirectories) |> Array.toList)
-            |> List.filter (fun f -> not (isExcluded f))
+            Discovery.findFsprojFiles repoRoot |> List.filter (fun f -> not (isExcluded f))
 
         if List.isEmpty fsprojFiles then
             // Surface zero-project discoveries: this is almost always a
@@ -194,7 +191,7 @@ let private discoverAndRegisterProjects
             // .fshw.json `exclude` pattern, or an empty repo) and silently
             // running with no work to do hides the problem from users.
             let searched =
-                searchDirs
+                Discovery.existingDiscoveryRoots repoRoot
                 |> List.map (fun d -> Path.GetFileName(d.TrimEnd('/')))
                 |> String.concat ", "
 
@@ -1584,7 +1581,7 @@ let private performScan (ctx: BatchContext) (scanSignal: ScanSignal) (state: Sca
         // leaving stale FCS errors visible for one cycle.
         // Guarded by fsproj fingerprint to skip expensive MSBuild evaluation
         // when no project files have changed.
-        let currentFingerprint = fingerprintFsprojFiles ctx.RepoRoot
+        let currentFingerprint = fingerprintFsprojFiles ctx.RepoRoot ctx.ExcludePatterns
         let mutable lastFingerprint = state.LastFingerprint
 
         if currentFingerprint <> state.LastFingerprint then
