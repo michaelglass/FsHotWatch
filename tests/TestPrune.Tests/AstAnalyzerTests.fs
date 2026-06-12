@@ -2410,3 +2410,90 @@ let pull () =
     [<Fact>]
     let ``tryName swallows InvalidOperationException`` () =
         test <@ TestHelpers.testTryName (fun () -> raise (InvalidOperationException())) = None @>
+
+// Soundness regression: two bindings sharing a short name in one file (legal in
+// sibling nested modules) must each keep their own dependency edges. The bug was
+// that `definitionsByName` / `allBindingRangeMap` / `typeDefnRangeMap` were built
+// with `Map.ofList`, which is last-write-wins on the short name, so the earlier
+// binding's SymbolInfo was silently dropped and uses inside it were mis-attributed
+// or dropped. That severs dependency edges → affected tests are not selected.
+module ``Short-name collisions across sibling modules`` =
+
+    [<Fact>]
+    let ``both f bindings keep their distinct call edges`` () =
+        let result =
+            analyze
+                """
+module M
+
+let helperA x = x + 1
+let helperB x = x + 2
+
+module A =
+    let f x = helperA x
+
+module B =
+    let f x = helperB x
+"""
+
+        // A.f calls helperA; B.f calls helperB. Each edge's FromSymbol must be the
+        // correct enclosing f (distinguished by its module qualifier).
+        let edgeAToHelperA =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("A.f", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("helperA", StringComparison.Ordinal))
+
+        let edgeBToHelperB =
+            result.Dependencies
+            |> List.tryFind (fun d ->
+                d.FromSymbol.EndsWith("B.f", StringComparison.Ordinal)
+                && d.ToSymbol.EndsWith("helperB", StringComparison.Ordinal))
+
+        test <@ edgeAToHelperA.IsSome @>
+        test <@ edgeBToHelperB.IsSome @>
+
+    [<Fact>]
+    let ``colliding short names do not drop edges`` () =
+        let result =
+            analyze
+                """
+module M
+
+let helperA x = x + 1
+let helperB x = x + 2
+
+module A =
+    let f x = helperA x
+
+module B =
+    let f x = helperB x
+"""
+
+        // Neither use of helperA/helperB should be dropped (findEnclosing must
+        // resolve both f's to their own SymbolInfo, not a single collapsed entry).
+        test <@ result.Diagnostics.DroppedEdges = 0 @>
+
+    [<Fact>]
+    let ``both f symbols are tracked`` () =
+        let result =
+            analyze
+                """
+module M
+
+let helperA x = x + 1
+let helperB x = x + 2
+
+module A =
+    let f x = helperA x
+
+module B =
+    let f x = helperB x
+"""
+
+        let fSymbols =
+            result.Symbols
+            |> List.filter (fun s -> s.FullName.EndsWith(".f", StringComparison.Ordinal))
+
+        // Both M.A.f and M.B.f must be present as tracked symbols.
+        test <@ fSymbols.Length = 2 @>

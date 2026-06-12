@@ -665,8 +665,33 @@ let private extractResults
 
             // Pre-build Maps keyed by simple (unqualified) name for O(log M) range lookup
             // rather than O(M) List.tryFind scans per symbol.
-            let allBindingRangeMap = memberBindingRanges |> Map.ofList
-            let typeDefnRangeMap = typeDefnRanges |> Map.ofList
+            //
+            // A single short name can legitimately occur more than once in one file
+            // (e.g. `let f` in two sibling nested modules), so each name maps to a LIST
+            // of ranges. Using `Map.ofList` here would be last-write-wins and silently
+            // drop the earlier binding, severing its dependency edges. Callers that need
+            // a single range disambiguate by which range contains the use in question.
+            let groupRangesByName (ranges: (string * range) list) : Map<string, range list> =
+                ranges
+                |> List.groupBy fst
+                |> List.map (fun (n, rs) -> n, List.map snd rs)
+                |> Map.ofList
+
+            let allBindingRangeMap = groupRangesByName memberBindingRanges
+            let typeDefnRangeMap = groupRangesByName typeDefnRanges
+
+            // From the candidate ranges sharing a short name, pick the narrowest one that
+            // contains the given use range. Falls back to the first candidate when none
+            // contains it (defensive: preserves prior single-entry behavior for the rare
+            // case where the FCS use range sits just outside every AST binding range).
+            let pickRangeFor (useRange: range) (candidates: range list) : range option =
+                let containing =
+                    candidates
+                    |> List.filter (fun r -> useRange.StartLine >= r.StartLine && useRange.EndLine <= r.EndLine)
+
+                match containing with
+                | [] -> List.tryHead candidates
+                | _ -> containing |> List.minBy (fun r -> r.EndLine - r.StartLine) |> Some
 
             // Extract the last dot-delimited component of a fully-qualified name,
             // stripping surrounding backticks so it matches AST-derived identifiers
@@ -702,12 +727,14 @@ let private extractResults
                                 | Type ->
                                     typeDefnRangeMap
                                     |> Map.tryFind sn
+                                    |> Option.bind (pickRangeFor u.Range)
                                     |> Option.map (fun r -> r.StartLine, r.EndLine)
                                     |> Option.defaultValue (u.Range.StartLine, u.Range.EndLine)
                                 | Function
                                 | Value ->
                                     allBindingRangeMap
                                     |> Map.tryFind sn
+                                    |> Option.bind (pickRangeFor u.Range)
                                     |> Option.map (fun r -> r.StartLine, r.EndLine)
                                     |> Option.defaultValue (u.Range.StartLine, u.Range.EndLine)
                                 | _ -> u.Range.StartLine, u.Range.EndLine
@@ -746,9 +773,15 @@ let private extractResults
             // outside any member body.
             let allEnclosingRanges = (memberBindingRanges @ typeDefnRanges) |> Array.ofList
 
-            // Pre-build a map from binding short name to SymbolInfo for O(log N) lookup.
-            // Includes symbols from both binding ranges and type definition ranges
+            // Pre-build a map from binding short name to its SymbolInfo(s) for O(log N)
+            // lookup. Includes symbols from both binding ranges and type definition ranges
             // so findEnclosing can resolve both member-level and type-level enclosures.
+            //
+            // A short name can map to more than one SymbolInfo (e.g. `let f` in two sibling
+            // nested modules), so values are LISTS. Collapsing to a single entry (as
+            // `Map.ofList` would) silently drops the earlier definition and mis-attributes
+            // or loses dependency edges originating inside it. findEnclosing disambiguates
+            // by the definition's own line range, which sits inside the enclosing binding.
             let definitionsByName =
                 definitions
                 |> List.choose (fun (si, _) ->
@@ -761,7 +794,28 @@ let private extractResults
                         Some(sn, si)
                     else
                         None)
+                |> List.groupBy fst
+                |> List.map (fun (n, sis) -> n, List.map snd sis)
                 |> Map.ofList
+
+            // Resolve a (name, enclosing binding range) pair to the SymbolInfo whose own
+            // definition range sits inside that binding range. Disambiguates colliding
+            // short names; falls back to the single candidate (or the first) when the
+            // definition range can't be matched against the binding range.
+            let resolveEnclosing (name: string) (bindingRange: range) : SymbolInfo option =
+                match definitionsByName |> Map.tryFind name with
+                | None -> None
+                | Some [ single ] -> Some single
+                | Some candidates ->
+                    let contained =
+                        candidates
+                        |> List.filter (fun si ->
+                            si.LineStart >= bindingRange.StartLine && si.LineEnd <= bindingRange.EndLine)
+
+                    match contained with
+                    | [ exactlyOne ] -> Some exactlyOne
+                    | first :: _ -> Some first
+                    | [] -> List.tryHead candidates
 
             let findEnclosing (useRange: range) =
                 let mutable best: (string * range) voption = ValueNone
@@ -784,7 +838,7 @@ let private extractResults
 
                 best
                 |> function
-                    | ValueSome(name, _) -> definitionsByName |> Map.tryFind name
+                    | ValueSome(name, bindingRange) -> resolveEnclosing name bindingRange
                     | ValueNone -> None
 
             let mutable droppedEdgeCount = 0
