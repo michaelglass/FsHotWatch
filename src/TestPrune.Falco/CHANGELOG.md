@@ -1,6 +1,8 @@
 # Changelog — TestPrune.Falco
 
-## [Unreleased]
+## Unreleased
+
+## 2.0.2 - 2026-06-12
 - refactor: adapt to revised ITestPruneExtension edge-injection interface
 
 ## [1.0.2] - 2026-04-11

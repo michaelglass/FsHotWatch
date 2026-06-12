@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.2.2 - 2026-06-12
+
 - fix: the AST impact analyzer preserves dependency edges when two bindings share a
   short name across sibling nested modules (e.g. `let f` in `module A` and `module B`
   in one file). Previously the by-name range maps collapsed to last-write-wins, so a

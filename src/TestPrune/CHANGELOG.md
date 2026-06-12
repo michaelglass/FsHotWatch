@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.2.2 - 2026-06-12
+
 - fix: `test-prune` impact analysis no longer mis-attributes or drops dependency
   edges when two bindings share a short name across sibling nested modules in one
   file, which could silently skip affected tests (via TestPrune.Core).
