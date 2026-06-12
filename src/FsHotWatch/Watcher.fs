@@ -52,11 +52,31 @@ type FilePattern =
 
 module FilePattern =
     /// Parse a pattern string. A leading `*` denotes a wildcard suffix;
-    /// anything else is treated as a literal filename. Embedded `*` in
-    /// non-leading position is not a glob — it's part of the literal name.
+    /// anything else is treated as a literal filename.
+    ///
+    /// Patterns with an embedded (non-leading) `*` are REJECTED with
+    /// ArgumentException: the raw pattern string doubles as the
+    /// `FileSystemWatcher.Filter` glob (which would happily glob
+    /// `schema.*.sql`), while the in-process `matches` treats it as a literal
+    /// suffix/basename that never matches the same files — the OS event would
+    /// fire and then be silently dropped. Rejecting at parse (config-load)
+    /// time turns that silent never-runs into a loud, actionable error.
     let parse (pattern: string) : FilePattern =
-        if pattern.StartsWith("*") then
-            FilePattern.Wildcard(pattern.Substring(1))
+        if String.IsNullOrEmpty(pattern) then
+            invalidArg (nameof pattern) "File pattern must not be empty."
+        elif pattern.StartsWith("*") then
+            let suffix = pattern.Substring(1)
+
+            if suffix.Contains("*") then
+                invalidArg
+                    (nameof pattern)
+                    $"Unsupported file pattern '%s{pattern}': only a single leading '*' is supported (e.g. '*.ratchet.json' or a literal filename)."
+
+            FilePattern.Wildcard suffix
+        elif pattern.Contains("*") then
+            invalidArg
+                (nameof pattern)
+                $"Unsupported file pattern '%s{pattern}': '*' is only supported as a leading wildcard (e.g. '*.ratchet.json' or a literal filename)."
         else
             FilePattern.Literal pattern
 

@@ -1027,6 +1027,17 @@ let ``parseConfig raises ConfigError when afterTests entry lacks name`` () =
     Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
     |> ignore
 
+[<Fact(Timeout = 15000)>]
+let ``parseConfig raises ConfigError on fileCommands pattern with embedded wildcard`` () =
+    // Embedded `*` diverges between FileSystemWatcher.Filter (globs) and
+    // FilePattern.matches (literal) — must fail at config-load with a clean
+    // ConfigError, not an unhandled ArgumentException at registration time.
+    let json =
+        """{ "fileCommands": [ { "pattern": "schema.*.sql", "command": "echo", "args": "hi" } ] }"""
+
+    let ex = Assert.Throws<ConfigError>(fun () -> parseConfig json defaults |> ignore)
+    Assert.Contains("schema.*.sql", ex.Message)
+
 // --- countPlugins ---
 
 [<Fact(Timeout = 15000)>]

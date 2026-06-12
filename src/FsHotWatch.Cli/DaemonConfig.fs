@@ -482,6 +482,18 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                 if afterTests.IsSome && name.IsNone then
                     raise (ConfigError "fileCommands entries with `afterTests` require an explicit `name`")
 
+                // Validate the pattern shape at config-load so unsupported
+                // globs (embedded `*`) fail with a clean `fshw: config error:`
+                // exit instead of an unhandled ArgumentException later, at
+                // plugin-registration time.
+                match pattern with
+                | Some p ->
+                    try
+                        FsHotWatch.Watcher.FilePattern.parse p |> ignore
+                    with :? System.ArgumentException as ex ->
+                        raise (ConfigError $"fileCommands pattern invalid: %s{ex.Message}")
+                | None -> ()
+
                 // Derive the effective plugin name up-front so registration is
                 // a straight mapping. Uses the explicit `name` when given, else
                 // falls back to a pattern-derived name (guaranteed Some here by
