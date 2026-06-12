@@ -10,7 +10,7 @@ open FsHotWatch.Plugin
 /// Internal messages for the status agent.
 [<NoComparison; NoEquality>]
 type private StatusMsg =
-    | SetStatus of string * PluginStatus * System.Threading.Tasks.TaskCompletionSource<unit>
+    | SetStatus of string * PluginStatus
     | GetStatus of string * AsyncReplyChannel<PluginStatus option>
     | GetAllStatuses of AsyncReplyChannel<Map<string, PluginStatus>>
 
@@ -78,12 +78,40 @@ type PluginHost
                 pluginGenerations.AddOrUpdate(name, 1L, (fun _ g -> g + 1L)) |> ignore
         | _ -> ()
 
+    // statusChanged.Trigger dispatch is owned by its own agent: the status
+    // agent posts the (name, status) pair here AFTER applying the mutation, and
+    // this loop fires the trigger serially, in mutation order, OUTSIDE the
+    // status agent's serialization boundary. Two invariants hang off that:
+    //   1. A subscriber doing GetAllStatuses (PostAndReply to the status agent)
+    //      from inside the trigger callback cannot deadlock — the status agent
+    //      is not blocked inside the trigger.
+    //   2. By the time a trigger fires, the status agent has already applied
+    //      the mutation, so a re-entrant read observes the new value (or newer).
+    // A subscriber that throws must not kill this loop (it would silently stop
+    // ALL future status notifications), so the exception is logged and the loop
+    // continues.
+    let triggerAgent =
+        MailboxProcessor<string * PluginStatus>.Start(fun inbox ->
+            let rec loop () =
+                async {
+                    let! (name, status) = inbox.Receive()
+
+                    try
+                        statusChanged.Trigger(name, status)
+                    with ex ->
+                        Logging.error "plugin-host" $"OnStatusChanged subscriber failed: %s{ex.ToString()}"
+
+                    return! loop ()
+                }
+
+            loop ())
+
     // Status tracking is owned by a MailboxProcessor: the loop's recursion holds
     // (Statuses, RunStartedAt) and serializes mutations. statusChanged.Trigger
-    // fires OUTSIDE the agent's loop (in the public setStatus wrapper, after
-    // the agent has applied the change) so subscribers can safely call
-    // GetAllStatuses re-entrantly without deadlocking - the agent isn't blocked
-    // inside the trigger callback.
+    // fires OUTSIDE this agent's loop (handed to triggerAgent after the
+    // mutation is applied) so subscribers can safely call GetAllStatuses
+    // re-entrantly without deadlocking - this agent isn't blocked inside the
+    // trigger callback.
     let statusAgent =
         MailboxProcessor<StatusMsg>.Start(fun inbox ->
             let rec loop (state: StatusAgentState) =
@@ -91,7 +119,7 @@ type PluginHost
                     let! msg = inbox.Receive()
 
                     match msg with
-                    | SetStatus(name, status, tcs) ->
+                    | SetStatus(name, status) ->
                         let prev = Map.tryFind name state.Statuses
                         bumpGenerationIfStarting name prev status
                         touchActivity ()
@@ -118,7 +146,9 @@ type PluginHost
                                 Map.remove name state.RunStartedAt
                             | _ -> state.RunStartedAt
 
-                        tcs.SetResult(())
+                        // Mutation applied — hand the notification to the
+                        // trigger agent (fires outside this loop, in order).
+                        triggerAgent.Post(name, status)
 
                         return!
                             loop
@@ -137,19 +167,20 @@ type PluginHost
                   RunStartedAt = Map.empty })
 
     let setStatus (name: string) status =
-        // Apply the status mutation inside the agent, then fire statusChanged
-        // OUTSIDE the agent's serialization boundary. A subscriber doing
-        // GetAllStatuses (PostAndReply) from inside the trigger callback will
-        // not deadlock - the agent has already replied and is free to handle
-        // the next message.
-        let tcs =
-            System.Threading.Tasks.TaskCompletionSource<unit>(
-                System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
-            )
-
-        statusAgent.Post(SetStatus(name, status, tcs))
-        tcs.Task.GetAwaiter().GetResult()
-        statusChanged.Trigger(name, status)
+        // Non-blocking by design: setStatus is called from plugin
+        // MailboxProcessor agent threads (via ReportStatus inside handler
+        // Update bodies). The previous implementation posted a
+        // TaskCompletionSource and synchronously blocked on it
+        // (`tcs.Task.GetAwaiter().GetResult()`) until the status agent applied
+        // the mutation — pinning an agent (thread-pool) thread per concurrent
+        // caller, a latent thread-pool-starvation deadlock: enough simultaneous
+        // blocked reporters can starve the status agent of the very pool thread
+        // it needs to call SetResult. A plain Post keeps every agent thread
+        // free; ordering and visibility survive because (a) the status agent's
+        // mailbox is FIFO, so any GetStatus/GetAllStatuses posted after this
+        // SetStatus observes it, and (b) the statusChanged trigger is fired by
+        // the trigger agent only after the mutation is applied.
+        statusAgent.Post(SetStatus(name, status))
 
     let setPluginStatus (name: PluginFramework.PluginName) status =
         setStatus (PluginFramework.PluginName.value name) status

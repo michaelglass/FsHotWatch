@@ -840,6 +840,63 @@ let ``waitForAllTerminal does not deadlock when OnStatusChanged subscriber calls
     let completed = waitTask.Wait(TimeSpan.FromSeconds(8.0))
     test <@ completed @>
 
+// Item 2: setStatus must not block the calling (plugin agent) thread on a TCS
+// round-trip to the status agent. The visibility invariant — that an
+// OnStatusChanged subscriber observes the just-applied status via GetAllStatuses
+// (re-entrantly, without deadlock) — is pinned by the two tests below
+// (`OnStatusChanged subscriber re-entrantly ...` and `waitForAllTerminal does
+// not deadlock when OnStatusChanged subscriber calls GetAllStatuses`), which the
+// non-blocking implementation must keep green.
+[<Fact(Timeout = 20000)>]
+let ``OnStatusChanged subscriber observes the newly-applied status via GetAllStatuses`` () =
+    // The trigger must fire only AFTER the status agent has applied the
+    // mutation: a subscriber reading GetAllStatuses inside the handler must see
+    // the new value, never a stale one. The non-blocking setStatus achieves this
+    // by firing the trigger from the agent's post-mutation continuation (off the
+    // agent loop, so the re-entrant GetAllStatuses cannot deadlock).
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let observed = ref None
+    let seen = new ManualResetEventSlim(false)
+
+    host.OnStatusChanged.Add(fun (name, status) ->
+        match status with
+        | Running _ when name = "observer" ->
+            let snapshot = host.GetAllStatuses()
+            observed.Value <- Map.tryFind "observer" snapshot
+            seen.Set()
+        | _ -> ())
+
+    let handler =
+        { Name = PluginName.create "observer"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ -> ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+    test <@ seen.Wait(TimeSpan.FromSeconds(5.0)) @>
+    // The subscriber saw the status the trigger was reporting — i.e. the agent
+    // had applied it before the trigger fired (no stale read).
+    test
+        <@
+            match observed.Value with
+            | Some(Running _) -> true
+            | _ -> false
+        @>
+
 [<Fact(Timeout = 20000)>]
 let ``waitForAllTerminal with TimeSpan.MaxValue does not overflow deadline arithmetic`` () =
     // Regression: DateTime.UtcNow + TimeSpan.MaxValue throws; MaxValue must be treated
