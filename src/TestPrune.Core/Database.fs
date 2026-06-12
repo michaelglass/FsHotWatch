@@ -640,7 +640,7 @@ type Database(dbPath: string) =
                     FROM symbols child
                     JOIN symbols parent ON child.parent_symbol_id = parent.id
                     WHERE child.full_name IN (%s{placeholders})
-                      AND parent.kind = '%s{typeKindStr}'
+                      AND parent.kind = @typeKind
                 ),
                 expanded AS (
                     SELECT id FROM after_lift
@@ -649,7 +649,7 @@ type Database(dbPath: string) =
                     FROM symbols child
                     JOIN symbols parent ON child.parent_symbol_id = parent.id
                     WHERE parent.id IN (SELECT id FROM after_lift)
-                      AND parent.kind = '%s{typeKindStr}'
+                      AND parent.kind = @typeKind
                 ),
                 transitive_deps AS (
                     SELECT from_symbol_id FROM dependencies
@@ -665,6 +665,7 @@ type Database(dbPath: string) =
                 """
 
             bindPlaceholders cmd changedSymbolNames
+            cmd.Parameters.AddWithValue("@typeKind", typeKindStr) |> ignore
 
             use reader = cmd.ExecuteReader()
 
