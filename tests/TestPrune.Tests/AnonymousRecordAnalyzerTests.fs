@@ -6,6 +6,10 @@ open FSharp.Compiler.CodeAnalysis
 open FSharp.Analyzers.SDK
 open TestPrune.Analyzers.AnonymousRecordAnalyzer
 
+/// Shared across every test module in this file; each carries
+/// [<Collection("FCS-AnonymousRecord")>] so they serialize with each other
+/// instead of hitting this single FSharpChecker instance in parallel.
+/// New test modules added to this file must join the same collection.
 let private checker = FSharpChecker.Create()
 
 /// Parse `source` under `fileName` and return the collected anonymous-record ranges.
@@ -30,6 +34,7 @@ let private collect (source: string) =
 
 let private messagesFor (source: string) = collect source |> buildMessages
 
+[<Collection("FCS-AnonymousRecord")>]
 module ``Anonymous-record expressions`` =
 
     [<Fact>]
@@ -59,6 +64,7 @@ let derived = {| base' with Month = 6 |}
         // base' definition + the copy-update expression = 2 anon records.
         test <@ List.length ranges = 2 @>
 
+[<Collection("FCS-AnonymousRecord")>]
 module ``Anonymous-record type annotations`` =
 
     [<Fact>]
@@ -84,6 +90,7 @@ let make () : {| Year: int |} = {| Year = 2026 |}
         // One for the return-type annotation, one for the expression.
         test <@ List.length ranges = 2 @>
 
+[<Collection("FCS-AnonymousRecord")>]
 module ``Nested and multiple occurrences`` =
 
     [<Fact>]
@@ -121,6 +128,7 @@ let xs = [ {| N = 1 |}; {| N = 2 |} ]
 
         test <@ List.length ranges = 2 @>
 
+[<Collection("FCS-AnonymousRecord")>]
 module ``Nested inside control-flow and binding constructs`` =
 
     /// Each fixture embeds anonymous records inside a different syntactic construct,
@@ -213,6 +221,7 @@ let f (p: int * {| Year: int |}) = p
 
         test <@ List.length ranges = 1 @>
 
+[<Collection("FCS-AnonymousRecord")>]
 module ``No false positives`` =
 
     [<Fact>]
@@ -274,6 +283,7 @@ let f (p: Point) = p.X
         let ranges = collectIn "/tmp/AnonRecordTest.fsi" "module M\nval x: int\n"
         test <@ List.isEmpty ranges @>
 
+[<Collection("FCS-AnonymousRecord")>]
 module ``Diagnostic shape`` =
 
     [<Fact>]

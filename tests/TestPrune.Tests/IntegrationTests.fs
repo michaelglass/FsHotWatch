@@ -16,6 +16,10 @@ open TestPrune.Tests.TestHelpers
 let private runDeadCodeResult (db: Database) (patterns: string list) (includeTests: bool) =
     runDeadCode db patterns includeTests |> fst
 
+/// Shared across every test module in this file; each carries
+/// [<Collection("FCS-Integration")>] so they serialize with each other
+/// instead of hitting this single FSharpChecker instance in parallel.
+/// New test modules added to this file must join the same collection.
 let checker = FSharpChecker.Create()
 
 let analyze source =
@@ -30,6 +34,7 @@ let analyze source =
     | Ok r -> r
     | Error msg -> failwith $"Analysis failed: %s{msg}"
 
+[<Collection("FCS-Integration")>]
 module ``Full pipeline — index and select affected tests`` =
 
     [<Fact>]
@@ -128,6 +133,7 @@ let ``counter starts at zero`` () =
             test <@ changedNames.Length = 1 @>
             test <@ changedNames[0].EndsWith("add", StringComparison.Ordinal) @>)
 
+[<Collection("FCS-Integration")>]
 module ``Transitive dependency chain`` =
 
     [<Fact>]
@@ -198,6 +204,7 @@ let testMethod () = helperFunc 5 |> ignore
             test <@ affected.Length = 1 @>
             test <@ affected[0].TestMethod = "testMethod" @>)
 
+[<Collection("FCS-Integration")>]
 module ``DU case change affects pattern-matching tests`` =
 
     [<Fact>]
@@ -267,6 +274,7 @@ let testDescribe () = describe (Circle 1.0) |> ignore
             test <@ affected.Length >= 1 @>
             test <@ affected |> List.exists (fun t -> t.TestMethod = "testDescribe") @>)
 
+[<Collection("FCS-Integration")>]
 module ``Unindexed file triggers RunAll`` =
 
     [<Fact>]
@@ -309,6 +317,7 @@ let f x = x
             | RunAll _ -> ()
             | RunSubset _ -> failwith "Expected RunAll for unindexed file")
 
+[<Collection("FCS-Integration")>]
 module ``No changes returns empty RunSubset`` =
 
     [<Fact>]
@@ -338,6 +347,7 @@ let f x = x
             | RunSubset tests -> test <@ tests |> List.isEmpty @>
             | RunAll reason -> failwith $"Expected RunSubset, got RunAll: %s{SelectionReason.describe reason}")
 
+[<Collection("FCS-Integration")>]
 module ``Dead code — full pipeline`` =
 
     [<Fact>]
@@ -488,6 +498,7 @@ let main () = area (Circle 1.0) |> ignore
                     |> not
                 @>)
 
+[<Collection("FCS-Integration")>]
 module ``SymbolDiff — real source change detection`` =
 
     [<Fact>]
@@ -811,6 +822,7 @@ let path () = @"C:\new\path"
         let names = changedSymbolNames changes
         test <@ names |> List.exists (fun n -> n.EndsWith("path", StringComparison.Ordinal)) @>
 
+[<Collection("FCS-Integration")>]
 module ``Impact analysis — change affects zero tests`` =
 
     [<Fact>]
@@ -858,6 +870,7 @@ let myTest () = used 5 |> ignore
             let affected = db.QueryAffectedTests changedNames
             test <@ affected |> List.isEmpty @>)
 
+[<Collection("FCS-Integration")>]
 module ``Impact analysis — change affects two test classes`` =
 
     [<Fact>]
@@ -911,6 +924,7 @@ let testBeta () = wrapperB 2 |> ignore
             let testNames = affected |> List.map (fun t -> t.TestMethod) |> List.sort
             test <@ testNames = [ "testAlpha"; "testBeta" ] @>)
 
+[<Collection("FCS-Integration")>]
 module ``Impact analysis — generic type parameter change affects test`` =
 
     [<Fact>]
@@ -960,6 +974,7 @@ let testLoad () = loadConfigs () |> ignore
             test <@ affected.Length >= 1 @>
             test <@ affected |> List.exists (fun t -> t.TestMethod = "testLoad") @>)
 
+[<Collection("FCS-Integration")>]
 module ``Impact analysis — record field construction affects test`` =
 
     [<Fact>]
@@ -1008,6 +1023,7 @@ let testMake () = makePerson () |> ignore
             test <@ affected.Length >= 1 @>
             test <@ affected |> List.exists (fun t -> t.TestMethod = "testMake") @>)
 
+[<Collection("FCS-Integration")>]
 module ``Impact analysis — DU parent type change affects test via case usage`` =
 
     [<Fact>]
@@ -1064,6 +1080,7 @@ let testDescribe () = describe Red |> ignore
             test <@ affected.Length >= 1 @>
             test <@ affected |> List.exists (fun t -> t.TestMethod = "testDescribe") @>)
 
+[<Collection("FCS-Integration")>]
 module ``Impact analysis — four hop transitive chain`` =
 
     [<Fact>]
@@ -1114,6 +1131,7 @@ let testDeep () = depth1 5 |> ignore
             test <@ affected.Length = 1 @>
             test <@ affected[0].TestMethod = "testDeep" @>)
 
+[<Collection("FCS-Integration")>]
 module ``Impact analysis — mixed edge types`` =
 
     [<Fact>]
@@ -1173,6 +1191,7 @@ let testProcess () =
             test <@ affected.Length >= 1 @>
             test <@ affected |> List.exists (fun t -> t.TestMethod = "testProcess") @>)
 
+[<Collection("FCS-Integration")>]
 module ``Dead code — generic type parameter keeps type alive`` =
 
     [<Fact>]
@@ -1211,6 +1230,7 @@ let main () = loadAll () |> ignore
                     |> not
                 @>)
 
+[<Collection("FCS-Integration")>]
 module ``Dead code — record type kept alive by field construction`` =
 
     [<Fact>]
@@ -1248,6 +1268,7 @@ let main () = defaultSettings () |> ignore
                     |> not
                 @>)
 
+[<Collection("FCS-Integration")>]
 module ``Dead code — DU type kept alive by case pattern match`` =
 
     [<Fact>]
@@ -1294,6 +1315,7 @@ let main () = isVertical North |> ignore
                     |> not
                 @>)
 
+[<Collection("FCS-Integration")>]
 module ``Impact analysis — class-based (type member) tests`` =
 
     [<Fact>]
@@ -1466,6 +1488,7 @@ type ComputeTests() =
             // The class-based test should be found when its dependency changes
             test <@ testMethods |> List.exists (fun t -> t.TestMethod.Contains("compute")) @>)
 
+[<Collection("FCS-Integration")>]
 module ``Cross-assembly dependency extraction`` =
 
     [<Fact>]
@@ -1537,6 +1560,7 @@ let ``test uses string builder`` () =
             test <@ affected.Length = 1 @>
             test <@ affected[0].TestMethod.Contains("string builder") @>)
 
+[<Collection("FCS-Integration")>]
 module ``Fixture member invalidation`` =
 
     [<Fact>]

@@ -8,6 +8,12 @@ open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Symbols
 open TestPrune.AstAnalyzer
 
+/// Shared across every test module in this file. Each nested module is its own
+/// xunit test class (= its own collection by default), so without coordination
+/// they would all hit this single FSharpChecker instance in parallel. Every test
+/// module in this file therefore carries [<Collection("FCS-AstAnalyzer")>] to
+/// serialize them with each other (they still run in parallel with other files).
+/// New test modules added to this file must join the same collection.
 let checker = FSharpChecker.Create()
 
 let analyze source =
@@ -23,6 +29,7 @@ let analyze source =
     | Ok r -> r
     | Error msg -> failwith $"Analysis failed: %s{msg}"
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Simple function extraction`` =
 
     [<Fact>]
@@ -57,6 +64,7 @@ let greeting = "hello"
         test <@ sym.IsSome @>
         test <@ sym.Value.Kind = Value @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``DU type extraction`` =
 
     [<Fact>]
@@ -88,6 +96,7 @@ type Shape =
         test <@ circleCase.IsSome @>
         test <@ rectCase.IsSome @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Dependency extraction`` =
 
     [<Fact>]
@@ -194,6 +203,7 @@ let quadruple x = double (double x)
         test <@ doubleCallsAdd.IsSome @>
         test <@ quadCallsDouble.IsSome @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Module extraction`` =
 
     [<Fact>]
@@ -212,6 +222,7 @@ let x = 1
 
         test <@ modSym.IsSome @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Namespace handling`` =
 
     [<Fact>]
@@ -242,6 +253,7 @@ module Bar =
 
         test <@ modSym.IsSome @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Entity classification flavors`` =
 
     // Regression guard: when we replaced tryClassifyEntity's catch-all
@@ -355,6 +367,7 @@ type E = X = 1 | Y = 2
 
         test <@ kinds = [ Some Type; Some Type; Some Type ] @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Test method detection`` =
 
     // NOTE: Detecting [<Fact>] attributes requires xunit assemblies to be referenced
@@ -430,6 +443,7 @@ let myTest () = ()
         test <@ not (tc.Contains("+")) @>
         test <@ tc.EndsWith("TopModule", StringComparison.Ordinal) @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Symbol source locations`` =
 
     [<Fact>]
@@ -482,6 +496,7 @@ let second = 2
         test <@ second.IsSome @>
         test <@ first.Value.LineStart < second.Value.LineStart @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Local binding scoping`` =
 
     [<Fact>]
@@ -518,6 +533,7 @@ let main args =
 
         test <@ localCallsHelper.IsEmpty @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Record type extraction`` =
 
     [<Fact>]
@@ -536,6 +552,7 @@ type Person = { Name: string; Age: int }
 
         test <@ recSym.IsSome @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Binding range diagnostics`` =
     [<Fact>]
     let ``multi-line function captures full body range`` () =
@@ -578,6 +595,7 @@ let routeHandler (x: int) : int =
         test <@ startLine <= 4 @>
         test <@ endLine >= 8 @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Enum type extraction`` =
 
     [<Fact>]
@@ -599,6 +617,7 @@ type Color =
 
         test <@ enumSym.IsSome @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Type abbreviation extraction`` =
 
     [<Fact>]
@@ -643,6 +662,7 @@ let makePoint x y : Point = { X = x; Y = y }
 
         test <@ pointSym.IsSome @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Class type extraction`` =
 
     [<Fact>]
@@ -686,6 +706,7 @@ let analyzeRaw source =
     analyzeSource checker fileName source options "TestProject"
     |> Async.RunSynchronously
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Parse error handling`` =
 
     [<Fact>]
@@ -698,6 +719,7 @@ module ``Parse error handling`` =
         | Error msg -> test <@ msg.StartsWith("Parse errors:", StringComparison.Ordinal) @>
         | Ok _ -> failwith "expected error"
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Cross-file dependencies (regression)`` =
 
     [<Fact>]
@@ -787,6 +809,7 @@ let test () =
             with _ ->
                 ()
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Branch coverage for dependency kinds`` =
 
     [<Fact>]
@@ -832,6 +855,7 @@ let handleSome opt =
         // The pattern matching on Option cases creates dependencies
         test <@ result.Dependencies.Length > 0 @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Symbol classification coverage`` =
 
     [<Fact>]
@@ -907,6 +931,7 @@ let getArea c = c.Area
         let symbols = result.Symbols
         test <@ symbols.Length > 0 @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Coverage for hashSourceLines`` =
 
     [<Fact>]
@@ -931,6 +956,7 @@ let c = 3
             test <@ analysis.Symbols.Length >= 3 @>
         | Error e -> failwith $"analysis failed: {e}"
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Coverage for collectTypeMemberRanges`` =
 
     [<Fact>]
@@ -988,6 +1014,7 @@ type Worker() =
             test <@ runCallsHelper @>
         | Error e -> failwith $"analysis failed: {e}"
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Coverage for collectModuleBindingRanges`` =
 
     [<Fact>]
@@ -1011,6 +1038,7 @@ let moduleValue = 42
         | Ok analysis -> test <@ analysis.Symbols.Length > 0 @>
         | Error e -> failwith $"analysis failed: {e}"
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Symbol classification robustness`` =
 
     [<Fact>]
@@ -1037,6 +1065,7 @@ let c = a + b
         // Normal analysis verifies the classification paths work
         test <@ result.Symbols.Length > 0 @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Local bindings should not be queryable (regression)`` =
 
     [<Fact>]
@@ -1093,6 +1122,7 @@ let moduleLevel = 42
             test <@ localBindings.Length = 0 @>
         | Error e -> failwith $"analysis failed: {e}"
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Exception handling in symbol classification`` =
 
     [<Fact>]
@@ -1340,6 +1370,7 @@ let myTheoryTest (x: int) =
             test <@ hasTheoryTest @>
         | Error e -> failwith $"analysis failed: {e}"
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Edge cases and error handling`` =
 
     [<Fact>]
@@ -1477,6 +1508,7 @@ module M =
             test <@ hasModule @>
         | Error e -> failwith $"analysis failed: {e}"
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``DU parent type edge from case usage`` =
 
     [<Fact>]
@@ -1532,6 +1564,7 @@ let init () = Increment
 
         test <@ hasEdgeToMsg @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Generic type parameter edges`` =
 
     [<Fact>]
@@ -1609,6 +1642,7 @@ let lookup : Map<Key, Val> = Map.empty
         test <@ hasEdgeToKey @>
         test <@ hasEdgeToVal @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Record type edge from field usage`` =
 
     [<Fact>]
@@ -1656,6 +1690,7 @@ let getHost (c: Config) = c.Host
 
         test <@ configEdges.Length >= 1 @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``getScriptOptions concurrency`` =
 
     [<Fact>]
@@ -1675,6 +1710,7 @@ module ``getScriptOptions concurrency`` =
                     |> Array.exists (fun f -> f.Contains($"concurrent_{i + 1}.fsx"))
                 @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``resolveToAbsolute`` =
 
     [<Fact>]
@@ -1697,6 +1733,7 @@ module ``resolveToAbsolute`` =
         let result = resolveToAbsolute "/base/dir" ""
         test <@ result = "" @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Closure and nested function edge attribution`` =
 
     [<Fact>]
@@ -1745,6 +1782,7 @@ let topLevel () =
 
         test <@ topLevelCallsUtility.IsSome @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Interface implementation edge extraction`` =
 
     [<Fact>]
@@ -1806,6 +1844,7 @@ let run (p: IProcessor) =
 
         test <@ runToImplementor.IsNone @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Dead code false positive regression — edge extraction`` =
 
     [<Fact>]
@@ -1872,6 +1911,7 @@ let initial () = Start
 
         test <@ initialToMsg.IsSome @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Content hash ignores comments`` =
 
     [<Fact>]
@@ -1982,6 +2022,7 @@ let myFunc () =
         // stable.
         test <@ hashOf (mk "alpha comment") = hashOf (mk "beta comment") @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Backtick-quoted identifiers`` =
 
     [<Fact>]
@@ -2011,6 +2052,7 @@ let ``my special function`` () =
 
         test <@ edge.IsSome @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``getScriptOptions with bare filename`` =
 
     [<Fact>]
@@ -2026,6 +2068,7 @@ module ``getScriptOptions with bare filename`` =
         | Ok analysis -> test <@ analysis.Symbols.Length > 0 @>
         | Error e -> failwith $"analysis failed: {e}"
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``DllImport detection`` =
 
     [<Fact>]
@@ -2051,6 +2094,7 @@ extern void Sleep(int milliseconds)
         test <@ sleepSym.IsSome @>
         test <@ sleepSym.Value.IsExtern @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Record field edges via FSharpField`` =
 
     [<Fact>]
@@ -2095,6 +2139,7 @@ let makeVerbose (s: Settings) = { s with Verbose = true }
 
         test <@ dep.IsSome @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Union parent type edge coverage`` =
 
     [<Fact>]
@@ -2136,6 +2181,7 @@ let area s =
         test <@ hasSquareEdge @>
         test <@ hasShapeEdge @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Generic type arg edges`` =
 
     [<Fact>]
@@ -2162,6 +2208,7 @@ let bundle (p: Payload) : Wrapper<Payload> = { Items = [ p ] }
 
         test <@ hasPayloadEdge @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``findEnclosing tighter span`` =
 
     [<Fact>]
@@ -2211,6 +2258,7 @@ type Worker() =
 
         test <@ doWorkCallsUtility.IsSome @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Extern symbol extraction`` =
 
     [<Fact>]
@@ -2231,6 +2279,7 @@ let greet name = sprintf "Hello, %s" name
             test <@ s.IsExtern @>
             test <@ s.SourceFile = ExternSourceFile @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``AnalysisDiagnostics`` =
 
     [<Fact>]
@@ -2247,6 +2296,7 @@ let double x = add x x
         // Diagnostics should be populated
         test <@ result.Diagnostics.TotalDefinitions > 0 @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``AnalysisResult Create helper`` =
 
     [<Fact>]
@@ -2267,6 +2317,7 @@ module ``AnalysisResult Create helper`` =
         test <@ result.Diagnostics = AnalysisDiagnostics.Zero @>
         test <@ result.Symbols.Length = 1 @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``normalizeSymbolPaths`` =
 
     [<Fact>]
@@ -2283,6 +2334,7 @@ module ``normalizeSymbolPaths`` =
         let normalized = normalizeSymbolPaths "/repo/root" symbols
         test <@ normalized[0].SourceFile = "src/MyModule.fs" @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Custom attribute extraction`` =
 
     [<Fact>]
@@ -2314,6 +2366,7 @@ let getArticles () = ()
         test <@ readsFromAttrs[0].ArgsJson.Contains("articles") @>
         test <@ readsFromAttrs[0].ArgsJson.Contains("status") @>
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Backtick name handling`` =
 
     [<Fact>]
@@ -2364,6 +2417,7 @@ let normalTest () = ()
             test <@ hasNormalSymbol @>
         | Error e -> failwith $"analysis failed: {e}"
 
+[<Collection("FCS-AstAnalyzer")>]
 module ``Un-nameable symbols do not abort analysis`` =
 
     // Regression: some FCS symbols (e.g. anonymous-record projections, generic
@@ -2474,6 +2528,7 @@ let pull () =
 // with `Map.ofList`, which is last-write-wins on the short name, so the earlier
 // binding's SymbolInfo was silently dropped and uses inside it were mis-attributed
 // or dropped. That severs dependency edges → affected tests are not selected.
+[<Collection("FCS-AstAnalyzer")>]
 module ``Short-name collisions across sibling modules`` =
 
     [<Fact>]
