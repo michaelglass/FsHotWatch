@@ -7,8 +7,8 @@
 
     <ItemGroup>
         <PackageVersion Include="FSharp.Analyzers.SDK" Version="0.36.0" />
-        <PackageVersion Include="FSharp.Core" Version="10.1.204" />
-        <PackageVersion Include="FSharp.Compiler.Service" Version="43.12.*" />
+        <PackageVersion Include="FSharp.Core" Version="10.1.*" />
+        <PackageVersion Include="FSharp.Compiler.Service" Version="43.*" />
         <PackageVersion Include="Ionide.ProjInfo" Version="0.74.2" />
         <PackageVersion Include="Ionide.ProjInfo.FCS" Version="0.74.2" />
         <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.8" />
