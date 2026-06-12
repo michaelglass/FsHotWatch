@@ -462,7 +462,11 @@ let withSeededTestEnv (prefix: string) (relPath: string) (source: string) (body:
         // ~+10s (~1.1x) on the full suite, far under the 2x bar set for this
         // isolation change.
         let checker =
-            FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
+            FSharpChecker.Create(
+                projectCacheSize = 200,
+                keepAssemblyContents = true,
+                keepAllBackgroundResolutions = true
+            )
 
         File.WriteAllText(filePath, source)
         let sourceText = FSharp.Compiler.Text.SourceText.ofString source

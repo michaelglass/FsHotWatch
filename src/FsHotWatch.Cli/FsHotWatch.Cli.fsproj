@@ -31,6 +31,16 @@
         <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="9" />
     </ItemGroup>
 
+    <!-- Allow tests to access internal members (mirrors src/FsHotWatch) -->
+    <ItemGroup>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+            <_Parameter1>FsHotWatch.Tests</_Parameter1>
+        </AssemblyAttribute>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+            <_Parameter1>FsHotWatch.IntegrationTests</_Parameter1>
+        </AssemblyAttribute>
+    </ItemGroup>
+
     <ItemGroup>
         <Compile Include="DaemonConfig.fs" />
         <Compile Include="InitConfig.fs" />

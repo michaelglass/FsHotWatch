@@ -898,6 +898,71 @@ let ``OnStatusChanged subscriber observes the newly-applied status via GetAllSta
         @>
 
 [<Fact(Timeout = 20000)>]
+let ``a throwing OnStatusChanged subscriber is logged and does not kill status notifications`` () =
+    // The trigger agent must survive a faulting subscriber: the exception is
+    // logged at error level and the NEXT status notification is still
+    // delivered. If the fault escaped, the MailboxProcessor loop would die and
+    // every future OnStatusChanged notification would be silently dropped.
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let sawCompleted = new ManualResetEventSlim(false)
+    let mutable threwOnRunning = false
+
+    host.OnStatusChanged.Add(fun (name, status) ->
+        if name = "fault-subscriber" then
+            match status with
+            | Running _ ->
+                threwOnRunning <- true
+                failwith "subscriber boom"
+            | Completed _ -> sawCompleted.Set()
+            | _ -> ())
+
+    let original = FsHotWatch.Logging.logLevel
+    let sb = System.Text.StringBuilder()
+    let writer = new System.IO.StringWriter(sb)
+    let prevErr = Console.Error
+
+    try
+        Console.SetError(writer)
+        FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
+
+        let handler =
+            { Name = PluginName.create "fault-subscriber"
+              Init = ()
+              Update =
+                fun ctx state event ->
+                    async {
+                        match event with
+                        | FileChanged _ ->
+                            ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                            ctx.ReportStatus(Completed(DateTime.UtcNow))
+                        | _ -> ()
+
+                        return state
+                    }
+              Commands = []
+              Subscriptions = Set.ofList [ SubscribeFileChanged ]
+              CacheKey = None
+              Teardown = None }
+
+        host.RegisterHandler(handler)
+        host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
+
+        // The Completed notification (posted after the Running one whose
+        // subscriber threw) must still arrive — the trigger loop survived.
+        test <@ sawCompleted.Wait(TimeSpan.FromSeconds(5.0)) @>
+        test <@ threwOnRunning @>
+
+        // And the fault was logged, not swallowed. The trigger agent is FIFO,
+        // so by the time Completed was delivered the Running fault had already
+        // been written to stderr.
+        writer.Flush()
+        test <@ sb.ToString().Contains("OnStatusChanged subscriber failed") @>
+    finally
+        Console.SetError(prevErr)
+        FsHotWatch.Logging.setLogLevel original
+
+[<Fact(Timeout = 20000)>]
 let ``waitForAllTerminal with TimeSpan.MaxValue does not overflow deadline arithmetic`` () =
     // Regression: DateTime.UtcNow + TimeSpan.MaxValue throws; MaxValue must be treated
     // as "no deadline" so the RPC path that passes it through (WaitForComplete with

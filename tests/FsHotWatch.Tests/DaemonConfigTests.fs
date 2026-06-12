@@ -1095,6 +1095,14 @@ let ``watchRepoConfigFile returns no-op disposable when no config file exists`` 
 // heavy parallel load the OS can take >5s to deliver, so they're grouped into
 // the FileWatch DisableParallelization collection (mirrors MacFsEventsTests)
 // to keep delivery deterministic instead of racing the saturated suite.
+//
+// Coverage note (2026-06-12): these tests are also what pins the watcher
+// handler's lines as deterministically covered in this (ratcheted) suite — a
+// passing run means the callback fired. The handler's BRANCHES live in the
+// extracted `debounceShouldFire`/`configChangeReason` functions (unit-tested
+// directly below with injected clocks), so an OS double-fire during these
+// tests can only re-hit already-covered branches and the ratchet stays
+// deterministic.
 [<Collection(FileWatchCollectionName)>]
 type RealWatchTests() =
 
@@ -1150,6 +1158,62 @@ type RealWatchTests() =
 
             Assert.True(signal.Wait(5000), "expected watcher callback within 5s")
             Assert.Contains("invalid", observed.Value))
+
+// --- debounceShouldFire / configChangeReason / onConfigFsEvent ---
+// Direct tests with injected clocks so BOTH arms of every watcher branch are
+// covered deterministically — production only hits the suppressed-debounce arm
+// when the OS double-fires within the window, which is nondeterministic and
+// used to coin-flip this file's branch coverage in the ratchet.
+
+[<Fact(Timeout = 15000)>]
+let ``debounceShouldFire fires on first event and suppresses within the window`` () =
+    let gate = obj ()
+    let lastFire = ref System.DateTime.MinValue
+    let window = System.TimeSpan.FromMilliseconds(200.0)
+    let t0 = System.DateTime(2026, 6, 12, 12, 0, 0, System.DateTimeKind.Utc)
+
+    let first = debounceShouldFire gate lastFire window t0
+    // 100ms later: inside the window — suppressed.
+    let withinWindow =
+        debounceShouldFire gate lastFire window (t0.AddMilliseconds(100.0))
+    // 300ms after the accepted fire: outside the window — fires again.
+    let afterWindow =
+        debounceShouldFire gate lastFire window (t0.AddMilliseconds(300.0))
+
+    test <@ first && not withinWindow && afterWindow @>
+
+[<Fact(Timeout = 15000)>]
+let ``configChangeReason distinguishes valid from invalid config`` () =
+    withTempDir "cfg-reason" (fun tmpDir ->
+        let configPath = Path.Combine(tmpDir, ".fshw.json")
+
+        File.WriteAllText(configPath, """{"lint": false}""")
+        test <@ (configChangeReason configPath defaults).Contains("config changed") @>
+
+        File.WriteAllText(configPath, "{not valid json")
+        test <@ (configChangeReason configPath defaults).Contains("config invalid") @>)
+
+[<Fact(Timeout = 15000)>]
+let ``onConfigFsEvent dispatches once per debounce window`` () =
+    withTempDir "cfg-fsevent" (fun tmpDir ->
+        let configPath = Path.Combine(tmpDir, ".fshw.json")
+        File.WriteAllText(configPath, "{}")
+
+        let gate = obj ()
+        let lastFire = ref System.DateTime.MinValue
+        let window = System.TimeSpan.FromMilliseconds(200.0)
+        let t0 = System.DateTime(2026, 6, 12, 12, 0, 0, System.DateTimeKind.Utc)
+        let calls = ResizeArray<string>()
+
+        let fire now =
+            onConfigFsEvent gate lastFire window configPath defaults ignore (fun r -> calls.Add(r)) now
+
+        fire t0 // fires
+        fire (t0.AddMilliseconds(50.0)) // double-fire within window: suppressed
+        fire (t0.AddMilliseconds(500.0)) // next save: fires
+
+        test <@ calls.Count = 2 @>
+        test <@ calls |> Seq.forall (fun r -> r.Contains("config changed")) @>)
 
 [<Fact(Timeout = 15000)>]
 let ``invokeOnChangeWith routes onChange exception to logError sink (F3)`` () =
