@@ -379,3 +379,35 @@ let ``Tracker tracks its own state independently`` () =
         test <@ tracker.HasContentChanged tmpFile = true @> // changed
     finally
         File.Delete(tmpFile)
+
+// === Item 6: FilePattern.parse must reject globs it cannot match consistently ===
+//
+// An embedded (non-leading) `*` diverges between the two matchers: the raw
+// pattern string is handed to FileSystemWatcher.Filter (which GLOBS it, so the
+// OS watcher fires for e.g. schema.users.sql) while the in-process
+// FilePattern.matches treats it as a literal basename / literal suffix (which
+// never matches those same files) — the event fires and is then silently
+// dropped, so the user's file command never runs and never errors. parse must
+// reject such patterns loudly at config-load time instead.
+
+[<Fact(Timeout = 15000)>]
+let ``parse rejects literal patterns with embedded wildcard`` () =
+    Assert.Throws<ArgumentException>(fun () -> FilePattern.parse "schema.*.sql" |> ignore)
+    |> ignore
+
+[<Fact(Timeout = 15000)>]
+let ``parse rejects wildcard patterns with additional embedded wildcard`` () =
+    Assert.Throws<ArgumentException>(fun () -> FilePattern.parse "*.ratchet.*.json" |> ignore)
+    |> ignore
+
+[<Fact(Timeout = 15000)>]
+let ``parse rejects empty pattern`` () =
+    Assert.Throws<ArgumentException>(fun () -> FilePattern.parse "" |> ignore)
+    |> ignore
+
+[<Fact(Timeout = 15000)>]
+let ``parse still accepts leading-wildcard and literal patterns`` () =
+    test <@ FilePattern.parse "*.ratchet.json" = FilePattern.Wildcard ".ratchet.json" @>
+    test <@ FilePattern.parse "coverage-ratchet.json" = FilePattern.Literal "coverage-ratchet.json" @>
+    // A bare "*" (match everything) stays supported: both matchers agree on it.
+    test <@ FilePattern.parse "*" = FilePattern.Wildcard "" @>
