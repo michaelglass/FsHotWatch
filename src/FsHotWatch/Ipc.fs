@@ -343,8 +343,16 @@ module IpcServer =
                     pipeServer.Dispose())
                 |> ignore
             with
-            | :? OperationCanceledException -> pipeServer.Dispose()
-            | _ -> pipeServer.Dispose()
+            | :? OperationCanceledException ->
+                // Normal shutdown: the daemon's CancellationToken fired while
+                // waiting for a client. Quiet by design.
+                pipeServer.Dispose()
+            | ex ->
+                // A single bad connection (client vanished mid-handshake, broken
+                // pipe, RPC wiring failure) must not kill the server — but it
+                // must not vanish silently either.
+                pipeServer.Dispose()
+                Logging.warn "ipc" $"IPC connection handler failed: %s{ex.ToString()}"
         }
 
     /// Start the IPC server. Keeps multiple accept tasks running concurrently
@@ -367,6 +375,19 @@ module IpcServer =
                     // Wait for any accept to complete
                     let! completed = Task.WhenAny(acceptTasks |> List.toArray) |> Async.AwaitTask
 
+                    // Task.WhenAny hands a faulted acceptor back WITHOUT
+                    // throwing, so its exception must be observed here or it
+                    // vanishes. A fault at this level means the acceptor died
+                    // before serving (NamedPipeServerStream creation/bind
+                    // failed) — per-connection failures are already caught and
+                    // logged inside acceptOne. Log loudly and back off before
+                    // respawning: a persistent bind failure (pipe path invalid,
+                    // permissions, name collision) would otherwise busy-spin
+                    // the loop with instantly-faulting acceptors.
+                    if completed.IsFaulted then
+                        Logging.error "ipc" $"IPC accept task faulted: %s{completed.Exception.ToString()}"
+                        do! Task.Delay(1000, cts.Token) |> Async.AwaitTask
+
                     // Replace completed task with a new accept
                     acceptTasks <-
                         acceptTasks
@@ -376,8 +397,15 @@ module IpcServer =
                             else
                                 t)
                 with
-                | :? OperationCanceledException -> ()
-                | _ -> ()
+                | :? OperationCanceledException ->
+                    // Normal shutdown signal — the while condition exits the loop.
+                    ()
+                | ex ->
+                    // Never silently swallow: anything else here is a real
+                    // server-loop fault. Log it and keep serving — killing the
+                    // daemon's IPC over one bad cycle would be a worse failure
+                    // mode than a logged retry.
+                    Logging.error "ipc" $"IPC accept loop error: %s{ex.ToString()}"
         }
 
 /// IPC client that connects to the daemon's named pipe and calls methods via StreamJsonRpc.
