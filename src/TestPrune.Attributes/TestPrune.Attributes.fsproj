@@ -2,7 +2,7 @@
 
     <PropertyGroup>
         <TargetFrameworks>netstandard2.0;net10.0</TargetFrameworks>
-        <NoWarn>$(NoWarn);NU1605;MSB3277;NETSDK1188</NoWarn>
+        <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
         <PackageId>TestPrune.Attributes</PackageId>
         <Authors>Michael Glass</Authors>
         <Description>Consumer-side marker attributes for TestPrune. Let tests and production symbols declare cross-cutting dependencies that the static graph can't infer (reflection, DI registration by type, plug-ins, etc.).</Description>

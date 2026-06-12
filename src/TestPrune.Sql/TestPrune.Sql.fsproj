@@ -2,7 +2,7 @@
 
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
-        <NoWarn>$(NoWarn);NU1605;MSB3277;NETSDK1188</NoWarn>
+        <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
         <PackageId>TestPrune.Sql</PackageId>
         <Authors>Michael Glass</Authors>
         <Description>SQL table/column coupling attributes for TestPrune test impact analysis</Description>
