@@ -18,6 +18,7 @@
   the flush chokepoint, before the snapshot advance) rather than on every
   FileChecked — same crash-safety direction (over-testing), far fewer disk
   writes.
+- chore: bump TestPrune.Core to 4.2.2 and TestPrune.Falco to 2.0.2.
 
 ## 0.7.0-alpha.23 - 2026-06-11
 

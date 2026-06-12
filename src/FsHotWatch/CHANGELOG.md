@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- fix: `ContentDedup` is now scoped per daemon instance, so two daemons sharing a
+  machine can no longer poison each other's content-hash cache (a change seen by one
+  daemon was wrongly deduplicated as "already seen" by another).
+- fix: `PluginHost.setStatus` is non-blocking, closing a latent deadlock where a plugin
+  setting its status from an agent thread could stall the host.
+- fix: the IPC accept loop now logs faults instead of silently swallowing them, so a
+  failing client connection surfaces in the daemon log rather than vanishing.
+- fix: `FilePattern.parse` rejects globs it cannot match consistently rather than
+  accepting a pattern that would silently never fire.
+- refactor: discovery roots now have a single source of truth and the fingerprint honors
+  configured excludes, so excluded paths no longer perturb change detection.
+- chore: float `FSharp.Compiler.Service` via a `43.*` wildcard so restore resolves the
+  latest published 43.x.
+- fix(deps): lift transitive `MessagePack` to 2.5.301 (GHSA-hv8m-jj95-wg3x).
+
 ## 0.8.0-alpha.27 - 2026-06-11
 
 ### Changed
