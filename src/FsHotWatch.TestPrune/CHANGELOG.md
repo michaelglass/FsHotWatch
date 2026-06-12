@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.24 - 2026-06-12
+
 - fix!: the test gate can no longer go green without the tests having actually
   run ("false green"). A durable needs-testing queue
   (`.fshw/test-prune/pending-verification.json`) records every changed symbol
