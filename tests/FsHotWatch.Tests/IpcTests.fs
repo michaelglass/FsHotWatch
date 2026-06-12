@@ -1104,3 +1104,65 @@ let ``server keeps accepting connections after a malformed-frame client`` () =
             serverTask.Wait(TimeSpan.FromSeconds(3.0)) |> ignore
         with _ ->
             ()
+
+// === Item 3 regression: accept loop must not silently swallow acceptor faults ===
+//
+// A pipe name that (with the runtime's `CoreFxPipe_` temp-dir prefix) exceeds
+// the platform's Unix-domain-socket path limit makes the NamedPipeServerStream
+// constructor throw deterministically — a PERSISTENT bind failure. On the old
+// code the accept loop's `| _ -> ()` (and the unobserved faulted task handed
+// back by Task.WhenAny) silently respawned acceptors in a tight spin with no
+// diagnostic at all. The loop must log the fault loudly (and back off) while
+// still shutting down cleanly on cancellation.
+//
+// Touches Logging.logLevel + Console.Error → joins the LogGlobal serialized
+// collection (see TestHelpers).
+[<Collection(LogGlobalCollectionName)>]
+type AcceptLoopFaultTests() =
+
+    [<Fact(Timeout = 20000)>]
+    member _.``accept loop logs pipe-bind failures instead of swallowing them``() =
+        let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+        // Long enough that the socket path exceeds the 104-char macOS limit
+        // (and Linux's 108) once the temp-dir prefix is prepended.
+        let pipeName = String.replicate 200 "x"
+
+        let original = FsHotWatch.Logging.logLevel
+        let sb = StringBuilder()
+        let writer = new IO.StringWriter(sb)
+        let prevErr = Console.Error
+        use cts = new CancellationTokenSource()
+
+        try
+            Console.SetError(writer)
+            FsHotWatch.Logging.setLogLevel FsHotWatch.Logging.LogLevel.Error
+
+            let serverTask =
+                Async.StartAsTask(IpcServer.start pipeName (defaultRpcConfig host) cts)
+
+            // The bind failure is persistent: the loop must observe the faulted
+            // acceptor and log it (old code: nothing is ever logged).
+            waitUntil
+                (fun () ->
+                    writer.Flush()
+                    sb.ToString().Contains("accept task faulted"))
+                10000
+
+            cts.Cancel()
+
+            // Loud-but-alive: the fault must not have killed the loop before
+            // cancellation, and cancellation must still shut it down cleanly.
+            let exited =
+                try
+                    serverTask.Wait(TimeSpan.FromSeconds(5.0))
+                with :? AggregateException ->
+                    serverTask.IsCompleted
+
+            writer.Flush()
+            let output = sb.ToString()
+            test <@ output.Contains("accept task faulted") @>
+            test <@ exited @>
+        finally
+            cts.Cancel()
+            Console.SetError(prevErr)
+            FsHotWatch.Logging.setLogLevel original
