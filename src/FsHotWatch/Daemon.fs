@@ -580,6 +580,12 @@ type internal BatchContext =
         DaemonCt: CancellationToken ref
         FcsSuppressedCodes: Set<int>
         ExcludePatterns: string list
+        /// Per-daemon content-dedup tracker. Scoped per instance so a hash
+        /// written by one daemon never suppresses a genuine first-observation
+        /// change event in another daemon sharing the process (keys are absolute
+        /// paths, so a stale global entry would collide exactly). See
+        /// `ContentDedup.Tracker`.
+        ContentTracker: ContentDedup.Tracker
         /// Monotonic counter bumped per `InSessionBatch` `BatchChecked` emitted
         /// from `processBatch`. Per-trigger generation lets subscribers dedup
         /// "latest in-session cohort" without colliding with scan generations
@@ -635,7 +641,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
             filteredSourceFiles
             |> List.rev
             |> List.filter (fun f ->
-                let changed = ContentDedup.hasContentChanged f
+                let changed = ctx.ContentTracker.HasContentChanged f
 
                 if not changed then
                     Logging.debug "daemon" $"content unchanged: %s{f}"
@@ -646,7 +652,7 @@ let internal processBatch (ctx: BatchContext) (changes: FileChangeKind list) (su
             projFiles
             |> List.distinct
             |> List.filter (fun f ->
-                let changed = ContentDedup.hasContentChanged f
+                let changed = ctx.ContentTracker.HasContentChanged f
 
                 if not changed then
                     Logging.debug "daemon" $"content unchanged: %s{f}"
@@ -1863,6 +1869,7 @@ module Daemon =
                   DaemonCt = daemonCtRef
                   FcsSuppressedCodes = fcsSuppressedCodes
                   ExcludePatterns = excludePatterns
+                  ContentTracker = ContentDedup.Tracker()
                   InSessionBatchGen = ref 0L
                   DepsGate =
                     if isNull (box checker) then
