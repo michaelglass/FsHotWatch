@@ -183,8 +183,8 @@ handler files. Extensions let you teach TestPrune about these:
 ```fsharp
 type ITestPruneExtension =
     abstract Name: string
-    abstract FindAffectedTests:
-        db: Database -> changedFiles: string list -> repoRoot: string -> AffectedTest list
+    abstract AnalyzeEdges:
+        symbolStore: SymbolStore -> changedFiles: string list -> repoRoot: string -> Dependency list
 ```
 
 [`TestPrune.Falco`](src/TestPrune.Falco/) is an extension for Falco
