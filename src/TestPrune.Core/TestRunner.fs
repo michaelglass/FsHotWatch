@@ -3,6 +3,7 @@ module TestPrune.TestRunner
 open System
 open System.Diagnostics
 open System.IO
+open System.Threading.Tasks
 
 /// Result of running a test process, with stdout and stderr kept separate.
 type TestResult =
@@ -22,6 +23,12 @@ let findTestDll (projectPath: string) : string =
     let projName = Path.GetFileNameWithoutExtension(projectPath)
     Path.Combine(projDir, "bin", "Debug", defaultTfm, $"%s{projName}.dll")
 
+/// Unwrap a completed redirected-output read. Internal (not private) so the
+/// faulted-task path can be unit-tested: a faulted task must surface its
+/// ORIGINAL exception (e.g. IOException), not the AggregateException wrapper
+/// that `.Result` would rethrow.
+let internal awaitOutput (t: Task<string>) : string = t.GetAwaiter().GetResult()
+
 let private runProcess (fileName: string) (arguments: string) : TestResult =
     let psi = ProcessStartInfo(fileName, arguments)
     psi.RedirectStandardOutput <- true
@@ -37,8 +44,8 @@ let private runProcess (fileName: string) (arguments: string) : TestResult =
     proc.WaitForExit()
     sw.Stop()
 
-    let stdout = stdoutTask.Result
-    let stderr = stderrTask.Result
+    let stdout = awaitOutput stdoutTask
+    let stderr = awaitOutput stderrTask
 
     eprintfn $"[%s{fileName} %s{arguments}] \u2192 exit %d{proc.ExitCode} in %.1f{sw.Elapsed.TotalSeconds}s"
 

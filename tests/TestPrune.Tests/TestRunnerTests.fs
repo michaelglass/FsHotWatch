@@ -2,6 +2,7 @@ module TestPrune.Tests.TestRunnerTests
 
 open System
 open System.IO
+open System.Threading.Tasks
 open Xunit
 open Swensen.Unquote
 open TestPrune.TestRunner
@@ -108,6 +109,21 @@ module ``discoverTestProjects`` =
         withTempDir (fun root ->
             let result = discoverTestProjects root
             test <@ result |> List.isEmpty @>)
+
+module ``awaitOutput`` =
+
+    [<Fact>]
+    let ``returns the value of a completed task`` () =
+        test <@ awaitOutput (Task.FromResult "captured output") = "captured output" @>
+
+    // Regression: unwrapping a faulted output-read with .Result rethrows
+    // AggregateException, masking the real IO failure from callers and logs.
+    // The original exception type must surface unchanged.
+    [<Fact>]
+    let ``faulted task surfaces the original exception, not AggregateException`` () =
+        let faulted = Task.FromException<string>(IOException "pipe broke")
+
+        raises<IOException> <@ awaitOutput faulted @>
 
 module ``buildFilterArgs`` =
 
