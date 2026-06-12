@@ -1156,3 +1156,66 @@ let ``resolveAffectedProjects dedups .fsproj and its assets.json to one project`
     match FsHotWatch.Daemon.resolveAffectedProjects known changed with
     | Some [ _ ] -> ()
     | other -> Assert.Fail($"expected a single deduped project, got %A{other}")
+
+// === Item 4: fsproj fingerprint vs discovery roots ===
+//
+// Reviewer claim (REFUTED): "repos with fsproj outside src/+tests/ get
+// cold-scan fingerprint misses → full MSBuild re-evaluation every scan."
+// The fingerprint is computed over the SAME discovery roots that
+// discoverAndRegisterProjects enumerates, so a project under examples/ is
+// invisible to both — the fingerprint is stable across scans and performScan's
+// `currentFingerprint <> state.LastFingerprint` guard correctly skips
+// re-evaluation. This test pins that stability.
+[<Fact(Timeout = 15000)>]
+let ``fsproj fingerprint is stable across scans when projects exist outside discovery roots`` () =
+    withTempDir "fingerprint-stability" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src", "A")
+        let examplesDir = Path.Combine(tmpDir, "examples", "B")
+        Directory.CreateDirectory(srcDir) |> ignore
+        Directory.CreateDirectory(examplesDir) |> ignore
+        File.WriteAllText(Path.Combine(srcDir, "A.fsproj"), "<Project />")
+        File.WriteAllText(Path.Combine(examplesDir, "B.fsproj"), "<Project />")
+
+        let fp1 = FsHotWatch.Daemon.fingerprintFsprojFiles tmpDir []
+        let fp2 = FsHotWatch.Daemon.fingerprintFsprojFiles tmpDir []
+
+        // Stable: a second scan over an unchanged repo sees the identical
+        // fingerprint, so MSBuild re-evaluation is skipped (not "every scan").
+        test <@ fp1 = fp2 @>
+        // The in-roots project is fingerprinted...
+        test <@ fp1 |> Set.exists (fun (p, _) -> p.EndsWith("A.fsproj")) @>
+        // ...and the out-of-roots project is invisible to the fingerprint,
+        // exactly as it is invisible to discovery (consistent, not a miss).
+        test <@ fp1 |> Set.forall (fun (p, _) -> not (p.Contains("examples"))) @>)
+
+// Real divergence found while characterizing the (refuted) claim above: the
+// fingerprint used only the generated-path obj/bin filter while discovery
+// applies the user's `.fshw.json` exclude patterns. A user-excluded fsproj was
+// therefore fingerprinted, so editing it churned the fingerprint and triggered
+// a spurious full MSBuild re-discovery of a project that discovery would never
+// register. The fingerprint now shares discovery's exclude semantics.
+[<Fact(Timeout = 15000)>]
+let ``fsproj fingerprint applies user exclude patterns like discovery does`` () =
+    withTempDir "fingerprint-excludes" (fun tmpDir ->
+        let srcDir = Path.Combine(tmpDir, "src", "A")
+        let vendorDir = Path.Combine(tmpDir, "src", "Vendor")
+        Directory.CreateDirectory(srcDir) |> ignore
+        Directory.CreateDirectory(vendorDir) |> ignore
+        File.WriteAllText(Path.Combine(srcDir, "A.fsproj"), "<Project />")
+        File.WriteAllText(Path.Combine(vendorDir, "V.fsproj"), "<Project />")
+
+        let excludes = [ "src/Vendor/" ]
+        let fp = FsHotWatch.Daemon.fingerprintFsprojFiles tmpDir excludes
+
+        // The registered project is fingerprinted; the excluded one is not, so
+        // editing it cannot trigger a spurious re-discovery.
+        test <@ fp |> Set.exists (fun (p, _) -> p.EndsWith("A.fsproj")) @>
+        test <@ fp |> Set.forall (fun (p, _) -> not (p.Contains("Vendor"))) @>
+
+        // And the fingerprint must still react to edits of NON-excluded
+        // projects (mtime is part of the key).
+        let before = fp
+        System.Threading.Thread.Sleep(20)
+        File.SetLastWriteTimeUtc(Path.Combine(srcDir, "A.fsproj"), DateTime.UtcNow)
+        let after = FsHotWatch.Daemon.fingerprintFsprojFiles tmpDir excludes
+        test <@ before <> after @>)
