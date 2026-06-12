@@ -662,6 +662,51 @@ let invokeOnChangeWith (logError: string -> unit) (onChange: string -> unit) (re
     with ex ->
         logError $"onChange callback failed (config edit not propagated): %s{ex.ToString()}"
 
+/// Debounce decision for the config watcher: true when `now` is more than
+/// `window` past the previous accepted fire (and records it as the new last
+/// fire). Extracted (like `invokeOnChangeWith` above) so BOTH arms are
+/// unit-testable with an injected clock: the suppressed arm only executes in
+/// production when the OS double-fires events within the window, which is
+/// nondeterministic and used to coin-flip this file's branch coverage in the
+/// ratchet.
+let internal debounceShouldFire (gate: obj) (lastFire: DateTime ref) (window: TimeSpan) (now: DateTime) : bool =
+    lock gate (fun () ->
+        if now - lastFire.Value > window then
+            lastFire.Value <- now
+            true
+        else
+            false)
+
+/// Compute the human-readable reason for a config-file change by re-parsing
+/// the file: distinguishes "config changed" from "config invalid". Extracted
+/// for the same deterministic-coverage reason as `debounceShouldFire` — both
+/// arms are pinned by direct unit tests instead of depending on which FSW
+/// events the OS happens to deliver.
+let internal configChangeReason (configPath: string) (defaults: DaemonConfiguration) : string =
+    try
+        let _ = parseConfig (File.ReadAllText configPath) defaults
+        "config changed, stopping (restart to apply)"
+    with ex ->
+        $"config invalid, stopping: %s{ex.Message}"
+
+/// One config-watcher FS event: debounce, compute the reason, dispatch.
+/// `now` is injected so the debounce path is unit-testable; the FSW lambda in
+/// `watchConfigFile` passes `DateTime.UtcNow` and stays branchless (its line
+/// coverage is pinned by the RealWatchTests; all branches live here and in the
+/// helpers above, covered deterministically).
+let internal onConfigFsEvent
+    (gate: obj)
+    (lastFire: DateTime ref)
+    (window: TimeSpan)
+    (configPath: string)
+    (defaults: DaemonConfiguration)
+    (logError: string -> unit)
+    (onChange: string -> unit)
+    (now: DateTime)
+    : unit =
+    if debounceShouldFire gate lastFire window now then
+        invokeOnChangeWith logError onChange (configChangeReason configPath defaults)
+
 /// Watch `.fshw.json` for any write/rename/create and invoke the callback
 /// once with a human-readable reason. Re-parses the file to distinguish
 /// "config changed" from "config invalid, stopping".
@@ -685,27 +730,18 @@ let watchConfigFile (configPath: string) (onChange: string -> unit) : IDisposabl
     let defaults = defaultConfigFor dir
     let lastFire = ref DateTime.MinValue
     let gate = obj ()
+    let window = TimeSpan.FromMilliseconds(200.0)
 
     let handler (_: FileSystemEventArgs) =
-        let fire =
-            lock gate (fun () ->
-                let now = DateTime.UtcNow
-
-                if now - lastFire.Value > TimeSpan.FromMilliseconds(200.0) then
-                    lastFire.Value <- now
-                    true
-                else
-                    false)
-
-        if fire then
-            let reason =
-                try
-                    let _ = parseConfig (File.ReadAllText configPath) defaults
-                    "config changed, stopping (restart to apply)"
-                with ex ->
-                    $"config invalid, stopping: %s{ex.Message}"
-
-            invokeOnChangeWith (FsHotWatch.Logging.error "config-watcher") onChange reason
+        onConfigFsEvent
+            gate
+            lastFire
+            window
+            configPath
+            defaults
+            (FsHotWatch.Logging.error "config-watcher")
+            onChange
+            DateTime.UtcNow
 
     watcher.Changed.Add(handler)
     watcher.Created.Add(handler)
