@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.28 - 2026-06-12
+
 - fix: `ContentDedup` is now scoped per daemon instance, so two daemons sharing a
   machine can no longer poison each other's content-hash cache (a change seen by one
   daemon was wrongly deduplicated as "already seen" by another).

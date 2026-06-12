@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.30 - 2026-06-12
+
 - chore: refresh bundled dependencies — CommandTree 0.6.3, TestPrune.Core 4.2.2,
   TestPrune.Falco 2.0.2 — and rebundle the updated FsHotWatch core plugins.
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.16 - 2026-06-12
+
 - chore: float `FSharp.Compiler.Service` via a `43.*` wildcard and rebuild to bundle the
   refreshed transitive dependencies.
 

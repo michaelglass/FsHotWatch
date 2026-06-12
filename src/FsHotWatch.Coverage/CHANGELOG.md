@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.13 - 2026-06-12
+
 - chore: bump `CoverageRatchet.Core` to 0.1.0-alpha.3.
 
 ## 0.7.0-alpha.12 - 2026-06-08
