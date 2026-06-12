@@ -5,25 +5,50 @@ open System.Collections.Concurrent
 open System.IO
 open System.Security.Cryptography
 
-/// Track file content hashes to skip watcher events where mtime changed but content didn't.
-let private fileHashes = ConcurrentDictionary<string, byte[]>()
-
-/// Returns true if the file content actually changed since last check.
-/// Updates the stored hash on change. Returns true for new/deleted files.
-let hasContentChanged (path: string) =
+/// Compute the change verdict for `path` against `store`, mutating `store`.
+/// Extracted so both the per-instance `Tracker` and the process-global default
+/// share one implementation. Returns true if the content actually changed since
+/// the store last saw it (and true for new/deleted/unreadable files).
+let private evaluate (store: ConcurrentDictionary<string, byte[]>) (path: string) =
     try
         if not (File.Exists(path)) then
-            fileHashes.TryRemove(path) |> ignore
+            store.TryRemove(path) |> ignore
             true
         else
             let content = File.ReadAllBytes(path)
             let hash = SHA256.HashData(content)
 
-            match fileHashes.TryGetValue(path) with
+            match store.TryGetValue(path) with
             | true, previous when ReadOnlySpan(previous).SequenceEqual(ReadOnlySpan(hash)) -> false
             | _ ->
-                fileHashes[path] <- hash
+                store[path] <- hash
                 true
     with
     | :? IOException -> true
     | :? UnauthorizedAccessException -> true
+
+/// Per-daemon content-hash store. Scoped per instance (like
+/// `ProcessRegistry.Registry`) so a hash written by one daemon never suppresses
+/// a genuine first-observation change event in another daemon sharing the same
+/// process. The dictionary key is the absolute file path, so a stale entry from
+/// daemon A would otherwise collide exactly with daemon B's first read of the
+/// same path.
+type Tracker() =
+    let fileHashes = ConcurrentDictionary<string, byte[]>()
+
+    /// Returns true if the file content actually changed since this tracker last
+    /// checked it. Updates the stored hash on change. Returns true for
+    /// new/deleted files.
+    member _.HasContentChanged(path: string) = evaluate fileHashes path
+
+/// Process-global fallback tracker backing the module-level `hasContentChanged`.
+/// Daemons own their own per-instance `Tracker` (threaded through the daemon's
+/// batch context); this default exists only for direct callers (e.g. unit
+/// tests) that invoke the module function without a daemon.
+let private defaultTracker = Tracker()
+
+/// Returns true if the file content actually changed since the process-global
+/// default tracker last checked it. Returns true for new/deleted files.
+/// Daemons do NOT use this path — they hold a per-instance `Tracker` so cross-
+/// daemon hashes never collide.
+let hasContentChanged (path: string) = defaultTracker.HasContentChanged(path)

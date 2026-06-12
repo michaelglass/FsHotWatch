@@ -336,3 +336,46 @@ let ``FileWatcher with literal filename pattern fires only for matching file`` (
         probeLoop (fun n -> File.WriteAllText(configPath, $"{{\"probe\": {n}}}")) hasMatch 30000
 
         test <@ hasMatch () @>)
+
+// === Cross-instance dedup isolation (ContentDedup.Tracker) ===
+// The content-dedup hash store must be scoped per daemon instance, not shared
+// process-globally. Two daemons in one process (e.g. parallel test daemons, or
+// a daemon restarted over the same repo root within a long-lived process) watch
+// overlapping absolute paths; a hash written by daemon A must NOT suppress a
+// genuine first-observation change event in daemon B. The keys are absolute
+// paths, so the collision is exact: same path, two trackers.
+
+[<Fact(Timeout = 15000)>]
+let ``Tracker first observation reports changed even when another tracker already saw the file`` () =
+    let tmpFile =
+        Path.Combine(Path.GetTempPath(), $"fshotwatch-xinstance-{Guid.NewGuid():N}.fs")
+
+    try
+        File.WriteAllText(tmpFile, "let x = 1")
+
+        let trackerA = Tracker()
+        let trackerB = Tracker()
+
+        // Daemon A observes the file first and stores its hash.
+        test <@ trackerA.HasContentChanged tmpFile = true @>
+        // Daemon B's FIRST EVER observation of the same path must still be
+        // reported as changed — B has never seen this file. With a shared
+        // global store this returns false (the genuine event is suppressed).
+        test <@ trackerB.HasContentChanged tmpFile = true @>
+    finally
+        File.Delete(tmpFile)
+
+[<Fact(Timeout = 15000)>]
+let ``Tracker tracks its own state independently`` () =
+    let tmpFile =
+        Path.Combine(Path.GetTempPath(), $"fshotwatch-instance-state-{Guid.NewGuid():N}.fs")
+
+    try
+        File.WriteAllText(tmpFile, "let x = 1")
+        let tracker = Tracker()
+        test <@ tracker.HasContentChanged tmpFile = true @> // first: stores hash
+        test <@ tracker.HasContentChanged tmpFile = false @> // unchanged
+        File.WriteAllText(tmpFile, "let x = 2")
+        test <@ tracker.HasContentChanged tmpFile = true @> // changed
+    finally
+        File.Delete(tmpFile)
