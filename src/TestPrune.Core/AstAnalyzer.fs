@@ -542,11 +542,13 @@ let private stripComments (flat: string) : string =
     let mutable inLineComment = false
     let mutable inString = false
     let mutable inVerbatimString = false // @"..."
+    let mutable inTripleString = false // """..."""
     let mutable i = 0
 
     while i < flat.Length do
         let c = flat[i]
         let next = if i + 1 < flat.Length then flat[i + 1] else '\000'
+        let next2 = if i + 2 < flat.Length then flat[i + 2] else '\000'
 
         if inLineComment then
             if c = '\n' then
@@ -562,6 +564,16 @@ let private stripComments (flat: string) : string =
                 i <- i + 1
             elif c = '\n' then
                 result.Append('\n') |> ignore
+        elif inTripleString then
+            // Inside """...""": everything is literal (no escapes, no comments) until
+            // the closing triple quote. Emit all three closing quotes together so a
+            // single trailing `"` inside the content can't be mistaken for the close.
+            if c = '"' && next = '"' && next2 = '"' then
+                result.Append("\"\"\"") |> ignore
+                inTripleString <- false
+                i <- i + 2
+            else
+                result.Append(c) |> ignore
         elif inVerbatimString then
             result.Append(c) |> ignore
 
@@ -590,6 +602,11 @@ let private stripComments (flat: string) : string =
             result.Append(c) |> ignore
             result.Append(next) |> ignore
             i <- i + 1
+        elif c = '"' && next = '"' && next2 = '"' then
+            // Triple-quoted string opener. Checked before the single `"` branch.
+            inTripleString <- true
+            result.Append("\"\"\"") |> ignore
+            i <- i + 2
         elif c = '"' then
             inString <- true
             result.Append(c) |> ignore

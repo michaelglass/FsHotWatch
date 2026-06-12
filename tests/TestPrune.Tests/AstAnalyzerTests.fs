@@ -1925,6 +1925,63 @@ let myFunc () =
         // Just verify it produces a non-empty hash without crashing
         test <@ sym.ContentHash.Length > 0 @>
 
+    // Regression: stripComments must treat `//` and `(*` inside a triple-quoted
+    // string as literal content, not as comments. Otherwise a real change to the
+    // post-`//` portion of a string literal is silently masked (same hash), and the
+    // affected symbol's tests are not re-selected. The source is built with escaped
+    // quotes because the surrounding test strings are themselves triple-quoted.
+    [<Fact>]
+    let ``triple-quoted string content after // affects content hash`` () =
+        let hashOf src =
+            (analyze src).Symbols
+            |> List.find (fun s -> s.FullName.EndsWith("myFunc", StringComparison.Ordinal))
+            |> _.ContentHash
+
+        let mk word =
+            "module M\n\nlet myFunc () =\n    let s = \"\"\"see // "
+            + word
+            + " not a comment\"\"\"\n    s\n"
+
+        // Same code apart from the text after `//` inside the literal; the literal is
+        // real content, so the hashes must differ.
+        test <@ hashOf (mk "alpha") <> hashOf (mk "beta") @>
+
+    [<Fact>]
+    let ``triple-quoted string containing block-comment opener does not swallow code`` () =
+        let hashOf src =
+            (analyze src).Symbols
+            |> List.find (fun s -> s.FullName.EndsWith("myFunc", StringComparison.Ordinal))
+            |> _.ContentHash
+
+        let mk binding =
+            "module M\n\nlet myFunc () =\n    let s = \"\"\"has (* opener\"\"\"\n    let "
+            + binding
+            + "\n    s, x\n"
+
+        // If `(*` inside the literal opened a block comment, the trailing `let` line
+        // would be stripped and both variants would hash identically.
+        test <@ hashOf (mk "x = 1") <> hashOf (mk "x = 999") @>
+
+    // The naive single-quote toggle desyncs when a triple-quoted string contains an
+    // ODD number of embedded `"`: after the closing `"""` the walk is still "inString",
+    // so a real `//` comment on a later line is preserved instead of stripped. Changing
+    // ONLY that comment then changes the content hash → a phantom "changed" signal.
+    [<Fact>]
+    let ``odd embedded quote in triple-quoted string still strips later real comment`` () =
+        let hashOf src =
+            (analyze src).Symbols
+            |> List.find (fun s -> s.FullName.EndsWith("myFunc", StringComparison.Ordinal))
+            |> _.ContentHash
+
+        let mk comment =
+            "module M\n\nlet myFunc () =\n    let s = \"\"\"3\" inches\"\"\" // "
+            + comment
+            + "\n    s\n"
+
+        // Only the trailing real comment differs; it must be stripped, so the hash is
+        // stable.
+        test <@ hashOf (mk "alpha comment") = hashOf (mk "beta comment") @>
+
 module ``Backtick-quoted identifiers`` =
 
     [<Fact>]
