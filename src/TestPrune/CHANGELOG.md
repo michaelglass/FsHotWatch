@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: `test-prune` impact analysis no longer mis-attributes or drops dependency
+  edges when two bindings share a short name across sibling nested modules in one
+  file, which could silently skip affected tests (via TestPrune.Core).
+- fix: comment-only edits next to triple-quoted strings containing embedded `"` no
+  longer produce phantom "changed" signals in impact analysis (via TestPrune.Core's
+  `stripComments` fix).
+- fix: failures reading a test process's redirected output now surface the original
+  IO exception instead of an `AggregateException` wrapper (via TestPrune.Core).
+
 ## 4.2.1 - 2026-06-07
 
 - chore: release alongside TestPrune.Core (public `Database.SchemaVersion` for external
