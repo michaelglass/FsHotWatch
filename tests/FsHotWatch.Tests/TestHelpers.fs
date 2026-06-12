@@ -451,7 +451,18 @@ let withSeededTestEnv (prefix: string) (relPath: string) (source: string) (body:
     withTempDir prefix (fun tmpDir ->
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let filePath = Path.Combine(tmpDir, relPath)
-        let checker = sharedChecker.Value
+
+        // Fresh checker per call (NOT sharedChecker): these envs drive a full
+        // script-closure resolution + analyzeSource + CheckPipeline through the
+        // checker while ~5 other test classes hit the shared instance
+        // concurrently, so shared FCS caches (keyed by options/paths) could
+        // bleed state across tests nondeterministically. Measured cost
+        // (2026-06-12): ~3s per env for the un-amortized framework/script
+        // resolution — the calling tests went 7s → 17s as a sequential class,
+        // ~+10s (~1.1x) on the full suite, far under the 2x bar set for this
+        // isolation change.
+        let checker =
+            FSharpChecker.Create(projectCacheSize = 200, keepAssemblyContents = true, keepAllBackgroundResolutions = true)
 
         File.WriteAllText(filePath, source)
         let sourceText = FSharp.Compiler.Text.SourceText.ofString source
