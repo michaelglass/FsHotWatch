@@ -7,7 +7,10 @@
 
     <ItemGroup>
         <PackageVersion Include="FSharp.Analyzers.SDK" Version="0.36.0" />
-        <PackageVersion Include="FSharp.Core" Version="10.1.*" />
+        <!-- FCS declares an EXACT FSharp.Core dependency (e.g. 43.12.204 requires = 10.1.204),
+             so this must stay an exact pin matching the resolved FCS; a 10.1.* float resolves
+             higher and fails restore with NU1608. Update it whenever FCS floats to a new version. -->
+        <PackageVersion Include="FSharp.Core" Version="10.1.204" />
         <PackageVersion Include="FSharp.Compiler.Service" Version="43.*" />
         <PackageVersion Include="Ionide.ProjInfo" Version="0.74.2" />
         <PackageVersion Include="Ionide.ProjInfo.FCS" Version="0.74.2" />
