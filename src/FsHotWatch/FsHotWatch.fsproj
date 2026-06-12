@@ -87,6 +87,9 @@
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
     <PackageReference Include="FSharp.Data.Adaptive" Version="1.2.26" />
     <PackageReference Include="StreamJsonRpc" Version="2.24.92" />
+    <!-- Direct ref lifts StreamJsonRpc's transitive MessagePack above GHSA-hv8m-jj95-wg3x
+         (LZ4 decompression AccessViolation; patched in 2.5.301 on the 2.x line). -->
+    <PackageReference Include="MessagePack" Version="2.5.301" />
     <PackageReference Include="FSharp.Compiler.Service" Version="43.*" />
     <PackageReference Include="Ionide.ProjInfo" Version="0.74.2" />
     <PackageReference Include="Ionide.ProjInfo.FCS" Version="0.74.2" />
