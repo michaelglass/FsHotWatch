@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- fix: the AST impact analyzer preserves dependency edges when two bindings share a
+  short name across sibling nested modules (e.g. `let f` in `module A` and `module B`
+  in one file). Previously the by-name range maps collapsed to last-write-wins, so a
+  use inside one binding could resolve to the other binding's symbol — mis-attributing
+  or dropping its dependency edges and silently failing to select affected tests (a
+  soundness violation). Each name now maps to a list of ranges and is disambiguated by
+  the range containing the use.
+- fix: `stripComments` correctly handles triple-quoted strings. A triple-quoted string
+  containing an odd number of embedded `"` (e.g. `"""3\" inches"""`) previously desynced
+  the single-quote string tracker, letting a trailing `//` comment leak into the content
+  hash and producing a phantom "changed" signal on comment-only edits. Triple-quoted
+  content is now treated as literal until its closing `"""`.
+- fix: failures reading a test process's redirected stdout/stderr surface the original
+  IO exception instead of an `AggregateException` wrapper, so the real error type is
+  preserved.
+
 ## 4.2.1 - 2026-06-07
 
 - feat: `Database.SchemaVersion` is now public. External read-only consumers (e.g.
