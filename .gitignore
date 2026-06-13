@@ -52,9 +52,9 @@ coverage/
 *.coverage
 *.coveragexml
 # `*.coverage`'s bare glob also matches the "FsHotWatch.Coverage" path component,
-# which would ignore the real source/docs project dirs — re-include them.
+# which would ignore the real source/docs project dirs — re-include the dir
+# (bin/ and obj/ inside it still stay ignored).
 !**/FsHotWatch.Coverage/
-!**/FsHotWatch.Coverage/**
 
 # OS files
 .DS_Store
