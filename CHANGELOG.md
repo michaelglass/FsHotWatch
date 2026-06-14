@@ -4,6 +4,15 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+## Released — the `alpha.9` → `alpha.28` line (2026-04-22 → 2026-06-13)
+
+_These narratives are all shipped. This root file is a human-readable summary that fell
+behind around `core-v0.8.0-alpha.8` — everything below was released across the alpha.9–alpha.28
+series but never got closed out of `Unreleased`. For the precise per-version, per-package history
+(the source of truth that drives the release tags) see each `src/<package>/CHANGELOG.md`.
+Latest released: `core-v0.8.0-alpha.28` · `cli-v0.8.0-alpha.30` · `testprune-v0.7.0-alpha.24` ·
+`analyzers-v0.7.0-alpha.16` · `coverage-v0.7.0-alpha.13`._
+
 ### The test gate can no longer go green without running the tests
 
 `fshw check` could report "No errors" while executing zero tests: TestPrune's
