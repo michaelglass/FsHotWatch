@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.12 - 2026-06-16
+
 - fix: a matched file-command no longer runs twice on its first trigger. The
   plugin's cache key returned `None` until the command had run once in-session,
   but the framework treats a `None` key as uncacheable — so the first run was
