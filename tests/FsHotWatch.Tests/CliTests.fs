@@ -174,8 +174,7 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
                            Extensions = []
                            Projects = [ makeProj "ProjA" true; makeProj "ProjB" true; makeProj "ProjOptOut" false ]
                            CoverageDir = covDir
-                           DependsOn = []
-                           SeedTestImpactFrom = None |} }
+                           DependsOn = [] |} }
 
         let deleted = FsHotWatch.Cli.Program.refreshCoverageBaseline tmp config
         // 4 files total: 2 projects × (baseline + partial)

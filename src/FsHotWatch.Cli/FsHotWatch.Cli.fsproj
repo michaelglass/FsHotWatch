@@ -42,7 +42,6 @@
     </ItemGroup>
 
     <ItemGroup>
-        <Compile Include="SeedTestImpact.fs" />
         <Compile Include="DaemonConfig.fs" />
         <Compile Include="InitConfig.fs" />
         <Compile Include="RunOnceOutput.fs" />
