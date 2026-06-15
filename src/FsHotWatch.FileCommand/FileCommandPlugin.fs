@@ -185,12 +185,6 @@ let create
         | Some s -> TimeSpan.FromSeconds(float s)
         | None -> System.Threading.Timeout.InfiniteTimeSpan
 
-    // Cold-start guard: until the command has actually executed once in this
-    // daemon session, CacheKey returns None so a stale on-disk cache entry from
-    // a prior session can't pre-empt the first fire. Mirrors TestPrunePlugin's
-    // hadPriorResultsRef pattern. Flipped to true inside runCommand below.
-    let mutable hasFiredInSessionRef = false
-
     /// Run the command and return the resulting CommandResult. Callers merge
     /// this into the full plugin state so runCommand stays agnostic of
     /// trigger-specific fields.
@@ -203,10 +197,6 @@ let create
 
         async {
             ctx.ReportStatus(Running(since = DateTime.UtcNow))
-            // Mark before the subtask so CacheKey starts returning Some as soon as
-            // the command begins; in-session re-triggers at the same commit cache-hit
-            // and skip re-running. Cold-start (false) bypasses any prior-session entry.
-            Volatile.Write(&hasFiredInSessionRef, true)
 
             return!
                 PluginCtxHelpers.withSubtask
@@ -355,18 +345,20 @@ let create
         // same inputs hash the same regardless of working-copy state.
         // Recomputed per event so mid-session edits to a referenced config
         // file invalidate the cache.
+        //
+        // The key is always `Some` for a trigger event (matching BuildPlugin's
+        // always-content-addressed key). An earlier "cold-start bypass" returned
+        // `None` until the command had run once in-session — but the framework
+        // treats a `None` key as *uncacheable* (it neither replays NOR stores),
+        // so the FIRST trigger's result was never stored. The result: the SECOND
+        // trigger (the first with a real key) found nothing cached and re-ran the
+        // command — a double-execution of a side-effecting command. Returning the
+        // content key from the first event lets that run store its result, so the
+        // next identical trigger replays instead of re-running.
         let cacheKey (event: PluginEvent<unit>) : ContentHash option =
             match event with
             | Custom _ -> None
-            | _ ->
-                if Volatile.Read(&hasFiredInSessionRef) then
-                    // Cold-start bypass: return None until the command has actually
-                    // run once in this daemon session. Without this, an on-disk entry
-                    // from a prior session pre-empts the first replay-emitted event
-                    // and the command never executes despite its trigger firing.
-                    Some(ContentHash.create (computeArgsSalt repoRoot command args))
-                else
-                    None
+            | _ -> Some(ContentHash.create (computeArgsSalt repoRoot command args))
 
         Some cacheKey
       Teardown = None }

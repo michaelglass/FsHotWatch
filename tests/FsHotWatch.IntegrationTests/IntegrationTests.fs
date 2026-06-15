@@ -302,7 +302,16 @@ let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> stri
 
         let host = PluginHost.create checker repoRoot
 
-        let analyzers = AnalyzersPlugin.create [ analyzerPath ] None DiagnosticSeverity.Hint
+        // failOnSeverity = Error so the analyzer's RAW severity survives to the
+        // ledger. With the default Hint threshold, `promoteIfFailing` rewrites
+        // every sub-error finding (incl. this wildcard Warning) to Error with a
+        // `[warning]` message prefix — correct production behaviour (it fails the
+        // build), but it masks the raw severity these tests assert on. Error is
+        // the highest threshold, so promotion never fires and a Warning stays a
+        // Warning. The promotion path itself is covered by the dedicated
+        // `promoteIfFailing` unit tests in AnalyzersPluginTests.fs.
+        let analyzers =
+            AnalyzersPlugin.create [ analyzerPath ] None DiagnosticSeverity.Error
 
         host.RegisterHandler(analyzers)
 
@@ -1208,7 +1217,14 @@ let ``rerun re-executes a cached FileCommandPlugin`` () =
         host.RegisterFileCommandPattern(pluginName, parsedPattern)
 
         // First run: matching file event → plugin runs, sentinel has 1 line.
+        // Wait on the observable SIDE EFFECT, not on `waitForStatusSettled`:
+        // "settled" means "status is not Running", which is also true in the
+        // window before the freshly-dispatched event has flipped the plugin to
+        // Running — so under load the wait can return on the stale/None status
+        // before the command has written the sentinel. Waiting for the file
+        // itself removes that race.
         host.EmitFileChanged(SourceChanged [ "coverage.ratchet.json" ])
+        waitUntil (fun () -> File.Exists(sentinel) && File.ReadAllLines(sentinel).Length >= 1) 5000
         waitForStatusSettled host pluginName 5000
         test <@ File.Exists(sentinel) @>
         test <@ File.ReadAllLines(sentinel).Length = 1 @>
