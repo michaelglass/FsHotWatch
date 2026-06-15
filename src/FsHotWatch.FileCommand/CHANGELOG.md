@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a matched file-command no longer runs twice on its first trigger. The
+  plugin's cache key returned `None` until the command had run once in-session,
+  but the framework treats a `None` key as uncacheable — so the first run was
+  never stored and an identical second trigger re-ran the side-effecting command.
+  The key is now always content-addressed (matching BuildPlugin), so the command
+  runs exactly once per distinct change.
+
 ## 0.7.0-alpha.11 - 2026-06-09
 
 - chore: refresh transitive dependencies (CommandTree 0.5.1, CoverageRatchet.Core 0.1.0-alpha.2, TestPrune.Core 4.0.2, FSharpLintAnalyzerShim 0.3.0-alpha.3 via the lint shim).
