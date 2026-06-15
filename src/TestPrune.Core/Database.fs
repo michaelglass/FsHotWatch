@@ -652,6 +652,14 @@ type Database(dbPath: string) =
                       AND parent.kind = @typeKind
                 ),
                 transitive_deps AS (
+                    -- Seed inclusion: the changed/expanded symbols are themselves
+                    -- in the affected set, not only their dependents. A changed
+                    -- test method has no incoming edges, so without this anchor it
+                    -- selected zero tests — diverging from the in-memory reference
+                    -- store, whose `transitiveClosure` includes its seeds.
+                    -- (FsHotWatch ISSUE B: a fixed test stayed pinned red.)
+                    SELECT id AS from_symbol_id FROM expanded
+                    UNION
                     SELECT from_symbol_id FROM dependencies
                     WHERE to_symbol_id IN (SELECT id FROM expanded)
                     UNION

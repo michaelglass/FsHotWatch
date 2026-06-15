@@ -48,6 +48,15 @@ module ``InMemoryStore basics`` =
         let tests = store.QueryAffectedTests [ "NonExistent.func" ]
         test <@ tests |> List.isEmpty @>
 
+    // Both stores must agree on seed inclusion; this is the case where SQLite
+    // historically diverged (FsHotWatch ISSUE B). See Database.fs transitive_deps CTE.
+    [<Fact>]
+    let ``QueryAffectedTests selects a test whose own symbol changed`` () =
+        let store = fromAnalysisResults [ standardGraph ]
+        let tests = store.QueryAffectedTests [ "Tests.testA" ]
+        test <@ tests.Length = 1 @>
+        test <@ tests[0].TestMethod = "testA" @>
+
     [<Fact>]
     let ``GetSymbolsInFile returns empty for unknown file`` () =
         let store = fromAnalysisResults [ standardGraph ]

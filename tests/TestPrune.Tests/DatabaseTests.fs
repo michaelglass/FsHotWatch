@@ -207,6 +207,75 @@ module ``No dependency`` =
             let affected = db.QueryAffectedTests [ "Other.unrelated" ]
             test <@ affected |> List.isEmpty @>)
 
+module ``Test edits its own body`` =
+
+    // ROOT CAUSE of FsHotWatch ISSUE B: editing a test's OWN symbol must
+    // re-select it. The changed test is the seed, with no incoming edges, so
+    // the SQLite `transitive_deps` CTE (which seeded only dependents) omitted
+    // it — diverging from the in-memory store, which includes its seeds. The
+    // InMemoryStoreTests twin runs `standardGraph` through the same assertion.
+    [<Fact>]
+    let ``changing a test method's own symbol selects that test`` () =
+        withDb (fun db ->
+            db.RebuildProjects([ standardGraph ])
+
+            // The CHANGED symbol is the test method itself, not anything it
+            // depends on; it must still be selected for re-run.
+            let affected = db.QueryAffectedTests [ "Tests.testA" ]
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "testA" @>)
+
+    // A member-bodied test whose class is a Type: editing the member must
+    // select the test even though nothing depends on the member. (Exercises the
+    // aggregate-type lift path AND the seed-inclusion fix together.)
+    [<Fact>]
+    let ``changing a member test on a Type class selects that test`` () =
+        withDb (fun db ->
+            let result =
+                { Symbols =
+                    [ { FullName = "Tests.AdminDashboardTests"
+                        Kind = Type
+                        SourceFile = "tests/AdminDashboardTests.fs"
+                        LineStart = 1
+                        LineEnd = 20
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Tests.AdminDashboardTests.renders"
+                        Kind = Function
+                        SourceFile = "tests/AdminDashboardTests.fs"
+                        LineStart = 3
+                        LineEnd = 8
+                        ContentHash = ""
+                        IsExtern = false }
+                      { FullName = "Lib.dashboard"
+                        Kind = Function
+                        SourceFile = "src/Lib.fs"
+                        LineStart = 1
+                        LineEnd = 5
+                        ContentHash = ""
+                        IsExtern = false } ]
+                  Dependencies =
+                    [ { FromSymbol = "Tests.AdminDashboardTests.renders"
+                        ToSymbol = "Lib.dashboard"
+                        Kind = Calls
+                        Source = "core" } ]
+                  TestMethods =
+                    [ { SymbolFullName = "Tests.AdminDashboardTests.renders"
+                        TestProject = "AdminTests"
+                        TestClass = "AdminDashboardTests"
+                        TestMethod = "renders" } ]
+                  Attributes = []
+                  ParentLinks =
+                    [ { Child = "Tests.AdminDashboardTests.renders"
+                        Parent = "Tests.AdminDashboardTests" } ]
+                  Diagnostics = AnalysisDiagnostics.Zero }
+
+            db.RebuildProjects([ result ])
+
+            let affected = db.QueryAffectedTests [ "Tests.AdminDashboardTests.renders" ]
+            test <@ affected.Length = 1 @>
+            test <@ affected[0].TestMethod = "renders" @>)
+
 module ``RebuildProjects replaces old data`` =
 
     [<Fact>]

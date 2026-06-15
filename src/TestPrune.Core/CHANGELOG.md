@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: editing a test's own body now re-selects that test for impact analysis.
+  `Database.QueryAffectedTests` seeded its transitive closure only from symbols
+  that *depend on* the changed symbol, so when the changed symbol *was* the test
+  method (a node with no incoming edges), it returned no affected tests — the
+  edited test was never re-run and a prior failure stayed pinned red. The closure
+  now includes the changed symbols themselves, matching the in-memory reference
+  store (`InMemoryStore.QueryAffectedTests`), which already did.
+
 ## 4.2.2 - 2026-06-12
 
 - fix: the AST impact analyzer preserves dependency edges when two bindings share a
