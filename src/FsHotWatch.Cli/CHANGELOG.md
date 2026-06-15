@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.33 - 2026-06-16
+
 - fix: a directly-edited test now re-selects itself. Bundles TestPrune.Core
   4.2.3, so `fshw` re-runs a test you just edited instead of skipping it as
   unaffected and leaving a prior failure pinned red (FsHotWatch ISSUE B).
