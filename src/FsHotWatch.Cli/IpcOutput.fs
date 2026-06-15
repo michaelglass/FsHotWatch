@@ -213,11 +213,26 @@ let renderIpcResult
 [<Literal>]
 let MaxConvergeAttempts = 3
 
-/// Poll plugin statuses until all terminal, rendering live progress. Pure of the
-/// scan trigger — the caller decides whether/when to wait for a scan first.
-let private pollUntilTerminal
+/// Render live plugin-status progress until `isSettled` reports the host has
+/// reached its authoritative verdict. Pure of the scan trigger — the caller
+/// decides whether/when to wait for a scan first.
+///
+/// SOUNDNESS: the loop termination is `isSettled`, NOT a status-map predicate
+/// like `isAllTerminal`. `isAllTerminal` treats `Idle` as quiescent and never
+/// consults the host's inflight/busy state, so it concludes "settled" while a
+/// downstream plugin (test-prune) still has a `BuildCompleted` event queued in
+/// its mailbox (status observably `Idle`, handler not yet run) or while it is
+/// mid-run with a non-empty pending-verification queue. That produced false
+/// greens: `check` exited 0 having computed N affected tests BEFORE the
+/// test-prune run's verdict was captured. The authoritative settle is the
+/// daemon's `WaitForComplete` RPC (`waitForVerdict` → `requireVerdict=true`,
+/// which gates on `AnyPluginBusy` + generation advancement + quiescence), so
+/// `isSettled` is wired to that RPC's completion. The status reads here are for
+/// RENDERING ONLY and never decide the gate.
+let private pollUntilSettled
     (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
     (getStatus: unit -> string)
+    (isSettled: unit -> bool)
     : unit =
     let mutable prevLineCount = 0
     let mutable prevRendered = ""
@@ -226,7 +241,6 @@ let private pollUntilTerminal
     while not allDone do
         let statusJson = getStatus ()
         let parsed = parsePluginStatuses statusJson
-        let plain = statusOnly parsed
 
         if UI.isInteractive then
             let lines = renderStatuses parsed
@@ -241,7 +255,9 @@ let private pollUntilTerminal
                 prevLineCount <- List.length lines
                 prevRendered <- progress
 
-        allDone <- isAllTerminal plain
+        // Authoritative termination: the daemon's sound verdict, NOT the
+        // Idle-tolerant status map. See the soundness note above.
+        allDone <- isSettled ()
 
         if not allDone then
             Thread.Sleep(200)
@@ -260,6 +276,7 @@ let pollAndRender
     (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
     (noWarnFail: bool)
     (waitForScan: unit -> string)
+    (waitForComplete: unit -> string)
     (getStatus: unit -> string)
     (getErrors: unit -> string)
     (triggerScan: unit -> string)
@@ -274,9 +291,24 @@ let pollAndRender
             eprintfn "  %s" consoleLabel
             fn ()
 
+    // Settle the host through its AUTHORITATIVE verdict (`WaitForComplete` →
+    // `waitForVerdict`), rendering live status while it blocks. `WaitForComplete`
+    // runs on a background task; the render loop terminates only when THAT task
+    // finishes — never on the Idle-tolerant `isAllTerminal` status predicate
+    // that let `check` exit green while test-prune still had a build event queued
+    // or a run in flight. See `pollUntilSettled`.
+    let settle () : unit =
+        let completeTask =
+            System.Threading.Tasks.Task.Run(fun () -> waitForComplete () |> ignore)
+
+        pollUntilSettled renderStatuses getStatus (fun () -> completeTask.IsCompleted)
+        // Surface a fault (daemon shutdown / IPC error) rather than swallowing it
+        // behind a vacuous clean — re-raises the original RPC exception.
+        completeTask.GetAwaiter().GetResult()
+
     withProgress "Scanning" "Scanning..." (fun () -> waitForScan () |> ignore)
 
-    pollUntilTerminal renderStatuses getStatus
+    settle ()
 
     // First read: diagnostics + coverage after the daemon has settled.
     let firstResp = parseDiagnosticsResponse (getErrors ())
@@ -287,7 +319,7 @@ let pollAndRender
     // just report" step). Invoked only when the first read is incomplete-but-clean.
     let rescan () : unit =
         withProgress "Re-scanning (incomplete)" "Re-scanning (incomplete check)..." (fun () -> triggerScan () |> ignore)
-        pollUntilTerminal renderStatuses getStatus
+        settle ()
 
     // Re-read diagnostics + coverage and render. Called after each rescan.
     let reread () : bool * Coverage =
