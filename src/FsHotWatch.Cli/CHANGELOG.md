@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: `dotnet fshw check` no longer reports a false green before the test-prune verdict
+  lands. The CLI gate now blocks on the daemon's `WaitForComplete` (which waits for every
+  triggered plugin run to reach a real terminal verdict) instead of an Idle-tolerant
+  scan-settle — closing a race where `check` could exit 0 "No errors" while the
+  affected-tests run was still about to launch.
+
 ## 0.8.0-alpha.31 - 2026-06-15
 
 - feat: configurable FSEvents watch latency via the new `.fshw.json` `fsEventsLatencyMs`
