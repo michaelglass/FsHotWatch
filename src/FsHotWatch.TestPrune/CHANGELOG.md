@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: a directly-edited test now re-selects itself. Bundles TestPrune.Core
+  4.2.3, whose `QueryAffectedTests` now includes the changed symbols themselves
+  in the affected set — so editing a test's own body re-runs that test instead
+  of leaving a prior failure pinned in the needs-verification queue (FsHotWatch
+  ISSUE B). Previously a test method, having no incoming edges, selected zero
+  tests when it was itself the change.
+
 ## 0.7.0-alpha.24 - 2026-06-12
 
 - fix!: the test gate can no longer go green without the tests having actually
