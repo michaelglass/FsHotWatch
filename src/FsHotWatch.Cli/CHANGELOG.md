@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- feat: configurable FSEvents watch latency via the new `.fshw.json` `fsEventsLatencyMs`
+  key (default 250ms, replacing a hardcoded 50ms). Higher values let the kernel coalesce
+  more file-change events per callback, cutting fseventsd dispatch load on busy trees, at
+  the cost of slightly higher change-to-rebuild latency.
+
 ## 0.8.0-alpha.30 - 2026-06-12
 
 - chore: refresh bundled dependencies — CommandTree 0.6.3, TestPrune.Core 4.2.2,

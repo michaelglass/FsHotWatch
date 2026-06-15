@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: FSEvents watch latency is now configurable (was a hardcoded 50ms).
+  `MacFsEvents.create` / `createWithCoalesced` and `FileWatcher.create` take an explicit
+  `latencySeconds`, threaded from the new `DaemonOptions.FsEventsLatencySeconds` (default 0.25s).
+
 ## 0.8.0-alpha.28 - 2026-06-12
 
 - fix: `ContentDedup` is now scoped per daemon instance, so two daemons sharing a
