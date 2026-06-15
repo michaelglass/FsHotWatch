@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.31 - 2026-06-15
+
 - feat: configurable FSEvents watch latency via the new `.fshw.json` `fsEventsLatencyMs`
   key (default 250ms, replacing a hardcoded 50ms). Higher values let the kernel coalesce
   more file-change events per callback, cutting fseventsd dispatch load on busy trees, at
