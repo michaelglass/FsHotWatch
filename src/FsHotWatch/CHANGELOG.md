@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.29 - 2026-06-15
+
 - feat: FSEvents watch latency is now configurable (was a hardcoded 50ms).
   `MacFsEvents.create` / `createWithCoalesced` and `FileWatcher.create` take an explicit
   `latencySeconds`, threaded from the new `DaemonOptions.FsEventsLatencySeconds` (default 0.25s).
