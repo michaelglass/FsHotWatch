@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: a directly-edited test now re-selects itself. Bundles TestPrune.Core
+  4.2.3, so `fshw` re-runs a test you just edited instead of skipping it as
+  unaffected and leaving a prior failure pinned red (FsHotWatch ISSUE B).
+
 ## 0.8.0-alpha.32 - 2026-06-15
 
 - fix: `dotnet fshw check` no longer reports a false green before the test-prune verdict

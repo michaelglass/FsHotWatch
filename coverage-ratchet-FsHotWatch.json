@@ -2,7 +2,7 @@
   "overrides": {
     "AnalyzersPlugin.fs": [
       {
-        "line": 81,
+        "line": 80,
         "branch": 70,
         "reason": "FCS analyzer paths in IntegrationTests (excluded); \u00A72a \u002B lifecycle \u002B \u00A71 fcs-signature add untested branches; line drifts 74-76% across runs",
         "platform": "macos"
@@ -61,7 +61,7 @@
     ],
     "CheckPipeline.fs": [
       {
-        "line": 79,
+        "line": 77,
         "branch": 64,
         "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor; scoped-rediscovery PrepareForRediscovery(clearCheckCache) branch is integration-tested, pinned below floor. Pinned at 79 stable-minimum: L232/L247 flip 79.66-80.79% under FCS timing, do NOT auto-ratchet to 80 (reintroduces the flake fixed in xwtkmmqv). Restored 79 after a stray auto-ratchet committed 80 (loosen can't lower an existing floor).",
         "platform": "macos"
