@@ -289,3 +289,127 @@ let ``parsePluginStatuses accepts object-valued entries with status field`` () =
 
     let parsed = parsePluginStatuses json
     test <@ Map.containsKey "plugin" parsed @>
+
+// --- Regression: check-gate soundness (false green before the test-prune verdict) ---
+//
+// THE BUG (observed on alpha.30 against a large consumer repo): `fshw check`
+// returned exit 0 "No errors" having computed N affected tests, but BEFORE the
+// test-prune run's verdict was captured — the test-prune run launched/finished
+// AFTER `check` had already exited green, so real test failures sat behind a
+// green exit.
+//
+// ROOT CAUSE: the CLI `check` gate (`pollAndRender`) settled on the
+// Idle-tolerant `isAllTerminal` status predicate instead of the daemon's
+// authoritative `WaitForComplete` verdict. The scan signals its generation as
+// soon as FCS check + BatchChecked finish; at that instant test-prune can still
+// be Idle (the build's `BuildCompleted` event is queued in its mailbox but its
+// handler hasn't run, so it hasn't transitioned Idle->Running yet). `isAllTerminal`
+// treats Idle as quiescent and never consults the host's inflight/busy state, so
+// the gate concluded "settled" and read diagnostics during that Idle window —
+// missing the test-prune failure that surfaces only once the run completes.
+//
+// THE FIX: `pollAndRender` now blocks on `WaitForComplete` (the daemon's
+// `waitForVerdict`, which gates on plugin busy/inflight + generation advancement
+// + quiescence) before reading diagnostics; status polling is rendering-only.
+//
+// This test drives `pollAndRender` through the exact ordering with injected,
+// fully-deterministic seams (no real daemon, no sleep race):
+//   - `getStatus` reports FCS=Completed + test-prune=Idle during the race window
+//     (the false-green trap), flipping test-prune to Completed only once the
+//     authoritative wait has run.
+//   - `waitForComplete` is the authoritative settle: invoking it marks the
+//     test-prune run finished (as `waitForVerdict` would, by blocking until the
+//     inflight BuildCompleted -> run reaches terminal).
+//   - `getErrors` reports the test failure ONLY after the run finished — i.e. a
+//     gate that reads diagnostics during the Idle window sees a (false) clean.
+//
+// With the fix the gate waits for `waitForComplete`, so the failure is surfaced
+// (exit 1). Without it the gate stops at `isAllTerminal` while test-prune is Idle
+// and reads the clean diagnostics (exit 0) — the false green. The assertion
+// `exit = 1` is therefore red-before / green-after.
+
+/// GetStatus JSON: fcs Completed; test-prune Idle until the run has finished,
+/// then Completed. The Idle window is the false-green trap.
+let private statusJsonFor (testRunFinished: bool) : string =
+    let testPruneStatus =
+        if testRunFinished then
+            """{"tag":"completed","at":"2026-01-01T00:00:00.0000000Z"}"""
+        else
+            """{"tag":"idle"}"""
+
+    $"""{{"fcs":{{"status":{{"tag":"completed","at":"2026-01-01T00:00:00.0000000Z"}},"subtasks":[],"activityTail":[],"lastRun":null}},"test-prune":{{"status":%s{testPruneStatus},"subtasks":[],"activityTail":[],"lastRun":null}}}}"""
+
+/// GetDiagnostics JSON: complete coverage (unchecked 0). One test-prune failure
+/// becomes visible ONLY after the test-prune run finished — before that the
+/// ledger is (deceptively) clean, exactly as it is during the Idle race window.
+let private diagnosticsJsonFor (testRunFinished: bool) : string =
+    if testRunFinished then
+        """{"count":1,"files":{"tests/Foo.fs":[{"plugin":"test-prune","message":"1 test failed","severity":"error","line":0,"column":0,"detail":null}]},"statuses":{},"unchecked":0}"""
+    else
+        """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+
+[<Fact(Timeout = 15000)>]
+let ``pollAndRender waits for the test-prune verdict before deciding (no false green while test-prune is Idle)`` () =
+    // Shared mutable: the test-prune run's terminal state. Flipped true ONLY by
+    // the authoritative wait, mirroring `waitForVerdict` blocking until the
+    // BuildCompleted -> affected-tests run reaches its terminal verdict.
+    let mutable testRunFinished = false
+    let mutable waitForCompleteCalls = 0
+
+    let waitForScan () : string =
+        // The scan generation is signalled; test-prune has NOT yet processed its
+        // queued BuildCompleted. This is the false-green window.
+        "idle"
+
+    let waitForComplete () : string =
+        // The daemon's sound verdict wait: it returns only once the test-prune
+        // run has reached terminal. Model that by marking the run finished.
+        waitForCompleteCalls <- waitForCompleteCalls + 1
+        testRunFinished <- true
+        statusJsonFor true
+
+    let getStatus () : string = statusJsonFor testRunFinished
+    let getErrors () : string = diagnosticsJsonFor testRunFinished
+    let triggerScan () : string = "idle"
+
+    let exitCode =
+        pollAndRender
+            ProgressRenderer.Agent
+            (fun _ -> [])
+            false
+            waitForScan
+            waitForComplete
+            getStatus
+            getErrors
+            triggerScan
+
+    // The authoritative settle MUST have been consulted...
+    test <@ waitForCompleteCalls >= 1 @>
+    // ...and the test-prune failure surfaced. Exit 1 (failure) only happens if
+    // the gate waited for the verdict before reading diagnostics. With the bug
+    // (settle on `isAllTerminal` while test-prune is Idle) the gate reads the
+    // clean ledger during the Idle window and returns exit 0 — the false green.
+    test <@ exitCode = 1 @>
+
+[<Fact(Timeout = 15000)>]
+let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` () =
+    // The legitimate "nothing failed" case: the authoritative wait completes and
+    // the ledger is clean -> exit 0. Guards against the fix over-blocking or
+    // mis-reporting a genuinely green run.
+    let alwaysCleanStatus () : string = statusJsonFor true
+
+    let cleanDiagnostics () : string =
+        """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
+
+    let exitCode =
+        pollAndRender
+            ProgressRenderer.Agent
+            (fun _ -> [])
+            false
+            (fun () -> "idle")
+            alwaysCleanStatus
+            alwaysCleanStatus
+            cleanDiagnostics
+            (fun () -> "idle")
+
+    test <@ exitCode = 0 @>

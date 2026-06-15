@@ -346,6 +346,14 @@ let private ensureAndQueryErrors
                 (renderLines mode (not noWarnFail))
                 noWarnFail
                 (fun () -> ipc.WaitForScan pipeName -1L |> Async.RunSynchronously)
+                // Authoritative settle: block until the daemon reports its sound
+                // verdict (`waitForVerdict`, which gates on plugin busy/inflight
+                // state + generation advancement + quiescence). This is what
+                // closes the false-green hole — `WaitForScan` alone only waits
+                // for the SCAN generation to be signalled, which can race ahead
+                // of the test-prune run launched by the build's BuildCompleted.
+                // `-1` = no client-imposed timeout (the daemon bounds the wait).
+                (fun () -> ipc.WaitForComplete pipeName -1 |> Async.RunSynchronously)
                 (fun () -> ipc.GetStatus pipeName |> Async.RunSynchronously)
                 (fun () -> ipc.GetDiagnostics pipeName pluginFilter |> Async.RunSynchronously)
                 // Convergence re-scan: start a scan and block until it (and the
