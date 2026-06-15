@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.2.3 - 2026-06-16
+
 - fix: editing a test's own body now re-selects that test for impact analysis.
   `Database.QueryAffectedTests` seeded its transitive closure only from symbols
   that *depend on* the changed symbol, so when the changed symbol *was* the test
