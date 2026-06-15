@@ -1,6 +1,6 @@
 # ADR-010: Warm cold-start across workspaces — seed test-impact, then content-address the cache
 
-Status: Accepted (2026-06-15)
+Status: Accepted 2026-06-15; increment 1 reversed same day — seeding moved to consumer bootstrap.
 
 ## Context
 
@@ -47,22 +47,39 @@ framings — a shared cross-daemon task queue, or a single shared daemon for N w
 behind this and reconsidered only if concurrency still oversubscribes after the redundant
 work is gone (see the "one shared daemon for N workspaces" note in ADR-006).
 
-Two increments:
+The portability finding above stands: `test-impact.db` *is* the right thing to seed, and the
+donor is the repo's default (main) workspace `.fshw/test-impact.db`. The open question is
+*who* performs the seed.
 
-1. **(landing now) Seed `test-impact.db` on daemon start.** When a daemon starts in a
-   workspace whose `test-impact.db` is absent or empty (0 indexed test methods) and a donor
-   db is available with a matching schema `user_version`, copy the donor's graph *before*
-   the first test selection — so prune runs pruned instead of all-tests from the first
-   change. Donor = the repo's default (main) workspace `.fshw/test-impact.db`, auto-detected
-   (with a config override). The portable graph (symbols/deps/tests/coverage) carries over;
-   the workspace-local invalidation rows force a safe re-index. No donor (first-ever
-   workspace) → no-op, behaviour unchanged.
+1. **Seed `test-impact.db` on fshw daemon start — REJECTED.** The original plan had the fshw
+   daemon, on starting in a fresh workspace, auto-detect the donor and copy its graph before
+   the first test selection. This is reversed because **fshw cannot reliably locate the
+   donor from inside a fresh workspace.** Detection relied on resolving the default
+   workspace's root via jj, but `jj workspace root --name default` exits 1
+   ("Workspace has no recorded path: default"): only workspaces created with
+   `jj workspace add` carry a recorded path; the *bootstrap* default workspace — the donor
+   we want — has none. So the auto-detect no-ops in exactly the primary case, leaving the
+   feature inert. The donor-path config override doesn't rescue it: requiring every consumer
+   to hand-configure an absolute donor path is the consumer's job, not a property the daemon
+   can infer. The seeding wiring (the `SeedTestImpact` module, the daemon-start `seedDefault`
+   call, and the `tests.seedTestImpactFrom` config key) is therefore removed from fshw. It
+   was never released — clean removal.
 
-2. **(planned follow-on) Content-address the rest of the cache** by making per-file
-   merkle/FCS keys **repo-relative** instead of absolute, then expose a shared/seedable
-   cache store so build/FCS/lint/analyzer verdicts also replay warm on a fresh workspace.
-   This turns `jj workspace add` fully warm. Bigger — touches every plugin's `cacheKey`
-   function plus the FCS options hash, and needs a merkle-salt bump to orphan old entries.
+2. **Seed in the consumer's workspace-bootstrap step — ACCEPTED (where seeding lives).** The
+   tool that *creates* a workspace (`jj workspace add …`) already holds the default-workspace
+   root path — it is the cwd it runs `jj workspace add` *from*, or a value it computed to get
+   there. That bootstrap step is the correct place to copy `<default-root>/.fshw/test-impact.db`
+   into the new workspace's `.fshw/` before the first fshw run. fshw stays donor-agnostic: it
+   reads whatever `test-impact.db` it finds and re-indexes workspace-local invalidation rows
+   exactly as the portability finding describes. The correctness argument is unchanged; only
+   the seeding actor moves out of the daemon and into the bootstrap that knows the donor path.
+
+3. **(planned follow-on, still valid fshw-side) Content-address the rest of the cache** by
+   making per-file merkle/FCS keys **repo-relative** instead of absolute, then expose a
+   shared/seedable cache store so build/FCS/lint/analyzer verdicts also replay warm on a fresh
+   workspace. This turns `jj workspace add` fully warm. Bigger — touches every plugin's
+   `cacheKey` function plus the FCS options hash, and needs a merkle-salt bump to orphan old
+   entries. Independent of who seeds `test-impact.db`.
 
 **Rejected: a single shared live `test-impact.db` across workspaces.** sqlite multi-writer
 contention across concurrent daemons; copy-on-create is safer and the graph is small enough
@@ -70,13 +87,20 @@ to copy once per fresh workspace.
 
 ## Consequences
 
-- A fresh workspace starts **pruned** — the single biggest cold-start cost (the full test
-  suite) is removed without waiting to rebuild the impact map.
-- Seeding is correctness-safe by construction: a stale seed over-indexes (re-checks files)
+- fshw ships **no daemon-start seeding**. A fresh workspace whose bootstrap did not seed
+  `test-impact.db` starts cold on the test run (full, unpruned) until its first run rebuilds
+  the impact map — the pre-ADR baseline. The cold-start tax is paid by *not seeding*, not by
+  fshw.
+- The portability guarantee that makes seeding correctness-safe (a stale seed over-indexes
   but never serves a stale verdict, because invalidation rows stay workspace-local and
-  content-checked.
-- Until increment 2 lands, build/FCS caches still start cold (cheaper than the test run, so
-  acceptable as an interim).
-- If this is reconsidered in favour of a shared daemon, the bar is evidence that
-  *simultaneously-active* (not merely numerous) workspaces oversubscribe even after seeding
-  + content-addressed caching remove the redundant recompute.
+  content-checked) is a property of the db, not the seeding actor — so it holds equally when
+  the consumer's bootstrap performs the copy.
+- Consumers that want a warm test cold-start must seed `test-impact.db` from the default
+  workspace's `.fshw/` as part of their `jj workspace add` bootstrap, using the default-root
+  path they already hold. This keeps donor detection out of fshw, where it provably cannot
+  work for the bootstrap default workspace.
+- The content-addressing follow-on (point 3) remains fshw's to do and is unaffected by this
+  reversal.
+- If a shared daemon is reconsidered, the bar is still evidence that *simultaneously-active*
+  (not merely numerous) workspaces oversubscribe even after seeding + content-addressed
+  caching remove the redundant recompute.
