@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix: editing a test's own body now re-selects that test, so `test-prune run`
+  re-executes a test you just changed instead of skipping it as unaffected (via
+  TestPrune.Core's `QueryAffectedTests` seed-inclusion fix).
+
 ## 4.2.2 - 2026-06-12
 
 - fix: `test-prune` impact analysis no longer mis-attributes or drops dependency
