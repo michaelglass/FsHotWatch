@@ -123,7 +123,8 @@ type DaemonConfiguration =
                Extensions: TestExtensionConfig list
                Projects: TestProjectConfig list
                CoverageDir: string
-               DependsOn: string list |} option
+               DependsOn: string list
+               SeedTestImpactFrom: string option |} option
         FileCommands:
             {| PluginName: string
                Pattern: string option
@@ -424,6 +425,15 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                     arr.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList
                 | _ -> []
 
+            // `tests.seedTestImpactFrom`: explicit donor db path for the ADR-010
+            // cold-start seed. A string path (relative paths resolved against
+            // repoRoot at the call site). Absent → auto-detect the default jj
+            // workspace donor.
+            let seedTestImpactFrom =
+                match v.TryGetProperty("seedTestImpactFrom") with
+                | true, s when s.ValueKind = JsonValueKind.String -> Some(s.GetString())
+                | _ -> None
+
             if projects.IsEmpty then
                 None
             else
@@ -432,7 +442,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                        Extensions = extensions
                        Projects = projects
                        CoverageDir = coverageDir
-                       DependsOn = dependsOn |}
+                       DependsOn = dependsOn
+                       SeedTestImpactFrom = seedTestImpactFrom |}
         | _ -> None
 
     let fileCommands =
@@ -884,6 +895,17 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
     | Some t ->
         let dbPath = Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "test-impact.db")
         Directory.CreateDirectory(Path.GetDirectoryName(dbPath)) |> ignore
+
+        // ADR-010 increment 1: seed test-impact.db from a donor (the default jj
+        // workspace, or `tests.seedTestImpactFrom`) BEFORE the TestPrune plugin
+        // opens it for the first selection, so a fresh workspace runs PRUNED
+        // instead of all-tests from its first change. No-op when the local db
+        // already has indexed test methods, or no donor exists (non-jj repo /
+        // default workspace / first-ever workspace).
+        let seedDonorOverride =
+            SeedTestImpact.resolveSeedDonorOverride repoRoot t.SeedTestImpactFrom
+
+        SeedTestImpact.seedDefault repoRoot dbPath seedDonorOverride |> ignore
 
         let testConfigs =
             t.Projects
