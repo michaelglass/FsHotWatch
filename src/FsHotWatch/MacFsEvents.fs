@@ -360,9 +360,16 @@ type FsEventStream
 
 /// Create an FsEventStream watching the given directories.
 /// The callback is invoked on the dedicated CFRunLoop thread with each changed file path.
-let create (directories: string list) (onFileEvent: string -> unit) =
-    new FsEventStream(directories, onFileEvent, None, 0.05)
+/// `latencySeconds` is the FSEvents coalescing window passed to `FSEventStreamCreate`.
+let create (directories: string list) (onFileEvent: string -> unit) (latencySeconds: float) =
+    new FsEventStream(directories, onFileEvent, None, latencySeconds)
 
 /// Create an FsEventStream with a handler for coalesced (MustScanSubDirs) events.
-let createWithCoalesced (directories: string list) (onFileEvent: string -> unit) (onCoalescedEvent: string -> unit) =
-    new FsEventStream(directories, onFileEvent, Some onCoalescedEvent, 0.05)
+/// `latencySeconds` is the FSEvents coalescing window passed to `FSEventStreamCreate`.
+let createWithCoalesced
+    (directories: string list)
+    (onFileEvent: string -> unit)
+    (onCoalescedEvent: string -> unit)
+    (latencySeconds: float)
+    =
+    new FsEventStream(directories, onFileEvent, Some onCoalescedEvent, latencySeconds)

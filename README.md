@@ -191,6 +191,7 @@ Create `.fshw.json` in your repo root. All fields are optional — sensible defa
 | `timeoutSec` | `int` | — | Global default per-task timeout in seconds. Used when a plugin/project has no per-entry override. |
 | `idleExitMin` | `int \| false` | *auto* | Minutes of idleness after which the daemon shuts itself down to reclaim memory. See [Idle exit](#idle-exit). |
 | `pressureIdleFloorMin` | `int \| false` | `2` | Under memory pressure, shorten an already-eligible idle-exit window to this many minutes (`min(idleExitMin, this)`). See [Pressure-shortened idle exit](#pressure-shortened-idle-exit). |
+| `fsEventsLatencyMs` | `int` | `250` | macOS only: the FSEvents coalescing window (milliseconds) passed to `FSEventStreamCreate`. Higher = more event coalescing and lower `fseventsd` load per change, at the cost of slightly higher change-to-rebuild latency. `0` disables coalescing. Ignored on non-macOS. |
 
 **Per-task timeouts.** Any of `build[]`, `tests.projects[]`, and `fileCommands[]` entries may set their own `timeoutSec` to override the global default. When a task exceeds its timeout, the daemon kills the child process tree, records the run with outcome `timed out` (distinct `⏱` glyph in the UI, `timed-out` token in agent mode), and stays running — the next change retriggers normally.
 

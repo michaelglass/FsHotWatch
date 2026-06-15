@@ -181,7 +181,7 @@ type MacFsEventsTests() =
             // adding flake from fseventsd timing.
             let ex =
                 Assert.Throws<System.ArgumentException>(fun () ->
-                    use _stream = FsHotWatch.MacFsEvents.create [] ignore
+                    use _stream = FsHotWatch.MacFsEvents.create [] ignore 0.05
                     ())
 
             test <@ ex.Message.Contains("At least one directory") @>
@@ -192,7 +192,7 @@ type MacFsEventsTests() =
             Assert.Skip("macOS only")
         else
             withTempDir "fsevents" (fun tmpDir ->
-                use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] ignore
+                use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] ignore 0.05
                 test <@ _stream.IsRunning @>)
 
     [<Fact(Timeout = 150000)>]
@@ -207,7 +207,7 @@ type MacFsEventsTests() =
                 let onFile path =
                     lock lockObj (fun () -> detectedPaths <- path :: detectedPaths)
 
-                use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] onFile
+                use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] onFile 0.05
 
                 // Phase 1: probe until stream is live (FSEvents cold-start can be 4-20s for new dirs).
                 probeUntilEvent tmpDir (fun () -> lock lockObj (fun () -> detectedPaths.Length > 0)) 60000
@@ -239,7 +239,7 @@ type MacFsEventsTests() =
                 let onFile _path =
                     lock lockObj (fun () -> detectedCount <- detectedCount + 1)
 
-                use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] onFile
+                use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] onFile 0.05
 
                 // Phase 1: probe until stream is live.
                 probeUntilEvent tmpDir (fun () -> lock lockObj (fun () -> detectedCount > 0)) 60000
@@ -271,7 +271,7 @@ type MacFsEventsTests() =
                 let onFile path =
                     lock lockObj (fun () -> detectedPaths <- path :: detectedPaths)
 
-                use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] onFile
+                use _stream = FsHotWatch.MacFsEvents.create [ tmpDir ] onFile 0.05
 
                 // Phase 1: probe until stream is live.
                 probeUntilEvent tmpDir (fun () -> lock lockObj (fun () -> detectedPaths.Length > 0)) 60000
@@ -310,7 +310,7 @@ type MacFsEventsTests() =
                 lock lockObj (fun () -> detectedPaths <- path :: detectedPaths)
 
             try
-                use _stream = FsHotWatch.MacFsEvents.create [ srcDir; testDir ] onFile
+                use _stream = FsHotWatch.MacFsEvents.create [ srcDir; testDir ] onFile 0.05
 
                 // Phase 1: probe until stream is live.
                 probeUntilEvent srcDir (fun () -> lock lockObj (fun () -> detectedPaths.Length > 0)) 60000

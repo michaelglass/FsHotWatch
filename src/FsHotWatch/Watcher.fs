@@ -134,11 +134,14 @@ module FileWatcher =
     /// the full repo root. Patterns support both wildcard-suffix form (`*.ratchet.json`)
     /// and literal filenames (`coverage-ratchet.json`).
     /// Pass isMacOSOverride to force a specific code path (useful for testing).
+    /// `latencySeconds` is the macOS FSEvents coalescing window (ignored on
+    /// non-macOS, where .NET FileSystemWatcher has no equivalent knob).
     let create
         (repoRoot: string)
         (onChange: FileChangeKind -> unit)
         (isMacOSOverride: bool option)
         (extraPatterns: FilePattern list)
+        (latencySeconds: float)
         : FileWatcher =
         let handle (path: string) =
             if isRelevantFileOrExtra extraPatterns path then
@@ -199,7 +202,7 @@ module FileWatcher =
                     | :? DirectoryNotFoundException -> ()
                     | :? UnauthorizedAccessException -> ()
 
-                let stream = MacFsEvents.createWithCoalesced dirs handle onCoalesced
+                let stream = MacFsEvents.createWithCoalesced dirs handle onCoalesced latencySeconds
                 { Disposables = (stream :> IDisposable) :: slnWatcher :: extraWatchers }
         else
             let createFsw (dir: string) =

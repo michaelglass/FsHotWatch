@@ -1108,6 +1108,7 @@ let main args =
                             CacheKeyProvider = keyProvider
                             ExcludePatterns = config.Exclude
                             ExtraWatchPatterns = fileCommandPatterns
+                            FsEventsLatencySeconds = float config.FsEventsLatencyMs / 1000.0
                             IdleExitMin = idleExitMin
                             PressureIdleFloorMin = pressureIdleFloorMin }
 
