@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.32 - 2026-06-15
+
 - fix: `dotnet fshw check` no longer reports a false green before the test-prune verdict
   lands. The CLI gate now blocks on the daemon's `WaitForComplete` (which waits for every
   triggered plugin run to reach a real terminal verdict) instead of an Idle-tolerant
