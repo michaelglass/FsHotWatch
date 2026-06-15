@@ -272,7 +272,8 @@ let ``serializeConfig with empty test projects omits tests section`` () =
                        Extensions = []
                        Projects = []
                        CoverageDir = "coverage"
-                       DependsOn = [] |} }
+                       DependsOn = []
+                       SeedTestImpactFrom = None |} }
 
 
     let json = serializeConfig config
@@ -301,7 +302,8 @@ let ``serializeConfig test project without filterTemplate omits it`` () =
                             CoverageArgsTemplate = None
                             TimeoutSec = None } ]
                        CoverageDir = "coverage"
-                       DependsOn = [] |} }
+                       DependsOn = []
+                       SeedTestImpactFrom = None |} }
 
 
     let json = serializeConfig config
