@@ -98,7 +98,8 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
       LogDir = "logs"
       TimeoutSec = None
       IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent
-      PressureIdleFloorMin = FsHotWatch.IdleExit.PressureFloorConfig.Absent }
+      PressureIdleFloorMin = FsHotWatch.IdleExit.PressureFloorConfig.Absent
+      FsEventsLatencyMs = 250 }
 
 /// Serialize a DaemonConfiguration to a pretty-printed JSON string.
 let serializeConfig (config: DaemonConfiguration) : string =

@@ -1748,6 +1748,11 @@ module Daemon =
             /// Extra file patterns from FileCommandPlugin configs that the watcher
             /// should monitor beyond the default F# source/project set.
             ExtraWatchPatterns: FilePattern list
+            /// macOS FSEvents coalescing window in seconds, passed through to
+            /// `MacFsEvents.createWithCoalesced`. Resolved by the caller from the
+            /// `fsEventsLatencyMs` config key (`float ms / 1000.0`). Default 0.25
+            /// (250 ms). Ignored on non-macOS. See `DaemonConfiguration`.
+            FsEventsLatencySeconds: float
             /// Resolved idle-exit threshold in minutes. `Some n` arms a 30s timer
             /// that gracefully shuts the daemon down after `n` minutes of
             /// idleness (no events, no running work); the next `fshw` command
@@ -1774,6 +1779,7 @@ module Daemon =
               FcsSuppressedCodes = None
               ExcludePatterns = []
               ExtraWatchPatterns = []
+              FsEventsLatencySeconds = 0.25
               IdleExitMin = None
               PressureIdleFloorMin = None }
 
@@ -1793,6 +1799,7 @@ module Daemon =
 
         let excludePatterns = opts.ExcludePatterns
         let extraWatchPatterns = opts.ExtraWatchPatterns
+        let fsEventsLatencySeconds = opts.FsEventsLatencySeconds
         let lifetime = new CancellationTokenSource()
 
         try
@@ -1954,7 +1961,8 @@ module Daemon =
                 Logging.debug "watcher" $"%O{change}"
                 changeAgent.Post(Choice1Of2 change)
 
-            let watcher = FileWatcher.create repoRoot onChange None extraWatchPatterns
+            let watcher =
+                FileWatcher.create repoRoot onChange None extraWatchPatterns fsEventsLatencySeconds
 
             let scanSignal = ScanSignal(cancellationToken = lifetime.Token)
 

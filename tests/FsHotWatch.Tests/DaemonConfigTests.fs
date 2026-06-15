@@ -50,6 +50,35 @@ let ``parseConfig logDir absolute path is preserved`` () =
     let config = parseConfig """{"logDir": "/var/log/fshw"}""" defaults
     test <@ config.LogDir = "/var/log/fshw" @>
 
+// --- parseConfig: fsEventsLatencyMs ---
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig fsEventsLatencyMs custom value overrides default`` () =
+    let config = parseConfig """{"fsEventsLatencyMs": 100}""" defaults
+    test <@ config.FsEventsLatencyMs = 100 @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig fsEventsLatencyMs absent yields default 250`` () =
+    let config = parseConfig "{}" defaults
+    test <@ config.FsEventsLatencyMs = 250 @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig fsEventsLatencyMs zero is valid (no coalescing)`` () =
+    let config = parseConfig """{"fsEventsLatencyMs": 0}""" defaults
+    test <@ config.FsEventsLatencyMs = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig fsEventsLatencyMs negative falls back to default 250`` () =
+    // A negative latency is invalid; warn and fall back to the default.
+    let config = parseConfig """{"fsEventsLatencyMs": -10}""" defaults
+    test <@ config.FsEventsLatencyMs = 250 @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig fsEventsLatencyMs non-numeric falls back to default 250`` () =
+    // A non-number value is invalid; warn and fall back to the default.
+    let config = parseConfig """{"fsEventsLatencyMs": "nope"}""" defaults
+    test <@ config.FsEventsLatencyMs = 250 @>
+
 // --- parseConfig: idleExitMin ---
 
 [<Fact(Timeout = 15000)>]

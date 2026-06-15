@@ -215,7 +215,7 @@ let ``FileWatcher.create with isMacOS=false watches src and tests dirs`` () =
         let mutable changes: FileChangeKind list = []
         let onChange change = changes <- change :: changes
 
-        use watcher = FileWatcher.create tmpDir onChange (Some false) []
+        use watcher = FileWatcher.create tmpDir onChange (Some false) [] 0.05
 
         probeUntilEvent srcDir (fun () -> changes.Length >= 1) 10000
         test <@ changes.Length >= 1 @>)
@@ -226,7 +226,7 @@ let ``FileWatcher.create with isMacOS=false when neither src nor tests exist`` (
         let mutable changes: FileChangeKind list = []
         let onChange change = changes <- change :: changes
 
-        use watcher = FileWatcher.create tmpDir onChange (Some false) []
+        use watcher = FileWatcher.create tmpDir onChange (Some false) [] 0.05
         test <@ watcher.Disposables.Length = 1 @>)
 
 // === Integration test: verify FileWatcher.create produces a working watcher (default OS path) ===
@@ -239,7 +239,7 @@ let ``watcher detects file changes in src directory`` () =
     let mutable changes = []
     let onChange change = changes <- change :: changes
 
-    use watcher = FileWatcher.create tmpDir onChange None []
+    use watcher = FileWatcher.create tmpDir onChange None [] 0.05
 
     // Probe until the watcher is delivering events (FSEvents cold-start can be 4-20s).
     probeUntilEvent srcDir (fun () -> changes.Length >= 1) 60000
@@ -297,7 +297,7 @@ let ``FileWatcher with wildcard pattern fires SourceChanged for matching file`` 
         let onChange change = received.Add(change)
 
         use _watcher =
-            FileWatcher.create tmpDir onChange (Some false) [ FilePattern.parse "*.ratchet.json" ] :> IDisposable
+            FileWatcher.create tmpDir onChange (Some false) [ FilePattern.parse "*.ratchet.json" ] 0.05 :> IDisposable
 
         // Probe by repeatedly rewriting a matching file until the watcher delivers an event.
         // FileSystemWatcher on macOS (kqueue/FSEvents backend) can have cold-start latency.
@@ -321,7 +321,7 @@ let ``FileWatcher with literal filename pattern fires only for matching file`` (
         let onChange change = received.Add(change)
 
         use _watcher =
-            FileWatcher.create tmpDir onChange (Some false) [ FilePattern.parse "coverage-ratchet.json" ]
+            FileWatcher.create tmpDir onChange (Some false) [ FilePattern.parse "coverage-ratchet.json" ] 0.05
             :> IDisposable
 
         let configPath = Path.Combine(tmpDir, "coverage-ratchet.json")

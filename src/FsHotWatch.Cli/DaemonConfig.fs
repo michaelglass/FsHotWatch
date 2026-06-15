@@ -151,6 +151,13 @@ type DaemonConfiguration =
         /// disabled; positive N → floor at N min. Pressure never makes a
         /// non-eligible daemon eligible. See `FsHotWatch.IdleExit`.
         PressureIdleFloorMin: IdleExit.PressureFloorConfig
+        /// macOS FSEvents coalescing latency in milliseconds, from the
+        /// `fsEventsLatencyMs` key. The native `FSEventStreamCreate` batches
+        /// filesystem events within this window before delivering them. Default
+        /// 250. `0` is valid (no coalescing). Higher = more event coalescing and
+        /// lower fseventsd load per change, at the cost of slightly higher
+        /// change-to-rebuild latency. Only affects the macOS FSEvents watcher.
+        FsEventsLatencyMs: int
     }
 
 let private defaultConfigFor (repoRoot: string) =
@@ -172,7 +179,8 @@ let private defaultConfigFor (repoRoot: string) =
       LogDir = "logs"
       TimeoutSec = None
       IdleExitMin = IdleExit.IdleExitConfig.Absent
-      PressureIdleFloorMin = IdleExit.PressureFloorConfig.Absent }
+      PressureIdleFloorMin = IdleExit.PressureFloorConfig.Absent
+      FsEventsLatencyMs = 250 }
 
 /// Raised when `.fshw.json` cannot be read, parsed, or validated.
 /// Carries a user-facing message.
@@ -551,6 +559,30 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | true, v when v.ValueKind = JsonValueKind.Number -> Some(v.GetInt32())
         | _ -> defaults.TimeoutSec
 
+    // `fsEventsLatencyMs`: absent → default (250); a non-negative integer is used
+    // verbatim (0 is valid — no coalescing); a present-but-invalid value
+    // (negative, or non-number) warns and falls back to the default.
+    let fsEventsLatencyMs =
+        match root.TryGetProperty("fsEventsLatencyMs") with
+        | false, _ -> defaults.FsEventsLatencyMs
+        | true, v when v.ValueKind = JsonValueKind.Number ->
+            let ms = v.GetInt32()
+
+            if ms >= 0 then
+                ms
+            else
+                Logging.warn
+                    "config"
+                    $"fsEventsLatencyMs must be >= 0, got %d{ms}; using default %d{defaults.FsEventsLatencyMs}"
+
+                defaults.FsEventsLatencyMs
+        | true, _ ->
+            Logging.warn
+                "config"
+                $"fsEventsLatencyMs must be a non-negative integer; using default %d{defaults.FsEventsLatencyMs}"
+
+            defaults.FsEventsLatencyMs
+
     // Parse a `number | false` tristate, shared by the two idle-exit windows:
     // positive N → `minutes N`; a non-positive number / `false` / `true` →
     // `disabled` (`true` is rejected rather than treated as an implicit window —
@@ -594,7 +626,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       LogDir = logDir
       TimeoutSec = timeoutSec
       IdleExitMin = idleExitMin
-      PressureIdleFloorMin = pressureIdleFloorMin }
+      PressureIdleFloorMin = pressureIdleFloorMin
+      FsEventsLatencyMs = fsEventsLatencyMs }
 
 /// Strip a config down to a minimal base for run-once subcommands.
 /// Disables all plugins except format preprocessor. Caller overrides specific fields.
