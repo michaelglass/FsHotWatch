@@ -9,6 +9,10 @@ that connects Falco URL routes to integration tests. If you change the
 handler for `/api/users/{id}`, it finds the tests that make requests to
 that URL and runs just those.
 
+> **Status: early alpha.** This is a young project, substantially
+> AI-written, and still finding its shape. Behavior and APIs shift
+> between versions, so pin a version and expect surprises.
+
 ## Installation
 
 ```bash
@@ -19,9 +23,13 @@ dotnet add package TestPrune.Falco
 
 ### 1. Store your route mappings during indexing
 
-Tell TestPrune which source files handle which URLs:
+Tell TestPrune which source files handle which URLs. Each entry is a
+`RouteHandlerEntry`; `db.RebuildRouteHandlers` clears and rewrites the
+whole route table:
 
 ```fsharp
+open TestPrune.AstAnalyzer // RouteHandlerEntry
+
 db.RebuildRouteHandlers [
     { UrlPattern = "/api/users/{id}"
       HttpMethod = "GET"
@@ -34,17 +42,33 @@ db.RebuildRouteHandlers [
 
 ### 2. Create the extension and query affected tests
 
+The extension reads routes through a `RouteStore` — build one from your
+`Database` with `toRouteStore`:
+
 ```fsharp
+open TestPrune.Ports        // toRouteStore, toSymbolStore
+open TestPrune.Extensions   // ITestPruneExtension, AffectedTest
+
 let extension =
     FalcoRouteExtension(
         integrationTestProject = "MyApp.IntegrationTests",
-        integrationTestDir = "tests/MyApp.IntegrationTests"
+        integrationTestDir = "tests/MyApp.IntegrationTests",
+        routeStore = toRouteStore db
     )
 
-let affected =
-    (extension :> ITestPruneExtension)
-        .FindAffectedTests db changedFiles repoRoot
+// Affected test classes, directly:
+let affected = extension.FindAffectedTestClasses(changedFiles, repoRoot)
 // -> [{ TestProject = "MyApp.IntegrationTests"; TestClass = "UsersTests" }]
+```
+
+To feed those couplings into TestPrune's dependency graph instead, use
+the `ITestPruneExtension` interface, which returns edges to inject:
+
+```fsharp
+let edges =
+    (extension :> ITestPruneExtension)
+        .AnalyzeEdges (toSymbolStore db) changedFiles repoRoot
+// -> Dependency list (test symbol -> handler symbol, kind SharedState)
 ```
 
 ## How it works
@@ -54,6 +78,8 @@ let affected =
 3. Scans your integration test `.fs` files for those URLs
    (`/api/users/{id}` matches `/api/users/123` in your test code)
 4. Returns the test classes from files that reference affected routes
+   (`FindAffectedTestClasses`), or those couplings as graph edges
+   (`AnalyzeEdges`)
 
 ## Documentation
 
