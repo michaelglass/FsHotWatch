@@ -46,7 +46,7 @@ File change -> FormatPreprocessor (rewrites) -> FileChanged
 
 ## Writing a plugin
 
-See the [main README](../../README.md#writing-your-own-plugin) for a
+See [Writing a plugin](../../docs/writing-plugins.md) for a
 complete example using the declarative `PluginHandler` framework.
 
 ### Status visibility contract

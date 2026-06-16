@@ -9,9 +9,14 @@ A plugin is a `PluginHandler<'State, 'Msg>` record. `'State` is whatever you
 want to remember between events; `'Msg` is the type of custom messages the
 plugin can post back to itself (use `unit` if you don't need any).
 
+<!-- This block is sourced from a real, compiled example — see
+     examples/PluginExample/PluginExample.fs. Do not edit it here; edit the
+     source file and run `mise run sync-docs`. CI compiles the example and
+     `sync-docs-check` fails if this block drifts. -->
+<!-- sync:plugin-example:start src=examples/PluginExample/PluginExample.fs -->
 ```fsharp
 open System
-open FsHotWatch.Events          // PluginEvent cases, FileCheckResult, AbsFilePath
+open FsHotWatch.Events // PluginEvent cases, FileCheckResult, AbsFilePath
 open FsHotWatch.PluginFramework // PluginHandler, PluginName, SubscribeFileChecked
 
 type MyState = { FilesChecked: int }
@@ -28,18 +33,22 @@ let myPlugin: PluginHandler<MyState, unit> =
                     // warm FSharpChecker — no re-parsing needed.
                     printfn "Checked: %s" (AbsFilePath.value result.File)
                     ctx.ReportStatus(Completed(DateTime.UtcNow))
-                    return { state with FilesChecked = state.FilesChecked + 1 }
+
+                    return
+                        { state with
+                            FilesChecked = state.FilesChecked + 1 }
                 | _ -> return state
             }
-      Commands =
-        [ "my-status",
-          fun _ctx state _args ->
-              async { return $"checked %d{state.FilesChecked} files" } ]
+      Commands = [ "my-status", fun _ctx state _args -> async { return $"checked %d{state.FilesChecked} files" } ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey = None
       Teardown = None }
+```
+<!-- sync:plugin-example:end -->
 
-// Register with the daemon:
+Then register the handler with a live daemon:
+
+```fsharp
 daemon.RegisterHandler(myPlugin)
 ```
 
