@@ -1,10 +1,10 @@
 <!-- sync:intro -->
 # FsHotWatch
 
-Speed up your F# development feedback loop.
+Trying to speed up the F# development feedback loop.
 
-FsHotWatch is a background daemon that watches your source files and
-keeps the F# compiler warm. When you save a file, it instantly re-checks
-it and tells your tools (linters, analyzers, test runners) what changed
-— without restarting the compiler from scratch each time.
+FsHotWatch is a background daemon that watches your source files and aims to
+keep the F# compiler warm, so saving a file re-checks just what changed and
+hands the results to your tools (linters, analyzers, test runners) — instead of
+each tool restarting the compiler from scratch every time.
 <!-- sync:intro:end -->
