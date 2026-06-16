@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.30 - 2026-06-16
+
 - feat: `PluginCtx.ProjectGraph` exposes a read-only project-graph accessor
   (`GetAllProjects` / `GetTransitiveDependentProjects` / `GetProjectReferences`
   / `GetCanonicalDllPath`) to plugins. The daemon installs the live graph before
