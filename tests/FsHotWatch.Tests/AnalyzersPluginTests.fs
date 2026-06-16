@@ -109,6 +109,35 @@ let ``analyzer with mix of valid and invalid paths`` () =
         with _ ->
             ()
 
+// Fail-loud guard inputs: a CONFIGURED analyzer path that loads zero analyzers
+// must produce LoadedCount = 0, which is what DaemonConfig.analyzersLoadFailure
+// turns into a RED gate. Two sub-cases the guard must catch:
+//   (a) the path does not exist (the actual CI bug — bin built in wrong config)
+//   (b) the path exists but contains no analyzer DLLs
+
+[<Fact(Timeout = 15000)>]
+let ``configured non-existent analyzer path loads zero (guard input)`` () =
+    let handler =
+        create [ "/tmp/no-such-analyzer-dir-guard-a" ] None DiagnosticSeverity.Hint
+
+    test <@ handler.Init.LoadedCount = 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``configured empty analyzer dir loads zero (guard input)`` () =
+    let emptyDir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"az-guard-empty-{System.Guid.NewGuid():N}")
+
+    System.IO.Directory.CreateDirectory(emptyDir) |> ignore
+
+    try
+        let handler = create [ emptyDir ] None DiagnosticSeverity.Hint
+        test <@ handler.Init.LoadedCount = 0 @>
+    finally
+        try
+            System.IO.Directory.Delete(emptyDir, true)
+        with _ ->
+            ()
+
 [<Fact(Timeout = 15000)>]
 let ``concurrent analyzer runs are bounded`` () =
     let handler = create [] None DiagnosticSeverity.Hint

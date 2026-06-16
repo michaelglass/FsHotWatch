@@ -239,6 +239,24 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     | other -> Assert.Fail(sprintf "Unexpected status: %A" other)
 
 // ---------------------------------------------------------------------------
+// Fail-loud guard (DaemonConfig.analyzersLoadFailure): a CONFIGURED analyzer
+// path that loads ≥1 analyzer must NOT fire the guard. Uses the real
+// ExampleAnalyzer bin so this exercises the genuine load path (excluded from
+// coverage in this project because the SDK-reflection load is nondeterministic).
+// ---------------------------------------------------------------------------
+[<Fact(Timeout = 30000)>]
+let ``analyzers load guard does not fire when a real analyzer loads`` () =
+    let analyzerPath = exampleAnalyzerPath.Value
+
+    let handler = AnalyzersPlugin.create [ analyzerPath ] None DiagnosticSeverity.Hint
+
+    // The real ExampleAnalyzer DLL contributes at least one analyzer.
+    test <@ handler.Init.LoadedCount >= 1 @>
+
+    // Guard: configured 1 path, ≥1 loaded ⇒ no failure (gate stays green).
+    test <@ (FsHotWatch.Cli.DaemonConfig.analyzersLoadFailure 1 handler.Init.LoadedCount).IsNone @>
+
+// ---------------------------------------------------------------------------
 // Helper: create a temp directory with a single .fs returning (dir, filePath)
 // ---------------------------------------------------------------------------
 let private withTempFsFile (content: string) (action: string -> string -> 'a) =

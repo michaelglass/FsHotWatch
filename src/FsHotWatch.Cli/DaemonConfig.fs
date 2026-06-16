@@ -59,6 +59,28 @@ let resolveExistingPathsWithRetry (dirExists: string -> bool) (sleep: int -> uni
 
     resolved
 
+/// Fail-loud guard: analyzers are treated like test failures — if the user
+/// CONFIGURED analyzers but the end result is ZERO analyzers loaded, that is a
+/// misconfiguration that must turn the gate RED, never a silent pass.
+///
+/// This closes a "silent green" class: a `.fshw.json` `analyzers.paths` that
+/// points at a bin dir which doesn't exist in CI (e.g. built in the wrong
+/// configuration) resolves to zero paths, the plugin loads 0 analyzers, and the
+/// lint silently passes.
+///
+/// The check compares the ORIGINAL configured count against the loaded count —
+/// NOT the post-resolution path count, because that itself can silently drop to
+/// zero. Returns `Some message` when the guard should fire (configured > 0 but
+/// loaded = 0), `None` otherwise (unconfigured, or ≥1 analyzer loaded).
+let analyzersLoadFailure (configuredCount: int) (loadedCount: int) : string option =
+    if configuredCount > 0 && loadedCount = 0 then
+        Some
+            $"Analyzers configured (%d{configuredCount} path(s)) but 0 analyzers loaded — \
+              paths missing/empty or built in the wrong configuration; \
+              check .fshw.json analyzers.paths vs the build config"
+    else
+        None
+
 /// Detect the default cache backend. Always file-based now that jj-specific
 /// caching has been removed; kept for API compatibility.
 let detectDefaultCacheBackend (_repoRoot: string) : CacheBackendConfig = FileBackend
@@ -878,12 +900,27 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                 "config"
                 $"Analyzers: %d{resolvedPaths.Length}/%d{absolutePaths.Length} paths resolved (missing after retry: %s{missing})"
 
-        if not resolvedPaths.IsEmpty then
-            Logging.info "config" $"Registering AnalyzersPlugin with %d{resolvedPaths.Length} paths"
+        // Build the handler unconditionally (even when resolvedPaths is empty) so
+        // its LoadedCount is known: that is what the fail-loud guard inspects. The
+        // factory loads analyzers eagerly, so Init.LoadedCount is the real result.
+        let handler =
+            FsHotWatch.Analyzers.AnalyzersPlugin.create resolvedPaths config.TimeoutSec a.FailOnSeverity
 
-            daemon.RegisterHandler(
-                FsHotWatch.Analyzers.AnalyzersPlugin.create resolvedPaths config.TimeoutSec a.FailOnSeverity
-            )
+        let loadedCount = handler.Init.LoadedCount
+
+        // Fail-loud: configured analyzers that load nothing must turn the gate
+        // RED (treated like a test failure), never silently pass. Compare against
+        // the ORIGINAL configured count — resolvedPaths can itself drop to zero.
+        match analyzersLoadFailure absolutePaths.Length loadedCount with
+        | Some message -> raise (ConfigError message)
+        | None ->
+            // loadedCount ≥ 1 here (the guard only passes with ≥1 loaded, or with
+            // 0 configured paths — and we are inside `Some a` so paths were given).
+            Logging.info
+                "config"
+                $"Registering AnalyzersPlugin with %d{resolvedPaths.Length} paths (%d{loadedCount} analyzers loaded)"
+
+            daemon.RegisterHandler(handler)
     | None -> ()
 
     // Build plugin(s)
