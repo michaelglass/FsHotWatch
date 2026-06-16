@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.34 - 2026-06-16
+
 - feat: `fshw` re-runs a project's dependent tests when its dependency
   fingerprint changes — a NuGet/`PackageReference` bump, or a referenced project
   rebuilt against a changed dependency — even when no F# symbol moved. Bundles

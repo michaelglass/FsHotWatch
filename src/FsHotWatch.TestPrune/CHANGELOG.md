@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.26 - 2026-06-16
+
 - feat: daemon re-runs dependent tests on a dependency-fingerprint change (new
   `PluginCtx` project-graph accessor), closing the zero-affected skip for
   dependency-only changes. On each `BuildCompleted`, every test project is
