@@ -493,6 +493,54 @@ let internal isZeroTestsUnderFilter (wasFiltered: bool) (outcome: ProcessOutcome
        | ProcessOutcome.Failed(_, output) -> output.Contains("Zero tests ran", StringComparison.OrdinalIgnoreCase)
        | _ -> false
 
+/// Build the human-readable error lines for a FAILED test project run, parsed
+/// from the runner's captured `output`. The header line plus the per-test
+/// `failed ...` lines plus the MTP summary lines (`total:`/`failed:`/
+/// `succeeded:`).
+///
+/// CRITICAL for CI observability: a red run that only reports "failed: 1" with
+/// NO test name is undiagnosable when the on-disk `.fshw/test-runs` log isn't
+/// uploaded as an artifact. MTP prints a failing test as a line whose TRIMMED
+/// form starts with `failed ` — INCLUDING `failed (canceled) <name> (Nms)` for a
+/// test killed by its `[<Fact(Timeout=...)>]` under CI load (the documented
+/// daemon-load flake class). We match the trimmed prefix so leading indentation
+/// (which varies by MTP version / capture path) never hides the name. As a
+/// backstop, when the run failed but NO `failed ` line parsed (a crash, an
+/// OOM-kill, or an output shape the matcher doesn't yet recognise), the tail of
+/// the captured output is echoed so the failure is ALWAYS visible from the CI
+/// console alone — never silently swallowed into "0 test(s) failed".
+let internal formatFailureReport (projectName: string) (output: string) : string list =
+    let lines = output.Split('\n')
+
+    let isFailedLine (l: string) = l.TrimStart().StartsWith("failed ")
+
+    let failedTests = lines |> Array.filter isFailedLine |> Array.toList
+
+    let summaryLines =
+        lines
+        |> Array.filter (fun l ->
+            let t = l.TrimStart()
+
+            t.StartsWith("Test run summary:")
+            || t.Contains("total:")
+            || t.Contains("failed:")
+            || t.Contains("succeeded:"))
+        |> Array.filter (isFailedLine >> not)
+        |> Array.toList
+
+    [ $"%s{projectName}: %d{failedTests.Length} test(s) failed:"
+      yield! failedTests |> List.map (fun l -> $"  %s{l.TrimEnd()}")
+      yield! summaryLines |> List.map (fun l -> $"  %s{l.TrimEnd()}")
+      if List.isEmpty failedTests then
+          $"%s{projectName}: run failed but no per-test 'failed' line was parsed — dumping last output lines so the failure is visible without the saved log:"
+
+          let tail =
+              lines
+              |> Array.filter (fun l -> not (System.String.IsNullOrWhiteSpace l))
+              |> (fun ls -> ls.[max 0 (ls.Length - 40) ..])
+
+          yield! tail |> Array.map (fun l -> $"  | %s{l.TrimEnd()}") |> Array.toList ]
+
 /// Issue 2 — STRUCTURAL apphost-missing detection. On a cold daemon a
 /// `dotnet run --project <proj> --no-build` can be launched before the build
 /// plugin produced that project's apphost binary; `dotnet run` then fails to
@@ -989,28 +1037,8 @@ let private executeTests
                                 | :? UnauthorizedAccessException as ex ->
                                     Logging.error "test-prune" $"Failed to persist test output: %s{ex.Message}"
 
-                                let lines = output.Split('\n')
-
-                                let failedTests = lines |> Array.filter (fun l -> l.StartsWith("failed "))
-
-                                let summaryLines =
-                                    lines
-                                    |> Array.filter (fun l ->
-                                        l.StartsWith("failed ")
-                                        || l.StartsWith("Test run summary:")
-                                        || l.Contains("total:")
-                                        || l.Contains("failed:")
-                                        || l.Contains("succeeded:"))
-
-                                Logging.error
-                                    "test-prune"
-                                    $"%s{config.Project}: %d{failedTests.Length} test(s) failed:"
-
-                                for line in failedTests do
-                                    Logging.error "test-prune" $"  %s{line}"
-
-                                for line in summaryLines |> Array.filter (fun l -> not (l.StartsWith("failed "))) do
-                                    Logging.error "test-prune" $"  %s{line}"
+                                for line in formatFailureReport config.Project output do
+                                    Logging.error "test-prune" line
 
                             let result =
                                 match processResult with

@@ -1935,6 +1935,61 @@ let ``comment-only change does not add file to ChangedFiles but AST change does`
 
         test <@ changedAfterAst.Value.Contains(env.RelPath) @>)
 
+// --- formatFailureReport: CI observability for a red test run ---
+//
+// Regression coverage for the bug where a failed run reported "0 test(s)
+// failed:" with NO test name in the CI console — undiagnosable because the
+// per-test detail only lived in the on-disk `.fshw/test-runs` log that CI
+// discards. The matcher must surface the failing test name(s) robustly, and
+// when nothing parses it must dump the output tail rather than swallow it.
+
+[<Fact(Timeout = 15000)>]
+let ``formatFailureReport surfaces a plain failed-test line`` () =
+    let output =
+        "Discovering: probe\nfailed FsHotWatch.Tests.Foo.bar (32ms)\nTest run summary: Failed!\n  total: 1\n  failed: 1\n  succeeded: 0"
+
+    let report = formatFailureReport "FsHotWatch.Tests" output |> String.concat "\n"
+    test <@ report.Contains("FsHotWatch.Tests.Foo.bar") @>
+    test <@ report.Contains("1 test(s) failed") @>
+
+[<Fact(Timeout = 15000)>]
+let ``formatFailureReport surfaces a timed-out (canceled) test — the daemon-load flake`` () =
+    // MTP prints a `[<Fact(Timeout=...)>]` cancellation as `failed (canceled) <name>`.
+    // This is the documented under-load flake; its name MUST appear.
+    let output =
+        "failed (canceled) FsHotWatch.Tests.Slow.thing (118ms)\n  Test execution timed out after 100 milliseconds\n  total: 1\n  failed: 1"
+
+    let report = formatFailureReport "FsHotWatch.Tests" output |> String.concat "\n"
+    test <@ report.Contains("FsHotWatch.Tests.Slow.thing") @>
+    test <@ report.Contains("(canceled)") @>
+    test <@ report.Contains("1 test(s) failed") @>
+
+[<Fact(Timeout = 15000)>]
+let ``formatFailureReport matches a failed line with leading whitespace`` () =
+    // The exact CI gap: some MTP/capture paths indent the failed line, so the
+    // old `StartsWith("failed ")` (no trim) silently missed it → "0 test(s)
+    // failed" with the name nowhere in the console.
+    let output =
+        "    failed FsHotWatch.Tests.Indented.case (5ms)\n  total: 1\n  failed: 1"
+
+    let report = formatFailureReport "FsHotWatch.Tests" output |> String.concat "\n"
+    test <@ report.Contains("1 test(s) failed") @>
+    test <@ report.Contains("FsHotWatch.Tests.Indented.case") @>
+
+[<Fact(Timeout = 15000)>]
+let ``formatFailureReport dumps the output tail when no failed line parses (backstop)`` () =
+    // A crash / OOM-kill / unrecognised format yields a non-zero run with no
+    // `failed ` line. Rather than report "0 test(s) failed" and hide the cause,
+    // the tail of the output is echoed so the failure is visible in the console.
+    let output =
+        "Building...\nUnhandled exception: System.AccessViolationException\n  at Some.Native.Frame()\nProcess terminated."
+
+    let report = formatFailureReport "FsHotWatch.Tests" output |> String.concat "\n"
+    test <@ report.Contains("0 test(s) failed") @>
+    test <@ report.Contains("no per-test 'failed' line was parsed") @>
+    // The actual cause IS surfaced (not swallowed).
+    test <@ report.Contains("AccessViolationException") @>
+
 // --- isZeroTestsUnderFilter unit tests ---
 //
 // Regression coverage for the bug where `test-rerun --filter-class X` (a raw
