@@ -3,6 +3,10 @@
 Plugin that runs [FSharpLint](https://fsprojects.github.io/FSharpLint/)
 using the warm FSharpChecker's parse and check results -- no re-parsing needed.
 
+> **Status: early alpha, and a lot of it is AI-written.** APIs shift between
+> versions and rough edges are expected — your mileage may vary. Issues and PRs
+> are very welcome.
+
 ## Why
 
 FSharpLint normally parses your entire project from scratch every time

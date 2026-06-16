@@ -8,6 +8,10 @@ formatting. This package provides two components:
 2. **FormatCheckPlugin** -- reports which files are not properly formatted
    (read-only, for CI)
 
+> **Status: early alpha, and a lot of it is AI-written.** APIs shift between
+> versions and rough edges are expected — your mileage may vary. Issues and PRs
+> are very welcome.
+
 ## Why
 
 Running `dotnet fantomas` on every save is slow because it starts a new

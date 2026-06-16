@@ -4,6 +4,10 @@ Plugin for test impact analysis. When you change a source file,
 TestPrune figures out which tests are affected and runs only those --
 instead of your entire test suite.
 
+> **Status: early alpha, and a lot of it is AI-written.** APIs and behavior
+> shift between versions and rough edges are expected — your mileage may vary.
+> Issues and PRs are very welcome.
+
 ## Why
 
 Running all tests after every save is slow. If you change a single
@@ -64,6 +68,9 @@ In `.fshw.json`:
 | `projects[].environment` | `object` | `{}` | Extra environment variables as `"KEY": "VALUE"` pairs. |
 | `projects[].filterTemplate` | `string` | -- | Template for class-based filtering. `{classes}` is replaced with affected test class names. |
 | `projects[].classJoin` | `string` | `" "` | Separator for joining class names in the filter. |
+| `projects[].coverage` | `bool` or `object` | `true` | Emit coverage for this project. `false` disables it; an object `{ "enabled": bool, "argsTemplate": string }` overrides the coverage args. |
+| `projects[].timeoutSec` | `int` | -- | Per-project test timeout in seconds. Falls back to the top-level `tests.timeoutSec`. |
+| `coverageDir` | `string` | `"coverage"` | Directory (under the repo root) where per-project coverage artifacts are written. |
 
 ## CLI
 
@@ -100,7 +107,7 @@ before rewriting the cobertura file. Partial runs **never lower** the reported
 coverage.
 
 **Bootstrap.** If no `coverage.baseline.json` exists and the run was filtered,
-TestPrune skips cobertura emission entirely. Run `fshw test` (or any
+TestPrune skips cobertura emission entirely. Run `fshw check` (or any
 full-suite invocation) once to produce a baseline; subsequent filtered runs
 will merge against it.
 
@@ -124,12 +131,16 @@ daemon.RegisterHandler(
               Group = "unit"
               Environment = []
               FilterTemplate = Some "--filter-class {classes}"
-              ClassJoin = " " }
+              ClassJoin = " "
+              TimeoutSec = None }
         ])
         None                      // buildExtensions: Database -> ITestPruneExtension list
         None                      // beforeRun callback
         None                      // afterRun callback
         None                      // coveragePaths: project -> CoveragePaths option
+        []                        // dependsOn: repo-root-relative globs naming external
+                                  //   test inputs (migrations, generated files) — their
+                                  //   content hash salts the test cache key
 )
 ```
 
