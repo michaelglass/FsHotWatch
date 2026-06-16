@@ -1,21 +1,27 @@
 <!-- sync:readme -->
 # TestPrune
 
-Only run the tests affected by your change.
+Run only the tests your change could have affected.
 
-TestPrune analyzes your F# code to figure out which functions depend on
-which, then uses that to skip tests that couldn't possibly be affected
-by what you changed.
+TestPrune analyzes your F# code to work out which functions depend on
+which, then uses that map to skip tests that couldn't have been touched
+by what you changed. The aim: when your suite takes minutes but you
+changed one function, you wait seconds.
+
+> **Status: early alpha.** This is a young project, substantially
+> AI-written, and still finding its shape. Behavior and APIs shift
+> between versions, so pin a version and expect surprises. Issues and
+> PRs are very welcome.
 
 ## Why?
 
 When your test suite takes minutes but you only changed one function,
 running everything is wasteful. TestPrune builds a map of your code —
-which functions call which, which tests cover which code — and uses it
-to pick just the tests that matter.
+which functions call which, which tests cover which code — and tries to
+pick just the tests that matter.
 
-Change `multiply`? Only the multiply tests run. Change a type that
-three modules depend on? Those three modules' tests run. Add a new
+Change `multiply`? Ideally only the multiply tests run. Change a type
+that three modules depend on? Those three modules' tests run. Add a new
 file? Everything runs, just to be safe.
 
 ## Quick example
@@ -40,113 +46,44 @@ let ``add returns sum`` () = Assert.Equal(5, add 2 3)
 let ``multiply returns product`` () = Assert.Equal(12, multiply 3 4)
 ```
 
-You change `multiply`. TestPrune figures out that only
+You change `multiply`. TestPrune works out that only
 `multiply returns product` needs to run — and skips `add returns sum`.
 
-## Getting started
+## Try the CLI
 
-```bash
-dotnet add package TestPrune.Core
+The quickest way to see it work is the `test-prune` CLI, a reference
+implementation that wires the library up for you:
+
+```
+test-prune index       # Build the dependency graph
+test-prune run         # Run only affected tests
+test-prune status      # Show what would run (dry-run)
+test-prune dead-code   # Find unreachable production code
 ```
 
-### 1. Index your project
+It detects changes from your version control (`jj` or `git`), so run
+`index` once, then `run`/`status` after each edit.
 
-First, build a dependency graph of your code. This parses every `.fs`
-file and stores the results in a local SQLite database:
+Global options: `--repo <path>` (repo root, default: auto-detect),
+`--parallelism <n>` (max parallel analyses, default: processor count).
 
-```fsharp
-let checker = FSharpChecker.Create()
-let db = Database.create ".test-prune.db"
-let projOptions = getScriptOptions checker fileName source |> Async.RunSynchronously
-
-match analyzeSource checker fileName source projOptions |> Async.RunSynchronously with
-| Ok result ->
-    let normalized = { result with Symbols = normalizeSymbolPaths repoRoot result.Symbols }
-    db.RebuildProjects([ normalized ])
-| Error msg -> eprintfn $"Failed: %s{msg}"
-```
-
-Caching works at two levels — project and file — to skip expensive
-re-analysis for unchanged code:
-
-```fsharp
-// Project-level: skip the entire project if nothing changed
-match db.GetProjectKey("MyProject") with
-| Some key when key = currentKey -> () // skip
-| _ ->
-    // File-level: skip individual files within a changed project
-    match db.GetFileKey("src/Lib.fs") with
-    | Some key when key = currentFileKey ->
-        // Load cached results from DB instead of re-analyzing
-        let symbols = db.GetSymbolsInFile("src/Lib.fs")
-        let deps = db.GetDependenciesFromFile("src/Lib.fs")
-        let tests = db.GetTestMethodsInFile("src/Lib.fs")
-        // ... use cached data
-    | _ ->
-        // File changed — run FCS analysis
-        // ... analyzeSource, then db.SetFileKey(...)
-
-    db.RebuildProjects([ combined ])
-    db.SetProjectKey("MyProject", currentKey)
-```
-
-Cache keys can be anything that changes when source files change.
-Good options:
-
-- **VCS tree hash** (recommended) — `jj log -r @ -T commit_id` or
-  `git rev-parse HEAD` gives a content-addressed hash that changes
-  exactly when files change. Fast and correct across branch switches.
-- **File metadata** — path + size + mtime. The CLI uses this by default.
-  Simple but can be wrong after `git checkout` (mtime updates even if
-  content is identical).
-
-### 2. Find affected tests
-
-When you're ready to test, compare the current code against the index
-to find what changed, then ask which tests are affected:
-
-```fsharp
-let store = Ports.toSymbolStore db
-
-match selectTests store changedFiles currentSymbolsByFile with
-| RunSubset tests -> // only these tests need to run
-| RunAll reason   -> // something changed that we can't analyze — run everything
-```
-
-`RunSubset` gives you a list of specific test methods. `RunAll` is the
-safe fallback for situations like `.fsproj` changes or brand new files
-where TestPrune can't be sure what's affected.
-
-### 3. (Bonus) Find dead code
-
-The same dependency graph can find code that's never reached from your
-entry points:
-
-```fsharp
-let result = findDeadCode db [ "*.main"; "*.Program.*" ] false
-// result.UnreachableSymbols — functions nothing calls
-```
-
-By default, symbols in test files are excluded from the report. Pass
-`true` for `includeTests` to find dead code in your test suite too
-(e.g. unused test helpers):
-
-```fsharp
-let result = findDeadCode db [ "Tests.MyTests.*" ] true
-```
+The CLI re-analyzes serially and isn't tuned for big codebases —
+FSharp.Compiler.Service type-checking is slow. For real workflows,
+embed `TestPrune.Core` in your build tooling, where you can cache and
+parallelize. See the [integration guide](docs/integration.md).
 
 ## How it works
 
-1. **Index** — Parse every `.fs` file, record which functions/types exist
-   and what they depend on. Store in SQLite.
+1. **Index** — Parse every `.fs` file, record which functions/types
+   exist and what they depend on. Store in SQLite.
 2. **Diff** — Look at what files changed since last commit.
 3. **Compare** — Figure out which specific functions changed (added,
    removed, or modified).
-4. **Walk** — Follow the dependency graph from changed functions to find
-   every test that transitively depends on them.
+4. **Walk** — Follow the dependency graph from changed functions to
+   find every test that transitively depends on them.
 5. **Run** — Execute only those tests.
 
-If anything looks uncertain (new files, project file changes), it falls
+If anything looks uncertain (new files, project-file changes), it falls
 back to running everything. Better to run too many tests than miss a
 broken one.
 
@@ -175,46 +112,6 @@ Glob dialect: `**` crosses path segments, `*` stays within one, `?` is
 a single non-`/` char. Paths are repo-relative and case-sensitive. The
 attributes are metadata — no runtime behavior.
 
-## Dependency-change fanout
-
-When a project's *dependency fingerprint* changes — a NuGet/`PackageReference`
-bump, or a `ProjectReference`d project rebuilt against a changed dependency —
-every test in the projects that transitively reference it is selected, even
-though no source symbol changed (the `ProjectFanout` module). This catches
-behavior changes the symbol graph can't see. **FsHotWatch**'s daemon is the
-reference consumer of this fanout.
-
-## Extensions
-
-Some dependencies don't show up in code — like HTTP routes mapping to
-handler files. Extensions let you teach TestPrune about these:
-
-```fsharp
-type ITestPruneExtension =
-    abstract Name: string
-    abstract AnalyzeEdges:
-        symbolStore: SymbolStore -> changedFiles: string list -> repoRoot: string -> Dependency list
-```
-
-[`TestPrune.Falco`](src/TestPrune.Falco/) is an extension for Falco
-web apps that maps URL routes to integration tests.
-
-## Analyzer (opt-in)
-
-Anonymous records (`{| Year = d.Year |}` and the matching `{| Year: int |}`
-type annotations) have no stable cross-build name, so TestPrune's AST impact
-analysis **skips** them. A test or symbol coupled to a change *only* through an
-anonymous record is therefore invisible to impact selection.
-
-[`TestPrune.Analyzers`](src/TestPrune.Analyzers/) is an opt-in
-[FSharp.Analyzers.SDK](https://github.com/ionide/FSharp.Analyzers.SDK) analyzer
-that flags every anonymous-record occurrence (diagnostic `TP001`,
-`TestPrune.AnonymousRecord`, severity *Warning*) so precision-sensitive repos can
-steer that coupling to a tracked alternative — a named record, or an explicit
-`[<TestPrune.DependsOnFile>]` / `[<TestPrune.DependsOnGlob>]` edge. It is opt-in by
-construction: nothing changes unless you load the analyzer into your analyzer host
-(FsHotWatch, Ionide, or `fsharp-analyzers`).
-
 ## Packages
 
 | Package | What it's for |
@@ -223,44 +120,25 @@ construction: nothing changes unless you load the analyzer into your analyzer ho
 | [`TestPrune.Attributes`](https://www.nuget.org/packages/TestPrune.Attributes) | Consumer-side markers: `[<DependsOn>]`, `[<DependsOnFile>]`, `[<DependsOnGlob>]` |
 | [`TestPrune.Falco`](https://www.nuget.org/packages/TestPrune.Falco) | Extension for Falco web apps (route → test mapping) |
 | [`TestPrune.Analyzers`](https://www.nuget.org/packages/TestPrune.Analyzers) | Opt-in F# analyzer that flags anonymous records (invisible to impact analysis) |
-| `TestPrune` | CLI tool (reference implementation — see below) |
+| `TestPrune` | CLI tool (reference implementation) |
 
-## CLI (reference implementation)
+## Going deeper
 
-The `TestPrune` CLI is a **reference implementation** — it shows how to
-wire up the library, but it's not optimized for production use. In
-particular, FSharp.Compiler.Service analysis is inherently slow (it
-type-checks your entire project), so the CLI re-indexes serially and
-can take a while on large codebases. For real workflows, use
-`TestPrune.Core` directly in your build system where you can cache
-aggressively, parallelize across projects, and integrate with your
-existing tooling.
-
-```
-test-prune index       # Build the dependency graph
-test-prune run         # Run only affected tests
-test-prune status      # Show what would run (dry-run)
-test-prune dead-code   # Find unreachable production code
-test-prune dead-code --include-tests  # Include test files in report
-```
-
-## Documentation
-
+- [Integration guide](docs/integration.md) — embed `TestPrune.Core`:
+  indexing, two-level caching, finding affected tests, dead-code
+  detection, extensions, the analyzer, and dependency-change fanout.
 - [Full documentation](https://michaelglass.github.io/TestPrune/)
 - [API reference](https://michaelglass.github.io/TestPrune/reference/testprune.html)
 
 ## Design choices
 
 **Static analysis, not coverage.** TestPrune reads your code's AST
-instead of instrumenting test runs. This means you don't need to run
-tests to build the graph, and there's no flaky-coverage problem. The
-tradeoff: it might run a few extra tests, but it won't miss broken
-ones. Note that FSharp.Compiler.Service type-checking is not instant —
-plan on caching aggressively (see the file- and project-level caching
-APIs) and parallelizing across projects in your integration.
+instead of instrumenting test runs. So you don't need to run tests to
+build the graph, and there's no flaky-coverage problem. The tradeoff:
+it may run a few extra tests, but it aims never to miss a broken one.
 
-**Safe by default.** When in doubt, run everything. A missed broken test
-is much worse than running a few unnecessary ones.
+**Safe by default.** When in doubt, run everything. A missed broken
+test is much worse than running a few unnecessary ones.
 
 **Single-file storage.** The dependency graph is one `.test-prune.db`
 file. No servers, no services. Rebuilds are atomic.
