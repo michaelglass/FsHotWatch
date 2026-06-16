@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: `fshw` re-runs a project's dependent tests when its dependency
+  fingerprint changes — a NuGet/`PackageReference` bump, or a referenced project
+  rebuilt against a changed dependency — even when no F# symbol moved. Bundles
+  the updated FsHotWatch.TestPrune + TestPrune.Core 4.3.0 (`ProjectFanout`).
+- fix: a failing test's NAME is now surfaced in `fshw`'s console output, not
+  just the saved `.fshw/test-runs` log — so a CI red is diagnosable from the
+  console alone instead of collapsing to `failed: 1`. Bundles the
+  FsHotWatch.TestPrune observability fix.
+
 ## 0.8.0-alpha.33 - 2026-06-16
 
 - fix: a directly-edited test now re-selects itself. Bundles TestPrune.Core

@@ -12,6 +12,15 @@
   changes binary behaviour without touching an F# symbol (e.g. CommandTree
   0.6.3 → 0.7.0) now re-runs the dependent tests instead of being skipped.
   Bundles TestPrune.Core's `ProjectFanout`.
+- fix: a failing test in a daemon run now has its NAME surfaced in the console
+  output, not just the on-disk `.fshw/test-runs` log (which CI discards). The
+  failure-summary matcher checked for a `failed ` prefix without trimming, so any
+  capture path that indented the line (varies by MTP version) was missed —
+  producing the contradictory `0 test(s) failed:` alongside `failed: 1` with no
+  test name. Now matched on the trimmed prefix (covering `failed (canceled) …`
+  timeout-cancellations, the documented under-load flake class), with a backstop
+  that dumps the output tail when a run fails but no per-test line parses — so a
+  failure is never swallowed into "0 test(s) failed".
 
 ## 0.7.0-alpha.25 - 2026-06-16
 
