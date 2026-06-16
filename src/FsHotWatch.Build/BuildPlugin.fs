@@ -237,33 +237,6 @@ let create
     let countBuiltProjects (output: string) =
         BuildDiagnostics.parseDllPaths output |> Map.count
 
-    /// Run from the async build worker. Logs+summary happens here (live UI),
-    /// but the *captured* operations (ReportErrors / ClearErrors / EmitBuildCompleted)
-    /// are deferred to the synchronous Custom BuildDone handler so the framework's
-    /// per-event capture window records them for the §2a cache. Returns the
-    /// completion message; the framework posts it back via RunExclusive.
-    let applyBuildOutcome (ctx: PluginCtx<BuildMsg>) (outcome: BuildOutcome) (entries: ErrorEntry list) =
-        match outcome with
-        | BuildPassed out ->
-            let n = countBuiltProjects out
-            let summary = if n > 0 then $"built {n} projects" else "build succeeded"
-            ctx.Log summary
-            ctx.CompleteWithSummary summary
-        | BuildArtifactsStale(stale, _) ->
-            let summary = $"build failed: %d{stale.Length} stale artifacts"
-            ctx.Log summary
-            error "build" summary
-            ctx.CompleteWithSummary summary
-        | BuildOutputFailed _ ->
-            let errCount =
-                entries
-                |> List.filter (fun e -> e.Severity = DiagnosticSeverity.Error)
-                |> List.length
-
-            ctx.CompleteWithSummary $"build failed: %d{errCount} errors"
-
-        BuildDone(outcome, entries)
-
     /// Phrase a single stale-artifact case for human-readable diagnostics.
     /// Worker-side so cache replay reproduces the same message verbatim.
     let formatStaleArtifact (s: StaleArtifact) : string =
@@ -279,6 +252,38 @@ let create
         + "found stale artifacts (MSBuild incremental cache likely lied).\n"
         + "Re-run with `dotnet build --no-incremental` (or delete bin/ and obj/).\n\n"
         + (stale |> List.map formatStaleArtifact |> String.concat "\n")
+
+    /// Run from the async build worker. Logs+summary happens here (live UI),
+    /// but the *captured* operations (ReportErrors / ClearErrors / EmitBuildCompleted)
+    /// are deferred to the synchronous Custom BuildDone handler so the framework's
+    /// per-event capture window records them for the §2a cache. Returns the
+    /// completion message; the framework posts it back via RunExclusive.
+    let applyBuildOutcome (ctx: PluginCtx<BuildMsg>) (outcome: BuildOutcome) (entries: ErrorEntry list) =
+        match outcome with
+        | BuildPassed out ->
+            let n = countBuiltProjects out
+            let summary = if n > 0 then $"built {n} projects" else "build succeeded"
+            ctx.Log summary
+            ctx.CompleteWithSummary summary
+        | BuildArtifactsStale(stale, _) ->
+            let summary = $"build failed: %d{stale.Length} stale artifacts"
+            // Log the per-project detail (which DLL, and how far its mtime trails
+            // its newest source), not just the count, so an intermittent stale-
+            // artifact failure names the project and the mtime delta in the live
+            // log/test output — otherwise it surfaces only as un-actionable
+            // "build failed: 1 stale artifacts" with no way to tell which project.
+            ctx.Log(staleDiagnostic stale)
+            error "build" (staleDiagnostic stale)
+            ctx.CompleteWithSummary summary
+        | BuildOutputFailed _ ->
+            let errCount =
+                entries
+                |> List.filter (fun e -> e.Severity = DiagnosticSeverity.Error)
+                |> List.length
+
+            ctx.CompleteWithSummary $"build failed: %d{errCount} errors"
+
+        BuildDone(outcome, entries)
 
     /// Run verifyArtifactsFresh on a BuildPassed outcome and demote to
     /// BuildArtifactsStale if any project's DLL is stale. Other outcomes
