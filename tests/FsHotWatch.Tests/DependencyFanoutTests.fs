@@ -52,7 +52,7 @@ module ``directPackageVersions`` =
 
     [<Fact>]
     let ``an unreadable / missing project yields an empty list`` () =
-        test <@ directPackageVersions "/no/such/path/Nope.fsproj" = [] @>
+        test <@ List.isEmpty (directPackageVersions "/no/such/path/Nope.fsproj") @>
 
 module ``computeProjectFingerprint`` =
 
@@ -155,9 +155,9 @@ module ``ProjectGraphAccessor none`` =
     [<Fact>]
     let ``the no-op accessor returns empty/None for every query`` () =
         let g = ProjectGraphAccessor.none
-        test <@ g.GetAllProjects() = [] @>
-        test <@ g.GetTransitiveDependentProjects "X.fsproj" = [] @>
-        test <@ g.GetProjectReferences "X.fsproj" = [] @>
+        test <@ List.isEmpty (g.GetAllProjects()) @>
+        test <@ List.isEmpty (g.GetTransitiveDependentProjects "X.fsproj") @>
+        test <@ List.isEmpty (g.GetProjectReferences "X.fsproj") @>
         test <@ g.GetCanonicalDllPath "X.fsproj" = None @>
 
 module ``changedProjects`` =
