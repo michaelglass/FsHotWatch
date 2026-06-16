@@ -14,4 +14,7 @@
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/TestPrune.Benchmarks/TestPrune.Benchmarks.fsproj" />
   </Folder>
+  <Folder Name="/examples/">
+    <Project Path="examples/UsageExample/UsageExample.fsproj" />
+  </Folder>
 </Solution>

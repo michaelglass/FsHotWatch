@@ -20,6 +20,11 @@ type-checking is not instant, so plan on caching.
 First, build a dependency graph of your code. This parses every `.fs`
 file with FCS and stores the results in a local SQLite database:
 
+<!-- This block is sourced from a real, compiled example — see
+     examples/UsageExample/UsageExample.fs. Do not edit it here; edit the source
+     file and run `mise run sync-docs`. CI compiles the example and
+     `sync-docs-check` fails if this block drifts. -->
+<!-- sync:index:start src=examples/UsageExample/UsageExample.fs -->
 ```fsharp
 open TestPrune.AstAnalyzer
 open TestPrune.Database
@@ -33,12 +38,19 @@ let projectName = "MyProject"
 
 let projOptions = getScriptOptions checker fileName source |> Async.RunSynchronously
 
-match analyzeSource checker fileName source projOptions projectName |> Async.RunSynchronously with
+match
+    analyzeSource checker fileName source projOptions projectName
+    |> Async.RunSynchronously
+with
 | Ok result ->
-    let normalized = { result with Symbols = normalizeSymbolPaths repoRoot result.Symbols }
+    let normalized =
+        { result with
+            Symbols = normalizeSymbolPaths repoRoot result.Symbols }
+
     db.RebuildProjects([ normalized ])
 | Error msg -> eprintfn $"Failed: %s{msg}"
 ```
+<!-- sync:index:end -->
 
 `analyzeSource` takes `checker source-file source project-options
 project-name` and returns `Result<AnalysisResult, string>`.
@@ -55,6 +67,7 @@ content hashes that you supply. Read them with `db.GetProjectKey` /
 `db.GetFileKey`, and write them in the same transaction as the symbols
 via `RebuildProjects`'s optional `fileKeys` / `projectKeys` arguments:
 
+<!-- sync:cache:start src=examples/UsageExample/UsageExample.fs -->
 ```fsharp
 match db.GetProjectKey("MyProject") with
 | Some key when key = currentKey -> () // unchanged — skip the whole project
@@ -66,15 +79,16 @@ match db.GetProjectKey("MyProject") with
         let deps = db.GetDependenciesFromFile("src/Lib.fs")
         let tests = db.GetTestMethodsInFile("src/Lib.fs")
         () // ... use cached data
-    | _ ->
-        () // file changed — run analyzeSource as above
+    | _ -> () // file changed — run analyzeSource as above
 
     // Write symbols and both sets of cache keys atomically.
     db.RebuildProjects(
         [ combined ],
         fileKeys = [ "src/Lib.fs", currentFileKey ],
-        projectKeys = [ "MyProject", currentKey ])
+        projectKeys = [ "MyProject", currentKey ]
+    )
 ```
+<!-- sync:cache:end -->
 
 Cache keys can be anything that changes when source files change. Good
 options:
@@ -93,6 +107,7 @@ to find what changed, then ask which tests are affected. `selectTests`
 returns a `TestSelection * AnalysisEvent list` tuple (the events are an
 audit trail you can ignore):
 
+<!-- sync:select:start src=examples/UsageExample/UsageExample.fs -->
 ```fsharp
 open TestPrune.Ports
 open TestPrune.ImpactAnalysis
@@ -103,8 +118,9 @@ let selection, _events = selectTests store changedFiles currentSymbolsByFile
 
 match selection with
 | RunSubset tests -> () // only these test methods need to run
-| RunAll reason   -> () // can't analyze the change — run everything
+| RunAll reason -> () // can't analyze the change — run everything
 ```
+<!-- sync:select:end -->
 
 `RunSubset` carries a list of specific test methods. `RunAll` is the
 safe fallback for `.fsproj` changes, brand-new files, or analysis
@@ -117,6 +133,7 @@ The same dependency graph can find code that's never reached from your
 entry points. Resolve entry-point patterns to symbol names, compute the
 reachable set, then call `findDeadCode`:
 
+<!-- sync:dead-code:start src=examples/UsageExample/UsageExample.fs -->
 ```fsharp
 open TestPrune.DeadCode
 
@@ -129,9 +146,10 @@ let entryPoints = findEntryPoints allNames entryPatterns
 let reachable = store.GetReachableSymbols(entryPoints)
 let testMethodNames = store.GetTestMethodSymbolNames()
 
-let result, _events = findDeadCode allSymbols reachable testMethodNames false
 // result.UnreachableSymbols — symbols nothing reaches from the entry points
+let result, _events = findDeadCode allSymbols reachable testMethodNames false
 ```
+<!-- sync:dead-code:end -->
 
 The last argument is `includeTests`. By default (`false`) symbols in
 test files are excluded from the report; pass `true` to find dead code
@@ -143,16 +161,25 @@ a `getIncomingEdgesBatch` (available as `store.GetIncomingEdgesBatch`).
 
 Some dependencies don't show up in code — like HTTP routes mapping to
 handler files. Extensions let you teach TestPrune about these by
-injecting extra dependency edges:
+implementing `ITestPruneExtension` to inject extra dependency edges:
 
+<!-- sync:extension:start src=examples/UsageExample/UsageExample.fs -->
 ```fsharp
 open TestPrune.Extensions
 
-type ITestPruneExtension =
-    abstract Name: string
-    abstract AnalyzeEdges:
-        symbolStore: SymbolStore -> changedFiles: string list -> repoRoot: string -> Dependency list
+type ExampleExtension() =
+    interface ITestPruneExtension with
+        member _.Name = "example"
+
+        member _.AnalyzeEdges
+            (symbolStore: SymbolStore)
+            (changedFiles: string list)
+            (repoRoot: string)
+            : Dependency list =
+            // Map out-of-band coupling (routes, snapshots, config) to edges here.
+            []
 ```
+<!-- sync:extension:end -->
 
 [`TestPrune.Falco`](https://www.nuget.org/packages/TestPrune.Falco) is
 an extension for Falco web apps that maps URL routes to integration
