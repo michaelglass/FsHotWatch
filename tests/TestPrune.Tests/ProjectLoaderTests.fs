@@ -111,3 +111,111 @@ module ``parseProjectFile`` =
             test <@ projectRefs |> List.isEmpty @>
         finally
             Directory.Delete(tmpDir, true)
+
+module ``parsePackageReferences`` =
+
+    [<Fact>]
+    let ``extracts direct PackageReference versions (non-CPM, e.g. intelligence)`` () =
+        let tmpDir, fsprojPath =
+            writeTempFsproj
+                """<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="CommandTree" Version="0.7.0" />
+    <PackageReference Include="FSharp.Core" Version="10.1.0" />
+  </ItemGroup>
+</Project>"""
+
+        try
+            let pkgs = parsePackageReferences fsprojPath
+            test <@ pkgs = [ ("CommandTree", "0.7.0"); ("FSharp.Core", "10.1.0") ] @>
+        finally
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``resolves CPM versions from an ancestor Directory.Packages.props`` () =
+        // Project under <tmp>/proj/, CPM props at <tmp>/Directory.Packages.props.
+        let tmpDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+        let projDir = Path.Combine(tmpDir, "proj")
+        Directory.CreateDirectory(projDir) |> ignore
+
+        File.WriteAllText(
+            Path.Combine(tmpDir, "Directory.Packages.props"),
+            """<Project>
+  <ItemGroup>
+    <PackageVersion Include="CommandTree" Version="0.6.3" />
+    <PackageVersion Include="FSharp.Core" Version="10.1.0" />
+  </ItemGroup>
+</Project>"""
+        )
+
+        let fsprojPath = Path.Combine(projDir, "Proj.fsproj")
+
+        File.WriteAllText(
+            fsprojPath,
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="CommandTree" />
+    <PackageReference Include="FSharp.Core" />
+  </ItemGroup>
+</Project>"""
+        )
+
+        try
+            let pkgs = parsePackageReferences fsprojPath
+            test <@ pkgs = [ ("CommandTree", "0.6.3"); ("FSharp.Core", "10.1.0") ] @>
+        finally
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``a CPM bump in Directory.Packages.props changes the parsed version`` () =
+        // The acceptance mechanism: the same .fsproj resolves a different version
+        // after the central props file bumps the package.
+        let tmpDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+        let projDir = Path.Combine(tmpDir, "proj")
+        Directory.CreateDirectory(projDir) |> ignore
+        let propsPath = Path.Combine(tmpDir, "Directory.Packages.props")
+        let fsprojPath = Path.Combine(projDir, "Proj.fsproj")
+
+        File.WriteAllText(
+            fsprojPath,
+            """<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="CommandTree" />
+  </ItemGroup>
+</Project>"""
+        )
+
+        try
+            File.WriteAllText(
+                propsPath,
+                """<Project><ItemGroup><PackageVersion Include="CommandTree" Version="0.6.3" /></ItemGroup></Project>"""
+            )
+
+            let before = parsePackageReferences fsprojPath
+
+            File.WriteAllText(
+                propsPath,
+                """<Project><ItemGroup><PackageVersion Include="CommandTree" Version="0.7.0" /></ItemGroup></Project>"""
+            )
+
+            let after = parsePackageReferences fsprojPath
+            test <@ before = [ ("CommandTree", "0.6.3") ] @>
+            test <@ after = [ ("CommandTree", "0.7.0") ] @>
+        finally
+            Directory.Delete(tmpDir, true)
+
+    [<Fact>]
+    let ``an unresolved CPM reference is emitted as "unresolved" (deterministic)`` () =
+        let tmpDir, fsprojPath =
+            writeTempFsproj
+                """<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="NoVersionAnywhere" />
+  </ItemGroup>
+</Project>"""
+
+        try
+            let pkgs = parsePackageReferences fsprojPath
+            test <@ pkgs = [ ("NoVersionAnywhere", "unresolved") ] @>
+        finally
+            Directory.Delete(tmpDir, true)

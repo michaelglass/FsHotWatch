@@ -23,6 +23,7 @@
     <Compile Include="DiffParserTests.fs" />
     <Compile Include="SymbolDiffTests.fs" />
     <Compile Include="ImpactAnalysisTests.fs" />
+    <Compile Include="ProjectFanoutTests.fs" />
     <Compile Include="DeadCodeTests.fs" />
     <Compile Include="AuditSinkTests.fs" />
     <Compile Include="PortsTests.fs" />

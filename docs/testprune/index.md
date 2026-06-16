@@ -175,6 +175,15 @@ Glob dialect: `**` crosses path segments, `*` stays within one, `?` is
 a single non-`/` char. Paths are repo-relative and case-sensitive. The
 attributes are metadata — no runtime behavior.
 
+## Dependency-change fanout
+
+When a project's *dependency fingerprint* changes — a NuGet/`PackageReference`
+bump, or a `ProjectReference`d project rebuilt against a changed dependency —
+every test in the projects that transitively reference it is selected, even
+though no source symbol changed (the `ProjectFanout` module). This catches
+behavior changes the symbol graph can't see. **FsHotWatch**'s daemon is the
+reference consumer of this fanout.
+
 ## Extensions
 
 Some dependencies don't show up in code — like HTTP routes mapping to

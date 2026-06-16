@@ -32,6 +32,7 @@
     <ItemGroup>
         <Compile Include="Domain.fs" />
         <Compile Include="AstAnalyzer.fs" />
+        <Compile Include="ProjectFanout.fs" />
         <Compile Include="Database.fs" />
         <Compile Include="Coverage.fs" />
         <Compile Include="Ports.fs" />

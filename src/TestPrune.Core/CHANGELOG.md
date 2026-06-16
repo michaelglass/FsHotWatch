@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- feat: dependency-fingerprint project-fanout — a dependency/PackageReference
+  change selects all tests in transitively-dependent test projects (superset of
+  the symbol graph). New `ProjectFanout` module: `ProjectInfo`,
+  `computeDependencyFingerprint`, `diffFingerprints`, `affectedTestProjects`,
+  `selectTestsForChangedProjects`. Closes the gap where a NuGet/PackageReference
+  bump changes a project's binary behaviour without touching any F# symbol, so
+  the symbol diff was empty and dependent tests were skipped. Source-symbol edits
+  stay symbol-precise; only dependency/binary changes get the project-scoped
+  fanout (never a run-all).
+
 ## 4.2.3 - 2026-06-16
 
 - fix: editing a test's own body now re-selects that test for impact analysis.

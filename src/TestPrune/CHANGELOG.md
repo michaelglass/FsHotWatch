@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `ProjectLoader.parsePackageReferences` extracts a project's
+  `<PackageReference>` versions — both inline (`Version="..."`) and CPM-resolved
+  from an ancestor `Directory.Packages.props` — feeding TestPrune.Core's new
+  dependency-fingerprint project-fanout so a package bump re-runs the dependent
+  test projects' tests.
+
 ## 4.2.3 - 2026-06-16
 
 - fix: editing a test's own body now re-selects that test, so `test-prune run`
