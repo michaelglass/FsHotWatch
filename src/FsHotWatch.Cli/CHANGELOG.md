@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: configured-but-not-running analyzers now turn the gate RED instead of
+  passing silently. If `.fshw.json` `analyzers.paths` is non-empty but the
+  result is zero analyzers loaded — paths missing (e.g. a bin dir built in the
+  wrong configuration, the actual CI bug) or present-but-empty — `fshw check
+  --run-once` exits non-zero with `config error: Analyzers configured (N
+  path(s)) but 0 analyzers loaded …`. Linters/analyzers are treated like test
+  failures: configured-but-not-running is never a silent pass.
+
 ## 0.8.0-alpha.34 - 2026-06-16
 
 - feat: `fshw` re-runs a project's dependent tests when its dependency

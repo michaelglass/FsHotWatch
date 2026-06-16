@@ -848,13 +848,21 @@ let executeCommand
                 1
         | Check flags when isRunOnce flags ->
 
-            RunOnceOutput.runOnceAndReport
-                (renderBlock mode (not noWarnFail))
-                noWarnFail
-                createDaemon
-                repoRoot
-                config
-                None
+            // A misconfiguration surfaced during plugin registration (e.g. the
+            // fail-loud analyzers guard) raises ConfigError. Report it cleanly
+            // with a RED exit code — same contract as the config-load handler —
+            // rather than crashing with an unhandled-exception stack trace.
+            try
+                RunOnceOutput.runOnceAndReport
+                    (renderBlock mode (not noWarnFail))
+                    noWarnFail
+                    createDaemon
+                    repoRoot
+                    config
+                    None
+            with ConfigError msg ->
+                eprintfn $"fshw: config error: %s{msg}"
+                2
         | Check flags -> queryPluginWith (mode) ""
         | Config ConfigCommand.Check ->
             // Config has already been parsed by main; reaching here means it's valid.

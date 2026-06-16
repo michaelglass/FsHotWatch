@@ -1012,6 +1012,47 @@ let ``registerPlugins stores FileCommand pattern on host`` () =
             @>)
 
 [<Fact(Timeout = 15000)>]
+let ``registerPlugins raises ConfigError when configured analyzers load zero`` () =
+    // Fail-loud guard end-to-end through registerPlugins: a CONFIGURED analyzers
+    // path that loads no analyzers (here: a non-existent dir — the actual CI bug)
+    // must raise ConfigError rather than register a do-nothing plugin that lets
+    // the gate pass silently.
+    withTempDir "cfg-analyzers-zero" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+        let daemon =
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+
+        let config =
+            { stripConfig defaults with
+                Analyzers =
+                    Some
+                        {| Paths = [ "no-such-analyzer-bin-dir" ]
+                           FailOnSeverity = DiagnosticSeverity.Hint |} }
+
+        let ex = Assert.Throws<ConfigError>(fun () -> registerPlugins daemon tmpDir config)
+
+        Assert.Contains("0 analyzers loaded", ex.Message)
+        // The plugin must NOT have registered — a silent do-nothing handler is
+        // exactly the failure mode the guard exists to prevent.
+        test <@ not (daemon.Host.GetAllStatuses().ContainsKey("analyzers")) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``registerPlugins with unconfigured analyzers does not raise or register`` () =
+    // No analyzers requested ⇒ the guard never fires (no misconfiguration).
+    withTempDir "cfg-analyzers-none" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+        let daemon =
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+
+        let config = stripConfig defaults
+        test <@ config.Analyzers = None @>
+
+        registerPlugins daemon tmpDir config
+        test <@ not (daemon.Host.GetAllStatuses().ContainsKey("analyzers")) @>)
+
+[<Fact(Timeout = 15000)>]
 let ``registerPlugins with afterTests-only plugin does not register pattern`` () =
     withTempDir "cfg-fc-aftertests-only" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
@@ -1442,3 +1483,32 @@ let ``resolveExistingPathsWithRetry handles empty input without sleeping`` () =
     let result = resolveExistingPathsWithRetry dirExists sleep []
     test <@ List.isEmpty result @>
     test <@ sleepCount = 0 @>
+
+// --- analyzersLoadFailure: fail-loud guard for configured-but-zero-loaded ---
+
+[<Fact(Timeout = 2000)>]
+let ``analyzersLoadFailure fires when paths configured but zero loaded`` () =
+    // The actual CI bug: configured paths that all fail to resolve → 0 loaded.
+    let result = analyzersLoadFailure 1 0
+    test <@ result.IsSome @>
+    test <@ result.Value.Contains("0 analyzers loaded") @>
+    test <@ result.Value.Contains("1 path(s)") @>
+    test <@ result.Value.Contains(".fshw.json analyzers.paths") @>
+
+[<Fact(Timeout = 2000)>]
+let ``analyzersLoadFailure fires for multiple configured paths that load zero`` () =
+    let result = analyzersLoadFailure 3 0
+    test <@ result.IsSome @>
+    test <@ result.Value.Contains("3 path(s)") @>
+
+[<Fact(Timeout = 2000)>]
+let ``analyzersLoadFailure silent when at least one analyzer loads`` () =
+    test <@ (analyzersLoadFailure 1 1).IsNone @>
+    test <@ (analyzersLoadFailure 2 1).IsNone @>
+    test <@ (analyzersLoadFailure 5 7).IsNone @>
+
+[<Fact(Timeout = 2000)>]
+let ``analyzersLoadFailure silent when analyzers unconfigured`` () =
+    // No analyzers requested (0 configured) is fine — "no analyzers" is not a
+    // misconfiguration, even if loaded count is also 0.
+    test <@ (analyzersLoadFailure 0 0).IsNone @>
