@@ -3,6 +3,10 @@
 Plugin that checks per-file line and branch coverage thresholds after each
 test run, using Cobertura XML reports produced by the test runner.
 
+> **Status: early alpha, and a lot of it is AI-written.** APIs shift between
+> versions and rough edges are expected — your mileage may vary. Issues and PRs
+> are very welcome.
+
 ## Why
 
 Coverage enforcement is usually a separate CI step that runs after all tests.
@@ -13,9 +17,10 @@ below the minimum.
 ## How it works
 
 1. TestPrune runs your tests (with coverage flags wired via `coveragePaths`)
-2. Tests produce `coverage.cobertura.xml` reports under `searchDir`
+2. TestPrune merges each run into the coverage high-watermark and writes the
+   shared `coverage.cobertura.xml` under `searchDir`
 3. CoveragePlugin receives `TestRunCompleted`
-4. It merges partial-run coverage with the baseline, then parses the Cobertura XML
+4. It finds and parses the `coverage.cobertura.xml` report(s)
 5. Files below their per-file threshold are reported as errors (surfaced by `fshw check` / `fshw status`)
 
 ## Configuration

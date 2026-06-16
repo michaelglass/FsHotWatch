@@ -4,6 +4,10 @@ Plugin that runs F# analyzers in-process using the warm FSharpChecker's
 check results. Compatible with [G-Research F# Analyzers SDK](https://github.com/G-Research/fsharp-analyzers)
 and custom `[<CliAnalyzer>]` implementations.
 
+> **Status: early alpha, and a lot of it is AI-written.** APIs shift between
+> versions and rough edges are expected — your mileage may vary. Issues and PRs
+> are very welcome.
+
 ## Why
 
 F# analyzers normally need to start their own compiler to get type

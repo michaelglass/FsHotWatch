@@ -4,6 +4,10 @@ Command-line tool for the FsHotWatch daemon. It auto-starts the daemon
 in the background when you run any command, so you don't need to manually
 manage daemon lifecycle.
 
+> **Status: early alpha, and a lot of it is AI-written.** Commands and flags
+> shift between versions and rough edges are expected — your mileage may vary.
+> Issues and PRs are very welcome.
+
 ## Install
 
 ```bash
@@ -43,17 +47,23 @@ current state without triggering anything.
 | `test-rerun [opts]` | Rerun a slice of tests through the daemon, bypassing impact analysis. Options: `--filter-class <pattern>`, `--filter-trait <name=value>`. Daemon-only. |
 | `format [--run-once]` | Run the Fantomas formatter on all files. |
 | `rerun <plugin>` | Force a single plugin to re-run, clearing its cached state. |
+| `init` | Write a starter `.fshw.json` to the repo root. |
 | `config check` | Validate `.fshw.json` without starting the daemon. Exits `0` on valid config, `2` on parse/validation error. |
-| `dead-code [opts]` | Report unreachable symbols from entry points (TestPrune dead-code analysis). |
+| `coverage refresh-baseline` | Delete the coverage baseline + partial JSON so the next full run rebuilds it from scratch. |
+| `dead-code [opts]` | Report unreachable symbols from entry points (TestPrune dead-code analysis). Options: `--entry <pattern>` (repeatable; replaces the defaults), `--include-tests`. |
+| `completions` | Install fish shell completions. |
 | `<command> [args]` | Run any plugin-registered command (e.g. `diagnostics`). |
 
 ## Options
 
 | Flag | Description |
 |------|-------------|
-| `-v`, `--verbose` | Show per-file status transitions (same as `--log-level=debug`). |
+| `-v`, `--verbose` | Enable debug-level logging (same as `--log-level=debug`). |
 | `--log-level=<level>` | Set log level: `error`, `warning`, `info`, `debug` (default: `info`). |
-| `--no-cache` | Disable the check result cache. |
+| `--no-cache` | Disable the on-disk task result cache. |
+| `--no-warn-fail` | Treat warnings as non-fatal (errors still fail the gate). |
+| `-q`, `--compact` | One line per plugin instead of per-file detail. |
+| `-a`, `--agent` | Agent-friendly parseable output with a next-step hint. |
 
 ## Examples
 

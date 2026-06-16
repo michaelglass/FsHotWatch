@@ -4,6 +4,10 @@ Core library for the FsHotWatch daemon. This package provides the event system,
 plugin framework, file watcher, project graph, check pipeline, and IPC server
 that all plugins build on top of.
 
+> **Status: early alpha, and a lot of it is AI-written.** APIs shift between
+> versions and rough edges are expected — your mileage may vary. Issues and PRs
+> are very welcome.
+
 ## What it does
 
 FsHotWatch keeps a single FSharpChecker instance warm in the background.

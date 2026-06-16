@@ -3,6 +3,10 @@
 Plugin that runs a custom command when files matching a pattern change.
 Register multiple instances for different file patterns.
 
+> **Status: early alpha, and a lot of it is AI-written.** APIs shift between
+> versions and rough edges are expected — your mileage may vary. Issues and PRs
+> are very welcome.
+
 ## Why
 
 Sometimes you want to run a specific command when certain files change --

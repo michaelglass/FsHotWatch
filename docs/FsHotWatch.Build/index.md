@@ -4,6 +4,10 @@ Plugin that runs a build command when source files change and emits
 `BuildCompleted` events for downstream plugins (like test runners and
 coverage checkers).
 
+> **Status: early alpha, and a lot of it is AI-written.** APIs shift between
+> versions and rough edges are expected — your mileage may vary. Issues and PRs
+> are very welcome.
+
 ## Why
 
 Without this plugin, each tool would need to trigger its own build.
