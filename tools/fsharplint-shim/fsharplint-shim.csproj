@@ -1,9 +1,16 @@
 <Project Sdk="Microsoft.Build.NoTargets/3.7.0">
   <!--
     Restore-only project: pulls FSharpLintAnalyzerShim + its bundled deps into
-    bin/Release/net10.0/ so fshw's AnalyzersPlugin can load them via a directory
-    path. Microsoft.Build.NoTargets skips Csc entirely so we don't generate an
-    empty fsharplint-shim.dll on every build.
+    bin/<Configuration>/net10.0/ so fshw's AnalyzersPlugin can load them via a
+    directory path. Microsoft.Build.NoTargets skips Csc entirely so we don't
+    generate an empty fsharplint-shim.dll on every build.
+
+    IMPORTANT: the analyzers path in .fshw.json MUST match the configuration the
+    build uses. CI (the reusable michaels-wacky-build workflow) and the daemon
+    both build Debug (`dotnet build`), so .fshw.json points at bin/Debug/net10.0/.
+    Pointing it at a config CI doesn't build makes the AnalyzersPlugin load ZERO
+    analyzers and the lint silently passes — which is exactly the bug this comment
+    exists to prevent.
   -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>

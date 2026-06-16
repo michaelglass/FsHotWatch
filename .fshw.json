@@ -6,7 +6,7 @@
   "format": true,
   "lint": false,
   "analyzers": {
-    "paths": ["tools/fsharplint-shim/bin/Release/net10.0/"]
+    "paths": ["tools/fsharplint-shim/bin/Debug/net10.0/"]
   },
   "tests": {
     "beforeRun": "dotnet build",
