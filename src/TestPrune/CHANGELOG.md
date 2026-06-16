@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.3.0 - 2026-06-16
+
 - feat: `ProjectLoader.parsePackageReferences` extracts a project's
   `<PackageReference>` versions — both inline (`Version="..."`) and CPM-resolved
   from an ancestor `Directory.Packages.props` — feeding TestPrune.Core's new

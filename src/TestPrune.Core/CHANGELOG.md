@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 4.3.0 - 2026-06-16
+
 - feat: dependency-fingerprint project-fanout — a dependency/PackageReference
   change selects all tests in transitively-dependent test projects (superset of
   the symbol graph). New `ProjectFanout` module: `ProjectInfo`,
