@@ -1253,6 +1253,28 @@ type Daemon
     let processRegistry = ProcessRegistry.Registry()
     do ProcessRegistry.install processRegistry |> ignore
 
+    // Expose a read-only view of the live project graph to plugins (via
+    // PluginCtx.ProjectGraph) BEFORE DaemonConfig.registerPlugins runs, so the
+    // TestPrune plugin can compute dependency fingerprints + fan out to dependent
+    // test projects. All paths are absolute .fsproj strings.
+    // `GetTransitiveDependents` includes the project itself; we drop it here so
+    // the accessor's contract ("dependents, excluding self") holds.
+    do
+        host.SetProjectGraph
+            { GetAllProjects = fun () -> graph.GetAllProjects() |> List.map AbsProjectPath.value
+              GetTransitiveDependentProjects =
+                fun fsproj ->
+                    let self = AbsProjectPath.create fsproj
+
+                    graph.GetTransitiveDependents(self)
+                    |> List.filter (fun p -> p <> self)
+                    |> List.map AbsProjectPath.value
+              GetProjectReferences =
+                fun fsproj ->
+                    graph.GetReferences(AbsProjectPath.create fsproj)
+                    |> List.map AbsProjectPath.value
+              GetCanonicalDllPath = fun fsproj -> graph.GetCanonicalDllPath(AbsProjectPath.create fsproj) }
+
     /// The single live-coverage computation reused by every "incomplete" consumer
     /// (`status`/`WaitForScan`/logs via FormatScanStatus, and `check` via the
     /// IPC GetUncheckedCount closure). Both `host` and `pipeline` are in scope

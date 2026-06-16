@@ -1766,6 +1766,128 @@ let ``skip tests when 0 affected classes and not cold start`` () =
         waitForPluginTerminal host "test-prune" 12.0
         test <@ runCount = 1 @>) // still 1, not 2
 
+// ── Dependency-fanout (DependencyFanout + PluginCtx.ProjectGraph) ─────────────
+// A dependency/PackageReference change flips a test project's dependency
+// fingerprint (its referenced-project DLL content) without changing any F#
+// symbol. The fanout must force-run that test project — closing the zero-
+// affected skip gate for dependency-only changes — while an ordinary build with
+// NO dependency change still skips (no regression to the symbol-precise path).
+
+/// Emit a BuildSucceeded and fully serialize: catch THIS build's terminal
+/// transition, then wait for the plugin to settle to idle so the async run (and
+/// any queued rerun it spawns) has drained before the next build. Required for
+/// the fanout tests, which depend on each build's fingerprint comparison seeing
+/// the prior build's committed state (not a half-applied pipelined one).
+let private emitBuildAndSettle (host: PluginHost) =
+    let await = beginAwaitNextTerminal host "test-prune"
+    host.EmitBuildCompleted(BuildSucceeded)
+    await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+    waitForSettled host "test-prune" 15000
+
+/// A fake project graph for a single test project `TestProj` that references one
+/// library project whose compiled DLL is `opsDllPath`. The test mutates that
+/// file's content to flip `TestProj`'s dependency fingerprint.
+let private fanoutGraph (testProjFsproj: string) (opsFsproj: string) (opsDllPath: string) =
+    { FsHotWatch.PluginFramework.ProjectGraphAccessor.none with
+        GetAllProjects = fun () -> [ testProjFsproj; opsFsproj ]
+        GetProjectReferences =
+            fun p ->
+                if p = testProjFsproj then [ opsFsproj ]
+                elif p = opsFsproj then []
+                else []
+        GetCanonicalDllPath = fun p -> if p = opsFsproj then Some opsDllPath else None }
+
+[<Fact(Timeout = 20000)>]
+let ``dependency-fingerprint change force-runs the dependent test project`` () =
+    withTempDir "tp-fanout" (fun tmpDir ->
+        let mutable runCount = 0
+
+        let testProjFsproj = Path.Combine(tmpDir, "TestProj", "TestProj.fsproj")
+        let opsFsproj = Path.Combine(tmpDir, "Ops", "Ops.fsproj")
+        let opsDll = Path.Combine(tmpDir, "Ops", "bin", "Debug", "net10.0", "Ops.dll")
+        Directory.CreateDirectory(Path.GetDirectoryName testProjFsproj) |> ignore
+        Directory.CreateDirectory(Path.GetDirectoryName opsDll) |> ignore
+        File.WriteAllText(testProjFsproj, "<Project></Project>")
+        File.WriteAllText(opsFsproj, "<Project></Project>")
+        // Initial referenced DLL (as if built against CommandTree 0.6.3).
+        File.WriteAllBytes(opsDll, Text.Encoding.UTF8.GetBytes "ops-binary-v063")
+
+        let configs =
+            [ { Project = "TestProj"
+                Command = "echo"
+                Args = "ran"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        // Wire the fake graph BEFORE registering the plugin (mirrors the daemon).
+        host.SetProjectGraph(fanoutGraph testProjFsproj opsFsproj opsDll)
+
+        let handler =
+            create ":memory:" tmpDir (Some configs) None None (Some(fun _ -> runCount <- runCount + 1)) None []
+
+        host.RegisterHandler(handler)
+
+        // 1) Cold-start build runs all + records the baseline fingerprint.
+        emitBuildAndSettle host
+        test <@ runCount = 1 @>
+
+        // 2) Build with NO dependency change and no symbols — must SKIP.
+        emitBuildAndSettle host
+        test <@ runCount = 1 @> // skipped, still 1
+
+        // 3) Bump the referenced DLL (as if Ops rebuilt against CommandTree 0.7.0).
+        //    No F# symbol in TestProj changed, but its dependency fingerprint flips
+        //    → the fanout must force-run TestProj.
+        File.WriteAllBytes(opsDll, Text.Encoding.UTF8.GetBytes "ops-binary-v070-DIFFERENT")
+        emitBuildAndSettle host
+        test <@ runCount = 2 @>) // fanout ran it
+
+[<Fact(Timeout = 20000)>]
+let ``no dependency change and no symbol change still skips (no regression)`` () =
+    // Same harness as the fanout test but the referenced DLL never changes — the
+    // symbol-precise skip must remain intact (the fanout must not fire spuriously).
+    withTempDir "tp-fanout-noregress" (fun tmpDir ->
+        let mutable runCount = 0
+
+        let testProjFsproj = Path.Combine(tmpDir, "TestProj", "TestProj.fsproj")
+        let opsFsproj = Path.Combine(tmpDir, "Ops", "Ops.fsproj")
+        let opsDll = Path.Combine(tmpDir, "Ops", "bin", "Debug", "net10.0", "Ops.dll")
+        Directory.CreateDirectory(Path.GetDirectoryName testProjFsproj) |> ignore
+        Directory.CreateDirectory(Path.GetDirectoryName opsDll) |> ignore
+        File.WriteAllText(testProjFsproj, "<Project></Project>")
+        File.WriteAllText(opsFsproj, "<Project></Project>")
+        File.WriteAllBytes(opsDll, Text.Encoding.UTF8.GetBytes "ops-binary-stable")
+
+        let configs =
+            [ { Project = "TestProj"
+                Command = "echo"
+                Args = "ran"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        host.SetProjectGraph(fanoutGraph testProjFsproj opsFsproj opsDll)
+
+        let handler =
+            create ":memory:" tmpDir (Some configs) None None (Some(fun _ -> runCount <- runCount + 1)) None []
+
+        host.RegisterHandler(handler)
+
+        emitBuildAndSettle host
+        test <@ runCount = 1 @>
+
+        // Two more builds, DLL unchanged → both skip; runCount stays 1.
+        emitBuildAndSettle host
+        emitBuildAndSettle host
+        test <@ runCount = 1 @>)
+
 [<Fact(Timeout = 15000)>]
 let ``comment-only change does not add file to ChangedFiles but AST change does`` () =
     // Regression test: before the fix, newChangedFiles was computed unconditionally

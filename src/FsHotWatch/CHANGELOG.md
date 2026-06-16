@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- feat: `PluginCtx.ProjectGraph` exposes a read-only project-graph accessor
+  (`GetAllProjects` / `GetTransitiveDependentProjects` / `GetProjectReferences`
+  / `GetCanonicalDllPath`) to plugins. The daemon installs the live graph before
+  registering plugins (`PluginHost.SetProjectGraph`); tests and the null-checker
+  daemon get a no-op accessor. Enables the TestPrune plugin's dependency-
+  fingerprint fanout.
+
 ## 0.8.0-alpha.29 - 2026-06-15
 
 - feat: FSEvents watch latency is now configurable (was a hardcoded 50ms).

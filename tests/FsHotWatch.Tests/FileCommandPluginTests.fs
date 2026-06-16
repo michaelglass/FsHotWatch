@@ -1201,7 +1201,8 @@ let ``Update is a no-op for FileChanged when trigger has no FilePattern`` () =
           CompleteWithTimeout = fun _ -> ()
           RunExclusive = fun _ _ -> ()
           IsRunning = fun _ -> false
-          FcsSuppressedCodes = Set.empty }
+          FcsSuppressedCodes = Set.empty
+          ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
     let initialState = handler.Init
     let event = FileChanged(SourceChanged [ "anything.fs" ])

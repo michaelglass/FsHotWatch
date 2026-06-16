@@ -63,7 +63,7 @@
       {
         "line": 77,
         "branch": 64,
-        "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor; scoped-rediscovery PrepareForRediscovery(clearCheckCache) branch is integration-tested, pinned below floor. Pinned at 79 stable-minimum: L232/L247 flip 79.66-80.79% under FCS timing, do NOT auto-ratchet to 80 (reintroduces the flake fixed in xwtkmmqv). Restored 79 after a stray auto-ratchet committed 80 (loosen can't lower an existing floor).",
+        "reason": "FCS end-to-end checking paths moved to FsHotWatch.IntegrationTests (excluded from coverage); threshold tracks the deterministic unit-test-only floor; scoped-rediscovery PrepareForRediscovery(clearCheckCache) branch is integration-tested, pinned below floor. Pinned at 79 stable-minimum: L232/L247 flip 79.66-80.79% under FCS timing, do NOT auto-ratchet to 80 (reintroduces the flake fixed in xwtkmmqv). Restored 79 after a stray auto-ratchet committed 80 (loosen can\u0027t lower an existing floor).",
         "platform": "macos"
       },
       {
@@ -147,8 +147,8 @@
     ],
     "DaemonConfig.fs": [
       {
-        "line": 77,
-        "branch": 78,
+        "line": 78,
+        "branch": 79,
         "reason": "2026-06-12: nondeterminism FIXED by extracting the config-watcher\u0027s debounce/reason branches into debounceShouldFire/configChangeReason/onConfigFsEvent (unit-tested with injected clocks; FSW lambda is branchless, its line pinned by RealWatchTests) -- coverage is now identical across runs (77.7 line / 78.8 branch, 104/132). Floors settled at 77/78 via official loosen. Historical: branch flipped 78.5-80.0 between identical runs because the suppressed-debounce arm only executed when the OS double-fired within the 200ms window.",
         "platform": "macos"
       },
@@ -172,6 +172,11 @@
         "platform": "linux"
       }
     ],
+    "DependencyFanout.fs": {
+      "line": 93,
+      "branch": 100,
+      "reason": "honest floor for the daemon dependency-fanout primitives. DependencyFanoutTests deterministically cover directPackageVersions (inline + CPM + missing-file), computeProjectFingerprint (DLL-content change, missing-DLL sentinel, own-package-version fold, transitive diamond), and changedProjects. The two remaining uncovered lines are the IOException catch in fileContentHash (a locked/unreadable DLL — not deterministically triggerable) and the null-Include guard in the PackageReference parse; deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage. Achieved 93.5% line / 100% branch (4/4)."
+    },
     "DepsFreshness.fs": [
       {
         "line": 91,
@@ -234,7 +239,7 @@
         "platform": "linux"
       },
       {
-        "line": 95,
+        "line": 96,
         "branch": 95,
         "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)"
       }
@@ -360,8 +365,8 @@
     ],
     "IpcOutput.fs": [
       {
-        "line": 72,
-        "branch": 39,
+        "line": 80,
+        "branch": 53,
         "reason": "honest floor 2026-06-08 for the converge-then-verdict orchestration in pollAndRender/pollUntilTerminal/rescan/reread (lines ~196-285): live-IPC \u002B interactive-console code (real spinners, Console cursor moves, Thread.Sleep, UI.fail reporting) that drives real IpcOps and so is not unit-testable. The PURE verdict \u002B convergence logic it delegates to is in CheckVerdict.fs at 96%\u002B coverage; this orchestration shell is deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage. Was 75 before the bigger function lowered the percentage.",
         "platform": "macos"
       },
@@ -531,7 +536,7 @@
     ],
     "Program.fs": [
       {
-        "line": 72,
+        "line": 74,
         "branch": 58,
         "reason": "CLI entry point; line drifts 66-68% and branch drifts 53-54% across runs \u2014 pin to floor; auto-ratchet bumps to ceiling and breaks CI on the next unlucky run idle-exit daemon-start glue (resolveThreshold call in createDaemon) added a few uncovered lines, nudging the macOS run from 71.0% to 70.9% \u2014 daemon-start path, not unit-testable; floor lowered to 70 to absorb it. Pressure-idle (2026-06-07) adds further createDaemon glue (resolvePressureFloor \u002B pressureIdleFloorMin threading), same untestable daemon-start path; line floor pinned to the documented 66% drift-floor and branch to 53% so normal drift no longer reds the gate. Hand-settled to 72 (2026-06-15): the gating path (test-direct then coverage-check) measures macOS line 72.9 percent, below the run-once drift floor this 73 was pinned from; coverage-ratchet/loosen cannot lower it without illegally bumping DaemonConfig 79 to 80 and CheckPipeline 77 to 78. PRIOR: Pinned at 73 stable-minimum (2026-06-12): line drifts 73.0-74.2 across identical runs (CLI/daemon-lifecycle timing), do NOT auto-ratchet to 74 -- a 73.x sample then fails coverage-check (same pathology as CheckPipeline\u0027s 79 pin).",
         "platform": "macos"

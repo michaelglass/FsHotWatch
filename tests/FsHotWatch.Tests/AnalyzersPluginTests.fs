@@ -580,7 +580,8 @@ let private makeAnalyzerRecordingCtx () =
           CompleteWithTimeout = fun _ -> ()
           RunExclusive = fun _ _ -> ()
           IsRunning = fun _ -> false
-          FcsSuppressedCodes = Set.empty }
+          FcsSuppressedCodes = Set.empty
+          ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
     ctx, summaries, ledger
 

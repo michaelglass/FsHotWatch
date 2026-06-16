@@ -39,7 +39,8 @@ let private registerWith
           Log = fun _ _ -> ()
           SetSummary = fun _ _ -> ()
           SetNextTerminalOutcome = fun _ _ -> ()
-          FcsSuppressedCodes = Set.empty }
+          FcsSuppressedCodes = Set.empty
+          ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
         handler
 
 /// Register with all defaults.
@@ -316,7 +317,8 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
               Log = fun _ _ -> ()
               SetSummary = fun _ _ -> ()
               SetNextTerminalOutcome = fun _ _ -> ()
-              FcsSuppressedCodes = Set.empty }
+              FcsSuppressedCodes = Set.empty
+              ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
             handler
 
     reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
@@ -399,7 +401,8 @@ let ``handler that throws records ex.ToString() (full type+stack) in Failed stat
               Log = fun _ _ -> ()
               SetSummary = fun _ _ -> ()
               SetNextTerminalOutcome = fun _ _ -> ()
-              FcsSuppressedCodes = Set.empty }
+              FcsSuppressedCodes = Set.empty
+              ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
             handler
 
     reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
@@ -443,7 +446,8 @@ let private servicesWithCache (cache: TaskCache.ITaskCache) (registerCommand: st
       Log = fun _ _ -> ()
       SetSummary = fun _ _ -> ()
       SetNextTerminalOutcome = fun _ _ -> ()
-      FcsSuppressedCodes = Set.empty }
+      FcsSuppressedCodes = Set.empty
+      ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
 [<Fact(Timeout = 20000)>]
 let ``pre-populated cache replays on the very first dispatch`` () =
@@ -742,7 +746,8 @@ let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRu
               Log = fun _ _ -> ()
               SetSummary = fun _ _ -> ()
               SetNextTerminalOutcome = fun _ _ -> ()
-              FcsSuppressedCodes = Set.empty }
+              FcsSuppressedCodes = Set.empty
+              ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
         let updateCalls = ref 0
 
