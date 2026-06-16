@@ -31,7 +31,8 @@ let private makeRecordingCtx () =
           CompleteWithTimeout = fun r -> calls.Add(sprintf "Timeout %s" r)
           RunExclusive = fun _ _ -> ()
           IsRunning = fun _ -> false
-          FcsSuppressedCodes = Set.empty }
+          FcsSuppressedCodes = Set.empty
+          ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
 
     ctx, calls
 

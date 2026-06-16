@@ -83,7 +83,42 @@ type PluginCtx<'Msg> =
         /// gate or report decision so the user-visible error stream and any
         /// cache-poisoning gates agree on what counts as an error.
         FcsSuppressedCodes: Set<int>
+        /// Read-only project-graph accessor for dependency-aware test selection.
+        /// The daemon wires this from its live `ProjectGraph`; tests and the
+        /// null-checker daemon leave it at the no-op default (every accessor
+        /// returns empty/None), so a plugin that consults it simply sees "no
+        /// graph" and falls back to its symbol-precise behaviour. All paths are
+        /// absolute `.fsproj` paths.
+        ProjectGraph: ProjectGraphAccessor
     }
+
+/// Minimal read-only view of the project graph exposed to plugins via
+/// `PluginCtx`. Closures (not the concrete `ProjectGraph`) so `PluginFramework`
+/// stays free of a forward dependency on `ProjectGraph.fs` (which compiles
+/// after it). All inputs/outputs are absolute `.fsproj` path strings; the DLL
+/// path is the canonical `bin/Debug/<TFM>/<name>.dll`.
+and [<NoComparison; NoEquality>] ProjectGraphAccessor =
+    {
+        /// Every registered project, as absolute `.fsproj` paths.
+        GetAllProjects: unit -> string list
+        /// Projects that directly or transitively ProjectReference the given
+        /// project (excludes the project itself), as absolute `.fsproj` paths.
+        GetTransitiveDependentProjects: string -> string list
+        /// The given project's direct ProjectReferences, as absolute `.fsproj` paths.
+        GetProjectReferences: string -> string list
+        /// The given project's canonical compiled-DLL path, or None when the
+        /// target framework couldn't be resolved.
+        GetCanonicalDllPath: string -> string option
+    }
+
+module ProjectGraphAccessor =
+    /// No-op accessor: no graph wired (tests, null-checker daemon). Every query
+    /// returns empty/None, so dependency-fanout consumers fall back cleanly.
+    let none: ProjectGraphAccessor =
+        { GetAllProjects = fun () -> []
+          GetTransitiveDependentProjects = fun _ -> []
+          GetProjectReferences = fun _ -> []
+          GetCanonicalDllPath = fun _ -> None }
 
 /// Tags for events a plugin can subscribe to.
 type SubscribedEvent =
@@ -188,6 +223,10 @@ type PluginHostServices =
         /// every plugin's `PluginCtx.FcsSuppressedCodes` so plugin-level gates
         /// stay in sync with the user-visible diagnostic filter.
         FcsSuppressedCodes: Set<int>
+        /// Read-only project-graph accessor wired into every plugin's
+        /// `PluginCtx.ProjectGraph`. The host supplies `ProjectGraphAccessor.none`
+        /// until the daemon installs the live graph.
+        ProjectGraph: ProjectGraphAccessor
     }
 
 /// Register a declarative plugin handler, returning a type-erased RegisteredPlugin.
@@ -296,7 +335,8 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                 services.SetNextTerminalOutcome handler.Name (TimedOut reason)
           RunExclusive = runExclusive
           IsRunning = isRunning
-          FcsSuppressedCodes = services.FcsSuppressedCodes }
+          FcsSuppressedCodes = services.FcsSuppressedCodes
+          ProjectGraph = services.ProjectGraph }
 
     let agent =
         MailboxProcessor<Choice<PluginEvent<'Msg>, AsyncReplyChannel<'State>>>
@@ -476,7 +516,8 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                             services.SetNextTerminalOutcome handler.Name (TimedOut reason)
                                       RunExclusive = runExclusive
                                       IsRunning = isRunning
-                                      FcsSuppressedCodes = services.FcsSuppressedCodes }
+                                      FcsSuppressedCodes = services.FcsSuppressedCodes
+                                      ProjectGraph = services.ProjectGraph }
 
                                 let! nextState = safeUpdate capturingCtx state event
 

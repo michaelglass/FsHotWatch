@@ -34,6 +34,7 @@
     <Compile Include="Flakiness.fs" />
     <Compile Include="FileFreshness.fs" />
     <Compile Include="PendingVerification.fs" />
+    <Compile Include="DependencyFanout.fs" />
     <Compile Include="TestPrunePlugin.fs" />
   </ItemGroup>
 
@@ -44,6 +45,6 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.300" PrivateAssets="All" />
     <PackageReference Update="FSharp.Core" Version="10.1.*" />
-    <PackageReference Include="TestPrune.Core" Version="4.2.3" />
+    <PackageReference Include="TestPrune.Core" Version="4.3.0" />
   </ItemGroup>
 </Project>

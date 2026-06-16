@@ -221,6 +221,17 @@ type TestPruneState =
         /// clears the in-process "I've seen warm FCS this session"
         /// assertion.
         BuildCompletedInThisSession: bool
+        /// Per-test-project dependency fingerprint observed at the last
+        /// `BuildCompleted`. A project whose fingerprint moves between builds had
+        /// a dependency/binary change the symbol diff can't see, so its tests are
+        /// force-run (dependency-fanout). Empty until the first build establishes
+        /// the baseline. See `DependencyFanout`.
+        PriorProjectFingerprints: Map<string, string>
+        /// Test projects whose dependency fingerprint changed but whose force-run
+        /// is deferred because a run was already in flight when the build landed.
+        /// The queued rerun consumes (and clears) this so a dependency change that
+        /// arrives mid-run is not lost. Unioned with the rerun's own fanout.
+        PendingForceRunProjects: Set<string>
     }
 
 /// Custom message posted from the async test runner back to the synchronous
@@ -1485,7 +1496,9 @@ let create
           LastResults = None
           PendingRerun = false
           TestClassFiles = Map.empty
-          BuildCompletedInThisSession = false }
+          BuildCompletedInThisSession = false
+          PriorProjectFingerprints = Map.empty
+          PendingForceRunProjects = Set.empty }
 
     // Keep the cache-key snapshot consistent with the seeded queue from the
     // very first event (the cache intercept runs before any Update handler).
@@ -1509,6 +1522,13 @@ let create
         // baseline yet and must run the full suite once to establish one. See
         // the skip gate below.
         (hasCachedResults: bool)
+        // Dependency-fanout (DependencyFanout): test projects whose dependency
+        // fingerprint changed since the last build. Their tests run in FULL
+        // (project-coarse), UNIONED with the symbol-precise selection — a binary
+        // change the symbol diff can't see still re-runs the dependent tests.
+        // Empty in the common case (no dependency change), so ordinary
+        // source-symbol edits keep their precise, minimal selection.
+        (forceRunProjects: Set<string>)
         : Async<TestPruneMsg> =
         async {
             // The queue snapshot this run is LAUNCHED against — the durable
@@ -1546,13 +1566,29 @@ let create
                     | Analyzed tests -> tests
                     | NotYetAnalyzed -> []
 
-                let affectedByProject =
+                let symbolAffectedByProject =
                     affectedTestsList
                     |> List.groupBy (fun t -> t.TestProject)
                     |> List.map (fun (proj, tests) -> proj, tests |> List.map (fun t -> t.TestClass) |> List.distinct)
                     |> Map.ofList
 
-                let totalClasses = affectedByProject |> Map.values |> Seq.sumBy List.length
+                // UNION the dependency-fanout: each force-run project enters the
+                // map with an EMPTY class list, which `buildFilterArgs` treats as
+                // "no filter → run ALL tests in this project" (a project ABSENT
+                // from a non-empty map is skipped; present-with-[] runs in full).
+                // We don't overwrite a project that already has symbol-affected
+                // classes — its precise selection plus a forced full run are the
+                // same "run this project"; [] (full) is the safe superset, so a
+                // fanout hit promotes a partially-selected project to full.
+                let affectedByProject =
+                    forceRunProjects
+                    |> Set.fold (fun acc proj -> Map.add proj [] acc) symbolAffectedByProject
+
+                // The skip gate counts symbol-affected classes only. A pure
+                // dependency-fanout (force-run projects, zero symbol classes) must
+                // NOT be counted as "0 affected" and skipped — so the gate below
+                // also checks `forceRunProjects` is empty.
+                let totalClasses = symbolAffectedByProject |> Map.values |> Seq.sumBy List.length
 
                 // Gate the zero-affected skip on the PERSISTED queue being empty
                 // (§3c). The queue-empty check is the load-bearing addition: an
@@ -1565,10 +1601,15 @@ let create
                 // green baseline the empty queue is then equivalent to. Both must
                 // hold to skip — either alone would under-test (queue-empty cold
                 // start) or be unsound (warm with a non-empty queue).
-                if totalClasses = 0 && Set.isEmpty pendingQueueRef && hasCachedResults then
+                if
+                    totalClasses = 0
+                    && Set.isEmpty forceRunProjects
+                    && Set.isEmpty pendingQueueRef
+                    && hasCachedResults
+                then
                     Logging.info
                         "test-prune"
-                        "No affected classes, empty pending queue, baseline exists — skipping tests"
+                        "No affected classes, no dependency fanout, empty pending queue, baseline exists — skipping tests"
 
                     // Build a degenerate lifecycle (Started → Completed with empty
                     // Results). The synchronous Custom handler emits both events
@@ -2089,6 +2130,47 @@ let create
                             { state with
                                 BuildCompletedInThisSession = true }
 
+                        // ── Dependency-fanout fingerprint (computed for EVERY
+                        // build, before the running/idle split, so the prior
+                        // fingerprint always advances and a mid-run dependency
+                        // change is never lost). Fingerprint each test project from
+                        // its referenced-project DLL hashes + own package versions
+                        // (DependencyFanout). A project whose fingerprint moved
+                        // since the last build had a dependency/binary change the
+                        // symbol diff can't see → force-run it. An empty graph
+                        // (tests / no graph wired) yields no fanout, so the
+                        // symbol-precise path is unchanged.
+                        let fsprojByName =
+                            ctx.ProjectGraph.GetAllProjects()
+                            |> List.map (fun p -> Path.GetFileNameWithoutExtension p, p)
+                            |> Map.ofList
+
+                        let currentFingerprints =
+                            match testConfigs with
+                            | Some configs ->
+                                configs
+                                |> List.choose (fun c ->
+                                    Map.tryFind c.Project fsprojByName
+                                    |> Option.map (fun fsproj -> c.Project, fsproj))
+                                |> List.map (fun (name, fsproj) ->
+                                    name, DependencyFanout.computeProjectFingerprint ctx.ProjectGraph fsproj)
+                                |> Map.ofList
+                            | None -> Map.empty
+
+                        let fanoutNow =
+                            DependencyFanout.changedProjects state.PriorProjectFingerprints currentFingerprints
+
+                        if not (Set.isEmpty fanoutNow) then
+                            Logging.info
+                                "test-prune"
+                                $"Dependency fanout: %d{Set.count fanoutNow} test project(s) had a dependency-fingerprint change — force-running: %A{Set.toList fanoutNow}"
+
+                        // Advance the baseline on every build; carry any not-yet-run
+                        // fanout in the pending set (consumed by the queued rerun).
+                        let state =
+                            { state with
+                                PriorProjectFingerprints = currentFingerprints }
+
                         if ctx.IsRunning "tests" then
                             // Leading "  ↳ " (↳) indents this entry one
                             // level beyond test-result lines in the activity-fold
@@ -2102,7 +2184,12 @@ let create
                                 "test-prune"
                                 "BuildSucceeded received but tests already running — will re-run after"
 
-                            return { state with PendingRerun = true }
+                            // Stash the fanout so the rerun runs it (don't lose a
+                            // mid-run dependency change).
+                            return
+                                { state with
+                                    PendingRerun = true
+                                    PendingForceRunProjects = Set.union state.PendingForceRunProjects fanoutNow }
                         else
                             Logging.info "test-prune" "BuildSucceeded: starting test run"
 
@@ -2128,9 +2215,23 @@ let create
                                     ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
                                     let hasCachedResults = state.LastResults.IsSome
 
+                                    // Union this build's fanout with any pending
+                                    // fanout deferred from a prior mid-run build,
+                                    // then clear the pending set (it's being run).
+                                    let forceRunProjects = Set.union fanoutNow stateWithAffected.PendingForceRunProjects
+
+                                    let stateWithAffected =
+                                        { stateWithAffected with
+                                            PendingForceRunProjects = Set.empty }
+
                                     ctx.RunExclusive
                                         "tests"
-                                        (runTestsWithImpact ctx configs stateWithAffected hasCachedResults)
+                                        (runTestsWithImpact
+                                            ctx
+                                            configs
+                                            stateWithAffected
+                                            hasCachedResults
+                                            forceRunProjects)
 
                                     return stateWithAffected
                                 | _ ->
@@ -2412,16 +2513,26 @@ let create
 
                             ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
 
+                            // Consume the deferred dependency-fanout: a build that
+                            // landed mid-run stashed its changed test projects here
+                            // (it couldn't run them then). The rerun runs them now,
+                            // alongside the queued symbols. Clear so a later rerun
+                            // doesn't re-run them.
+                            let deferredFanout = rerunState.PendingForceRunProjects
+
                             let rerunState =
                                 { rerunState with
                                     LastResults = Some testResults
-                                    PendingRerun = false }
+                                    PendingRerun = false
+                                    PendingForceRunProjects = Set.empty }
 
                             match testConfigs with
                             | Some configs when not configs.IsEmpty ->
                                 // A run just completed (LastResults set below), so the
-                                // baseline exists — hasCachedResults = true.
-                                ctx.RunExclusive "tests" (runTestsWithImpact ctx configs rerunState true)
+                                // baseline exists — hasCachedResults = true. The
+                                // deferred fanout force-runs any test project whose
+                                // dependency fingerprint changed during the prior run.
+                                ctx.RunExclusive "tests" (runTestsWithImpact ctx configs rerunState true deferredFanout)
                             | _ -> ()
 
                             return rerunState

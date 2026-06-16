@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- feat: daemon re-runs dependent tests on a dependency-fingerprint change (new
+  `PluginCtx` project-graph accessor), closing the zero-affected skip for
+  dependency-only changes. On each `BuildCompleted`, every test project is
+  fingerprinted from the content hashes of its referenced projects' compiled
+  DLLs plus its own direct `PackageReference` versions (`DependencyFanout`); a
+  project whose fingerprint moved since the last build is force-run in full,
+  unioned with the symbol-precise selection. A NuGet/PackageReference bump that
+  changes binary behaviour without touching an F# symbol (e.g. CommandTree
+  0.6.3 → 0.7.0) now re-runs the dependent tests instead of being skipped.
+  Bundles TestPrune.Core's `ProjectFanout`.
+
 ## 0.7.0-alpha.25 - 2026-06-16
 
 - fix: a directly-edited test now re-selects itself. Bundles TestPrune.Core

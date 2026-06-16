@@ -38,6 +38,14 @@ type PluginHost
     let fileCommandPatterns = ConcurrentDictionary<string, Watcher.FilePattern>()
     let activity = PluginActivity.State()
 
+    // Read-only project-graph accessor threaded into every plugin's
+    // `PluginCtx.ProjectGraph`. Starts as the no-op accessor; the daemon installs
+    // the live graph via `SetProjectGraph` before plugins are registered (so the
+    // closure captured into each plugin's `services` sees the live one). Volatile
+    // because it's set from the daemon construction thread and read from plugin
+    // agent threads.
+    let mutable projectGraphAccessor = PluginFramework.ProjectGraphAccessor.none
+
     // Quiescence tracking for `WaitForComplete`. `lastActivityAtTicks` is the
     // UTC ticks of the most recent host-level activity (event dispatch, plugin
     // status change, preprocessor run). `pluginGenerations` is a per-plugin
@@ -197,6 +205,13 @@ type PluginHost
         for p in registeredPlugins do
             p.Dispatch event
 
+    /// Install the read-only project-graph accessor exposed to every plugin via
+    /// `PluginCtx.ProjectGraph`. The daemon calls this once, with closures over
+    /// its live `ProjectGraph`, before registering plugins. Plugins registered
+    /// before or after both see the live accessor because `services.ProjectGraph`
+    /// reads through the mutable holder on every call.
+    member _.SetProjectGraph(accessor: PluginFramework.ProjectGraphAccessor) = projectGraphAccessor <- accessor
+
     /// Register a declarative framework-managed plugin handler.
     member this.RegisterHandler<'State, 'Msg>(handler: PluginFramework.PluginHandler<'State, 'Msg>) =
         let services: PluginFramework.PluginHostServices =
@@ -238,7 +253,16 @@ type PluginHost
               SetSummary = fun name s -> activity.SetSummary(PluginFramework.PluginName.value name, s)
               SetNextTerminalOutcome =
                 fun name outcome -> activity.SetNextTerminalOutcome(PluginFramework.PluginName.value name, outcome)
-              FcsSuppressedCodes = fcsSuppressedCodes }
+              FcsSuppressedCodes = fcsSuppressedCodes
+              // Read through the mutable holder so a plugin registered before the
+              // daemon installed the live graph still sees it (the accessor record
+              // is captured at registration, but its three closures all re-read
+              // `projectGraphAccessor` each call below).
+              ProjectGraph =
+                { GetAllProjects = fun () -> projectGraphAccessor.GetAllProjects()
+                  GetTransitiveDependentProjects = fun p -> projectGraphAccessor.GetTransitiveDependentProjects p
+                  GetProjectReferences = fun p -> projectGraphAccessor.GetProjectReferences p
+                  GetCanonicalDllPath = fun p -> projectGraphAccessor.GetCanonicalDllPath p } }
 
         let plugin = PluginFramework.registerHandler services handler
 
