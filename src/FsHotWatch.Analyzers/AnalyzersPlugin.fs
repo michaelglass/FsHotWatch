@@ -195,7 +195,13 @@ let internal createWithSlowHook
     (failOnSeverity: DiagnosticSeverity)
     (slowHook: (unit -> unit) option)
     : PluginHandler<AnalyzersState, AnalyzersMsg> =
-    let client = Client<CliAnalyzerAttribute, CliContext>()
+    // The SDK Client holds the loaded analyzer set in private state. On a reload
+    // (Bug C) we swap in a FRESH Client rather than re-loading the existing one:
+    // a fresh Client is the path verified to pick up a newly-added analyzer for
+    // RunAnalyzersSafely, and it can never replay a now-removed/changed analyzer
+    // instance from prior private state. Volatile per the plugin's thread-safety
+    // convention (concurrent FileChecked events read it under the semaphore).
+    let mutable client = Client<CliAnalyzerAttribute, CliContext>()
     let concurrencyLimit = 4
     let semaphore = new SemaphoreSlim(concurrencyLimit, concurrencyLimit)
     let cts = new CancellationTokenSource()
@@ -264,18 +270,56 @@ let internal createWithSlowHook
     // Per-path load result (path, count). A non-existent path counts 0 without
     // touching the loader; an existing path's count is what LoadAnalyzers found.
     // Both 0-cases are silent-skips the fail-loud guard turns RED.
-    let loadedByPath =
+    let loadInto (c: Client<CliAnalyzerAttribute, CliContext>) =
         analyzerPaths
         |> List.map (fun path ->
             if Directory.Exists(path) then
-                let stats = client.LoadAnalyzers(path, excludeInclude = excludeKnownDeps)
+                let stats = c.LoadAnalyzers(path, excludeInclude = excludeKnownDeps)
                 path, stats.Analyzers
             else
                 path, 0)
 
+    let loadedByPath = loadInto client
+
     let loadedCount = loadedByPath |> List.sumBy snd
 
     info "analyzers" $"Loaded %d{loadedCount} analyzers from %d{analyzerPaths.Length} paths"
+
+    // Bug C (2026-06-17): a long-lived (warm) daemon loads analyzers ONCE at
+    // construction. When a downstream repo adds a NEW analyzer (a new .fs +
+    // <Compile> entry) and the gate's build refreshes the analyzer DLL on disk,
+    // the in-memory `client` still holds the OLD analyzer set — the new analyzer
+    // never runs, so the gate reports green without ever inspecting the codebase
+    // with it. (Bug A's cache key invalidates stale RESULTS so the loaded set
+    // re-runs; Bug B fails loud on a 0-analyzer load — but neither catches a
+    // PARTIAL stale load that's merely MISSING the newly-added analyzer.)
+    //
+    // Track the content identity of the loaded assembly set (the same hash Bug A
+    // computes for the cache key). At the start of each FileChecked event, if the
+    // on-disk identity differs, re-load the client so the new analyzer is present
+    // before this file is analyzed. Volatile-guarded per the plugin convention
+    // ("All mutable plugin state uses Volatile.Read/Write for thread safety").
+    let mutable loadedAssemblyIdentity =
+        analyzerAssemblyIdentity knownNonAnalyzerPrefixes analyzerPaths
+
+    let reloadIfStale () =
+        let onDisk = analyzerAssemblyIdentity knownNonAnalyzerPrefixes analyzerPaths
+
+        if onDisk <> Volatile.Read(&loadedAssemblyIdentity) then
+            // The analyzer assemblies on disk changed since we loaded (rule
+            // changed, or — the Bug C case — a new analyzer was added). Load the
+            // current set into a FRESH client and swap it in, so the new analyzer
+            // is live (and any removed/changed one is gone) before we analyze.
+            let fresh = Client<CliAnalyzerAttribute, CliContext>()
+            let reloaded = loadInto fresh
+            let reloadedCount = reloaded |> List.sumBy snd
+
+            Volatile.Write(&client, fresh)
+            Volatile.Write(&loadedAssemblyIdentity, onDisk)
+
+            info
+                "analyzers"
+                $"Analyzer assembly set changed on disk — reloaded %d{reloadedCount} analyzers from %d{analyzerPaths.Length} paths"
 
     let analyzerTimeout =
         let secs = defaultArg timeoutSec AnalyzersTimeoutDefaultSec
@@ -295,6 +339,11 @@ let internal createWithSlowHook
                     let fileStr = AbsFilePath.value result.File
                     ctx.ReportStatus(Running(since = DateTime.UtcNow))
                     ctx.StartSubtask PrimarySubtaskKey $"analyzing {Path.GetFileName fileStr}"
+
+                    // Bug C: pick up a changed analyzer assembly set (e.g. a
+                    // newly-added analyzer) before analyzing, so a warm daemon
+                    // never runs a stale set that's missing the new analyzer.
+                    reloadIfStale ()
 
                     let checkResultsObj =
                         match result.CheckResults with
@@ -337,7 +386,10 @@ let internal createWithSlowHook
                                                             checkResultsObj
                                                             (box result.ProjectOptions)
 
-                                                    client.RunAnalyzersSafely(context) |> Async.RunSynchronously
+                                                    // Read the current client: reloadIfStale may have
+                                                    // swapped in a fresh one carrying a newly-added analyzer.
+                                                    let activeClient = Volatile.Read(&client)
+                                                    activeClient.RunAnalyzersSafely(context) |> Async.RunSynchronously
 
                                                 match runWithTimeout analyzerTimeout runAnalyzers with
                                                 | WorkTimedOut after ->
