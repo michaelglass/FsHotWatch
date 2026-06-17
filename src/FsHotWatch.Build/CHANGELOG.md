@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: surface per-project stale-artifact detail in the live build log.
+- docs: README early-alpha status-note pass.
+
 ## 0.7.0-alpha.13 - 2026-06-08
 
 - fix: content-hash build inputs so mtime-preserving edits invalidate the cache. `BuildInputsHasher.hashFile` previously memoized the content hash under `(path, mtime)`; an `rsync -a` / `cp -p` / branch-switch / in-place rewrite that preserves mtime returned the stale hash, so the build merkle never moved and a stale `BuildDone` (an FS1178 phantom) replayed forever. Every input is now content-hashed on each Compute — mtime is never trusted as a content oracle.

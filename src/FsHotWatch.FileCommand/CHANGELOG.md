@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- docs: README accuracy & early-alpha status-note pass.
+
 ## 0.7.0-alpha.12 - 2026-06-16
 
 - fix: a matched file-command no longer runs twice on its first trigger. The

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- docs: correct the README "how it works" (the plugin finds/parses/gates; TestPrune performs the coverage merge) and add an early-alpha status note.
+
 ## 0.7.0-alpha.13 - 2026-06-12
 
 - chore: bump `CoverageRatchet.Core` to 0.1.0-alpha.3.
