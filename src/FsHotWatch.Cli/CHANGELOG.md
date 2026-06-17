@@ -3,12 +3,16 @@
 ## Unreleased
 
 - fix: configured-but-not-running analyzers now turn the gate RED instead of
-  passing silently. If `.fshw.json` `analyzers.paths` is non-empty but the
-  result is zero analyzers loaded — paths missing (e.g. a bin dir built in the
-  wrong configuration, the actual CI bug) or present-but-empty — `fshw check
-  --run-once` exits non-zero with `config error: Analyzers configured (N
-  path(s)) but 0 analyzers loaded …`. Linters/analyzers are treated like test
-  failures: configured-but-not-running is never a silent pass.
+  passing silently, PER PATH. Every `.fshw.json` `analyzers.paths` entry must
+  contribute ≥1 analyzer; if ANY configured path loads zero — the path is
+  missing (e.g. a bin dir built in the wrong configuration, the actual CI bug)
+  or present-but-empty — `fshw check --run-once` exits non-zero with `config
+  error: Analyzer path(s) loaded 0 analyzers (missing/empty or built in the
+  wrong configuration): <path> — check .fshw.json analyzers.paths vs the build
+  config`, naming the offending path(s). This catches the partial silent-skip
+  the earlier aggregate (total==0) guard missed: a multi-path config where some
+  paths load and one quietly loads nothing now goes RED. Linters/analyzers are
+  treated like test failures: configured-but-not-running is never a silent pass.
 
 ## 0.8.0-alpha.34 - 2026-06-16
 

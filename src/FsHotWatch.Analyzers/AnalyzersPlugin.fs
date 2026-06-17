@@ -23,9 +23,15 @@ type AnalyzersMsg =
     | AnalysisFailed of file: string * error: string
 
 type AnalyzersState =
-    { DiagnosticsByFile: Map<AbsFilePath, ErrorEntry list>
-      LoadedCount: int
-      RunAnalyzed: int }
+    {
+        DiagnosticsByFile: Map<AbsFilePath, ErrorEntry list>
+        LoadedCount: int
+        /// Per-path analyzer load result, in the order paths were configured. The
+        /// count is 0 when the path doesn't exist OR exists but contains no
+        /// analyzer DLLs — both are silent-skip cases the fail-loud guard catches.
+        LoadedByPath: (string * int) list
+        RunAnalyzed: int
+    }
 
 /// Render the analyzer run summary from the LIVE per-file diagnostic map — the
 /// SAME `DiagnosticsByFile` set that backs `reportOrClearFile` → ErrorLedger →
@@ -203,12 +209,19 @@ let internal createWithSlowHook
     let excludeKnownDeps =
         ExcludeInclude.ExcludeFilter(isKnownNonAnalyzerPrefix knownNonAnalyzerPrefixes)
 
-    let mutable loadedCount = 0
+    // Per-path load result (path, count). A non-existent path counts 0 without
+    // touching the loader; an existing path's count is what LoadAnalyzers found.
+    // Both 0-cases are silent-skips the fail-loud guard turns RED.
+    let loadedByPath =
+        analyzerPaths
+        |> List.map (fun path ->
+            if Directory.Exists(path) then
+                let stats = client.LoadAnalyzers(path, excludeInclude = excludeKnownDeps)
+                path, stats.Analyzers
+            else
+                path, 0)
 
-    for path in analyzerPaths do
-        if Directory.Exists(path) then
-            let stats = client.LoadAnalyzers(path, excludeInclude = excludeKnownDeps)
-            loadedCount <- loadedCount + stats.Analyzers
+    let loadedCount = loadedByPath |> List.sumBy snd
 
     info "analyzers" $"Loaded %d{loadedCount} analyzers from %d{analyzerPaths.Length} paths"
 
@@ -220,6 +233,7 @@ let internal createWithSlowHook
       Init =
         { DiagnosticsByFile = Map.empty
           LoadedCount = loadedCount
+          LoadedByPath = loadedByPath
           RunAnalyzed = 0 }
       Update =
         fun ctx state event ->

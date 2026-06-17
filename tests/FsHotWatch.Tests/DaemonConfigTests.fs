@@ -1032,7 +1032,9 @@ let ``registerPlugins raises ConfigError when configured analyzers load zero`` (
 
         let ex = Assert.Throws<ConfigError>(fun () -> registerPlugins daemon tmpDir config)
 
-        Assert.Contains("0 analyzers loaded", ex.Message)
+        Assert.Contains("loaded 0 analyzers", ex.Message)
+        // The offending path is named (resolved to absolute under the repo root).
+        Assert.Contains("no-such-analyzer-bin-dir", ex.Message)
         // The plugin must NOT have registered — a silent do-nothing handler is
         // exactly the failure mode the guard exists to prevent.
         test <@ not (daemon.Host.GetAllStatuses().ContainsKey("analyzers")) @>)
@@ -1484,31 +1486,49 @@ let ``resolveExistingPathsWithRetry handles empty input without sleeping`` () =
     test <@ List.isEmpty result @>
     test <@ sleepCount = 0 @>
 
-// --- analyzersLoadFailure: fail-loud guard for configured-but-zero-loaded ---
+// --- analyzerPathFailures: per-path fail-loud guard for silent-skip paths ---
 
 [<Fact(Timeout = 2000)>]
-let ``analyzersLoadFailure fires when paths configured but zero loaded`` () =
-    // The actual CI bug: configured paths that all fail to resolve → 0 loaded.
-    let result = analyzersLoadFailure 1 0
+let ``analyzerPathFailures fires per-path: one path loads, one loads zero`` () =
+    // The key behavior the old aggregate guard MISSED: a multi-path config where
+    // some paths load and ONE silently loads 0 must still go RED, naming the
+    // offending path(s) — both the empty-dir and the nonexistent-dir flavours.
+    let result =
+        analyzerPathFailures
+            [ "/repo/good/bin", 3 // loads fine
+              "/repo/empty/bin", 0 // exists but no analyzer DLLs
+              "/repo/missing/bin", 0 ] // path doesn't exist
+
     test <@ result.IsSome @>
-    test <@ result.Value.Contains("0 analyzers loaded") @>
-    test <@ result.Value.Contains("1 path(s)") @>
+    test <@ result.Value.Contains("/repo/empty/bin") @>
+    test <@ result.Value.Contains("/repo/missing/bin") @>
+    // The path that loaded fine must NOT be named.
+    test <@ not (result.Value.Contains("/repo/good/bin")) @>
     test <@ result.Value.Contains(".fshw.json analyzers.paths") @>
 
 [<Fact(Timeout = 2000)>]
-let ``analyzersLoadFailure fires for multiple configured paths that load zero`` () =
-    let result = analyzersLoadFailure 3 0
-    test <@ result.IsSome @>
-    test <@ result.Value.Contains("3 path(s)") @>
+let ``analyzerPathFailures fires when every configured path loads zero`` () =
+    // The prior total==0 cases still fail — now as a subset of the per-path guard.
+    let single = analyzerPathFailures [ "/repo/a/bin", 0 ]
+    test <@ single.IsSome @>
+    test <@ single.Value.Contains("/repo/a/bin") @>
+
+    let multiple =
+        analyzerPathFailures [ "/repo/a/bin", 0; "/repo/b/bin", 0; "/repo/c/bin", 0 ]
+
+    test <@ multiple.IsSome @>
+    test <@ multiple.Value.Contains("/repo/a/bin") @>
+    test <@ multiple.Value.Contains("/repo/b/bin") @>
+    test <@ multiple.Value.Contains("/repo/c/bin") @>
 
 [<Fact(Timeout = 2000)>]
-let ``analyzersLoadFailure silent when at least one analyzer loads`` () =
-    test <@ (analyzersLoadFailure 1 1).IsNone @>
-    test <@ (analyzersLoadFailure 2 1).IsNone @>
-    test <@ (analyzersLoadFailure 5 7).IsNone @>
+let ``analyzerPathFailures silent when every configured path loads at least one`` () =
+    test <@ (analyzerPathFailures [ "/repo/a/bin", 1 ]).IsNone @>
+    test <@ (analyzerPathFailures [ "/repo/a/bin", 2; "/repo/b/bin", 1 ]).IsNone @>
+    test <@ (analyzerPathFailures [ "/repo/a/bin", 5; "/repo/b/bin", 7 ]).IsNone @>
 
 [<Fact(Timeout = 2000)>]
-let ``analyzersLoadFailure silent when analyzers unconfigured`` () =
-    // No analyzers requested (0 configured) is fine — "no analyzers" is not a
-    // misconfiguration, even if loaded count is also 0.
-    test <@ (analyzersLoadFailure 0 0).IsNone @>
+let ``analyzerPathFailures silent when analyzers unconfigured`` () =
+    // No analyzers requested (empty list) is fine — "no analyzers" is not a
+    // misconfiguration.
+    test <@ (analyzerPathFailures []).IsNone @>
