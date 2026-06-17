@@ -381,6 +381,52 @@ let withEnv (name: string) (value: string option) (body: unit -> unit) =
     finally
         Environment.SetEnvironmentVariable(name, prior)
 
+/// Recursively delete a throwaway temp dir, tolerating the daemon-teardown race.
+///
+/// Root cause (2026-06-17, CI flake on `check --run-once`, Linux): a daemon test
+/// cancels its daemon and waits a bounded time (`task.Wait(5s)`) for shutdown,
+/// but the daemon's watcher / FCS / FileErrorReporter pipeline is cooperative —
+/// in-flight checks can still emit `FileChecked` and have `FileErrorReporter`
+/// (re)create `.fshw/errors/` and write JSON *after* `Wait` returns. When
+/// `withTempDir`'s `finally` then runs `Directory.Delete(tmpDir, recursive=true)`
+/// on the test thread, that background writer races the recursive delete: the OS
+/// removes a subdir's entries, the writer recreates one, and `Directory.Delete`
+/// throws `IOException "Directory not empty"` / `DirectoryNotFoundException`.
+/// That exception escapes the test body via `finally` and is recorded by the
+/// test host as an unattributed failure ("failed: 1" with no per-test name and
+/// some tests unreported) — exactly the observed CI signature. (The same race is
+/// already *tolerated* inside `FileErrorReporter.tryDelete`; the only unguarded
+/// spot was this cleanup.) A direct micro-repro throws on ~80% of attempts.
+///
+/// Fix: the temp dir is genuinely transient, so cleanup is best-effort. Retry the
+/// recursive delete a few times (the daemon's background work drains in well under
+/// a second once cancelled), and if it still races, swallow — a test verdict must
+/// never depend on whether the OS finished tearing down a scratch dir. This does
+/// NOT mask real failures: a failing assertion throws from `body` *before*
+/// `finally`, so it propagates unchanged.
+let private deleteTempDirResilient (tmpDir: string) =
+    let mutable remaining = 10
+    let mutable deleted = false
+
+    while not deleted && remaining > 0 do
+        remaining <- remaining - 1
+
+        try
+            if Directory.Exists(tmpDir) then
+                Directory.Delete(tmpDir, true)
+
+            deleted <- true
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException ->
+            // A not-yet-drained daemon is still writing into the tree. Give it a
+            // moment to finish, then retry. On the final attempt, give up: leaking
+            // a scratch temp dir is harmless and far better than failing the test.
+            if remaining = 0 then
+                deleted <- true
+            else
+                System.Threading.Thread.Sleep(25)
+
 let withTempDir (prefix: string) (body: string -> 'a) =
     // Canonicalize so /var/folders/... and /private/var/folders/... don't diverge
     // across test+plugin views of the same path (macOS temp dir is a symlink).
@@ -393,8 +439,7 @@ let withTempDir (prefix: string) (body: string -> 'a) =
     try
         body tmpDir
     finally
-        if Directory.Exists(tmpDir) then
-            Directory.Delete(tmpDir, true)
+        deleteTempDirResilient tmpDir
 
 /// Write a minimal `.fsproj` with a `<TargetFramework>` and the given
 /// `<Compile Include="…">` items. Returns nothing — the caller already knows
