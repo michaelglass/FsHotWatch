@@ -657,3 +657,39 @@ let ``regression: clean cycle after a findings cycle renders 0, not the stale co
     // the stale 2 from cycle 1. And the file's ledger entry must be cleared.
     test <@ summaries |> Seq.last = "analyzed 2 files, 0 findings (0 errors, 0 warnings)" @>
     test <@ not (ledger.ContainsKey file) @>
+
+// The `diagnostics` command sums `entries.Length` across every file in the live
+// map. The empty-state path is covered elsewhere ("diagnostics command returns
+// zeroes when no files checked"); this covers the NON-empty fold — a state with
+// real diagnostics — so the summing lambda is exercised deterministically (no
+// SDK analyzer load). Populates state via a Custom(AnalysisComplete …) update,
+// then invokes the command function directly on the resulting state.
+[<Fact(Timeout = 15000)>]
+let ``diagnostics command sums findings across files in a populated state`` () =
+    let handler = create [] None DiagnosticSeverity.Hint
+    let ctx, _summaries, _ledger = makeAnalyzerRecordingCtx ()
+
+    let findings =
+        [ { Message = "rule X"
+            Severity = DiagnosticSeverity.Error
+            Line = 10
+            Column = 1
+            Detail = None }
+          { Message = "rule Y"
+            Severity = DiagnosticSeverity.Warning
+            Line = 20
+            Column = 1
+            Detail = None } ]
+
+    let populated =
+        handler.Update ctx handler.Init (Custom(AnalysisComplete("/tmp/diag/Sum.fs", findings)))
+        |> Async.RunSynchronously
+
+    let (_, diagnosticsCmd) =
+        handler.Commands |> List.find (fun (name, _) -> name = "diagnostics")
+
+    let json = diagnosticsCmd ctx populated [||] |> Async.RunSynchronously
+
+    // The fold over the live map must report both findings on the one file.
+    test <@ json.Contains("\"diagnostics\":2") @>
+    test <@ json.Contains("\"files\":1") @>
