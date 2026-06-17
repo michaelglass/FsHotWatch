@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.18 - 2026-06-17
+
 - fix: the per-file analyzer cache key now folds in the **content identity** of the
   loaded analyzer assemblies (`analyzer-assemblies` merkle slot), not just the
   configured path strings. Previously a rebuilt analyzer DLL (rule changed / analyzer

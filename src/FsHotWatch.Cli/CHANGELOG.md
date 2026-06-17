@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.36 - 2026-06-17
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.8.0-alpha.35 - 2026-06-17
 
 - fix: configured-but-not-running analyzers now turn the gate RED instead of
