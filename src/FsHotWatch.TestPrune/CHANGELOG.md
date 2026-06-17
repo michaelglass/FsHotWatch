@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- docs: fix a stale `fshw test` reference (now `fshw check`), document missing config/`create` fields, and add an early-alpha status note in the README.
+
 ## 0.7.0-alpha.26 - 2026-06-16
 
 - feat: daemon re-runs dependent tests on a dependency-fingerprint change (new

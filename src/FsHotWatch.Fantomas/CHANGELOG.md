@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- docs: README accuracy & early-alpha status-note pass.
+
 ## 0.7.0-alpha.12 - 2026-06-09
 
 - chore: refresh transitive dependencies (CommandTree 0.5.1, CoverageRatchet.Core 0.1.0-alpha.2, TestPrune.Core 4.0.2, FSharpLintAnalyzerShim 0.3.0-alpha.3 via the lint shim).
