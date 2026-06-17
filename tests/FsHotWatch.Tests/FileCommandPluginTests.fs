@@ -703,23 +703,20 @@ let ``afterTests AnyTest fires on TestRunCompleted regardless of projects`` () =
         create (FsHotWatch.PluginFramework.PluginName.create "afterTests-any") trigger "echo" "ran" "/tmp" None
 
     host.RegisterHandler(handler)
-
+    // Subscribe-before-emit (see `combined-a`/`combined-b` below): the previous
+    // `waitUntil ... 5000` poll raced the Idle→Running→Completed transition — a
+    // slow `echo` fork+exec under heavy parallel CPU load could outlast the 5s
+    // polling budget while the `Fact(Timeout=15000)` watchdog still had 10s to
+    // spare. Awaiting the terminal status on the OnStatusChanged event removes
+    // the poll-granularity race and uses the full Fact budget deterministically.
+    let completion = beginAwaitTerminal host "afterTests-any"
     emitRunCompleted host [ "AnyProject", FsHotWatch.Events.TestsPassed("", false, TimeSpan.Zero) ]
-
-    waitUntil
-        (fun () ->
-            match host.GetStatus("afterTests-any") with
-            | Some(Completed _) -> true
-            | _ -> false)
-        5000
-
-    let status = host.GetStatus("afterTests-any")
-    test <@ status.IsSome @>
+    completion.Wait(TimeSpan.FromSeconds 12.0) |> ignore
 
     test
         <@
-            match status.Value with
-            | Completed _ -> true
+            match host.GetStatus("afterTests-any") with
+            | Some(Completed _) -> true
             | _ -> false
         @>
 
