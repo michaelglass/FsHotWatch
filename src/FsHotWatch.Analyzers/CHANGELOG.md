@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- feat: the plugin now exposes per-path analyzer load counts (`LoadedByPath`) on its
+  state, so the host can fail the gate when any configured analyzer path loads zero
+  analyzers (per-path fail-loud guard) rather than silently passing.
+
 ## 0.7.0-alpha.16 - 2026-06-12
 
 - chore: float `FSharp.Compiler.Service` via a `43.*` wildcard and rebuild to bundle the
