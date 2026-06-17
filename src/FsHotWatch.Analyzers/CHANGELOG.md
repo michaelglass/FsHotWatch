@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix: the per-file analyzer cache key now folds in the **content identity** of the
+  loaded analyzer assemblies (`analyzer-assemblies` merkle slot), not just the
+  configured path strings. Previously a rebuilt analyzer DLL (rule changed / analyzer
+  added) on an unchanged path replayed cached per-file verdicts — a long-lived daemon
+  could report a real violation as CLEAN while a fresh daemon flagged it (stale-green
+  false negative). The `plugin-version` slot is bumped to `analyzers-merkle-v3` so old
+  path-only cache entries never match after upgrade. See `docs/adr-011`.
+
 ## 0.7.0-alpha.17 - 2026-06-17
 
 - feat: the plugin now exposes per-path analyzer load counts (`LoadedByPath`) on its
