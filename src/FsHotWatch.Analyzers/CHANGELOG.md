@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.19 - 2026-06-17
+
 - fix: a long-lived (warm) daemon now **reloads** the analyzer assembly set when it
   changes on disk, instead of running the set it loaded once at startup. Adding a NEW
   custom analyzer (a new `.fs` + `<Compile>` entry, rebuilt) previously left the warm
