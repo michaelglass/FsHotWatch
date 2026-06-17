@@ -270,6 +270,137 @@ let ``cache key reflects file content when getCommitId is unavailable`` () =
     test <@ k1 = k2 @>
     test <@ k1 <> k3 @>
 
+// ---------------------------------------------------------------------------
+// Cache correctness (2026-06-17): a rebuilt analyzer DLL must invalidate cached
+// per-file verdicts even when the configured analyzer PATHS are byte-identical.
+// Before this fix the cache key hashed the path STRINGS only, so a long-lived
+// daemon replayed stale-green for unchanged source after an analyzer rule
+// changed / a new analyzer was added (same path, new DLL content). These tests
+// use throwaway *.dll byte files so the keying is exercised deterministically
+// without a real SDK analyzer load.
+// ---------------------------------------------------------------------------
+
+/// Write `bytes` to a fresh `name`.dll inside a unique temp dir; return the dir.
+let private analyzerBinWith (name: string) (bytes: byte array) =
+    let dir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"az-id-{System.Guid.NewGuid():N}")
+
+    System.IO.Directory.CreateDirectory(dir) |> ignore
+    System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, $"{name}.dll"), bytes)
+    dir
+
+[<Fact(Timeout = 15000)>]
+let ``analyzerAssemblyIdentity changes when an analyzer DLL's content changes`` () =
+    let dir = analyzerBinWith "MyAnalyzer" [| 1uy; 2uy; 3uy |]
+
+    try
+        let before = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
+
+        // Simulate a rebuild: same path, same DLL filename, new bytes (rule
+        // changed). The identity MUST differ — this is what invalidates the
+        // stale per-file cache entry.
+        System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, "MyAnalyzer.dll"), [| 9uy; 8uy; 7uy; 6uy |])
+        let after = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
+
+        test <@ before <> after @>
+    finally
+        try
+            System.IO.Directory.Delete(dir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 15000)>]
+let ``analyzerAssemblyIdentity changes when a new analyzer DLL is added`` () =
+    let dir = analyzerBinWith "First" [| 1uy; 2uy |]
+
+    try
+        let before = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
+
+        // Adding a second analyzer to the same path must change identity.
+        System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, "Second.dll"), [| 3uy; 4uy |])
+        let after = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
+
+        test <@ before <> after @>
+    finally
+        try
+            System.IO.Directory.Delete(dir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 15000)>]
+let ``analyzerAssemblyIdentity is stable for identical content (cache hits survive a no-op rescan)`` () =
+    let dir = analyzerBinWith "Stable" [| 5uy; 5uy; 5uy |]
+
+    try
+        let a = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
+        let b = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
+        test <@ a = b @>
+    finally
+        try
+            System.IO.Directory.Delete(dir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 15000)>]
+let ``analyzerAssemblyIdentity ignores known-non-analyzer (bundled dep) DLLs`` () =
+    // A bundled BCL/FCS dep churning (e.g. FSharp.Core refresh) must NOT change
+    // the analyzer identity — only the analyzer assemblies themselves count.
+    let dir = analyzerBinWith "RealAnalyzer" [| 1uy |]
+
+    try
+        let before = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
+        // FSharp.Core matches a known-non-analyzer prefix ⇒ excluded from identity.
+        System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, "FSharp.Core.dll"), [| 42uy; 43uy |])
+        let after = analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ dir ]
+        test <@ before = after @>
+    finally
+        try
+            System.IO.Directory.Delete(dir, true)
+        with _ ->
+            ()
+
+[<Fact(Timeout = 15000)>]
+let ``analyzerAssemblyIdentity does not throw on a missing path`` () =
+    // A configured-but-missing path contributes a stable sentinel, never a throw
+    // that would abort plugin construction.
+    let id1 =
+        analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ "/tmp/no-such-analyzer-dir-id-xyz" ]
+
+    let id2 =
+        analyzerAssemblyIdentity knownNonAnalyzerPrefixes [ "/tmp/no-such-analyzer-dir-id-xyz" ]
+
+    test <@ id1 = id2 @>
+
+[<Fact(Timeout = 15000)>]
+let ``regression: cache key changes when the analyzer DLL is rebuilt (same path)`` () =
+    // The end-to-end Bug A repro at the CacheKey level: two handlers configured
+    // with the SAME analyzer path, but the DLL content differs between them
+    // (a rebuild). The per-file cache key for identical source MUST differ, so a
+    // daemon that cached "clean" under the old DLL cannot replay it after the
+    // rebuild. Before the fix (path-string-only key) these keys were identical.
+    let dir = analyzerBinWith "RuleChanged" [| 0uy; 1uy; 2uy |]
+
+    try
+        let h1 = create [ dir ] None DiagnosticSeverity.Hint
+        let event = FileChecked(fakeResult $"{dir}/Subject.fs")
+        let key1 = (h1.CacheKey.Value) event
+
+        // Rebuild the analyzer (rule changed) — same path, new content.
+        System.IO.File.WriteAllBytes(System.IO.Path.Combine(dir, "RuleChanged.dll"), [| 9uy; 9uy; 9uy; 9uy |])
+
+        let h2 = create [ dir ] None DiagnosticSeverity.Hint
+        let key2 = (h2.CacheKey.Value) event
+
+        test <@ key1.IsSome @>
+        test <@ key2.IsSome @>
+        // Same source, same path — but different analyzer DLL ⇒ different key.
+        test <@ key1 <> key2 @>
+    finally
+        try
+            System.IO.Directory.Delete(dir, true)
+        with _ ->
+            ()
+
 [<Fact(Timeout = 15000)>]
 let ``cache key for Custom event returns None`` () =
     let handler = create [] None DiagnosticSeverity.Hint
