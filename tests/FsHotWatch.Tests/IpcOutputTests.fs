@@ -356,6 +356,23 @@ let ``pollAndRender waits for the test-prune verdict before deciding (no false g
     let mutable testRunFinished = false
     let mutable waitForCompleteCalls = 0
 
+    // Determinism gate (coverage stability): `pollUntilSettled` runs
+    // `waitForComplete` on a `Task.Run` and exits as soon as that task's
+    // `IsCompleted` is observed true. If the task finishes before the FIRST
+    // `isSettled` poll (idle machine), the loop never takes its
+    // `if not allDone then Thread.Sleep(200)` arm — so that branch in
+    // IpcOutput.fs flips covered/uncovered run-to-run (the observed 28/54 <->
+    // 29/54 branch-coverage flake around the 53% floor). We pin it
+    // deterministically: `waitForComplete` blocks until the render loop has
+    // completed a FULL un-settled iteration (status read + `isSettled` returned
+    // false + the sleep arm taken). `getStatus` runs at the top of every
+    // iteration; releasing the gate on the SECOND poll (not the first) keeps the
+    // task un-finished THROUGH the first `isSettled` check, so the loop is
+    // guaranteed to take the wait-and-retry branch once, then converge. The
+    // branch is now ALWAYS covered, with no wall-clock race.
+    use releaseComplete = new System.Threading.ManualResetEventSlim(false)
+    let mutable pollCount = 0
+
     let waitForScan () : string =
         // The scan generation is signalled; test-prune has NOT yet processed its
         // queued BuildCompleted. This is the false-green window.
@@ -363,12 +380,26 @@ let ``pollAndRender waits for the test-prune verdict before deciding (no false g
 
     let waitForComplete () : string =
         // The daemon's sound verdict wait: it returns only once the test-prune
-        // run has reached terminal. Model that by marking the run finished.
+        // run has reached terminal. Block until the render loop has done one full
+        // un-settled iteration (so `pollUntilSettled` takes its wait-and-retry
+        // branch), then mark the run finished.
+        releaseComplete.Wait()
         waitForCompleteCalls <- waitForCompleteCalls + 1
         testRunFinished <- true
         statusJsonFor true
 
-    let getStatus () : string = statusJsonFor testRunFinished
+    let getStatus () : string =
+        // Called at the top of each `pollUntilSettled` iteration, before the
+        // `isSettled` check. The first poll observes the task still running (gate
+        // closed) so `isSettled` is false and the loop sleeps; the second poll
+        // releases the gate, letting `waitForComplete` finish and the loop exit.
+        pollCount <- pollCount + 1
+
+        if pollCount >= 2 then
+            releaseComplete.Set()
+
+        statusJsonFor testRunFinished
+
     let getErrors () : string = diagnosticsJsonFor testRunFinished
     let triggerScan () : string = "idle"
 
@@ -396,7 +427,33 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
     // The legitimate "nothing failed" case: the authoritative wait completes and
     // the ledger is clean -> exit 0. Guards against the fix over-blocking or
     // mis-reporting a genuinely green run.
-    let alwaysCleanStatus () : string = statusJsonFor true
+    //
+    // Determinism gate (coverage stability): this test pins the OTHER arm of
+    // `pollUntilSettled`'s `if not allDone then Thread.Sleep(200)` branch — the
+    // SKIP arm, taken when the verdict task has already completed by the first
+    // `isSettled` poll (so no sleep). Without pinning, whether the `Task.Run`
+    // beats the first poll is a wall-clock race. We force it: `waitForComplete`
+    // signals `completed` when it finishes, and the first `getStatus` (top of the
+    // loop, before the `isSettled` check) blocks until that signal — so the loop's
+    // first `isSettled` is GUARANTEED true and the sleep arm is skipped. Together
+    // with the verdict test (which always takes the sleep arm), both arms of the
+    // branch are deterministically covered, stabilising IpcOutput.fs at its peak.
+    use completed = new System.Threading.ManualResetEventSlim(false)
+    let mutable firstStatusPoll = true
+
+    let waitForComplete () : string =
+        let r = statusJsonFor true
+        completed.Set()
+        r
+
+    let getStatus () : string =
+        if firstStatusPoll then
+            firstStatusPoll <- false
+            // Ensure the verdict task has finished before the loop's first
+            // `isSettled` check, so the loop exits without sleeping (skip arm).
+            completed.Wait()
+
+        statusJsonFor true
 
     let cleanDiagnostics () : string =
         """{"count":0,"files":{},"statuses":{},"unchecked":0}"""
@@ -407,8 +464,8 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
             (fun _ -> [])
             false
             (fun () -> "idle")
-            alwaysCleanStatus
-            alwaysCleanStatus
+            waitForComplete
+            getStatus
             cleanDiagnostics
             (fun () -> "idle")
 
