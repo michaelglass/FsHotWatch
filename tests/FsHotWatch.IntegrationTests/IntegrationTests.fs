@@ -253,8 +253,49 @@ let ``analyzers load guard does not fire when a real analyzer loads`` () =
     // The real ExampleAnalyzer DLL contributes at least one analyzer.
     test <@ handler.Init.LoadedCount >= 1 @>
 
-    // Guard: configured 1 path, ≥1 loaded ⇒ no failure (gate stays green).
-    test <@ (FsHotWatch.Cli.DaemonConfig.analyzersLoadFailure 1 handler.Init.LoadedCount).IsNone @>
+    // Per-path guard: the one configured path loaded ≥1 ⇒ no failure (gate stays
+    // green). LoadedByPath is the genuine per-path result from the real load.
+    test <@ (FsHotWatch.Cli.DaemonConfig.analyzerPathFailures handler.Init.LoadedByPath).IsNone @>
+
+// ---------------------------------------------------------------------------
+// Per-path strictness end-to-end through registerPlugins, exercising the REAL
+// SDK load: a multi-path config where one path loads ≥1 (the ExampleAnalyzer
+// bin) and the others are empty / missing (load 0) must STILL raise ConfigError,
+// naming the zero-loading paths but NOT the one that loaded. This is the partial
+// silent-skip the earlier aggregate (total==0) guard missed. Lives here (not the
+// coverage-rachet unit suite) because the SDK-reflection load is nondeterministic.
+// ---------------------------------------------------------------------------
+[<Fact(Timeout = 30000)>]
+let ``analyzers load guard fires per-path when one of several paths loads zero`` () =
+    let goodPath = exampleAnalyzerPath.Value
+
+    withTempDir "cfg-analyzers-partial" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "src")) |> ignore
+
+        // An existing-but-empty dir (resolves, loads 0) and a non-existent dir.
+        let emptyPath = Path.Combine(tmpDir, "empty-analyzer-bin")
+        Directory.CreateDirectory(emptyPath) |> ignore
+
+        let daemon =
+            Daemon.createWith (Unchecked.defaultof<_>) tmpDir Daemon.DaemonOptions.defaults
+
+        let config =
+            { DaemonConfig.stripConfig (defaultTestConfig ()) with
+                Analyzers =
+                    Some
+                        {| Paths = [ goodPath; emptyPath; "no-such-analyzer-bin-dir" ]
+                           FailOnSeverity = DiagnosticSeverity.Hint |} }
+
+        let ex =
+            Assert.Throws<DaemonConfig.ConfigError>(fun () -> DaemonConfig.registerPlugins daemon tmpDir config)
+
+        // The two zero-loading paths are named …
+        Assert.Contains(emptyPath, ex.Message)
+        Assert.Contains("no-such-analyzer-bin-dir", ex.Message)
+        // … but the path that loaded ≥1 analyzer is NOT named.
+        test <@ not (ex.Message.Contains(goodPath)) @>
+        // The plugin must NOT have registered.
+        test <@ not (daemon.Host.GetAllStatuses().ContainsKey("analyzers")) @>)
 
 // ---------------------------------------------------------------------------
 // Helper: create a temp directory with a single .fs returning (dir, filePath)

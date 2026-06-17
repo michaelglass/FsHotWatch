@@ -117,10 +117,13 @@ let ``analyzer with mix of valid and invalid paths`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``configured non-existent analyzer path loads zero (guard input)`` () =
-    let handler =
-        create [ "/tmp/no-such-analyzer-dir-guard-a" ] None DiagnosticSeverity.Hint
+    let path = "/tmp/no-such-analyzer-dir-guard-a"
+    let handler = create [ path ] None DiagnosticSeverity.Hint
 
     test <@ handler.Init.LoadedCount = 0 @>
+    // Per-path: a non-existent path is recorded with a 0 count so the per-path
+    // guard can name it as the offender.
+    test <@ handler.Init.LoadedByPath = [ path, 0 ] @>
 
 [<Fact(Timeout = 15000)>]
 let ``configured empty analyzer dir loads zero (guard input)`` () =
@@ -132,6 +135,8 @@ let ``configured empty analyzer dir loads zero (guard input)`` () =
     try
         let handler = create [ emptyDir ] None DiagnosticSeverity.Hint
         test <@ handler.Init.LoadedCount = 0 @>
+        // Per-path: an existing-but-empty dir is recorded with a 0 count.
+        test <@ handler.Init.LoadedByPath = [ emptyDir, 0 ] @>
     finally
         try
             System.IO.Directory.Delete(emptyDir, true)
@@ -203,6 +208,8 @@ let ``ParseOnly dispatches to analyzer worker instead of skipping`` () =
 let ``empty analyzer paths still creates working handler`` () =
     let handler = create [] None DiagnosticSeverity.Hint
     test <@ handler.Init.LoadedCount = 0 @>
+    // No configured paths ⇒ empty per-path list ⇒ the per-path guard stays silent.
+    test <@ List.isEmpty handler.Init.LoadedByPath @>
     test <@ handler.Init.DiagnosticsByFile = Map.empty @>
     test <@ handler.Subscriptions.Contains(FsHotWatch.PluginFramework.SubscribeFileChecked) @>
 

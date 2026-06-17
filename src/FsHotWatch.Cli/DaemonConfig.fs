@@ -59,27 +59,31 @@ let resolveExistingPathsWithRetry (dirExists: string -> bool) (sleep: int -> uni
 
     resolved
 
-/// Fail-loud guard: analyzers are treated like test failures — if the user
-/// CONFIGURED analyzers but the end result is ZERO analyzers loaded, that is a
-/// misconfiguration that must turn the gate RED, never a silent pass.
+/// Fail-loud guard: analyzers are treated like test failures — EVERY configured
+/// `analyzers.paths` entry must contribute ≥1 analyzer, else the gate goes RED.
 ///
-/// This closes a "silent green" class: a `.fshw.json` `analyzers.paths` that
-/// points at a bin dir which doesn't exist in CI (e.g. built in the wrong
-/// configuration) resolves to zero paths, the plugin loads 0 analyzers, and the
-/// lint silently passes.
+/// This closes a "silent green" class — PER PATH, not just in aggregate: a
+/// `.fshw.json` with several analyzer paths where ONE points at a bin dir that
+/// doesn't exist in CI (e.g. built in the wrong configuration) or is empty would
+/// load 0 from that path yet stay green because the OTHER paths loaded. Both
+/// failure modes per path collapse to a count of 0: (a) the path didn't resolve
+/// / doesn't exist, and (b) it exists but holds no analyzer DLLs.
 ///
-/// The check compares the ORIGINAL configured count against the loaded count —
-/// NOT the post-resolution path count, because that itself can silently drop to
-/// zero. Returns `Some message` when the guard should fire (configured > 0 but
-/// loaded = 0), `None` otherwise (unconfigured, or ≥1 analyzer loaded).
-let analyzersLoadFailure (configuredCount: int) (loadedCount: int) : string option =
-    if configuredCount > 0 && loadedCount = 0 then
+/// Input is the per-ORIGINAL-configured-path (absolute path, contributed count)
+/// list. Returns `Some message` naming each zero-loading path when any exists,
+/// `None` otherwise — unconfigured (empty list), or every path loaded ≥1.
+let analyzerPathFailures (loadedByPath: (string * int) list) : string option =
+    let zeroPaths =
+        loadedByPath |> List.filter (fun (_, count) -> count = 0) |> List.map fst
+
+    match zeroPaths with
+    | [] -> None
+    | paths ->
+        let joined = String.concat "; " paths
+
         Some
-            $"Analyzers configured (%d{configuredCount} path(s)) but 0 analyzers loaded — \
-              paths missing/empty or built in the wrong configuration; \
-              check .fshw.json analyzers.paths vs the build config"
-    else
-        None
+            $"Analyzer path(s) loaded 0 analyzers (missing/empty or built in the wrong configuration): \
+              %s{joined} — check .fshw.json analyzers.paths vs the build config"
 
 /// Detect the default cache backend. Always file-based now that jj-specific
 /// caching has been removed; kept for API compatibility.
@@ -901,21 +905,32 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                 $"Analyzers: %d{resolvedPaths.Length}/%d{absolutePaths.Length} paths resolved (missing after retry: %s{missing})"
 
         // Build the handler unconditionally (even when resolvedPaths is empty) so
-        // its LoadedCount is known: that is what the fail-loud guard inspects. The
-        // factory loads analyzers eagerly, so Init.LoadedCount is the real result.
+        // its per-path load result is known: that is what the fail-loud guard
+        // inspects. The factory loads analyzers eagerly, so Init.LoadedByPath is
+        // the real per-path result.
         let handler =
             FsHotWatch.Analyzers.AnalyzersPlugin.create resolvedPaths config.TimeoutSec a.FailOnSeverity
 
-        let loadedCount = handler.Init.LoadedCount
+        // Map every ORIGINAL configured path to its contributed analyzer count:
+        // 0 if it was dropped during resolution (missing after retry), else the
+        // plugin's per-path count (0 if it resolved but loaded no analyzer DLLs).
+        let countByResolvedPath = handler.Init.LoadedByPath |> Map.ofList
 
-        // Fail-loud: configured analyzers that load nothing must turn the gate
-        // RED (treated like a test failure), never silently pass. Compare against
-        // the ORIGINAL configured count — resolvedPaths can itself drop to zero.
-        match analyzersLoadFailure absolutePaths.Length loadedCount with
+        let loadedByOriginalPath =
+            absolutePaths
+            |> List.map (fun p -> p, (Map.tryFind p countByResolvedPath |> Option.defaultValue 0))
+
+        // Fail-loud: any configured path that loads nothing must turn the gate
+        // RED (treated like a test failure), never silently pass — even when other
+        // configured paths loaded fine.
+        match analyzerPathFailures loadedByOriginalPath with
         | Some message -> raise (ConfigError message)
         | None ->
-            // loadedCount ≥ 1 here (the guard only passes with ≥1 loaded, or with
-            // 0 configured paths — and we are inside `Some a` so paths were given).
+            // Every configured path loaded ≥1 here (the guard only passes when no
+            // path contributed 0, or when no paths were configured — and we are
+            // inside `Some a` so paths were given).
+            let loadedCount = handler.Init.LoadedCount
+
             Logging.info
                 "config"
                 $"Registering AnalyzersPlugin with %d{resolvedPaths.Length} paths (%d{loadedCount} analyzers loaded)"
