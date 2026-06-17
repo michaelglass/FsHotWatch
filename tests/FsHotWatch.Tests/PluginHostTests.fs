@@ -1062,8 +1062,14 @@ let ``waitForAllTerminal waits for downstream plugin that hasn't yet picked up i
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
+    // No internal deadline (MaxValue): the regression this guards is the wait
+    // returning EARLY (caught below by bReachedRunning/bReachedCompleted), and a
+    // genuine hang is bounded by the outer `.Wait(20s)` + `Fact(Timeout=30000)`.
+    // A finite internal timeout (was 15s) only added a wall-clock magic number
+    // that could fire spuriously under heavy parallel CPU load while the cascade
+    // was still legitimately draining — a flake, not a real failure.
     let waitTask =
-        waitForAllTerminal host (TimeSpan.FromSeconds(15.0)) System.Threading.CancellationToken.None
+        waitForAllTerminal host TimeSpan.MaxValue System.Threading.CancellationToken.None
 
     let completed = waitTask.Wait(TimeSpan.FromSeconds(20.0))
     test <@ completed @>
@@ -1168,8 +1174,14 @@ let ``waitForAllTerminal does not return while a downstream plugin still has eve
 
     host.EmitFileChanged(SourceChanged [ "src/Lib.fs" ])
 
+    // No internal deadline (MaxValue): the regression this guards is the wait
+    // returning EARLY (caught below by `observed = 1`), and a genuine hang is
+    // bounded by the outer `.Wait(20s)` + `Fact(Timeout=30000)`. A finite
+    // internal timeout (was 15s) only added a wall-clock magic number that could
+    // fire spuriously under heavy parallel CPU load while B's queued event was
+    // still legitimately draining — a flake, not a real failure.
     let waitTask =
-        waitForAllTerminal host (TimeSpan.FromSeconds(15.0)) System.Threading.CancellationToken.None
+        waitForAllTerminal host TimeSpan.MaxValue System.Threading.CancellationToken.None
 
     let completed = waitTask.Wait(TimeSpan.FromSeconds(20.0))
     test <@ completed @>
