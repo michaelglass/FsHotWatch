@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.27 - 2026-06-17
+
 - docs: fix a stale `fshw test` reference (now `fshw check`), document missing config/`create` fields, and add an early-alpha status note in the README.
 
 ## 0.7.0-alpha.26 - 2026-06-16

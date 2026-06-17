@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.31 - 2026-06-17
+
 - docs: README accuracy & early-alpha status-note pass (no functional changes).
 
 ## 0.8.0-alpha.30 - 2026-06-16

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.35 - 2026-06-17
+
 - fix: configured-but-not-running analyzers now turn the gate RED instead of
   passing silently, PER PATH. Every `.fshw.json` `analyzers.paths` entry must
   contribute ≥1 analyzer; if ANY configured path loads zero — the path is
