@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- fix: a long-lived (warm) daemon now **reloads** the analyzer assembly set when it
+  changes on disk, instead of running the set it loaded once at startup. Adding a NEW
+  custom analyzer (a new `.fs` + `<Compile>` entry, rebuilt) previously left the warm
+  daemon running a stale assembly that lacked the new analyzer — it silently never ran
+  and the gate reported green (observed twice in a downstream repo: a new analyzer
+  reported 0 violations while it actually had 24). The plugin now tracks the content
+  identity of the loaded analyzer assemblies and, at the start of each `FileChecked`,
+  loads the current set into a fresh `Client` and swaps it in if the on-disk identity
+  differs. Complements the alpha.18 cache-key fix (stale cached *results*) and the
+  alpha.17 fail-loud guard (a *0*-analyzer load): this closes the remaining hole — a
+  *partial* stale load that's merely missing a newly-added analyzer.
+
 ## 0.7.0-alpha.18 - 2026-06-17
 
 - fix: the per-file analyzer cache key now folds in the **content identity** of the

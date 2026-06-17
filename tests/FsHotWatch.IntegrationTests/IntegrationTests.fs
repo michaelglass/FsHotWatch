@@ -931,6 +931,82 @@ let ``AnalyzersPlugin produces no warning on exhaustive DU match`` () =
         | PluginStatus.Failed(msg, _) -> Assert.Fail($"Analyzer should succeed but failed: {msg}")
         | other -> Assert.Fail($"Unexpected status: %A{other}"))
 
+// ---------------------------------------------------------------------------
+// Bug C (2026-06-17): a long-lived (warm) daemon loads analyzers ONCE at
+// construction. When a downstream repo ADDS a new analyzer (new .fs + <Compile>
+// entry) and rebuilds, the analyzer DLL on disk changes but the in-memory
+// `client` still holds the OLD set — the new analyzer silently never runs, so
+// the gate reports green without ever inspecting the codebase with it. This was
+// observed twice in thellma/intelligence (a new analyzer reported 0 findings
+// when it actually had 24). Bug A's cache key invalidates stale RESULTS but the
+// loaded assembly stays stale; Bug B fails loud on a 0-analyzer load but a
+// PARTIAL stale load that's merely MISSING the new analyzer slips past it.
+//
+// Repro on a genuine warm handler: point it at an analyzer dir that starts
+// EMPTY (loads 0 analyzers), emit FileChecked on a wildcard-DU file → no
+// findings. Then copy a real analyzer DLL into the SAME dir (a downstream "add
+// + rebuild") and re-emit → the analyzer must now fire. Pre-fix the second
+// emission still saw 0 analyzers loaded; post-fix `reloadIfStale` re-scans the
+// changed assembly set before analyzing and the new analyzer runs.
+// ---------------------------------------------------------------------------
+[<Fact(Timeout = 60000)>]
+let ``Bug C: warm daemon reloads analyzers when a new analyzer DLL is added to the path`` () =
+    withAnalyzerGate (fun () ->
+        let repoRoot = findRepoRoot ()
+        let exampleBin = exampleAnalyzerPath.Value
+
+        // A wildcard DU match — the ExampleAnalyzer flags it once present.
+        let source =
+            "module Test\ntype Shape = Circle | Square\nlet f s = match s with | Circle -> 1 | _ -> 2\n"
+
+        withTempDir "bugc-warm-reload" (fun tmpDir ->
+            let analyzerDir = Path.Combine(tmpDir, "analyzer-bin")
+            Directory.CreateDirectory(analyzerDir) |> ignore
+
+            let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
+            let host = PluginHost.create checker repoRoot
+
+            // The handler loads from analyzerDir at construction — currently EMPTY,
+            // so zero analyzers are loaded (the warm daemon's starting state before
+            // the downstream add). failOnSeverity = Error so the raw Warning the
+            // ExampleAnalyzer emits survives to the ledger unpromoted.
+            let analyzers = AnalyzersPlugin.create [ analyzerDir ] None DiagnosticSeverity.Error
+
+            host.RegisterHandler(analyzers)
+
+            withTempFsFile source (fun _dir tmpFile ->
+                let findings () =
+                    host.GetErrorsByPlugin("analyzers") |> Map.toList |> List.collect snd
+
+                let emit () =
+                    match checkTempFile checker tmpFile with
+                    | Some checkResult -> host.EmitFileChecked(checkResult)
+                    | None -> Assert.Fail("FCS failed to check temp file")
+
+                // Cycle 1: empty analyzer dir ⇒ no analyzer ⇒ no findings. The
+                // plugin reaches Completed; assert the ledger stays empty.
+                emit ()
+                waitForTerminalStatus host "analyzers" 15000
+                test <@ List.isEmpty (findings ()) @>
+
+                // Downstream adds a new analyzer to the SAME path and rebuilds:
+                // copy the real ExampleAnalyzer DLL set into the watched dir.
+                Directory.GetFiles(exampleBin, "*.dll")
+                |> Array.iter (fun f -> File.Copy(f, Path.Combine(analyzerDir, Path.GetFileName f), true))
+
+                // Cycle 2: the assembly set on disk changed ⇒ reloadIfStale must
+                // re-scan and load the new analyzer BEFORE analyzing this file, so
+                // the wildcard-DU warning now appears. The plugin status lingers at
+                // Completed from cycle 1, so poll the ledger (the real
+                // postcondition) rather than waiting on a status transition that
+                // already happened. Pre-fix the ledger stayed empty (stale load).
+                emit ()
+                waitUntil (fun () -> not (List.isEmpty (findings ()))) 15000
+
+                let after = findings ()
+                test <@ not (List.isEmpty after) @>
+                test <@ after |> List.exists (fun e -> e.Severity = DiagnosticSeverity.Warning) @>)))
+
 // ===========================================================================
 // BuildPlugin — success and failure
 // ===========================================================================
