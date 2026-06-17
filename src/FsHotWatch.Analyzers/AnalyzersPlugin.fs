@@ -80,6 +80,58 @@ let internal isKnownNonAnalyzerPrefix (prefixes: string array) (assemblyName: st
     prefixes
     |> Array.exists (fun p -> assemblyName.StartsWith(p, StringComparison.Ordinal))
 
+/// Content-addressed identity of the analyzer assemblies in the configured
+/// paths — the cache-correctness fix for the "stale-green after analyzer
+/// rebuild" class (2026-06-17). The per-file analyzer cache previously keyed on
+/// the analyzer PATH STRINGS only, so when a custom-analyzer DLL was rebuilt
+/// (a rule changed, or a new analyzer added) but the path stayed the same, every
+/// cached per-file verdict for unchanged source was replayed — the new/changed
+/// rule never re-ran on those files, masking real findings. Folding the DLL
+/// CONTENT into the key invalidates exactly those entries when (and only when)
+/// the analyzer set actually changes.
+///
+/// We hash the same DLL set the loader inspects: every `*.dll` in each existing
+/// path whose filename is NOT a known-non-analyzer prefix (BCL/FCS/shim deps).
+/// Excluding those keeps the identity from churning on unrelated bundled-dep
+/// refreshes while still tracking the analyzer assemblies themselves. Each DLL
+/// contributes its relative filename + a SHA-256 of its bytes; the per-file
+/// digests are sorted so directory enumeration order is irrelevant. A path that
+/// doesn't exist (or an unreadable DLL) contributes a stable sentinel rather
+/// than throwing, so identity computation never crashes plugin construction.
+///
+/// Pure (filesystem-reading) and `internal` so the keying behaviour is
+/// unit-testable with throwaway byte files — no real SDK analyzer load needed.
+let internal analyzerAssemblyIdentity (prefixes: string array) (paths: string list) : string =
+    let perFile =
+        paths
+        |> List.sort
+        |> List.collect (fun path ->
+            if not (Directory.Exists(path)) then
+                [ $"%s{path}=>missing" ]
+            else
+                Directory.GetFiles(path, "*.dll")
+                |> Array.filter (fun dll ->
+                    not (isKnownNonAnalyzerPrefix prefixes (Path.GetFileNameWithoutExtension dll)))
+                |> Array.map (fun dll ->
+                    let name = Path.GetFileName dll
+
+                    let contentHash =
+                        try
+                            File.ReadAllBytes dll
+                            |> System.Security.Cryptography.SHA256.HashData
+                            |> System.Convert.ToHexString
+                        with ex ->
+                            // Unreadable (transient lock, perms): a stable sentinel
+                            // keyed on the message so distinct failures stay distinct,
+                            // never a throw that aborts plugin construction.
+                            $"unreadable:%s{ex.Message}"
+
+                    $"%s{name}:%s{contentHash}")
+                |> Array.toList)
+        |> List.sort
+
+    FsHotWatch.CheckCache.sha256Hex (String.concat "\n" perFile)
+
 /// Build the `AnalyzerProjectOptions` instance the SDK's CliContext expects.
 /// The SDK's constructor shape is reflected at startup (`apoCtor`); extracted
 /// so we can unit-test the `None` fallback and the `Invoke`-throws recovery
@@ -426,9 +478,17 @@ let internal createWithSlowHook
               } ]
       Subscriptions = Set.ofList [ SubscribeFileChecked ]
       CacheKey =
-        // §2a: pure-content cache key (file source + analyzer paths + fcs-signature).
+        // §2a: pure-content cache key (file source + analyzer identity + fcs-signature).
         let analyzerPathsHash =
             FsHotWatch.CheckCache.sha256Hex (String.concat "|" (List.sort analyzerPaths))
+
+        // Cache-correctness (2026-06-17): the key folds in the CONTENT identity of
+        // the loaded analyzer assemblies, not just the path strings. A rebuilt
+        // analyzer DLL (rule changed / analyzer added) changes this hash even when
+        // the configured paths are byte-identical, invalidating cached per-file
+        // verdicts so the new/changed rule re-runs instead of replaying stale-green.
+        let analyzerAssemblyHash =
+            analyzerAssemblyIdentity knownNonAnalyzerPrefixes analyzerPaths
 
         let cacheKey (event: PluginEvent<AnalyzersMsg>) : ContentHash option =
             match event with
@@ -439,8 +499,13 @@ let internal createWithSlowHook
 
                 Some(
                     FsHotWatch.TaskCache.merkleCacheKey
-                        [ "plugin-version", "analyzers-merkle-v2"
+                        // plugin-version bumped to v3: the added analyzer-assemblies
+                        // slot makes every old on-disk entry's key non-matching, so a
+                        // daemon that cached "clean" under the path-only key (v2) can't
+                        // replay it after the analyzer set changed.
+                        [ "plugin-version", "analyzers-merkle-v3"
                           "analyzer-paths", analyzerPathsHash
+                          "analyzer-assemblies", analyzerAssemblyHash
                           "file", AbsFilePath.value result.File
                           "source", result.Source
                           "fcs-signature", fcsSignature ]
