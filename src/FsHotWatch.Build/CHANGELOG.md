@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.14 - 2026-06-17
+
 - fix: surface per-project stale-artifact detail in the live build log.
 - docs: README early-alpha status-note pass.
 

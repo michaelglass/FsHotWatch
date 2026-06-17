@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.14 - 2026-06-17
+
 - docs: correct the README "how it works" (the plugin finds/parses/gates; TestPrune performs the coverage merge) and add an early-alpha status note.
 
 ## 0.7.0-alpha.13 - 2026-06-12

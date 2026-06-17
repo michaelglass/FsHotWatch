@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.13 - 2026-06-17
+
 - docs: README accuracy & early-alpha status-note pass.
 
 ## 0.7.0-alpha.12 - 2026-06-16
