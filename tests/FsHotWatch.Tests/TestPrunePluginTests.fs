@@ -72,7 +72,8 @@ let private withSingleProjectHarness (tmpDir: string) (projectName: string) =
             Environment = []
             FilterTemplate = None
             ClassJoin = " "
-            TimeoutSec = None } ]
+            TimeoutSec = None
+            ReportVerificationFormat = AutoDetect } ]
 
     let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
     let handler = create ":memory:" tmpDir (Some configs) None None None None []
@@ -228,7 +229,8 @@ let ``plugin with testConfigs subscribes to OnBuildCompleted`` () =
             Environment = []
             FilterTemplate = None
             ClassJoin = " "
-            TimeoutSec = None } ]
+            TimeoutSec = None
+            ReportVerificationFormat = AutoDetect } ]
 
     let handler = create ":memory:" "/tmp" (Some configs) None None None None []
 
@@ -260,7 +262,8 @@ let ``extension is invoked via AnalyzeEdges during test run`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -296,7 +299,8 @@ let ``extension error is caught and does not crash plugin`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -423,7 +427,8 @@ let ``FileChecked does not set Running status`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -487,7 +492,8 @@ let ``FileChecked exception while tests running surfaces Failed via framework sa
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
@@ -577,7 +583,8 @@ let ``FileChecked replaces test-run Completed status with error state`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -632,7 +639,8 @@ let ``run-tests command runs all projects and returns results`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -659,7 +667,8 @@ let ``run-tests with project filter runs only named project`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None }
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect }
               { Project = "Beta"
                 Command = "echo"
                 Args = "beta"
@@ -667,7 +676,8 @@ let ``run-tests with project filter runs only named project`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -694,7 +704,8 @@ let ``run-tests with filter passes raw filter args through to the test command``
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -726,7 +737,8 @@ let ``run-tests with only-failed reruns failed projects`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None }
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect }
               { Project = "Fails"
                 Command = "false"
                 Args = ""
@@ -734,7 +746,8 @@ let ``run-tests with only-failed reruns failed projects`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -830,7 +843,8 @@ let ``test failures are reported to error ledger`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -857,7 +871,8 @@ let ``test errors are cleared when all tests pass`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -901,7 +916,8 @@ let ``RerunQueued path records previous run outcome to history before starting r
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -1034,7 +1050,8 @@ let ``FileChecked reports Completed when testConfigs provided (analysis done, aw
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
@@ -1133,7 +1150,8 @@ let beta () = ()
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let handler = create dbPath tmpDir (Some testConfigs) None None None None []
 
@@ -1222,7 +1240,8 @@ let computeTest () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let handler = create dbPath tmpDir (Some testConfigs) None None None None []
 
@@ -1333,7 +1352,8 @@ let ``cross-file type change only runs affected test classes`` () =
                 Environment = []
                 FilterTemplate = Some "-- --filter-class {classes}"
                 ClassJoin = "|"
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
@@ -1481,7 +1501,8 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -1644,7 +1665,8 @@ let lazyComputeTest () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let handler = create dbPath tmpDir (Some testConfigs) None None None None []
         host.RegisterHandler(handler)
@@ -1719,7 +1741,8 @@ let ``BuildCompleted queries affected tests after flush`` () =
                 Environment = []
                 FilterTemplate = Some "-- --filter-class {classes}"
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
@@ -1747,7 +1770,8 @@ let ``skip tests when 0 affected classes and not cold start`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -1820,7 +1844,8 @@ let ``dependency-fingerprint change force-runs the dependent test project`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         // Wire the fake graph BEFORE registering the plugin (mirrors the daemon).
@@ -1870,7 +1895,8 @@ let ``no dependency change and no symbol change still skips (no regression)`` ()
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         host.SetProjectGraph(fanoutGraph testProjFsproj opsFsproj opsDll)
@@ -2096,7 +2122,8 @@ let ``run-tests with a filter that matches nothing reports no-tests-matched dist
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
@@ -2126,7 +2153,8 @@ let ``run-tests with a filter that matches tests executes and reports a real pas
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
@@ -2161,7 +2189,8 @@ let ``run-tests force-executes after an in-flight run finishes instead of instan
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
@@ -2200,7 +2229,8 @@ let ``buildFilterArgs returns None when no classes for project`` () =
           Environment = []
           FilterTemplate = Some "-- --filter-class {classes}"
           ClassJoin = "|"
-          TimeoutSec = None }
+          TimeoutSec = None
+          ReportVerificationFormat = AutoDetect }
 
     let result = buildFilterArgs config Map.empty
     test <@ result = None @>
@@ -2215,7 +2245,8 @@ let ``buildFilterArgs returns None when no FilterTemplate configured`` () =
           Environment = []
           FilterTemplate = None
           ClassJoin = "|"
-          TimeoutSec = None }
+          TimeoutSec = None
+          ReportVerificationFormat = AutoDetect }
 
     let classesByProject = Map.ofList [ "TestProj", [ "TestClassA"; "TestClassB" ] ]
     let result = buildFilterArgs config classesByProject
@@ -2231,7 +2262,8 @@ let ``buildFilterArgs applies template with ClassJoin`` () =
           Environment = []
           FilterTemplate = Some "-- --filter-class {classes}"
           ClassJoin = "|"
-          TimeoutSec = None }
+          TimeoutSec = None
+          ReportVerificationFormat = AutoDetect }
 
     let classesByProject = Map.ofList [ "TestProj", [ "ClassA"; "ClassB" ] ]
     let result = buildFilterArgs config classesByProject
@@ -2247,7 +2279,8 @@ let ``buildFilterArgs applies template with default space join`` () =
           Environment = []
           FilterTemplate = Some "-- --filter-class {classes}"
           ClassJoin = " "
-          TimeoutSec = None }
+          TimeoutSec = None
+          ReportVerificationFormat = AutoDetect }
 
     let classesByProject = Map.ofList [ "TestProj", [ "ClassA"; "ClassB" ] ]
     let result = buildFilterArgs config classesByProject
@@ -2263,7 +2296,8 @@ let ``buildFilterArgs ignores classes from other projects`` () =
           Environment = []
           FilterTemplate = Some "-- --filter-class {classes}"
           ClassJoin = "|"
-          TimeoutSec = None }
+          TimeoutSec = None
+          ReportVerificationFormat = AutoDetect }
 
     let classesByProject =
         Map.ofList [ "TestProjA", [ "ClassA" ]; "TestProjB", [ "ClassB" ] ]
@@ -2387,7 +2421,8 @@ let ``executeTests emits a TestProgress per group as groups finish`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None }
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect }
               { Project = "ProjFastB"
                 Command = "echo"
                 Args = "b"
@@ -2395,7 +2430,8 @@ let ``executeTests emits a TestProgress per group as groups finish`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None }
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect }
               { Project = "ProjSlow"
                 Command = "sleep"
                 Args = "2"
@@ -2403,7 +2439,8 @@ let ``executeTests emits a TestProgress per group as groups finish`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
 
@@ -2468,7 +2505,8 @@ let ``full run (no filter) produces TestResult with WasFiltered = false`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let handler = create dbPath tmpDir (Some configs) None None None None []
@@ -2806,7 +2844,8 @@ let ``full run (no filter) emits TestRunCompleted with RanFullSuite=true`` () =
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let handler = create dbPath tmpDir (Some configs) None None None None []
@@ -2841,7 +2880,8 @@ let ``regression: TestPrune writes a cache entry with TestRunCompleted on termin
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let handler = create dbPath tmpDir (Some configs) None None None None []
@@ -3109,7 +3149,8 @@ let ``AUTOMATION-5: a failed test run is not cached, so a later run on the same 
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let dbPath = Path.Combine(tmpDir, "tp.db")
         let handler = create dbPath tmpDir (Some configs) None None None None []
@@ -3182,7 +3223,8 @@ let ``test-results JSON exposes per-project elapsedMs after a successful run`` (
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
 
@@ -3249,7 +3291,8 @@ let ``cold-start BuildCompleted with unchanged state replays from task cache`` (
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         // Session 1: run once to populate the task cache with a prior-session result.
         do
@@ -3495,7 +3538,8 @@ let ``FileChecked with FCS errors persists symbols to DB and stamps sidecar dirt
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
@@ -3559,7 +3603,8 @@ let ``FileChecked without FCS errors flushes symbols to DB (gate doesn't break c
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
@@ -3717,7 +3762,8 @@ let ``cold-boot regression: dirty FCS leaves sidecar dirty so detectChanges fall
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         // Phase 1: clean check, flush populates DB.
         let host1 = PluginHost.create checker tmpDir
@@ -3901,7 +3947,8 @@ let phaseBTest () = ()
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create checker tmpDir
         let handler = create dbPath tmpDir (Some testConfigs) None None None None []
@@ -3988,7 +4035,8 @@ let ``Item 3: pre-BuildCompleted clean FileChecked → sidecar stays dirty`` () 
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
@@ -4039,7 +4087,8 @@ let ``Item 3: post-BuildCompleted clean FileChecked → sidecar stamped clean`` 
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
@@ -4087,7 +4136,8 @@ let ``Item 3: clean check after prior dirty, still pre-build → stays dirty`` (
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
         let pipeline = CheckPipeline(checker)
@@ -4343,7 +4393,8 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None []
@@ -4423,7 +4474,8 @@ let ``stale failures from a prior cycle are cleared when the next cycle supersed
               Environment = []
               FilterTemplate = None
               ClassJoin = " "
-              TimeoutSec = None }
+              TimeoutSec = None
+              ReportVerificationFormat = AutoDetect }
 
         let configs = [ mk "ProjA" flagA; mk "ProjB" flagB ]
 
@@ -4606,7 +4658,8 @@ module private PendingQueueHelpers =
           Environment = []
           FilterTemplate = None
           ClassJoin = " "
-          TimeoutSec = None }
+          TimeoutSec = None
+          ReportVerificationFormat = AutoDetect }
 
     /// Current durable pending-verification queue for a repo root.
     let loadQueue (tmpDir: string) : Set<string> = PendingVerification.load tmpDir
@@ -4741,7 +4794,8 @@ let barTest () = assert (bar 1 = 2)
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let handler = create dbPath tmpDir (Some configs) None None None None []
         host.RegisterHandler(handler)
@@ -4855,7 +4909,8 @@ let ``restart persistence: a non-empty queue survives a daemon restart and is re
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
@@ -4899,7 +4954,8 @@ let ``no-covering-test symbol drops from the queue at flush without wedging it``
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create dbPath tmpDir (Some configs) None None None None []
@@ -4920,3 +4976,131 @@ let ``no-covering-test symbol drops from the queue at flush without wedging it``
         match host.GetStatus("test-prune") with
         | Some(Completed _) -> ()
         | other -> Assert.Fail($"expected Completed (queue drained, not wedged), got %A{other}"))
+
+// --- classifyTestOutcome: report-authoritative verdict (CTRF over exit code) ---
+//
+// These pin the false-RED fix: the structured report (not the process exit code)
+// decides green/red, with the exit code only a tie-break when no report exists.
+
+open FsHotWatch.ProcessHelper
+
+let private rep total passed failed skipped other : Flakiness.TestReport =
+    { Total = total
+      Passed = passed
+      Failed = failed
+      Skipped = skipped
+      Other = other }
+
+let private isFailed result =
+    match result with
+    | TestsFailed _ -> true
+    | _ -> false
+
+[<Fact(Timeout = 5000)>]
+let ``classify: non-zero exit with a clean report is GREEN (the shutdown flake)`` () =
+    // exit 7 (MTP dirty-shutdown) but the report shows zero failures and >=1 test.
+    let report = Some(rep 12 12 0 0 0)
+
+    let result =
+        classifyTestOutcome
+            (ReportRequested report)
+            false
+            TimeSpan.Zero
+            (ProcessOutcome.Failed(7, "host crashed during shutdown"))
+
+    test <@ TestResult.isPassed result @>
+
+[<Fact(Timeout = 5000)>]
+let ``classify: report with a failed test is RED even on exit 0`` () =
+    let report = Some(rep 3 2 1 0 0)
+
+    let result =
+        classifyTestOutcome (ReportRequested report) false TimeSpan.Zero (ProcessOutcome.Succeeded "")
+
+    test <@ isFailed result @>
+
+[<Fact(Timeout = 5000)>]
+let ``classify: report with an other (raw-throw) result is RED`` () =
+    let report = Some(rep 3 2 0 0 1)
+
+    let result =
+        classifyTestOutcome (ReportRequested report) false TimeSpan.Zero (ProcessOutcome.Failed(2, ""))
+
+    test <@ isFailed result @>
+
+[<Fact(Timeout = 5000)>]
+let ``classify: non-zero exit with NO report from a capable runner is ERRORED, not failed`` () =
+    let result =
+        classifyTestOutcome (ReportRequested None) false TimeSpan.Zero (ProcessOutcome.Failed(7, "aborted"))
+
+    test <@ TestResult.isErrored result @>
+    test <@ not (isFailed result) @>
+    test <@ not (TestResult.isPassed result) @>
+
+[<Fact(Timeout = 5000)>]
+let ``classify: non-zero exit with no report from an UNKNOWN runner stays FAILED (no regression)`` () =
+    // NoReportRequested → exit code is the only signal → behave as before.
+    let result =
+        classifyTestOutcome NoReportRequested false TimeSpan.Zero (ProcessOutcome.Failed(1, "boom"))
+
+    test <@ isFailed result @>
+
+[<Fact(Timeout = 5000)>]
+let ``classify: clean exit with no report is PASSED`` () =
+    let result =
+        classifyTestOutcome (ReportRequested None) false TimeSpan.Zero (ProcessOutcome.Succeeded "ok")
+
+    test <@ TestResult.isPassed result @>
+
+[<Fact(Timeout = 5000)>]
+let ``classify: unfiltered zero-test report with non-zero exit is RED (empty suite is a problem)`` () =
+    let report = Some(rep 0 0 0 0 0)
+
+    let result =
+        classifyTestOutcome (ReportRequested report) false TimeSpan.Zero (ProcessOutcome.Failed(8, "Zero tests ran"))
+
+    test <@ isFailed result @>
+
+[<Fact(Timeout = 5000)>]
+let ``classify: a timeout is TimedOut regardless of a flushed report`` () =
+    let report = Some(rep 5 5 0 0 0)
+
+    let result =
+        classifyTestOutcome
+            (ReportRequested report)
+            false
+            (TimeSpan.FromSeconds 30.0)
+            (ProcessOutcome.TimedOut(TimeSpan.FromSeconds 30.0, "stuck"))
+
+    test <@ TestResult.isTimedOut result @>
+
+// --- detectCtrfCapable: scope report injection to xUnit runners ---
+
+[<Fact(Timeout = 5000)>]
+let ``detectCtrfCapable: Some true when the project references xunit`` () =
+    withTempDir "fshw-detect-xunit" (fun tmp ->
+        let proj = Path.Combine(tmp, "MyTests.fsproj")
+
+        File.WriteAllText(
+            proj,
+            "<Project><ItemGroup><PackageReference Include=\"xunit.v3\" Version=\"3.2.2\" /></ItemGroup></Project>"
+        )
+
+        test <@ detectCtrfCapable $"--project {proj}" tmp = Some true @>)
+
+[<Fact(Timeout = 5000)>]
+let ``detectCtrfCapable: Some false when the project does not reference xunit`` () =
+    withTempDir "fshw-detect-noxunit" (fun tmp ->
+        let proj = Path.Combine(tmp, "MyTests.fsproj")
+
+        File.WriteAllText(
+            proj,
+            "<Project><ItemGroup><PackageReference Include=\"Expecto\" Version=\"10.0.0\" /></ItemGroup></Project>"
+        )
+
+        test <@ detectCtrfCapable $"--project {proj}" tmp = Some false @>)
+
+[<Fact(Timeout = 5000)>]
+let ``detectCtrfCapable: None when no project can be derived from the args`` () =
+    // A --project-less / non-file command → fall back to the dotnet heuristic.
+    test <@ detectCtrfCapable "test --no-build" "/tmp" = None @>

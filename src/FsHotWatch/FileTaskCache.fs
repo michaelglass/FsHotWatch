@@ -94,6 +94,13 @@ let private serializeTestResult (key: string) (result: TestResult) =
         // Stored under `output` so the back-compat deserializer's `output`
         // read finds it without a special case.
         obj["output"] <- reason
+    | TestsErrored reason ->
+        // In practice an errored result is never written: it is non-passing, so
+        // the cacheKey gate (`allPassed`) returns None and `runAndCache` skips
+        // the write — an "I don't know" verdict must never be replayed as a
+        // verdict. Serialized here only for match exhaustiveness / robustness.
+        obj["result"] <- "errored"
+        obj["output"] <- reason
 
     obj
 
@@ -138,6 +145,7 @@ let private deserializeTestResult (obj: JsonObject) : string * TestResult =
 
             TestsTimedOut(output, TimeSpan.FromSeconds secs, wasFiltered, elapsed)
         | "deferred" -> TestsDeferred output
+        | "errored" -> TestsErrored output
         | r -> failwith $"Unknown test result: %s{r}"
 
     project, result
