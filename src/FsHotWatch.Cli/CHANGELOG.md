@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.38 - 2026-06-19
+
 - feat: `.fshw.json` test projects accept a `reportVerificationFormat` field
   (`auto` | `ctrf` | `off`) controlling how the test verdict's structured report
   is obtained (default `auto`). See the README config reference.
