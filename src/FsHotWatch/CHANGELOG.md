@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: a new `TestResult.TestsErrored` case (plus `TestResult.isErrored`) for a
+  test run that aborted before producing a usable result — not a pass and not a
+  failure. The TestPrune gate uses it to surface an honest "errored" diagnostic
+  instead of a misleading test failure. Note: exhaustive matches on `TestResult`
+  in downstream code now need an arm for it.
+
 ## 0.8.0-alpha.31 - 2026-06-17
 
 - docs: README accuracy & early-alpha status-note pass (no functional changes).

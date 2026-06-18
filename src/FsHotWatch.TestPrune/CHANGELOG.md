@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- fix: the test gate no longer reports a false failure when a test host exits
+  non-zero during a dirty shutdown (e.g. the Microsoft.Testing.Platform exit-7
+  flake) after writing a clean report. The pass/fail verdict is now derived from
+  the CTRF report's summary counts and is authoritative over the process exit
+  code (which is only a tie-break when no report exists): a non-zero exit with a
+  clean, complete report is GREEN. Previously such a run was reported as "Tests
+  failed in <project>" with zero named tests while a re-run came back green.
+- feat: a new `TestsErrored` verdict for a run that aborted before producing any
+  parseable report (non-zero exit, no results). Distinct from a test failure
+  (nothing was shown to fail) and from a pass (nothing was verified) — surfaced
+  as an honest "errored — re-run" diagnostic, never green, and never cached.
+  `--only-failed` re-runs it.
+- feat: a per-project `reportVerificationFormat` setting (`.fshw.json`: `auto` |
+  `ctrf` | `off`) scoping CTRF report injection. `auto` (default) injects
+  `--report-ctrf` only for a runner detected as xUnit.v3 (an unsupported
+  `--report-*` flag is fatal), else falls back to the dotnet heuristic; `off`
+  keeps the exit code authoritative for custom runners.
+- fix: per-test flakiness tracking now records runs — the CTRF parser read a
+  top-level `tests` array, but real Microsoft.Testing.Platform / xUnit.v3 reports
+  nest it under `results.tests`, so it had been silently recording nothing.
+
 ## 0.7.0-alpha.27 - 2026-06-17
 
 - docs: fix a stale `fshw test` reference (now `fshw check`), document missing config/`create` fields, and add an early-alpha status note in the README.

@@ -171,6 +171,7 @@ For memory/idle-exit, FSEvents latency, and per-task timeout keys, see
 | `environment` | `object` | `{}` | Extra environment variables as `"KEY": "VALUE"` pairs. |
 | `filterTemplate` | `string` | — | Template for class-based filtering. `{classes}` is replaced with affected test class names. |
 | `classJoin` | `string` | `" "` | Separator for joining class names in the filter. |
+| `reportVerificationFormat` | `string` | `"auto"` | How the pass/fail verdict's structured test report is obtained. The report (not the process exit code) decides green/red. `auto` injects `--report-ctrf` only for a runner detected as xUnit.v3 (else falls back to the dotnet heuristic); `ctrf` always injects it; `off` never injects it and the exit code stays authoritative. |
 
 **`analyzers` fields:**
 
