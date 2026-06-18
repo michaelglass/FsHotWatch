@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.28 - 2026-06-19
+
 - fix: the test gate no longer reports a false failure when a test host exits
   non-zero during a dirty shutdown (e.g. the Microsoft.Testing.Platform exit-7
   flake) after writing a clean report. The pass/fail verdict is now derived from
