@@ -58,18 +58,45 @@ let private tryGetNumber (o: JsonNode) (key: string) : float option =
         with _ ->
             None
 
+/// The per-test array in a real Microsoft.Testing.Platform / xUnit.v3 CTRF
+/// report is nested under `results.tests` (confirmed against captured output;
+/// `specVersion` "0.0.0"). Older / hand-authored documents put it at the top
+/// level (`tests`). Try the spec-nested location first, then fall back, so a
+/// runner-variant or a flattened fixture both parse. Returns null when neither
+/// holds a JSON array.
+let private asJsonArray (node: JsonNode) : JsonArray =
+    match node with
+    | :? JsonArray as arr -> arr
+    | _ -> null
+
+let private ctrfTestsArray (root: JsonNode) : JsonArray =
+    let nested =
+        match root.["results"] with
+        | null -> null
+        | results -> asJsonArray results.["tests"]
+
+    match nested with
+    | null -> asJsonArray root.["tests"]
+    | arr -> arr
+
 /// Parse a CTRF (Common Test Report Format) JSON document and extract per-
 /// test records. Returns [] when the document has no `tests` array or is
 /// unparseable — silent failure is the right behaviour for an opportunistic
 /// post-test step that shouldn't crash the test runner if the report is
 /// missing or malformed. Entries missing `name` or `status` are dropped.
+///
+/// NOTE: a real report OMITS per-test entries for tests that threw a raw
+/// (non-assertion) exception while still counting them in the summary — so
+/// this array is NOT a reliable run total. Use `tryParseReport` (summary
+/// counts) for the pass/fail verdict; this array is only for flakiness history.
 let internal parseCtrfTests (json: string) : TestRunRecord list =
     try
         match JsonNode.Parse(json) with
         | null -> []
         | root ->
-            match root.["tests"] with
-            | :? JsonArray as arr ->
+            match ctrfTestsArray root with
+            | null -> []
+            | arr ->
                 arr
                 |> Seq.choose (fun node ->
                     if isNull node then
@@ -84,9 +111,63 @@ let internal parseCtrfTests (json: string) : TestRunRecord list =
                                   RunStartedAt = DateTime.UtcNow }
                         | _ -> None)
                 |> Seq.toList
-            | _ -> []
     with _ ->
         []
+
+/// Aggregate, runner-agnostic view of a test run, read from the report's
+/// SUMMARY block (CTRF `results.summary`). This — NOT the per-test array — is
+/// the authoritative source for the pass/fail verdict, because the per-test
+/// array omits raw-throw/errored tests while the summary still counts them
+/// (see `parseCtrfTests`). `Other` captures CTRF statuses outside
+/// passed/failed/skipped/pending (an individually-errored test).
+type TestReport =
+    { Total: int
+      Passed: int
+      Failed: int
+      Skipped: int
+      Other: int }
+
+module TestReport =
+    /// "All clear" — the run produced at least one result and NOTHING that is
+    /// not a clean pass-or-skip. `Failed` and `Other` are both treated as
+    /// problems (a test that threw an unrecognised/raw exception is NOT a pass);
+    /// `Pending` is folded into skip-like and does not block green. The
+    /// `Total > 0` guard is intentionally NOT here — an unfiltered zero-test run
+    /// is a real problem that the verdict layer (which knows `wasFiltered`)
+    /// decides, so this stays a pure "no bad results" predicate.
+    let allClear (r: TestReport) : bool = r.Failed = 0 && r.Other = 0
+
+/// Parse a CTRF report's SUMMARY counts into a runner-agnostic `TestReport`.
+/// Returns None when the JSON is unparseable or carries no summary object —
+/// the signal the verdict logic reads as "no usable report" (a truncated or
+/// never-flushed report fails to parse here, so it is never mistaken for a
+/// clean run). Reads ONLY the summary; the per-test array is unreliable for
+/// totals. The summary is nested under `results.summary` in real MTP/xUnit.v3
+/// output, with a top-level fallback for flattened variants.
+let internal tryParseReport (json: string) : TestReport option =
+    try
+        match JsonNode.Parse(json) with
+        | null -> None
+        | root ->
+            let summary =
+                match root.["results"] with
+                | null -> root.["summary"]
+                | results -> results.["summary"]
+
+            match summary with
+            | null -> None
+            | s ->
+                let getInt key =
+                    tryGetNumber s key |> Option.map int |> Option.defaultValue 0
+
+                Some
+                    { Total = getInt "tests"
+                      Passed = getInt "passed"
+                      Failed = getInt "failed"
+                      Skipped = getInt "skipped"
+                      Other = getInt "other" }
+    with _ ->
+        None
 
 /// Compute a flakiness score in [0.0, 1.0] over a sequence of outcomes ordered
 /// most-recent-first. Skipped runs are filtered out before counting (a skip

@@ -45,7 +45,8 @@ let ``PendingRerun storm: plugin reaches terminal state after BuildCompleted ham
                 Environment = []
                 FilterTemplate = None
                 ClassJoin = " "
-                TimeoutSec = None } ]
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
 
         let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
         let handler = create ":memory:" tmpDir (Some configs) None None None None []

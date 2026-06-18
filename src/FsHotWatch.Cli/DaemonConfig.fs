@@ -98,16 +98,21 @@ let detectDefaultCacheBackend (_repoRoot: string) : CacheBackendConfig = FileBac
 /// For other test runners (coverlet.collector, AltCover, etc.), provide
 /// your own template.
 type TestProjectConfig =
-    { Project: string
-      Command: string
-      Args: string
-      Group: string
-      Environment: (string * string) list
-      FilterTemplate: string option
-      ClassJoin: string
-      Coverage: bool
-      CoverageArgsTemplate: string option
-      TimeoutSec: int option }
+    {
+        Project: string
+        Command: string
+        Args: string
+        Group: string
+        Environment: (string * string) list
+        FilterTemplate: string option
+        ClassJoin: string
+        Coverage: bool
+        CoverageArgsTemplate: string option
+        TimeoutSec: int option
+        /// How to obtain the structured test report the verdict is derived from
+        /// (`reportVerificationFormat` in `.fshw.json`). Default `AutoDetect`.
+        ReportVerificationFormat: ReportVerificationFormat
+    }
 
 /// The kind of test extension.
 type TestExtensionKind =
@@ -430,6 +435,28 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                             | true, t when t.ValueKind = JsonValueKind.Number -> Some(t.GetInt32())
                             | _ -> None
 
+                        // `reportVerificationFormat`: how fshw obtains the structured
+                        // test report the verdict is derived from. Absent → AutoDetect.
+                        let reportVerificationFormat =
+                            match p.TryGetProperty("reportVerificationFormat") with
+                            | true, v when v.ValueKind = JsonValueKind.String ->
+                                match v.GetString().ToLowerInvariant() with
+                                | "ctrf" -> Ctrf
+                                | "auto"
+                                | "autodetect"
+                                | "detect" -> AutoDetect
+                                | "off"
+                                | "none"
+                                | "disabled"
+                                | "false" -> Disabled
+                                | other ->
+                                    Logging.warn
+                                        "config"
+                                        $"Unknown reportVerificationFormat value '%s{other}', using AutoDetect"
+
+                                    AutoDetect
+                            | _ -> AutoDetect
+
                         { Project = project
                           Command = command
                           Args = args
@@ -439,7 +466,8 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
                           ClassJoin = classJoin
                           Coverage = coverage
                           CoverageArgsTemplate = coverageArgsTemplate
-                          TimeoutSec = timeoutSec })
+                          TimeoutSec = timeoutSec
+                          ReportVerificationFormat = reportVerificationFormat })
                     |> Seq.toList
                 | _ -> []
 
@@ -980,7 +1008,8 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                   Environment = p.Environment
                   FilterTemplate = p.FilterTemplate
                   ClassJoin = p.ClassJoin
-                  TimeoutSec = p.TimeoutSec })
+                  TimeoutSec = p.TimeoutSec
+                  ReportVerificationFormat = p.ReportVerificationFormat })
 
         let beforeRun = t.BeforeRun |> Option.map (makeShellHook "beforeRun" true repoRoot)
 
