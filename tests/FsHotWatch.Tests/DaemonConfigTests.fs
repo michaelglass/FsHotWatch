@@ -552,6 +552,26 @@ let ``parseConfig tests with explicit coverageDir`` () =
     let config = parseConfig json defaults
     test <@ config.Tests.Value.CoverageDir = "artifacts/cov" @>
 
+[<Fact(Timeout = 15000)>]
+let ``parseConfig tests reportVerificationFormat parses auto/ctrf/off and warns on unknown`` () =
+    let parseFmt (v: string) =
+        let json =
+            """{"tests": {"projects": [{"project": "T", "reportVerificationFormat": "__V__"}]}}""".Replace("__V__", v)
+
+        (parseConfig json defaults).Tests.Value.Projects.[0].ReportVerificationFormat
+
+    let absent =
+        (parseConfig """{"tests": {"projects": [{"project": "T"}]}}""" defaults)
+            .Tests.Value.Projects.[0].ReportVerificationFormat
+
+    // Absent → AutoDetect (the default); explicit values map to their cases; an
+    // unknown value warns and falls back to AutoDetect.
+    test <@ absent = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect @>
+    test <@ parseFmt "auto" = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect @>
+    test <@ parseFmt "ctrf" = FsHotWatch.TestPrune.TestPrunePlugin.Ctrf @>
+    test <@ parseFmt "off" = FsHotWatch.TestPrune.TestPrunePlugin.Disabled @>
+    test <@ parseFmt "bogus" = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect @>
+
 // --- parseConfig: fileCommands ---
 
 [<Fact(Timeout = 15000)>]
