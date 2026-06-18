@@ -712,6 +712,47 @@ let ``FileTaskCache roundtrips the TestsDeferred case (never-ran, non-green)`` (
         test <@ (TestResult.output p1).Contains("apphost not produced") @>)
 
 [<Fact(Timeout = 15000)>]
+let ``FileTaskCache roundtrips the TestsErrored case (aborted, non-green)`` () =
+    // The TestsErrored case must survive serialization and stay NON-passing on
+    // the way back. In practice an errored result is never written (it is
+    // non-passing, so the cacheKey gate skips the write), but the serializer
+    // must still handle it for exhaustiveness/robustness.
+    withTempDir "ftc-errored" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir)
+        let c = cache :> ITaskCache
+
+        let result =
+            { CacheKey = hash "k"
+              Errors = []
+              Status = Completed(at = fixedTime)
+              EmittedEvents =
+                [ CachedTestRunCompleted
+                      { RunId = System.Guid.NewGuid()
+                        TotalElapsed = System.TimeSpan.Zero
+                        Outcome = Normal
+                        Results =
+                          Map.ofList [ "p1", TestsErrored "test host exited non-zero but wrote no parseable report" ]
+                        RanFullSuite = false } ] }
+
+        c.Set (ck "test-prune" "X.fs") (hash "k") result
+
+        let cache2 = FileTaskCache(tmpDir)
+        let r = (cache2 :> ITaskCache).TryGet (ck "test-prune" "X.fs") (hash "k")
+        test <@ r.IsSome @>
+
+        let evt =
+            r.Value.EmittedEvents
+            |> List.tryPick (function
+                | CachedTestRunCompleted e -> Some e
+                | _ -> None)
+
+        test <@ evt.IsSome @>
+        let p1 = evt.Value.Results.["p1"]
+        test <@ TestResult.isErrored p1 @>
+        test <@ not (TestResult.isPassed p1) @>
+        test <@ (TestResult.output p1).Contains("no parseable report") @>)
+
+[<Fact(Timeout = 15000)>]
 let ``FileTaskCache roundtrips error entries with detail`` () =
     withTempDir "ftc-detail" (fun tmpDir ->
         let cache = FileTaskCache(tmpDir)
