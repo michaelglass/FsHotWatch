@@ -299,7 +299,8 @@ let ``serializeConfig test project without filterTemplate omits it`` () =
                             ClassJoin = " "
                             Coverage = true
                             CoverageArgsTemplate = None
-                            TimeoutSec = None } ]
+                            TimeoutSec = None
+                            ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect } ]
                        CoverageDir = "coverage"
                        DependsOn = [] |} }
 

@@ -160,6 +160,24 @@ let internal ingestAndEmitCoverage
     with ex ->
         Logging.error "test-prune" $"coverage post-processing failed: %s{ex.Message}"
 
+/// How fshw obtains the structured pass/fail report a test verdict is derived
+/// from. The report (CTRF) — not the process exit code — is authoritative, but
+/// only a runner that actually emits a parseable report can be trusted that
+/// way, and an UNSUPPORTED `--report-*` flag is fatal (the runner exits
+/// "invalid command line" and runs nothing). So injection of the report flag is
+/// scoped by this setting.
+type ReportVerificationFormat =
+    /// Inject `--report-ctrf` iff the runner is detected as CTRF-capable
+    /// (xUnit.v3, from the test project's package references), else fall back to
+    /// the broad "is a dotnet command" heuristic. The default.
+    | AutoDetect
+    /// Always inject `--report-ctrf` (force-on for a capable runner the detector
+    /// misses).
+    | Ctrf
+    /// Never inject a report flag — the process exit code is authoritative
+    /// (force-off; e.g. a custom runner that would error on `--report-ctrf`).
+    | Disabled
+
 /// Configuration for a test project to run.
 type TestConfig =
     {
@@ -176,6 +194,9 @@ type TestConfig =
         ClassJoin: string
         /// Per-project timeout in seconds. None → use top-level default.
         TimeoutSec: int option
+        /// How to obtain the structured test report for the verdict. Default
+        /// `AutoDetect`. Override via `.fshw.json` `reportVerificationFormat`.
+        ReportVerificationFormat: ReportVerificationFormat
     }
 
 type AffectedTestsState =
@@ -439,6 +460,7 @@ let private formatTestResultsJson (results: TestResults) =
                 | TestsFailed(o, _, _) -> ("failed", o)
                 | TestsTimedOut(o, _, _, _) -> ("timed-out", o)
                 | TestsDeferred reason -> ("deferred", reason)
+                | TestsErrored reason -> ("errored", reason)
 
             {| project = name
                status = status
@@ -541,6 +563,109 @@ let internal formatFailureReport (projectName: string) (output: string) : string
 
           yield! tail |> Array.map (fun l -> $"  | %s{l.TrimEnd()}") |> Array.toList ]
 
+/// What is known about the structured test report for a run — the verdict
+/// input. Modelled as a DU rather than a `bool * report option` so the
+/// meaningless "no report was requested yet somehow a parsed report exists"
+/// state cannot be constructed.
+type ReportEvidence =
+    /// No report was requested (an unknown / unsupported runner) — the process
+    /// exit code is the only pass/fail signal available.
+    | NoReportRequested
+    /// A report WAS requested from a capable runner. `Some` carries the parsed
+    /// summary; `None` means the file was absent / unreadable / unparseable —
+    /// the host aborted before flushing, or wrote a truncated report.
+    | ReportRequested of report: Flakiness.TestReport option
+
+/// Decide a single project's verdict. The structured test report (when present
+/// and parseable) is AUTHORITATIVE for pass/fail; the process exit code is only
+/// a tie-break when there is no usable report. This inverts the prior logic
+/// (exit-code-only), which produced false REDs: a test host that exits non-zero
+/// during a dirty shutdown (e.g. the Microsoft.Testing.Platform exit-7 flake)
+/// after flushing a clean report was reported as "Tests failed" with zero named
+/// tests, while `test-rerun` came back green.
+///
+/// Precedence (apphost-missing / zero-match-under-filter are handled by the
+/// caller BEFORE this — they are not test outcomes):
+///   1. report has any failed/other result → `TestsFailed` (red). Exit irrelevant.
+///   2. report is all-clear (no failed/other) AND ran ≥1 test → `TestsPassed`
+///      (green) EVEN IF the process exited non-zero — the flake case.
+///   3. no usable report (absent / unparseable / no summary) AND exit ≠ 0:
+///        - report WAS requested from a capable runner → `TestsErrored`: the host
+///          aborted before writing results; nothing was verified. Never green,
+///          never the misleading "tests failed".
+///        - report NOT requested (unknown runner) → exit code is the only signal
+///          we have → `TestsFailed` (unchanged behaviour, no regression).
+///   4. no usable report AND exit = 0 → trust the clean exit → `TestsPassed`.
+///   A `summary.tests == 0` report that reaches here is an UNFILTERED zero-test
+///   run (the filtered case was handled upstream) — a real misconfiguration, so
+///   it falls to the exit-code tie-break rather than going green.
+///
+/// TODO(approach C, deferred): once the set of benign shutdown exit codes is
+/// confirmed per runner/version, outcome 2 could additionally require the exit
+/// code to be 0 or a whitelisted shutdown code (e.g. MTP's 7), treating other
+/// non-zero exits with a clean report as errored. Left out for now — the exact
+/// benign code is runner/version-specific and a report that positively shows
+/// zero failures is stronger evidence than the exit number.
+let internal classifyTestOutcome
+    (evidence: ReportEvidence)
+    (wasFiltered: bool)
+    (elapsed: System.TimeSpan)
+    (outcome: ProcessOutcome)
+    : TestResult =
+    match outcome with
+    | ProcessOutcome.TimedOut(after, output) ->
+        // A timeout KILL is a real "stuck" signal; a partial report it may have
+        // flushed must not override it. Keep it distinct (unchanged).
+        TestsTimedOut(output, after, wasFiltered, elapsed)
+    | _ ->
+        let output = outputOf outcome
+        let succeeded = isSucceeded outcome
+
+        match evidence with
+        | ReportRequested(Some r) when r.Failed > 0 || r.Other > 0 ->
+            // Outcome 1: the report names failing/errored tests — authoritative red.
+            TestsFailed(output, wasFiltered, elapsed)
+        | ReportRequested(Some r) when Flakiness.TestReport.allClear r && r.Total > 0 ->
+            // Outcome 2: report parsed, zero non-pass results, ≥1 test ran →
+            // GREEN even if the process exited non-zero (the dirty-shutdown flake).
+            TestsPassed(output, wasFiltered, elapsed)
+        | ReportRequested(Some _) ->
+            // Report parsed but Total == 0 — an unfiltered zero-test run. Real
+            // problem; defer to the exit code (preserves "empty suite is red").
+            if succeeded then
+                TestsPassed(output, wasFiltered, elapsed)
+            else
+                TestsFailed(output, wasFiltered, elapsed)
+        | _ when succeeded ->
+            // Outcome 4: clean exit and no usable report (none requested, or
+            // requested-but-absent) → trust the pass.
+            TestsPassed(output, wasFiltered, elapsed)
+        | ReportRequested None ->
+            // Outcome 3: we asked a capable runner for a report, the process
+            // exited non-zero, and none is parseable → the host aborted before
+            // writing results. Errored — never green, never "tests failed".
+            TestsErrored "test host exited non-zero but wrote no parseable report — nothing verified"
+        | NoReportRequested ->
+            // Unknown runner we never asked for a report: exit code is the only
+            // signal. Preserve today's behaviour (no false-errored regression).
+            TestsFailed(output, wasFiltered, elapsed)
+
+/// Split runner args on whitespace into tokens (empty entries removed).
+let private argTokens (args: string) : string[] =
+    if String.IsNullOrWhiteSpace args then
+        [||]
+    else
+        args.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries)
+
+/// The value following `--project`/`-p` in the tokenized args, quote-trimmed.
+/// Shared by `tryApphostPresent` and `detectCtrfCapable` (both derive a project
+/// from the runner command line the same way).
+let private projectFlagValue (tokens: string[]) : string option =
+    tokens
+    |> Array.tryFindIndex (fun t -> t = "--project" || t = "-p")
+    |> Option.bind (fun i -> if i + 1 < tokens.Length then Some tokens.[i + 1] else None)
+    |> Option.map (fun raw -> raw.Trim('"'))
+
 /// Issue 2 — STRUCTURAL apphost-missing detection. On a cold daemon a
 /// `dotnet run --project <proj> --no-build` can be launched before the build
 /// plugin produced that project's apphost binary; `dotnet run` then fails to
@@ -562,18 +687,8 @@ let internal formatFailureReport (projectName: string) (output: string) : string
 ///   None       — could not derive a project from args (e.g. a non-`dotnet run`
 ///                custom command); caller falls back to the output sniff.
 let internal tryApphostPresent (args: string) (repoRoot: string) : bool option =
-    // Tokenize on whitespace and find the value after `--project`.
-    let tokens =
-        if String.IsNullOrWhiteSpace args then
-            [||]
-        else
-            args.Split([| ' '; '\t' |], StringSplitOptions.RemoveEmptyEntries)
-
-    let projArg =
-        tokens
-        |> Array.tryFindIndex (fun t -> t = "--project" || t = "-p")
-        |> Option.bind (fun i -> if i + 1 < tokens.Length then Some(tokens.[i + 1]) else None)
-        |> Option.map (fun raw -> raw.Trim('"'))
+    // The value after `--project` identifies the project to check.
+    let projArg = projectFlagValue (argTokens args)
 
     match projArg with
     | None -> None
@@ -630,6 +745,60 @@ let internal tryApphostPresent (args: string) (repoRoot: string) : bool option =
                     || File.Exists(Path.Combine(tfmDir, assemblyName + ".exe")))
 
             Some present
+
+/// Detect whether a test runner emits a CTRF report we can parse. The
+/// `--report-ctrf` family is provided by xUnit.v3's runner (NOT the MTP core),
+/// and an UNSUPPORTED `--report-*` flag is fatal — the runner exits "invalid
+/// command line" and runs zero tests. So we positively identify xUnit.v3 from
+/// the test project file's package references before injecting the flag.
+///
+/// Returns `Some true`/`Some false` when a project file is located and read
+/// (mentions xunit or not), and `None` when no project file can be derived from
+/// the args (a custom runner, or a `--project`-less command) — the caller treats
+/// `None` as "fall back to the broad dotnet heuristic", preserving existing
+/// behaviour without risking a fatal flag on a positively-non-xunit runner.
+let internal detectCtrfCapable (args: string) (repoRoot: string) : bool option =
+    let tokens = argTokens args
+
+    let looksLikeProjectFile (t: string) =
+        t.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase)
+        || t.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)
+
+    // The project hint: the value after --project/-p, else any token that is
+    // itself a project file path (e.g. `dotnet test path/to/Proj.fsproj`).
+    let projArg =
+        projectFlagValue tokens
+        |> Option.orElse (
+            tokens
+            |> Array.tryFind looksLikeProjectFile
+            |> Option.map (fun raw -> raw.Trim('"'))
+        )
+
+    let resolveProjectFile (proj: string) : string option =
+        let abs =
+            if Path.IsPathRooted proj then
+                proj
+            else
+                Path.Combine(repoRoot, proj)
+
+        if File.Exists abs && looksLikeProjectFile abs then
+            Some abs
+        elif Directory.Exists abs then
+            Directory.GetFiles(abs, "*.fsproj")
+            |> Array.append (Directory.GetFiles(abs, "*.csproj"))
+            |> Array.tryHead
+        else
+            None
+
+    projArg
+    |> Option.bind resolveProjectFile
+    |> Option.bind (fun projFile ->
+        try
+            // xUnit is a DIRECT package reference in a test project, so a text
+            // probe of the project file is sufficient and build-independent.
+            Some((File.ReadAllText projFile).Contains("xunit", StringComparison.OrdinalIgnoreCase))
+        with _ ->
+            None)
 
 /// Issue 1/2 — defensive fallback apphost-missing classifier, used ONLY when
 /// `tryApphostPresent` can't derive a project from the runner args (custom,
@@ -735,6 +904,14 @@ let private reportTestErrors (ctx: PluginCtx<TestPruneMsg>) (classFiles: Map<str
                   ErrorLedger.ErrorEntry.errorWithDetail
                       $"%s{project}: waiting on build — %s{reason}"
                       $"The %s{project} test project did not run because its build artifact (apphost) was not produced. Tests were NOT executed, so this cycle cannot be reported as passing. This is a build-ordering issue, not a test failure." ]
+            | TestsErrored reason ->
+                // NOT a test failure (no test was shown to fail) and NOT a pass
+                // (nothing was verified) — an honest "errored" diagnostic so the
+                // verdict is non-green without the misleading "Tests failed in X".
+                [ $"<tests/%s{project}>",
+                  ErrorLedger.ErrorEntry.errorWithDetail
+                      $"%s{project}: errored — %s{reason}"
+                      $"The %s{project} test host exited non-zero but wrote no parseable test report, so NO pass/fail verdict could be derived — nothing was verified. This is NOT a reported test failure and NOT a pass; re-run (e.g. `dotnet fshw test-rerun`). A run that only goes green on retry is itself a real failure, so this stays non-green." ]
             | TestsPassed _ -> [])
         |> List.groupBy fst
         |> List.map (fun (file, entries) -> file, entries |> List.map snd)
@@ -881,17 +1058,31 @@ let private executeTests
                             | Some paths -> extraArgs.Add(buildCoverageArgs paths wasFiltered)
                             | None -> ()
 
-                            // Microsoft Testing Platform (xUnit v3, MTP-compatible
-                            // runners) supports `--report-ctrf` for structured per-test
-                            // output that the flakiness tracker can ingest. Gated on a
-                            // `dotnet` command — non-MTP runners (sleep, echo, etc.)
-                            // would error on the unknown flag.
+                            // xUnit.v3's runner supports `--report-ctrf`, which fshw
+                            // reads back as the AUTHORITATIVE pass/fail verdict (and for
+                            // flakiness history). An UNSUPPORTED `--report-*` flag is
+                            // FATAL (the runner exits "invalid command line" and runs
+                            // zero tests), so injection is scoped: `Disabled` never
+                            // injects, `Ctrf` always does, `AutoDetect` injects iff the
+                            // runner is detected as xUnit (from the project's package
+                            // refs) and otherwise falls back to the broad "is a dotnet
+                            // command" heuristic — non-dotnet test fixtures (sleep, echo)
+                            // are thereby never given the flag.
                             let isDotnetCommand (cmd: string) =
                                 let leaf = Path.GetFileNameWithoutExtension(cmd)
                                 leaf = "dotnet"
 
+                            let shouldRequestCtrf =
+                                match config.ReportVerificationFormat with
+                                | Disabled -> false
+                                | Ctrf -> true
+                                | AutoDetect ->
+                                    match detectCtrfCapable config.Args repoRoot with
+                                    | Some capable -> capable
+                                    | None -> isDotnetCommand config.Command
+
                             let ctrfPath =
-                                if isDotnetCommand config.Command then
+                                if shouldRequestCtrf then
                                     let ctrfDir = testRunsDir repoRoot
                                     Directory.CreateDirectory(ctrfDir) |> ignore
                                     let ctrfName = $"{config.Project}-{Guid.NewGuid():N}.ctrf.json"
@@ -1002,29 +1193,89 @@ let private executeTests
                             // like an impact-skip.
                             let zeroTestsUnderFilter = isZeroTestsUnderFilter wasFiltered processResult
 
-                            let success = isSucceeded processResult
                             let output = outputOf processResult
 
-                            if apphostMissing then
+                            // Read the structured report ONCE (when one was requested
+                            // from a capable runner). It is BOTH the authoritative
+                            // pass/fail signal (summary counts) AND the flakiness
+                            // source (per-test records). Read BEFORE the verdict so
+                            // the REPORT — not the exit code — decides green/red.
+                            let reportJson =
+                                match ctrfPath with
+                                | Some p ->
+                                    try
+                                        Some(File.ReadAllText p)
+                                    with
+                                    | :? IOException
+                                    | :? UnauthorizedAccessException -> None
+                                | None -> None
+
+                            let reportEvidence =
+                                match ctrfPath with
+                                | None -> NoReportRequested
+                                | Some _ -> ReportRequested(reportJson |> Option.bind Flakiness.tryParseReport)
+
+                            let result =
+                                if apphostMissing then
+                                    // Tests NEVER RAN — the apphost wasn't produced.
+                                    // A dedicated `TestsDeferred`, NOT a pass
+                                    // (`isPassed`=false → never a silent false-green)
+                                    // and NOT a real failure: surfaced as an honest
+                                    // "waiting on build" diagnostic. Carries no
+                                    // elapsed/wasFiltered, so it never lowers a
+                                    // coverage baseline.
+                                    TestsDeferred "apphost not produced; tests did not run"
+                                elif zeroTestsUnderFilter then
+                                    // A filtered run matched no tests here — record
+                                    // like an impact-skip (passed + filtered), NOT a
+                                    // failure. The ZeroMatchMarker lets `run-tests`
+                                    // report `no-tests-matched` distinctly.
+                                    TestsPassed(ZeroMatchMarker + output, true, projectElapsed)
+                                else
+                                    // Report-authoritative verdict (exit code only a
+                                    // tie-break). Fixes the false-RED: a dirty-shutdown
+                                    // non-zero exit with a clean report is GREEN; a
+                                    // non-zero exit with NO parseable report is ERRORED
+                                    // (never a misleading "tests failed").
+                                    classifyTestOutcome reportEvidence wasFiltered projectElapsed processResult
+
+                            // Log driven off the AUTHORITATIVE verdict (not the raw
+                            // exit code) so the console line can never disagree with
+                            // the recorded result.
+                            match result with
+                            | TestsDeferred _ ->
                                 logToCtx $"{config.Project}: waiting on build (apphost not yet produced)"
 
                                 Logging.warn
                                     "test-prune"
-                                    $"%s{config.Project}: apphost still missing after retry — surfacing as 'waiting on build', not FAILED (this is a build-ordering issue, never a test failure)"
-                            elif zeroTestsUnderFilter then
+                                    $"%s{config.Project}: apphost still missing after retry — surfacing as 'waiting on build', not FAILED (a build-ordering issue, never a test failure)"
+                            | TestsPassed(o, _, _) when o.StartsWith(ZeroMatchMarker, StringComparison.Ordinal) ->
                                 logToCtx $"{config.Project}: no tests matched the filter — skipped"
 
                                 Logging.info
                                     "test-prune"
                                     $"%s{config.Project}: no tests matched the active filter — skipped, not FAILED (a filtered run that selects nothing here is not a test failure)"
-                            elif success then
+                            | TestsPassed _ ->
                                 logToCtx $"{config.Project}: passed"
                                 Logging.info "test-prune" $"%s{config.Project}: PASSED"
-                            else
+                            | TestsErrored reason ->
+                                logToCtx $"{config.Project}: errored — {reason}"
+
+                                Logging.error
+                                    "test-prune"
+                                    $"%s{config.Project}: ERRORED — %s{reason}. Nothing was verified; this is NOT a test failure and NOT a pass — re-run (e.g. `dotnet fshw test-rerun`)."
+                            | TestsFailed _
+                            | TestsTimedOut _ ->
                                 logToCtx $"{config.Project}: failed"
                                 Logging.error "test-prune" $"%s{config.Project}: FAILED"
 
-                            if not success && not apphostMissing && not zeroTestsUnderFilter then
+                            // Persist the raw output for any non-clean run (Failed,
+                            // TimedOut, Errored) so the CI console has the diagnostic
+                            // even when `.fshw/test-runs` isn't uploaded as an artifact.
+                            match result with
+                            | TestsFailed _
+                            | TestsTimedOut _
+                            | TestsErrored _ ->
                                 try
                                     let logDir = testRunsDir repoRoot
                                     Directory.CreateDirectory(logDir) |> ignore
@@ -1039,36 +1290,7 @@ let private executeTests
 
                                 for line in formatFailureReport config.Project output do
                                     Logging.error "test-prune" line
-
-                            let result =
-                                match processResult with
-                                | _ when apphostMissing ->
-                                    // Issue 1: the tests NEVER RAN — the apphost
-                                    // wasn't produced. This is a dedicated
-                                    // `TestsDeferred` case, NOT a pass: `isPassed`
-                                    // is false for it, so it can never produce a
-                                    // silent false-green verdict. It is also not a
-                                    // real failure — the verdict surfaces it as an
-                                    // honest "waiting on build" diagnostic.
-                                    // `TestsDeferred` carries no elapsed/wasFiltered,
-                                    // and `wasFiltered` reports true for it, so it
-                                    // never lowers a coverage baseline (Issue 3).
-                                    TestsDeferred "apphost not produced; tests did not run"
-                                | _ when zeroTestsUnderFilter ->
-                                    // A filtered run matched no tests here. Record it
-                                    // like an impact-skip: passed + filtered (so it
-                                    // counts toward a green verdict and contributes no
-                                    // coverage), NOT TestsFailed. Without this, a
-                                    // `--filter-*` passthrough fanned out across every
-                                    // project reports the non-matching ones as failures.
-                                    // Prefix the ZeroMatchMarker so `run-tests` can tell
-                                    // a zero-match pass apart from a real pass and report
-                                    // `no-tests-matched` distinctly when NOTHING matched.
-                                    TestsPassed(ZeroMatchMarker + output, true, projectElapsed)
-                                | ProcessOutcome.Succeeded _ -> TestsPassed(output, wasFiltered, projectElapsed)
-                                | ProcessOutcome.TimedOut(after, _) ->
-                                    TestsTimedOut(output, after, wasFiltered, projectElapsed)
-                                | ProcessOutcome.Failed _ -> TestsFailed(output, wasFiltered, projectElapsed)
+                            | _ -> ()
 
                             // Post-test coverage step: collect this project's raw
                             // runner cobertura for SERIAL ingest after Async.Parallel
@@ -1087,15 +1309,14 @@ let private executeTests
                                     coverageOutput <- Some paths.Cobertura)
                             | _ -> ()
 
-                            // Per-test flakiness tracking: parse the CTRF report this run
-                            // emitted, append per-test records to the rolling history file
-                            // (capped at 20 runs per test). Best-effort — exceptions don't
-                            // fail the run.
-                            match ctrfPath with
-                            | None -> ()
-                            | Some p ->
+                            // Per-test flakiness tracking: reuse the report content
+                            // already read for the verdict; append per-test records to
+                            // the rolling history file (capped at 20 runs per test).
+                            // Best-effort — exceptions never fail the run.
+                            match ctrfPath, reportJson with
+                            | Some p, Some json ->
                                 try
-                                    let records = Flakiness.parseCtrfTests (File.ReadAllText p)
+                                    let records = Flakiness.parseCtrfTests json
 
                                     if not records.IsEmpty then
                                         Flakiness.appendRecords (flakinessHistoryPath repoRoot) 20 records
@@ -1106,6 +1327,15 @@ let private executeTests
                                 | :? UnauthorizedAccessException
                                 | :? JsonException as ex ->
                                     Logging.warn "test-prune" $"flakiness: failed to record run: %s{ex.Message}"
+                            | Some p, None ->
+                                // Report requested but unreadable (missing — the host
+                                // aborted before flushing — or locked). Best-effort
+                                // cleanup; absence already drove the Errored verdict.
+                                try
+                                    File.Delete p
+                                with _ ->
+                                    ()
+                            | None, _ -> ()
 
                             results <- (config.Project, result) :: results
 
@@ -1847,9 +2077,12 @@ let create
                                                         match r with
                                                         | TestsFailed _
                                                         | TestsTimedOut _
-                                                        // A deferred project never ran — `--only-failed`
-                                                        // (rerun non-green projects) should pick it up.
-                                                        | TestsDeferred _ -> Some name
+                                                        // A deferred project never ran, and an errored one
+                                                        // aborted without a verdict — both are non-green, so
+                                                        // `--only-failed` (rerun non-green projects) must pick
+                                                        // them up.
+                                                        | TestsDeferred _
+                                                        | TestsErrored _ -> Some name
                                                         | _ -> None)
                                                     |> Set.ofList
 

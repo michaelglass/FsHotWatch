@@ -68,7 +68,8 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
                       ClassJoin = " "
                       Coverage = true
                       CoverageArgsTemplate = None
-                      TimeoutSec = None }
+                      TimeoutSec = None
+                      ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect }
             | SourceProject _ -> None)
 
     { Build =

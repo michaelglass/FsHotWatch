@@ -162,6 +162,20 @@ type TestResult =
     /// elapsed/wasFiltered — nothing executed — so it never lowers a coverage
     /// baseline.
     | TestsDeferred of reason: string
+    /// The runner STARTED but aborted before producing a usable result: a
+    /// non-zero exit with NO parseable report (the test host crashed or was
+    /// killed during shutdown — e.g. the Microsoft.Testing.Platform exit-7
+    /// shutdown flake — before flushing its CTRF report). Distinct from every
+    /// other case so it can NEVER be surfaced as a test failure (no test was
+    /// shown to fail) NOR as a pass (nothing was verified). `isPassed` is FALSE:
+    /// a run that produced no evidence must never count toward a green gate.
+    /// Surfaced as an honest "errored — re-run" diagnostic, NOT "tests failed".
+    /// Like `TestsDeferred`, carries no elapsed/wasFiltered (nothing usable ran)
+    /// so it never lowers a coverage baseline, and it is UNCACHEABLE by
+    /// construction (`isPassed`=false → the cacheKey gate skips the write), so a
+    /// transient abort is never replayed as a stale verdict. `reason` documents
+    /// what aborted (exit code + "no report written").
+    | TestsErrored of reason: string
 
 module TestResult =
     let output =
@@ -169,34 +183,40 @@ module TestResult =
         | TestsPassed(o, _, _)
         | TestsFailed(o, _, _)
         | TestsTimedOut(o, _, _, _) -> o
-        | TestsDeferred reason -> reason
+        | TestsDeferred reason
+        | TestsErrored reason -> reason
 
     let wasFiltered =
         function
         | TestsPassed(_, w, _)
         | TestsFailed(_, w, _)
         | TestsTimedOut(_, _, w, _) -> w
-        // A deferred project never executed; treat it as filtered so
-        // `ranFullSuite` can't class the run as a full suite that would lower a
-        // coverage baseline.
-        | TestsDeferred _ -> true
+        // A deferred or errored project produced no usable run; treat it as
+        // filtered so `ranFullSuite` can't class the run as a full suite that
+        // would lower a coverage baseline.
+        | TestsDeferred _
+        | TestsErrored _ -> true
 
     let elapsed =
         function
         | TestsPassed(_, _, e)
         | TestsFailed(_, _, e)
         | TestsTimedOut(_, _, _, e) -> e
-        // Nothing ran, so there's no wall-clock duration to report.
-        | TestsDeferred _ -> System.TimeSpan.Zero
+        // Nothing usable ran, so there's no wall-clock duration to report.
+        | TestsDeferred _
+        | TestsErrored _ -> System.TimeSpan.Zero
 
     let isPassed =
         function
         | TestsPassed _ -> true
         | TestsFailed _
         | TestsTimedOut _
-        // A project that never ran must NEVER count as passed — otherwise a
-        // build-ordering race produces a silent false-green CI verdict.
-        | TestsDeferred _ -> false
+        // A project that never ran (Deferred) or aborted before producing
+        // evidence (Errored) must NEVER count as passed — otherwise a
+        // build-ordering race or a host crash produces a silent false-green
+        // CI verdict.
+        | TestsDeferred _
+        | TestsErrored _ -> false
 
     let isTimedOut =
         function
@@ -209,6 +229,15 @@ module TestResult =
     let isDeferred =
         function
         | TestsDeferred _ -> true
+        | _ -> false
+
+    /// True for the `TestsErrored` case: the runner aborted before producing a
+    /// usable result (non-zero exit + no parseable report). Distinct from a real
+    /// failure (no test was shown to fail) and from a pass (nothing verified) so
+    /// the verdict surfaces an honest "errored — re-run" diagnostic.
+    let isErrored =
+        function
+        | TestsErrored _ -> true
         | _ -> false
 
     /// Derive run-level `RanFullSuite` from a per-project Results map: true iff

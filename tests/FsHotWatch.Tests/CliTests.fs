@@ -147,7 +147,8 @@ let ``refreshCoverageBaseline deletes baseline and partial cobertura across conf
               ClassJoin = " "
               Coverage = cov
               CoverageArgsTemplate = None
-              TimeoutSec = None }
+              TimeoutSec = None
+              ReportVerificationFormat = FsHotWatch.TestPrune.TestPrunePlugin.AutoDetect }
 
         let covDir = "coverage"
 
