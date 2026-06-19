@@ -4,14 +4,30 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
-## Released — the `alpha.9` → `alpha.28` line (2026-04-22 → 2026-06-13)
+## Released — the `alpha.9` line onward (2026-04-22 → 2026-06-19)
 
 _These narratives are all shipped. This root file is a human-readable summary that fell
-behind around `core-v0.8.0-alpha.8` — everything below was released across the alpha.9–alpha.28
-series but never got closed out of `Unreleased`. For the precise per-version, per-package history
-(the source of truth that drives the release tags) see each `src/<package>/CHANGELOG.md`.
-Latest released: `core-v0.8.0-alpha.28` · `cli-v0.8.0-alpha.30` · `testprune-v0.7.0-alpha.24` ·
-`analyzers-v0.7.0-alpha.16` · `coverage-v0.7.0-alpha.13`._
+behind around `core-v0.8.0-alpha.8` — the entries below were released across the alpha.9+
+series but only some got closed out of `Unreleased`. For the precise per-version, per-package
+history (the source of truth that drives the release tags) see each `src/<package>/CHANGELOG.md`.
+Latest released: `core-v0.8.0-alpha.32` · `cli-v0.8.0-alpha.38` · `testprune-v0.7.0-alpha.28` ·
+`analyzers-v0.7.0-alpha.19` · `coverage-v0.7.0-alpha.14`._
+
+### The test gate trusts the test report, not the exit code
+
+`fshw check` could go falsely RED when a test host exited non-zero during a dirty
+shutdown (e.g. the Microsoft.Testing.Platform exit-7 flake) after writing a clean
+report — surfacing "Tests failed in <project>" with zero named tests while a re-run
+came back green. The pass/fail verdict is now derived from the CTRF report's summary
+counts and is authoritative over the process exit code (only a tie-break when no
+report exists): a non-zero exit with a clean, complete report is GREEN. A run that
+aborts before writing any parseable report (non-zero exit, no results) gets a new
+`TestsErrored` verdict — not a failure, not a pass, never cached, surfaced as an
+honest "errored — re-run". CTRF report injection is scoped per project via the new
+`.fshw.json` `reportVerificationFormat` (`auto` | `ctrf` | `off`), so a non-xUnit
+runner that would choke on `--report-ctrf` keeps the exit code authoritative. Also
+fixed: per-test flakiness tracking, which silently recorded nothing because the
+parser read a top-level `tests` array instead of the real nested `results.tests`.
 
 ### The test gate can no longer go green without running the tests
 
