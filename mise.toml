@@ -120,8 +120,8 @@ run = "dotnet tool run fsprojlint"
 depends = ["tool-restore"]
 
 [tasks.check-api]
-description = "Check API changes since last release"
-run = "dotnet tool run fssemantictagger check"
+description = "Preview the version bumps the next release would make (API diff vs last release)"
+run = "dotnet tool run fssemantictagger release --dry-run"
 depends = ["restore"]
 
 [tasks.sync-docs]
