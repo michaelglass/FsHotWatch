@@ -2,6 +2,7 @@ module FsHotWatch.ProcessHelper
 
 open System
 open System.Diagnostics
+open System.Threading
 open System.Threading.Tasks
 
 /// Outcome of running an external process. Tagged so callers can tell a
@@ -241,24 +242,51 @@ let runProcessWithTimeout
 let runProcess (command: string) (args: string) (workDir: string) (env: (string * string) list) : ProcessOutcome =
     runProcessWithTimeout command args workDir env Threading.Timeout.InfiniteTimeSpan
 
-/// Run a synchronous unit of work with a wall-clock timeout. The orphan task
-/// continues running in the background — there is no cancellation hook.
-/// Acceptable for plugin handlers where the next event will start a fresh unit
-/// of work.
+/// Run a synchronous unit of work with a wall-clock timeout, threading a
+/// `CancellationToken` into the work so a timed-out unit is ACTUALLY cancelled
+/// rather than orphaned. The token is cancelled the instant the wait expires;
+/// cooperative work (anything that polls `ct.IsCancellationRequested` or calls
+/// `ct.ThrowIfCancellationRequested()`, or an `Async` driven under the token)
+/// then unwinds and releases whatever lock it held — closing the "stuck unit
+/// times out the WAIT but the runaway thread keeps holding a lock → daemon
+/// stays wedged" hole the audit flagged.
+///
+/// Work that ignores the token (a tight non-cooperative CPU loop, a P/Invoke
+/// that can't observe cancellation) still cannot be force-killed in-process —
+/// that is a .NET limitation, not a bug here — but the common cases (FCS /
+/// Fantomas / analyzer work that honour their token, or `Thread.Sleep`-style
+/// waits replaced by `ct.WaitHandle.WaitOne`) now release on timeout.
 ///
 /// Uses `TaskCreationOptions.LongRunning` so the work runs on a dedicated
 /// thread rather than a pool worker. Plugin work can be CPU-heavy (FCS,
-/// analyzers) and the timeout-test path injects `Thread.Sleep` to force
+/// analyzers) and the timeout-test path injects a cooperative wait to force
 /// expiry; both starve the default thread pool under parallel test load and
 /// caused 5s xUnit timeouts to fire spuriously on unrelated tests.
-let runWithTimeout (timeout: TimeSpan) (work: unit -> 'a) : WorkOutcome<'a> =
+let runWithCancellableTimeout (timeout: TimeSpan) (work: CancellationToken -> 'a) : WorkOutcome<'a> =
     if timeout = Threading.Timeout.InfiniteTimeSpan then
-        WorkCompleted(work ())
+        WorkCompleted(work CancellationToken.None)
     else
+        use cts = new CancellationTokenSource()
+
         let task =
-            Task.Factory.StartNew((fun () -> work ()), TaskCreationOptions.LongRunning)
+            Task.Factory.StartNew((fun () -> work cts.Token), TaskCreationOptions.LongRunning)
 
         if task.Wait(timeout) then
             WorkCompleted task.Result
         else
+            // Signal the work to unwind so it stops holding any lock. We do NOT
+            // block on the orphan after cancelling — a cooperative unit observes
+            // the token and exits promptly; a non-cooperative one would hang us
+            // here, which is precisely what we must avoid. The CTS is disposed by
+            // the enclosing `use`; cancellation has already been requested, so a
+            // late-cancelling token registration on a disposed CTS cannot occur.
+            cts.Cancel()
             WorkTimedOut timeout
+
+/// Run a synchronous unit of work with a wall-clock timeout. Back-compat
+/// shim over `runWithCancellableTimeout` for work that cannot observe
+/// cancellation. PREFER `runWithCancellableTimeout` for new call sites so a
+/// timed-out unit actually releases its locks instead of running on as an
+/// orphan thread.
+let runWithTimeout (timeout: TimeSpan) (work: unit -> 'a) : WorkOutcome<'a> =
+    runWithCancellableTimeout timeout (fun _ct -> work ())

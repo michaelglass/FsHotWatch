@@ -93,7 +93,7 @@ let internal createFormatCheckWithSlowHook
 
                     for file in files do
                         if File.Exists(file) && not (isIgnored file) && not failed && not timedOut then
-                            let work () =
+                            let work (ct: System.Threading.CancellationToken) =
                                 match slowHook with
                                 | Some h -> h ()
                                 | None -> ()
@@ -101,13 +101,20 @@ let internal createFormatCheckWithSlowHook
                                 let source = File.ReadAllText(file)
                                 let isSignature = file.EndsWith(".fsi")
 
+                                // Drive Fantomas under the timeout's token so a
+                                // stuck/slow format is actually cancelled on
+                                // expiry (releasing the thread) rather than
+                                // orphaned. Fantomas's async honours the token.
                                 let formatted =
-                                    CodeFormatter.FormatDocumentAsync(isSignature, source) |> Async.RunSynchronously
+                                    Async.RunSynchronously(
+                                        CodeFormatter.FormatDocumentAsync(isSignature, source),
+                                        cancellationToken = ct
+                                    )
 
                                 source, formatted
 
                             try
-                                match runWithTimeout formatTimeout work with
+                                match runWithCancellableTimeout formatTimeout work with
                                 | WorkTimedOut after ->
                                     let reason = $"timed out after %d{int after.TotalSeconds}s"
                                     Logging.error "format" $"Format check TIMED OUT for %s{file}: %s{reason}"

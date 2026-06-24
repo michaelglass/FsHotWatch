@@ -116,8 +116,41 @@ Configure it with `pressureIdleFloorMin`:
 
 ## Per-task timeouts
 
-Any `build[]`, `tests.projects[]`, or `fileCommands[]` entry may set its own
-`timeoutSec` to override the global default. When a task exceeds its timeout, the
-daemon kills the child process tree, records the run with outcome `timed out`
-(a distinct `⏱` glyph in the UI, `timed-out` token in agent mode), and stays
-running — the next change retriggers normally.
+Operations are bounded by **default** so a hung op (a deadlocked `dotnet build`,
+a test runner stuck on a socket) can never wedge the daemon forever. With no
+`timeoutSec` configured anywhere, every op inherits a global default of
+**600 seconds (10 minutes)** — deliberately generous so it never falsely kills
+real work (large builds / full suites legitimately run for minutes) and only
+ever fires on a genuine hang. On expiry the daemon kills the child process tree
+(and cancels in-process work so it releases any lock it held), records the run
+with outcome `timed out` (a distinct `⏱` glyph in the UI, `timed-out` token in
+agent mode), and stays running — the next change retriggers normally.
+
+Tune it via the global `timeoutSec` key, or per entry:
+
+- **Global** `timeoutSec` (top-level): the default for every op. A positive
+  integer sets the bound; `0` or `false` **disables** the global default (opt
+  out to unbounded ops — not recommended); absent uses the 600s default.
+- **Per-entry** `timeoutSec` on any `build[]`, `tests.projects[]`, or
+  `fileCommands[]` entry overrides the global value for that op.
+
+```jsonc
+{
+  "timeoutSec": 300,           // global default: 5 min for every op
+  "build": { "command": "dotnet", "args": "build", "timeoutSec": 600 },
+  "tests": { "projects": [ { "project": "Slow", "timeoutSec": 1200 } ] }
+}
+```
+
+## Wedge diagnostics
+
+If an op does overrun, the daemon is **diagnosable** instead of a black box:
+
+- A watchdog logs a structured `operation exceeded Ns: <op> running Ms` record
+  (and a periodic `heartbeat:` line naming the in-flight op + elapsed) to
+  `logs/daemon.log`.
+- `fshw status` / `fshw scan-status` report the wedge directly —
+  `WEDGED: <op> running Ns, exceeded threshold — <recovery>` — even while the
+  stuck op holds its own request, because the daemon keeps several IPC
+  acceptors live. You get the stuck op's name and the recovery action inline
+  rather than a blind `could not connect to daemon: operation timed out`.
