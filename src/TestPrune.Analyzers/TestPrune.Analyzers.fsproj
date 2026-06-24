@@ -2,7 +2,7 @@
 
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>
-        <!-- NU1608: FSharp.Analyzers.SDK 0.36.0 declares a pin on FCS 43.10.101, but this
+        <!-- NU1608: FSharp.Analyzers.SDK 0.37.2 declares a pin on FCS 43.12.201, but this
              repo (and the FsHotWatch ExampleAnalyzer this mirrors) runs against FCS
              43.12.204 to match the rest of the solution and the analyzer host. The skew is
              ABI-compatible for the syntax-tree surface we use and the host supplies FCS at

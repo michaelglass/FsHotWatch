@@ -3,8 +3,8 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <OutputType>Exe</OutputType>
-    <!-- NU1608: references TestPrune.Analyzers, which pulls FSharp.Analyzers.SDK 0.36.0
-         (pinned to FCS 43.10.101 / FSharp.Core 10.0.101) while this repo resolves
+    <!-- NU1608: references TestPrune.Analyzers, which pulls FSharp.Analyzers.SDK 0.37.2
+         (pinned to FCS 43.12.201 / FSharp.Core 10.1.201) while this repo resolves
          43.12.204 / 10.1.204. Same documented skew the analyzer project suppresses;
          consuming projects must suppress it too (cf. fsharp-analyzers, FSharpLintAnalyzerShim). -->
     <NoWarn>$(NoWarn);NU1605;NU1608;MSB3277;NETSDK1188</NoWarn>
