@@ -4,6 +4,21 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### A test-file-only edit can no longer go green against a stale test binary
+
+The build plugin used to **skip** MSBuild when a change touched only test files,
+waiting instead for FCS's in-memory `BatchChecked` type-check signal and then
+emitting `BuildSucceeded`. But FCS type-checking does not emit the runnable
+assembly for an xUnit v3 standalone-exe test project — only MSBuild does — and
+`test-prune` runs each test project with `dotnet run --no-build`, executing the
+**on-disk** DLL. So a freshly-edited test compiled fine in FCS, the build was
+skipped, and the test runner ran the **stale** binary → a confident false green
+(`test-rerun` / the `check` test phase both took this path). Now every source
+change, test files included, runs the real build: MSBuild re-emits the test DLL
+and the `verifyArtifactsFresh` post-build guard runs before `BuildSucceeded`, so
+`--no-build` can only ever execute an up-to-date assembly. `WaitingForBatchPhase`
+is removed. See `docs/adr-012-test-file-changes-build-no-batchchecked-skip.md`.
+
 ## Released — the `alpha.9` line onward (2026-04-22 → 2026-06-19)
 
 _These narratives are all shipped. This root file is a human-readable summary that fell
