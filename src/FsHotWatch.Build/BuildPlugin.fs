@@ -31,18 +31,16 @@ type BuildOutcome =
     | BuildArtifactsStale of stale: StaleArtifact list * output: string
     | BuildOutputFailed of outputs: string list
 
-type BuildPhase =
+type BuildState =
     /// The build plugin has no in-flight build of its own (the framework's
-    /// `RunExclusive "build"` owns single-flighting). `pendingFiles` buffers
+    /// `RunExclusive "build"` owns single-flighting). `PendingFiles` buffers
     /// file changes that arrived before this plugin's `dependsOn` were satisfied.
     /// Every source change — test files included — drives a real build: there is
     /// no longer a "skip the build for test-only changes" phase, because that
     /// skip left a stale on-disk test DLL for `dotnet run --no-build` to execute
-    /// (see ADR-012). A single-case union keeps the named-field clarity.
-    | IdlePhase of Lifecycle<Idle, BuildOutcome option> * pendingFiles: FileChangeKind list
-
-type BuildState =
-    { Phase: BuildPhase
+    /// (see ADR-012). `LastBuild` carries the most recent build's lifecycle.
+    { LastBuild: Lifecycle<Idle, BuildOutcome option>
+      PendingFiles: FileChangeKind list
       SatisfiedDeps: Set<string> }
 
 /// Internal message posted from the async build runner back to the plugin's
@@ -353,11 +351,12 @@ let create
                         return BuildDone(BuildOutputFailed [ ex.Message ], [ crashEntry ])
                 }))
 
-        // State stays at IdlePhase carrying the prior idle lifecycle. The
-        // synchronous BuildDone handler advances Lifecycle.start ▸ complete
-        // when the framework posts the completion message back. Phase-based
-        // "is the build running" is replaced by ctx.IsRunning "build".
-        { Phase = IdlePhase(idle, [])
+        // State carries the prior idle lifecycle. The synchronous BuildDone
+        // handler advances Lifecycle.start ▸ complete when the framework posts
+        // the completion message back. "is the build running" is owned by
+        // ctx.IsRunning "build".
+        { LastBuild = idle
+          PendingFiles = []
           SatisfiedDeps = Set.empty }
 
     let startTemplateBuild
@@ -448,7 +447,8 @@ let create
                             return BuildDone(BuildOutputFailed [ ex.Message ], [ ErrorEntry.error ex.Message ])
                     }))
 
-            { Phase = IdlePhase(idle, [])
+            { LastBuild = idle
+              PendingFiles = []
               SatisfiedDeps = Set.empty }
 
     let handleSourceChanged
@@ -483,14 +483,15 @@ let create
 
     { Name = PluginName.create "build"
       Init =
-        { Phase = IdlePhase(Lifecycle.create None, [])
+        { LastBuild = Lifecycle.create None
+          PendingFiles = []
           SatisfiedDeps = Set.empty }
       Update =
         fun ctx state event ->
             async {
-                match event, state.Phase with
+                match event with
                 // --- CommandCompleted: track dependency satisfaction ---
-                | CommandCompleted result, _ when depNames.Contains(result.Name) ->
+                | CommandCompleted result when depNames.Contains(result.Name) ->
                     match result.Outcome with
                     | FsHotWatch.Events.CommandFailed _ ->
                         ctx.ReportStatus(PluginStatus.Failed($"dependency failed: %s{result.Name}", DateTime.UtcNow))
@@ -499,7 +500,7 @@ let create
                         let newDeps = Set.add result.Name state.SatisfiedDeps
 
                         if allDepsSatisfied newDeps then
-                            let (IdlePhase(_, pendingFiles)) = state.Phase
+                            let pendingFiles = state.PendingFiles
 
                             let updatedState = { state with SatisfiedDeps = newDeps }
 
@@ -517,39 +518,37 @@ let create
                                 |> List.map AbsFilePath.create
                                 |> List.distinct
 
-                            match hasProjectChange, sourceFiles, updatedState.Phase with
-                            | true, _, IdlePhase(idle, _) -> return handleProjectChanged ctx updatedState idle
-                            | _, _ :: _, IdlePhase(idle, _) ->
-                                return handleSourceChanged ctx updatedState idle sourceFiles
+                            match hasProjectChange, sourceFiles with
+                            | true, _ -> return handleProjectChanged ctx updatedState updatedState.LastBuild
+                            | _, _ :: _ ->
+                                return handleSourceChanged ctx updatedState updatedState.LastBuild sourceFiles
                             | _ -> return updatedState
                         else
                             return { state with SatisfiedDeps = newDeps }
 
                 // --- FileChanged: buffer if deps not yet satisfied ---
-                | FileChanged change, IdlePhase(idle, pending) when
-                    not depNames.IsEmpty && not (allDepsSatisfied state.SatisfiedDeps)
-                    ->
+                | FileChanged change when not depNames.IsEmpty && not (allDepsSatisfied state.SatisfiedDeps) ->
                     info "build" "Buffering file change — waiting for dependencies"
 
                     return
                         { state with
-                            Phase = IdlePhase(idle, pending @ [ change ]) }
+                            PendingFiles = state.PendingFiles @ [ change ] }
 
                 // --- FileChanged: drop while a build is in flight (framework single-flight) ---
-                | FileChanged _, _ when ctx.IsRunning "build" ->
+                | FileChanged _ when ctx.IsRunning "build" ->
                     info "build" "Skipping: build already in progress"
                     return state
 
                 // --- FileChanged: normal handling (no deps or all satisfied) ---
-                | FileChanged(SourceChanged files), IdlePhase(idle, _) ->
-                    return handleSourceChanged ctx state idle (files |> List.map AbsFilePath.create)
-                | FileChanged(ProjectChanged _), IdlePhase(idle, _) -> return handleProjectChanged ctx state idle
-                | Custom(BuildDone(outcome, entries)), _ ->
+                | FileChanged(SourceChanged files) ->
+                    return handleSourceChanged ctx state state.LastBuild (files |> List.map AbsFilePath.create)
+                | FileChanged(ProjectChanged _) -> return handleProjectChanged ctx state state.LastBuild
+                | Custom(BuildDone(outcome, entries)) ->
                     // Build single-flight is owned by the framework (RunExclusive "build").
-                    // The completion message arrives at whatever phase we're in (typically
-                    // IdlePhase carrying the pre-build idle lifecycle); we advance the
-                    // lifecycle through Running ▸ Completed for activity-log bookkeeping.
-                    let (IdlePhase(prevIdle, _)) = state.Phase
+                    // The completion message arrives carrying the pre-build idle lifecycle;
+                    // we advance the lifecycle through Running ▸ Completed for activity-log
+                    // bookkeeping.
+                    let prevIdle = state.LastBuild
 
                     let idle = Lifecycle.complete (Some outcome) (Lifecycle.start prevIdle)
 
@@ -584,7 +583,8 @@ let create
 
                     return
                         { state with
-                            Phase = IdlePhase(idle, [])
+                            LastBuild = idle
+                            PendingFiles = []
                             SatisfiedDeps = Set.empty }
 
                 | _ -> return state
@@ -593,8 +593,7 @@ let create
         [ "build-status",
           fun _ctx state _args ->
               async {
-                  let (IdlePhase(idle, _)) = state.Phase
-                  let lastResult = Lifecycle.value idle
+                  let lastResult = Lifecycle.value state.LastBuild
 
                   match lastResult with
                   | Some(BuildPassed output) ->
