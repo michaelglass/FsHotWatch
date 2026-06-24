@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- chore(deps): pin `SQLitePCLRaw.lib.e_sqlite3` 3.50.3 (clears NU1903 / GHSA-2m69-gcr7-jv3q, High).
+
 ## 0.7.0-alpha.28 - 2026-06-19
 
 - fix: the test gate no longer reports a false failure when a test host exits

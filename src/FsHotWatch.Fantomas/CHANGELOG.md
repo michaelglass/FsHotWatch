@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- chore(deps): dependency refresh (version-coupled release; no functional change).
+
 ## 0.7.0-alpha.13 - 2026-06-17
 
 - docs: README accuracy & early-alpha status-note pass.

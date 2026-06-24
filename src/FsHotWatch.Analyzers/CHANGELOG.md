@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- chore(deps): bump `FSharp.Analyzers.SDK` 0.36.0 → 0.37.2 (FCS 43.12.201).
+
 ## 0.7.0-alpha.19 - 2026-06-17
 
 - fix: a long-lived (warm) daemon now **reloads** the analyzer assembly set when it

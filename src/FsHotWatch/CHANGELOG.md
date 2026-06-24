@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- chore(deps): bump `System.Security.Cryptography.Xml` 10.0.9; suite-wide dependency refresh (version-coupled with the cli/build release).
+
 ## 0.8.0-alpha.32 - 2026-06-19
 
 - feat: a new `TestResult.TestsErrored` case (plus `TestResult.isErrored`) for a
