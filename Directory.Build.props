@@ -4,7 +4,7 @@
     <EnableSourceLink Condition="!Exists('$(MSBuildThisFileDirectory).git')">false</EnableSourceLink>
     <EnableSourceControlManagerQueries Condition="!Exists('$(MSBuildThisFileDirectory).git')">false</EnableSourceControlManagerQueries>
 
-    <!-- NU1608: FSharp.Analyzers.SDK 0.36.0 pins old FCS/FSharp.Core; we use newer. -->
+    <!-- NU1608: FSharp.Analyzers.SDK 0.37.2 pins old FCS/FSharp.Core; we use newer. -->
     <NoWarn>$(NoWarn);NU1608</NoWarn>
   </PropertyGroup>
 
@@ -12,7 +12,7 @@
        (9.0.0 has CVEs GHSA-w3x6-4m5h-cxqf and GHSA-37gx-xxp4-5rgx). Applied
        repo-wide because multiple plugin projects pull it in via FCS/FSharpLint. -->
   <ItemGroup>
-    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.8" />
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.9" />
   </ItemGroup>
   <!-- Pin transitive Nerdbank.MessagePack to a patched version (1.0.2 has
        GHSA-2cwq-pwfr-wcw3 — attacker-controlled stackalloc in DateTime
