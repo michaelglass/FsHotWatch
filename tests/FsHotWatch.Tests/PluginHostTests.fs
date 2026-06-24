@@ -705,6 +705,49 @@ let ``OnStatusChanged event fires when plugin reports status`` () =
                    | _ -> false)
         @>
 
+[<Fact(Timeout = 20000)>]
+let ``work-cycle generation bumps once across consecutive Running reports`` () =
+    // bumpGenerationIfStarting bumps the per-plugin generation only on a
+    // non-Running ▸ Running EDGE: a plugin that reports Running again while
+    // already Running (no terminal status in between) must NOT bump a second
+    // time (the `Some(Running _) -> false` arm). Drives two Running reports with
+    // no Completed/Failed between them and asserts the generation advanced once.
+    let host = PluginHost.create nullChecker "/tmp/test"
+
+    let handler =
+        { Name = PluginName.create "running-twice"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    // Report ONLY Running (no terminal status) so the next
+                    // FileChanged finds prev = Some(Running _).
+                    | FileChanged _ -> ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChanged ]
+          CacheKey = None
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+
+    // First edge: Idle ▸ Running → generation 1.
+    host.EmitFileChanged(SourceChanged [ "src/A.fs" ])
+    waitUntil (fun () -> host.WorkCycleGenerations().TryFind "running-twice" = Some 1L) 12000
+    test <@ host.WorkCycleGenerations().TryFind "running-twice" = Some 1L @>
+
+    // Second report while already Running → NO second bump (stays at 1).
+    host.EmitFileChanged(SourceChanged [ "src/B.fs" ])
+    waitForQuiescent host 12000
+    // Give the status agent a beat to apply any (non-)mutation, then assert it
+    // did not advance — Running ▸ Running is not a new work cycle.
+    Thread.Sleep(150)
+    test <@ host.WorkCycleGenerations().TryFind "running-twice" = Some 1L @>
+
 // --- REGRESSION (daemon side): vacuous resolution on an all-Idle host ---
 //
 // The daemon-side `WaitForComplete` path (`waitForVerdict` →

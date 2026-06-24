@@ -32,12 +32,14 @@ type BuildOutcome =
     | BuildOutputFailed of outputs: string list
 
 type BuildPhase =
+    /// The build plugin has no in-flight build of its own (the framework's
+    /// `RunExclusive "build"` owns single-flighting). `pendingFiles` buffers
+    /// file changes that arrived before this plugin's `dependsOn` were satisfied.
+    /// Every source change — test files included — drives a real build: there is
+    /// no longer a "skip the build for test-only changes" phase, because that
+    /// skip left a stale on-disk test DLL for `dotnet run --no-build` to execute
+    /// (see ADR-012). A single-case union keeps the named-field clarity.
     | IdlePhase of Lifecycle<Idle, BuildOutcome option> * pendingFiles: FileChangeKind list
-    /// Test-files-only change — build is logically a no-op but we wait for the
-    /// next BatchChecked covering the expecting set before emitting
-    /// BuildSucceeded. Otherwise downstream test-prune dispatch would race FCS
-    /// and read stale AffectedTests.
-    | WaitingForBatchPhase of expecting: Set<AbsFilePath> * Lifecycle<Idle, BuildOutcome option>
 
 type BuildState =
     { Phase: BuildPhase
@@ -175,8 +177,8 @@ let create
         | None -> System.Threading.Timeout.InfiniteTimeSpan
 
     // Path normalization happens once at the SourceChanged → AbsFilePath boundary
-    // (callers inject `AbsFilePath.create` per file). BatchChecked.Files is already
-    // a list of AbsFilePath, so the subset check against `expecting` is direct.
+    // (callers inject `AbsFilePath.create` per file). `isTestFile` drives the
+    // template-build path's non-test-project filter (`startTemplateBuild`).
     let isTestFile (file: AbsFilePath) =
         graph.GetProjectsForFile(file)
         |> List.exists (fun proj ->
@@ -455,22 +457,21 @@ let create
         (idle: Lifecycle<Idle, BuildOutcome option>)
         (files: AbsFilePath list)
         =
-        let allTestFiles = not files.IsEmpty && files |> List.forall isTestFile
-
-        if allTestFiles then
-            info "build" "Skipping build — only test files changed; waiting for BatchChecked"
-            ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
-
-            { state with
-                Phase = WaitingForBatchPhase(Set.ofList files, idle) }
-        else
-            match buildTemplate with
-            | Some template ->
-                { (startTemplateBuild ctx idle template files) with
-                    SatisfiedDeps = state.SatisfiedDeps }
-            | None ->
-                { (startBuild ctx idle) with
-                    SatisfiedDeps = state.SatisfiedDeps }
+        // A test-file-only change is NOT a build no-op: the changed test project
+        // is run by test-prune via `dotnet run --no-build`, which executes the
+        // on-disk assembly. Only MSBuild re-emits that assembly — FCS's in-memory
+        // `BatchChecked` type-check signal does not. The previous "skip build,
+        // wait for BatchChecked, emit BuildSucceeded" path therefore left a STALE
+        // DLL on disk and let `--no-build` run it → false green (see ADR-012).
+        // Every source change, test or not, runs the real build so `verifyArtifactsFresh`
+        // confirms the DLL post-dates its sources before `BuildSucceeded` fires.
+        match buildTemplate with
+        | Some template ->
+            { (startTemplateBuild ctx idle template files) with
+                SatisfiedDeps = state.SatisfiedDeps }
+        | None ->
+            { (startBuild ctx idle) with
+                SatisfiedDeps = state.SatisfiedDeps }
 
     let handleProjectChanged
         (ctx: PluginCtx<BuildMsg>)
@@ -498,10 +499,7 @@ let create
                         let newDeps = Set.add result.Name state.SatisfiedDeps
 
                         if allDepsSatisfied newDeps then
-                            let pendingFiles =
-                                match state.Phase with
-                                | IdlePhase(_, pending) -> pending
-                                | WaitingForBatchPhase _ -> []
+                            let (IdlePhase(_, pendingFiles)) = state.Phase
 
                             let updatedState = { state with SatisfiedDeps = newDeps }
 
@@ -551,10 +549,7 @@ let create
                     // The completion message arrives at whatever phase we're in (typically
                     // IdlePhase carrying the pre-build idle lifecycle); we advance the
                     // lifecycle through Running ▸ Completed for activity-log bookkeeping.
-                    let prevIdle =
-                        match state.Phase with
-                        | IdlePhase(idle, _) -> idle
-                        | WaitingForBatchPhase(_, idle) -> idle
+                    let (IdlePhase(prevIdle, _)) = state.Phase
 
                     let idle = Lifecycle.complete (Some outcome) (Lifecycle.start prevIdle)
 
@@ -592,48 +587,14 @@ let create
                             Phase = IdlePhase(idle, [])
                             SatisfiedDeps = Set.empty }
 
-                | PluginEvent.BatchChecked batch, WaitingForBatchPhase(expecting, idle) ->
-                    // Per design Item 7: subset check, not exact-match. If the
-                    // cohort doesn't yet cover everything we're expecting, hold
-                    // the wait — late `SourceChanged` files merge into
-                    // `expecting` via the merge arm below, and a subsequent
-                    // BatchChecked will cover them.
-                    let coveredFiles = Set.ofList batch.Files
-
-                    if Set.isSubset expecting coveredFiles then
-                        ctx.EmitBuildCompleted(BuildSucceeded)
-                        ctx.ReportStatus(Completed(DateTime.UtcNow))
-
-                        return
-                            { state with
-                                Phase = IdlePhase(idle, []) }
-                    else
-                        return state
-
-                | FileChanged(ProjectChanged _), WaitingForBatchPhase(_, idle) ->
-                    return handleProjectChanged ctx state idle
-                | FileChanged(SourceChanged files), WaitingForBatchPhase(expecting, idle) ->
-                    let typed = files |> List.map AbsFilePath.create
-                    let nonTest = typed |> List.filter (fun f -> not (isTestFile f))
-
-                    if nonTest.IsEmpty then
-                        let merged = typed |> List.fold (fun s f -> Set.add f s) expecting
-
-                        return
-                            { state with
-                                Phase = WaitingForBatchPhase(merged, idle) }
-                    else
-                        return handleSourceChanged ctx state idle typed
                 | _ -> return state
             }
       Commands =
         [ "build-status",
           fun _ctx state _args ->
               async {
-                  let lastResult =
-                      match state.Phase with
-                      | IdlePhase(idle, _) -> Lifecycle.value idle
-                      | WaitingForBatchPhase(_, idle) -> Lifecycle.value idle
+                  let (IdlePhase(idle, _)) = state.Phase
+                  let lastResult = Lifecycle.value idle
 
                   match lastResult with
                   | Some(BuildPassed output) ->
@@ -657,8 +618,12 @@ let create
                   | None -> return JsonSerializer.Serialize({| status = "not run" |})
               } ]
       Subscriptions =
+        // The build plugin no longer subscribes to `BatchChecked`: every source
+        // change (test files included) drives a real MSBuild build, so there is
+        // no test-only-skip phase that waited on the FCS cohort signal. TestPrune
+        // keeps its own `BatchChecked` subscription (the AffectedTests seal).
         Set.ofList (
-            [ SubscribeFileChanged; SubscribeBatchChecked ]
+            [ SubscribeFileChanged ]
             @ (if dependsOn.IsEmpty then
                    []
                else
@@ -667,14 +632,13 @@ let create
       CacheKey =
         // §2a: content-merkle key over all build-relevant files in the project graph.
         // FileChanged and Custom BuildDone share the same key so a stored result
-        // is found on the next matching FileChanged. BatchChecked events return None
-        // to skip the cache — they're handled by WaitingForBatchPhase state, not triggers.
+        // is found on the next matching FileChanged. The merkle hashes EVERY source
+        // file (test files included), so a test-file edit moves the key → cache miss
+        // → a real build runs and re-emits the test DLL before it's executed.
         let inputsHasher = lazy BuildInputsHasher(graph)
 
-        let cacheKey (event: PluginEvent<BuildMsg>) : ContentHash option =
-            match event with
-            | PluginEvent.BatchChecked _ -> None
-            | _ -> Some(computeBuildCacheKey buildCommand buildArgs dependsOn (inputsHasher.Value.Compute()))
+        let cacheKey (_event: PluginEvent<BuildMsg>) : ContentHash option =
+            Some(computeBuildCacheKey buildCommand buildArgs dependsOn (inputsHasher.Value.Compute()))
 
         Some cacheKey
       // Framework gate: suppresses cache replay until this plugin completes once
