@@ -302,6 +302,15 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
 
         if shouldStart then
             Async.Start(runOne key work)
+        else
+            // AUTOMATION-15 (item 5): exclusion-slot contention. A new run was
+            // requested while `key` is still busy — the framework drops it
+            // rather than stacking. Surfacing it as a debug diagnostic makes the
+            // "why didn't my edit re-run this plugin?" / "is it wedged on a
+            // long run?" question answerable from the log instead of guessing.
+            debug
+                (PluginName.value handler.Name)
+                $"exclusion-slot busy: '%s{key}' run skipped (a previous run is still in flight)"
 
     let isRunning (key: string) =
         lock runSlotsLock (fun () ->

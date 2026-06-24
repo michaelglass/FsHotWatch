@@ -333,6 +333,151 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
 // moved to FsHotWatch.IntegrationTests 2026-04-30 — flaked under load
 // (~20% rate locally), 4-handler dispatch is integration-grade.
 
+// --- Wedge-aware status (AUTOMATION-15 item 4) ---
+
+[<Fact(Timeout = 15000)>]
+let ``GetStatus splices a WEDGED report when the watchdog has a stuck op`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let clock = ref (DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc))
+
+    // Inject a watchdog with a tiny threshold and a stuck op (Begin, no End).
+    use watchdog =
+        new FsHotWatch.OperationWatchdog.Watchdog(
+            TimeSpan.FromSeconds(1.0),
+            heartbeatEvery = TimeSpan.FromHours(1.0),
+            now = (fun () -> clock.Value),
+            log = ignore,
+            tick = TimeSpan.FromMilliseconds(50.0)
+        )
+
+    watchdog.Begin "RunCommand:run-tests"
+    // Advance the injected clock past the threshold so it reads as wedged.
+    clock.Value <- clock.Value.AddSeconds 30.0
+
+    let target = DaemonRpcTarget(defaultRpcConfig host, watchdog)
+    let json = target.GetStatus()
+
+    test <@ json.Contains("fshw-wedge") @>
+    test <@ json.Contains("WEDGED:") @>
+    test <@ json.Contains("RunCommand:run-tests") @>
+    // Inline recovery action.
+    test <@ json.Contains("fshw stop") @>
+
+[<Fact(Timeout = 15000)>]
+let ``GetStatus omits the wedge entry when no op is stuck`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    use watchdog =
+        new FsHotWatch.OperationWatchdog.Watchdog(
+            TimeSpan.FromSeconds(120.0),
+            heartbeatEvery = TimeSpan.FromHours(1.0),
+            now = (fun () -> DateTime.UtcNow),
+            log = ignore,
+            tick = TimeSpan.FromMilliseconds(50.0)
+        )
+
+    // No op in flight at all.
+    let target = DaemonRpcTarget(defaultRpcConfig host, watchdog)
+    let json = target.GetStatus()
+    test <@ not (json.Contains("fshw-wedge")) @>
+    test <@ not (json.Contains("WEDGED:")) @>
+
+[<Fact(Timeout = 15000)>]
+let ``ScanStatus prefixes the wedge report when a stuck op is in flight`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let clock = ref (DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc))
+
+    use watchdog =
+        new FsHotWatch.OperationWatchdog.Watchdog(
+            TimeSpan.FromSeconds(1.0),
+            heartbeatEvery = TimeSpan.FromHours(1.0),
+            now = (fun () -> clock.Value),
+            log = ignore,
+            tick = TimeSpan.FromMilliseconds(50.0)
+        )
+
+    watchdog.Begin "WaitForComplete"
+    clock.Value <- clock.Value.AddSeconds 30.0
+
+    let config =
+        { defaultRpcConfig host with
+            GetScanStatus = fun () -> "complete: 10 files checked in 1.0s" }
+
+    let target = DaemonRpcTarget(config, watchdog)
+    let status = target.ScanStatus()
+    test <@ status.StartsWith("WEDGED:") @>
+    test <@ status.Contains("WaitForComplete") @>
+    // The underlying scan line is still present.
+    test <@ status.Contains("complete: 10 files") @>
+
+[<Fact(Timeout = 30000)>]
+let ``status stays responsive over a real pipe while another op is wedged`` () =
+    // The end-to-end acceptance: a real daemon over a real pipe, ONE RPC op
+    // blocked indefinitely (a stuck WaitForComplete), and a concurrent `status`
+    // call must STILL return — reporting the wedge + stuck op — instead of the
+    // consumer blindly timing out on a dead socket. This is what 2026-06-16's
+    // "could not connect to daemon: operation timed out" looked like; the
+    // multi-acceptor server + watchdog make status land on a free acceptor.
+    let pipeName = $"fshw-{Guid.NewGuid():N}"
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+    let cts = new CancellationTokenSource()
+    let blockForever = new TaskCompletionSource<unit>()
+
+    let config =
+        { defaultRpcConfig host with
+            // A WaitForComplete that never resolves — the wedged op.
+            WaitForAllTerminal = fun _ -> blockForever.Task }
+
+    host.RegisterHandler(
+        { Name = PluginName.create "p"
+          Init = ()
+          Update = fun _ctx state _event -> async { return state }
+          Commands = []
+          Subscriptions = PluginSubscriptions.none
+          CacheKey = None
+          Teardown = None }
+    )
+
+    let serverTask = Async.StartAsTask(IpcServer.start pipeName config cts)
+    waitForServer pipeName
+
+    try
+        // Park a client in WaitForComplete — this occupies one accept task and
+        // never returns (the wedge).
+        let wedged =
+            Async.StartAsTask(
+                async {
+                    try
+                        return! IpcClient.waitForComplete pipeName 0
+                    with ex ->
+                        return $"faulted: {ex.Message}"
+                }
+            )
+
+        Thread.Sleep(500)
+
+        if wedged.IsCompleted then
+            failwithf "wedged WaitForComplete should still be parked, but completed with: %s" wedged.Result
+
+        // The defining assertion: a concurrent `status` over the same pipe MUST
+        // still return within a bounded time, not hang on the wedged op.
+        let statusTask = Async.StartAsTask(async { return! IpcClient.getStatus pipeName })
+
+        let completed = statusTask.Wait(TimeSpan.FromSeconds(8.0))
+        test <@ completed @>
+        // The wedged op is still parked (we didn't accidentally unblock it).
+        test <@ not wedged.IsCompleted @>
+        // status returned a real payload (the registered plugin is present).
+        test <@ statusTask.Result.Contains("\"p\"") @>
+    finally
+        blockForever.TrySetResult(()) |> ignore
+        cts.Cancel()
+
+        try
+            serverTask.Wait(TimeSpan.FromSeconds(3.0)) |> ignore
+        with _ ->
+            ()
+
 [<Fact(Timeout = 15000)>]
 let ``DaemonRpcTarget.RunCommand returns unknown command for missing command`` () =
     let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"

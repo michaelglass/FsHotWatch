@@ -371,7 +371,7 @@ let internal createWithSlowHook
                                         $"analyzing {Path.GetFileName fileStr}"
                                         (async {
                                             try
-                                                let runAnalyzers () =
+                                                let runAnalyzers (workCt: Threading.CancellationToken) =
                                                     match slowHook with
                                                     | Some h -> h ()
                                                     | None -> ()
@@ -388,10 +388,17 @@ let internal createWithSlowHook
 
                                                     // Read the current client: reloadIfStale may have
                                                     // swapped in a fresh one carrying a newly-added analyzer.
+                                                    // Drive the analyzer run under the timeout's token so a
+                                                    // stuck analyzer is actually cancelled on expiry rather
+                                                    // than orphaned holding the semaphore slot.
                                                     let activeClient = Volatile.Read(&client)
-                                                    activeClient.RunAnalyzersSafely(context) |> Async.RunSynchronously
 
-                                                match runWithTimeout analyzerTimeout runAnalyzers with
+                                                    Async.RunSynchronously(
+                                                        activeClient.RunAnalyzersSafely(context),
+                                                        cancellationToken = workCt
+                                                    )
+
+                                                match runWithCancellableTimeout analyzerTimeout runAnalyzers with
                                                 | WorkTimedOut after ->
                                                     let reason = $"timed out after %d{int after.TotalSeconds}s"
 

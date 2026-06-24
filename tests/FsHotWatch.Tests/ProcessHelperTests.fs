@@ -52,6 +52,79 @@ let ``runWithTimeout returns WorkTimedOut when work exceeds timeout`` () =
 let ``runWithTimeout with InfiniteTimeSpan never times out`` () =
     Assert.Equal(WorkCompleted 7, runWithTimeout System.Threading.Timeout.InfiniteTimeSpan (fun () -> 7))
 
+// --- runWithCancellableTimeout: real in-process cancellation (AUTOMATION-15 item 2) ---
+
+[<Fact(Timeout = 20000)>]
+let ``runWithCancellableTimeout returns WorkCompleted when work completes in time`` () =
+    Assert.Equal(WorkCompleted 99, runWithCancellableTimeout (TimeSpan.FromSeconds 1.0) (fun _ct -> 99))
+
+[<Fact(Timeout = 20000)>]
+let ``runWithCancellableTimeout with InfiniteTimeSpan passes a non-cancelled token`` () =
+    match
+        runWithCancellableTimeout System.Threading.Timeout.InfiniteTimeSpan (fun ct -> ct.IsCancellationRequested)
+    with
+    | WorkCompleted requested -> Assert.False(requested)
+    | WorkTimedOut _ -> Assert.Fail "expected completion"
+
+[<Fact(Timeout = 20000)>]
+let ``runWithCancellableTimeout CANCELS a stuck unit on timeout (no orphaned thread)`` () =
+    // The audit's core defect: a timed-out in-process unit used to leave its
+    // orphan thread running (still holding whatever lock it grabbed). With real
+    // cancellation, a cooperative unit observes the token and unwinds — proven
+    // here by a flag the work sets ONLY when it sees the cancellation, plus an
+    // "still running" flag that must be cleared by the time we observe cancel.
+    let observedCancellation = new System.Threading.ManualResetEventSlim(false)
+    let workExited = new System.Threading.ManualResetEventSlim(false)
+
+    let work (ct: System.Threading.CancellationToken) =
+        try
+            // Cooperative wait that releases the instant the token is cancelled —
+            // models a stuck unit that honours cancellation (FCS/Fantomas/etc.).
+            ct.WaitHandle.WaitOne() |> ignore
+            observedCancellation.Set()
+            42
+        finally
+            workExited.Set()
+
+    let result = runWithCancellableTimeout (TimeSpan.FromMilliseconds 50.0) work
+
+    match result with
+    | WorkTimedOut _ -> ()
+    | WorkCompleted _ -> Assert.Fail "expected timeout"
+
+    // The defining assertion: the work was actually cancelled (token fired) and
+    // its thread unwound — it is NOT orphaned still-running.
+    Assert.True(observedCancellation.Wait(TimeSpan.FromSeconds 5.0), "work never observed cancellation — orphaned")
+    Assert.True(workExited.Wait(TimeSpan.FromSeconds 5.0), "work thread never exited — orphaned")
+
+[<Fact(Timeout = 20000)>]
+let ``runWithCancellableTimeout cancelled unit releases its lock so the next unit proceeds`` () =
+    // Concretely models the wedge: unit A grabs a lock and hangs; on timeout it
+    // is cancelled and releases the lock; unit B must then be able to acquire it.
+    // Pre-fix (orphan thread holding the lock forever) B would block indefinitely.
+    let gate = new System.Threading.SemaphoreSlim(1, 1)
+
+    let stuck (ct: System.Threading.CancellationToken) =
+        gate.Wait()
+
+        try
+            ct.WaitHandle.WaitOne() |> ignore
+        finally
+            gate.Release() |> ignore
+
+    let aResult = runWithCancellableTimeout (TimeSpan.FromMilliseconds 50.0) stuck
+
+    match aResult with
+    | WorkTimedOut _ -> ()
+    | WorkCompleted _ -> Assert.Fail "expected timeout for the stuck unit"
+
+    // B must be able to take the lock the cancelled A released.
+    let acquiredByB = gate.Wait(TimeSpan.FromSeconds 5.0)
+    Assert.True(acquiredByB, "lock was never released by the cancelled unit — daemon would stay wedged")
+
+    if acquiredByB then
+        gate.Release() |> ignore
+
 [<Fact(Timeout = 20000)>]
 let ``runProcess succeeds for echo`` () =
     match runProcess "echo" "hello" "." [] with

@@ -132,10 +132,61 @@ type DaemonRpcConfig =
         GetUncheckedCount: unit -> int
     }
 
-/// RPC target object exposed to clients via StreamJsonRpc.
-type DaemonRpcTarget(config: DaemonRpcConfig) =
+/// Sentinel key under which a wedge report is carried in the status JSON map.
+/// Namespaced with the `fshw-` control prefix so it can never collide with a
+/// real plugin name. When present, its value is the `WEDGED: ...` message from
+/// `OperationWatchdog.wedgeReport`; the CLI surfaces it directly.
+[<Literal>]
+let WedgeStatusKey = "fshw-wedge"
 
-    /// Returns a JSON string of all plugin statuses.
+/// RPC target object exposed to clients via StreamJsonRpc.
+///
+/// `watchdog` (AUTOMATION-15): each RPC method that does real work brackets
+/// itself with `watchdog.Begin`/`End` so the watchdog always knows the single
+/// in-flight daemon operation. When ONE op wedges, a `status` call lands on a
+/// FREE accept task (the IPC server keeps several acceptors running) and reads
+/// the watchdog — so `GetStatus`/`ScanStatus` report the wedge + stuck op +
+/// inline recovery instead of the consumer blindly timing out on the socket.
+type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watchdog) =
+
+    /// Bracket a unit of RPC work so the watchdog tracks it as the in-flight op.
+    /// `status`/`scanStatus` are intentionally NOT bracketed — they must stay
+    /// cheap and readable even while another op is wedged.
+    let tracked (name: string) (f: unit -> 'a) : 'a =
+        match watchdog with
+        | Some w ->
+            w.Begin name
+
+            try
+                f ()
+            finally
+                w.End()
+        | None -> f ()
+
+    /// Async variant of `tracked` for the Task-returning RPC methods.
+    let trackedTask (name: string) (f: unit -> Task<'a>) : Task<'a> =
+        match watchdog with
+        | Some w ->
+            w.Begin name
+
+            task {
+                try
+                    return! f ()
+                finally
+                    w.End()
+            }
+        | None -> f ()
+
+    /// The wedge entry to splice into a status map, if the daemon is wedged.
+    let wedgeEntry () : (string * obj) option =
+        watchdog
+        |> Option.bind (fun w -> w.WedgeReport())
+        |> Option.map (fun msg -> WedgeStatusKey, (box msg))
+
+    /// Returns a JSON string of all plugin statuses. When the daemon's RPC loop
+    /// is wedged on a stuck op, a `WedgeStatusKey` entry carrying the
+    /// `WEDGED: ...` report (stuck op + inline recovery) is spliced in so the
+    /// consumer learns it directly instead of timing out on the socket.
     member _.GetStatus() : string =
         let statuses = config.Host.GetAllStatuses()
         let counts = config.Host.GetDiagnosticCountsByPlugin()
@@ -144,7 +195,12 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
             statuses
             |> Map.map (fun name status -> pluginStatusPayload config.Host counts name status)
 
-        JsonSerializer.Serialize(entries)
+        let withWedge =
+            match wedgeEntry () with
+            | Some(k, v) -> entries |> Map.add k v
+            | None -> entries
+
+        JsonSerializer.Serialize(withWedge)
 
     /// Returns a single plugin's status as a single-entry tagged JSON map,
     /// or an empty map JSON object when the plugin is not registered.
@@ -160,19 +216,20 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
     /// Runs a registered command by name and returns the result, or the
     /// `unknownCommandReply` sentinel when the plugin host doesn't recognize it.
     member _.RunCommand(name: string, argsJson: string) : Task<string> =
-        task {
-            let args =
-                if String.IsNullOrEmpty(argsJson) then
-                    [||]
-                else
-                    [| argsJson |]
+        trackedTask $"RunCommand:%s{name}" (fun () ->
+            task {
+                let args =
+                    if String.IsNullOrEmpty(argsJson) then
+                        [||]
+                    else
+                        [| argsJson |]
 
-            let! result = config.Host.RunCommand(name, args) |> Async.StartAsTask
+                let! result = config.Host.RunCommand(name, args) |> Async.StartAsTask
 
-            match result with
-            | Some r -> return r
-            | None -> return unknownCommandReply name
-        }
+                match result with
+                | Some r -> return r
+                | None -> return unknownCommandReply name
+            })
 
     /// Gracefully shut down the daemon.
     member _.Shutdown() : string =
@@ -185,8 +242,15 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
         config.RequestScan()
         $"scan started:%d{gen}"
 
-    /// Get current scan progress without blocking.
-    member _.ScanStatus() : string = config.GetScanStatus()
+    /// Get current scan progress without blocking. When the daemon is wedged on
+    /// a stuck op, the scan line is prefixed with the `WEDGED: ...` report so a
+    /// plain `fshw scan-status` poll surfaces the wedge inline.
+    member _.ScanStatus() : string =
+        let scan = config.GetScanStatus()
+
+        match wedgeEntry () with
+        | Some(_, v) -> $"%s{unbox<string> v}\n%s{scan}"
+        | None -> scan
 
     /// Query the error ledger. If pluginFilter is empty, return all errors; otherwise filter to that plugin.
     member _.GetDiagnostics(pluginFilter: string) : string =
@@ -238,47 +302,50 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
     /// Wait for scan generation to advance past afterGeneration, then return the final status.
     /// Negative afterGeneration means "wait for any scan completion" (legacy path).
     member _.WaitForScan(afterGeneration: int64) : Task<string> =
-        task {
-            Logging.debug "rpc" $"WaitForScan(%d{afterGeneration}) called"
-            do! config.WaitForScanGeneration(afterGeneration)
-            return config.GetScanStatus()
-        }
+        trackedTask "WaitForScan" (fun () ->
+            task {
+                Logging.debug "rpc" $"WaitForScan(%d{afterGeneration}) called"
+                do! config.WaitForScanGeneration(afterGeneration)
+                return config.GetScanStatus()
+            })
 
     /// Wait for all plugins to reach a terminal state with 1s stability confirmation.
     /// timeoutMs <= 0 means no client-imposed timeout.
     member this.WaitForComplete(timeoutMs: int) : Task<string> =
-        task {
-            let statuses = config.Host.GetAllStatuses()
+        trackedTask "WaitForComplete" (fun () ->
+            task {
+                let statuses = config.Host.GetAllStatuses()
 
-            let running =
-                statuses
-                |> Map.toList
-                |> List.choose (fun (name, s) -> if Events.PluginStatus.isTerminal s then None else Some name)
+                let running =
+                    statuses
+                    |> Map.toList
+                    |> List.choose (fun (name, s) -> if Events.PluginStatus.isTerminal s then None else Some name)
 
-            match running with
-            | [] -> Logging.info "rpc" $"WaitForComplete(%d{timeoutMs}ms) called — all plugins already terminal"
-            | plugins ->
-                let joined = plugins |> String.concat ", "
-                Logging.info "rpc" $"WaitForComplete(%d{timeoutMs}ms) called — waiting for: %s{joined}"
+                match running with
+                | [] -> Logging.info "rpc" $"WaitForComplete(%d{timeoutMs}ms) called — all plugins already terminal"
+                | plugins ->
+                    let joined = plugins |> String.concat ", "
+                    Logging.info "rpc" $"WaitForComplete(%d{timeoutMs}ms) called — waiting for: %s{joined}"
 
-            let timeout =
-                if timeoutMs <= 0 then
-                    TimeSpan.MaxValue
-                else
-                    TimeSpan.FromMilliseconds(float timeoutMs)
+                let timeout =
+                    if timeoutMs <= 0 then
+                        TimeSpan.MaxValue
+                    else
+                        TimeSpan.FromMilliseconds(float timeoutMs)
 
-            do! config.WaitForAllTerminal(timeout)
-            Logging.info "rpc" "WaitForComplete() resolved"
-            return this.GetStatus()
-        }
+                do! config.WaitForAllTerminal(timeout)
+                Logging.info "rpc" "WaitForComplete() resolved"
+                return this.GetStatus()
+            })
 
     /// Trigger a build by emitting SourceChanged for all registered files, then wait for completion.
     member this.TriggerBuild() : Task<string> =
-        task {
-            do! config.TriggerBuild() |> Async.StartAsTask
-            let! _ = this.WaitForComplete(0)
-            return this.GetStatus()
-        }
+        trackedTask "TriggerBuild" (fun () ->
+            task {
+                do! config.TriggerBuild() |> Async.StartAsTask
+                let! _ = this.WaitForComplete(0)
+                return this.GetStatus()
+            })
 
     /// Force a specific plugin to re-run by clearing its task cache and
     /// emitting a synthetic FileChanged event whose path matches the plugin's
@@ -286,13 +353,14 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
     /// returns the status JSON (or an error payload if the plugin has no
     /// registered pattern).
     member this.RerunPlugin(name: string) : Task<string> =
-        task {
-            match! config.RerunPlugin name |> Async.StartAsTask with
-            | Result.Ok() ->
-                let! _ = this.WaitForComplete(0)
-                return this.GetStatus()
-            | Result.Error msg -> return JsonSerializer.Serialize {| error = msg |}
-        }
+        trackedTask $"RerunPlugin:%s{name}" (fun () ->
+            task {
+                match! config.RerunPlugin name |> Async.StartAsTask with
+                | Result.Ok() ->
+                    let! _ = this.WaitForComplete(0)
+                    return this.GetStatus()
+                | Result.Error msg -> return JsonSerializer.Serialize {| error = msg |}
+            })
 
     /// Clear task cache entries. Optionally filter by plugin and/or file.
     [<JsonRpcMethod("cache-clear")>]
@@ -310,10 +378,11 @@ type DaemonRpcTarget(config: DaemonRpcConfig) =
 
     /// Run all preprocessors on all registered files and return a summary.
     member _.FormatAll() : Task<string> =
-        task {
-            let! result = config.FormatAll() |> Async.StartAsTask
-            return result
-        }
+        trackedTask "FormatAll" (fun () ->
+            task {
+                let! result = config.FormatAll() |> Async.StartAsTask
+                return result
+            })
 
 /// IPC server that listens on a named pipe and exposes plugin host methods via StreamJsonRpc.
 module IpcServer =
@@ -357,9 +426,24 @@ module IpcServer =
 
     /// Start the IPC server. Keeps multiple accept tasks running concurrently
     /// so clients don't have to wait for the accept loop to cycle.
+    ///
+    /// Creates an `OperationWatchdog.Watchdog` (item 3/4/5 of AUTOMATION-15):
+    /// each RPC method that does real work brackets itself so the watchdog
+    /// always knows the single in-flight op; a background timer logs the
+    /// structured "operation exceeded Ns" record + periodic heartbeat, and
+    /// `status`/`scanStatus` surface the wedge inline. The watchdog is disposed
+    /// when the server loop exits (daemon shutdown).
     let start (pipeName: string) (config: DaemonRpcConfig) (cts: CancellationTokenSource) : Async<unit> =
         async {
-            let target = DaemonRpcTarget(config)
+            use watchdog =
+                new OperationWatchdog.Watchdog(
+                    OperationWatchdog.DefaultThreshold,
+                    heartbeatEvery = TimeSpan.FromSeconds(30.0),
+                    now = (fun () -> DateTime.UtcNow),
+                    log = Logging.info "watchdog"
+                )
+
+            let target = DaemonRpcTarget(config, watchdog)
 
             // Keep 3 accept tasks running at all times so clients can connect immediately
             let mutable acceptTasks: Task list = []

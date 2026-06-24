@@ -437,6 +437,20 @@
       "branch": 39,
       "reason": "loosened automatically"
     },
+    "OperationWatchdog.fs": [
+      {
+        "line": 84,
+        "branch": 84,
+        "reason": "AUTOMATION-15 daemon watchdog. Pure decision fns + Begin/End + WedgeReport are unit-tested via injected clock (deterministic); the live Timer callback's overrun/heartbeat emission is exercised via poll-until-deadline timer tests, but the timer-scheduling edge lines (Dispose, a tick that observes no work) jitter a few pp under parallel-suite CPU load. Conservative gate-passing floor (measured ~87 line / ~86 branch macOS) so normal scheduling drift does not red the gate; tighten from a green run once fshw exposes a manual coverage primitive.",
+        "platform": "macos"
+      },
+      {
+        "line": 84,
+        "branch": 84,
+        "reason": "AUTOMATION-15 daemon watchdog; same timer-scheduling jitter as macOS. Conservative floor pending a green Linux CI sample.",
+        "platform": "linux"
+      }
+    ],
     "PathFilter.fs": [
       {
         "line": 96,

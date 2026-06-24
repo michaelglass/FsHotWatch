@@ -127,7 +127,7 @@ let create
                                     Logging.warn "lint" $"Skipping %s{fileStr} — no parse results"
                                     return state
                                 else
-                                    match runWithTimeout lintTimeout (fun () -> runLint result) with
+                                    match runWithCancellableTimeout lintTimeout (fun _ct -> runLint result) with
                                     | WorkTimedOut after ->
                                         let reason = $"timed out after %d{int after.TotalSeconds}s"
                                         Logging.error "lint" $"Lint TIMED OUT for %s{fileStr}: %s{reason}"

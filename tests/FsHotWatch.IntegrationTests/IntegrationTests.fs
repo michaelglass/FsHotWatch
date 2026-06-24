@@ -2890,3 +2890,147 @@ let ``scoped: changing a project re-checks its dependent (correctness over warmt
                 ()
         finally
             (daemon :> IDisposable).Dispose())
+
+// ===========================================================================
+// AUTOMATION-15 regression (absorbs AUTOMATION-26): the jj-merge wedge repro.
+//
+// On 2026-06-16 a foreground `scan`/`check` issued WHILE the daemon was mid
+// auto-rebuild (a jj merge landed ~13 files at once, including .fsproj edits)
+// wedged the daemon: `status` and `check` both blocked on the same dead socket
+// ("could not connect to daemon: operation timed out"). This test reproduces
+// the shape deterministically — a real daemon over a real pipe, a multi-file
+// batch (incl. a .fsproj) landing to kick a (slow) auto-rebuild — and asserts
+// the daemon STAYS RESPONSIVE: a concurrent `status`/`scanStatus` over the
+// same pipe returns within a bounded window rather than hanging.
+//
+// Per the ticket: if this shows cancellation did NOT cure the race (status
+// hangs), the test FAILS loudly rather than papering over it.
+// ===========================================================================
+
+/// Poll until the IPC server answers a cheap `scanStatus`, or the deadline.
+/// Returns whether the server came up within the budget.
+let private waitForIpcServer (pipeName: string) (timeoutMs: int) : bool =
+    let serverUp () =
+        try
+            IpcClient.scanStatus pipeName |> Async.RunSynchronously |> ignore
+            true
+        with _ ->
+            false
+
+    waitUntil serverUp timeoutMs
+    serverUp ()
+
+[<Fact(Timeout = 180000)>]
+let ``daemon stays responsive to status while mid auto-rebuild after a multi-file batch (AUTOMATION-15/26)`` () =
+    withTempDir "fshw-wedge-rebuild" (fun tmpDir ->
+        let tmpDir = realPath tmpDir
+        let projDir = Path.Combine(tmpDir, "src", "MyProj")
+        Directory.CreateDirectory(projDir) |> ignore
+
+        // ~13 source files + the .fsproj — the jj-merge repro's batch shape.
+        let fileNames = [ for i in 1..13 -> sprintf "M%d.fs" i ]
+
+        let fsprojBody (comment: string) =
+            let compiles =
+                fileNames |> List.map (sprintf "<Compile Include=\"%s\"/>") |> String.concat ""
+
+            sprintf
+                "<Project Sdk=\"Microsoft.NET.Sdk\"><!-- %s --><PropertyGroup><TargetFramework>net10.0</TargetFramework><TreatWarningsAsErrors>false</TreatWarningsAsErrors></PropertyGroup><ItemGroup>%s</ItemGroup></Project>\n"
+                comment
+                compiles
+
+        let fsprojPath = Path.Combine(projDir, "MyProj.fsproj")
+        File.WriteAllText(fsprojPath, fsprojBody "v1")
+
+        for i, name in List.indexed fileNames do
+            File.WriteAllText(Path.Combine(projDir, name), sprintf "module M%d\nlet v%d = %d\n" (i + 1) (i + 1) i)
+
+        runDotnetIn projDir "restore --nologo"
+
+        let checker = FSharpChecker.Create(projectCacheSize = 50)
+        let cts = new CancellationTokenSource()
+        let pipeName = Program.computePipeName tmpDir
+
+        // A build plugin whose build is a slow `sleep` — models the long auto
+        // rebuild in flight. A DEFAULT timeout is wired (Some 30) so an
+        // unbounded hang would instead fail fast; here the sleep finishes well
+        // within it, but the point is the daemon must not be wedged WHILE it runs.
+        let daemon = Daemon.createWith checker tmpDir Daemon.DaemonOptions.defaults
+
+        try
+            daemon.RegisterHandler(BuildPlugin.create "sleep" "5" [] daemon.Graph [] None [] (Some 30))
+
+            let task = Async.StartAsTask(daemon.RunWithIpc(pipeName, cts))
+
+            if not (waitForIpcServer pipeName 60000) then
+                Assert.Fail("IPC server never came up")
+
+            // Let the boot scan settle.
+            IpcClient.waitForScan pipeName -1L |> Async.RunSynchronously |> ignore
+
+            // Land the multi-file batch incl. the .fsproj — kicks re-discovery +
+            // the (slow) auto-rebuild. Bump the .fsproj and rewrite every source.
+            File.WriteAllText(fsprojPath, fsprojBody "v2")
+
+            for i, name in List.indexed fileNames do
+                File.WriteAllText(
+                    Path.Combine(projDir, name),
+                    sprintf "module M%d\nlet v%d = %d\n" (i + 1) (i + 1) (i + 100)
+                )
+
+            // Give the watcher debounce + build-kick a moment to put a build in
+            // flight, then HAMMER status concurrently. Each call MUST return
+            // within a bounded window — a wedged daemon would block here, which
+            // is exactly the 2026-06-16 symptom.
+            Thread.Sleep(1500)
+
+            let statusReturnedWithin (ms: int) =
+                let t =
+                    Async.StartAsTask(
+                        async {
+                            let! s = IpcClient.scanStatus pipeName
+                            let! g = IpcClient.getStatus pipeName
+                            return (s, g)
+                        }
+                    )
+
+                t.Wait(TimeSpan.FromMilliseconds(float ms)) && t.IsCompletedSuccessfully
+
+            // Several probes across the in-flight-build window. Responsive ==
+            // every probe returns inside the budget (8s is generous; production
+            // status is sub-second).
+            let mutable allResponsive = true
+
+            for _ in 1..5 do
+                if not (statusReturnedWithin 8000) then
+                    allResponsive <- false
+
+                Thread.Sleep(400)
+
+            if not allResponsive then
+                Assert.Fail(
+                    "DAEMON WEDGED: a concurrent `status` over the pipe did not return within budget while a \
+                     multi-file rebuild was in flight. Cancellation did NOT cure the race — this needs a \
+                     dedicated fix (do not paper over). See AUTOMATION-15/26."
+                )
+
+            // And it must still drive work to completion: the rebuild settles and
+            // the next scan completes (not stuck forever).
+            let settled =
+                Async.StartAsTask(
+                    async {
+                        let! _ = IpcClient.scan pipeName
+                        return! IpcClient.waitForScan pipeName -1L
+                    }
+                )
+
+            test <@ settled.Wait(TimeSpan.FromSeconds(60.0)) @>
+
+            cts.Cancel()
+
+            try
+                task.Wait(TimeSpan.FromSeconds(10.0)) |> ignore
+            with :? AggregateException ->
+                ()
+        finally
+            (daemon :> IDisposable).Dispose())

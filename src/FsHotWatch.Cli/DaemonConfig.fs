@@ -89,6 +89,25 @@ let analyzerPathFailures (loadedByPath: (string * int) list) : string option =
 /// caching has been removed; kept for API compatibility.
 let detectDefaultCacheBackend (_repoRoot: string) : CacheBackendConfig = FileBackend
 
+/// Default global per-operation timeout (seconds) applied when neither a
+/// per-entry `timeoutSec` nor the global `.fshw.json` `timeoutSec` is set.
+///
+/// This is the PRIMARY wedge cure: process-spawning plugins (build / tests /
+/// fileCommands) previously fell back to `Timeout.InfiniteTimeSpan` when no
+/// timeout was configured, so an op that hung (a deadlocked `dotnet build`, a
+/// test runner stuck on a socket) hung the daemon FOREVER with no recovery
+/// short of `fshw stop` + cold restart. With a non-`None` default, an unbounded
+/// op becomes `TimedOut` — the process tree is killed and the daemon stays
+/// responsive.
+///
+/// 600s (10 min) is deliberately generous: large builds and full test suites
+/// legitimately run for minutes, so the default must never falsely kill real
+/// work — it only ever fires on a genuine hang. Tighten it per repo via the
+/// `.fshw.json` `timeoutSec` key (global) or a per-entry `timeoutSec`
+/// (build/tests.projects/fileCommands), which still take precedence.
+[<Literal>]
+let DefaultGlobalTimeoutSec = 600
+
 /// Configuration for a single test project.
 ///
 /// `CoverageArgsTemplate` is the command-line template the daemon appends
@@ -208,7 +227,7 @@ let private defaultConfigFor (repoRoot: string) =
       Coverage = None
       Exclude = []
       LogDir = "logs"
-      TimeoutSec = None
+      TimeoutSec = Some DefaultGlobalTimeoutSec
       IdleExitMin = IdleExit.IdleExitConfig.Absent
       PressureIdleFloorMin = IdleExit.PressureFloorConfig.Absent
       FsEventsLatencyMs = 250 }
@@ -608,9 +627,21 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | true, v when v.ValueKind = JsonValueKind.String -> v.GetString()
         | _ -> defaults.LogDir
 
+    // `timeoutSec` (global default per-operation timeout, seconds):
+    //   absent          → the baked-in default (`DefaultGlobalTimeoutSec`, see defaults);
+    //   positive N      → N seconds;
+    //   `0` / `false`   → DISABLED (no global default; ops fall back to each
+    //                     plugin's own behaviour — `Infinite` for the
+    //                     process-spawning plugins). An explicit opt-out for
+    //                     repos that genuinely need unbounded ops.
+    // Per-entry `timeoutSec` (build/tests.projects/fileCommands) still overrides
+    // this global value.
     let timeoutSec =
         match root.TryGetProperty("timeoutSec") with
-        | true, v when v.ValueKind = JsonValueKind.Number -> Some(v.GetInt32())
+        | true, v when v.ValueKind = JsonValueKind.Number ->
+            let n = v.GetInt32()
+            if n > 0 then Some n else None
+        | true, v when v.ValueKind = JsonValueKind.False -> None
         | _ -> defaults.TimeoutSec
 
     // `fsEventsLatencyMs`: absent → default (250); a non-negative integer is used

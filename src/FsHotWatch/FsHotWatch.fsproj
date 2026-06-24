@@ -50,6 +50,7 @@
 
   <ItemGroup>
     <Compile Include="Logging.fs" />
+    <Compile Include="OperationWatchdog.fs" />
 <Compile Include="Lifecycle.fs" />
     <Compile Include="Events.fs" />
     <Compile Include="PathFilter.fs" />

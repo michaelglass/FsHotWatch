@@ -38,6 +38,66 @@ let ``parseConfig with empty JSON returns defaults`` () =
     test <@ config.Exclude |> List.isEmpty @>
     test <@ config.LogDir = "logs" @>
 
+// --- Global timeoutSec default (AUTOMATION-15 item 1) ---
+
+[<Fact(Timeout = 15000)>]
+let ``loadConfig on a repo with no .fshw.json applies the baked-in default timeout (not infinite)`` () =
+    // The PRIMARY wedge cure: with no config at all, the daemon's global default
+    // timeout is a real, generous-but-finite bound — NOT Infinite. This is the
+    // production default path (defaultConfigFor), distinct from parseConfig's
+    // "inherit the caller's defaults" fallback.
+    let tmp =
+        Path.Combine(Path.GetTempPath(), $"fshw-noconfig-{System.Guid.NewGuid():N}")
+
+    Directory.CreateDirectory(tmp) |> ignore
+
+    try
+        let config = loadConfig tmp
+        test <@ config.TimeoutSec = Some DefaultGlobalTimeoutSec @>
+        // Sanity: the documented default is generous but finite.
+        test <@ DefaultGlobalTimeoutSec = 600 @>
+    finally
+        Directory.Delete(tmp, true)
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig timeoutSec 0 disables the global default (opt-out to unbounded)`` () =
+    let config = parseConfig """{"timeoutSec": 0}""" defaults
+    test <@ config.TimeoutSec = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig timeoutSec false disables the global default`` () =
+    let config = parseConfig """{"timeoutSec": false}""" defaults
+    test <@ config.TimeoutSec = None @>
+
+[<Fact(Timeout = 15000)>]
+let ``positive global timeoutSec flows to build/tests/fileCommands entries that omit their own`` () =
+    // Per-entry omitted timeoutSec inherits the global via Option.orElse.
+    let json =
+        """{ "timeoutSec": 45,
+             "build": { "command": "dotnet", "args": "build" },
+             "tests": { "projects": [ { "project": "P" } ] },
+             "fileCommands": [ { "name": "fc", "pattern": "*.sql", "command": "echo" } ] }"""
+
+    let config = parseConfig json defaults
+    // The global default is set; per-entry overrides remain None and inherit it
+    // at registration time (registerPlugins: `b.TimeoutSec |> Option.orElse config.TimeoutSec`).
+    test <@ config.TimeoutSec = Some 45 @>
+
+    match config.Build with
+    | Some [ b ] -> test <@ (b.TimeoutSec |> Option.orElse config.TimeoutSec) = Some 45 @>
+    | other -> failwithf "expected one build entry, got %A" other
+
+    match config.Tests with
+    | Some t ->
+        match t.Projects with
+        | [ p ] -> test <@ (p.TimeoutSec |> Option.orElse config.TimeoutSec) = Some 45 @>
+        | other -> failwithf "expected one test project, got %A" other
+    | None -> failwith "expected tests config"
+
+    match config.FileCommands with
+    | [ fc ] -> test <@ (fc.TimeoutSec |> Option.orElse config.TimeoutSec) = Some 45 @>
+    | other -> failwithf "expected one fileCommand, got %A" other
+
 // --- parseConfig: logDir ---
 
 [<Fact(Timeout = 15000)>]
