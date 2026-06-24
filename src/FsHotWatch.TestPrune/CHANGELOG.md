@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.29 - 2026-06-24
+
 - chore(deps): pin `SQLitePCLRaw.lib.e_sqlite3` 3.50.3 (clears NU1903 / GHSA-2m69-gcr7-jv3q, High).
 
 ## 0.7.0-alpha.28 - 2026-06-19

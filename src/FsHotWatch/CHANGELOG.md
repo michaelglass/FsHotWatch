@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.33 - 2026-06-24
+
 - chore(deps): bump `System.Security.Cryptography.Xml` 10.0.9; suite-wide dependency refresh (version-coupled with the cli/build release).
 
 ## 0.8.0-alpha.32 - 2026-06-19
