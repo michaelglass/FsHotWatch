@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.20 - 2026-06-24
+
 - chore(deps): bump `FSharp.Analyzers.SDK` 0.36.0 → 0.37.2 (FCS 43.12.201).
 
 ## 0.7.0-alpha.19 - 2026-06-17

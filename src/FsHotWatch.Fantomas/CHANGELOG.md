@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.14 - 2026-06-24
+
 - chore(deps): dependency refresh (version-coupled release; no functional change).
 
 ## 0.7.0-alpha.13 - 2026-06-17

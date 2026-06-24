@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.14 - 2026-06-24
+
 - chore(deps): bump the bundled `FSharpLintAnalyzerShim` to 0.3.0-alpha.5 (FCS 43.12 alignment — resolves the FL0000 host-incompatibility caveat).
 
 ## 0.7.0-alpha.13 - 2026-06-17
