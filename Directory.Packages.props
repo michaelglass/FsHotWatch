@@ -6,7 +6,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageVersion Include="FSharp.Analyzers.SDK" Version="0.36.0" />
+        <PackageVersion Include="FSharp.Analyzers.SDK" Version="0.37.2" />
         <!-- FCS declares an EXACT FSharp.Core dependency (e.g. 43.12.204 requires = 10.1.204),
              so floating FSharp.Core above it trips NU1608. A higher patch within the same
              minor is binary-compatible, so projects suppress NU1608 (same arrangement as
@@ -15,9 +15,14 @@
         <PackageVersion Include="FSharp.Compiler.Service" Version="43.*" />
         <PackageVersion Include="Ionide.ProjInfo" Version="0.74.2" />
         <PackageVersion Include="Ionide.ProjInfo.FCS" Version="0.74.2" />
-        <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.8" />
+        <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.9" />
+        <!-- Transitive pin: the SQLitePCLRaw bundle pulls native lib.e_sqlite3 2.1.11,
+             flagged High by GHSA-2m69-gcr7-jv3q. The native binary re-versions onto SQLite's
+             own line (3.50.3) independently of the 2.1.x managed core/provider/bundle, and
+             carries no managed dependencies, so pinning it forward fixes the advisory cleanly. -->
+        <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.50.3" />
         <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.300" />
-        <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.7.0" />
+        <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.8.0" />
         <PackageVersion Include="Unquote" Version="7.0.1" />
         <PackageVersion Include="xunit.v3" Version="3.2.2" />
         <PackageVersion Include="xunit.v3.mtp-v2" Version="3.2.2" />
