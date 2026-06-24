@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix(build): a test-file-only edit no longer goes green against a **stale test binary** — the build plugin now runs a real build (re-emitting the DLL) instead of trusting the FCS `BatchChecked` type-check signal, so `--no-build` test runs can't execute an out-of-date assembly (see FsHotWatch.Build / ADR-012).
+- chore(deps): bump `Microsoft.Data.Sqlite` 10.0.9; pin `SQLitePCLRaw.lib.e_sqlite3` 3.50.3 (clears NU1903 / GHSA-2m69-gcr7-jv3q, High).
+
 ## 0.8.0-alpha.38 - 2026-06-19
 
 - feat: `.fshw.json` test projects accept a `reportVerificationFormat` field
