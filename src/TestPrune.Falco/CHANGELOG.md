@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- feat: `FalcoRouteExtension` — route-based integration-test selection. Maps a changed Falco handler file to the integration tests that exercise its routes by scanning test sources for URL patterns (including `{param}` placeholders), pulling those tests into TestPrune's impact set.
+- chore(deps): refresh to TestPrune.Core 4.3.0.
+
 ## 2.0.2 - 2026-06-12
 - refactor: adapt to revised ITestPruneExtension edge-injection interface
 
