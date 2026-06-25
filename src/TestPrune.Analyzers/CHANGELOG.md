@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.3 - 2026-06-25
+
 - chore(deps): recompile against FSharp.Analyzers.SDK 0.37.2 (FCS 43.12.201). TP001 (`TestPrune.AnonymousRecord`) diagnostic behavior unchanged.
 
 ## 0.1.0-alpha.2 - 2026-06-12
