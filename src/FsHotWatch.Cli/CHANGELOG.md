@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.40 - 2026-06-30
+
 - fix(testprune): the bundled test gate now defers on artifact **freshness** as
   well as presence — a present-but-**stale** test binary is deferred as "waiting
   on build" instead of being run with `--no-build`, so it can't report a passing
