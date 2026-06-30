@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.30 - 2026-06-30
+
 - fix: the test gate now defers on artifact **freshness**, not just presence. A
   test project whose compiled assembly EXISTS but predates the newest source is
   no longer run with `dotnet run --no-build` — which would execute stale bits and

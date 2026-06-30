@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0-alpha.16 - 2026-06-30
+
 - refactor: collapse the now-degenerate single-case `BuildPhase` union into the
   `BuildState` record. After `WaitingForBatchPhase` was removed in alpha.15, the
   union had a single `IdlePhase` case; its payload now lives directly on
