@@ -4,6 +4,29 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### A stale test binary can no longer pass the gate
+
+`test-prune` runs each test project with `dotnet run --no-build`, executing the
+**on-disk** assembly. The cold-start apphost check only deferred when that
+assembly was *missing* — a present-but-**stale** binary (one that exists but
+predates the newest source) was still run, executing code that no longer matches
+the sources and reporting a pass/fail that isn't real. The old check also fired
+only on a FAILED launch, so a stale binary that exited 0 sailed straight through
+as a confident false green. The gate now defers a test project whose compiled
+assembly predates the newest source as "waiting on build" — without launching it
+— exactly the honest signal a missing apphost already produced, so a stale
+artifact can never yield a passing verdict. Mirrors
+`BuildPlugin.verifyArtifactsFresh` (ADR-008).
+
+## Released — the `alpha.9` line onward (2026-04-22 → 2026-06-24)
+
+_These narratives are all shipped. This root file is a human-readable summary that fell
+behind around `core-v0.8.0-alpha.8` — the entries below were released across the alpha.9+
+series but only some got closed out of `Unreleased`. For the precise per-version, per-package
+history (the source of truth that drives the release tags) see each `src/<package>/CHANGELOG.md`.
+Latest released: `core-v0.8.0-alpha.33` · `cli-v0.8.0-alpha.39` · `testprune-v0.7.0-alpha.29` ·
+`analyzers-v0.7.0-alpha.20` · `build-v0.7.0-alpha.15` · `coverage-v0.7.0-alpha.14`._
+
 ### A test-file-only edit can no longer go green against a stale test binary
 
 The build plugin used to **skip** MSBuild when a change touched only test files,
@@ -18,15 +41,6 @@ change, test files included, runs the real build: MSBuild re-emits the test DLL
 and the `verifyArtifactsFresh` post-build guard runs before `BuildSucceeded`, so
 `--no-build` can only ever execute an up-to-date assembly. `WaitingForBatchPhase`
 is removed. See `docs/adr-012-test-file-changes-build-no-batchchecked-skip.md`.
-
-## Released — the `alpha.9` line onward (2026-04-22 → 2026-06-19)
-
-_These narratives are all shipped. This root file is a human-readable summary that fell
-behind around `core-v0.8.0-alpha.8` — the entries below were released across the alpha.9+
-series but only some got closed out of `Unreleased`. For the precise per-version, per-package
-history (the source of truth that drives the release tags) see each `src/<package>/CHANGELOG.md`.
-Latest released: `core-v0.8.0-alpha.32` · `cli-v0.8.0-alpha.38` · `testprune-v0.7.0-alpha.28` ·
-`analyzers-v0.7.0-alpha.19` · `coverage-v0.7.0-alpha.14`._
 
 ### The test gate trusts the test report, not the exit code
 
