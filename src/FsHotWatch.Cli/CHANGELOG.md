@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- fix(testprune): the bundled test gate now defers on artifact **freshness** as
+  well as presence — a present-but-**stale** test binary is deferred as "waiting
+  on build" instead of being run with `--no-build`, so it can't report a passing
+  verdict against code that no longer matches the sources (see FsHotWatch.TestPrune
+  / ADR-008).
+- refactor(build): the bundled build plugin's single-case `BuildPhase` union is
+  flattened into `BuildState` — no behavioural change (see FsHotWatch.Build).
+
 ## 0.8.0-alpha.39 - 2026-06-24
 
 - fix(build): a test-file-only edit no longer goes green against a **stale test binary** — the build plugin now runs a real build (re-emitting the DLL) instead of trusting the FCS `BatchChecked` type-check signal, so `--no-build` test runs can't execute an out-of-date assembly (see FsHotWatch.Build / ADR-012).
