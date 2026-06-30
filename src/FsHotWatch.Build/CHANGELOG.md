@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- refactor: collapse the now-degenerate single-case `BuildPhase` union into the
+  `BuildState` record. After `WaitingForBatchPhase` was removed in alpha.15, the
+  union had a single `IdlePhase` case; its payload now lives directly on
+  `BuildState` as `PendingFiles` and `LastBuild`. Internal state shape only — no
+  behavioural change — but `BuildPhase` is removed from the public surface.
+
 ## 0.7.0-alpha.15 - 2026-06-24
 
 - fix: a test-file-only change now runs a real build instead of skipping MSBuild and waiting for FCS's `BatchChecked` signal. The skip emitted `BuildSucceeded` on the in-memory type-check alone, so the on-disk test DLL was never re-emitted — and `test-prune`'s `dotnet run --no-build` then executed the **stale** binary, reporting a false green for a freshly-edited test. Every source change (test files included) now drives MSBuild so the DLL is re-emitted and `verifyArtifactsFresh` runs before `BuildSucceeded`. `WaitingForBatchPhase` is removed (`BuildPhase` collapses to a single `IdlePhase`); the plugin no longer subscribes to `BatchChecked`. See ADR-012 (amends ADR-002).

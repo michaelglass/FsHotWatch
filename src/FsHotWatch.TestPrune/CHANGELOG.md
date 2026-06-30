@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: the test gate now defers on artifact **freshness**, not just presence. A
+  test project whose compiled assembly EXISTS but predates the newest source is
+  no longer run with `dotnet run --no-build` — which would execute stale bits and
+  report a pass/fail that doesn't match the sources (the false-green this
+  prevents). It is deferred as "waiting on build", exactly the signal a missing
+  apphost already produced, so a stale binary can never yield a passing verdict.
+  The previous apphost check fired only on a FAILED launch, so a stale artifact
+  that exited 0 sailed through as a pass. Runs pre-launch on the canonical
+  `<assemblyName>.dll` mtime; mirrors `BuildPlugin.verifyArtifactsFresh` (ADR-008).
+
 ## 0.7.0-alpha.29 - 2026-06-24
 
 - chore(deps): pin `SQLitePCLRaw.lib.e_sqlite3` 3.50.3 (clears NU1903 / GHSA-2m69-gcr7-jv3q, High).

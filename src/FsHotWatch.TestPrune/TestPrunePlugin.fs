@@ -710,6 +710,19 @@ let private deriveProjectBin (args: string) (repoRoot: string) : (string * strin
 
         projDir, assemblyName, Path.Combine(projDir, "bin", "Debug"))
 
+/// The per-TFM output directories under a project's `bin/Debug` (one per target
+/// framework), or empty when no build output exists yet. The apphost and the
+/// managed DLL both live under a `<tfm>/` subdir whose name we can't know
+/// without the project graph, so the presence (`tryApphostPresent`) and
+/// freshness (`apphostStale`) probes both scan across these. Centralising the
+/// `Directory.Exists` guard + enumeration keeps "no build output ⇒ empty" in
+/// one place.
+let private tfmOutputDirs (binDir: string) : string[] =
+    if Directory.Exists binDir then
+        Directory.GetDirectories binDir
+    else
+        [||]
+
 /// Issue 2 — STRUCTURAL apphost-missing detection. On a cold daemon a
 /// `dotnet run --project <proj> --no-build` can be launched before the build
 /// plugin produced that project's apphost binary; `dotnet run` then fails to
@@ -733,21 +746,16 @@ let private deriveProjectBin (args: string) (repoRoot: string) : (string * strin
 ///   None       — could not derive a project from args (e.g. a non-`dotnet run`
 ///                custom command); caller falls back to the output sniff.
 let internal tryApphostPresent (args: string) (repoRoot: string) : bool option =
-    match deriveProjectBin args repoRoot with
-    | None -> None
-    | Some(_, assemblyName, binDir) ->
-        if not (Directory.Exists binDir) then
-            // No build output at all yet — apphost definitionally absent.
-            Some false
-        else
-            // The apphost lives at bin/Debug/<tfm>/<assemblyName>(.exe). We don't
-            // know the TFM, so scan every TFM dir for the extension-less binary
-            // (Unix) or the `.exe` (Windows).
-            Directory.GetDirectories(binDir)
-            |> Array.exists (fun tfmDir ->
-                File.Exists(Path.Combine(tfmDir, assemblyName))
-                || File.Exists(Path.Combine(tfmDir, assemblyName + ".exe")))
-            |> Some
+    deriveProjectBin args repoRoot
+    |> Option.map (fun (_, assemblyName, binDir) ->
+        // The apphost lives at bin/Debug/<tfm>/<assemblyName>(.exe). We don't
+        // know the TFM, so scan every TFM output dir for the extension-less
+        // binary (Unix) or the `.exe` (Windows); no build output yet ⇒ no TFM
+        // dirs ⇒ apphost definitionally absent.
+        tfmOutputDirs binDir
+        |> Array.exists (fun tfmDir ->
+            File.Exists(Path.Combine(tfmDir, assemblyName))
+            || File.Exists(Path.Combine(tfmDir, assemblyName + ".exe"))))
 
 /// Source-file extensions whose mtime feeds the freshness gate — the F#/C#
 /// compile inputs whose edit should force a rebuild before tests are trusted.
@@ -839,26 +847,23 @@ let internal apphostStale (args: string) (repoRoot: string) : bool =
     match deriveProjectBin args repoRoot with
     | None -> false
     | Some(_, assemblyName, binDir) ->
-        if not (Directory.Exists binDir) then
-            false
-        else
-            let dllMtimes =
-                Directory.GetDirectories binDir
-                |> Array.choose (fun tfmDir ->
-                    let dll = Path.Combine(tfmDir, assemblyName + ".dll")
+        let dllMtimes =
+            tfmOutputDirs binDir
+            |> Array.choose (fun tfmDir ->
+                let dll = Path.Combine(tfmDir, assemblyName + ".dll")
 
-                    if File.Exists dll then
-                        Some(File.GetLastWriteTimeUtc dll)
-                    else
-                        None)
-                |> Array.toList
+                if File.Exists dll then
+                    Some(File.GetLastWriteTimeUtc dll)
+                else
+                    None)
+            |> Array.toList
 
-            match newestSourceMtime repoRoot, dllMtimes with
-            // The NEWEST built DLL still predates the newest source ⇒ even the
-            // most recent build ran before the last edit ⇒ stale. Using the max
-            // (most-recent) DLL mtime is conservative against false-stale.
-            | Some srcMtime, (_ :: _ as mtimes) -> List.max mtimes < srcMtime
-            | _ -> false
+        match newestSourceMtime repoRoot, dllMtimes with
+        // The NEWEST built DLL still predates the newest source ⇒ even the
+        // most recent build ran before the last edit ⇒ stale. Using the max
+        // (most-recent) DLL mtime is conservative against false-stale.
+        | Some srcMtime, (_ :: _ as mtimes) -> List.max mtimes < srcMtime
+        | _ -> false
 
 /// Detect whether a test runner emits a CTRF report we can parse. The
 /// `--report-ctrf` family is provided by xUnit.v3's runner (NOT the MTP core),
