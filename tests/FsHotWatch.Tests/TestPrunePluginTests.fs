@@ -4445,6 +4445,177 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
             | other -> Assert.Fail($"expected non-green Failed status for deferred project, got %A{other}"))
 
 // =============================================================================
+// Freshness gate (TDD). `tryApphostPresent`/`detectApphostMissing` only fired
+// on a FAILED launch (post-exit), so a PRESENT-but-STALE apphost that exits 0
+// reported a false GREEN — `--no-build` ran OLD bits and "passed". The gate now
+// runs PRE-launch, independent of exit code: a compiled artifact older than the
+// newest source DEFERS as "waiting on build" exactly like a missing one, so
+// stale bits can never produce a verdict. Mirrors BuildPlugin.verifyArtifactsFresh
+// (ADR-008): mtime is the right *temporal* "rebuilt after the source?" signal.
+// =============================================================================
+
+[<Fact(Timeout = 15000)>]
+let ``newestSourceMtime is None when there are no sources`` () =
+    withTempDir "tp-nsm-empty" (fun tmpDir -> test <@ newestSourceMtime tmpDir = None @>)
+
+[<Fact(Timeout = 15000)>]
+let ``newestSourceMtime returns the newest source and ignores build output`` () =
+    withTempDir "tp-nsm" (fun tmpDir ->
+        Directory.CreateDirectory(Path.Combine(tmpDir, "sub")) |> ignore
+        let older = Path.Combine(tmpDir, "A.fs")
+        let newer = Path.Combine(tmpDir, "sub", "B.fs")
+        File.WriteAllText(older, "")
+        File.WriteAllText(newer, "")
+        let t = DateTime.UtcNow
+        File.SetLastWriteTimeUtc(older, t.AddMinutes(-10.0))
+        File.SetLastWriteTimeUtc(newer, t)
+
+        // A build-output .fs is newer still, but lives under bin/ so it must be
+        // ignored (a regenerated obj/ file must not masquerade as a newer source).
+        let binDir = Path.Combine(tmpDir, "bin", "Debug", "net10.0")
+        Directory.CreateDirectory(binDir) |> ignore
+        let gen = Path.Combine(binDir, "Generated.fs")
+        File.WriteAllText(gen, "")
+        File.SetLastWriteTimeUtc(gen, t.AddMinutes(10.0))
+
+        match newestSourceMtime tmpDir with
+        | Some got -> test <@ got = File.GetLastWriteTimeUtc newer @>
+        | None -> Assert.Fail "expected a source mtime")
+
+[<Fact(Timeout = 15000)>]
+let ``apphostStale is false when args carry no --project`` () =
+    test <@ not (apphostStale "/tmp/runner.sh" "/repo") @>
+    test <@ not (apphostStale "test" "/repo") @>
+
+[<Fact(Timeout = 15000)>]
+let ``apphostStale is false when no build output exists`` () =
+    withTempDir "tp-stale-nobin" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "Unit")
+        Directory.CreateDirectory(projDir) |> ignore
+        File.WriteAllText(Path.Combine(projDir, "Foo.fs"), "module Foo")
+        // No bin/Debug → absence is tryApphostPresent's job, not staleness.
+        test <@ not (apphostStale $"run --project {projDir} --no-build --" tmpDir) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``apphostStale is false when there are no sources to be stale against`` () =
+    withTempDir "tp-stale-nosrc" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "Unit")
+        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
+        Directory.CreateDirectory(tfmDir) |> ignore
+        File.WriteAllText(Path.Combine(tfmDir, "Unit.dll"), "")
+        // DLL present, no source files anywhere → nothing to be stale against.
+        test <@ not (apphostStale $"run --project {projDir} --no-build --" tmpDir) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``apphostStale is false when the DLL is newer than every source`` () =
+    withTempDir "tp-stale-fresh" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "Unit")
+        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
+        Directory.CreateDirectory(tfmDir) |> ignore
+        let src = Path.Combine(projDir, "Foo.fs")
+        File.WriteAllText(src, "module Foo")
+        let dll = Path.Combine(tfmDir, "Unit.dll")
+        File.WriteAllText(dll, "")
+        let t = DateTime.UtcNow
+        File.SetLastWriteTimeUtc(src, t.AddMinutes(-10.0))
+        File.SetLastWriteTimeUtc(dll, t)
+        // Built AFTER the source → fresh → runnable.
+        test <@ not (apphostStale $"run --project {projDir} --no-build --" tmpDir) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``apphostStale is TRUE when the canonical DLL predates a source`` () =
+    withTempDir "tp-stale-stale" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "Unit")
+        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
+        Directory.CreateDirectory(tfmDir) |> ignore
+        let dll = Path.Combine(tfmDir, "Unit.dll")
+        File.WriteAllText(dll, "")
+
+        // A source edited AFTER the DLL was built — e.g. `--no-build` ran without
+        // a rebuild. Placed in a SIBLING dir to exercise the repo-wide scan, the
+        // production trigger where a DEPENDENCY's source was edited but the test
+        // project's output (incl. the copied dep DLL) was never re-emitted.
+        let srcDir = Path.Combine(tmpDir, "src")
+        Directory.CreateDirectory(srcDir) |> ignore
+        let src = Path.Combine(srcDir, "Dep.fs")
+        File.WriteAllText(src, "module Dep")
+        let t = DateTime.UtcNow
+        File.SetLastWriteTimeUtc(dll, t.AddMinutes(-10.0))
+        File.SetLastWriteTimeUtc(src, t)
+        test <@ apphostStale $"run --project {projDir} --no-build --" tmpDir @>)
+
+// End-to-end: a present-but-stale apphost must DEFER (non-green, "waiting on
+// build") through the plugin, never report a passing run on stale bits. On the
+// pre-fix code the runner exits 0 → TestsPassed → a false GREEN, so the
+// `HasFailingReasons` assertion FAILS until the freshness gate lands.
+[<Fact(Timeout = 20000)>]
+let ``a present-but-stale apphost defers as 'waiting on build' instead of passing on stale bits`` () =
+    withTempDir "tp-stale-defer" (fun tmpDir ->
+        let projDir = Path.Combine(tmpDir, "Unit")
+        let tfmDir = Path.Combine(projDir, "bin", "Debug", "net10.0")
+        Directory.CreateDirectory(tfmDir) |> ignore
+
+        // Apphost + canonical DLL PRESENT (so the missing-apphost path does NOT
+        // fire) ...
+        File.WriteAllText(Path.Combine(tfmDir, "Unit"), "")
+        let dll = Path.Combine(tfmDir, "Unit.dll")
+        File.WriteAllText(dll, "")
+
+        // ... but a source was edited AFTER the build — the stale-binary trigger.
+        let src = Path.Combine(projDir, "Tests.fs")
+        File.WriteAllText(src, "module Tests")
+        let now = DateTime.UtcNow
+        File.SetLastWriteTimeUtc(dll, now.AddMinutes(-10.0))
+        File.SetLastWriteTimeUtc(src, now)
+
+        // The runner would EXIT 0 (a 'pass' on stale bits) if launched; `--project`
+        // makes the project derivable so the freshness gate engages pre-launch.
+        let configs =
+            [ { Project = "Unit"
+                Command = "sh"
+                Args = $"-c \"exit 0\" --project {projDir} --no-build --"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        host.EmitBuildCompleted(BuildSucceeded)
+        waitForPluginTerminal host "test-prune" 15.0
+
+        let failingReasons =
+            host.GetErrorsByPlugin("test-prune")
+            |> Map.toList
+            |> List.collect snd
+            |> List.filter (fun e -> e.Severity = FsHotWatch.ErrorLedger.Error)
+
+        // Stale bits must be DEFERRED — non-green, with an honest "waiting on
+        // build" diagnostic — exactly like a missing apphost; never a pass.
+        test <@ host.HasFailingReasons(warningsAreFailures = true) @>
+
+        let waitingDiagnostic =
+            failingReasons
+            |> List.exists (fun e -> e.Message.ToLowerInvariant().Contains("waiting on build"))
+
+        test <@ waitingDiagnostic @>
+
+        match host.GetStatus("test-prune") with
+        | Some(Failed(msg, _)) -> test <@ msg.ToLowerInvariant().Contains("waiting on build") @>
+        | other -> Assert.Fail($"expected non-green Failed status for the stale-artifact defer, got %A{other}")
+
+        // And it must never masquerade as a test failure.
+        test
+            <@
+                failingReasons
+                |> List.forall (fun e -> not (e.Message.ToLowerInvariant().Contains("tests failed")))
+            @>)
+
+// =============================================================================
 // Issue 2 — `fshw errors` must reflect ONLY the most recent completed cycle.
 // When a cycle re-runs, the plugin's prior-cycle diagnostics must be
 // cleared/replaced so stale reds from a superseded run don't accumulate.

@@ -666,33 +666,17 @@ let private projectFlagValue (tokens: string[]) : string option =
     |> Option.bind (fun i -> if i + 1 < tokens.Length then Some tokens.[i + 1] else None)
     |> Option.map (fun raw -> raw.Trim('"'))
 
-/// Issue 2 — STRUCTURAL apphost-missing detection. On a cold daemon a
-/// `dotnet run --project <proj> --no-build` can be launched before the build
-/// plugin produced that project's apphost binary; `dotnet run` then fails to
-/// spawn it and exits non-zero. That is an ORDERING bug, never a test failure.
-///
-/// Rather than sniff localized OS error text out of the runner output (fragile
-/// to locale and SDK phrasing — see `looksLikeApphostMissing`, kept only as a
-/// defensive fallback), we derive the apphost binary path from the runner's
-/// `--project` arg and check `File.Exists` BEFORE/around the launch. The
-/// apphost is the extension-less sibling of the canonical
-/// `<projDir>/bin/Debug/<tfm>/<assemblyName>.dll` (`.exe` on Windows). We don't
-/// know the TFM without the project graph here, so we glob every
-/// `bin/Debug/*/` TFM dir for the assembly. If NO apphost is found for a
-/// derivable project, that absence IS the "apphost not yet produced" signal.
-///
-/// Returns:
-///   Some true  — project derivable AND apphost present
-///   Some false — project derivable AND apphost absent (the deferred signal)
-///   None       — could not derive a project from args (e.g. a non-`dotnet run`
-///                custom command); caller falls back to the output sniff.
-let internal tryApphostPresent (args: string) (repoRoot: string) : bool option =
-    // The value after `--project` identifies the project to check.
-    let projArg = projectFlagValue (argTokens args)
-
-    match projArg with
-    | None -> None
-    | Some proj ->
+/// Derive `(projDir, assemblyName, binDir)` from a runner's `--project` arg, or
+/// `None` when no `--project`/`-p` token is present (a custom, non-`dotnet run`
+/// command). `binDir` is `<projDir>/bin/Debug`. The `--project` value may point
+/// at a `.fsproj`/`.csproj` file OR a directory; the assembly name defaults to
+/// the project/dir leaf — matching `ProjectGraph.GetCanonicalDllPath`, which
+/// uses the project file's base name. Shared by `tryApphostPresent` (presence)
+/// and `apphostStale` (freshness) so this fsproj-or-directory derivation has ONE
+/// definition.
+let private deriveProjectBin (args: string) (repoRoot: string) : (string * string * string) option =
+    projectFlagValue (argTokens args)
+    |> Option.map (fun proj ->
         // Resolve to an absolute path (relative paths are repoRoot-relative).
         let abs =
             if Path.IsPathRooted proj then
@@ -700,11 +684,6 @@ let internal tryApphostPresent (args: string) (repoRoot: string) : bool option =
             else
                 Path.Combine(repoRoot, proj)
 
-        // The `--project` value may point at a `.fsproj`/`.csproj` file or at a
-        // directory. Derive (projDir, assemblyName) for both shapes. The
-        // assembly name defaults to the project/dir leaf — matching the
-        // canonical DLL derivation in ProjectGraph.GetCanonicalDllPath, which
-        // uses the project file's base name.
         let projDir, assemblyName =
             if
                 File.Exists abs
@@ -729,8 +708,34 @@ let internal tryApphostPresent (args: string) (repoRoot: string) : bool option =
 
                 dir, (nameFromProjFile |> Option.defaultValue (Path.GetFileName dir))
 
-        let binDir = Path.Combine(projDir, "bin", "Debug")
+        projDir, assemblyName, Path.Combine(projDir, "bin", "Debug"))
 
+/// Issue 2 — STRUCTURAL apphost-missing detection. On a cold daemon a
+/// `dotnet run --project <proj> --no-build` can be launched before the build
+/// plugin produced that project's apphost binary; `dotnet run` then fails to
+/// spawn it and exits non-zero. That is an ORDERING bug, never a test failure.
+///
+/// Rather than sniff localized OS error text out of the runner output (fragile
+/// to locale and SDK phrasing — see `looksLikeApphostMissing`, kept only as a
+/// defensive fallback), we derive the apphost binary path from the runner's
+/// `--project` arg and check `File.Exists` BEFORE/around the launch. The
+/// apphost is the extension-less sibling of the canonical
+/// `<projDir>/bin/Debug/<tfm>/<assemblyName>.dll` (`.exe` on Windows). We don't
+/// know the TFM without the project graph here, so we glob every
+/// `bin/Debug/*/` TFM dir for the assembly. If NO apphost is found for a
+/// derivable project, that absence IS the "apphost not yet produced" signal.
+/// Presence only — `apphostStale` is the freshness complement (a PRESENT but
+/// out-of-date artifact).
+///
+/// Returns:
+///   Some true  — project derivable AND apphost present
+///   Some false — project derivable AND apphost absent (the deferred signal)
+///   None       — could not derive a project from args (e.g. a non-`dotnet run`
+///                custom command); caller falls back to the output sniff.
+let internal tryApphostPresent (args: string) (repoRoot: string) : bool option =
+    match deriveProjectBin args repoRoot with
+    | None -> None
+    | Some(_, assemblyName, binDir) ->
         if not (Directory.Exists binDir) then
             // No build output at all yet — apphost definitionally absent.
             Some false
@@ -738,13 +743,122 @@ let internal tryApphostPresent (args: string) (repoRoot: string) : bool option =
             // The apphost lives at bin/Debug/<tfm>/<assemblyName>(.exe). We don't
             // know the TFM, so scan every TFM dir for the extension-less binary
             // (Unix) or the `.exe` (Windows).
-            let present =
-                Directory.GetDirectories(binDir)
-                |> Array.exists (fun tfmDir ->
-                    File.Exists(Path.Combine(tfmDir, assemblyName))
-                    || File.Exists(Path.Combine(tfmDir, assemblyName + ".exe")))
+            Directory.GetDirectories(binDir)
+            |> Array.exists (fun tfmDir ->
+                File.Exists(Path.Combine(tfmDir, assemblyName))
+                || File.Exists(Path.Combine(tfmDir, assemblyName + ".exe")))
+            |> Some
 
-            Some present
+/// Source-file extensions whose mtime feeds the freshness gate — the F#/C#
+/// compile inputs whose edit should force a rebuild before tests are trusted.
+let private freshnessSourceExtensions = set [ ".fs"; ".fsi"; ".fsx"; ".cs" ]
+
+/// Directory names never walked when computing the newest source mtime: build
+/// output (where a regenerated obj/ file could masquerade as a newer "source"),
+/// VCS, and tooling state.
+let private freshnessExcludedDirs =
+    set
+        [ "bin"
+          "obj"
+          ".git"
+          ".jj"
+          ".hg"
+          ".svn"
+          ".fshw"
+          ".vs"
+          ".idea"
+          "node_modules"
+          ".workspaces" ]
+
+/// Newest `LastWriteTimeUtc` across the on-disk source files under `repoRoot`
+/// (recursive; build-output and VCS/tooling dirs skipped). `None` when no source
+/// file exists. Mirrors the LOGIC of `ProjectGraph.GetMaxSourceMtime` (max of
+/// `File.GetLastWriteTimeUtc`) but is self-contained — `executeTests` is
+/// deliberately graph-free (shared with the one-off `run-tests` command), so the
+/// freshness gate cannot reach `IProjectGraphReader`. Scanning the whole repo is
+/// the conservative superset of any single test project's dependency-closure
+/// sources: an edit ANYWHERE that a (whole-solution) build hasn't yet re-emitted
+/// leaves the test artifact older than that edit. Per-subtree IO errors are
+/// swallowed (best-effort) so a transient hiccup can't crash the gate.
+let internal newestSourceMtime (repoRoot: string) : DateTime option =
+    let rec walk (dir: string) : DateTime list =
+        let filesHere =
+            try
+                Directory.GetFiles dir
+                |> Array.choose (fun f ->
+                    if freshnessSourceExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()) then
+                        Some(File.GetLastWriteTimeUtc f)
+                    else
+                        None)
+                |> Array.toList
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException -> []
+
+        let fromSubdirs =
+            try
+                Directory.GetDirectories dir
+                |> Array.filter (fun d -> not (freshnessExcludedDirs.Contains(Path.GetFileName d)))
+                |> Array.toList
+                |> List.collect walk
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException -> []
+
+        filesHere @ fromSubdirs
+
+    if not (Directory.Exists repoRoot) then
+        None
+    else
+        match walk repoRoot with
+        | [] -> None
+        | times -> Some(List.max times)
+
+/// Freshness complement to `tryApphostPresent`: `true` when the test project's
+/// canonical `<assemblyName>.dll` (the managed assembly `dotnet run --no-build`
+/// executes — the same artifact `ProjectGraph.GetCanonicalDllPath` names) EXISTS
+/// but PREDATES the newest source. Running `--no-build` then executes STALE code
+/// and yields a verdict (pass OR fail) from bits that don't match the sources —
+/// the false-green/false-red this gate prevents.
+///
+/// Mirrors `BuildPlugin.verifyArtifactsFresh`'s `DllOlderThanSources` arm (see
+/// ADR-008): mtime is the right *temporal* signal — "was the artifact re-emitted
+/// AFTER the newest source?" A real edit bumps the source mtime, so `dll < source`
+/// is exactly the tell that the build did not run (or ran `--no-build`). We probe
+/// the managed DLL, not the apphost: the apphost is a thin native launcher whose
+/// mtime can lag an incremental rebuild, whereas the DLL always re-stamps on
+/// recompile — so it is the reliable freshness signal (and the one
+/// `verifyArtifactsFresh` checks).
+///
+/// `false` (treat as runnable) when: the project isn't derivable from args, no
+/// build output exists (absence is `tryApphostPresent`'s job — kept on the
+/// retry-friendly cold-start path, since a build in flight may still land the
+/// apphost; a stale one won't refresh without a real build), or there are no
+/// sources to be stale against.
+let internal apphostStale (args: string) (repoRoot: string) : bool =
+    match deriveProjectBin args repoRoot with
+    | None -> false
+    | Some(_, assemblyName, binDir) ->
+        if not (Directory.Exists binDir) then
+            false
+        else
+            let dllMtimes =
+                Directory.GetDirectories binDir
+                |> Array.choose (fun tfmDir ->
+                    let dll = Path.Combine(tfmDir, assemblyName + ".dll")
+
+                    if File.Exists dll then
+                        Some(File.GetLastWriteTimeUtc dll)
+                    else
+                        None)
+                |> Array.toList
+
+            match newestSourceMtime repoRoot, dllMtimes with
+            // The NEWEST built DLL still predates the newest source ⇒ even the
+            // most recent build ran before the last edit ⇒ stale. Using the max
+            // (most-recent) DLL mtime is conservative against false-stale.
+            | Some srcMtime, (_ :: _ as mtimes) -> List.max mtimes < srcMtime
+            | _ -> false
 
 /// Detect whether a test runner emits a CTRF report we can parse. The
 /// `--report-ctrf` family is provided by xUnit.v3's runner (NOT the MTP core),
@@ -1034,6 +1148,32 @@ let private executeTests
                             // its coverage contribution is "nothing new", so mark as filtered.
                             // Elapsed=Zero since we didn't actually run the test runner.
                             results <- (config.Project, TestsPassed("", true, TimeSpan.Zero)) :: results
+                        elif apphostStale config.Args repoRoot then
+                            // FRESHNESS GATE (mirrors BuildPlugin.verifyArtifactsFresh; ADR-008).
+                            // The test project's compiled artifact PREDATES the newest source, so
+                            // `dotnet run --no-build` would execute STALE bits and report a verdict
+                            // (pass OR fail) that doesn't match the sources — the false-green this
+                            // exists to prevent. Runs PRE-launch, independent of exit code: the old
+                            // apphost check only fired on a FAILED launch (`detectApphostMissing`
+                            // short-circuits on a clean exit), so a stale apphost that exited 0
+                            // sailed through as `TestsPassed`. DEFER without launching — exactly the
+                            // "waiting on build" signal a MISSING apphost yields — so a stale
+                            // artifact can never produce a passing verdict. (A MISSING apphost stays
+                            // on the launch+retry+defer path below: a build in flight may still land
+                            // it; a stale one won't refresh without a real build.)
+                            Logging.warn
+                                "test-prune"
+                                $"%s{config.Project}: compiled artifact is STALE (older than newest source) — deferring as 'waiting on build', NOT running --no-build on stale code (mirrors BuildPlugin.verifyArtifactsFresh; ADR-008)"
+
+                            ctx
+                            |> Option.iter (fun c ->
+                                c.Log $"{config.Project}: waiting on build (compiled artifact is stale)")
+
+                            results <-
+                                (config.Project,
+                                 TestsDeferred
+                                     "compiled artifact is stale (older than newest source) — would run --no-build on stale code")
+                                :: results
                         else
                             let filterArgs = buildFilterArgs config affectedClassesByProject
 
