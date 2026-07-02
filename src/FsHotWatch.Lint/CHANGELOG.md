@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: skip compile items that resolve outside the repo root (NuGet-injected `_content`, e.g. xunit.v3's `DefaultRunnerReporters.fs`) — compiled in, but not ours to lint, and a latent FSharpLint-crash surface (AUTOMATION-49). `create` now takes a leading `repoRoot: string option` (Some → skip out-of-repo; None → include them, via the CLI's `includeOutsideRepo` override).
+
 ## 0.7.0-alpha.14 - 2026-06-24
 
 - chore(deps): bump the bundled `FSharpLintAnalyzerShim` to 0.3.0-alpha.5 (FCS 43.12 alignment — resolves the FL0000 host-incompatibility caveat).

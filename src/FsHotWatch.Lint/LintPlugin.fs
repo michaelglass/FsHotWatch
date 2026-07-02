@@ -39,6 +39,7 @@ let private pluginCacheSalt = "lint-merkle-v1"
 /// content-merkle (file source + tool/config hashes); jj commit_id is not
 /// consulted. See design doc §2a.
 let create
+    (repoRoot: string option)
     (lintConfigPath: string option)
     (lintRunner: (FileCheckResult -> Lint.LintResult) option)
     (timeoutSec: int option)
@@ -114,71 +115,85 @@ let create
                 match event with
                 | FileChecked result ->
                     let fileStr = AbsFilePath.value result.File
-                    Logging.debug "lint" $"FileChecked received: %s{fileStr}"
-                    ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
-                    return!
-                        PluginCtxHelpers.withSubtask
-                            ctx
-                            fileStr
-                            $"linting {System.IO.Path.GetFileName fileStr}"
-                            (async {
-                                if isNull (box result.ParseResults) then
-                                    Logging.warn "lint" $"Skipping %s{fileStr} — no parse results"
-                                    return state
-                                else
-                                    match runWithCancellableTimeout lintTimeout (fun _ct -> runLint result) with
-                                    | WorkTimedOut after ->
-                                        let reason = $"timed out after %d{int after.TotalSeconds}s"
-                                        Logging.error "lint" $"Lint TIMED OUT for %s{fileStr}: %s{reason}"
+                    // Skip compile items outside the repo root (NuGet-injected
+                    // `_content` source etc.) — compiled in, but not ours to lint,
+                    // and a latent crash surface (AUTOMATION-49). Disabled when
+                    // repoRoot is None (the `includeOutsideRepo` override).
+                    if
+                        repoRoot
+                        |> Option.exists (fun root -> FsHotWatch.PathFilter.isOutsideRepo root fileStr)
+                    then
+                        Logging.debug "lint" $"Skipping out-of-repo compile item %s{fileStr}"
+                        return state
+                    else
 
-                                        ctx.CompleteWithTimeout reason
+                        Logging.debug "lint" $"FileChecked received: %s{fileStr}"
+                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
 
-                                        ctx.ReportStatus(
-                                            PluginStatus.Failed($"lint timed out: {reason}", DateTime.UtcNow)
-                                        )
-
+                        return!
+                            PluginCtxHelpers.withSubtask
+                                ctx
+                                fileStr
+                                $"linting {System.IO.Path.GetFileName fileStr}"
+                                (async {
+                                    if isNull (box result.ParseResults) then
+                                        Logging.warn "lint" $"Skipping %s{fileStr} — no parse results"
                                         return state
-                                    | WorkCompleted(Lint.LintResult.Success warnings) ->
-                                        Logging.debug
-                                            "lint"
-                                            $"Linted %s{System.IO.Path.GetFileName fileStr}: %d{warnings.Length} warnings"
+                                    else
+                                        match runWithCancellableTimeout lintTimeout (fun _ct -> runLint result) with
+                                        | WorkTimedOut after ->
+                                            let reason = $"timed out after %d{int after.TotalSeconds}s"
+                                            Logging.error "lint" $"Lint TIMED OUT for %s{fileStr}: %s{reason}"
 
-                                        let msgs = warnings |> List.map (fun w -> w.Details.Message)
+                                            ctx.CompleteWithTimeout reason
 
-                                        let newWarnings = state.WarningsByFile |> Map.add result.File msgs
+                                            ctx.ReportStatus(
+                                                PluginStatus.Failed($"lint timed out: {reason}", DateTime.UtcNow)
+                                            )
 
-                                        let entries =
-                                            warnings
-                                            |> List.map (fun w ->
-                                                { Message = w.Details.Message
-                                                  Severity = DiagnosticSeverity.Warning
-                                                  Line = w.Details.Range.StartLine
-                                                  Column = w.Details.Range.StartColumn
-                                                  Detail = None })
+                                            return state
+                                        | WorkCompleted(Lint.LintResult.Success warnings) ->
+                                            Logging.debug
+                                                "lint"
+                                                $"Linted %s{System.IO.Path.GetFileName fileStr}: %d{warnings.Length} warnings"
 
-                                        PluginCtxHelpers.reportOrClearFile ctx fileStr entries
+                                            let msgs = warnings |> List.map (fun w -> w.Details.Message)
 
-                                        let newState = { WarningsByFile = newWarnings }
+                                            let newWarnings = state.WarningsByFile |> Map.add result.File msgs
 
-                                        let totalIssues =
-                                            newWarnings |> Map.toList |> List.sumBy (fun (_, w) -> w.Length)
+                                            let entries =
+                                                warnings
+                                                |> List.map (fun w ->
+                                                    { Message = w.Details.Message
+                                                      Severity = DiagnosticSeverity.Warning
+                                                      Line = w.Details.Range.StartLine
+                                                      Column = w.Details.Range.StartColumn
+                                                      Detail = None })
 
-                                        PluginCtxHelpers.completeWith
-                                            ctx
-                                            $"linted {newWarnings.Count} files, {totalIssues} issues"
+                                            PluginCtxHelpers.reportOrClearFile ctx fileStr entries
 
-                                        return newState
-                                    | WorkCompleted(Lint.LintResult.Failure failure) ->
-                                        let msg = $"Lint failed for %s{fileStr}: %A{failure}"
+                                            let newState = { WarningsByFile = newWarnings }
 
-                                        ctx.ReportErrors fileStr [ ErrorEntry.error msg ]
+                                            let totalIssues =
+                                                newWarnings |> Map.toList |> List.sumBy (fun (_, w) -> w.Length)
 
-                                        ctx.CompleteWithSummary $"lint failed on {System.IO.Path.GetFileName fileStr}"
+                                            PluginCtxHelpers.completeWith
+                                                ctx
+                                                $"linted {newWarnings.Count} files, {totalIssues} issues"
 
-                                        ctx.ReportStatus(PluginStatus.Failed(msg, DateTime.UtcNow))
-                                        return state
-                            })
+                                            return newState
+                                        | WorkCompleted(Lint.LintResult.Failure failure) ->
+                                            let msg = $"Lint failed for %s{fileStr}: %A{failure}"
+
+                                            ctx.ReportErrors fileStr [ ErrorEntry.error msg ]
+
+                                            ctx.CompleteWithSummary
+                                                $"lint failed on {System.IO.Path.GetFileName fileStr}"
+
+                                            ctx.ReportStatus(PluginStatus.Failed(msg, DateTime.UtcNow))
+                                            return state
+                                })
                 | _ -> return state
             }
       Commands =

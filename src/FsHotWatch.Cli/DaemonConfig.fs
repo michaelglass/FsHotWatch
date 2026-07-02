@@ -185,6 +185,13 @@ type DaemonConfiguration =
             {| ConfigPath: string
                SearchDir: string |} option
         Exclude: string list
+        /// When false (default), the report-producing plugins (analyzers, lint) skip
+        /// compile items that resolve OUTSIDE the repo root — e.g. NuGet-injected
+        /// `_content` source (xunit's `DefaultRunnerReporters.fs`) or files above/beside
+        /// the repo. Such third-party source is compiled in but is not ours to lint. Set
+        /// `includeOutsideRepo: true` to report on them anyway. (obj/bin is always skipped
+        /// regardless — see `PathFilter.isGeneratedPath`.)
+        IncludeOutsideRepo: bool
         /// Directory (relative to repoRoot or absolute) for daemon.log. Defaults to "logs".
         LogDir: string
         /// Global default timeout (seconds). Used when no per-entry override set.
@@ -226,6 +233,7 @@ let private defaultConfigFor (repoRoot: string) =
       FileCommands = []
       Coverage = None
       Exclude = []
+      IncludeOutsideRepo = false
       LogDir = "logs"
       TimeoutSec = Some DefaultGlobalTimeoutSec
       IdleExitMin = IdleExit.IdleExitConfig.Absent
@@ -622,6 +630,12 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
             arr.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Seq.toList
         | _ -> defaults.Exclude
 
+    let includeOutsideRepo =
+        match root.TryGetProperty("includeOutsideRepo") with
+        | true, v when v.ValueKind = JsonValueKind.True -> true
+        | true, v when v.ValueKind = JsonValueKind.False -> false
+        | _ -> defaults.IncludeOutsideRepo
+
     let logDir =
         match root.TryGetProperty("logDir") with
         | true, v when v.ValueKind = JsonValueKind.String -> v.GetString()
@@ -708,6 +722,7 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
       FileCommands = fileCommands
       Coverage = coverage
       Exclude = exclude
+      IncludeOutsideRepo = includeOutsideRepo
       LogDir = logDir
       TimeoutSec = timeoutSec
       IdleExitMin = idleExitMin
@@ -929,6 +944,12 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         daemon.RegisterHandler(FsHotWatch.Fantomas.FormatCheckPlugin.createFormatCheck config.TimeoutSec)
     | Off -> ()
 
+    // When includeOutsideRepo is false (default), the report-producing plugins
+    // (analyzers, lint) skip compile items outside repoRoot (NuGet-injected
+    // `_content` etc.); None disables the skip. obj/bin is always skipped
+    // independently (PathFilter.isGeneratedPath). See AUTOMATION-49.
+    let outsideRepoScope = if config.IncludeOutsideRepo then None else Some repoRoot
+
     // Lint plugin
     if config.Lint then
         let lintConfigPath =
@@ -939,7 +960,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         | Some path -> Logging.info "config" $"Registering LintPlugin with config: %s{path}"
         | None -> Logging.info "config" "Registering LintPlugin (no fsharplint.json found)"
 
-        daemon.RegisterHandler(FsHotWatch.Lint.LintPlugin.create lintConfigPath None config.TimeoutSec)
+        daemon.RegisterHandler(FsHotWatch.Lint.LintPlugin.create outsideRepoScope lintConfigPath None config.TimeoutSec)
 
     // Analyzers plugin
     match config.Analyzers with
@@ -968,7 +989,11 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         // inspects. The factory loads analyzers eagerly, so Init.LoadedByPath is
         // the real per-path result.
         let handler =
-            FsHotWatch.Analyzers.AnalyzersPlugin.create (Some repoRoot) resolvedPaths config.TimeoutSec a.FailOnSeverity
+            FsHotWatch.Analyzers.AnalyzersPlugin.create
+                outsideRepoScope
+                resolvedPaths
+                config.TimeoutSec
+                a.FailOnSeverity
 
         // Map every ORIGINAL configured path to its contributed analyzer count:
         // 0 if it was dropped during resolution (missing after retry), else the

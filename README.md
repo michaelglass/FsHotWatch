@@ -139,6 +139,8 @@ hand. Every field is optional — sensible defaults apply when omitted.
 | `coverage` | `object` | — | Coverage threshold checking. |
 | `analyzers` | `object` | — | F# Analyzers SDK integration. |
 | `fileCommands` | `array` | `[]` | Custom commands triggered by file patterns. |
+| `exclude` | `string[]` | `[]` | Gitignore-style globs (repo-root-relative) for paths to skip entirely — watching, building, checking. (`obj/` + `bin/` are always skipped, independent of this.) |
+| `includeOutsideRepo` | `bool` | `false` | Report on compile items that resolve **outside** the repo root — e.g. NuGet-injected `_content` source (xunit's `DefaultRunnerReporters.fs`), or files above/beside the repo. Default `false`: the report-producing plugins (analyzers, lint) skip such third-party source — it's compiled into your project, but not yours to lint, and a latent analyzer-crash surface (AUTOMATION-49). Set `true` to lint them anyway. |
 
 For memory/idle-exit, FSEvents latency, and per-task timeout keys, see
 [Memory & tuning](docs/memory-and-tuning.md).
