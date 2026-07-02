@@ -11,6 +11,19 @@ let isGeneratedPath (path: string) =
     let n = normalize path
     n.Contains("/obj/") || n.Contains("/bin/")
 
+/// True if `path` resolves OUTSIDE `repoRoot` — a rooted or `..`-prefixed
+/// relative path (a different drive root, or a file above/beside the repo).
+/// The canonical case is a NuGet-cache compile item a package injects into a
+/// consumer via `contentFiles`/`_content` (e.g. `xunit.v3.core.mtp-v1`'s
+/// `_content/DefaultRunnerReporters.fs` under `~/.nuget/packages/...`). Such
+/// files are third-party — compiled into the project, but never the repo's own
+/// source. The analyze/lint hosts use this to skip inspecting them (running
+/// FSharpLint over xunit's `_content` crashed the analyzer host — see
+/// AUTOMATION-49); `isExcludedPath` also uses it for its out-of-repo test.
+let isOutsideRepo (repoRoot: string) (path: string) : bool =
+    let rel = Path.GetRelativePath(repoRoot, path).Replace('\\', '/')
+    Path.IsPathRooted(rel) || rel.StartsWith("..")
+
 /// True if the path matches any of the given exclude patterns or is inside obj/bin.
 /// Exclude patterns use gitignore-style glob syntax interpreted relative to
 /// `repoRoot`. Files outside `repoRoot` are not subject to user excludes
@@ -25,15 +38,13 @@ let isExcludedPath (repoRoot: string) (excludePatterns: string list) : (string -
         let ig = (Ignore(), patterns) ||> List.fold (fun ig pat -> ig.Add(pat))
 
         let toRepoRelative (path: string) : string option =
-            let rel = Path.GetRelativePath(repoRoot, path).Replace('\\', '/')
-            // GetRelativePath returns a rooted path when it can't relativize
-            // (e.g. different drive roots on Windows) and a `..`-prefixed
-            // path when `path` lies outside `repoRoot`. In both cases the
-            // file is not repo-relative, so user excludes should not apply.
-            if Path.IsPathRooted(rel) || rel.StartsWith("..") then
+            // Files outside repoRoot (rooted / `..`-prefixed) aren't
+            // repo-relative, so user excludes don't apply — shared with
+            // `isOutsideRepo`.
+            if isOutsideRepo repoRoot path then
                 None
             else
-                Some rel
+                Some(Path.GetRelativePath(repoRoot, path).Replace('\\', '/'))
 
         fun path ->
             isGeneratedPath path

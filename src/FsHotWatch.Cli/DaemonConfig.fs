@@ -968,7 +968,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
         // inspects. The factory loads analyzers eagerly, so Init.LoadedByPath is
         // the real per-path result.
         let handler =
-            FsHotWatch.Analyzers.AnalyzersPlugin.create resolvedPaths config.TimeoutSec a.FailOnSeverity
+            FsHotWatch.Analyzers.AnalyzersPlugin.create (Some repoRoot) resolvedPaths config.TimeoutSec a.FailOnSeverity
 
         // Map every ORIGINAL configured path to its contributed analyzer count:
         // 0 if it was dropped during resolution (missing after retry), else the

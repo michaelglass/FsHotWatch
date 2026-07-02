@@ -21,6 +21,24 @@ let ``isGeneratedPath returns true for bin directory`` () =
 let ``isGeneratedPath returns false for normal source file`` () =
     test <@ not (isGeneratedPath "/src/MyProject/Program.fs") @>
 
+// --- isOutsideRepo ---
+
+[<Fact(Timeout = 15000)>]
+let ``isOutsideRepo true for NuGet-cache _content compile item`` () =
+    // A package injects source into the consumer from the ~/.nuget cache
+    // (xunit.v3's _content) — outside the repo, so never ours to lint.
+    test
+        <@
+            isOutsideRepo
+                "/home/dev/myrepo"
+                "/home/dev/.nuget/packages/xunit.v3.core.mtp-v1/3.2.2/_content/DefaultRunnerReporters.fs"
+        @>
+
+[<Fact(Timeout = 15000)>]
+let ``isOutsideRepo false for repo-owned source`` () =
+    test <@ not (isOutsideRepo "/home/dev/myrepo" "/home/dev/myrepo/src/File.fs") @>
+    test <@ not (isOutsideRepo "/home/dev/myrepo" "/home/dev/myrepo/tests/T.fs") @>
+
 // --- isExcludedPath with gitignore-style globs ---
 
 [<Fact(Timeout = 15000)>]

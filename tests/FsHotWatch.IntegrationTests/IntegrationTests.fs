@@ -109,7 +109,7 @@ let ``all plugins receive events when checking a file`` () =
 
     let lint = LintPlugin.create None None None
     let fantomas = createFormatCheck None
-    let analyzers = AnalyzersPlugin.create [] None DiagnosticSeverity.Hint
+    let analyzers = AnalyzersPlugin.create None [] None DiagnosticSeverity.Hint
 
     host.RegisterHandler(testPrune)
     host.RegisterHandler(lint)
@@ -191,7 +191,8 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
     let analyzerPaths =
         [ gResearchPath; customAnalyzerPath ] |> List.filter Directory.Exists
 
-    let analyzers = AnalyzersPlugin.create analyzerPaths None DiagnosticSeverity.Hint
+    let analyzers =
+        AnalyzersPlugin.create None analyzerPaths None DiagnosticSeverity.Hint
 
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
@@ -248,7 +249,8 @@ let ``analyzers plugin loads real analyzers and runs without crashing`` () =
 let ``analyzers load guard does not fire when a real analyzer loads`` () =
     let analyzerPath = exampleAnalyzerPath.Value
 
-    let handler = AnalyzersPlugin.create [ analyzerPath ] None DiagnosticSeverity.Hint
+    let handler =
+        AnalyzersPlugin.create None [ analyzerPath ] None DiagnosticSeverity.Hint
 
     // The real ExampleAnalyzer DLL contributes at least one analyzer.
     test <@ handler.Init.LoadedCount >= 1 @>
@@ -370,7 +372,7 @@ let private withAnalyzerCheck (source: string) (assertResult: PluginHost -> stri
         // Warning. The promotion path itself is covered by the dedicated
         // `promoteIfFailing` unit tests in AnalyzersPluginTests.fs.
         let analyzers =
-            AnalyzersPlugin.create [ analyzerPath ] None DiagnosticSeverity.Error
+            AnalyzersPlugin.create None [ analyzerPath ] None DiagnosticSeverity.Error
 
         host.RegisterHandler(analyzers)
 
@@ -816,7 +818,7 @@ let ``AnalyzersPlugin completes without crashing on checked file`` () =
         let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
         let host = PluginHost.create checker repoRoot
-        let analyzers = AnalyzersPlugin.create [] None DiagnosticSeverity.Hint
+        let analyzers = AnalyzersPlugin.create None [] None DiagnosticSeverity.Hint
         host.RegisterHandler(analyzers)
 
         let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
@@ -859,7 +861,8 @@ let ``AnalyzersPlugin loads real analyzers from example project`` () =
 
         let host = PluginHost.create checker repoRoot
 
-        let analyzers = AnalyzersPlugin.create [ analyzerPath ] None DiagnosticSeverity.Hint
+        let analyzers =
+            AnalyzersPlugin.create None [ analyzerPath ] None DiagnosticSeverity.Hint
 
         host.RegisterHandler(analyzers)
 
@@ -970,7 +973,8 @@ let ``Bug C: warm daemon reloads analyzers when a new analyzer DLL is added to t
             // so zero analyzers are loaded (the warm daemon's starting state before
             // the downstream add). failOnSeverity = Error so the raw Warning the
             // ExampleAnalyzer emits survives to the ledger unpromoted.
-            let analyzers = AnalyzersPlugin.create [ analyzerDir ] None DiagnosticSeverity.Error
+            let analyzers =
+                AnalyzersPlugin.create None [ analyzerDir ] None DiagnosticSeverity.Error
 
             host.RegisterHandler(analyzers)
 
