@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: skip compile items that resolve outside the repo root (NuGet-injected `_content`, e.g. xunit.v3's `DefaultRunnerReporters.fs`). Running F# analyzers (FSharpLint via the shim) over such third-party sources crashed the analyzer host. `create` / `createWithSlowHook` now take a leading `repoRoot: string option` (AUTOMATION-49).
+
 ## 0.7.0-alpha.20 - 2026-06-24
 
 - chore(deps): bump `FSharp.Analyzers.SDK` 0.36.0 → 0.37.2 (FCS 43.12.201).

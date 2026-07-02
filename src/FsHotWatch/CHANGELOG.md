@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- feat: `PathFilter.isOutsideRepo` — true when a path resolves outside the repo root (a rooted or `..`-prefixed relative path), e.g. a NuGet-injected `_content` compile item under `~/.nuget`. `isExcludedPath`'s out-of-repo test now shares this check (AUTOMATION-49).
+
 ## 0.8.0-alpha.33 - 2026-06-24
 
 - chore(deps): bump `System.Security.Cryptography.Xml` 10.0.9; suite-wide dependency refresh (version-coupled with the cli/build release).

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: the analyzers plugin is now scoped to the repo root, so NuGet-injected out-of-repo `_content` compile items (e.g. xunit.v3's) are skipped instead of analyzed — fixes an analyzer-host crash when F# analyzers ran over them (AUTOMATION-49).
+
 ## 0.8.0-alpha.40 - 2026-06-30
 
 - fix(testprune): the bundled test gate now defers on artifact **freshness** as
