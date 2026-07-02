@@ -107,7 +107,7 @@ let ``all plugins receive events when checking a file`` () =
 
     let testPrune = TestPrunePlugin.create dbPath repoRoot None None None None None []
 
-    let lint = LintPlugin.create None None None
+    let lint = LintPlugin.create None None None None
     let fantomas = createFormatCheck None
     let analyzers = AnalyzersPlugin.create None [] None DiagnosticSeverity.Hint
 
@@ -398,7 +398,7 @@ let x = 5
 
         let repoRoot = findRepoRoot ()
         let host = PluginHost.create checker repoRoot
-        let lint = LintPlugin.create None None None
+        let lint = LintPlugin.create None None None None
         host.RegisterHandler(lint)
 
         try
@@ -726,7 +726,7 @@ let ``LintPlugin reports no warnings on clean code`` () =
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let host = PluginHost.create checker repoRoot
-    let lint = LintPlugin.create None None None
+    let lint = LintPlugin.create None None None None
     host.RegisterHandler(lint)
 
     // Events.fs from FsHotWatch itself should be clean
@@ -775,7 +775,7 @@ let ``LintPlugin reports warnings on code with issues`` () =
     let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
 
     let host = PluginHost.create checker repoRoot
-    let lint = LintPlugin.create None None None
+    let lint = LintPlugin.create None None None None
     host.RegisterHandler(lint)
 
     let badCode =

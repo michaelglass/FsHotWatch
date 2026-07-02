@@ -139,6 +139,23 @@ let ``parseConfig fsEventsLatencyMs non-numeric falls back to default 250`` () =
     let config = parseConfig """{"fsEventsLatencyMs": "nope"}""" defaults
     test <@ config.FsEventsLatencyMs = 250 @>
 
+// --- parseConfig: includeOutsideRepo ---
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig includeOutsideRepo true overrides the default`` () =
+    let config = parseConfig """{"includeOutsideRepo": true}""" defaults
+    test <@ config.IncludeOutsideRepo = true @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig includeOutsideRepo false is honored`` () =
+    let config = parseConfig """{"includeOutsideRepo": false}""" defaults
+    test <@ config.IncludeOutsideRepo = false @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseConfig includeOutsideRepo absent defaults to false`` () =
+    let config = parseConfig "{}" defaults
+    test <@ config.IncludeOutsideRepo = false @>
+
 // --- parseConfig: idleExitMin ---
 
 [<Fact(Timeout = 15000)>]

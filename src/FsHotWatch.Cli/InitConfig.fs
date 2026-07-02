@@ -96,6 +96,7 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
       FileCommands = []
       Coverage = None
       Exclude = []
+      IncludeOutsideRepo = false
       LogDir = "logs"
       TimeoutSec = None
       IdleExitMin = FsHotWatch.IdleExit.IdleExitConfig.Absent

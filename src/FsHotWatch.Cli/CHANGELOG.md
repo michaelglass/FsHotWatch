@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- fix: the analyzers plugin is now scoped to the repo root, so NuGet-injected out-of-repo `_content` compile items (e.g. xunit.v3's) are skipped instead of analyzed — fixes an analyzer-host crash when F# analyzers ran over them.
+- feat: the report-producing plugins (**analyzers** and **lint**) now skip compile items that resolve **outside the repo root** by default — NuGet-injected `_content` source (e.g. xunit.v3's `DefaultRunnerReporters.fs`) or files above/beside the repo. Such third-party source is compiled in but not yours to lint (was a latent analyzer-crash surface —). Opt back in with `"includeOutsideRepo": true` in `.fshw.json`. (`obj/`+`bin/` are always skipped independently.)
 
 ## 0.8.0-alpha.40 - 2026-06-30
 
