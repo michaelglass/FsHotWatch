@@ -116,14 +116,10 @@ let create
                 | FileChecked result ->
                     let fileStr = AbsFilePath.value result.File
 
-                    // Skip compile items outside the repo root (NuGet-injected
-                    // `_content` source etc.) — compiled in, but not ours to lint,
-                    // and a latent crash surface (AUTOMATION-49). Disabled when
-                    // repoRoot is None (the `includeOutsideRepo` override).
-                    if
-                        repoRoot
-                        |> Option.exists (fun root -> FsHotWatch.PathFilter.isOutsideRepo root fileStr)
-                    then
+                    // Skip out-of-repo compile items (NuGet-injected `_content`
+                    // etc.) — not ours to lint, and a latent crash surface
+                    // (AUTOMATION-49). See PathFilter.isOutsideRepoScoped.
+                    if FsHotWatch.PathFilter.isOutsideRepoScoped repoRoot fileStr then
                         Logging.debug "lint" $"Skipping out-of-repo compile item %s{fileStr}"
                         return state
                     else

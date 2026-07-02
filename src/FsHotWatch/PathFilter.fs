@@ -22,7 +22,15 @@ let isGeneratedPath (path: string) =
 /// AUTOMATION-49); `isExcludedPath` also uses it for its out-of-repo test.
 let isOutsideRepo (repoRoot: string) (path: string) : bool =
     let rel = Path.GetRelativePath(repoRoot, path).Replace('\\', '/')
-    Path.IsPathRooted(rel) || rel.StartsWith("..")
+    Path.IsPathRooted(rel) || rel.StartsWith("..", System.StringComparison.Ordinal)
+
+/// `isOutsideRepo` lifted over an optional repo root: `Some root` → true when
+/// `path` is outside `root`; `None` → false (no repo scope, so nothing is
+/// "outside" — everything is included). The report-producing plugins (analyzers,
+/// lint) call this to skip third-party out-of-repo compile items by default, and
+/// pass `None` for the `.fshw.json` `includeOutsideRepo` override (AUTOMATION-49).
+let isOutsideRepoScoped (repoRoot: string option) (path: string) : bool =
+    repoRoot |> Option.exists (fun root -> isOutsideRepo root path)
 
 /// True if the path matches any of the given exclude patterns or is inside obj/bin.
 /// Exclude patterns use gitignore-style glob syntax interpreted relative to
