@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.41 - 2026-07-02
+
 - feat: the report-producing plugins (**analyzers** and **lint**) now skip compile items that resolve **outside the repo root** by default — NuGet-injected `_content` source (e.g. xunit.v3's `DefaultRunnerReporters.fs`) or files above/beside the repo. Such third-party source is compiled in but not yours to lint (and was a latent analyzer-crash surface — AUTOMATION-49). Opt back in with `"includeOutsideRepo": true` in `.fshw.json`. (`obj/`+`bin/` are always skipped independently.)
 
 ## 0.8.0-alpha.40 - 2026-06-30

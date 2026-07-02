@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0-alpha.34 - 2026-07-02
+
 - feat: `PathFilter.isOutsideRepo` — true when a path resolves outside the repo root (a rooted or `..`-prefixed relative path), e.g. a NuGet-injected `_content` compile item under `~/.nuget`. `isExcludedPath`'s out-of-repo test now shares this check (AUTOMATION-49). `PathFilter.isOutsideRepoScoped` lifts it over an optional repo root (`None` = include everything) — the shared predicate the analyzers + lint plugins use for the `includeOutsideRepo` skip.
 
 ## 0.8.0-alpha.33 - 2026-06-24
