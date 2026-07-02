@@ -346,10 +346,7 @@ let internal createWithSlowHook
                     // which FCS type-checks and fires FileChecked for. That source
                     // is third-party — not ours to lint — and running FSharpLint
                     // (via the shim) over it crashed the analyzer host. Skip it.
-                    if
-                        repoRoot
-                        |> Option.exists (fun root -> FsHotWatch.PathFilter.isOutsideRepo root fileStr)
-                    then
+                    if FsHotWatch.PathFilter.isOutsideRepoScoped repoRoot fileStr then
                         debug "analyzers" $"Skipping out-of-repo compile item %s{fileStr}"
                         return state
                     else

@@ -39,6 +39,19 @@ let ``isOutsideRepo false for repo-owned source`` () =
     test <@ not (isOutsideRepo "/home/dev/myrepo" "/home/dev/myrepo/src/File.fs") @>
     test <@ not (isOutsideRepo "/home/dev/myrepo" "/home/dev/myrepo/tests/T.fs") @>
 
+// --- isOutsideRepoScoped (the Option-lifted form the report plugins call) ---
+
+[<Fact(Timeout = 15000)>]
+let ``isOutsideRepoScoped None includes everything (includeOutsideRepo override)`` () =
+    // None = no repo scope → nothing is "outside", so nothing is skipped.
+    test <@ not (isOutsideRepoScoped None "/home/dev/.nuget/packages/x/3.2.2/_content/A.fs") @>
+    test <@ not (isOutsideRepoScoped None "/home/dev/myrepo/src/File.fs") @>
+
+[<Fact(Timeout = 15000)>]
+let ``isOutsideRepoScoped Some skips out-of-repo but keeps repo-owned`` () =
+    test <@ isOutsideRepoScoped (Some "/home/dev/myrepo") "/home/dev/.nuget/packages/x/3.2.2/_content/A.fs" @>
+    test <@ not (isOutsideRepoScoped (Some "/home/dev/myrepo") "/home/dev/myrepo/src/File.fs") @>
+
 // --- isExcludedPath with gitignore-style globs ---
 
 [<Fact(Timeout = 15000)>]
