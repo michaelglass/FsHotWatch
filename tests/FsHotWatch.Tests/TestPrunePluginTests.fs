@@ -2404,6 +2404,30 @@ let ``run-tests force-executes after an in-flight run finishes instead of instan
         let projects = doc.RootElement.GetProperty("projects")
         Assert.True(projects.GetArrayLength() > 0))
 
+// --- parseRunTestsWaitMs (run-tests slot-wait budget, AUTOMATION-66) ---
+
+[<Fact(Timeout = 15000)>]
+let ``parseRunTestsWaitMs reads waitSec and converts to milliseconds`` () =
+    test <@ parseRunTestsWaitMs """{"waitSec":300}""" DefaultRunTestsWaitMs = 300_000 @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseRunTestsWaitMs falls back when waitSec is absent`` () =
+    test <@ parseRunTestsWaitMs """{"filter":"--filter-class *Foo*"}""" DefaultRunTestsWaitMs = DefaultRunTestsWaitMs @>
+    test <@ parseRunTestsWaitMs "{}" DefaultRunTestsWaitMs = DefaultRunTestsWaitMs @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseRunTestsWaitMs falls back on malformed or non-numeric or non-positive input`` () =
+    test <@ parseRunTestsWaitMs "not json" 123 = 123 @>
+    test <@ parseRunTestsWaitMs """{"waitSec":"lots"}""" 123 = 123 @>
+    test <@ parseRunTestsWaitMs """{"waitSec":0}""" 123 = 123 @>
+    test <@ parseRunTestsWaitMs """{"waitSec":-5}""" 123 = 123 @>
+
+[<Fact(Timeout = 15000)>]
+let ``DefaultRunTestsWaitMs is well above the old fixed 120s`` () =
+    // Regression guard: the whole point of AUTOMATION-66 bug 2 is that the wait
+    // must outlast a ~90s+ beforeRun chain a prior in-flight run is executing.
+    test <@ DefaultRunTestsWaitMs > 120_000 @>
+
 // --- buildFilterArgs unit tests ---
 
 [<Fact(Timeout = 15000)>]

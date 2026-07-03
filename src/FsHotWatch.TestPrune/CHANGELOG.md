@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- feat: the manual `run-tests` command's slot-wait budget (how long it waits for
+  a prior in-flight run to release the `tests` `RunExclusive` slot before
+  reporting `busy`) is now configurable via the CLI's `--wait-sec` (payload
+  `waitSec`, seconds) and defaults to **600 s**, up from a hardcoded 120 s. A
+  background run with a long `tests.beforeRun` chain (90 s+) no longer makes an
+  explicit `test-rerun` give up before the slot frees. Absent/malformed
+  `waitSec` falls back to the default. (AUTOMATION-66; `parseRunTestsWaitMs` /
+  `DefaultRunTestsWaitMs`)
+
 ## 0.10.0-alpha.1 - 2026-07-03
 
 - fix: a failing `beforeRun` preflight in the manual `run-tests` command now

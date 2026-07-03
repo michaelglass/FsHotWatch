@@ -93,6 +93,10 @@ let ``parse test-rerun --filter-trait returns TestRerun FilterTrait`` () =
         @>
 
 [<Fact(Timeout = 15000)>]
+let ``parse test-rerun --wait-sec returns TestRerun WaitSec`` () =
+    test <@ CommandTree.parse tree [| "test-rerun"; "--wait-sec"; "300" |] = Ok(TestRerun [ WaitSec 300 ]) @>
+
+[<Fact(Timeout = 15000)>]
 let ``parse test-rerun rejects --run-once`` () =
     // --run-once belongs on `fshw test` (forward-progress); test-rerun is daemon-only.
     match CommandTree.parse tree [| "test-rerun"; "--run-once" |] with
@@ -974,13 +978,216 @@ let ``decideDaemonAction starts fresh when not running even with matching hash``
     let action = decideDaemonAction false "abc123" "abc123"
     test <@ action = StartFresh @>
 
+// --- Daemon readiness gate (AUTOMATION-66) ---
+
+/// A stand-in whose type name contains "ConnectionLost" — exercises the
+/// StreamJsonRpc connection-loss detection without a compile-time dependency on
+/// the transport assembly (the production match is by type-name substring).
+type private FakeConnectionLostException() =
+    inherit exn("connection lost")
+
+[<Fact(Timeout = 15000)>]
+let ``isTransientConnectFault recognises connect-phase transients`` () =
+    test <@ isTransientConnectFault (TimeoutException("The operation has timed out")) @>
+    test <@ isTransientConnectFault (System.IO.IOException("pipe is broken")) @>
+    test <@ isTransientConnectFault (System.IO.EndOfStreamException()) @>
+    test <@ isTransientConnectFault (System.ObjectDisposedException("pipe")) @>
+    test <@ isTransientConnectFault (FakeConnectionLostException()) @>
+    // ...seen through an AggregateException / inner-exception chain (as produced
+    // by Async.RunSynchronously wrapping the connect fault).
+    test <@ isTransientConnectFault (AggregateException(TimeoutException("timed out"))) @>
+
+[<Fact(Timeout = 15000)>]
+let ``isTransientConnectFault ignores non-connect faults`` () =
+    test <@ not (isTransientConnectFault (exn "boom")) @>
+    test <@ not (isTransientConnectFault (InvalidOperationException("bad state"))) @>
+    test <@ not (isTransientConnectFault null) @>
+
+[<Fact(Timeout = 15000)>]
+let ``decideReadinessStep proceeds when the probe succeeds`` () =
+    test <@ decideReadinessStep (Ok()) true false = ReadinessStep.ProceedReady @>
+
+[<Fact(Timeout = 15000)>]
+let ``decideReadinessStep keeps waiting on a transient fault while alive and in-budget`` () =
+    let step = decideReadinessStep (Error(TimeoutException("timed out"))) true false
+    test <@ step = ReadinessStep.KeepWaiting @>
+
+[<Fact(Timeout = 15000)>]
+let ``decideReadinessStep fails fast when the daemon process is gone`` () =
+    let step = decideReadinessStep (Error(TimeoutException("timed out"))) false false
+    test <@ step = ReadinessStep.FailCrashed @>
+
+[<Fact(Timeout = 15000)>]
+let ``decideReadinessStep times out when the deadline passes while still transient`` () =
+    let step = decideReadinessStep (Error(TimeoutException("timed out"))) true true
+    test <@ step = ReadinessStep.FailTimedOut @>
+
+[<Fact(Timeout = 15000)>]
+let ``decideReadinessStep proceeds on a non-connect probe error (daemon reached)`` () =
+    // A non-transient error means the daemon answered (just not cleanly); proceed
+    // and let the real check surface it, regardless of liveness/deadline.
+    test <@ decideReadinessStep (Error(exn "weird")) true false = ReadinessStep.ProceedReady @>
+    test <@ decideReadinessStep (Error(exn "weird")) false true = ReadinessStep.ProceedReady @>
+
+[<Fact(Timeout = 15000)>]
+let ``waitForDaemonReadyWith retries transient faults then reports Ready`` () =
+    // Simulate a daemon still cold-scanning: the first two probes time out, the
+    // third answers. The gate must WAIT (retry) and then succeed — not surface
+    // the startup-race timeout as a failure.
+    let mutable calls = 0
+    let mutable slept = 0
+
+    let probe () =
+        calls <- calls + 1
+
+        if calls < 3 then
+            Error(TimeoutException("The operation has timed out") :> exn)
+        else
+            Ok()
+
+    let result =
+        waitForDaemonReadyWith
+            probe
+            (fun () -> true) // daemon alive
+            (fun () -> DateTime.UtcNow)
+            (fun _ -> slept <- slept + 1) // no real sleep
+            ignore
+            10
+            60.0
+
+    test <@ result = DaemonReadiness.Ready @>
+    test <@ calls = 3 @>
+    test <@ slept = 2 @> // waited between the two transient failures
+
+[<Fact(Timeout = 15000)>]
+let ``waitForDaemonReadyWith fails fast as Crashed when the process died`` () =
+    let mutable calls = 0
+
+    let probe () =
+        calls <- calls + 1
+        Error(TimeoutException("timed out") :> exn)
+
+    let result =
+        waitForDaemonReadyWith
+            probe
+            (fun () -> false) // process gone
+            (fun () -> DateTime.UtcNow)
+            ignore
+            ignore
+            10
+            60.0
+
+    test <@ result = DaemonReadiness.Crashed @>
+    test <@ calls = 1 @> // did not spin the deadline
+
+[<Fact(Timeout = 15000)>]
+let ``waitForDaemonReadyWith reports TimedOut when never responsive within the deadline`` () =
+    // A monotonic fake clock that jumps past the deadline on the second read.
+    let mutable ticks = 0
+    let start = DateTime.UtcNow
+
+    let now () =
+        ticks <- ticks + 1
+        start.AddSeconds(if ticks >= 2 then 120.0 else 0.0)
+
+    let probe () =
+        Error(TimeoutException("timed out") :> exn)
+
+    let result = waitForDaemonReadyWith probe (fun () -> true) now ignore ignore 10 60.0
+
+    test <@ result = DaemonReadiness.TimedOut @>
+
+[<Fact(Timeout = 15000)>]
+let ``daemonProcessAliveWith treats a missing pidfile as alive`` () =
+    let fileOps =
+        { defaultFileOps with
+            FileExists = fun _ -> false }
+
+    test <@ daemonProcessAliveWith fileOps "/tmp/whatever" @>
+
+[<Fact(Timeout = 15000)>]
+let ``daemonProcessAliveWith reports a dead pid as not alive`` () =
+    // A pid that cannot name a live process → GetProcessById throws → not alive.
+    let fileOps =
+        { defaultFileOps with
+            FileExists = fun _ -> true
+            ReadAllText = fun _ -> "2000000000" }
+
+    test <@ not (daemonProcessAliveWith fileOps "/tmp/whatever") @>
+
+[<Fact(Timeout = 15000)>]
+let ``daemonProcessAliveWith treats an unparseable pidfile as alive`` () =
+    let fileOps =
+        { defaultFileOps with
+            FileExists = fun _ -> true
+            ReadAllText = fun _ -> "not-a-number" }
+
+    test <@ daemonProcessAliveWith fileOps "/tmp/whatever" @>
+
+[<Fact(Timeout = 15000)>]
+let ``daemonProcessAliveWith reports a live pid as alive`` () =
+    let pid = System.Diagnostics.Process.GetCurrentProcess().Id
+
+    let fileOps =
+        { defaultFileOps with
+            FileExists = fun _ -> true
+            ReadAllText = fun _ -> string pid }
+
+    test <@ daemonProcessAliveWith fileOps "/tmp/whatever" @>
+
+[<Fact(Timeout = 15000)>]
+let ``executeCommand Check retries a startup connect race then succeeds`` () =
+    withTempDir "cli-check-startup-race" (fun tmpDir ->
+        // Force the Reuse path (daemon already listening) so the readiness gate,
+        // not a fresh launch, is what absorbs the race.
+        let stateDir = Path.Combine(tmpDir, ".fshw")
+        Directory.CreateDirectory(stateDir) |> ignore
+        let hash = computeConfigHashWith defaultFileOps tmpDir Environment.ProcessPath
+        File.WriteAllText(Path.Combine(stateDir, "config.hash"), hash)
+
+        // The daemon is mid cold-scan: the first two GetStatus probes time out
+        // (ConnectAsync starved), the third answers. The readiness gate must WAIT
+        // and then let the check run green — never surface the timeout as exit 1.
+        let mutable statusCalls = 0
+
+        let getStatus () =
+            statusCalls <- statusCalls + 1
+
+            if statusCalls <= 2 then
+                raise (TimeoutException("The operation has timed out"))
+            else
+                completedStatusJson
+
+        let ipc =
+            { fakeIpc () with
+                IsRunning = fun _ -> true
+                WaitForScan = fun _ _ -> async { return "idle" }
+                GetStatus = fun _ -> async { return getStatus () }
+                GetDiagnostics = fun _ _ -> async { return """{"count": 0, "unchecked": 0}""" } }
+
+        let result =
+            executeCommand
+                (fun _ -> Unchecked.defaultof<_>)
+                ipc
+                tmpDir
+                "fshw-test-pipe"
+                (Check [])
+                defaultGlobalOptions
+                fakeConfig
+                30.0
+
+        test <@ result = 0 @>
+        test <@ statusCalls > 2 @>) // proves it retried past the transient timeouts
+
 // --- exit code paths via executeCommand ---
 
 [<Fact(Timeout = 15000)>]
-let ``executeCommand Check returns exit code 1 when daemon dies during poll`` () =
-    // `check` polls GetStatus in a loop until plugins are terminal. If the
-    // daemon dies (or is gracefully stopped) mid-poll the RPC throws and we
-    // must exit non-zero so wait-style scripts notice.
+let ``executeCommand Check returns exit code 2 when daemon dies during poll`` () =
+    // `check` polls GetStatus in a loop until plugins are terminal. If the daemon
+    // dies (or is gracefully stopped) mid-poll the RPC throws — the daemon never
+    // produced a verdict, so the check is UN-COMPLETABLE. That is exit 2, NEVER
+    // exit 1 (which an autonomous loop reads as "the daemon ran and found
+    // failures"). See `withCheckIpc` / AUTOMATION-66.
     let ipc =
         { fakeIpc () with
             WaitForScan = fun _ _ -> async { return "idle" }
@@ -988,12 +1195,12 @@ let ``executeCommand Check returns exit code 1 when daemon dies during poll`` ()
 
     let result = exec ipc (Check [])
 
-    test <@ result = 1 @>
+    test <@ result = 2 @>
 
 // --- executeCommand for TestRerun, Format, Check ---
 
 [<Fact(Timeout = 15000)>]
-let ``executeCommand TestRerun with no flags calls run-tests with empty payload`` () =
+let ``executeCommand TestRerun with no flags sends default waitSec and no filter`` () =
     let mutable capturedArgs = ""
 
     let ipc =
@@ -1009,7 +1216,10 @@ let ``executeCommand TestRerun with no flags calls run-tests with empty payload`
     let result = exec ipc (TestRerun [])
 
     test <@ result = 0 @>
-    test <@ capturedArgs = "{}" @>
+    // The slot-wait budget always travels (default) so a long beforeRun chain
+    // can't defeat the rerun; no filter is sent when no filter flag is given.
+    test <@ capturedArgs = $"""{{"waitSec":{DefaultTestRerunWaitSec}}}""" @>
+    test <@ not (capturedArgs.Contains("filter")) @>
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand TestRerun --filter-class forwards filter to run-tests IPC`` () =
@@ -1068,6 +1278,58 @@ let ``RerunFilter.render quotes only the value half of a trait pair`` () =
 
 [<Fact>]
 let ``RerunFilter.render returns empty string for empty flag list`` () = test <@ RerunFilter.render [] = "" @>
+
+[<Fact>]
+let ``RerunFilter.render omits WaitSec (it is not an xUnit filter)`` () =
+    // `--wait-sec` is a client-side slot-wait knob; it must never leak into the
+    // xUnit runner arg string.
+    test <@ RerunFilter.render [ WaitSec 300; FilterClass "*Foo*" ] = "--filter-class *Foo*" @>
+    test <@ RerunFilter.render [ WaitSec 300 ] = "" @>
+
+[<Fact>]
+let ``RerunFilter.waitSec returns the flag value`` () =
+    test <@ RerunFilter.waitSec [ WaitSec 42 ] = 42 @>
+
+[<Fact>]
+let ``RerunFilter.waitSec falls back to the default when absent`` () =
+    test <@ RerunFilter.waitSec [ FilterClass "*Foo*" ] = DefaultTestRerunWaitSec @>
+
+[<Fact(Timeout = 15000)>]
+let ``executeCommand TestRerun --wait-sec forwards waitSec to run-tests IPC`` () =
+    let mutable capturedArgs = ""
+
+    let ipc =
+        { fakeIpc () with
+            RunCommand =
+                fun _ _ args ->
+                    async {
+                        capturedArgs <- args
+                        return """{"status": "passed"}"""
+                    } }
+
+    let result = exec ipc (TestRerun [ WaitSec 300 ])
+
+    test <@ result = 0 @>
+    test <@ capturedArgs.Contains("\"waitSec\":300") @>
+
+[<Fact(Timeout = 15000)>]
+let ``executeCommand TestRerun forwards both filter and waitSec`` () =
+    let mutable capturedArgs = ""
+
+    let ipc =
+        { fakeIpc () with
+            RunCommand =
+                fun _ _ args ->
+                    async {
+                        capturedArgs <- args
+                        return """{"status": "passed"}"""
+                    } }
+
+    let result = exec ipc (TestRerun [ FilterClass "*CryptoTests*"; WaitSec 250 ])
+
+    test <@ result = 0 @>
+    test <@ capturedArgs.Contains("--filter-class") @>
+    test <@ capturedArgs.Contains("\"waitSec\":250") @>
 
 [<Fact(Timeout = 15000)>]
 let ``executeCommand Format calls formatAll`` () =
@@ -1162,8 +1424,10 @@ let private withStartupFailure command =
         executeCommand (fun _ -> Unchecked.defaultof<_>) ipc tmpDir "pipe" command defaultGlobalOptions fakeConfig 0.0)
 
 [<Fact(Timeout = 15000)>]
-let ``executeCommand Check returns 1 when daemon startup fails`` () =
-    test <@ withStartupFailure (Check []) = 1 @>
+let ``executeCommand Check returns 2 when daemon startup fails`` () =
+    // A daemon that never comes up means the check could not run at all —
+    // un-completable, so exit 2 (never exit 1, which reads as "failures found").
+    test <@ withStartupFailure (Check []) = 2 @>
 
 // --- computeLaunchCommand tests ---
 

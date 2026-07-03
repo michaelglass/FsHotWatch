@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- fix: `fshw check` no longer misreports a daemon-startup race as failures. A
+  check issued right after a daemon (re)start used to fire its first RPC while
+  the daemon was still cold-scanning (analyzer load starving the pipe acceptor)
+  or briefly between pipe endpoints during a stop→start; the `ConnectAsync`
+  timeout / connection-loss surfaced as **exit 1** ("failures found"), poisoning
+  an autonomous loop's verdict. A readiness gate now probes the daemon with a
+  lightweight RPC and RETRIES transient connect faults (with a visible progress
+  line) against a startup deadline distinct from the per-RPC connect timeout. A
+  genuine connect failure — daemon absent, crashed during startup (detected via
+  the pidfile, so it fails fast instead of spinning), or never responsive — now
+  exits **2** (un-completable) with a pointer to `logs/daemon.log`, **never**
+  exit 1. (AUTOMATION-66; `isTransientConnectFault` / `waitForDaemonReadyWith` /
+  `withCheckIpc`)
+- feat: `fshw test-rerun --wait-sec <seconds>` sets how long to wait for an
+  in-flight background test run to release the slot before reporting `busy`
+  (default **600**, up from a fixed 120 s). A long `tests.beforeRun` chain (90 s+)
+  held by a prior run no longer defeats an explicit rerun before it can execute.
+  (AUTOMATION-66)
+
 ## 0.11.0-alpha.1 - 2026-07-03
 
 - fix: a failing `beforeRun`/hook now includes the command's captured

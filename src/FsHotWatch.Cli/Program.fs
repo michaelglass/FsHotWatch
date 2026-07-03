@@ -22,6 +22,15 @@ type RerunFlag =
         string
     | [<CmdFlag(Description = "Pass --filter-trait <name=value> to the underlying test runner (xUnit v3)")>] FilterTrait of
         string
+    | [<CmdFlag(Description = "Seconds to wait for an in-flight background test run to release the slot before reporting busy (default 600). Raise it above a long tests.beforeRun chain so an explicit rerun isn't defeated.");
+        CmdArg("seconds")>] WaitSec of int
+
+/// Default slot-wait budget (seconds) sent to the daemon's `run-tests` command
+/// when `--wait-sec` is not given. Well above the old fixed 120 s so a long
+/// `tests.beforeRun` chain (90 s+) can't make an explicit `test-rerun` give up
+/// before the prior in-flight run releases the slot.
+[<Literal>]
+let DefaultTestRerunWaitSec = 600
 
 /// Render `RerunFlag list` to the raw arg string the xUnit v3 standalone
 /// runner expects, quoting values that contain whitespace / shell metachars.
@@ -48,10 +57,21 @@ module RerunFilter =
 
     let render (flags: RerunFlag list) : string =
         flags
-        |> List.map (function
-            | FilterClass p -> $"--filter-class %s{quoteIfNeeded p}"
-            | FilterTrait t -> $"--filter-trait %s{quoteTrait t}")
+        |> List.choose (function
+            | FilterClass p -> Some $"--filter-class %s{quoteIfNeeded p}"
+            | FilterTrait t -> Some $"--filter-trait %s{quoteTrait t}"
+            // `--wait-sec` is a client-side slot-wait knob, not an xUnit filter —
+            // it travels in the run-tests payload, never in the runner arg string.
+            | WaitSec _ -> None)
         |> String.concat " "
+
+    /// The slot-wait budget (seconds) from the flags, or `DefaultTestRerunWaitSec`.
+    let waitSec (flags: RerunFlag list) : int =
+        flags
+        |> List.tryPick (function
+            | WaitSec n -> Some n
+            | _ -> None)
+        |> Option.defaultValue DefaultTestRerunWaitSec
 
 type ConfigCommand = | [<Cmd("Validate .fshw.json without starting the daemon")>] Check
 
@@ -327,42 +347,90 @@ let private withIpc (action: unit -> int) : int =
         reportDaemonError ex
         1
 
+/// Whether the daemon is answering RPCs, as decided by the readiness gate before
+/// a check is issued. `Ready` proceeds; the two failure cases are both
+/// UN-COMPLETABLE (exit 2), distinguished only for the message shown.
+[<RequireQualifiedAccess>]
+type DaemonReadiness =
+    /// The daemon answered a probe — proceed with the check.
+    | Ready
+    /// The daemon process is provably gone (crashed during startup).
+    | Crashed
+    /// The daemon never became responsive within the readiness deadline.
+    | TimedOut
+
+/// Like `withIpc`, but for the `check` path. An IPC/connect fault here means the
+/// daemon never produced a verdict, so the check is UN-COMPLETABLE — exit 2
+/// ("completeness unachievable"), NEVER exit 1 (which a programmatic consumer
+/// reads as "the daemon ran and found failures"). Reports the connection error
+/// plus a pointer to the daemon log so the failure is actionable, never a bare
+/// non-zero that an autonomous loop misreads as diagnostics.
+let private withCheckIpc (action: unit -> int) : int =
+    try
+        action ()
+    with ex ->
+        reportDaemonError ex
+        eprintfn "  The check could not complete — see logs/daemon.log."
+        2
+
 /// Ensure daemon, poll for progress, render colored output.
 let private ensureAndQueryErrors
     (mode: ProgressRenderer.RenderMode)
     (noWarnFail: bool)
     (ensureDaemon: unit -> bool)
+    (waitReady: unit -> DaemonReadiness)
     (ipc: IpcOps)
     (pipeName: string)
     (pluginFilter: string)
     : int =
+    // A daemon that can't even be launched, that crashed during startup, or that
+    // never became responsive is UN-COMPLETABLE — exit 2, never exit 1. Only once
+    // the readiness gate confirms the daemon is answering RPCs do we issue the
+    // check; a connect fault after that (mid-check crash) is likewise exit 2 via
+    // `withCheckIpc`. This closes the startup-race hole where an RPC issued while
+    // the daemon was still cold-scanning timed out and poisoned the verdict as
+    // exit 1 ("failures found") for an autonomous loop.
     if not (ensureDaemon ()) then
-        eprintfn "Failed to start daemon"
-        1
+        eprintfn "Failed to start daemon — the check could not run. See logs/daemon.log."
+        2
     else
-        withIpc (fun () ->
-            IpcOutput.pollAndRender
-                mode
-                (renderLines mode (not noWarnFail))
-                noWarnFail
-                (fun () -> ipc.WaitForScan pipeName -1L |> Async.RunSynchronously)
-                // Authoritative settle: block until the daemon reports its sound
-                // verdict (`waitForVerdict`, which gates on plugin busy/inflight
-                // state + generation advancement + quiescence). This is what
-                // closes the false-green hole — `WaitForScan` alone only waits
-                // for the SCAN generation to be signalled, which can race ahead
-                // of the test-prune run launched by the build's BuildCompleted.
-                // `-1` = no client-imposed timeout (the daemon bounds the wait).
-                (fun () -> ipc.WaitForComplete pipeName -1 |> Async.RunSynchronously)
-                (fun () -> ipc.GetStatus pipeName |> Async.RunSynchronously)
-                (fun () -> ipc.GetDiagnostics pipeName pluginFilter |> Async.RunSynchronously)
-                // Convergence re-scan: start a scan and block until it (and the
-                // plugins it triggers) settle, so the next GetDiagnostics read
-                // reflects the fresh scan. `Scan` returns "scan started:<gen>";
-                // `WaitForScan -1L` waits for the next completion.
-                (fun () ->
-                    ipc.Scan pipeName |> Async.RunSynchronously |> ignore
-                    ipc.WaitForScan pipeName -1L |> Async.RunSynchronously))
+        match waitReady () with
+        | DaemonReadiness.Crashed ->
+            eprintfn
+                "The daemon stopped responding during startup (it appears to have exited). \
+                 Nothing was checked — see logs/daemon.log, then re-run `fshw check`."
+
+            2
+        | DaemonReadiness.TimedOut ->
+            eprintfn
+                "The daemon did not become ready in time — it may be wedged mid-startup. \
+                 Nothing was checked — see logs/daemon.log."
+
+            2
+        | DaemonReadiness.Ready ->
+            withCheckIpc (fun () ->
+                IpcOutput.pollAndRender
+                    mode
+                    (renderLines mode (not noWarnFail))
+                    noWarnFail
+                    (fun () -> ipc.WaitForScan pipeName -1L |> Async.RunSynchronously)
+                    // Authoritative settle: block until the daemon reports its sound
+                    // verdict (`waitForVerdict`, which gates on plugin busy/inflight
+                    // state + generation advancement + quiescence). This is what
+                    // closes the false-green hole — `WaitForScan` alone only waits
+                    // for the SCAN generation to be signalled, which can race ahead
+                    // of the test-prune run launched by the build's BuildCompleted.
+                    // `-1` = no client-imposed timeout (the daemon bounds the wait).
+                    (fun () -> ipc.WaitForComplete pipeName -1 |> Async.RunSynchronously)
+                    (fun () -> ipc.GetStatus pipeName |> Async.RunSynchronously)
+                    (fun () -> ipc.GetDiagnostics pipeName pluginFilter |> Async.RunSynchronously)
+                    // Convergence re-scan: start a scan and block until it (and the
+                    // plugins it triggers) settle, so the next GetDiagnostics read
+                    // reflects the fresh scan. `Scan` returns "scan started:<gen>";
+                    // `WaitForScan -1L` waits for the next completion.
+                    (fun () ->
+                        ipc.Scan pipeName |> Async.RunSynchronously |> ignore
+                        ipc.WaitForScan pipeName -1L |> Async.RunSynchronously))
 
 /// Compute a hash of the config file + CLI binary for staleness detection (injectable).
 let computeConfigHashWith (fileOps: FileOps) (repoRoot: string) (exePath: string) =
@@ -507,6 +575,158 @@ let private ensureDaemon
         killStaleDaemon repoRoot
         startFreshDaemon ipc repoRoot pipeName currentHash extraArgs logDirName startupTimeoutSeconds
 
+// ----------------------------------------------------------------------------
+// Daemon readiness gate (AUTOMATION-66).
+//
+// `ensureDaemon` returns as soon as the named pipe is *listening* (`IsRunning` —
+// a 500 ms probe connect). But a daemon that just (re)started is often still
+// mid cold-scan (analyzer reflection load pegging cores), so the FIRST real RPC
+// issued by a check — `ConnectAsync(5000)` inside `IpcClient.invoke` — can time
+// out because the acceptor is starved, or hit a pipe endpoint that was briefly
+// torn down during a stop→start. The old code surfaced that as exit 1
+// ("failures found"), poisoning an autonomous loop's verdict. The gate below
+// RETRIES such transient connect faults against a startup deadline (distinct
+// from the per-RPC connect timeout) until the daemon answers, fails FAST (exit
+// 2) if the daemon process is provably gone, and gives up (exit 2) if it never
+// becomes responsive.
+// ----------------------------------------------------------------------------
+
+/// True when `ex` is a connect-phase transient — the daemon is reachable-in-
+/// principle but not yet answering because it is mid-startup (cold scan /
+/// analyzer load) or briefly tore down a pipe endpoint during a restart. These
+/// are RETRIED by the readiness gate rather than surfaced as a hard failure:
+///  - `TimeoutException` — a `NamedPipeClientStream.ConnectAsync` connect timeout
+///    ("The operation has timed out") while the acceptor is starved by scan work.
+///  - StreamJsonRpc `ConnectionLostException` (matched by type-name substring so
+///    there is no compile-time dependency on the transport assembly) — the pipe
+///    dropped before the request completed.
+///  - `IOException` / `EndOfStreamException` (an `IOException` subtype) /
+///    `ObjectDisposedException` — a raw pipe teardown (an old daemon endpoint
+///    disposed during a stop→start).
+/// Walks `InnerException` so an `AggregateException` from `Async.RunSynchronously`
+/// is seen through.
+let rec isTransientConnectFault (ex: exn) : bool =
+    match ex with
+    | null -> false
+    | :? TimeoutException -> true
+    | :? System.IO.IOException -> true
+    | :? System.ObjectDisposedException -> true
+    | _ ->
+        ex.GetType().FullName.Contains("ConnectionLost", StringComparison.Ordinal)
+        || (not (isNull ex.InnerException) && isTransientConnectFault ex.InnerException)
+
+/// The next action for one readiness-probe iteration.
+[<RequireQualifiedAccess>]
+type ReadinessStep =
+    | ProceedReady
+    | KeepWaiting
+    | FailCrashed
+    | FailTimedOut
+
+/// Pure decision for one readiness-probe iteration. Ordering matters: a
+/// NON-transient probe error means the daemon was reached (it answered, just not
+/// with a clean status) so we PROCEED and let the real check surface it; only a
+/// transient connect fault consults liveness (fail fast if the process is gone)
+/// and the deadline (give up as un-completable) before waiting again.
+let decideReadinessStep (probe: Result<unit, exn>) (daemonAlive: bool) (deadlineReached: bool) : ReadinessStep =
+    match probe with
+    | Ok() -> ReadinessStep.ProceedReady
+    | Error ex ->
+        if not (isTransientConnectFault ex) then
+            ReadinessStep.ProceedReady
+        elif not daemonAlive then
+            ReadinessStep.FailCrashed
+        elif deadlineReached then
+            ReadinessStep.FailTimedOut
+        else
+            ReadinessStep.KeepWaiting
+
+/// True unless the daemon's recorded PID is PROVABLY gone. Reads `.fshw/daemon.pid`;
+/// a missing or unparseable pidfile is treated as ALIVE (unknown ⇒ keep waiting,
+/// never mis-declare a crash), while a pid whose process no longer exists is a
+/// proven crash (fail fast). Injectable file ops for testing.
+let daemonProcessAliveWith (fileOps: FileOps) (repoRoot: string) : bool =
+    let pidPath = Path.Combine(repoRoot, ".fshw", "daemon.pid")
+
+    if not (fileOps.FileExists pidPath) then
+        true
+    else
+        match Int32.TryParse((fileOps.ReadAllText pidPath).Trim()) with
+        | false, _ -> true
+        | true, pid ->
+            try
+                not (System.Diagnostics.Process.GetProcessById(pid).HasExited)
+            with
+            | :? ArgumentException -> false // no process with that id — proven dead
+            | _ -> true // any other probe error — assume alive rather than false-crash
+
+/// Effectful readiness gate. Probes the daemon with a lightweight RPC until it
+/// answers (`Ready`), the daemon process is proven gone (`Crashed`), or the
+/// readiness deadline elapses (`TimedOut`). Transient connect faults during a
+/// cold-scan startup are retried after a one-time visible progress line. All
+/// effects (probe / liveness / clock / sleep / progress) are injected so the loop
+/// is deterministically testable.
+let waitForDaemonReadyWith
+    (probe: unit -> Result<unit, exn>)
+    (isDaemonAlive: unit -> bool)
+    (now: unit -> DateTime)
+    (sleep: int -> unit)
+    (onWaiting: unit -> unit)
+    (pollMs: int)
+    (deadlineSeconds: float)
+    : DaemonReadiness =
+    let deadline = now().AddSeconds(deadlineSeconds)
+    let mutable announced = false
+
+    let rec loop () =
+        match probe () with
+        | Ok() -> DaemonReadiness.Ready
+        | Error ex ->
+            match decideReadinessStep (Error ex) (isDaemonAlive ()) (now () >= deadline) with
+            | ReadinessStep.ProceedReady -> DaemonReadiness.Ready
+            | ReadinessStep.FailCrashed -> DaemonReadiness.Crashed
+            | ReadinessStep.FailTimedOut -> DaemonReadiness.TimedOut
+            | ReadinessStep.KeepWaiting ->
+                if not announced then
+                    onWaiting ()
+                    announced <- true
+
+                sleep pollMs
+                loop ()
+
+    loop ()
+
+/// Readiness deadline for the check path. Deliberately generous (and DISTINCT
+/// from the 5 s per-RPC connect timeout) so a cold-scan startup — analyzer
+/// reflection load pegging cores — has room to become RPC-responsive before the
+/// check is declared un-completable.
+[<Literal>]
+let DaemonReadinessTimeoutSeconds = 60.0
+
+/// Production readiness gate: probe the daemon with a cheap `GetStatus` RPC,
+/// retrying transient connect faults until it answers or the deadline elapses.
+let private waitForDaemonReady
+    (ipc: IpcOps)
+    (repoRoot: string)
+    (pipeName: string)
+    (deadlineSeconds: float)
+    : DaemonReadiness =
+    let probe () =
+        try
+            ipc.GetStatus pipeName |> Async.RunSynchronously |> ignore
+            Ok()
+        with ex ->
+            Error(unwrapIpcException ex)
+
+    waitForDaemonReadyWith
+        probe
+        (fun () -> daemonProcessAliveWith defaultFileOps repoRoot)
+        (fun () -> DateTime.UtcNow)
+        (fun ms -> Thread.Sleep ms)
+        (fun () -> eprintfn "  Waiting for the daemon to finish starting...")
+        200
+        deadlineSeconds
+
 /// Options assembled from parsed global flags.
 type GlobalOptions =
     {
@@ -617,8 +837,14 @@ let executeCommand
         let ensureDaemonFn () =
             ensureDaemon ipc repoRoot pipeName opts.DaemonExtraArgs config.LogDir startupTimeoutSeconds
 
+        // Gate the check on the daemon actually answering RPCs, not just the pipe
+        // being listenable. The readiness deadline is at least
+        // `DaemonReadinessTimeoutSeconds`, never shorter than the launch timeout.
+        let waitReadyFn () =
+            waitForDaemonReady ipc repoRoot pipeName (max startupTimeoutSeconds DaemonReadinessTimeoutSeconds)
+
         let queryPluginWith (mode: ProgressRenderer.RenderMode) (filter: string) : int =
-            ensureAndQueryErrors mode noWarnFail ensureDaemonFn ipc pipeName filter
+            ensureAndQueryErrors mode noWarnFail ensureDaemonFn waitReadyFn ipc pipeName filter
 
         let queryPlugin filter =
             queryPluginWith ProgressRenderer.Verbose filter
@@ -778,10 +1004,14 @@ let executeCommand
         | TestRerun flags ->
             // Filter knobs live here, not on `fshw test`, so the
             // forward-progress contract (everything downstream runs) stays intact.
+            // `waitSec` (the slot-wait budget) always travels so a long
+            // `beforeRun` chain can't defeat an explicit rerun.
+            let waitSec = RerunFilter.waitSec flags
+
             let runArgsJson =
                 match RerunFilter.render flags with
-                | "" -> "{}"
-                | filter -> JsonSerializer.Serialize {| filter = filter |}
+                | "" -> JsonSerializer.Serialize {| waitSec = waitSec |}
+                | filter -> JsonSerializer.Serialize {| filter = filter; waitSec = waitSec |}
 
             withDaemon (fun () ->
                 let result =
