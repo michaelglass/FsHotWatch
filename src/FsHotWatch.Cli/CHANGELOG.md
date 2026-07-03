@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: a daemon shutdown/transport teardown during `check`'s settle wait now exits **2** with a clear "daemon shut down mid-wait" diagnostic instead of crashing with an opaque connection-loss error (`IpcOutput.isDaemonShutdownDuringWait`).
+
 ## 0.8.0-alpha.41 - 2026-07-02
 
 - feat: the report-producing plugins (**analyzers** and **lint**) now skip compile items that resolve **outside the repo root** by default — NuGet-injected `_content` source (e.g. xunit.v3's `DefaultRunnerReporters.fs`) or files above/beside the repo. Such third-party source is compiled in but not yours to lint (was a latent analyzer-crash surface —). Opt back in with `"includeOutsideRepo": true` in `.fshw.json`. (`obj/`+`bin/` are always skipped independently.)
