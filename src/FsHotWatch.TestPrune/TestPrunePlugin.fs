@@ -500,6 +500,32 @@ let private formatTestResultsJson (results: TestResults) =
            projects = projects |}
     )
 
+/// Default slot-wait budget (ms) for the manual `run-tests` command when the
+/// payload carries no `waitSec` — well above the old fixed 120 s so a long
+/// `tests.beforeRun` chain (90 s+) held by a prior in-flight run can't make an
+/// explicit `test-rerun` give up and report `busy` before the slot frees. The
+/// CLI always sends `waitSec` (default `DefaultTestRerunWaitSec`); this fallback
+/// covers a missing/malformed field (an older CLI or hand-crafted payload).
+[<Literal>]
+let internal DefaultRunTestsWaitMs = 600_000
+
+/// Read the `waitSec` slot-wait budget (seconds) from a `run-tests` argument
+/// JSON object and convert it to milliseconds, falling back to `fallbackMs` when
+/// the argument is absent, unparseable, or lacks a numeric `waitSec` field. Pure
+/// so the wait budget is unit-testable without round-tripping the IPC command.
+let internal parseRunTestsWaitMs (argStr: string) (fallbackMs: int) : int =
+    try
+        use doc = JsonDocument.Parse(argStr)
+
+        match doc.RootElement.TryGetProperty("waitSec") with
+        | true, v when v.ValueKind = JsonValueKind.Number ->
+            match v.TryGetInt32() with
+            | true, secs when secs > 0 -> secs * 1000
+            | _ -> fallbackMs
+        | _ -> fallbackMs
+    with _ ->
+        fallbackMs
+
 /// Build the filter arg string for a config given affected classes.
 let internal buildFilterArgs (config: TestConfig) (classesByProject: Map<string, string list>) : string option =
     let classes =
@@ -2185,8 +2211,15 @@ let create
                         // command always executes. If the slot is still held after
                         // the wait (a genuinely long run, or a stuck slot), report a
                         // DISTINCT `busy` status — never a generic verdict that could
-                        // read as a pass/fail the command never produced.
-                        let waitForSlotMs = 120_000
+                        // read as a pass/fail the command never produced. The
+                        // budget is configurable via the CLI's `--wait-sec`
+                        // (payload `waitSec`) so a long `beforeRun` chain held by
+                        // a prior run can't defeat the rerun; default well above
+                        // the old fixed 120 s.
+                        let waitForSlotMs =
+                            let argStr = if args.Length > 0 then args.[0].Trim() else "{}"
+                            parseRunTestsWaitMs argStr DefaultRunTestsWaitMs
+
                         let pollMs = 100
                         let mutable waitedMs = 0
 

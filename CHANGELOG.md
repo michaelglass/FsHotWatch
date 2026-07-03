@@ -4,6 +4,32 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### A daemon-startup race can no longer poison a check verdict
+
+`fshw check` issued right after a daemon (re)start — e.g. an explicit
+`stop`/`start` to reload analyzers — could fire its first RPC while the daemon
+was still cold-scanning (analyzer reflection load starving the pipe acceptor) or
+briefly between pipe endpoints during the restart. The `ConnectAsync` timeout
+("The operation has timed out") or a dropped connection surfaced as **exit 1** —
+which a programmatic consumer reads as "the daemon ran and found failures". An
+autonomous loop watching the exit code would then treat a transient startup race
+as real diagnostics. `check` now gates on the daemon actually *answering* an RPC,
+not merely the pipe being listenable: transient connect faults during startup are
+RETRIED (with a visible progress line) against a startup deadline that is
+distinct from the per-RPC connect timeout. A genuine connect failure — the daemon
+is absent, crashed during startup (detected via its pidfile, so it fails fast
+rather than spinning out the deadline), or never becomes responsive — now exits
+**2** ("un-completable") with a pointer to `logs/daemon.log`, never exit 1.
+
+### `test-rerun` can outlast a long `beforeRun` chain
+
+`fshw test-rerun` waited a fixed 120 s for an in-flight background test run to
+release the test slot before giving up with `busy`. A repo whose
+`tests.beforeRun` chain takes 90 s+ (so the prior run easily runs past 120 s)
+could never get its class-level rerun output in the terminal. The wait is now
+configurable via `--wait-sec <seconds>` and defaults to **600 s**, so a long
+setup chain no longer defeats an explicit rerun.
+
 ### A stale test binary can no longer pass the gate
 
 `test-prune` runs each test project with `dotnet run --no-build`, executing the
