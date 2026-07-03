@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- fix: a **seeded** `test-impact.db` (copied into a fresh workspace per ADR-010)
+  no longer silently under-selects. The fshw-owned freshness sidecar
+  (`file-freshness.json`) doesn't travel with the copied DB, so every seeded
+  file had no sidecar record and the `detectChanges` call site treated
+  "no record" the same as "poisoned" — it BYPASSED the diff and a real edit
+  against a seeded row set detected zero changed symbols → zero affected tests →
+  a vacuous green gate. `FileFreshness` now classifies stored rows three ways
+  (`Clean` / `Dirty` / `Unknown`): an ABSENT record (`Unknown`) over a non-empty
+  stored row set is a seeded DB and IS diffed — restoring ADR-010's "a seeded DB
+  over-indexes but never serves a stale verdict" guarantee — while an explicit
+  `fcsClean=false` record (`Dirty`, possibly-partial cold-scan rows) stays
+  bypassed to avoid the phantom "all symbols changed" delta. A genuinely empty
+  DB (real cold scan) still falls through to no-diff so it doesn't select the
+  whole suite. (AUTOMATION-67)
+
 ## 0.8.0-alpha.1 - 2026-07-03
 
 - fix: a transient DB error while resolving covering projects (`QueryAffectedTests` per-symbol lookups) now yields the honest re-runnable `Aborted` lifecycle instead of escaping as a raw framework fault that stranded the run before any test process launched (AUTOMATION-65).

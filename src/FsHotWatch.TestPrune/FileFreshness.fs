@@ -14,10 +14,12 @@
 /// The map fits comfortably in memory at fshw's scale (hundreds-to-low-thousands
 /// of files; rows are ~80 bytes each).
 ///
-/// Consumed by `TestPrunePlugin`'s detectChanges call site: if the sidecar
-/// doesn't say "this file ended its last check FCS-clean" the file is
-/// untrusted for cross-restart skip and detectChanges is bypassed (treated as
-/// "no diff information" rather than "all symbols changed").
+/// Consumed by `TestPrunePlugin`'s detectChanges call site via the three-way
+/// `classify` (Clean / Dirty / Unknown). Explicitly-`Dirty` rows are bypassed
+/// (untrusted for diff). An `Unknown` (absent) record over a NON-EMPTY stored
+/// row set is a seeded `test-impact.db` (ADR-010) whose sidecar didn't travel
+/// with it — those rows ARE diffed, so a seeded workspace selects the tests a
+/// real edit affects rather than silently skipping them.
 module FsHotWatch.TestPrune.FileFreshness
 
 open System
@@ -193,10 +195,47 @@ let markUnverified (relPath: string) (store: Store) : Store =
               LastCleanCheckAt = None }
             store
 
-/// True iff the sidecar has an explicit "ended clean" record for `relPath`.
-/// Absent entries return false — unknown == untrusted, the conservative
-/// default for cross-restart Phase B replay.
-let isClean (relPath: string) (store: Store) : bool =
+/// Three-way trust classification for a file's stored symbol rows, consumed by
+/// the `detectChanges` call site to decide whether those rows can be diffed
+/// against. The distinction between `Unknown` and `Dirty` is load-bearing
+/// (AUTOMATION-67 — the seeded-DB under-selection class):
+///
+///   - `Clean`   — an explicit "ended its last check FCS-clean" record. Safe to
+///                 diff: the stored rows are a complete, trustworthy extraction.
+///   - `Dirty`   — an explicit `fcsClean = false` record. The stored rows were
+///                 written while FCS reported errors and may be PARTIAL; diffing
+///                 against them yields a phantom "all symbols changed" delta (the
+///                 4921-affected-tests Phase B regression). Untrusted for diff.
+///   - `Unknown` — NO record at all. We have no information. The dominant cause
+///                 is a seeded `test-impact.db` (ADR-010) whose fshw-owned
+///                 freshness sidecar did not travel with it into a fresh
+///                 workspace: the stored rows are a real prior DB, safe to diff.
+///                 Treating `Unknown` like `Dirty` (bypass → no-diff) silently
+///                 UNDER-selects, violating ADR-010's "a seeded DB over-indexes
+///                 but never serves a stale verdict" guarantee. The call site
+///                 therefore trusts `Unknown` for diff *when stored rows exist*
+///                 (a genuinely empty DB / cold scan has no rows to diff and is
+///                 handled separately).
+type Freshness =
+    | Clean
+    | Dirty
+    | Unknown
+
+/// Classify `relPath`'s stored-row trust level. See `Freshness`.
+let classify (relPath: string) (store: Store) : Freshness =
     match Map.tryFind relPath store with
-    | Some s -> s.FcsClean
-    | None -> false
+    | Some s when s.FcsClean -> Clean
+    | Some _ -> Dirty
+    | None -> Unknown
+
+/// True iff the sidecar has an explicit "ended clean" record for `relPath`.
+/// Absent entries return false — unknown == not-explicitly-clean, the
+/// conservative default for the `markClean` gate. NOTE: this predicate must NOT
+/// be used to gate `detectChanges` — that call site needs the three-way
+/// `classify` so it can tell an absent (seeded-DB) record from an explicit dirty
+/// one. See `Freshness`.
+let isClean (relPath: string) (store: Store) : bool =
+    match classify relPath store with
+    | Clean -> true
+    | Dirty
+    | Unknown -> false

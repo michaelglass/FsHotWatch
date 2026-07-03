@@ -169,6 +169,50 @@ let ``isClean returns true only when entry is present and fcsClean = true`` () =
     test <@ not (isClean "dirty.fs" store) @>
     test <@ not (isClean "absent.fs" store) @>
 
+// =============================================================================
+// classify — three-way trust (Clean / Dirty / Unknown) consumed by the
+// detectChanges call site. The Unknown-vs-Dirty split is what lets a seeded
+// test-impact.db (ADR-010) whose sidecar didn't travel be diffed (Unknown)
+// while explicitly-poisoned rows stay bypassed (Dirty). AUTOMATION-67.
+// =============================================================================
+
+[<Fact(Timeout = 5000)>]
+let ``classify: explicit clean entry -> Clean`` () =
+    let now = DateTime(2026, 5, 3, 12, 0, 0, DateTimeKind.Utc)
+
+    let store =
+        Map.empty
+        |> Map.add
+            "clean.fs"
+            { FcsClean = true
+              LastCleanCheckAt = Some now }
+
+    test <@ classify "clean.fs" store = Clean @>
+
+[<Fact(Timeout = 5000)>]
+let ``classify: explicit dirty entry -> Dirty (poisoned rows, stays bypassed)`` () =
+    let store =
+        Map.empty
+        |> Map.add
+            "dirty.fs"
+            { FcsClean = false
+              LastCleanCheckAt = None }
+
+    test <@ classify "dirty.fs" store = Dirty @>
+
+[<Fact(Timeout = 5000)>]
+let ``classify: absent entry -> Unknown (seeded-DB case, diffable when rows exist)`` () =
+    // The seeded-workspace under-selection root cause: a copied test-impact.db
+    // has rows but no matching sidecar record, so every seeded file classifies
+    // Unknown (NOT Dirty). The call site diffs Unknown-over-nonempty rows.
+    test <@ classify "never-seen.fs" Map.empty = Unknown @>
+
+[<Fact(Timeout = 5000)>]
+let ``classify: Unknown is distinct from Dirty — the load-bearing polarity split`` () =
+    // Regression guard: if this collapses (e.g. classify maps None->Dirty), the
+    // seeded-DB fix silently reverts to under-selection.
+    test <@ classify "absent" Map.empty <> Dirty @>
+
 [<Fact(Timeout = 5000)>]
 let ``save uses atomic write — partial state never visible at sidecar path`` () =
     // Indirect check: after save the .tmp file should not exist alongside,

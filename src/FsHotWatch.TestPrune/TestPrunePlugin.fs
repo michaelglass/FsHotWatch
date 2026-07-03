@@ -2329,9 +2329,9 @@ let create
                     let currentClean =
                         not (hasFcsErrors ctx.FcsSuppressedCodes result.Source result.CheckResults)
 
-                    let storedClean =
+                    let storedFreshness =
                         let store = Volatile.Read(&freshnessRef)
-                        FileFreshness.isClean relPath store
+                        FileFreshness.classify relPath store
 
                     if not currentClean then
                         let errCount =
@@ -2381,33 +2381,56 @@ let create
                             state.PendingAnalysis
                             |> Map.add projectName (filteredExisting @ [ fileAnalysis ])
 
-                        // Path D gate: only run detectChanges when both ends of
-                        // the comparison are FCS-clean. If the sidecar says the
-                        // stored rows ended their last session dirty, those
-                        // rows may be partial / poisoned cold-scan extractions
-                        // — comparing against them produces a phantom "all
-                        // symbols changed" delta (the 4921-affected-tests
-                        // Phase B regression). If the current FCS result is
-                        // dirty, the just-extracted symbols themselves are
-                        // suspect. Either side untrusted → bypass the diff
-                        // and treat as "no change information for this file."
-                        // The first clean-clean comparison (typically: warm
-                        // recheck after BuildCompleted within the same
-                        // session) restores the normal flow.
+                        // Path D gate: decide whether the stored rows can be
+                        // diffed against. Requires the CURRENT extraction to be
+                        // FCS-clean (a dirty current result means the
+                        // just-extracted symbols are themselves suspect). Given
+                        // that, the STORED side is trusted per FileFreshness.classify:
+                        //
+                        //   Clean   — explicit clean stamp → diff.
+                        //   Unknown — NO sidecar record. Over a NON-EMPTY stored
+                        //             row set this is a seeded test-impact.db
+                        //             (ADR-010) whose freshness sidecar didn't
+                        //             travel into this fresh workspace. ADR-010
+                        //             guarantees a seeded DB over-indexes but
+                        //             never serves a stale verdict, so DIFF the
+                        //             seeded rows: unchanged files find no
+                        //             changes, edited files find the real delta
+                        //             and select their covering tests. Bypassing
+                        //             here (the pre-AUTOMATION-67 behaviour)
+                        //             silently UNDER-selected — a real edit in a
+                        //             seeded workspace ran zero tests → vacuous
+                        //             green. Gated on stored rows existing: an
+                        //             EMPTY stored set is a genuine cold scan
+                        //             (empty DB) with no baseline to diff, which
+                        //             stays no-diff so it doesn't select the
+                        //             whole suite.
+                        //   Dirty   — explicit `fcsClean = false` stamp: the
+                        //             stored rows were written during an FCS-error
+                        //             extraction and may be PARTIAL. Diffing
+                        //             against them yields a phantom "all symbols
+                        //             changed" delta (the 4921-affected-tests
+                        //             Phase B regression). Bypass.
+                        let storedTrustedForDiff =
+                            match storedFreshness with
+                            | FileFreshness.Clean -> true
+                            | FileFreshness.Unknown -> not storedSymbols.IsEmpty
+                            | FileFreshness.Dirty -> false
+
                         let (changedNames, suppressedDiff) =
-                            if currentClean && storedClean then
+                            if currentClean && storedTrustedForDiff then
                                 // detectChanges filters externs internally; no pre-filter needed here.
                                 let (changes, _events) = detectChanges normalizedSymbols storedSymbols
 
                                 Logging.info
                                     "test-prune"
-                                    $"detectChanges for %s{relPath}: %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{normalizedSymbols.Length} current"
+                                    $"detectChanges for %s{relPath} (stored=%A{storedFreshness}): %d{changes.Length} changes, %d{storedSymbols.Length} stored, %d{normalizedSymbols.Length} current"
 
                                 changedSymbolNames changes, false
                             else
                                 Logging.info
                                     "test-prune"
-                                    $"detectChanges bypassed for %s{relPath} (currentClean=%b{currentClean}, storedClean=%b{storedClean}); falling back to no-diff for this file"
+                                    $"detectChanges bypassed for %s{relPath} (currentClean=%b{currentClean}, stored=%A{storedFreshness}, storedRows=%d{storedSymbols.Length}); falling back to no-diff for this file"
 
                                 [], true
 

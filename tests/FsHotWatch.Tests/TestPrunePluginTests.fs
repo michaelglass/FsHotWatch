@@ -1486,6 +1486,193 @@ let validate (cfg: Config) = cfg.Value.Length > 0
         test <@ capturedArgs.Contains("--filter-class") @>
         test <@ capturedArgs.Contains("Tests") @>)
 
+// =============================================================================
+// AUTOMATION-67 — seeded-workspace under-selection regression tests.
+//
+// A fresh jj workspace seeds `test-impact.db` from the default workspace
+// (ADR-010) but NOT the fshw-owned freshness sidecar (it lives under `.fshw/`
+// and doesn't travel with the copied DB). Before the fix, every seeded file
+// therefore classified `storedClean = false` and the `detectChanges` call site
+// BYPASSED the diff — a real edit against a seeded row set detected zero changed
+// symbols → zero affected tests → vacuous green (the NEWS-661 gate that
+// "selected ZERO tests"). The fix distinguishes an ABSENT sidecar record
+// (`Unknown` — a seeded DB, diffable) from an explicit dirty stamp (`Dirty` —
+// poisoned rows, still bypassed).
+//
+// These two tests reproduce the seam directly: seed the DB exactly as the
+// plugin's flush would, leave the sidecar ABSENT, edit a covered symbol, and
+// assert the covering test is re-selected. Before the fix both assertions fail
+// (affected-tests returns "[]"). They also prove the edges the ticket flagged
+// are structurally trackable: a string-literal-only change inside a function
+// (instance 1) and a DU-list length change (instance 2) both alter the changed
+// symbol's content hash and re-select the asserting test.
+// =============================================================================
+
+/// Seed `dbPath` with the combined analysis of `libSource` + `testsSource`,
+/// mirroring `flushPendingAnalysis` (one merged AnalysisResult per project,
+/// symbol paths normalized to repo-relative, TestProject stamped). Deliberately
+/// does NOT write the freshness sidecar — that absence IS the fresh-workspace
+/// condition under test. Returns the registered project options.
+let private seedImpactDbNoSidecar
+    (checker: FSharpChecker)
+    (tmpDir: string)
+    (dbPath: string)
+    (libFile: string)
+    (libSource: string)
+    (testsFile: string)
+    (testsSource: string)
+    : FSharpProjectOptions =
+    File.WriteAllText(libFile, libSource)
+    File.WriteAllText(testsFile, testsSource)
+
+    let libText = SourceText.ofString libSource
+
+    let libOptions =
+        checker.GetProjectOptionsFromScript(libFile, libText, assumeDotNetFramework = false)
+        |> Async.RunSynchronously
+        |> fst
+
+    let projOptions =
+        { libOptions with
+            SourceFiles = [| libFile; testsFile |] }
+
+    // Derive the project name exactly as the plugin does from ProjectFileName so
+    // the seeded TestProject label matches what the live plugin will compute.
+    let projectName =
+        let raw = projOptions.ProjectFileName |> Path.GetFileNameWithoutExtension
+
+        if raw.EndsWith(".fsx") then
+            raw.Substring(0, raw.Length - 4)
+        else
+            raw
+
+    let analyze file src =
+        match analyzeSource checker file src projOptions projectName |> Async.RunSynchronously with
+        | Ok r -> r
+        | Error m -> failwith $"seed analyze failed for {file}: {m}"
+
+    let libR = analyze libFile libSource
+    let testsR = analyze testsFile testsSource
+
+    let combined =
+        { Symbols = normalizeSymbolPaths tmpDir (libR.Symbols @ testsR.Symbols)
+          Dependencies = libR.Dependencies @ testsR.Dependencies
+          TestMethods =
+            (libR.TestMethods @ testsR.TestMethods)
+            |> List.map (fun t -> { t with TestProject = projectName })
+          Attributes = libR.Attributes @ testsR.Attributes
+          ParentLinks = libR.ParentLinks @ testsR.ParentLinks
+          Diagnostics = AnalysisDiagnostics.Zero }
+
+    let db = Database.create dbPath
+    db.RebuildProjects([ combined ])
+    projOptions
+
+/// Drive an edited `libFile` through a FRESH plugin (empty sidecar) over the
+/// seeded DB and poll `affected-tests`. Returns the raw JSON so the caller can
+/// assert on the selected test method name.
+let private selectAfterSeededEdit
+    (checker: FSharpChecker)
+    (tmpDir: string)
+    (dbPath: string)
+    (projOptions: FSharpProjectOptions)
+    (libFile: string)
+    (libSourceEdited: string)
+    (expectedTest: string)
+    : string =
+    // The fresh-workspace invariant: the seeded DB exists but the sidecar does not.
+    test <@ not (File.Exists(FsHotWatch.TestPrune.FileFreshness.sidecarPath tmpDir)) @>
+
+    let pipeline = CheckPipeline(checker)
+    pipeline.RegisterProject(projOptions.ProjectFileName, projOptions)
+
+    let host = PluginHost.create checker tmpDir
+    let handler = create dbPath tmpDir None None None None None []
+    host.RegisterHandler(handler)
+
+    File.WriteAllText(libFile, libSourceEdited)
+
+    match pipeline.CheckFile(AbsFilePath.create libFile) |> Async.RunSynchronously with
+    | Some r -> host.EmitFileChecked(r)
+    | None -> failwith "edited lib CheckFile failed"
+
+    let mutable affected = ""
+
+    waitUntil
+        (fun () ->
+            match host.RunCommand("affected-tests", [||]) |> Async.RunSynchronously with
+            | Some v -> affected <- v
+            | None -> ()
+
+            affected.Contains(expectedTest))
+        10000
+
+    affected
+
+// Generous xUnit cap: two full analyzeSource seeds + a real CheckFile + a 10s
+// affected-tests poll. Internal waits stay condition-based.
+[<Fact(Timeout = 60000)>]
+let ``seeded DB + absent sidecar: string-literal change re-selects the asserting test (AUTOMATION-67 instance 1)`` () =
+    withTempDir "tp-seed-logstring" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let libFile = Path.Combine(tmpDir, "Lib.fsx")
+        let testsFile = Path.Combine(tmpDir, "Tests.fsx")
+        let checker = sharedChecker.Value
+
+        // Prod: a failure-path log helper. Test: asserts the exact logged string —
+        // the LlmClient/Embeddings coupling shape.
+        let libV1 =
+            "module Lib\n\nlet auditFailureMessage (write: string -> unit) =\n    write \"audit-log write failed\"\n"
+
+        let testsSrc =
+            "module Tests\n\nopen Lib\n\ntype FactAttribute() =\n    inherit System.Attribute()\n\n[<Fact>]\nlet auditFailureLogsExpectedMessage () =\n    let mutable captured = \"\"\n    auditFailureMessage (fun s -> captured <- s)\n    assert (captured = \"audit-log write failed\")\n"
+
+        let projOptions =
+            seedImpactDbNoSidecar checker tmpDir dbPath libFile libV1 testsFile testsSrc
+
+        // Change ONLY the log string. Signature is identical; the function-body
+        // content hash changes, so the symbol is Modified and its covering test
+        // must be re-selected. Before the fix, the seeded rows classified
+        // storedClean=false → bypass → "[]".
+        let libV2 =
+            "module Lib\n\nlet auditFailureMessage (write: string -> unit) =\n    write \"audit-log write threw\"\n"
+
+        let affected =
+            selectAfterSeededEdit checker tmpDir dbPath projOptions libFile libV2 "auditFailureLogsExpectedMessage"
+
+        test <@ affected.Contains("auditFailureLogsExpectedMessage") @>)
+
+[<Fact(Timeout = 60000)>]
+let ``seeded DB + absent sidecar: DU-list length change re-selects the count-asserting test (AUTOMATION-67 instance 2)``
+    ()
+    =
+    withTempDir "tp-seed-ducount" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let libFile = Path.Combine(tmpDir, "Lib.fsx")
+        let testsFile = Path.Combine(tmpDir, "Tests.fsx")
+        let checker = sharedChecker.Value
+
+        // Prod: a DU + a value enumerating its cases. Test: asserts the count —
+        // the JobName.all.Length coupling shape.
+        let libV1 =
+            "module Lib\n\ntype JobName =\n    | Alpha\n    | Beta\n\nlet all = [ Alpha; Beta ]\n"
+
+        let testsSrc =
+            "module Tests\n\nopen Lib\n\ntype FactAttribute() =\n    inherit System.Attribute()\n\n[<Fact>]\nlet allHasExpectedCount () =\n    assert (List.length all = 2)\n"
+
+        let projOptions =
+            seedImpactDbNoSidecar checker tmpDir dbPath libFile libV1 testsFile testsSrc
+
+        // Add a case and grow the enumerating list. `all`'s content hash changes,
+        // so the test referencing it must be re-selected.
+        let libV2 =
+            "module Lib\n\ntype JobName =\n    | Alpha\n    | Beta\n    | Gamma\n\nlet all = [ Alpha; Beta; Gamma ]\n"
+
+        let affected =
+            selectAfterSeededEdit checker tmpDir dbPath projOptions libFile libV2 "allHasExpectedCount"
+
+        test <@ affected.Contains("allHasExpectedCount") @>)
+
 // Generous xUnit cap: chains a 12s terminal wait, a 5s settle wait, and an 8s
 // waitForAllTerminal task (25s internal budget). The previous 20000ms Fact cap
 // could fire before the (condition-based) stability window resolved on a slow
