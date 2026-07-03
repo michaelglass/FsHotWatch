@@ -283,6 +283,22 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                     completion <- ValueSome msg
                 with ex ->
                     error (PluginName.value handler.Name) $"RunExclusive '%s{key}' work failed: %s{ex.ToString()}"
+
+                    // A faulted exclusive run must never STRAND the plugin in a
+                    // non-terminal status. The completion message that would drive
+                    // the plugin to a terminal state through its own handler is NOT
+                    // posted on this path (`completion` stays ValueNone below), and
+                    // plugins routinely report Running just before launching the
+                    // work (e.g. test-prune's `ReportStatus(Running)` immediately
+                    // before `RunExclusive "tests"`). Without a forced terminal here
+                    // the plugin sits Running forever while `IsBusy`/`AnyPluginBusy`
+                    // report false — precisely the fresh-workspace wedge: the check's
+                    // `WaitForComplete` blocks on a Running plugin that will never
+                    // complete, and idle-exit later fires mid-wait. Forcing Failed
+                    // surfaces the fault as a prompt, loud verdict instead.
+                    services.ReportStatus
+                        handler.Name
+                        (PluginStatus.Failed($"RunExclusive '%s{key}' work failed: %s{ex.Message}", DateTime.UtcNow))
             finally
                 lock runSlotsLock (fun () -> runSlots.[key] <- false)
 
