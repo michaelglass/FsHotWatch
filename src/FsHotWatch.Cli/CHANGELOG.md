@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- fix: a failing `beforeRun`/hook now includes the command's captured
+  stdout/stderr in the raised error (previously only the command string). A
+  preflight failure propagates through TestPrune's `Aborted` lifecycle into the
+  plugin's `Failed` status, so this is what makes `fshw check` / `fshw errors`
+  show **why** the preflight failed, not just that it did. (AUTOMATION-68)
+
 ## 0.10.0-alpha.1 - 2026-07-03
 
 - chore: rebuild to bundle updated dependencies

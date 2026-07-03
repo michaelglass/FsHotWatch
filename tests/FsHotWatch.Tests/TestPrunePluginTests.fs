@@ -5063,6 +5063,95 @@ let ``incident: a beforeRun throw aborts the run, is NOT green, and re-flags the
         let queue = PendingQueueHelpers.loadQueue tmpDir
         test <@ queue.Contains("Lib.foo") @>)
 
+[<Fact(Timeout = 15000)>]
+let ``incident: a beforeRun throw in the run-tests command surfaces as Failed, not a swallowed error`` () =
+    // AUTOMATION-68 — the gate-trust hole. The manual `run-tests` command ran
+    // `executeTests` inside a try/with that, on a `beforeRun` throw, returned a
+    // command-level JSON error and posted NOTHING back — leaving the plugin
+    // status at its prior (possibly green) value. A concurrent `fshw check` then
+    // read the daemon aggregate (`IpcOutput.hasFailures` → `anyPluginFailed`),
+    // saw no Failed status, and exited 0 while the preflight-guarded suite NEVER
+    // RAN. Unlike the impact path (`runTestsWithImpact`), whose catch builds an
+    // Aborted lifecycle → PluginStatus.Failed, the command path was silent.
+    // Post-fix the command posts the SAME Aborted lifecycle, so the plugin
+    // reaches Failed with the hook's output surfaced and `check` reads non-green.
+    withTempDir "tp-cmd-beforerun-throw" (fun tmpDir ->
+        let configs =
+            [ { Project = "TestProject"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
+
+        // A beforeRun that fails its preflight (models a real csrf-gate step).
+        let beforeRun = Some(fun () -> failwith "csrf-gate failed")
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None beforeRun None None []
+        host.RegisterHandler(handler)
+
+        // The command posts the Aborted TestsFinished async; await the terminal
+        // transition it drives (Failed) before reading status.
+        let await = beginAwaitNextTerminal host "test-prune"
+        let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
+        await.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
+        // (1) The command still reports the failure to its direct caller.
+        test <@ result.IsSome @>
+        test <@ result.Value.Contains("csrf-gate failed") @>
+
+        // (2) The seam `fshw check` reads: the plugin status is Failed with the
+        //     hook's output surfaced — NOT a stale green / Idle. `anyPluginFailed`
+        //     (IpcOutput.hasFailures) keys off exactly this, so a non-zero check
+        //     verdict follows.
+        match host.GetStatus("test-prune") with
+        | Some(Failed(msg, _)) -> test <@ msg.Contains("csrf-gate failed") @>
+        | other -> Assert.Fail($"expected Failed with the hook output surfaced, got %A{other}"))
+
+[<Fact(Timeout = 15000)>]
+let ``run-tests command with a passing beforeRun runs normally and reports Completed`` () =
+    // Guards the pass path: a beforeRun that SUCCEEDS must leave the run
+    // unaffected — projects execute, results come back, and the plugin reaches a
+    // green terminal. Pairs with the failing-beforeRun regression above.
+    withTempDir "tp-cmd-beforerun-ok" (fun tmpDir ->
+        let ran = ref false
+
+        let configs =
+            [ { Project = "TestProject"
+                Command = "echo"
+                Args = "ok"
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
+
+        let beforeRun = Some(fun () -> ran.Value <- true)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some configs) None beforeRun None None []
+        host.RegisterHandler(handler)
+
+        let await = beginAwaitNextTerminal host "test-prune"
+        let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
+        await.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
+        test <@ ran.Value @>
+        test <@ result.IsSome @>
+        let doc = JsonDocument.Parse(result.Value)
+        let projects = doc.RootElement.GetProperty("projects")
+        Assert.True(projects.GetArrayLength() > 0)
+        Assert.Equal("passed", projects.[0].GetProperty("status").GetString())
+
+        match host.GetStatus("test-prune") with
+        | Some(Completed _) -> ()
+        | other -> Assert.Fail($"expected Completed for a passing beforeRun run, got %A{other}"))
+
 [<Fact(Timeout = 25000)>]
 let ``partial failure: symbols whose only covering project passed commit; symbols touching a failed project stay queued``
     ()

@@ -927,10 +927,16 @@ let private makeShellHook (label: string) (failOnError: bool) (repoRoot: string)
     let hook = makeShellHookWithResult label repoRoot cmd
 
     fun () ->
-        let (success, _) = hook ()
+        let (success, output) = hook ()
 
         if not success && failOnError then
-            failwith $"%s{label} failed: %s{cmd}"
+            // Surface the captured output in the raised message, not just the
+            // command string: a failing `beforeRun` throw propagates through
+            // TestPrune's Aborted lifecycle into the plugin's Failed status, so
+            // including the hook's stdout/stderr here is what makes `fshw check`
+            // / `fshw errors` show WHY the preflight failed (AUTOMATION-68),
+            // rather than only that it did.
+            failwith $"%s{label} failed: %s{cmd}\n%s{output}"
 
 /// Register plugins on the daemon based on the loaded configuration.
 let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfiguration) =

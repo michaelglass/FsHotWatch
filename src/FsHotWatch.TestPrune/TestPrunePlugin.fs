@@ -281,6 +281,31 @@ type TestRunLaunch =
 
 type TestPruneMsg = TestsFinished of started: TestRunStarted * completed: TestRunCompleted * launch: TestRunLaunch
 
+/// Build the degenerate Started→Aborted lifecycle a faulted run posts back so
+/// the synchronous `TestsFinished` handler drives the plugin to a NON-green
+/// terminal status. A `beforeRun` throw / `executeTests` fault means the suite
+/// it guards NEVER RAN — that must surface as a failure, never a stale prior
+/// green (AUTOMATION-68). Both the impact path (`runTestsWithImpact`) and the
+/// manual `run-tests` command build this identically, so it lives here to keep
+/// the two in lockstep. `Results = Map.empty` ⇒ the handler commits nothing from
+/// the pending queue; `reason` carries the hook's failure output so `fshw check`
+/// / `fshw errors` shows WHY the preflight failed.
+let private abortedRunLifecycle (reason: string) : TestRunStarted * TestRunCompleted =
+    let runId = Guid.NewGuid()
+
+    let started: TestRunStarted =
+        { RunId = runId
+          StartedAt = DateTime.UtcNow }
+
+    let completed: TestRunCompleted =
+        { RunId = runId
+          TotalElapsed = TimeSpan.Zero
+          Outcome = Aborted reason
+          Results = Map.empty
+          RanFullSuite = true }
+
+    started, completed
+
 /// Translate a repo-root-relative glob (`*`, `?`, `**`, `/`) into a regex
 /// anchored against a repo-relative path. `**` matches across directory
 /// separators (including none); a single `*`/`?` does NOT cross `/`. A trailing
@@ -2065,18 +2090,7 @@ let create
 
                 // Build an Aborted lifecycle so subscribers see a coherent end
                 // to this run rather than hanging at TestRunStarted.
-                let runId = Guid.NewGuid()
-
-                let started: TestRunStarted =
-                    { RunId = runId
-                      StartedAt = DateTime.UtcNow }
-
-                let completed: TestRunCompleted =
-                    { RunId = runId
-                      TotalElapsed = TimeSpan.Zero
-                      Outcome = Aborted ex.Message
-                      Results = Map.empty
-                      RanFullSuite = true }
+                let started, completed = abortedRunLifecycle ex.Message
 
                 // launch carries the queue snapshot this aborted run was
                 // launched against; the TestsFinished handler commits NOTHING
@@ -2288,6 +2302,28 @@ let create
                                         return formatTestResultsJson results
                             with ex ->
                                 Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
+
+                                // AUTOMATION-68: a `beforeRun` throw / `executeTests`
+                                // fault means the suite NEVER RAN. Pre-fix this only
+                                // returned a command-level JSON error and posted
+                                // NOTHING, so the plugin status stayed at its prior
+                                // (possibly green) value and a concurrent `fshw check`
+                                // read the daemon aggregate as clean (exit 0) even
+                                // though the preflight-guarded suite was skipped. Post
+                                // the SAME Aborted lifecycle the impact path
+                                // (`runTestsWithImpact`) builds so the synchronous
+                                // TestsFinished handler drives the plugin to
+                                // PluginStatus.Failed (`anyPluginFailed` ⇒ non-zero
+                                // verdict) with the hook's output surfaced. Empty
+                                // launch: a manual force-run commits nothing from the
+                                // pending-verification queue (over-testing is safe).
+                                let started, completed = abortedRunLifecycle ex.Message
+
+                                let abortedLaunch: TestRunLaunch =
+                                    { Symbols = Set.empty
+                                      CoveringProjectsBySymbol = Map.empty }
+
+                                ctx.Post(TestsFinished(started, completed, abortedLaunch))
                                 return JsonSerializer.Serialize({| error = ex.Message |})
                     } ]
         | _ -> commands

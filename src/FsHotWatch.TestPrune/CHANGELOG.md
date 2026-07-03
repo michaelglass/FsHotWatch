@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: a failing `beforeRun` preflight in the manual `run-tests` command now
+  surfaces as a **non-green** verdict. The command ran `executeTests` inside a
+  try/with that, on a `beforeRun` throw, returned a command-level JSON error and
+  posted **nothing** back — leaving the plugin at its prior (possibly green)
+  status, so a concurrent `fshw check` read the daemon aggregate
+  (`anyPluginFailed`) as clean and exited **0** even though the preflight-guarded
+  suite NEVER RAN. It now posts the SAME `Aborted` lifecycle the impact path
+  (`runTestsWithImpact`) builds, driving the plugin to `Failed` with the hook's
+  output surfaced, so `check` reads non-green. The two Aborted-lifecycle
+  constructions are unified in one helper so they can't drift. (AUTOMATION-68)
+
 ## 0.9.0-alpha.1 - 2026-07-03
 
 - fix: a **seeded** `test-impact.db` (copied into a fresh workspace per ADR-010)
