@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.1 - 2026-07-03
+
 - fix: a failing `beforeRun` preflight in the manual `run-tests` command now
   surfaces as a **non-green** verdict. The command ran `executeTests` inside a
   try/with that, on a `beforeRun` throw, returned a command-level JSON error and
