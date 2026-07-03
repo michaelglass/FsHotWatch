@@ -1424,6 +1424,17 @@ type Daemon
                 // FormatScanStatus via the daemon-level `liveCoverage`.
                 let getUncheckedCount () = snd (liveCoverage ())
 
+                // Count of in-flight `WaitForComplete`/verdict waits (connected
+                // check clients blocked on the daemon's authoritative settle).
+                // Feeds the idle-exit `Busy` predicate below so the daemon is
+                // NEVER treated as idle while a client is actively waiting for a
+                // verdict — even when every plugin's mailbox is quiet and a
+                // background `RunExclusive` run is holding a Running status that
+                // `AnyPluginBusy` (mailbox-inflight only) does not observe. Without
+                // this, a long/stuck settle let idle-exit fire mid-wait and drop
+                // the client with a connection error instead of a verdict.
+                let activeVerdictWaits = ref 0
+
                 let rpcConfig: DaemonRpcConfig =
                     { Host = host
                       RequestShutdown = fun () -> cts.Cancel()
@@ -1455,8 +1466,22 @@ type Daemon
                             }
                       // requireVerdict=true: this is the WaitForComplete RPC
                       // path — it must not report a vacuous clean on a cold /
-                      // never-ran daemon (block until a real verdict).
-                      WaitForAllTerminal = fun timeout -> waitForVerdict host timeout cts.Token
+                      // never-ran daemon (block until a real verdict). Bracketed
+                      // with the `activeVerdictWaits` counter so an in-flight
+                      // client wait inhibits idle-exit (see `Busy` below); the
+                      // increment runs synchronously as the task is started and
+                      // the decrement is guaranteed by `finally` on every exit
+                      // (verdict, timeout, or shutdown cancellation).
+                      WaitForAllTerminal =
+                        fun timeout ->
+                            task {
+                                System.Threading.Interlocked.Increment(&activeVerdictWaits.contents) |> ignore
+
+                                try
+                                    return! waitForVerdict host timeout cts.Token
+                                finally
+                                    System.Threading.Interlocked.Decrement(&activeVerdictWaits.contents) |> ignore
+                            }
                       RerunPlugin = rerunPlugin
                       GetUncheckedCount = getUncheckedCount }
 
@@ -1486,7 +1511,18 @@ type Daemon
                               PressureFloorMin = pressureIdleFloorMin
                               Pressure = IdleExit.readGcPressure
                               Now = fun () -> System.DateTime.UtcNow
-                              Busy = host.AnyPluginBusy
+                              // Busy when any plugin mailbox is in flight OR a
+                              // client is actively blocked on a verdict wait. The
+                              // wait leg is the fix for the fresh-workspace wedge:
+                              // it keeps idle-exit from firing out from under a
+                              // connected `fshw check` even while all mailboxes are
+                              // quiet (a background test run holds a Running status
+                              // that `AnyPluginBusy` alone cannot see).
+                              Busy =
+                                fun () ->
+                                    IdleExit.busyForIdleExit
+                                        (host.AnyPluginBusy())
+                                        (System.Threading.Volatile.Read(&activeVerdictWaits.contents))
                               LastActivityAt = host.LastActivityAt
                               Shutdown = fun () -> cts.Cancel()
                               Log = fun message -> Logging.info "idle-exit" message }
