@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.0-alpha.1 - 2026-07-03
+
 - fix: a daemon shutdown/transport teardown during `check`'s settle wait now exits **2** with a clear "daemon shut down mid-wait" diagnostic instead of crashing with an opaque connection-loss error (AUTOMATION-65; `IpcOutput.isDaemonShutdownDuringWait`).
 
 ## 0.8.0-alpha.41 - 2026-07-02
