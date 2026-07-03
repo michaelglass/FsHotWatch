@@ -137,6 +137,16 @@ module FireLatch =
     /// True once the latch has fired (or is firing). Read for diagnostics/tests.
     let hasFired (latch: FireLatch) : bool = Volatile.Read(&latch.state) = 1
 
+/// The daemon is "busy" for idle-exit purposes when EITHER any plugin mailbox is
+/// in flight OR at least one client is actively blocked on a verdict wait
+/// (`WaitForComplete`). The wait leg is load-bearing: a background `RunExclusive`
+/// run holds a plugin in a Running status that mailbox-inflight (`AnyPluginBusy`)
+/// does not observe, so without counting active verdict waits idle-exit could
+/// fire out from under a connected `fshw check` and drop the client with a
+/// connection error instead of a verdict. Pure so the composition is unit-tested
+/// independently of the live host; the daemon injects the two live signals.
+let busyForIdleExit (anyPluginBusy: bool) (activeVerdictWaits: int) : bool = anyPluginBusy || activeVerdictWaits > 0
+
 /// Pure decision: should idle-exit fire on this tick?
 ///
 /// Fires when the idle duration has met/exceeded the threshold AND no work is

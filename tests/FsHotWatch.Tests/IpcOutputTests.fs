@@ -470,3 +470,52 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
             (fun () -> "idle")
 
     test <@ exitCode = 0 @>
+
+// --- isDaemonShutdownDuringWait (mid-wait teardown classification) ---
+// Regression for AUTOMATION-65: a WaitForComplete that faults because the daemon
+// shut down / the pipe dropped mid-wait must be recognised so the check yields a
+// diagnostic verdict (exit 2) instead of an opaque crash / silent connection drop.
+
+/// A stand-in whose type name contains "ConnectionLost" — exercises the
+/// StreamJsonRpc connection-loss detection without a compile-time dependency on
+/// the transport assembly (the production match is by type-name substring).
+type private FakeConnectionLostException() =
+    inherit exn("connection lost")
+
+[<Fact(Timeout = 15000)>]
+let ``isDaemonShutdownDuringWait recognises transport + shutdown faults`` () =
+    test <@ isDaemonShutdownDuringWait (System.IO.IOException("pipe is broken")) @>
+    test <@ isDaemonShutdownDuringWait (System.IO.EndOfStreamException()) @>
+    test <@ isDaemonShutdownDuringWait (System.ObjectDisposedException("pipe")) @>
+    test <@ isDaemonShutdownDuringWait (FakeConnectionLostException()) @>
+    // The daemon's graceful-shutdown sentinel, propagated back as a remote error.
+    test <@ isDaemonShutdownDuringWait (exn ("Error: daemon shutting down")) @>
+    // ...and detected through the inner-exception chain.
+    test <@ isDaemonShutdownDuringWait (exn ("outer", System.IO.IOException("inner drop"))) @>
+
+[<Fact(Timeout = 15000)>]
+let ``isDaemonShutdownDuringWait ignores unrelated faults`` () =
+    // A real timeout or an arbitrary bug is NOT a mid-wait teardown — it must not
+    // be silently reclassified as a shutdown.
+    test <@ not (isDaemonShutdownDuringWait (System.TimeoutException("WaitForComplete timed out after 00:30:00"))) @>
+    test <@ not (isDaemonShutdownDuringWait (exn "boom")) @>
+
+[<Fact(Timeout = 15000)>]
+let ``pollAndRender returns exit 2 when the daemon drops mid-wait`` () =
+    // End-to-end: a faulting WaitForComplete (daemon shut down mid-settle) drives
+    // pollAndRender to the diagnostic exit-2 path rather than propagating a crash.
+    let waitForComplete () : string =
+        raise (System.IO.IOException("pipe is broken"))
+
+    let exitCode =
+        pollAndRender
+            ProgressRenderer.Agent
+            (fun _ -> [])
+            false
+            (fun () -> "idle") // waitForScan
+            waitForComplete
+            (fun () -> "{}") // getStatus
+            (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
+            (fun () -> "idle") // triggerScan
+
+    test <@ exitCode = 2 @>

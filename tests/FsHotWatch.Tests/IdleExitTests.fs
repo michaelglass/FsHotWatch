@@ -9,6 +9,25 @@ open FsHotWatch.IdleExit
 
 let private threshold = TimeSpan.FromMinutes(30.0)
 
+// --- busyForIdleExit (in-flight verdict wait inhibits idle-exit) ---
+
+[<Fact>]
+let ``busyForIdleExit is true while a verdict wait is in flight`` () =
+    // Regression for AUTOMATION-65: an in-flight WaitForComplete (connected check
+    // client) must count as busy so idle-exit never fires out from under it, even
+    // when every plugin mailbox is quiet (anyPluginBusy = false).
+    test <@ busyForIdleExit false 1 = true @>
+    test <@ busyForIdleExit false 3 = true @>
+
+[<Fact>]
+let ``busyForIdleExit is true when a plugin mailbox is in flight`` () =
+    test <@ busyForIdleExit true 0 = true @>
+    test <@ busyForIdleExit true 2 = true @>
+
+[<Fact>]
+let ``busyForIdleExit is idle only when nothing is in flight and no client waits`` () =
+    test <@ busyForIdleExit false 0 = false @>
+
 // --- shouldFire (pure decision) ---
 
 [<Fact>]

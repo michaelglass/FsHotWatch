@@ -266,6 +266,32 @@ let private pollUntilSettled
         for _ in 1..prevLineCount do
             Console.Error.Write("\x1b[A\x1b[2K")
 
+/// True when `ex` (walking its inner-exception chain) indicates the daemon shut
+/// down or the IPC pipe dropped WHILE a `WaitForComplete` verdict wait was in
+/// flight — as opposed to a genuine plugin verdict (which comes back as a normal
+/// status payload, never a fault). Matches three shapes: StreamJsonRpc's
+/// connection-loss exception (by type-name substring, so no compile-time
+/// dependency on the transport assembly is needed here), a raw pipe teardown
+/// (`IOException`/`ObjectDisposedException`/`EndOfStreamException`), and the
+/// daemon's own graceful-shutdown sentinel message propagated back as a remote
+/// invocation error. Used to turn a mid-wait teardown into a diagnostic exit-2
+/// ("no verdict was produced") instead of an opaque crash — the waiting client
+/// must never see a silent connection drop.
+let rec isDaemonShutdownDuringWait (ex: exn) : bool =
+    match ex with
+    | null -> false
+    | _ ->
+        let typeName = ex.GetType().FullName
+        let msg = ex.Message
+
+        typeName.Contains("ConnectionLost", StringComparison.Ordinal)
+        || (ex :? System.IO.EndOfStreamException)
+        || (ex :? System.IO.IOException)
+        || (ex :? System.ObjectDisposedException)
+        || (not (isNull msg)
+            && msg.Contains("daemon shutting down", StringComparison.Ordinal))
+        || (not (isNull ex.InnerException) && isDaemonShutdownDuringWait ex.InnerException)
+
 /// Poll daemon status, render live progress, then decide a converge-then-verdict
 /// outcome and return its exit code (0 = complete & clean, 1 = failures found,
 /// 2 = completeness unachievable). `renderStatuses` is injected so callers choose
@@ -306,41 +332,59 @@ let pollAndRender
         // behind a vacuous clean — re-raises the original RPC exception.
         completeTask.GetAwaiter().GetResult()
 
-    withProgress "Scanning" "Scanning..." (fun () -> waitForScan () |> ignore)
+    // A mid-wait daemon teardown (an explicit `fshw stop`, or any crash while a
+    // settle is in flight) surfaces the RPC as a transport fault, NOT a verdict.
+    // Translate it into a loud diagnostic + exit 2 ("completeness unachievable")
+    // so the waiting client always gets an actionable verdict rather than an
+    // opaque connection-drop stack trace. See `isDaemonShutdownDuringWait`.
+    try
+        withProgress "Scanning" "Scanning..." (fun () -> waitForScan () |> ignore)
 
-    settle ()
-
-    // First read: diagnostics + coverage after the daemon has settled.
-    let firstResp = parseDiagnosticsResponse (getErrors ())
-    let firstOutput = formatDiagnosticsResponse mode renderStatuses firstResp
-    eprintfn "%s" firstOutput
-
-    // Force a fresh scan and re-settle (the convergence loop's "try to FIX, not
-    // just report" step). Invoked only when the first read is incomplete-but-clean.
-    let rescan () : unit =
-        withProgress "Re-scanning (incomplete)" "Re-scanning (incomplete check)..." (fun () -> triggerScan () |> ignore)
         settle ()
 
-    // Re-read diagnostics + coverage and render. Called after each rescan.
-    let reread () : bool * Coverage =
-        let resp = parseDiagnosticsResponse (getErrors ())
-        let output = formatDiagnosticsResponse mode renderStatuses resp
-        eprintfn "%s" output
-        (hasFailures noWarnFail resp, resp.Coverage)
+        // First read: diagnostics + coverage after the daemon has settled.
+        let firstResp = parseDiagnosticsResponse (getErrors ())
+        let firstOutput = formatDiagnosticsResponse mode renderStatuses firstResp
+        eprintfn "%s" firstOutput
 
-    let outcome =
-        CheckVerdict.converge MaxConvergeAttempts rescan reread (hasFailures noWarnFail firstResp, firstResp.Coverage)
+        // Force a fresh scan and re-settle (the convergence loop's "try to FIX,
+        // not just report" step). Invoked only when the first read is
+        // incomplete-but-clean.
+        let rescan () : unit =
+            withProgress "Re-scanning (incomplete)" "Re-scanning (incomplete check)..." (fun () ->
+                triggerScan () |> ignore)
 
-    match outcome with
-    | CheckVerdict.CheckOutcome.Incomplete n ->
-        let detail =
-            if n > 0 then
-                $"%d{n} file(s) could not be checked"
-            else
-                "coverage could not be confirmed"
+            settle ()
 
-        UI.fail $"Check incomplete: {detail} after %d{MaxConvergeAttempts} re-scan attempt(s)"
-    | CheckVerdict.CheckOutcome.Clean
-    | CheckVerdict.CheckOutcome.FailuresFound -> ()
+        // Re-read diagnostics + coverage and render. Called after each rescan.
+        let reread () : bool * Coverage =
+            let resp = parseDiagnosticsResponse (getErrors ())
+            let output = formatDiagnosticsResponse mode renderStatuses resp
+            eprintfn "%s" output
+            (hasFailures noWarnFail resp, resp.Coverage)
 
-    CheckVerdict.exitCode outcome
+        let outcome =
+            CheckVerdict.converge
+                MaxConvergeAttempts
+                rescan
+                reread
+                (hasFailures noWarnFail firstResp, firstResp.Coverage)
+
+        match outcome with
+        | CheckVerdict.CheckOutcome.Incomplete n ->
+            let detail =
+                if n > 0 then
+                    $"%d{n} file(s) could not be checked"
+                else
+                    "coverage could not be confirmed"
+
+            UI.fail $"Check incomplete: {detail} after %d{MaxConvergeAttempts} re-scan attempt(s)"
+        | CheckVerdict.CheckOutcome.Clean
+        | CheckVerdict.CheckOutcome.FailuresFound -> ()
+
+        CheckVerdict.exitCode outcome
+    with ex when isDaemonShutdownDuringWait ex ->
+        UI.fail
+            "Check aborted: the daemon shut down before producing a verdict — nothing was verified. Re-run `fshw check` (the next command auto-restarts the daemon)."
+
+        2
