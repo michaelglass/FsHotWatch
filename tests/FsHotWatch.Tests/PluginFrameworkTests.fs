@@ -861,6 +861,90 @@ let ``RunExclusive releases slot when work raises and logs without re-posting co
     }
     |> Async.RunSynchronously
 
+[<Fact(Timeout = 30000)>]
+let ``RunExclusive forces a terminal Failed status when work raises (no strand)`` () =
+    // Regression for AUTOMATION-65 (fresh-workspace daemon wedge). A faulted
+    // exclusive run MUST NOT strand the plugin in a non-terminal (Running) status:
+    // the completion message that normally drives the plugin to terminal is never
+    // posted on the fault path, and plugins routinely report Running just before
+    // launching the work (test-prune reports Running immediately before
+    // `RunExclusive "tests"`). Without the framework forcing a terminal here the
+    // plugin sits Running forever while IsBusy/AnyPluginBusy report false — exactly
+    // the wedge that hangs the check's WaitForComplete and then lets idle-exit fire
+    // mid-wait. This asserts the fault transitions the plugin to a terminal Failed.
+    async {
+        let statuses =
+            System.Collections.Concurrent.ConcurrentQueue<PluginName * PluginStatus>()
+
+        let mutable capturedCtx: PluginCtx<RxMsg> option = None
+
+        let isFailed =
+            fun () ->
+                statuses
+                |> Seq.exists (fun (_, s) ->
+                    match s with
+                    | Failed _ -> true
+                    | _ -> false)
+
+        let services: PluginHostServices =
+            { Checker = checker
+              RepoRoot = "/tmp/repo"
+              ReportStatus = fun name status -> statuses.Enqueue(name, status)
+              ReportErrors = fun _ _ _ -> ()
+              ClearErrors = fun _ _ -> ()
+              ClearPlugin = fun _ -> ()
+              EmitBuildCompleted = fun _ -> ()
+              EmitTestRunStarted = fun _ -> ()
+              EmitTestProgress = fun _ -> ()
+              EmitTestRunCompleted = fun _ -> ()
+              EmitCommandCompleted = fun _ -> ()
+              RegisterCommand = fun _ -> ()
+              TaskCache = None
+              StartSubtask = fun _ _ _ -> ()
+              UpdateSubtask = fun _ _ _ -> ()
+              EndSubtask = fun _ _ -> ()
+              Log = fun _ _ -> ()
+              SetSummary = fun _ _ -> ()
+              SetNextTerminalOutcome = fun _ _ -> ()
+              FcsSuppressedCodes = Set.empty
+              ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+
+        let handler: PluginHandler<int, RxMsg> =
+            { Name = PluginName.create "rx-strand"
+              Init = 0
+              Update =
+                fun ctx state event ->
+                    async {
+                        capturedCtx <- Some ctx
+
+                        match event with
+                        | FileChanged _ ->
+                            // Mirror test-prune: announce Running, THEN launch the
+                            // exclusive work that faults before posting completion.
+                            ctx.ReportStatus(PluginStatus.Running(since = System.DateTime.UtcNow))
+                            ctx.RunExclusive "k" (async { return failwith "boom" })
+                            return state
+                        | _ -> return state
+                    }
+              Commands = [ "get", fun _ s _ -> async { return string s } ]
+              Subscriptions = Set.singleton SubscribeFileChanged
+              CacheKey = None
+              Teardown = None }
+
+        let reg = registerHandler services handler
+        reg.Dispatch(DispatchFileChanged(SourceChanged [ "/throw" ]))
+
+        // The fault path must report a terminal Failed (never leaving the plugin
+        // stranded Running).
+        waitUntil isFailed 20000
+        test <@ isFailed () @>
+
+        // ...and the exclusion slot is released so subsequent runs can proceed.
+        waitUntil (fun () -> not (capturedCtx.Value.IsRunning "k")) 20000
+        test <@ not (capturedCtx.Value.IsRunning "k") @>
+    }
+    |> Async.RunSynchronously
+
 [<Fact(Timeout = 20000)>]
 let ``IsRunning reports true while work in flight, false after completion`` () =
     async {

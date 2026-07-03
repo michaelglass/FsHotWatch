@@ -1941,26 +1941,30 @@ let create
             // these symbols and leaves mid-run arrivals queued for the rerun.
             let launchedSymbols = Set.union pendingQueueRef (Set.ofList state.ChangedSymbols)
 
-            // For each launched symbol, the set of test PROJECTS whose tests
-            // cover it. An empty set ⇒ no covering test. Queried per-symbol so
-            // a symbol commits ONLY when every project covering IT passed (a
-            // run-wide union would over-couple unrelated symbols). Empty queue ⇒
-            // no queries.
-            let coveringProjectsBySymbol =
-                launchedSymbols
-                |> Set.toList
-                |> List.map (fun s ->
-                    let projs =
-                        db.QueryAffectedTests [ s ] |> List.map (fun t -> t.TestProject) |> Set.ofList
-
-                    s, projs)
-                |> Map.ofList
-
-            let launch =
-                { Symbols = launchedSymbols
-                  CoveringProjectsBySymbol = coveringProjectsBySymbol }
-
             try
+                // For each launched symbol, the set of test PROJECTS whose tests
+                // cover it. An empty set ⇒ no covering test. Queried per-symbol so
+                // a symbol commits ONLY when every project covering IT passed (a
+                // run-wide union would over-couple unrelated symbols). Empty queue ⇒
+                // no queries. Kept INSIDE the try: these are DB reads that can throw
+                // transiently on a cold/contended box (SQLITE_BUSY, schema drift). A
+                // throw here must produce the Aborted lifecycle below (an honest,
+                // re-runnable "tests did not run" verdict) rather than escaping to
+                // the framework's `runOne`, which would only log-and-strand the run.
+                let coveringProjectsBySymbol =
+                    launchedSymbols
+                    |> Set.toList
+                    |> List.map (fun s ->
+                        let projs =
+                            db.QueryAffectedTests [ s ] |> List.map (fun t -> t.TestProject) |> Set.ofList
+
+                        s, projs)
+                    |> Map.ofList
+
+                let launch =
+                    { Symbols = launchedSymbols
+                      CoveringProjectsBySymbol = coveringProjectsBySymbol }
+
                 // Extension-contributed edges were already written to the DB by
                 // flushAndQueryAffected, so state.AffectedTests already includes tests
                 // reachable through extension edges (sql, sql-hydra, falco, etc.).
@@ -2076,7 +2080,15 @@ let create
 
                 // launch carries the queue snapshot this aborted run was
                 // launched against; the TestsFinished handler commits NOTHING
-                // for an Aborted outcome, so those symbols stay queued.
+                // for an Aborted outcome, so those symbols stay queued. Rebuilt
+                // from `launchedSymbols` here (rather than the in-try `launch`,
+                // which may not exist if the per-symbol coverage query itself
+                // threw) with an empty covering map — an Aborted run commits
+                // nothing, so the covering map is never consulted on this path.
+                let launch =
+                    { Symbols = launchedSymbols
+                      CoveringProjectsBySymbol = Map.empty }
+
                 return TestsFinished(started, completed, launch)
         }
 
