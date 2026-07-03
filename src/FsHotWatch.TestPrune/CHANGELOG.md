@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- fix: a transient DB error while resolving covering projects (`QueryAffectedTests` per-symbol lookups) now yields the honest re-runnable `Aborted` lifecycle instead of escaping as a raw framework fault that stranded the run before any test process launched (AUTOMATION-65).
+
 ## 0.7.0-alpha.30 - 2026-06-30
 
 - fix: the test gate now defers on artifact **freshness**, not just presence. A

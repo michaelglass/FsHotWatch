@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- fix: a faulted exclusive run (`RunExclusive` build/coverage/tests slot) can no longer strand its plugin in `Running` — the fault branch now forces a terminal `Failed` status, so a client `WaitForComplete` gets a prompt non-zero verdict instead of waiting forever (AUTOMATION-65; the fresh-workspace "test run never launches" wedge).
+- fix: the idle-exit can no longer fire while a client verdict-wait is in flight — active `WaitForAllTerminal` waits now count as busy via `IdleExit.busyForIdleExit` (AUTOMATION-65; previously the daemon shut down mid-`check` after 30 min, dropping the client with a connection error).
+
 ## 0.8.0-alpha.34 - 2026-07-02
 
 - feat: `PathFilter.isOutsideRepo` — true when a path resolves outside the repo root (a rooted or `..`-prefixed relative path), e.g. a NuGet-injected `_content` compile item under `~/.nuget`. `isExcludedPath`'s out-of-repo test now shares this check (AUTOMATION-49). `PathFilter.isOutsideRepoScoped` lifts it over an optional repo root (`None` = include everything) — the shared predicate the analyzers + lint plugins use for the `includeOutsideRepo` skip.
