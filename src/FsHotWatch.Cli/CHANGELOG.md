@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.12.0-alpha.1 - 2026-07-03
+
 - fix: `fshw check` no longer misreports a daemon-startup race as failures. A
   check issued right after a daemon (re)start used to fire its first RPC while
   the daemon was still cold-scanning (analyzer load starving the pipe acceptor)
