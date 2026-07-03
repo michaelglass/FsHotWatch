@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.0-alpha.1 - 2026-07-03
+
 - fix: a **seeded** `test-impact.db` (copied into a fresh workspace per ADR-010)
   no longer silently under-selects. The fshw-owned freshness sidecar
   (`file-freshness.json`) doesn't travel with the copied DB, so every seeded
