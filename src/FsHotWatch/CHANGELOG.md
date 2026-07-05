@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.1 - 2026-07-05
+
 - feat: `ProcessHelper.runProcessWithLaunchWatchdog` — run a child under a
   **launch-liveness watchdog** that can never block forever. `runProcessWithTimeout`
   bounds only the *total* run via one `WaitForExit`, which is INFINITE for a
