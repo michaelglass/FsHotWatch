@@ -5137,6 +5137,63 @@ let ``incident: a beforeRun throw in the run-tests command surfaces as Failed, n
         | other -> Assert.Fail($"expected Failed with the hook output surfaced, got %A{other}"))
 
 [<Fact(Timeout = 15000)>]
+let ``incident: a test child that never becomes a live process drives the run to Failed, not a wedge`` () =
+    // AUTOMATION-65 QA finding — the launch gap. Between a config's spawn and its
+    // first sign of life NOTHING watched the wait: an overloaded box left the
+    // (infinite, no-TimeoutSec) `WaitForExit` hanging forever with no child ever
+    // appearing, so the plugin stayed `Running` and `check`'s WaitForComplete
+    // streamed "Waiting for plugins" for hours. `sleep 30` reproduces it: it
+    // produces no output and won't exit, so with a tiny launch deadline
+    // (`FSHW_LAUNCH_DEADLINE_SEC`) the watchdog kills the tree and raises
+    // `LaunchStalledException`, which the run-tests command's catch turns into the
+    // SAME Aborted lifecycle a beforeRun throw does (AUTOMATION-68 seam) →
+    // PluginStatus.Failed → `check` exits non-green rather than wedging.
+    //
+    // The env override is process-global, but only `executeTests` reads it and
+    // the tests that reach `executeTests` all live in this class (one xUnit
+    // collection ⇒ sequential); echo-based configs elsewhere emit output within
+    // ms and so are immune to a 1 s launch deadline regardless. Restored in a
+    // finally.
+    withTempDir "tp-launch-gap-stall" (fun tmpDir ->
+        let key = "FSHW_LAUNCH_DEADLINE_SEC"
+        let prior = Environment.GetEnvironmentVariable key
+        Environment.SetEnvironmentVariable(key, "1")
+
+        try
+            let configs =
+                [ { Project = "TestProject"
+                    Command = "sleep"
+                    Args = "30"
+                    Group = "default"
+                    Environment = []
+                    FilterTemplate = None
+                    ClassJoin = " "
+                    TimeoutSec = None
+                    ReportVerificationFormat = AutoDetect } ]
+
+            let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+            let handler = create ":memory:" tmpDir (Some configs) None None None None []
+            host.RegisterHandler(handler)
+
+            let await = beginAwaitNextTerminal host "test-prune"
+            let result = host.RunCommand("run-tests", [| "{}" |]) |> Async.RunSynchronously
+            await.Wait(TimeSpan.FromSeconds 10.0) |> ignore
+
+            // The command surfaces the launch-stall diagnostic to its direct caller.
+            test <@ result.IsSome @>
+            test <@ result.Value.Contains("no live process") @>
+
+            // The seam `fshw check` reads: Failed, naming the config and the launch
+            // gap — NOT a stale green / a plugin stuck Running.
+            match host.GetStatus("test-prune") with
+            | Some(Failed(msg, _)) ->
+                test <@ msg.Contains("no live process") @>
+                test <@ msg.Contains("TestProject") @>
+            | other -> Assert.Fail($"expected Failed for a launch-stalled run, got %A{other}")
+        finally
+            Environment.SetEnvironmentVariable(key, prior))
+
+[<Fact(Timeout = 15000)>]
 let ``run-tests command with a passing beforeRun runs normally and reports Completed`` () =
     // Guards the pass path: a beforeRun that SUCCEEDS must leave the run
     // unaffected — projects execute, results come back, and the plugin reaches a

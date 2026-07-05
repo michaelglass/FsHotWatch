@@ -455,3 +455,235 @@ let ``ProcessRegistry.KillAll tolerates already-exited processes (F20)`` () =
     // Should complete without throwing even though Kill would throw on an
     // exited process if HasExited check raced.
     registry.KillAll()
+
+// --- Launch-liveness watchdog (AUTOMATION-65 QA finding: the launch gap) ---
+// The pure decision + the injectable loop are pinned deterministically here
+// (no real process, no OS scheduling) — mirroring how AUTOMATION-66 tested
+// `waitForDaemonReadyWith`. The real-process arms below are fast (sub-second)
+// and self-contained (no global state).
+
+// decideLaunchStep: (launchDeadlineReached, overallTimeoutReached, exited, sawOutput)
+
+[<Fact(Timeout = 5000)>]
+let ``decideLaunchStep: exited wins over everything`` () =
+    // Even racing the launch deadline with no output, a process that EXITED is a
+    // natural completion to classify — never a stall.
+    Assert.Equal(LaunchStep.Exited, decideLaunchStep true false true false)
+    Assert.Equal(LaunchStep.Exited, decideLaunchStep false false true true)
+
+[<Fact(Timeout = 5000)>]
+let ``decideLaunchStep: no life within the launch deadline is a stall`` () =
+    // never-appears: not exited, no output, past the launch deadline.
+    Assert.Equal(LaunchStep.Stalled, decideLaunchStep true false false false)
+
+[<Fact(Timeout = 5000)>]
+let ``decideLaunchStep: a process that produced output is never launch-killed`` () =
+    // slow-but-alive: streaming output past the launch deadline → keep waiting,
+    // NOT Stalled. The launch deadline governs launch, not total duration.
+    Assert.Equal(LaunchStep.KeepWaiting, decideLaunchStep true false false true)
+
+[<Fact(Timeout = 5000)>]
+let ``decideLaunchStep: overall timeout ends even a progressing run`` () =
+    // A hard cap the caller asked for still fires while progressing.
+    Assert.Equal(LaunchStep.TimedOut, decideLaunchStep false true false true)
+    // ...but a natural exit still wins over the overall timeout.
+    Assert.Equal(LaunchStep.Exited, decideLaunchStep false true true false)
+
+[<Fact(Timeout = 5000)>]
+let ``decideLaunchStep: still within the launch window keeps waiting`` () =
+    Assert.Equal(LaunchStep.KeepWaiting, decideLaunchStep false false false false)
+
+// resolveLaunchDeadline: override precedence (pure — no process env touched)
+
+[<Fact(Timeout = 5000)>]
+let ``resolveLaunchDeadline: absent override falls back to the default`` () =
+    Assert.Equal(DefaultLaunchDeadline, resolveLaunchDeadline None)
+
+[<Fact(Timeout = 5000)>]
+let ``resolveLaunchDeadline: a positive integer override wins`` () =
+    Assert.Equal(TimeSpan.FromSeconds 42.0, resolveLaunchDeadline (Some "42"))
+
+[<Theory(Timeout = 5000)>]
+[<InlineData("0")>]
+[<InlineData("-5")>]
+[<InlineData("not-a-number")>]
+[<InlineData("")>]
+let ``resolveLaunchDeadline: junk / non-positive override falls back to the default`` (value: string) =
+    Assert.Equal(DefaultLaunchDeadline, resolveLaunchDeadline (Some value))
+
+// launchWatchdogLoopWith: injected observe/clock/sleep — deterministic, no process.
+// The fake clock advances by the slept ms on each poll so the deadline is
+// reached after a bounded number of iterations.
+
+let private fakeClock (start: DateTime) =
+    let current = ref start
+    let now () = current.Value
+
+    let advance (ms: int) =
+        current.Value <- current.Value.AddMilliseconds(float ms)
+
+    now, advance
+
+[<Fact(Timeout = 5000)>]
+let ``launchWatchdogLoopWith: a child that never appears stalls at the launch deadline`` () =
+    // observe always reports "not exited, no output" — the overloaded-spawn case.
+    let now, advance = fakeClock DateTime.UtcNow
+
+    let step =
+        launchWatchdogLoopWith
+            (fun () -> false, false)
+            now
+            advance
+            250
+            (TimeSpan.FromSeconds 1.0)
+            System.Threading.Timeout.InfiniteTimeSpan
+
+    Assert.Equal(LaunchOutcome.Stalled, step)
+
+[<Fact(Timeout = 5000)>]
+let ``launchWatchdogLoopWith: a child that dies silently settles as Exited`` () =
+    // No output, then it's gone — the wrapper turns this into a launch-death
+    // (raise). The loop's job is just to observe the exit promptly.
+    let now, advance = fakeClock DateTime.UtcNow
+    let calls = ref 0
+
+    let observe () =
+        incr calls
+        if calls.Value >= 3 then true, false else false, false
+
+    let step =
+        launchWatchdogLoopWith
+            observe
+            now
+            advance
+            250
+            (TimeSpan.FromSeconds 10.0)
+            System.Threading.Timeout.InfiniteTimeSpan
+
+    Assert.Equal(LaunchOutcome.Exited, step)
+
+[<Fact(Timeout = 5000)>]
+let ``launchWatchdogLoopWith: a slow-but-progressing run is NOT launch-killed`` () =
+    // Streams output for far longer than the launch deadline, then exits. The
+    // launch deadline must NOT trip — the result is Exited, never Stalled.
+    let now, advance = fakeClock DateTime.UtcNow
+    let calls = ref 0
+
+    let observe () =
+        incr calls
+        // 20 polls of "alive, streaming output" (well past the 1 s launch
+        // deadline at 250 ms/poll = ~5 s), then a natural exit.
+        if calls.Value >= 20 then true, true else false, true
+
+    let step =
+        launchWatchdogLoopWith
+            observe
+            now
+            advance
+            250
+            (TimeSpan.FromSeconds 1.0)
+            System.Threading.Timeout.InfiniteTimeSpan
+
+    Assert.Equal(LaunchOutcome.Exited, step)
+
+[<Fact(Timeout = 5000)>]
+let ``launchWatchdogLoopWith: overall timeout ends a progressing run`` () =
+    let now, advance = fakeClock DateTime.UtcNow
+
+    let step =
+        launchWatchdogLoopWith
+            (fun () -> false, true) // always alive & progressing, never exits
+            now
+            advance
+            250
+            (TimeSpan.FromSeconds 10.0) // launch deadline never relevant (has output)
+            (TimeSpan.FromSeconds 1.0) // overall cap fires
+
+    Assert.Equal(LaunchOutcome.TimedOut, step)
+
+// runProcessWithLaunchWatchdog: fast real-process arms (no global state).
+
+[<Fact(Timeout = 20000)>]
+let ``runProcessWithLaunchWatchdog: a fast normal process returns Succeeded`` () =
+    // A progressing, quickly-exiting process is never launch-killed.
+    match
+        runProcessWithLaunchWatchdog
+            "echo"
+            "hi"
+            "."
+            []
+            System.Threading.Timeout.InfiniteTimeSpan
+            (TimeSpan.FromSeconds 5.0)
+    with
+    | Succeeded out -> Assert.Equal("hi", out.Trim())
+    | other -> Assert.Fail $"expected Succeeded, got %A{other}"
+
+[<Fact(Timeout = 20000)>]
+let ``runProcessWithLaunchWatchdog: a real failing test with output stays Failed`` () =
+    // A genuine nonzero verdict is preserved, never converted to a stall.
+    match
+        runProcessWithLaunchWatchdog
+            "sh"
+            "-c \"echo boom; exit 3\""
+            "."
+            []
+            System.Threading.Timeout.InfiniteTimeSpan
+            (TimeSpan.FromSeconds 5.0)
+    with
+    | Failed(3, out) -> Assert.Contains("boom", out)
+    | other -> Assert.Fail $"expected Failed 3, got %A{other}"
+
+[<Fact(Timeout = 20000)>]
+let ``runProcessWithLaunchWatchdog: a nonzero exit with NO output is Failed, not a stall`` () =
+    // Critical distinction (the regression that motivated dropping a silent-death
+    // heuristic): a child that EXITS nonzero having produced nothing is a genuine
+    // failing / zero-match test — a runner filtered to no tests exits nonzero with
+    // no output — INDISTINGUISHABLE from a spawn-death at the process boundary. It
+    // must be classified normally, NOT force-aborted, so it never masks a real
+    // verdict. The machine-sleep case is covered by the poll observing the exit at
+    // all (closing the wedge), not by guessing a death here.
+    match
+        runProcessWithLaunchWatchdog
+            "sh"
+            "-c \"exit 8\""
+            "."
+            []
+            System.Threading.Timeout.InfiniteTimeSpan
+            (TimeSpan.FromSeconds 5.0)
+    with
+    | Failed(8, _) -> ()
+    | other -> Assert.Fail $"expected Failed 8, got %A{other}"
+
+[<Fact(Timeout = 20000)>]
+let ``runProcessWithLaunchWatchdog: a child producing no output within the launch deadline raises`` () =
+    // `sleep` produces no output and won't exit inside a 250 ms launch deadline —
+    // the overloaded-spawn case. The tree is killed and a stall is raised.
+    let ex =
+        Assert.Throws<LaunchStalledException>(fun () ->
+            runProcessWithLaunchWatchdog
+                "sleep"
+                "30"
+                "."
+                []
+                System.Threading.Timeout.InfiniteTimeSpan
+                (TimeSpan.FromMilliseconds 250.0)
+            |> ignore)
+
+    Assert.Contains("no live process", ex.Data0)
+
+[<Fact(Timeout = 20000)>]
+let ``runProcessWithLaunchWatchdog: a progressing run that overruns the overall timeout is TimedOut`` () =
+    // Progresses (emits "go") so the launch deadline never trips, but the overall
+    // per-config timeout is a hard cap that still kills the tree → TimedOut. Proves
+    // an alive run is bounded by the caller's timeout, never by the launch deadline.
+    match
+        runProcessWithLaunchWatchdog
+            "sh"
+            "-c \"echo go; sleep 30\""
+            "."
+            []
+            (TimeSpan.FromMilliseconds 300.0)
+            (TimeSpan.FromSeconds 10.0)
+    with
+    | TimedOut(_, tail) -> Assert.Contains("go", tail)
+    | other -> Assert.Fail $"expected TimedOut, got %A{other}"

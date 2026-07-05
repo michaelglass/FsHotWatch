@@ -1126,6 +1126,16 @@ let private executeTests
         let sw = Stopwatch.StartNew()
         let runId = Guid.NewGuid()
 
+        // Launch-liveness deadline (AUTOMATION-65 QA finding). Between a test
+        // config's spawn and its first sign of life, `runProcessWithLaunchWatchdog`
+        // bounds the wait so an overloaded box / a sleep-killed child can never
+        // wedge the plugin at `Running` forever. Default 5 min, overridable with
+        // `FSHW_LAUNCH_DEADLINE_SEC` (read once per run).
+        let launchDeadline =
+            Environment.GetEnvironmentVariable "FSHW_LAUNCH_DEADLINE_SEC"
+            |> Option.ofObj
+            |> resolveLaunchDeadline
+
         let isFilteredRun = not affectedClassesByProject.IsEmpty || Option.isSome rawFilter
 
         let primaryLabel =
@@ -1312,12 +1322,13 @@ let private executeTests
                             let runOnce =
                                 async {
                                     return
-                                        runProcessWithTimeout
+                                        runProcessWithLaunchWatchdog
                                             config.Command
                                             finalArgs
                                             repoRoot
                                             config.Environment
                                             timeoutSpan
+                                            launchDeadline
                                 }
 
                             // Issue 2: STRUCTURAL apphost-missing detection. Prefer
@@ -1367,14 +1378,36 @@ let private executeTests
                                 }
 
                             let! processResult =
-                                match ctx with
-                                | Some c ->
-                                    PluginCtxHelpers.withSubtask
-                                        c
-                                        config.Project
-                                        $"testing {config.Project}"
-                                        runTestWithRetry
-                                | None -> runTestWithRetry
+                                async {
+                                    try
+                                        return!
+                                            match ctx with
+                                            | Some c ->
+                                                PluginCtxHelpers.withSubtask
+                                                    c
+                                                    config.Project
+                                                    $"testing {config.Project}"
+                                                    runTestWithRetry
+                                            | None -> runTestWithRetry
+                                    with LaunchStalledException reason ->
+                                        // AUTOMATION-65 QA finding — the launch gap. The
+                                        // watchdog killed a child that never showed a sign of
+                                        // life within the launch deadline (an overloaded spawn
+                                        // that went nowhere). Re-raise NAMING the config and
+                                        // elapsed so the run's Aborted lifecycle (built by the
+                                        // caller's `with ex ->`) carries a legible diagnostic;
+                                        // a launch stall means this project NEVER RAN, so the
+                                        // whole run must abort → PluginStatus.Failed → `check`
+                                        // exits non-green rather than wedging at Running. (A
+                                        // child that EXITS — even a sleep-killed one — is NOT a
+                                        // stall: the poll observes its exit and it's classified
+                                        // normally, non-green, without wedging.)
+                                        return
+                                            raise (
+                                                LaunchStalledException
+                                                    $"%s{config.Project}: %s{reason} (after %.0f{projectSw.Elapsed.TotalSeconds}s)"
+                                            )
+                                }
 
                             projectSw.Stop()
                             let projectElapsed = projectSw.Elapsed

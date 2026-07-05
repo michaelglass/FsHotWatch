@@ -2,6 +2,7 @@ module FsHotWatch.ProcessHelper
 
 open System
 open System.Diagnostics
+open System.Text
 open System.Threading
 open System.Threading.Tasks
 
@@ -130,18 +131,16 @@ let mergeDotnetEnv (command: string) (env: (string * string) list) : (string * s
     else
         env
 
-/// Run a process with a timeout. Reads stdout and stderr concurrently to avoid
-/// deadlock. On timeout the process tree is killed and TimedOut is returned.
-///
-/// For `dotnet` commands, injects `MSBUILDDISABLENODEREUSE=1` unless the
-/// caller already set it. See docs/msbuild-node-reuse-bug.md.
-let runProcessWithTimeout
+/// Build the `ProcessStartInfo` for a spawned child: redirected stdio, the
+/// working directory, the sanitized+overlaid environment, and the realpath'd
+/// `DOTNET_HOST_PATH`. Shared by every spawn path (`runProcessWithTimeout` and
+/// `runProcessWithLaunchWatchdog`) so the child-env contract lives in ONE place.
+let private makeChildProcessStartInfo
     (command: string)
     (args: string)
     (workDir: string)
     (env: (string * string) list)
-    (timeout: TimeSpan)
-    : ProcessOutcome =
+    : ProcessStartInfo =
     let psi = ProcessStartInfo(command, args)
     psi.RedirectStandardOutput <- true
     psi.RedirectStandardError <- true
@@ -177,6 +176,22 @@ let runProcessWithTimeout
         with _ ->
             () // path missing or not a symlink — leave the original value alone
     | _ -> ()
+
+    psi
+
+/// Run a process with a timeout. Reads stdout and stderr concurrently to avoid
+/// deadlock. On timeout the process tree is killed and TimedOut is returned.
+///
+/// For `dotnet` commands, injects `MSBUILDDISABLENODEREUSE=1` unless the
+/// caller already set it. See docs/msbuild-node-reuse-bug.md.
+let runProcessWithTimeout
+    (command: string)
+    (args: string)
+    (workDir: string)
+    (env: (string * string) list)
+    (timeout: TimeSpan)
+    : ProcessOutcome =
+    let psi = makeChildProcessStartInfo command args workDir env
 
     use proc = Process.Start(psi)
     // Register so a daemon shutdown can tear down in-flight children.
@@ -241,6 +256,281 @@ let runProcessWithTimeout
 /// Run a process to completion (no timeout).
 let runProcess (command: string) (args: string) (workDir: string) (env: (string * string) list) : ProcessOutcome =
     runProcessWithTimeout command args workDir env Threading.Timeout.InfiniteTimeSpan
+
+// ---------------------------------------------------------------------------
+// Launch-liveness watchdog (AUTOMATION-65 QA finding: the launch gap)
+//
+// `runProcessWithTimeout` bounds only the TOTAL run: it blocks on a single
+// `WaitForExit(timeoutMs)`. For a test config with no `TimeoutSec` that
+// timeout is INFINITE, so if the spawned child never becomes a live,
+// progressing process — the box is so overloaded the spawn goes nowhere, or a
+// machine sleep kills the child mid-launch — the wait blocks FOREVER. Nothing
+// raises, so the plugin stays `Running` and `check`'s `WaitForComplete` streams
+// "Waiting for plugins" indefinitely (observed 33 min – 16 h in the field).
+//
+// `runProcessWithLaunchWatchdog` closes that gap: it POLLS liveness instead of
+// blocking on one infinite wait, and enforces a bounded *launch* deadline — the
+// window in which the child must show its FIRST sign of life (any output, or an
+// exit). Once it does, the wait is unbounded again (only the overall timeout can
+// end it), so a slow-but-progressing suite streaming output is NEVER launch-
+// killed: the deadline governs launch, not total duration. A child that EXITS is
+// classified normally by its exit code (the machine-sleep case is covered by the
+// poll OBSERVING the exit + a bounded post-exit drain — NOT by guessing a "death"
+// from a no-output nonzero exit, which is indistinguishable from a genuine
+// failing / zero-match test).
+// ---------------------------------------------------------------------------
+
+/// Raised when a launched child never becomes a live, progressing process: it
+/// showed NO sign of life (no output, no exit) within the launch deadline — the
+/// box is so overloaded the spawn went nowhere. The message names the elapsed
+/// launch budget; TestPrune catches it and drives the run's `Aborted` lifecycle
+/// so `check` exits non-green with a legible "re-run when quiet" diagnostic
+/// rather than wedging.
+///
+/// `Message` is overridden to return the raw diagnostic (not F#'s default
+/// `LaunchStalledException "..."` repr) so the string that flows through
+/// `abortedRunLifecycle ex.Message` into the plugin's Failed status — and thence
+/// to `fshw check` / `fshw errors` — is clean.
+exception LaunchStalledException of string with
+    override this.Message = this.Data0
+
+/// The next action for one launch-watchdog poll. `KeepWaiting` loops; the other
+/// three map onto the terminal `LaunchOutcome`.
+[<RequireQualifiedAccess>]
+type LaunchStep =
+    /// The process ended — drain its output and classify by exit code.
+    | Exited
+    /// The overall (per-config) timeout elapsed — kill the tree, report TimedOut.
+    | TimedOut
+    /// No sign of life within the launch deadline — kill the tree, report a stall.
+    | Stalled
+    | KeepWaiting
+
+/// The terminal verdict of the launch-watchdog loop. Distinct from `LaunchStep`
+/// so the loop's result can NEVER be `KeepWaiting` — the impossible "still
+/// waiting" outcome is unrepresentable, and the production match has no dead arm.
+[<RequireQualifiedAccess>]
+type LaunchOutcome =
+    | Exited
+    | TimedOut
+    | Stalled
+
+/// Pure launch-liveness decision for one poll. Ordering is load-bearing:
+///  1. a process that EXITED wins over everything (natural completion, even if
+///     it raced the launch deadline);
+///  2. then the overall timeout (a hard cap the caller asked for);
+///  3. a process that has produced ANY output is "alive & progressing" — only
+///     the overall timeout can end it, NEVER the launch deadline (this is what
+///     protects a long DB suite that streams output for many minutes);
+///  4. only a process that has neither exited nor produced a byte, past the
+///     launch deadline, is a stall.
+let decideLaunchStep
+    (launchDeadlineReached: bool)
+    (overallTimeoutReached: bool)
+    (exited: bool)
+    (sawOutput: bool)
+    : LaunchStep =
+    if exited then LaunchStep.Exited
+    elif overallTimeoutReached then LaunchStep.TimedOut
+    elif sawOutput then LaunchStep.KeepWaiting
+    elif launchDeadlineReached then LaunchStep.Stalled
+    else LaunchStep.KeepWaiting
+
+/// Injectable launch-watchdog loop. Polls `observe` (returns `exited, sawOutput`)
+/// against the launch deadline and the optional overall timeout, sleeping between
+/// polls, until a terminal `LaunchOutcome` is reached. All effects (observe /
+/// clock / sleep) are injected so the loop is deterministically testable without
+/// spawning a real process — mirrors `waitForDaemonReadyWith`. `overallTimeout =
+/// InfiniteTimeSpan` disables the total cap (the common TestPrune case), leaving
+/// the launch deadline as the sole escape from an infinite wait.
+let launchWatchdogLoopWith
+    (observe: unit -> bool * bool)
+    (now: unit -> DateTime)
+    (sleep: int -> unit)
+    (pollMs: int)
+    (launchDeadline: TimeSpan)
+    (overallTimeout: TimeSpan)
+    : LaunchOutcome =
+    let start = now ()
+    let launchDeadlineAt = start.Add launchDeadline
+
+    let overallTimeoutAt =
+        if overallTimeout = Threading.Timeout.InfiniteTimeSpan then
+            None
+        else
+            Some(start.Add overallTimeout)
+
+    let rec loop () =
+        let exited, sawOutput = observe ()
+
+        let launchReached = now () >= launchDeadlineAt
+
+        let overallReached =
+            match overallTimeoutAt with
+            | Some t -> now () >= t
+            | None -> false
+
+        match decideLaunchStep launchReached overallReached exited sawOutput with
+        | LaunchStep.Exited -> LaunchOutcome.Exited
+        | LaunchStep.TimedOut -> LaunchOutcome.TimedOut
+        | LaunchStep.Stalled -> LaunchOutcome.Stalled
+        | LaunchStep.KeepWaiting ->
+            sleep pollMs
+            loop ()
+
+    loop ()
+
+/// Default launch deadline: the window in which a spawned test child must show
+/// its first sign of life. Deliberately generous — a real runner emits its
+/// discovery/progress banner within seconds, so 5 min only ever trips on a
+/// genuinely-wedged spawn, never on a slow-but-alive suite.
+let DefaultLaunchDeadline = TimeSpan.FromMinutes 5.0
+
+/// Resolve the launch deadline from an optional override string (the
+/// `FSHW_LAUNCH_DEADLINE_SEC` env value). A positive integer count of seconds
+/// wins; anything else (absent, unparseable, non-positive) falls back to
+/// `DefaultLaunchDeadline`. Pure so the precedence is unit-testable without
+/// touching process env.
+let resolveLaunchDeadline (overrideSec: string option) : TimeSpan =
+    match overrideSec with
+    | Some s ->
+        match Int32.TryParse(s: string) with
+        | true, n when n > 0 -> TimeSpan.FromSeconds(float n)
+        | _ -> DefaultLaunchDeadline
+    | None -> DefaultLaunchDeadline
+
+/// Bounded post-exit drain window. Once `HasExited` is true the exit CODE is
+/// available immediately, but the redirected streams may not have reached EOF —
+/// and if the child spawned a grandchild (an MSBuild/vstest node) that inherited
+/// the stdout pipe and outlives it, EOF NEVER comes. An unbounded `WaitForExit()`
+/// blocks forever on that pipe even though the process itself is gone — the exact
+/// 16 h machine-sleep wedge. So we drain only for a bounded window, then proceed
+/// with whatever output was captured; the verdict rides on the exit code, not on
+/// stream EOF.
+[<Literal>]
+let private PostExitDrainMs = 2000
+
+/// Run a process under a launch-liveness watchdog. Behaves like
+/// `runProcessWithTimeout` for a process that becomes live and progresses, but
+/// can NEVER block forever: if the child shows no sign of life within
+/// `launchDeadline`, the process tree is killed and `LaunchStalledException` is
+/// raised. A process that EXITS — for any reason, with any code — is classified
+/// normally by its exit code (a nonzero exit with no output is a genuine test
+/// failure / zero-match, INDISTINGUISHABLE from a spawn-death at the process
+/// boundary, so it must NOT be force-aborted). The machine-sleep case is covered
+/// not by guessing from the exit code but by POLLING `HasExited` (so the exit is
+/// observed at all) plus the bounded post-exit drain (so a grandchild holding the
+/// pipe can't re-wedge the read). Reads stdout/stderr incrementally (event-based)
+/// so the FIRST byte is observed as liveness.
+///
+/// For `dotnet` commands, injects `MSBUILDDISABLENODEREUSE=1` unless the caller
+/// already set it (via `makeChildProcessStartInfo`).
+let runProcessWithLaunchWatchdog
+    (command: string)
+    (args: string)
+    (workDir: string)
+    (env: (string * string) list)
+    (timeout: TimeSpan)
+    (launchDeadline: TimeSpan)
+    : ProcessOutcome =
+    let psi = makeChildProcessStartInfo command args workDir env
+
+    use proc = Process.Start(psi)
+    // Register so a daemon shutdown can tear down in-flight children.
+    ProcessRegistry.track proc
+
+    // Incremental output capture via explicit stream pumps. We can NOT use the
+    // event API (`BeginOutputReadLine`) here: draining it requires the
+    // parameterless `WaitForExit()` (the timed overload does NOT flush the async
+    // handlers), and that overload is exactly the unbounded, grandchild-pipe-
+    // wedging wait we must avoid. Direct `ReadAsync` gives us Task handles we can
+    // bound-wait AND flips a latch on the FIRST byte — the "alive & progressing"
+    // signal the launch deadline keys off (`ReadToEndAsync` only completes at
+    // EOF, which a wedged launch never reaches).
+    let output = StringBuilder()
+    let outputLock = obj ()
+    let mutable sawOutput = 0
+
+    let pump (reader: IO.StreamReader) : Task =
+        task {
+            let buf = Array.zeroCreate<char> 4096
+            let mutable go = true
+
+            while go do
+                let! n = reader.ReadAsync(buf.AsMemory())
+
+                if n = 0 then
+                    go <- false
+                else
+                    Volatile.Write(&sawOutput, 1)
+                    lock outputLock (fun () -> output.Append(buf, 0, n) |> ignore)
+        }
+        :> Task
+
+    let stdoutTask = pump proc.StandardOutput
+    let stderrTask = pump proc.StandardError
+
+    let drainedOutput () =
+        lock outputLock (fun () -> output.ToString().Trim())
+
+    // BOUNDED drain of the stream pumps. A normal process's pipes reach EOF the
+    // instant it exits (returns in ms); only a grandchild holding the pipe makes
+    // this block, and then only for the window — never forever.
+    let drainPumps () =
+        try
+            Task.WaitAll([| stdoutTask; stderrTask |], PostExitDrainMs) |> ignore
+        with _ ->
+            () // a faulted pump (pipe torn down on kill) is expected — drain best-effort
+
+    let pollMs = 250
+
+    try
+        // The "sleep" between polls IS a bounded `WaitForExit`: it wakes early
+        // the instant the child exits (so completion is observed promptly) but
+        // caps at `pollMs` so the launch/overall deadlines are still checked
+        // regularly. `observe` reads the independent liveness handle
+        // (`HasExited`) — the poll that closes the machine-sleep hole where a
+        // single blocking wait never returned.
+        let observe () =
+            proc.HasExited, (Volatile.Read &sawOutput = 1)
+
+        let sleep ms = proc.WaitForExit(ms: int) |> ignore
+
+        let outcome =
+            launchWatchdogLoopWith observe (fun () -> DateTime.UtcNow) sleep pollMs launchDeadline timeout
+
+        // A killed tree still needs draining so partial output is reported.
+        let killTree () =
+            try
+                proc.Kill(entireProcessTree = true)
+            with _ ->
+                ()
+
+        match outcome with
+        | LaunchOutcome.Exited ->
+            drainPumps ()
+            let out = drainedOutput ()
+
+            if proc.ExitCode = 0 then
+                Succeeded out
+            else
+                Failed(proc.ExitCode, out)
+        | LaunchOutcome.TimedOut ->
+            // Same kill+drain shape as runProcessWithTimeout's timeout arm.
+            killTree ()
+            drainPumps ()
+            TimedOut(timeout, drainedOutput ())
+        | LaunchOutcome.Stalled ->
+            killTree ()
+            drainPumps ()
+
+            raise (
+                LaunchStalledException(
+                    $"test launch produced no live process within %d{int launchDeadline.TotalSeconds}s — box overloaded or process died at spawn; re-run when quiet"
+                )
+            )
+    finally
+        ProcessRegistry.untrack proc
 
 /// Run a synchronous unit of work with a wall-clock timeout, threading a
 /// `CancellationToken` into the work so a timed-out unit is ACTUALLY cancelled

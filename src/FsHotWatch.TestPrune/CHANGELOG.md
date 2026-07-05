@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- fix: a test child that **never becomes a live process** no longer wedges the
+  plugin at `Running` forever. `executeTests` launched each config through
+  `runProcessWithTimeout` with an INFINITE timeout (configs rarely set
+  `TimeoutSec`), so after `executeTests starting…` / `beforeRun complete` the
+  actual child launch could go nowhere — an overloaded box where the child never
+  appears, or a machine sleep that kills it mid-launch — and the wait blocked
+  indefinitely. No fault was raised, so neither AUTOMATION-65's faulted-run
+  Failed path nor AUTOMATION-68's beforeRun fix applied, and `check`'s
+  `WaitForComplete` streamed "Waiting for plugins" for hours (observed 33 min –
+  16 h). Launches now go through `runProcessWithLaunchWatchdog` with a bounded
+  launch-liveness deadline (5 min default, `FSHW_LAUNCH_DEADLINE_SEC` override).
+  A slow-but-progressing suite that streams output is untouched — the deadline
+  governs launch, not total duration. A **stall** (no life within the deadline)
+  kills the tree and raises `LaunchStalledException`, which `executeTests`
+  enriches with the config name and elapsed and the impact / `run-tests` catches
+  turn into the SAME `Aborted` lifecycle a `beforeRun` throw does (AUTOMATION-68
+  seam) → `PluginStatus.Failed`, so `check` reads non-green with a legible
+  "re-run when quiet" diagnostic. A child that EXITS — including a sleep-killed
+  one — is no longer a wedge either: the poll observes its exit and it is
+  classified normally (a nonzero exit with no output → `TestsErrored`, honest and
+  re-runnable), never forced to abort (which would misclassify every genuine
+  no-output test failure). (AUTOMATION-65 QA finding: the launch gap)
+
 ## 0.11.0-alpha.1 - 2026-07-03
 
 - feat: the manual `run-tests` command's slot-wait budget (how long it waits for

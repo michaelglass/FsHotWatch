@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- feat: `ProcessHelper.runProcessWithLaunchWatchdog` — run a child under a
+  **launch-liveness watchdog** that can never block forever. `runProcessWithTimeout`
+  bounds only the *total* run via one `WaitForExit`, which is INFINITE for a
+  caller that passes no timeout; if the spawned child never becomes a live,
+  progressing process — an overloaded box where it never appears, or a machine
+  sleep that kills it mid-launch — that wait hangs forever. The watchdog polls
+  liveness instead and enforces a bounded *launch* deadline: the window in which
+  the child must show its FIRST sign of life (any output, or an exit). Once it
+  does, the wait is unbounded again, so a slow-but-progressing suite streaming
+  output is never launch-killed — the deadline governs launch, not total
+  duration. Only a **stall** (no life within the deadline) kills the tree and
+  raises `LaunchStalledException`; a child that EXITS is classified normally by
+  its exit code (a nonzero exit with no output is a genuine failing / zero-match
+  test, indistinguishable from a spawn-death, so it is never force-aborted). The
+  machine-sleep case is closed instead by (a) polling `HasExited` so the exit is
+  observed at all, and (b) a **bounded** post-exit drain — an unbounded
+  `WaitForExit` blocks forever if a grandchild (an MSBuild/vstest node) inherits
+  the stdout pipe and outlives the child, which is the actual 16 h wedge. The
+  pure decision (`decideLaunchStep`) and injectable loop
+  (`launchWatchdogLoopWith`) are deterministically testable, mirroring
+  `waitForDaemonReadyWith`. (AUTOMATION-65 QA finding: the launch gap)
+
 ## 0.9.0-alpha.1 - 2026-07-03
 
 - fix: a faulted exclusive run (`RunExclusive` build/coverage/tests slot) can no longer strand its plugin in `Running` — the fault branch now forces a terminal `Failed` status, so a client `WaitForComplete` gets a prompt non-zero verdict instead of waiting forever (AUTOMATION-65; the fresh-workspace "test run never launches" wedge).
