@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.12.0-alpha.1 - 2026-07-05
+
 - fix: a test child that **never becomes a live process** no longer wedges the
   plugin at `Running` forever. `executeTests` launched each config through
   `runProcessWithTimeout` with an INFINITE timeout (configs rarely set

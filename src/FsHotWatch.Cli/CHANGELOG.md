@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.1 - 2026-07-05
+
+- chore: rebuild to bundle updated dependencies
+
+
 ## 0.12.0-alpha.1 - 2026-07-03
 
 - fix: `fshw check` no longer misreports a daemon-startup race as failures. A
