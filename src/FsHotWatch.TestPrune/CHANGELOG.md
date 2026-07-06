@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0-alpha.1 - 2026-07-06
+
 - fix: a cycle whose changed/queued symbols **all have no covering test** now
   resolves as a clean "nothing to verify" green (0 ran) IMMEDIATELY, instead of
   falling through to the cold-start full-suite run. The zero-affected skip
