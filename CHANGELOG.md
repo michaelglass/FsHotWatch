@@ -4,6 +4,22 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### A check with nothing testable to run can no longer hang forever
+
+When the only things a `fshw check` had queued to verify were code symbols with
+**no covering test** (e.g. an infra-only or docs-only change that left behind a
+few untestable helper symbols), a freshly (re)started daemon would drop those
+symbols as uncovered — correctly finding an empty set of affected tests — and
+then, having no test baseline yet for this session, fall back to running the
+ENTIRE suite anyway. On a memory-pressured box that full run could stall before
+any test process even appeared, and the check streamed "Waiting for plugins:
+test-prune" for hours without ever finishing (observed 5 h+). The launch
+watchdog couldn't help: nothing was *expected* to run, so "no test process" was
+the correct state, not a stall. An all-untestable cycle is now recognised for
+what it is — genuinely nothing to verify — and the check reports a clean pass
+(zero tests ran) immediately. A genuine cold check that has never established a
+baseline still runs the full suite as before.
+
 ### A daemon-startup race can no longer poison a check verdict
 
 `fshw check` issued right after a daemon (re)start — e.g. an explicit
