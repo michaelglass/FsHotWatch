@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- fix: a cycle whose changed/queued symbols **all have no covering test** now
+  resolves as a clean "nothing to verify" green (0 ran) IMMEDIATELY, instead of
+  falling through to the cold-start full-suite run. The zero-affected skip
+  previously required a session baseline (`hasCachedResults`); on a cold daemon
+  with no baseline, an all-uncovered cycle (every symbol dropped as
+  no-covering-test → empty affected set) instead ran the full suite — and on a
+  loaded box that run could wedge in `executeTests`, streaming "Waiting for
+  plugins: test-prune" for hours with `WaitForComplete` never resolving (observed
+  5 h+). The launch-liveness watchdog (0.12.0-alpha.1) can't catch this: no
+  testhost is *expected* (nothing to run), so "no child" is the correct steady
+  state, not a stall. `flushAndQueryAffected` now records
+  `ChangedSymbolsAllUncovered` when it drops every symbol as uncovered, and the
+  run-trigger treats that as a definitive green — sound WITHOUT a baseline
+  because no test covers any changed symbol, so a run would verify nothing about
+  them. A genuine cold start with NO pending symbols leaves the flag false, so
+  the full-suite baseline still runs. Same terminal green as "tests exist and all
+  passed", differing only in that zero ran. (AUTOMATION-65 QA finding: the
+  empty-affected-set completion path)
+
 ## 0.12.0-alpha.1 - 2026-07-05
 
 - fix: a test child that **never becomes a live process** no longer wedges the

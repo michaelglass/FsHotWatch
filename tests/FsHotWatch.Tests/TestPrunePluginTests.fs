@@ -1736,6 +1736,72 @@ let ``WaitForComplete hangs when FileChecked arrives after BuildCompleted and te
 
         test <@ completed @>)
 
+// AUTOMATION-65 QA: the "nothing to verify" completion path. A cycle whose
+// changed/queued symbols ALL prove to have no covering test must resolve as a
+// clean green (0 ran) IMMEDIATELY — even on a cold daemon with no session
+// baseline — instead of falling through to the cold-start full-suite run, which
+// (on a loaded box) can wedge in executeTests and never resolve WaitForComplete.
+[<Fact(Timeout = 30000)>]
+let ``all changed symbols with no covering test complete green without running`` () =
+    withTempDir "tp-nothing-to-verify" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+
+        // A test project whose command would create this sentinel IF it ran. The
+        // whole point of the fix is that it must NOT run (nothing changed here is
+        // testable), so the sentinel must stay absent.
+        let sentinel = Path.Combine(tmpDir, "ran")
+
+        let configs =
+            [ { Project = "TestProject"
+                Command = "sh"
+                Args = $"-c \"touch {sentinel}\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
+
+        // Seed the durable needs-testing queue with a symbol that has NO covering
+        // test — the fresh plugin DB indexes no test for it, so QueryAffectedTests
+        // is empty. The plugin loads this queue at construction, so the very first
+        // BuildCompleted flush drops it as uncovered, leaving an empty affected set
+        // (ChangedSymbolsAllUncovered = true).
+        FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Orphan.uncovered" ])
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+
+        // No prior run this session ⇒ hasCachedResults = false. BEFORE the fix,
+        // that forced the cold-start else-branch to run the FULL suite (touching
+        // the sentinel) even though the only pending symbol is untestable — and
+        // that run could then wedge, never resolving WaitForComplete. AFTER the
+        // fix, the all-uncovered cycle is a "nothing to verify" green: 0 ran.
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        let completion = beginAwaitTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        // Bounded terminal wait — a hang (the bug) fails here rather than passing.
+        let reached = completion.Wait(TimeSpan.FromSeconds 15.0)
+        test <@ reached @>
+
+        // Green: reached Completed (a clean pass), NOT Failed and NOT stuck Running.
+        match host.GetStatus("test-prune") with
+        | Some(Completed _) -> ()
+        | other -> Assert.Fail($"Expected Completed (nothing to verify), got: %A{other}")
+
+        // The discriminator: zero tests ran. The sentinel-touching command must
+        // never have executed. (Before the fix, the cold-start full suite ran it.)
+        test <@ not (File.Exists sentinel) @>
+
+        // And WaitForComplete itself resolves promptly — it never blocks on a
+        // Running test-prune, because the plugin reached terminal.
+        let waitTask =
+            waitForAllTerminal host (TimeSpan.FromSeconds 5.0) System.Threading.CancellationToken.None
+
+        test <@ waitTask.Wait(TimeSpan.FromSeconds 8.0) @>)
+
 [<Fact(Timeout = 15000)>]
 let ``FileChecked with no detected symbol changes leaves ChangedSymbols empty`` () =
     // After the lazy-compute migration, FileChecked accumulates ChangedSymbols

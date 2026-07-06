@@ -253,6 +253,18 @@ type TestPruneState =
         /// The queued rerun consumes (and clears) this so a dependency change that
         /// arrives mid-run is not lost. Unioned with the rerun's own fanout.
         PendingForceRunProjects: Set<string>
+        /// True when the most recent `flushAndQueryAffected` had changed/queued
+        /// symbols but EVERY one proved to have NO covering test (all dropped as
+        /// uncovered), leaving an empty affected set. A definitive "nothing to
+        /// verify" green: there WAS pending work and none of it is testable, so a
+        /// run would verify nothing. Lets the zero-affected skip in
+        /// `runTestsWithImpact` complete green immediately — even on a cold daemon
+        /// with no session baseline — instead of pointlessly running (and, on a
+        /// memory-pressured box, potentially wedging in) the full suite. Distinct
+        /// from a genuine cold start with NO pending symbols, which must still run
+        /// the full-suite baseline to establish one (guarded by `hasCachedResults`).
+        /// Recomputed on every flush; only read right after one, by the run-trigger.
+        ChangedSymbolsAllUncovered: bool
     }
 
 /// Custom message posted from the async test runner back to the synchronous
@@ -1935,9 +1947,20 @@ let create
             flushedState.ChangedSymbols
             |> List.filter (fun s -> not (Set.contains s uncovered))
 
+        // There WERE symbols to consider this cycle, yet the affected set is
+        // empty — so every one of them was just dropped as uncovered (a union
+        // query returning zero tests means every per-symbol query did too). That
+        // is a definitive "nothing to verify" green: nothing that changed is
+        // testable, so a run would prove nothing. The run-trigger reads this to
+        // complete green immediately instead of running the full suite (see
+        // runTestsWithImpact's zero-affected skip). An EMPTY `symbols` (genuine
+        // cold start, nothing pending) leaves this false so the baseline still runs.
+        let allChangesUncovered = not symbols.IsEmpty && List.isEmpty affectedTests
+
         { flushedState with
             ChangedSymbols = remainingSymbols
-            AffectedTests = Analyzed affectedTests }
+            AffectedTests = Analyzed affectedTests
+            ChangedSymbolsAllUncovered = allChangesUncovered }
 
     // Mutable snapshot of ChangedSymbols for the cache key function.
     // Updated from the Update handler so the cache intercept (which runs
@@ -1985,7 +2008,8 @@ let create
           TestClassFiles = Map.empty
           BuildCompletedInThisSession = false
           PriorProjectFingerprints = Map.empty
-          PendingForceRunProjects = Set.empty }
+          PendingForceRunProjects = Set.empty
+          ChangedSymbolsAllUncovered = false }
 
     // Keep the cache-key snapshot consistent with the seeded queue from the
     // very first event (the cache intercept runs before any Update handler).
@@ -2081,26 +2105,54 @@ let create
                 // also checks `forceRunProjects` is empty.
                 let totalClasses = symbolAffectedByProject |> Map.values |> Seq.sumBy List.length
 
-                // Gate the zero-affected skip on the PERSISTED queue being empty
-                // (§3c). The queue-empty check is the load-bearing addition: an
-                // empty queue means "test-equivalent to the last green run", so "0
-                // affected tests" is a sound green; a NON-empty queue with 0 affected
-                // classes (covered symbols whose tests aren't indexed yet, etc.) must
-                // run the suite rather than silent-green. `hasCachedResults` is
-                // retained ONLY as the cold-start guard: the very first run of a
-                // session (no baseline yet) must run the full suite to ESTABLISH the
-                // green baseline the empty queue is then equivalent to. Both must
-                // hold to skip — either alone would under-test (queue-empty cold
-                // start) or be unsound (warm with a non-empty queue).
+                // Two independent routes to the degenerate zero-affected skip —
+                // BOTH terminate as a clean green (0 ran) via the same lifecycle,
+                // distinguishable from "tests exist and all passed" only in that
+                // zero ran:
+                //
+                //  (1) Baseline-equivalent (§3c). PERSISTED queue empty AND a
+                //      session baseline exists (`hasCachedResults`). Empty queue =
+                //      "test-equivalent to the last green run", so "0 affected
+                //      tests" is a sound green. The queue-empty check is
+                //      load-bearing: a NON-empty queue with 0 affected classes
+                //      (covered symbols whose tests aren't indexed yet, etc.) must
+                //      run the suite rather than silent-green. `hasCachedResults`
+                //      is the cold-start guard: the very first run of a session
+                //      (no baseline yet, e.g. a genuine cold check with nothing
+                //      pending) must run the full suite to ESTABLISH the green
+                //      baseline the empty queue is then equivalent to.
+                //
+                //  (2) Nothing-to-verify (AUTOMATION-65 QA). This cycle HAD
+                //      changed/queued symbols and EVERY one proved to have no
+                //      covering test (`ChangedSymbolsAllUncovered`, set by
+                //      flushAndQueryAffected as it dropped them). No test covers
+                //      any of them, so a run — even the cold-start full suite —
+                //      would verify nothing about them: the honest outcome is a
+                //      "nothing to verify" green NOW. This is sound WITHOUT a
+                //      session baseline (unlike route 1) precisely because it is
+                //      gated on symbols having existed and provably lacking any
+                //      test, not on an absent-pending inference. It rescues the
+                //      wedge where an all-uncovered cold run would otherwise fall
+                //      through to the full suite and hang, never resolving
+                //      WaitForComplete. A genuine cold start with NO pending
+                //      symbols leaves the flag false, so the baseline still runs.
+                let baselineEquivalent = Set.isEmpty pendingQueueRef && hasCachedResults
+
+                let nothingToVerify = state.ChangedSymbolsAllUncovered
+
                 if
                     totalClasses = 0
                     && Set.isEmpty forceRunProjects
-                    && Set.isEmpty pendingQueueRef
-                    && hasCachedResults
+                    && (baselineEquivalent || nothingToVerify)
                 then
-                    Logging.info
-                        "test-prune"
-                        "No affected classes, no dependency fanout, empty pending queue, baseline exists — skipping tests"
+                    if nothingToVerify then
+                        Logging.info
+                            "test-prune"
+                            "Every changed symbol has no covering test — nothing to verify, skipping tests (green, 0 ran)"
+                    else
+                        Logging.info
+                            "test-prune"
+                            "No affected classes, no dependency fanout, empty pending queue, baseline exists — skipping tests"
 
                     // Build a degenerate lifecycle (Started → Completed with empty
                     // Results). The synchronous Custom handler emits both events
