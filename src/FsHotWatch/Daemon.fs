@@ -1945,7 +1945,7 @@ module Daemon =
                         Some(fun projPath ->
                             DepsFreshness.evaluateProject
                                 (DepsFreshness.detectProjectFreshness repoRoot)
-                                (DepsFreshness.staleSignature repoRoot)
+                                (DepsFreshness.depRelevantSignature repoRoot)
                                 DepsFreshness.assetsPresent
                                 runner
                                 tracker

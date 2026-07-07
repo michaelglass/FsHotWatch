@@ -12,6 +12,8 @@ module FsHotWatch.DepsFreshness
 open System
 open System.Collections.Concurrent
 open System.IO
+open System.Text.RegularExpressions
+open System.Xml.Linq
 open FsHotWatch.ProcessHelper
 
 /// Whether a project's restored assets are in sync with its declared deps.
@@ -28,12 +30,13 @@ let pluginName = "deps"
 /// dependency-declaring file. No dep files → Fresh (nothing can invalidate the
 /// assets). Exposed for unit testing without disk.
 ///
-/// This is an mtime-based FAST PATH, not a content oracle: a preserved-mtime dep
-/// rewrite (rsync -a / git checkout) leaves a changed `paket.lock` looking older
-/// than the assets, so this would report Fresh. That residual gap is closed by
-/// `evaluateProject`'s content-drift cross-check against the content-hashed
-/// `staleSignature` — a `Fresh` verdict here whose dep-content signature drifted
-/// is still re-restored. See docs/adr-008-mtime-is-not-a-content-oracle.md.
+/// This is an mtime-based FAST PATH, not a content oracle. Both its blind spots
+/// are closed in `evaluateProject` by the content-hashed `depRelevantSignature`:
+/// a preserved-mtime dep rewrite (rsync -a / git checkout) leaves a changed
+/// `paket.lock` looking older than the assets → reported Fresh but re-restored on
+/// signature drift; a compile-item-only fsproj edit bumps the fsproj mtime →
+/// reported Stale but suppressed when the signature matches a known-good baseline.
+/// See docs/adr-008-mtime-is-not-a-content-oracle.md.
 let compareFreshness (assetsMtime: DateTime option) (depFileMtimes: DateTime list) : Freshness =
     match assetsMtime with
     | None -> Stale
@@ -92,16 +95,21 @@ let private ancestorDirs (fsprojPath: string) (repoRoot: string) : string list =
 /// version bump, triggering per-project restore recovery and skipped scans.
 /// (See `toolsManifest` below for the restore-runner's separate, freshness-
 /// independent need to know whether a tool manifest is in scope.)
-let dependencyFiles (fsprojPath: string) (repoRoot: string) : string list =
+///
+/// The ancestor-scoped dep files that exist for `fsprojPath` (nearest match per
+/// name), WITHOUT the project's own `.fsproj`. Shared by `dependencyFiles` (which
+/// prepends the fsproj) and `depRelevantSignature` (which hashes the fsproj's
+/// dep-relevant subset separately from these full-content ancestor files).
+let private ancestorDepFiles (fsprojPath: string) (repoRoot: string) : string list =
     let dirs = ancestorDirs fsprojPath repoRoot
 
-    let ancestorMatches =
-        ancestorDepFileNames
-        |> List.choose (fun name -> dirs |> List.map (fun d -> Path.Combine(d, name)) |> List.tryFind File.Exists)
+    ancestorDepFileNames
+    |> List.choose (fun name -> dirs |> List.map (fun d -> Path.Combine(d, name)) |> List.tryFind File.Exists)
 
+let dependencyFiles (fsprojPath: string) (repoRoot: string) : string list =
     let projFile = if File.Exists fsprojPath then [ fsprojPath ] else []
 
-    projFile @ ancestorMatches
+    projFile @ ancestorDepFiles fsprojPath repoRoot
 
 /// The nearest `.config/dotnet-tools.json` governing `fsprojPath`, if any.
 /// Used ONLY by the restore runner to decide whether to run `dotnet tool
@@ -135,21 +143,113 @@ let detectProjectFreshness (repoRoot: string) (fsprojPath: string) : Freshness =
     let depMtimes = dependencyFiles fsprojPath repoRoot |> List.choose tryMtime
     compareFreshness assetsMtime depMtimes
 
-/// Compute the stale signature for a project: a content hash over every
-/// dependency file (path + on-disk bytes). This debounces recovery — the same
-/// unchanged stale state keeps the same signature (no re-restore), while ANY
-/// content change to a dep file moves it forward and re-arms recovery.
+/// fsproj element local-names that DECLARE the dependency graph. A change to any
+/// of these can alter what `dotnet restore` produces in `project.assets.json`.
+/// `Import`/`Sdk` pull in external targets/props that can inject references;
+/// `TargetFramework(s)` selects the framework the graph is resolved for. Source-
+/// item names (`Compile`/`Content`/`None`/`EmbeddedResource`) are deliberately
+/// ABSENT — they do not participate in the package graph, so a compile-item-only
+/// edit must not perturb the signature.
+let private depRelevantElementNames =
+    set
+        [ "PackageReference"
+          "ProjectReference"
+          "PackageVersion"
+          "PackageDownload"
+          "FrameworkReference"
+          "Import"
+          "Sdk"
+          "TargetFramework"
+          "TargetFrameworks" ]
+
+/// Canonicalize an XML element to a whitespace- and order-insensitive string:
+/// local-name, attributes sorted `name=value`, child elements canonicalized and
+/// sorted, and the element's own (non-child) text collapsed. Namespaces are
+/// ignored (LocalName) so an old-style MSBuild-namespaced fsproj canonicalizes
+/// the same as an SDK-style one. Order-insensitivity means MOVING a
+/// `<PackageReference>` (or reordering its attributes / child metadata) does not
+/// perturb the signature — only a genuine content change does.
+let rec private canonicalizeElement (el: XElement) : string =
+    let attrs =
+        el.Attributes()
+        |> Seq.map (fun a -> $"%s{a.Name.LocalName}=%s{a.Value}")
+        |> Seq.sort
+        |> String.concat " "
+
+    let children =
+        el.Elements() |> Seq.map canonicalizeElement |> Seq.sort |> String.concat ";"
+
+    let ownText =
+        el.Nodes()
+        |> Seq.choose (fun n ->
+            match n with
+            | :? XText as t -> Some t.Value
+            | _ -> None)
+        |> String.concat ""
+        |> fun s -> Regex.Replace(s, @"\s+", " ").Trim()
+
+    $"%s{el.Name.LocalName}(%s{attrs}){{%s{children}}}[%s{ownText}]"
+
+/// The dep-relevant digest of a single `.fsproj`: the canonicalized dep-declaring
+/// elements (see `depRelevantElementNames`) plus the root `<Project Sdk="...">`
+/// attribute, sorted for order-independence. Source-item elements are NOT
+/// collected, so a compile-item-only edit yields the SAME digest. A parse/read
+/// failure folds a content-derived sentinel (never throws) so a later fix still
+/// moves the digest forward. Conditional references (inside `<Choose>`/`<When>`
+/// or with a `Condition=` attribute) ARE captured — `Descendants()` reaches them
+/// and the condition text rides along in the canonical form.
+let private depRelevantFsprojDigest (fsprojPath: string) : string =
+    try
+        let doc = XDocument.Load(fsprojPath)
+        let root = doc.Root
+
+        let sdkAttr =
+            match root.Attribute(XName.Get "Sdk") with
+            | null -> []
+            | a -> [ $"Project@Sdk=%s{a.Value}" ]
+
+        let elems =
+            root.Descendants()
+            |> Seq.filter (fun el -> depRelevantElementNames.Contains el.Name.LocalName)
+            |> Seq.map canonicalizeElement
+            |> Seq.sort
+            |> List.ofSeq
+
+        String.concat "\n" (sdkAttr @ elems)
+    with _ ->
+        // Malformed/unreadable fsproj: key the sentinel on the raw bytes so an
+        // unparseable→parseable transition (a content change) still moves the
+        // signature. Matches the never-throw contract below.
+        let raw =
+            try
+                FsHotWatch.CheckCache.sha256Hex (File.ReadAllText fsprojPath)
+            with _ ->
+                "unreadable"
+
+        $"fsproj-unparseable@%s{raw}"
+
+/// Content signature over ONLY a project's dependency-declaring inputs: the
+/// fsproj's dep-relevant element subset (`depRelevantFsprojDigest`) plus the full
+/// on-disk bytes of every ancestor dep file (`Directory.Packages.props`,
+/// `Directory.Build.props`, `paket.lock`, `paket.dependencies`). Two roles:
 ///
-/// mtime is NOT a content oracle: the previous implementation used max dep-file
-/// mtime ticks, which `rsync -a`/`cp -p`/`tar -x`/a git checkout that restores
-/// an old mtime leaves byte-identical after a content rewrite — so a genuinely
-/// changed `paket.lock`/`Directory.Packages.props` would never re-arm recovery.
-/// Content-hashing matches the BuildInputsHasher (Bug 1) and
-/// CheckCache.TimestampCacheKeyProvider precedents. See
-/// docs/adr-008-mtime-is-not-a-content-oracle.md.
-let internal staleSignature (repoRoot: string) (fsprojPath: string) : string =
-    let parts =
-        dependencyFiles fsprojPath repoRoot
+///   1. Debounce + drift baseline — the same unchanged dep state keeps the same
+///      signature (no re-restore loop), while ANY package-graph change moves it
+///      forward and re-arms recovery. mtime is NOT a content oracle (`rsync -a` /
+///      `cp -p` / `git checkout` restore an old mtime after a content rewrite),
+///      so this hashes CONTENT, matching BuildInputsHasher (Bug 1) and
+///      CheckCache.TimestampCacheKeyProvider.
+///   2. False-positive SUPPRESSION — because it EXCLUDES fsproj source items, a
+///      compile-item-only fsproj edit (which bumps the fsproj mtime → the mtime
+///      probe reads Stale) leaves this signature UNCHANGED. `evaluateProject`
+///      uses that to suppress the phantom stale→restore→timeout→pinned-red.
+///
+/// See docs/adr-008-mtime-is-not-a-content-oracle.md.
+let internal depRelevantSignature (repoRoot: string) (fsprojPath: string) : string =
+    let fsprojPart = depRelevantFsprojDigest fsprojPath
+
+    let ancestorParts =
+        ancestorDepFiles fsprojPath repoRoot
         |> List.sort
         |> List.map (fun path ->
             let hash =
@@ -163,7 +263,7 @@ let internal staleSignature (repoRoot: string) (fsprojPath: string) : string =
 
             $"%s{path}@%s{hash}")
 
-    FsHotWatch.CheckCache.sha256Hex (String.concat "\n" parts)
+    FsHotWatch.CheckCache.sha256Hex (String.concat "\n" ($"fsproj:%s{fsprojPart}" :: ancestorParts))
 
 /// Debounce tracker: remembers, per project, the last stale signature recovery
 /// was attempted for. Thread-safe; shared across scan cycles by the daemon.
@@ -189,6 +289,18 @@ type RecoveryTracker() =
     member _.HasContentDrifted(proj: string, sig_: string) : bool =
         match freshSignatures.TryGetValue proj with
         | true, prev -> prev <> sig_
+        | false, _ -> false
+
+    /// True when the dep-content signature EQUALS the last one this project was
+    /// observed Fresh / recovered at. The inverse of `HasContentDrifted`: a first
+    /// sighting is NOT a match (no baseline to compare against yet). Used to
+    /// suppress a phantom `Stale` mtime verdict whose dep-relevant content is
+    /// provably unchanged from a known-good baseline — a compile-item-only fsproj
+    /// edit bumped the mtime without touching the package graph. See
+    /// docs/adr-008-mtime-is-not-a-content-oracle.md.
+    member _.MatchesFreshBaseline(proj: string, sig_: string) : bool =
+        match freshSignatures.TryGetValue proj with
+        | true, prev -> prev = sig_
         | false, _ -> false
 
     /// Record the dep-content signature a project was last observed fresh at, so
@@ -239,9 +351,10 @@ let private restoreFailureMessage (proj: string) (outcome: ProcessOutcome) : str
 /// Pure gate orchestration over an injected freshness probe + restore runner +
 /// debounce tracker. Attempts recovery at most once per distinct stale state.
 ///
-/// `probe` returns the current freshness; `signatureOf` yields the stale
-/// signature used for debounce; `runner` performs the restore; `assetsPresent`
-/// reports whether `obj/project.assets.json` exists at all.
+/// `probe` returns the current freshness; `signatureOf` yields the dep-relevant
+/// content signature used for debounce, drift detection AND false-positive
+/// suppression (production injects `depRelevantSignature`); `runner` performs the
+/// restore; `assetsPresent` reports whether `obj/project.assets.json` exists.
 ///
 /// Post-restore policy: a **successful** restore means the package graph is
 /// consistent by definition, so we trust it and proceed — we do NOT re-run the
@@ -251,14 +364,21 @@ let private restoreFailureMessage (proj: string) (outcome: ProcessOutcome) : str
 /// dependency bump. The only post-success failure is assets *still missing
 /// entirely* (restore couldn't produce them) — a genuine broken state.
 ///
-/// Content-drift escape hatch: the `probe` is mtime-based (assets vs dep
-/// mtimes) and a preserved-mtime dep rewrite (rsync -a / git checkout) can fool
-/// it into reporting Fresh while the dep CONTENT actually changed. So a
-/// `Fresh` verdict is cross-checked against the dep-content signature: if it
-/// drifted from the value the project was last observed fresh/recovered at, we
-/// treat it as Stale (debounced like any other stale state) rather than
-/// proceeding on an artifact built against different deps. See
-/// docs/adr-008-mtime-is-not-a-content-oracle.md.
+/// The `probe` is mtime-based (assets vs dep mtimes) and the dep-relevant content
+/// signature closes BOTH of its blind spots symmetrically:
+///
+///   - Content-drift escape hatch (Fresh → treat as Stale): a preserved-mtime dep
+///     rewrite (rsync -a / git checkout) can fool the probe into reporting Fresh
+///     while the dep CONTENT actually changed. A `Fresh` verdict whose signature
+///     DRIFTED from the last fresh/recovered baseline is re-restored.
+///   - False-positive suppression (Stale → treat as Fresh): a compile-item-only
+///     fsproj edit bumps the fsproj mtime, so the probe reports Stale even though
+///     the package graph is untouched. A `Stale` verdict whose signature MATCHES
+///     the last fresh/recovered baseline is proceeded on (existing assets are
+///     still valid) — no phantom restore→timeout→pinned-red. A first sighting has
+///     no baseline, so a genuinely-cold Stale still restores.
+///
+/// See docs/adr-008-mtime-is-not-a-content-oracle.md.
 let evaluateProject
     (probe: string -> Freshness)
     (signatureOf: string -> string)
@@ -300,6 +420,15 @@ let evaluateProject
     | Fresh ->
         // Genuinely healthy: forget any prior attempt so a future regression
         // re-arms, and record the content baseline for drift detection.
+        tracker.Clear proj
+        tracker.RecordFreshSignature(proj, sig_)
+        Proceed
+    | Stale when tracker.MatchesFreshBaseline(proj, sig_) ->
+        // mtime says stale (the fsproj mtime was bumped), but the dep-relevant
+        // content is UNCHANGED from the last fresh/recovered baseline: a
+        // compile-item-only fsproj edit that never touched the package graph.
+        // Suppress the phantom restore — the existing assets are still valid.
+        // (Symmetric inverse of the Fresh+drift arm above.)
         tracker.Clear proj
         tracker.RecordFreshSignature(proj, sig_)
         Proceed
