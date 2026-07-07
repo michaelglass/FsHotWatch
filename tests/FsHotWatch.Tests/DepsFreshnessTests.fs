@@ -224,20 +224,73 @@ let ``detectProjectFreshness: assets older than fsproj is Stale`` () =
         File.SetLastWriteTimeUtc(fsproj, DateTime.UtcNow)
         test <@ detectProjectFreshness root fsproj = Stale @>)
 
-// ---- content-aware stale signature (mtime is not a content oracle) ----
+// ---- content-aware dep-relevant signature (mtime is not a content oracle) ----
 
-/// Bug class (rsync -a / cp -p / git checkout restore an OLD mtime while changing
-/// CONTENT): a signature keyed on max dep-file mtime ticks is byte-identical
-/// after a content rewrite that preserves mtime, so debounce recovery never
-/// re-arms. The signature must reflect dep-file CONTENT, mirroring the
-/// BuildInputsHasher / CheckCache.TimestampCacheKeyProvider content-hash
-/// precedent. See docs/adr-008-mtime-is-not-a-content-oracle.md.
+/// A minimal SDK-style fsproj body parameterized on the sole PackageReference
+/// version and the list of Compile items, so tests can vary the dep-relevant and
+/// the source-item axes independently.
+let private fsprojXml (pkgVersion: string) (compiles: string list) =
+    let items =
+        compiles
+        |> List.map (fun c -> $"""    <Compile Include="%s{c}" />""")
+        |> String.concat "\n"
+
+    $"""<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+%s{items}
+    <PackageReference Include="FSharp.Core" Version="%s{pkgVersion}" />
+  </ItemGroup>
+</Project>
+"""
+
+/// The crux of the fix: a compile-item-only edit (adding/moving `<Compile>`
+/// entries — which does NOT touch the package graph) leaves the dep-relevant
+/// signature UNCHANGED. That invariance is what suppresses the phantom stale.
 [<Fact(Timeout = 5000)>]
-let ``staleSignature: differs when a dep file's content changes but mtime is preserved (rsync -a)`` () =
+let ``depRelevantSignature: compile-item-only change yields the SAME signature`` () =
+    withTempDir "deps-sig-compile" (fun root ->
+        let projDir = Path.Combine(root, "src", "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        Directory.CreateDirectory projDir |> ignore
+
+        File.WriteAllText(fsproj, fsprojXml "8.0.0" [ "A.fs" ])
+        let before = depRelevantSignature root fsproj
+
+        // Add + reorder Compile items only; the package graph is untouched.
+        File.WriteAllText(fsproj, fsprojXml "8.0.0" [ "B.fs"; "A.fs"; "C.fs" ])
+        let after = depRelevantSignature root fsproj
+
+        test <@ before = after @>)
+
+/// A real PackageReference change DOES move the signature (re-arms recovery).
+[<Fact(Timeout = 5000)>]
+let ``depRelevantSignature: PackageReference version change yields a DIFFERENT signature`` () =
+    withTempDir "deps-sig-pkg" (fun root ->
+        let projDir = Path.Combine(root, "src", "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        Directory.CreateDirectory projDir |> ignore
+
+        File.WriteAllText(fsproj, fsprojXml "8.0.0" [ "A.fs" ])
+        let before = depRelevantSignature root fsproj
+
+        File.WriteAllText(fsproj, fsprojXml "9.0.0" [ "A.fs" ])
+        let after = depRelevantSignature root fsproj
+
+        test <@ before <> after @>)
+
+/// mtime is NOT a content oracle (rsync -a / cp -p / git checkout restore an OLD
+/// mtime while changing CONTENT): the signature must reflect ancestor dep-file
+/// CONTENT so a preserved-mtime rewrite of `paket.lock` still re-arms recovery.
+[<Fact(Timeout = 5000)>]
+let ``depRelevantSignature: differs when a dep file's content changes but mtime is preserved (rsync -a)`` () =
     withTempDir "deps-sig-content" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
         let fsproj = Path.Combine(projDir, "Proj.fsproj")
-        touch fsproj
+        Directory.CreateDirectory projDir |> ignore
+        File.WriteAllText(fsproj, fsprojXml "8.0.0" [ "A.fs" ])
         let lockFile = Path.Combine(root, "paket.lock")
         File.WriteAllText(lockFile, "NUGET\n  remote: x\n    PackageA (1.0)\n")
 
@@ -246,27 +299,96 @@ let ``staleSignature: differs when a dep file's content changes but mtime is pre
         File.SetLastWriteTimeUtc(fsproj, pinned)
         File.SetLastWriteTimeUtc(lockFile, pinned)
 
-        let before = staleSignature root fsproj
+        let before = depRelevantSignature root fsproj
 
         // Rewrite content, then restore the EXACT old mtime (what rsync -a does).
         File.WriteAllText(lockFile, "NUGET\n  remote: x\n    PackageA (2.0)\n")
         File.SetLastWriteTimeUtc(lockFile, pinned)
         test <@ File.GetLastWriteTimeUtc lockFile = pinned @>
 
-        let after = staleSignature root fsproj
+        let after = depRelevantSignature root fsproj
         test <@ before <> after @>)
 
 [<Fact(Timeout = 5000)>]
-let ``staleSignature: stable across repeated computes when nothing changes`` () =
+let ``depRelevantSignature: stable across repeated computes when nothing changes`` () =
     withTempDir "deps-sig-stable" (fun root ->
         let projDir = Path.Combine(root, "src", "Proj")
         let fsproj = Path.Combine(projDir, "Proj.fsproj")
-        touch fsproj
+        Directory.CreateDirectory projDir |> ignore
+        File.WriteAllText(fsproj, fsprojXml "8.0.0" [ "A.fs" ])
         File.WriteAllText(Path.Combine(root, "paket.lock"), "lock-content")
 
-        let first = staleSignature root fsproj
-        let second = staleSignature root fsproj
+        let first = depRelevantSignature root fsproj
+        let second = depRelevantSignature root fsproj
         test <@ first = second @>)
+
+/// Old-style (MSBuild-namespaced, no `Sdk` attr) fsproj with an `<Import>` and a
+/// `<PackageReference>` carrying child metadata: canonicalization must be
+/// namespace-agnostic (LocalName) AND descend into child elements, so a change to
+/// the child metadata (`<PrivateAssets>`) still moves the signature. Exercises the
+/// no-Sdk-attr branch, the `<Import>` element, and the recursive child/text walk.
+[<Fact(Timeout = 5000)>]
+let ``depRelevantSignature: old-style project captures Import + PackageReference child metadata`` () =
+    withTempDir "deps-sig-oldstyle" (fun root ->
+        let projDir = Path.Combine(root, "src", "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        Directory.CreateDirectory projDir |> ignore
+
+        let xml privateAssets =
+            $"""<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\Shared.props" />
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <PackageReference Include="X" Version="1.0">
+      <PrivateAssets>%s{privateAssets}</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+</Project>
+"""
+
+        File.WriteAllText(fsproj, xml "all")
+        let before = depRelevantSignature root fsproj
+
+        // Change ONLY the child metadata → the signature must move.
+        File.WriteAllText(fsproj, xml "none")
+        let afterMetadata = depRelevantSignature root fsproj
+
+        test <@ before <> afterMetadata @>
+
+        // Restore the metadata but reorder the (excluded) Compile item → SAME sig.
+        File.WriteAllText(
+            fsproj,
+            """<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\Shared.props" />
+  <ItemGroup>
+    <PackageReference Include="X" Version="1.0">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <Compile Include="Z.fs" />
+    <Compile Include="A.fs" />
+  </ItemGroup>
+</Project>
+"""
+        )
+
+        test <@ depRelevantSignature root fsproj = before @>)
+
+/// A malformed fsproj must never throw — the digest folds a content-derived
+/// sentinel, and fixing the XML (a content change) still moves the signature.
+[<Fact(Timeout = 5000)>]
+let ``depRelevantSignature: unparseable fsproj folds a sentinel and re-arms on fix`` () =
+    withTempDir "deps-sig-bad" (fun root ->
+        let projDir = Path.Combine(root, "src", "Proj")
+        let fsproj = Path.Combine(projDir, "Proj.fsproj")
+        Directory.CreateDirectory projDir |> ignore
+
+        File.WriteAllText(fsproj, "<Project><not-closed>")
+        let broken = depRelevantSignature root fsproj // must not throw
+
+        File.WriteAllText(fsproj, fsprojXml "8.0.0" [ "A.fs" ])
+        let fixed_ = depRelevantSignature root fsproj
+
+        test <@ broken <> fixed_ @>)
 
 // ---- orchestration: evaluateProject ----
 
@@ -434,6 +556,82 @@ let ``evaluateProject: mtime-Fresh with unchanged content signature stays Procee
     test <@ first = Proceed @>
     test <@ second = Proceed @>
     test <@ runs = 0 @>
+
+/// The compile-item-only false-positive this fix targets: once a project has been
+/// observed Fresh (baseline recorded), a compile-item-only fsproj edit bumps the
+/// fsproj mtime so the probe reads Stale — but the dep-relevant signature is
+/// UNCHANGED. evaluateProject must Proceed WITHOUT invoking the restore runner
+/// (no phantom stale→restore→timeout→pinned-red).
+[<Fact(Timeout = 5000)>]
+let ``evaluateProject: mtime-Stale but dep signature matches baseline -> Proceed with NO restore`` () =
+    let mutable ran = false
+
+    let runner: RestoreRunner =
+        fun _ ->
+            ran <- true
+            Succeeded "restored"
+
+    let sigStable (_: string) = "dep-sig-stable"
+    let tracker = RecoveryTracker()
+    let proj = "P.fsproj"
+
+    // Cycle 1: genuinely Fresh establishes the known-good baseline.
+    let first = evaluateProject (fun _ -> Fresh) sigStable assetsYes runner tracker proj
+
+    // Cycle 2: a compile-item edit bumped the mtime (probe now Stale) but the
+    // dep-relevant signature is unchanged → suppressed, no restore.
+    let second =
+        evaluateProject (fun _ -> Stale) sigStable assetsYes runner tracker proj
+
+    test <@ first = Proceed @>
+    test <@ second = Proceed @>
+    test <@ not ran @>
+
+/// The inverse: a real dependency change (the dep signature moved) on a Stale
+/// probe is NOT suppressed — recovery runs.
+[<Fact(Timeout = 5000)>]
+let ``evaluateProject: mtime-Stale with CHANGED dep signature -> restores (not suppressed)`` () =
+    let mutable runs = 0
+
+    let runner: RestoreRunner =
+        fun _ ->
+            runs <- runs + 1
+            Succeeded "restored"
+
+    // Cycle 1 fresh baseline at dep-A; cycle 2 has a real dep change to dep-B.
+    let sigs = System.Collections.Generic.Queue<string>([ "dep-A"; "dep-B" ])
+    let signatureOf (_: string) = sigs.Dequeue()
+    let tracker = RecoveryTracker()
+    let proj = "P.fsproj"
+
+    let first =
+        evaluateProject (fun _ -> Fresh) signatureOf assetsYes runner tracker proj
+
+    let second =
+        evaluateProject (fun _ -> Stale) signatureOf assetsYes runner tracker proj
+
+    test <@ first = Proceed @>
+    test <@ runs = 1 @>
+    test <@ second = RecoveredOk @>
+
+/// A cold first sighting (no baseline yet) that is Stale must still restore — the
+/// suppression only fires against a previously-recorded known-good baseline.
+[<Fact(Timeout = 5000)>]
+let ``evaluateProject: Stale on first sighting (no baseline) still restores`` () =
+    let mutable runs = 0
+
+    let runner: RestoreRunner =
+        fun _ ->
+            runs <- runs + 1
+            Succeeded "restored"
+
+    let tracker = RecoveryTracker()
+
+    let result =
+        evaluateProject (fun _ -> Stale) (fun _ -> "dep-sig") assetsYes runner tracker "P.fsproj"
+
+    test <@ runs = 1 @>
+    test <@ result = RecoveredOk @>
 
 // ---- daemon-level gate wiring: applyDepsGate ----
 
