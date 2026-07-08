@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- chore: rebuild to bundle updated dependencies
+
 ## 0.14.0-alpha.1 - 2026-07-06
 
 - chore: rebuild to bundle updated dependencies
