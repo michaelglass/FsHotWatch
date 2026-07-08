@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0-alpha.2 - 2026-07-08
+
 - fix: a compile-item-only `.fsproj` edit no longer wedges the deps-freshness
   gate red. The gate's mtime fast-path read an added/reordered `<Compile>` item
   as a stale restore; on a memory-pressured box where the phantom restore timed
