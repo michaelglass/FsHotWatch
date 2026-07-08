@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- fix: a compile-item-only `.fsproj` edit no longer wedges the deps-freshness
+  gate red. The gate's mtime fast-path read an added/reordered `<Compile>` item
+  as a stale restore; on a memory-pressured box where the phantom restore timed
+  out, the debounce tracker kept the project pinned Stale (deps RED) on every
+  subsequent cycle until the daemon restarted. The mtime probe is now backed by
+  a CONTENT signature over ONLY the dependency-declaring inputs — the fsproj's
+  `PackageReference` / `ProjectReference` / `Import` / `Sdk` / target-framework
+  subset (source items like `<Compile>` are excluded), plus the bytes of every
+  governing `Directory.Packages.props` / `Directory.Build.props` / `paket.lock` /
+  `paket.dependencies`. A compile-item-only edit leaves that signature unchanged
+  so the phantom Stale is recognised and suppressed; a real package-graph change
+  still moves it and re-arms recovery. See
+  `docs/adr-008-mtime-is-not-a-content-oracle.md`.
+
 ## 0.10.0-alpha.1 - 2026-07-05
 
 - feat: `ProcessHelper.runProcessWithLaunchWatchdog` — run a child under a
