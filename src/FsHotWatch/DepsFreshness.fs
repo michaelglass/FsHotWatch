@@ -199,34 +199,37 @@ let rec private canonicalizeElement (el: XElement) : string =
 /// or with a `Condition=` attribute) ARE captured — `Descendants()` reaches them
 /// and the condition text rides along in the canonical form.
 let private depRelevantFsprojDigest (fsprojPath: string) : string =
-    try
-        let doc = XDocument.Load(fsprojPath)
-        let root = doc.Root
+    // Read the fsproj ONCE, then parse from the string, so the malformed-parse
+    // fallback reuses that same content for its sentinel hash instead of re-reading.
+    match
+        (try
+            Some(File.ReadAllText fsprojPath)
+         with _ ->
+             None)
+    with
+    | None -> "fsproj-unparseable@unreadable"
+    | Some content ->
+        try
+            let root = (XDocument.Parse content).Root
 
-        let sdkAttr =
-            match root.Attribute(XName.Get "Sdk") with
-            | null -> []
-            | a -> [ $"Project@Sdk=%s{a.Value}" ]
+            let sdkAttr =
+                match root.Attribute(XName.Get "Sdk") with
+                | null -> []
+                | a -> [ $"Project@Sdk=%s{a.Value}" ]
 
-        let elems =
-            root.Descendants()
-            |> Seq.filter (fun el -> depRelevantElementNames.Contains el.Name.LocalName)
-            |> Seq.map canonicalizeElement
-            |> Seq.sort
-            |> List.ofSeq
+            let elems =
+                root.Descendants()
+                |> Seq.filter (fun el -> depRelevantElementNames.Contains el.Name.LocalName)
+                |> Seq.map canonicalizeElement
+                |> Seq.sort
+                |> List.ofSeq
 
-        String.concat "\n" (sdkAttr @ elems)
-    with _ ->
-        // Malformed/unreadable fsproj: key the sentinel on the raw bytes so an
-        // unparseable→parseable transition (a content change) still moves the
-        // signature. Matches the never-throw contract below.
-        let raw =
-            try
-                FsHotWatch.CheckCache.sha256Hex (File.ReadAllText fsprojPath)
-            with _ ->
-                "unreadable"
-
-        $"fsproj-unparseable@%s{raw}"
+            String.concat "\n" (sdkAttr @ elems)
+        with _ ->
+            // Malformed but readable: key the sentinel on the content bytes so an
+            // unparseable→parseable transition (a content change) still moves the
+            // signature. Matches the never-throw contract.
+            $"fsproj-unparseable@%s{FsHotWatch.CheckCache.sha256Hex content}"
 
 /// Content signature over ONLY a project's dependency-declaring inputs: the
 /// fsproj's dep-relevant element subset (`depRelevantFsprojDigest`) plus the full
