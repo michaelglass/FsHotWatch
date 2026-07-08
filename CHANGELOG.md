@@ -4,6 +4,25 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### A compile-item-only project-file edit can no longer wedge the deps-freshness gate red
+
+The deps-freshness gate uses an mtime fast-path to notice when a project's
+restored packages (`obj/project.assets.json`) have fallen behind its declared
+dependencies. But mtime is not a content oracle: adding or reordering a
+`<Compile>` item bumps the `.fsproj`'s modification time without touching the
+package graph at all. The gate read that as Stale, attempted a one-shot restore,
+and — on a memory-pressured box where the restore timed out — the debounce
+tracker kept the project pinned Stale (deps RED) on every subsequent cycle until
+the daemon was restarted. The gate now backs the mtime probe with a CONTENT
+signature over only the dependency-declaring inputs: the fsproj's
+`PackageReference` / `ProjectReference` / `Import` / `Sdk` / target-framework
+subset (source items like `<Compile>` are deliberately excluded), plus the full
+bytes of every governing `Directory.Packages.props` / `Directory.Build.props` /
+`paket.lock` / `paket.dependencies`. A compile-item-only edit leaves that
+signature unchanged, so the phantom Stale is recognised and suppressed; a real
+package-graph change still moves the signature and re-arms recovery. See
+`docs/adr-008-mtime-is-not-a-content-oracle.md`.
+
 ### A check with nothing testable to run can no longer hang forever
 
 When the only things a `fshw check` had queued to verify were code symbols with
