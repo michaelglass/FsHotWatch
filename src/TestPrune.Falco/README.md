@@ -25,7 +25,10 @@ dotnet add package TestPrune.Falco
 
 Tell TestPrune which source files handle which URLs. Each entry is a
 `RouteHandlerEntry`; `db.RebuildRouteHandlers` clears and rewrites the
-whole route table:
+whole route table. Set `HandlerFunction` to the short `Module.function`
+serving the route so a route's tests link only to that function (a one-
+function change to a multi-route file selects only that route's tests);
+`None` falls back to a whole-file match (every function in the file):
 
 ```fsharp
 open TestPrune.AstAnalyzer // RouteHandlerEntry
@@ -33,10 +36,12 @@ open TestPrune.AstAnalyzer // RouteHandlerEntry
 db.RebuildRouteHandlers [
     { UrlPattern = "/api/users/{id}"
       HttpMethod = "GET"
-      HandlerSourceFile = "src/Web/Handlers/Users.fs" }
+      HandlerSourceFile = "src/Web/Handlers/Users.fs"
+      HandlerFunction = Some "Users.get" }
     { UrlPattern = "/api/users/{id}"
       HttpMethod = "PUT"
-      HandlerSourceFile = "src/Web/Handlers/Users.fs" }
+      HandlerSourceFile = "src/Web/Handlers/Users.fs"
+      HandlerFunction = Some "Users.update" }
 ]
 ```
 

@@ -52,12 +52,14 @@ let toSymbolStore (db: Database) : SymbolStore =
 /// Port for reading route handler data from storage.
 type RouteStore =
     { GetAllHandlerSourceFiles: unit -> Set<string>
-      GetUrlPatternsForSourceFile: string -> string list }
+      GetUrlPatternsForSourceFile: string -> string list
+      GetRouteHandlersForSourceFile: string -> RouteHandlerEntry list }
 
 /// Create a RouteStore from a Database instance.
 let toRouteStore (db: Database) : RouteStore =
     { GetAllHandlerSourceFiles = db.GetAllHandlerSourceFiles
-      GetUrlPatternsForSourceFile = db.GetUrlPatternsForSourceFile }
+      GetUrlPatternsForSourceFile = db.GetUrlPatternsForSourceFile
+      GetRouteHandlersForSourceFile = db.GetRouteHandlersForSourceFile }
 
 let toSymbolSink (db: Database) : SymbolSink =
     { RebuildProjects =

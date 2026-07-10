@@ -67,7 +67,8 @@ module ``debug db roundtrip`` =
             db.RebuildRouteHandlers(
                 [ { UrlPattern = "/api/users/{id}"
                     HttpMethod = "GET"
-                    HandlerSourceFile = "src/Handlers/Users.fs" } ]
+                    HandlerSourceFile = "src/Handlers/Users.fs"
+                    HandlerFunction = None } ]
             )
 
             let hsf = db.GetAllHandlerSourceFiles()
@@ -113,7 +114,8 @@ module ``no changed handler files returns empty`` =
         withTestSetup
             [ { UrlPattern = "/api/users/{id}"
                 HttpMethod = "GET"
-                HandlerSourceFile = "src/Handlers/Users.fs" } ]
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
             [ ("UsersTests.fs", testContent) ]
             "IntTests"
             "tests/IntTests"
@@ -130,7 +132,8 @@ module ``changed handler file returns affected test classes`` =
         withTestSetup
             [ { UrlPattern = "/api/users/{id}"
                 HttpMethod = "GET"
-                HandlerSourceFile = "src/Handlers/Users.fs" } ]
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
             [ ("UsersTests.fs", testContent) ]
             "IntTests"
             "tests/IntTests"
@@ -152,7 +155,8 @@ module ``changed handler with module-style test file`` =
         withTestSetup
             [ { UrlPattern = "/api/users/{id}"
                 HttpMethod = "GET"
-                HandlerSourceFile = "src/Handlers/Users.fs" } ]
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
             [ ("UsersTests.fs", testContent) ]
             "IntTests"
             "tests/IntTests"
@@ -174,7 +178,8 @@ module ``no matching URL in test files returns empty`` =
         withTestSetup
             [ { UrlPattern = "/api/users/{id}"
                 HttpMethod = "GET"
-                HandlerSourceFile = "src/Handlers/Users.fs" } ]
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
             [ ("OrderTests.fs", testContent) ]
             "IntTests"
             "tests/IntTests"
@@ -188,7 +193,8 @@ module ``missing test directory returns empty`` =
         withTestSetup
             [ { UrlPattern = "/api/users/{id}"
                 HttpMethod = "GET"
-                HandlerSourceFile = "src/Handlers/Users.fs" } ]
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
             []
             "IntTests"
             "tests/IntTests/nonexistent"
@@ -214,7 +220,8 @@ type AdminUsersTests(output: ITestOutputHelper) =
         withTestSetup
             [ { UrlPattern = "/api/users/{id}"
                 HttpMethod = "GET"
-                HandlerSourceFile = "src/Handlers/Users.fs" } ]
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None } ]
             [ ("UsersTests.fs", testContent) ]
             "IntTests"
             "tests/IntTests"
@@ -237,10 +244,12 @@ module ``multiple handlers affecting different test files`` =
         withTestSetup
             [ { UrlPattern = "/api/users/{id}"
                 HttpMethod = "GET"
-                HandlerSourceFile = "src/Handlers/Users.fs" }
+                HandlerSourceFile = "src/Handlers/Users.fs"
+                HandlerFunction = None }
               { UrlPattern = "/api/orders/{id}"
                 HttpMethod = "GET"
-                HandlerSourceFile = "src/Handlers/Orders.fs" } ]
+                HandlerSourceFile = "src/Handlers/Orders.fs"
+                HandlerFunction = None } ]
             [ ("UsersTests.fs", usersTest); ("OrdersTests.fs", ordersTest) ]
             "IntTests"
             "tests/IntTests"
@@ -260,7 +269,8 @@ module ``URL pattern with path parameters matches correctly`` =
         withTestSetup
             [ { UrlPattern = "/api/users/{id}/posts/{postId}"
                 HttpMethod = "GET"
-                HandlerSourceFile = "src/Handlers/UserPosts.fs" } ]
+                HandlerSourceFile = "src/Handlers/UserPosts.fs"
+                HandlerFunction = None } ]
             [ ("UserPostsTests.fs", testContent) ]
             "IntTests"
             "tests/IntTests"
@@ -271,3 +281,178 @@ module ``URL pattern with path parameters matches correctly`` =
                         result = [ { TestProject = "IntTests"
                                      TestClass = "UserPostsTests" } ]
                     @>)
+
+// -----------------------------------------------------------------------------
+// AnalyzeEdges: function-scoped route edges
+// -----------------------------------------------------------------------------
+
+/// A test-method symbol for the in-memory symbol store, tagged as a test method
+/// so it participates in the route-edge query the same way a real one would.
+let private fn (fullName: string) (sourceFile: string) : SymbolInfo =
+    { FullName = fullName
+      Kind = Function
+      SourceFile = sourceFile
+      LineStart = 1
+      LineEnd = 2
+      ContentHash = "h"
+      IsExtern = false }
+
+/// Drive `AnalyzeEdges` with a DB-backed route store and an in-memory symbol
+/// store, writing the given integration test files to disk so per-route URL
+/// matching resolves against real content.
+let private withAnalyzeEdges
+    (routeEntries: RouteHandlerEntry list)
+    (symbols: SymbolInfo list)
+    (testFiles: (string * string) list)
+    (changedFiles: string list)
+    (f: Dependency list -> unit)
+    =
+    let tempDir = createTempDir ()
+
+    try
+        let dbPath = Path.Combine(tempDir, "test.db")
+        let db = Database.create dbPath
+        db.RebuildRouteHandlers(routeEntries)
+
+        let testDir = Path.Combine(tempDir, "tests/IntTests")
+        Directory.CreateDirectory(testDir) |> ignore
+
+        for (fileName, content) in testFiles do
+            File.WriteAllText(Path.Combine(testDir, fileName), content)
+
+        let symbolStore =
+            TestPrune.InMemoryStore.fromAnalysisResults [ AnalysisResult.Create(symbols, [], []) ]
+
+        let extension =
+            FalcoRouteExtension("IntTests", "tests/IntTests", toRouteStore db) :> ITestPruneExtension
+
+        let edges = extension.AnalyzeEdges symbolStore changedFiles tempDir
+        f edges
+    finally
+        cleanupDir tempDir
+
+/// Test files for a two-route handler file: one class per route's URL.
+let private usersTestFile =
+    "type UsersTests() =\n    member _.GetUser() =\n        let url = \"/api/users/123\"\n        ()\n"
+
+let private ordersTestFile =
+    "type OrdersTests() =\n    member _.GetOrder() =\n        let url = \"/api/orders/456\"\n        ()\n"
+
+module ``AnalyzeEdges function-scoped routes`` =
+
+    /// THE FIX: a change to a multi-route handler file, with each route mapped to
+    /// its own handler function, links each route's tests ONLY to that route's
+    /// function. Before the function-scoping change this asserted set contained the
+    /// full cross-product (UsersTests -> getOrder, OrdersTests -> getUser too), so
+    /// this test FAILS pre-change and PASSES post-change.
+    [<Fact>]
+    let ``one-function-per-route change scopes edges to that route's function`` () =
+        let symbols =
+            [ fn "App.Handlers.Multi.getUser" "src/Handlers/Multi.fs"
+              fn "App.Handlers.Multi.getOrder" "src/Handlers/Multi.fs"
+              fn "App.Tests.UsersTests.GetUser" "tests/IntTests/UsersTests.fs"
+              fn "App.Tests.OrdersTests.GetOrder" "tests/IntTests/OrdersTests.fs" ]
+
+        withAnalyzeEdges
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Multi.fs"
+                HandlerFunction = Some "Multi.getUser" }
+              { UrlPattern = "/api/orders/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Multi.fs"
+                HandlerFunction = Some "Multi.getOrder" } ]
+            symbols
+            [ ("UsersTests.fs", usersTestFile); ("OrdersTests.fs", ordersTestFile) ]
+            [ "src/Handlers/Multi.fs" ]
+            (fun edges ->
+                let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
+
+                // Only the route's own function is linked.
+                test
+                    <@
+                        pairs = set
+                            [ "App.Tests.UsersTests.GetUser", "App.Handlers.Multi.getUser"
+                              "App.Tests.OrdersTests.GetOrder", "App.Handlers.Multi.getOrder" ]
+                    @>
+
+                // The cross-route edges the old file-level product emitted are gone.
+                test <@ not (pairs.Contains("App.Tests.UsersTests.GetUser", "App.Handlers.Multi.getOrder")) @>
+                test <@ not (pairs.Contains("App.Tests.OrdersTests.GetOrder", "App.Handlers.Multi.getUser")) @>
+
+                test <@ edges |> List.forall (fun e -> e.Kind = SharedState && e.Source = "falco") @>)
+
+    /// config-applied handler: the seed carries the bare `Module.function`
+    /// (`WellKnown.robots`), not a partial application, and the store holds the
+    /// fully-qualified name. The suffix match still resolves it.
+    [<Fact>]
+    let ``config-applied bare handler function resolves by suffix`` () =
+        let symbols =
+            [ fn "App.Handlers.WellKnown.robots" "src/Handlers/WellKnown.fs"
+              fn "App.Handlers.WellKnown.humans" "src/Handlers/WellKnown.fs"
+              fn "App.Tests.RobotsTests.GetRobots" "tests/IntTests/RobotsTests.fs" ]
+
+        let robotsTest =
+            "type RobotsTests() =\n    member _.GetRobots() =\n        let url = \"/robots.txt\"\n        ()\n"
+
+        withAnalyzeEdges
+            [ { UrlPattern = "/robots.txt"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/WellKnown.fs"
+                HandlerFunction = Some "WellKnown.robots" } ]
+            symbols
+            [ ("RobotsTests.fs", robotsTest) ]
+            [ "src/Handlers/WellKnown.fs" ]
+            (fun edges ->
+                let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
+
+                test <@ pairs = set [ "App.Tests.RobotsTests.GetRobots", "App.Handlers.WellKnown.robots" ] @>
+
+                // The sibling function in the same file is NOT linked.
+                test <@ not (pairs.Contains("App.Tests.RobotsTests.GetRobots", "App.Handlers.WellKnown.humans")) @>)
+
+module ``AnalyzeEdges fallback`` =
+
+    /// FALLBACK PROOF: with HandlerFunction = None the route keeps the legacy
+    /// file-level cross-product — every symbol in the changed file linked to the
+    /// route-matched test's methods.
+    [<Fact>]
+    let ``None handler function keeps file-level cross-product`` () =
+        let symbols =
+            [ fn "App.Handlers.Multi.getUser" "src/Handlers/Multi.fs"
+              fn "App.Handlers.Multi.helper" "src/Handlers/Multi.fs"
+              fn "App.Tests.UsersTests.GetUser" "tests/IntTests/UsersTests.fs" ]
+
+        withAnalyzeEdges
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Multi.fs"
+                HandlerFunction = None } ]
+            symbols
+            [ ("UsersTests.fs", usersTestFile) ]
+            [ "src/Handlers/Multi.fs" ]
+            (fun edges ->
+                let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
+
+                // The test's method links to BOTH file symbols (file-level fallback).
+                test
+                    <@
+                        pairs = set
+                            [ "App.Tests.UsersTests.GetUser", "App.Handlers.Multi.getUser"
+                              "App.Tests.UsersTests.GetUser", "App.Handlers.Multi.helper" ]
+                    @>)
+
+    /// A change to a handler file NOT in the route table yields no edges.
+    [<Fact>]
+    let ``changed file with no routes yields no edges`` () =
+        let symbols = [ fn "App.Handlers.Multi.getUser" "src/Handlers/Multi.fs" ]
+
+        withAnalyzeEdges
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Multi.fs"
+                HandlerFunction = Some "Multi.getUser" } ]
+            symbols
+            [ ("UsersTests.fs", usersTestFile) ]
+            [ "src/Handlers/Unrelated.fs" ]
+            (fun edges -> test <@ edges |> List.isEmpty @>)

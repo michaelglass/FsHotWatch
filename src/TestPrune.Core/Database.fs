@@ -40,6 +40,7 @@ let private schema =
         url_pattern TEXT NOT NULL,
         http_method TEXT NOT NULL,
         handler_source_file TEXT NOT NULL,
+        handler_function TEXT,
         PRIMARY KEY (url_pattern, http_method)
     );
 
@@ -141,6 +142,15 @@ let private readAll (reader: SqliteDataReader) (f: SqliteDataReader -> 'T) : 'T 
 
     results |> List.rev
 
+/// Read a `route_handlers` row selected as
+/// (url_pattern, http_method, handler_source_file, handler_function).
+/// The trailing `handler_function` column is nullable — a NULL maps to `None`.
+let private readRouteHandlerRow (r: SqliteDataReader) : RouteHandlerEntry =
+    { UrlPattern = r.GetString(0)
+      HttpMethod = r.GetString(1)
+      HandlerSourceFile = r.GetString(2)
+      HandlerFunction = if r.IsDBNull(3) then None else Some(r.GetString(3)) }
+
 let private buildPlaceholders (names: string list) =
     let paramNames = names |> List.mapi (fun i _ -> $"@p%d{i}")
     String.Join(", ", paramNames)
@@ -187,6 +197,11 @@ let private openConnection (dbPath: string) =
 ///          symbol's coverage follows via the derived `line_start + line_offset`,
 ///          a changed symbol's coverage is purged). Bump forces recreate — legacy
 ///          v5 DBs don't have the table and INSERTs would throw "no such table".
+/// v7     — added nullable `route_handlers.handler_function` so route edges can be
+///          scoped to the specific handler function serving each route (function-
+///          scoped Falco edges) instead of the whole handler file. Bump forces
+///          recreate — a legacy v6 DB has the 3-column table and reads/writes of
+///          the new column would throw "no such column: handler_function".
 ///
 /// Public so external read-only consumers (e.g. FsHotWatch's `fshw dead-code`)
 /// can probe a live DB's `PRAGMA user_version` for compatibility BEFORE opening
@@ -195,7 +210,7 @@ let private openConnection (dbPath: string) =
 /// protection silently invert when this constant bumps: an old-version DB would
 /// pass the stale probe and then be recreated by the newer open path.
 [<Literal>]
-let SchemaVersion = 6
+let SchemaVersion = 7
 
 /// Delete the SQLite database file at `dbPath` along with its WAL mode
 /// sidecars (`-wal`, `-shm`). Deleting only the main file leaves stale
@@ -797,8 +812,8 @@ type Database(dbPath: string) =
 
             insCmd.CommandText <-
                 """
-                INSERT OR REPLACE INTO route_handlers (url_pattern, http_method, handler_source_file)
-                VALUES (@urlPattern, @httpMethod, @handlerSourceFile)
+                INSERT OR REPLACE INTO route_handlers (url_pattern, http_method, handler_source_file, handler_function)
+                VALUES (@urlPattern, @httpMethod, @handlerSourceFile, @handlerFunction)
                 """
 
             let pUrlPattern = insCmd.Parameters.Add("@urlPattern", SqliteType.Text)
@@ -807,10 +822,18 @@ type Database(dbPath: string) =
             let pHandlerSourceFile =
                 insCmd.Parameters.Add("@handlerSourceFile", SqliteType.Text)
 
+            let pHandlerFunction = insCmd.Parameters.Add("@handlerFunction", SqliteType.Text)
+
             for entry in entries do
                 pUrlPattern.Value <- entry.UrlPattern
                 pHttpMethod.Value <- entry.HttpMethod
                 pHandlerSourceFile.Value <- entry.HandlerSourceFile
+
+                pHandlerFunction.Value <-
+                    match entry.HandlerFunction with
+                    | Some fn -> box fn
+                    | None -> box DBNull.Value
+
                 insCmd.ExecuteNonQuery() |> ignore
 
             txn.Commit()
@@ -847,14 +870,29 @@ type Database(dbPath: string) =
     member _.GetAllRouteHandlers() : RouteHandlerEntry list =
         use conn = openConnection dbPath
         use cmd = conn.CreateCommand()
-        cmd.CommandText <- "SELECT url_pattern, http_method, handler_source_file FROM route_handlers"
+
+        cmd.CommandText <- "SELECT url_pattern, http_method, handler_source_file, handler_function FROM route_handlers"
 
         use reader = cmd.ExecuteReader()
+        readAll reader readRouteHandlerRow
 
-        readAll reader (fun r ->
-            { UrlPattern = r.GetString(0)
-              HttpMethod = r.GetString(1)
-              HandlerSourceFile = r.GetString(2) })
+    /// Get the full route handler entries served by a given handler source file.
+    /// Carries `HandlerFunction` so callers can scope edges to the specific
+    /// function serving each route rather than the whole file.
+    member _.GetRouteHandlersForSourceFile(sourceFile: string) : RouteHandlerEntry list =
+        use conn = openConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <-
+            """
+            SELECT url_pattern, http_method, handler_source_file, handler_function FROM route_handlers
+            WHERE handler_source_file = @sourceFile
+            """
+
+        cmd.Parameters.AddWithValue("@sourceFile", sourceFile) |> ignore
+
+        use reader = cmd.ExecuteReader()
+        readAll reader readRouteHandlerRow
 
     /// Get the stored cache key for a project, or None if not yet indexed.
     member _.GetProjectKey(projectName: string) : string option =

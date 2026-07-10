@@ -616,13 +616,16 @@ module ``Route handler round-trip`` =
             let entries =
                 [ { UrlPattern = "/api/users"
                     HttpMethod = "GET"
-                    HandlerSourceFile = "src/UsersHandler.fs" }
+                    HandlerSourceFile = "src/UsersHandler.fs"
+                    HandlerFunction = Some "Users.list" }
                   { UrlPattern = "/api/users"
                     HttpMethod = "POST"
-                    HandlerSourceFile = "src/UsersHandler.fs" }
+                    HandlerSourceFile = "src/UsersHandler.fs"
+                    HandlerFunction = Some "Users.create" }
                   { UrlPattern = "/api/orders"
                     HttpMethod = "GET"
-                    HandlerSourceFile = "src/OrdersHandler.fs" } ]
+                    HandlerSourceFile = "src/OrdersHandler.fs"
+                    HandlerFunction = None } ]
 
             db.RebuildRouteHandlers(entries)
 
@@ -633,7 +636,11 @@ module ``Route handler round-trip`` =
             test <@ patterns = set [ "/api/users"; "/api/orders" ] @>
 
             let methods = all |> List.map (fun e -> e.HttpMethod) |> Set.ofList
-            test <@ methods = set [ "GET"; "POST" ] @>)
+            test <@ methods = set [ "GET"; "POST" ] @>
+
+            // HandlerFunction round-trips, including a NULL back to None.
+            let handlerFns = all |> List.map (fun e -> e.HandlerFunction) |> Set.ofList
+            test <@ handlerFns = set [ Some "Users.list"; Some "Users.create"; None ] @>)
 
     [<Fact>]
     let ``GetUrlPatternsForSourceFile returns patterns for a given source file`` () =
@@ -641,13 +648,16 @@ module ``Route handler round-trip`` =
             let entries =
                 [ { UrlPattern = "/api/users"
                     HttpMethod = "GET"
-                    HandlerSourceFile = "src/UsersHandler.fs" }
+                    HandlerSourceFile = "src/UsersHandler.fs"
+                    HandlerFunction = None }
                   { UrlPattern = "/api/users"
                     HttpMethod = "POST"
-                    HandlerSourceFile = "src/UsersHandler.fs" }
+                    HandlerSourceFile = "src/UsersHandler.fs"
+                    HandlerFunction = None }
                   { UrlPattern = "/api/orders"
                     HttpMethod = "GET"
-                    HandlerSourceFile = "src/OrdersHandler.fs" } ]
+                    HandlerSourceFile = "src/OrdersHandler.fs"
+                    HandlerFunction = None } ]
 
             db.RebuildRouteHandlers(entries)
 
@@ -667,13 +677,16 @@ module ``Route handler round-trip`` =
             let entries =
                 [ { UrlPattern = "/api/users"
                     HttpMethod = "GET"
-                    HandlerSourceFile = "src/UsersHandler.fs" }
+                    HandlerSourceFile = "src/UsersHandler.fs"
+                    HandlerFunction = None }
                   { UrlPattern = "/api/users"
                     HttpMethod = "POST"
-                    HandlerSourceFile = "src/UsersHandler.fs" }
+                    HandlerSourceFile = "src/UsersHandler.fs"
+                    HandlerFunction = None }
                   { UrlPattern = "/api/orders"
                     HttpMethod = "GET"
-                    HandlerSourceFile = "src/OrdersHandler.fs" } ]
+                    HandlerSourceFile = "src/OrdersHandler.fs"
+                    HandlerFunction = None } ]
 
             db.RebuildRouteHandlers(entries)
 
@@ -686,14 +699,16 @@ module ``Route handler round-trip`` =
             let first =
                 [ { UrlPattern = "/old/route"
                     HttpMethod = "GET"
-                    HandlerSourceFile = "src/OldHandler.fs" } ]
+                    HandlerSourceFile = "src/OldHandler.fs"
+                    HandlerFunction = None } ]
 
             db.RebuildRouteHandlers(first)
 
             let second =
                 [ { UrlPattern = "/new/route"
                     HttpMethod = "POST"
-                    HandlerSourceFile = "src/NewHandler.fs" } ]
+                    HandlerSourceFile = "src/NewHandler.fs"
+                    HandlerFunction = None } ]
 
             db.RebuildRouteHandlers(second)
 
@@ -712,7 +727,8 @@ module ``Route handler round-trip`` =
             let entries =
                 [ { UrlPattern = "/api/users"
                     HttpMethod = "GET"
-                    HandlerSourceFile = "src/UsersHandler.fs" } ]
+                    HandlerSourceFile = "src/UsersHandler.fs"
+                    HandlerFunction = None } ]
 
             db.RebuildRouteHandlers(entries)
             db.RebuildRouteHandlers([])
@@ -2115,7 +2131,7 @@ module ``Schema version migration`` =
 
             let symbols = db.GetSymbolsInFile "src/Lib.fs"
             test <@ symbols.Length = 1 @>
-            test <@ getUserVersion path = 6 @>
+            test <@ getUserVersion path = SchemaVersion @>
         finally
             cleanupDb path
 

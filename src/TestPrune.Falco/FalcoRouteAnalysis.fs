@@ -88,30 +88,60 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
     interface ITestPruneExtension with
         member _.Name = "Falco Routes"
 
-        member this.AnalyzeEdges (symbolStore: SymbolStore) (changedFiles: string list) (repoRoot: string) =
-            let affectedClasses = this.FindAffectedTestClasses(changedFiles, repoRoot)
-
-            // For each changed handler file, get its symbols
+        member _.AnalyzeEdges (symbolStore: SymbolStore) (changedFiles: string list) (repoRoot: string) =
             let handlerSourceFiles = routeStore.GetAllHandlerSourceFiles()
 
-            let changedHandlerSymbols =
-                changedFiles
-                |> List.filter (fun f -> handlerSourceFiles |> Set.contains f)
-                |> List.collect symbolStore.GetSymbolsInFile
+            let changedHandlerFiles =
+                changedFiles |> List.filter (fun f -> handlerSourceFiles |> Set.contains f)
 
-            // For each affected test class, find test methods via symbol store
-            let affectedTestMethods =
-                affectedClasses
-                |> List.collect (fun at ->
-                    symbolStore.GetAllSymbols()
+            if changedHandlerFiles.IsEmpty then
+                []
+            else
+                let testFiles = findTestFiles repoRoot
+                let allSymbols = symbolStore.GetAllSymbols()
+
+                // Resolve the test-method symbols for a single test class by the same
+                // suffix/contains idiom the file-level path uses.
+                let testMethodsForClass (testClass: string) =
+                    allSymbols
                     |> List.filter (fun s ->
-                        s.FullName.Contains($".%s{at.TestClass}.")
-                        || s.FullName.EndsWith($".%s{at.TestClass}")))
+                        s.FullName.Contains($".%s{testClass}.")
+                        || s.FullName.EndsWith($".%s{testClass}"))
 
-            // Create edges between each handler symbol and each affected test symbol
-            [ for handler in changedHandlerSymbols do
-                  for testSym in affectedTestMethods do
-                      { FromSymbol = testSym.FullName
-                        ToSymbol = handler.FullName
-                        Kind = SharedState
-                        Source = "falco" } ]
+                // Edges for one route served by a changed handler file. Tests are
+                // matched by THIS route's URL only (per-route regex), so an unrelated
+                // route in the same file contributes no edges.
+                let edgesForRoute (changedFile: string) (entry: RouteHandlerEntry) : Dependency list =
+                    let regex = urlPatternToRegex entry.UrlPattern
+                    let testClasses = findTestClassesInFiles testFiles [ regex ]
+
+                    let routeTestMethods = testClasses |> List.collect testMethodsForClass
+
+                    // Handler symbols this route's tests link to. With a resolved
+                    // HandlerFunction, scope to just that function (matched by suffix,
+                    // since the seed carries the short `Module.function` while the store
+                    // holds the fully-qualified name); config-applied handlers carry the
+                    // bare function symbol (e.g. `WellKnown.robots`), which the same
+                    // suffix match resolves. With None, fall back to the whole file's
+                    // symbols (today's file-level cross-product) for that route.
+                    let handlerSymbols =
+                        let fileSymbols = symbolStore.GetSymbolsInFile changedFile
+
+                        match entry.HandlerFunction with
+                        | Some handlerFunction ->
+                            fileSymbols
+                            |> List.filter (fun s -> s.FullName.EndsWith($".%s{handlerFunction}"))
+                        | None -> fileSymbols
+
+                    [ for handler in handlerSymbols do
+                          for testSym in routeTestMethods do
+                              { FromSymbol = testSym.FullName
+                                ToSymbol = handler.FullName
+                                Kind = SharedState
+                                Source = "falco" } ]
+
+                changedHandlerFiles
+                |> List.collect (fun changedFile ->
+                    routeStore.GetRouteHandlersForSourceFile changedFile
+                    |> List.collect (edgesForRoute changedFile))
+                |> List.distinct
