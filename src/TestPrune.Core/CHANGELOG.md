@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 5.0.0 - 2026-07-11
+
 - feat!: function-scoped route attribution. `RouteHandlerEntry` gains a
   `HandlerFunction: string option` field and `RouteStore` gains
   `GetRouteHandlersForSourceFile`, so a route can carry the handler function that

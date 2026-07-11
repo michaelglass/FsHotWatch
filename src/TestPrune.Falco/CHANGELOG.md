@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.0.4 - 2026-07-11
+
 - fix: function-scoped route edges. `AnalyzeEdges` now links each route's tests
   to that route's *handler function* (via `RouteHandlerEntry.HandlerFunction`)
   instead of the whole changed file's symbols × all-its-routes' tests

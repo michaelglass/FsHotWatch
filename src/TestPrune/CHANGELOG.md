@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 5.0.0 - 2026-07-11
+
 - chore(deps): TestPrune.Core 5.0.0 — function-scoped route attribution
   (`RouteHandlerEntry.HandlerFunction`, `route_handlers.handler_function`).
 
