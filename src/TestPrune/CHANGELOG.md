@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- chore(deps): TestPrune.Core 5.0.0 — function-scoped route attribution
+  (`RouteHandlerEntry.HandlerFunction`, `route_handlers.handler_function`).
+
 ## 4.3.0 - 2026-06-16
 
 - feat: `ProjectLoader.parsePackageReferences` extracts a project's

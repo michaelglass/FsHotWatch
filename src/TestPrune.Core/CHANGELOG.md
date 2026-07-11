@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- feat!: function-scoped route attribution. `RouteHandlerEntry` gains a
+  `HandlerFunction: string option` field and `RouteStore` gains
+  `GetRouteHandlersForSourceFile`, so a route can carry the handler function that
+  serves it (`None` preserves prior behaviour). Adds a `handler_function` column
+  to the `route_handlers` table (SchemaVersion 6→7 — a legacy DB is recreated).
+  BREAKING: the new record field means every `RouteHandlerEntry` construction
+  site must set `HandlerFunction`.
+
 ## 4.3.0 - 2026-06-16
 
 - feat: dependency-fingerprint project-fanout — a dependency/PackageReference

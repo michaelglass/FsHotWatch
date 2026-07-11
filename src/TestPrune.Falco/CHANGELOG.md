@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: function-scoped route edges. `AnalyzeEdges` now links each route's tests
+  to that route's *handler function* (via `RouteHandlerEntry.HandlerFunction`)
+  instead of the whole changed file's symbols × all-its-routes' tests
+  cross-product, so a one-function change to a multi-route handler no longer
+  over-selects every route's browser tests. Falls back to the prior file-level
+  behaviour when `HandlerFunction` is `None`; no under-selection, since ordinary
+  call deps are still caught by TestPrune.Core's transitive symbol graph.
+- chore(deps): refresh to TestPrune.Core 5.0.0.
+
 ## 2.0.3 - 2026-06-25
 
 - feat: `FalcoRouteExtension` — route-based integration-test selection. Maps a changed Falco handler file to the integration tests that exercise its routes by scanning test sources for URL patterns (including `{param}` placeholders), pulling those tests into TestPrune's impact set.
