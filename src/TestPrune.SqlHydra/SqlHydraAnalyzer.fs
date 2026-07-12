@@ -63,7 +63,22 @@ type SqlHydraExtension(generatedModulePrefix: string) =
                 |> Option.defaultValue []
                 |> List.filter (fun d -> d.FromSymbol = sym.FullName)
 
-            let dslAccess =
+            // EVERY DSL access this symbol performs, de-duplicated — not just the first.
+            //
+            // A `Dependency` carries no source range and `GetDependenciesFromFile` has no
+            // ORDER BY, so we cannot pair a given DSL call with the table it operates on.
+            // Keeping only the FIRST access (the old `List.tryHead`) therefore silently
+            // discarded every other access, and which one survived was decided by SQLite's
+            // row order. An upsert-style symbol that selects and then inserts was recorded
+            // as a pure READER: `articles` had no writer at all, so readers of `articles`
+            // got no edge to it and their tests were never selected when it changed —
+            // under-selection, the one failure mode a test-impact tool must not have.
+            //
+            // Keeping them all is exact for the common single-access symbol and degrades to
+            // a conservative (access x table) product only for a symbol that genuinely mixes
+            // reads and writes — where no finer answer is derivable from the data we have.
+            // It can only ever ADD edges, so it cannot drop a genuinely-affected test.
+            let dslAccesses =
                 deps
                 |> List.choose (fun d ->
                     if d.Kind = Calls then
@@ -72,7 +87,7 @@ type SqlHydraExtension(generatedModulePrefix: string) =
                         SqlHydraAnalyzer.classifyDslContext funcName
                     else
                         None)
-                |> List.tryHead
+                |> List.distinct
 
             let tableRefs =
                 deps
@@ -82,15 +97,12 @@ type SqlHydraExtension(generatedModulePrefix: string) =
                     else
                         None)
 
-            match dslAccess with
-            | Some access ->
-                tableRefs
-                |> List.map (fun tref ->
-                    { Symbol = sym.FullName
-                      Table = tref.Table
-                      Column = "*"
-                      Access = access })
-            | None -> [])
+            [ for tref in tableRefs do
+                  for access in dslAccesses do
+                      { Symbol = sym.FullName
+                        Table = tref.Table
+                        Column = "*"
+                        Access = access } ])
 
     interface ITestPruneExtension with
         member _.Name = "SqlHydra"

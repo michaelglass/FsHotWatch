@@ -360,3 +360,46 @@ module ``SqlExtension auto-discovery`` =
         let extension = AutoSqlExtension()
         let edges = (extension :> ITestPruneExtension).AnalyzeEdges store [] ""
         test <@ edges.IsEmpty @>
+
+    /// AUDIT (issue #2): the FalcoRoute cross-product bug is NOT present here.
+    /// SQL facts are keyed by the SYMBOL the attribute sits on and coupled per
+    /// (table, column) — the source file never enters the computation, so three
+    /// symbols sharing one file stay independent. A file-level cross-product would
+    /// link the `articles` reader to the `users` writer as well; it must not.
+    [<Fact>]
+    let ``auto-discovery scopes edges per symbol and table, not per file`` () =
+        let symbolIn file name : SymbolInfo =
+            { FullName = name
+              Kind = Function
+              SourceFile = file
+              LineStart = 1
+              LineEnd = 5
+              ContentHash = name
+              IsExtern = false }
+
+        // Every symbol lives in ONE file.
+        let result =
+            { AnalysisResult.Create(
+                  [ symbolIn "src/Queries.fs" "Queries.saveArticle"
+                    symbolIn "src/Queries.fs" "Queries.saveUser"
+                    symbolIn "src/Queries.fs" "Queries.loadArticle" ],
+                  [],
+                  []
+              ) with
+                Attributes =
+                    [ { SymbolFullName = "Queries.saveArticle"
+                        AttributeName = "WritesToAttribute"
+                        ArgsJson = "[\"articles\", \"*\"]" }
+                      { SymbolFullName = "Queries.saveUser"
+                        AttributeName = "WritesToAttribute"
+                        ArgsJson = "[\"users\", \"*\"]" }
+                      { SymbolFullName = "Queries.loadArticle"
+                        AttributeName = "ReadsFromAttribute"
+                        ArgsJson = "[\"articles\", \"*\"]" } ] }
+
+        let store = TestPrune.InMemoryStore.fromAnalysisResults [ result ]
+        let edges = (AutoSqlExtension() :> ITestPruneExtension).AnalyzeEdges store [] ""
+        let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
+
+        // Only the same-table pair couples. The file-mate `saveUser` writer is absent.
+        test <@ pairs = set [ "Queries.loadArticle", "Queries.saveArticle" ] @>
