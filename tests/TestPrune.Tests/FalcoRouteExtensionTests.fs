@@ -4,6 +4,7 @@ open System
 open System.IO
 open Xunit
 open Swensen.Unquote
+open Microsoft.Data.Sqlite
 open TestPrune.AstAnalyzer
 open TestPrune.Database
 open TestPrune.Ports
@@ -19,6 +20,18 @@ let private cleanupDir dir =
     if Directory.Exists dir then
         Directory.Delete(dir, true)
 
+/// A route store over a fresh core database — the same wiring a consumer uses:
+/// core owns the file, `toPluginStore` hands Falco a connection to it.
+let private withRouteStore (f: string -> Database -> RouteStore -> unit) =
+    let tempDir = createTempDir ()
+
+    try
+        let dbPath = Path.Combine(tempDir, "test.db")
+        let db = Database.create dbPath
+        f dbPath db (RouteStore(toPluginStore db))
+    finally
+        cleanupDir tempDir
+
 let private withTestSetup
     (routeEntries: RouteHandlerEntry list)
     (testFiles: (string * string) list)
@@ -32,8 +45,8 @@ let private withTestSetup
     try
         let dbPath = Path.Combine(tempDir, "test.db")
         let db = Database.create dbPath
-
-        db.RebuildRouteHandlers(routeEntries)
+        let routeStore = RouteStore(toPluginStore db)
+        routeStore.Rebuild(routeEntries)
 
         let testDir = Path.Combine(tempDir, integrationTestSubDir)
 
@@ -42,8 +55,6 @@ let private withTestSetup
 
             for (fileName, content) in testFiles do
                 File.WriteAllText(Path.Combine(testDir, fileName), content)
-
-        let routeStore = toRouteStore db
 
         let extension =
             FalcoRouteExtension(integrationTestProject, integrationTestSubDir, routeStore)
@@ -54,6 +65,276 @@ let private withTestSetup
     finally
         cleanupDir tempDir
 
+// -----------------------------------------------------------------------------
+// RouteStore: the route table TestPrune.Falco owns inside core's cache database
+// -----------------------------------------------------------------------------
+
+module ``RouteStore round-trip`` =
+
+    [<Fact>]
+    let ``Rebuild and GetAll returns inserted entries`` () =
+        withRouteStore (fun _ _ routes ->
+            routes.Rebuild(
+                [ { UrlPattern = "/api/users"
+                    HttpMethod = "GET"
+                    HandlerSourceFile = "src/UsersHandler.fs"
+                    HandlerFunction = Some "Users.list" }
+                  { UrlPattern = "/api/users"
+                    HttpMethod = "POST"
+                    HandlerSourceFile = "src/UsersHandler.fs"
+                    HandlerFunction = Some "Users.create" }
+                  { UrlPattern = "/api/orders"
+                    HttpMethod = "GET"
+                    HandlerSourceFile = "src/OrdersHandler.fs"
+                    HandlerFunction = None } ]
+            )
+
+            let all = routes.GetAll()
+            test <@ all.Length = 3 @>
+
+            let patterns = all |> List.map (fun e -> e.UrlPattern) |> Set.ofList
+            test <@ patterns = set [ "/api/users"; "/api/orders" ] @>
+
+            let methods = all |> List.map (fun e -> e.HttpMethod) |> Set.ofList
+            test <@ methods = set [ "GET"; "POST" ] @>
+
+            // HandlerFunction round-trips, including a NULL back to None.
+            let handlerFns = all |> List.map (fun e -> e.HandlerFunction) |> Set.ofList
+            test <@ handlerFns = set [ Some "Users.list"; Some "Users.create"; None ] @>)
+
+    [<Fact>]
+    let ``GetUrlPatternsForSourceFile returns patterns for a given source file`` () =
+        withRouteStore (fun _ _ routes ->
+            routes.Rebuild(
+                [ { UrlPattern = "/api/users"
+                    HttpMethod = "GET"
+                    HandlerSourceFile = "src/UsersHandler.fs"
+                    HandlerFunction = None }
+                  { UrlPattern = "/api/users"
+                    HttpMethod = "POST"
+                    HandlerSourceFile = "src/UsersHandler.fs"
+                    HandlerFunction = None }
+                  { UrlPattern = "/api/orders"
+                    HttpMethod = "GET"
+                    HandlerSourceFile = "src/OrdersHandler.fs"
+                    HandlerFunction = None } ]
+            )
+
+            let patterns = routes.GetUrlPatternsForSourceFile("src/UsersHandler.fs")
+            test <@ patterns.Length = 2 @>
+            test <@ patterns |> List.contains "/api/users" @>
+
+            let ordersPatterns = routes.GetUrlPatternsForSourceFile("src/OrdersHandler.fs")
+            test <@ ordersPatterns = [ "/api/orders" ] @>
+
+            let none = routes.GetUrlPatternsForSourceFile("src/NotAHandler.fs")
+            test <@ none |> List.isEmpty @>)
+
+    [<Fact>]
+    let ``GetRouteHandlersForSourceFile returns only that file's entries`` () =
+        withRouteStore (fun _ _ routes ->
+            routes.Rebuild(
+                [ { UrlPattern = "/api/users"
+                    HttpMethod = "GET"
+                    HandlerSourceFile = "src/UsersHandler.fs"
+                    HandlerFunction = Some "Users.list" }
+                  { UrlPattern = "/api/orders"
+                    HttpMethod = "GET"
+                    HandlerSourceFile = "src/OrdersHandler.fs"
+                    HandlerFunction = None } ]
+            )
+
+            let entries = routes.GetRouteHandlersForSourceFile("src/UsersHandler.fs")
+
+            test
+                <@
+                    entries = [ { UrlPattern = "/api/users"
+                                  HttpMethod = "GET"
+                                  HandlerSourceFile = "src/UsersHandler.fs"
+                                  HandlerFunction = Some "Users.list" } ]
+                @>
+
+            test <@ routes.GetRouteHandlersForSourceFile("src/Unknown.fs") |> List.isEmpty @>)
+
+    [<Fact>]
+    let ``GetAllHandlerSourceFiles returns distinct source files`` () =
+        withRouteStore (fun _ _ routes ->
+            routes.Rebuild(
+                [ { UrlPattern = "/api/users"
+                    HttpMethod = "GET"
+                    HandlerSourceFile = "src/UsersHandler.fs"
+                    HandlerFunction = None }
+                  { UrlPattern = "/api/users"
+                    HttpMethod = "POST"
+                    HandlerSourceFile = "src/UsersHandler.fs"
+                    HandlerFunction = None }
+                  { UrlPattern = "/api/orders"
+                    HttpMethod = "GET"
+                    HandlerSourceFile = "src/OrdersHandler.fs"
+                    HandlerFunction = None } ]
+            )
+
+            let files = routes.GetAllHandlerSourceFiles()
+            test <@ files = set [ "src/UsersHandler.fs"; "src/OrdersHandler.fs" ] @>)
+
+    [<Fact>]
+    let ``Rebuild replaces all previous entries`` () =
+        withRouteStore (fun _ _ routes ->
+            routes.Rebuild(
+                [ { UrlPattern = "/old/route"
+                    HttpMethod = "GET"
+                    HandlerSourceFile = "src/OldHandler.fs"
+                    HandlerFunction = None } ]
+            )
+
+            routes.Rebuild(
+                [ { UrlPattern = "/new/route"
+                    HttpMethod = "POST"
+                    HandlerSourceFile = "src/NewHandler.fs"
+                    HandlerFunction = None } ]
+            )
+
+            let all = routes.GetAll()
+            test <@ all.Length = 1 @>
+            test <@ all[0].UrlPattern = "/new/route" @>
+            test <@ all[0].HandlerSourceFile = "src/NewHandler.fs" @>
+
+            let files = routes.GetAllHandlerSourceFiles()
+            test <@ files |> Set.contains "src/OldHandler.fs" |> not @>
+            test <@ files |> Set.contains "src/NewHandler.fs" @>)
+
+    [<Fact>]
+    let ``Rebuild with empty list clears all entries`` () =
+        withRouteStore (fun _ _ routes ->
+            routes.Rebuild(
+                [ { UrlPattern = "/api/users"
+                    HttpMethod = "GET"
+                    HandlerSourceFile = "src/UsersHandler.fs"
+                    HandlerFunction = None } ]
+            )
+
+            routes.Rebuild([])
+
+            test <@ routes.GetAll() |> List.isEmpty @>
+            test <@ routes.GetAllHandlerSourceFiles() = Set.empty @>)
+
+    [<Fact>]
+    let ``a failed Rebuild rolls back, leaving the previous routes intact`` () =
+        // Re-seeding is DELETE-then-INSERT in one transaction. If an entry is rejected
+        // mid-flight (here: a null url_pattern from a malformed seed, which the parameter
+        // binding refuses), the whole rebuild must roll back — a half-applied reseed would
+        // leave the route table missing routes whose tests would then never be selected.
+        withRouteStore (fun _ _ routes ->
+            let good =
+                [ { UrlPattern = "/api/users"
+                    HttpMethod = "GET"
+                    HandlerSourceFile = "src/UsersHandler.fs"
+                    HandlerFunction = None } ]
+
+            routes.Rebuild(good)
+
+            let malformed =
+                [ { UrlPattern = null
+                    HttpMethod = "GET"
+                    HandlerSourceFile = "src/OtherHandler.fs"
+                    HandlerFunction = None } ]
+
+            raises<InvalidOperationException> <@ routes.Rebuild(malformed) @>
+
+            test <@ routes.GetAll() = good @>)
+
+    [<Fact>]
+    let ``queries on a never-seeded store return empty, not an error`` () =
+        // The table does not exist until the store creates it: every read must issue its
+        // own DDL first, so a fresh core DB (or one a schema bump just recreated) reads as
+        // "no routes" rather than throwing "no such table: route_handlers".
+        withRouteStore (fun _ _ routes ->
+            test <@ routes.GetAll() |> List.isEmpty @>
+            test <@ routes.GetAllHandlerSourceFiles() = Set.empty @>
+            test <@ routes.GetUrlPatternsForSourceFile "nonexistent.fs" |> List.isEmpty @>
+            test <@ routes.GetRouteHandlersForSourceFile "nonexistent.fs" |> List.isEmpty @>)
+
+module ``RouteStore survives a core schema recreate`` =
+
+    let private openRawConnection (dbPath: string) =
+        let conn = new SqliteConnection($"Data Source=%s{dbPath}")
+        conn.Open()
+        conn
+
+    let private setUserVersion (dbPath: string) (version: int) =
+        use conn = openRawConnection dbPath
+        use cmd = conn.CreateCommand()
+        cmd.CommandText <- $"PRAGMA user_version = %d{version};"
+        cmd.ExecuteNonQuery() |> ignore
+
+    let private routeTableExists (dbPath: string) =
+        use conn = openRawConnection dbPath
+        use cmd = conn.CreateCommand()
+
+        cmd.CommandText <- "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='route_handlers'"
+
+        cmd.ExecuteScalar() :?> int64 > 0L
+
+    /// THE CONTRACT: core owns the FILE and deletes it on a `SchemaVersion` mismatch,
+    /// dropping the plugin's table with it — core cannot migrate a table it knows nothing
+    /// about. That is only safe because the plugin recreates its table on demand and its
+    /// contents are re-seeded every run. This test drives exactly that drop → recreate
+    /// path: a store that assumed its table existed would throw "no such table" here.
+    [<Fact>]
+    let ``a core schema bump drops the route table; the store recreates it on demand`` () =
+        let tempDir = createTempDir ()
+
+        try
+            let dbPath = Path.Combine(tempDir, "test.db")
+
+            let db = Database.create dbPath
+            let routes = RouteStore(toPluginStore db)
+
+            routes.Rebuild(
+                [ { UrlPattern = "/api/users/{id}"
+                    HttpMethod = "GET"
+                    HandlerSourceFile = "src/Handlers/Users.fs"
+                    HandlerFunction = Some "Users.get" } ]
+            )
+
+            test <@ routeTableExists dbPath @>
+            test <@ routes.GetAll().Length = 1 @>
+
+            // Stamp an incompatible (older) core schema version: the next core open
+            // delete+recreates the file.
+            setUserVersion dbPath (SchemaVersion - 1)
+
+            let db2 = Database.create dbPath
+            test <@ db2.WasRecreated @>
+
+            // The plugin's table really is gone — the test below is not vacuous.
+            test <@ not (routeTableExists dbPath) @>
+
+            // Reads recreate it and report an honest empty, rather than throwing.
+            let routes2 = RouteStore(toPluginStore db2)
+            test <@ routes2.GetAll() |> List.isEmpty @>
+            test <@ routeTableExists dbPath @>
+
+            // And the next seed (routes are re-seeded every run) restores the data.
+            routes2.Rebuild(
+                [ { UrlPattern = "/api/users/{id}"
+                    HttpMethod = "GET"
+                    HandlerSourceFile = "src/Handlers/Users.fs"
+                    HandlerFunction = Some "Users.get" } ]
+            )
+
+            test <@ routes2.GetAll().Length = 1 @>
+
+            // A store constructed BEFORE the recreate is equally fine: it holds a
+            // connection factory, not a connection, and re-issues its DDL per call.
+            test <@ routes.GetAllHandlerSourceFiles() = set [ "src/Handlers/Users.fs" ] @>
+        finally
+            cleanupDir tempDir
+
+// -----------------------------------------------------------------------------
+// FindAffectedTestClasses: URL-matching test selection
+// -----------------------------------------------------------------------------
+
 module ``debug db roundtrip`` =
 
     [<Fact>]
@@ -63,18 +344,19 @@ module ``debug db roundtrip`` =
         try
             let dbPath = Path.Combine(tempDir, "test.db")
             let db = Database.create dbPath
+            let routeStore = RouteStore(toPluginStore db)
 
-            db.RebuildRouteHandlers(
+            routeStore.Rebuild(
                 [ { UrlPattern = "/api/users/{id}"
                     HttpMethod = "GET"
                     HandlerSourceFile = "src/Handlers/Users.fs"
                     HandlerFunction = None } ]
             )
 
-            let hsf = db.GetAllHandlerSourceFiles()
+            let hsf = routeStore.GetAllHandlerSourceFiles()
             test <@ hsf = set [ "src/Handlers/Users.fs" ] @>
 
-            let urls = db.GetUrlPatternsForSourceFile("src/Handlers/Users.fs")
+            let urls = routeStore.GetUrlPatternsForSourceFile("src/Handlers/Users.fs")
             test <@ urls = [ "/api/users/{id}" ] @>
 
             // Now test the extension end-to-end
@@ -95,7 +377,6 @@ module ``debug db roundtrip`` =
 
             test <@ files.Length = 1 @>
 
-            let routeStore = toRouteStore db
             let extension = FalcoRouteExtension("IntTests", "tests/IntTests", routeStore)
 
             let result = extension.FindAffectedTestClasses([ "src/Handlers/Users.fs" ], tempDir)
@@ -312,7 +593,8 @@ let private withAnalyzeEdges
     try
         let dbPath = Path.Combine(tempDir, "test.db")
         let db = Database.create dbPath
-        db.RebuildRouteHandlers(routeEntries)
+        let routeStore = RouteStore(toPluginStore db)
+        routeStore.Rebuild(routeEntries)
 
         let testDir = Path.Combine(tempDir, "tests/IntTests")
         Directory.CreateDirectory(testDir) |> ignore
@@ -324,7 +606,7 @@ let private withAnalyzeEdges
             TestPrune.InMemoryStore.fromAnalysisResults [ AnalysisResult.Create(symbols, [], []) ]
 
         let extension =
-            FalcoRouteExtension("IntTests", "tests/IntTests", toRouteStore db) :> ITestPruneExtension
+            FalcoRouteExtension("IntTests", "tests/IntTests", routeStore) :> ITestPruneExtension
 
         let edges = extension.AnalyzeEdges symbolStore changedFiles tempDir
         f edges
@@ -435,6 +717,35 @@ module ``AnalyzeEdges fallback`` =
                 let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
 
                 // The test's method links to BOTH file symbols (file-level fallback).
+                test
+                    <@
+                        pairs = set
+                            [ "App.Tests.UsersTests.GetUser", "App.Handlers.Multi.getUser"
+                              "App.Tests.UsersTests.GetUser", "App.Handlers.Multi.helper" ]
+                    @>)
+
+    /// UNDER-SELECTION GUARD: a seed naming a handler function that no longer resolves
+    /// (renamed, moved, re-namespaced) must NOT silently emit zero edges for that route —
+    /// its tests would stop being selected. It degrades to the same coarse file-level set
+    /// as `None`.
+    [<Fact>]
+    let ``unresolvable handler function falls back to the file's symbols`` () =
+        let symbols =
+            [ fn "App.Handlers.Multi.getUser" "src/Handlers/Multi.fs"
+              fn "App.Handlers.Multi.helper" "src/Handlers/Multi.fs"
+              fn "App.Tests.UsersTests.GetUser" "tests/IntTests/UsersTests.fs" ]
+
+        withAnalyzeEdges
+            [ { UrlPattern = "/api/users/{id}"
+                HttpMethod = "GET"
+                HandlerSourceFile = "src/Handlers/Multi.fs"
+                HandlerFunction = Some "Multi.renamedAwayGetUser" } ]
+            symbols
+            [ ("UsersTests.fs", usersTestFile) ]
+            [ "src/Handlers/Multi.fs" ]
+            (fun edges ->
+                let pairs = edges |> List.map (fun e -> e.FromSymbol, e.ToSymbol) |> Set.ofList
+
                 test
                     <@
                         pairs = set

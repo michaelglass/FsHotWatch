@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- feat!: TestPrune.Falco owns the route table. `RouteHandlerEntry` and a new
+  `RouteStore` type (its own `route_handlers` table, created on demand inside
+  TestPrune's cache database through core's `Ports.PluginStore` seam) live here now,
+  not in TestPrune.Core — the core engine no longer carries any HTTP/route/URL
+  concept. BREAKING: seed with `RouteStore(toPluginStore db).Rebuild entries` instead
+  of `db.RebuildRouteHandlers entries`, and pass that `RouteStore` to
+  `FalcoRouteExtension` instead of `Ports.toRouteStore db`. `AffectedTest` (returned
+  by `FindAffectedTestClasses`) also moved here from `TestPrune.Extensions`.
+- fix: an unresolvable `HandlerFunction` no longer drops a route's edges. A seed
+  naming a handler that has since been renamed or moved used to scope to zero symbols
+  and emit nothing, so that route's tests silently stopped being selected —
+  under-selection. It now falls back to the file-level match, like `None` does. This
+  is core's shared `EdgeEmission.edgesTo`, which `AnalyzeEdges` now builds every edge
+  with; the function-scoped behaviour (and its regression tests) is unchanged.
+- feat: `RouteStore.Rebuild` is atomic — a rejected entry rolls the whole re-seed back
+  rather than leaving the route table half-written.
+
 ## 2.0.4 - 2026-07-11
 
 - fix: function-scoped route edges. `AnalyzeEdges` now links each route's tests

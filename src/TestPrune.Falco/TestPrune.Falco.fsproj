@@ -23,6 +23,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="RouteStore.fs" />
     <Compile Include="FalcoRouteAnalysis.fs" />
   </ItemGroup>
 
@@ -31,6 +32,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Falco owns its route table inside TestPrune's cache DB (via Ports.PluginStore),
+         so it talks to SQLite directly rather than through a core route API. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" />
     <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
   </ItemGroup>
 </Project>

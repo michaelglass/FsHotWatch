@@ -36,14 +36,6 @@ let private schema =
         test_method TEXT NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS route_handlers (
-        url_pattern TEXT NOT NULL,
-        http_method TEXT NOT NULL,
-        handler_source_file TEXT NOT NULL,
-        handler_function TEXT,
-        PRIMARY KEY (url_pattern, http_method)
-    );
-
     CREATE TABLE IF NOT EXISTS project_keys (
         project_name TEXT PRIMARY KEY,
         key TEXT NOT NULL
@@ -81,7 +73,6 @@ let private schema =
     CREATE INDEX IF NOT EXISTS idx_symbols_by_parent ON symbols (parent_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_deps_to ON dependencies (to_symbol_id);
     CREATE INDEX IF NOT EXISTS idx_deps_from ON dependencies (from_symbol_id);
-    CREATE INDEX IF NOT EXISTS idx_route_handlers_source ON route_handlers (handler_source_file);
     CREATE INDEX IF NOT EXISTS idx_events_run_id ON analysis_events(run_id);
     CREATE INDEX IF NOT EXISTS idx_events_type ON analysis_events(event_type);
     CREATE INDEX IF NOT EXISTS idx_symbol_attrs_by_symbol ON symbol_attributes (symbol_id);
@@ -142,15 +133,6 @@ let private readAll (reader: SqliteDataReader) (f: SqliteDataReader -> 'T) : 'T 
 
     results |> List.rev
 
-/// Read a `route_handlers` row selected as
-/// (url_pattern, http_method, handler_source_file, handler_function).
-/// The trailing `handler_function` column is nullable — a NULL maps to `None`.
-let private readRouteHandlerRow (r: SqliteDataReader) : RouteHandlerEntry =
-    { UrlPattern = r.GetString(0)
-      HttpMethod = r.GetString(1)
-      HandlerSourceFile = r.GetString(2)
-      HandlerFunction = if r.IsDBNull(3) then None else Some(r.GetString(3)) }
-
 let private buildPlaceholders (names: string list) =
     let paramNames = names |> List.mapi (fun i _ -> $"@p%d{i}")
     String.Join(", ", paramNames)
@@ -202,6 +184,20 @@ let private openConnection (dbPath: string) =
 ///          scoped Falco edges) instead of the whole handler file. Bump forces
 ///          recreate — a legacy v6 DB has the 3-column table and reads/writes of
 ///          the new column would throw "no such column: handler_function".
+/// v8     — removed `route_handlers` from the core schema. HTTP routes are not a
+///          core concept: the table (and the `RouteHandlerEntry` type that shaped
+///          it) now belong to TestPrune.Falco, which creates and owns them through
+///          the `PluginStore` seam (`Ports.toPluginStore`). Nothing about a legacy
+///          v7 DB is unreadable by this schema, but the bump keeps `user_version` an
+///          honest description of what core manages, and the recreate is free: a
+///          plugin table is re-created on demand by its owner (and Falco's routes
+///          are re-seeded every run).
+///
+/// A `SchemaVersion` bump DELETES the database file, so it drops every PLUGIN-owned
+/// table too — core cannot migrate a table it does not know about. That is safe only
+/// because a plugin store must treat its table as absent until it has issued its own
+/// `CREATE TABLE IF NOT EXISTS` (see `Ports.PluginStore`), and its contents must be
+/// derivable again (seeded per run), never the sole copy of anything.
 ///
 /// Public so external read-only consumers (e.g. FsHotWatch's `fshw dead-code`)
 /// can probe a live DB's `PRAGMA user_version` for compatibility BEFORE opening
@@ -210,7 +206,7 @@ let private openConnection (dbPath: string) =
 /// protection silently invert when this constant bumps: an old-version DB would
 /// pass the stale probe and then be recreated by the newer open path.
 [<Literal>]
-let SchemaVersion = 7
+let SchemaVersion = 8
 
 /// Delete the SQLite database file at `dbPath` along with its WAL mode
 /// sidecars (`-wal`, `-shm`). Deleting only the main file leaves stale
@@ -311,6 +307,19 @@ type Database(dbPath: string) =
 
     /// Create a Database instance, initializing the schema if needed.
     static member create(dbPath: string) = Database(dbPath)
+
+    /// Open a fresh connection to the cache database (WAL, foreign keys on); the caller
+    /// disposes it. This is the storage seam for extensions that must persist facts core
+    /// knows nothing about — data the AST cannot see and that is seeded from outside
+    /// (e.g. TestPrune.Falco's HTTP route table). Reach it through `Ports.toPluginStore`,
+    /// never by constructing a connection string: a plugin store obtained from a live
+    /// `Database` is guaranteed to have gone through the `SchemaVersion` check first.
+    ///
+    /// A plugin owns its tables; core owns the FILE. Core will delete and recreate the
+    /// file on a `SchemaVersion` mismatch, dropping plugin tables with it, so a plugin
+    /// must issue idempotent `CREATE TABLE IF NOT EXISTS` DDL before every use and must
+    /// never store anything it cannot re-derive.
+    member _.OpenConnection() : SqliteConnection = openConnection dbPath
 
     /// Clear and re-insert symbols, dependencies, and test methods.
     /// All symbols are inserted before any dependencies, so cross-project edges resolve correctly.
@@ -795,104 +804,6 @@ type Database(dbPath: string) =
 
             use reader = cmd.ExecuteReader()
             readAll reader (fun r -> r.GetString(0)) |> Set.ofList
-
-    /// Store route -> handler source file mappings. Clears and rebuilds all entries.
-    member _.RebuildRouteHandlers(entries: RouteHandlerEntry list) =
-        use conn = openConnection dbPath
-        use txn = conn.BeginTransaction()
-
-        try
-            use delCmd = conn.CreateCommand()
-            delCmd.Transaction <- txn
-            delCmd.CommandText <- "DELETE FROM route_handlers"
-            delCmd.ExecuteNonQuery() |> ignore
-
-            use insCmd = conn.CreateCommand()
-            insCmd.Transaction <- txn
-
-            insCmd.CommandText <-
-                """
-                INSERT OR REPLACE INTO route_handlers (url_pattern, http_method, handler_source_file, handler_function)
-                VALUES (@urlPattern, @httpMethod, @handlerSourceFile, @handlerFunction)
-                """
-
-            let pUrlPattern = insCmd.Parameters.Add("@urlPattern", SqliteType.Text)
-            let pHttpMethod = insCmd.Parameters.Add("@httpMethod", SqliteType.Text)
-
-            let pHandlerSourceFile =
-                insCmd.Parameters.Add("@handlerSourceFile", SqliteType.Text)
-
-            let pHandlerFunction = insCmd.Parameters.Add("@handlerFunction", SqliteType.Text)
-
-            for entry in entries do
-                pUrlPattern.Value <- entry.UrlPattern
-                pHttpMethod.Value <- entry.HttpMethod
-                pHandlerSourceFile.Value <- entry.HandlerSourceFile
-
-                pHandlerFunction.Value <-
-                    match entry.HandlerFunction with
-                    | Some fn -> box fn
-                    | None -> box DBNull.Value
-
-                insCmd.ExecuteNonQuery() |> ignore
-
-            txn.Commit()
-        with ex ->
-            txn.Rollback()
-            raise ex
-
-    /// Get all URL patterns served by a given handler source file.
-    member _.GetUrlPatternsForSourceFile(sourceFile: string) : string list =
-        use conn = openConnection dbPath
-        use cmd = conn.CreateCommand()
-
-        cmd.CommandText <-
-            """
-            SELECT url_pattern FROM route_handlers
-            WHERE handler_source_file = @sourceFile
-            """
-
-        cmd.Parameters.AddWithValue("@sourceFile", sourceFile) |> ignore
-
-        use reader = cmd.ExecuteReader()
-        readAll reader (fun r -> r.GetString(0))
-
-    /// Get all handler source files in the route_handlers table.
-    member _.GetAllHandlerSourceFiles() : Set<string> =
-        use conn = openConnection dbPath
-        use cmd = conn.CreateCommand()
-        cmd.CommandText <- "SELECT DISTINCT handler_source_file FROM route_handlers"
-
-        use reader = cmd.ExecuteReader()
-        readAll reader (fun r -> r.GetString(0)) |> Set.ofList
-
-    /// Get all route handler entries.
-    member _.GetAllRouteHandlers() : RouteHandlerEntry list =
-        use conn = openConnection dbPath
-        use cmd = conn.CreateCommand()
-
-        cmd.CommandText <- "SELECT url_pattern, http_method, handler_source_file, handler_function FROM route_handlers"
-
-        use reader = cmd.ExecuteReader()
-        readAll reader readRouteHandlerRow
-
-    /// Get the full route handler entries served by a given handler source file.
-    /// Carries `HandlerFunction` so callers can scope edges to the specific
-    /// function serving each route rather than the whole file.
-    member _.GetRouteHandlersForSourceFile(sourceFile: string) : RouteHandlerEntry list =
-        use conn = openConnection dbPath
-        use cmd = conn.CreateCommand()
-
-        cmd.CommandText <-
-            """
-            SELECT url_pattern, http_method, handler_source_file, handler_function FROM route_handlers
-            WHERE handler_source_file = @sourceFile
-            """
-
-        cmd.Parameters.AddWithValue("@sourceFile", sourceFile) |> ignore
-
-        use reader = cmd.ExecuteReader()
-        readAll reader readRouteHandlerRow
 
     /// Get the stored cache key for a project, or None if not yet indexed.
     member _.GetProjectKey(projectName: string) : string option =

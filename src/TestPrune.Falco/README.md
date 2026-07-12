@@ -23,17 +23,26 @@ dotnet add package TestPrune.Falco
 
 ### 1. Store your route mappings during indexing
 
-Tell TestPrune which source files handle which URLs. Each entry is a
-`RouteHandlerEntry`; `db.RebuildRouteHandlers` clears and rewrites the
-whole route table. Set `HandlerFunction` to the short `Module.function`
-serving the route so a route's tests link only to that function (a one-
-function change to a multi-route file selects only that route's tests);
-`None` falls back to a whole-file match (every function in the file):
+Routes are the one thing TestPrune cannot read out of your code — they
+live in a route DU plus runtime wiring, not in the symbol graph — so you
+seed them. `RouteStore` owns that table: it lives inside TestPrune's cache
+database, but TestPrune.Core knows nothing about it (it just hands out a
+connection, via `toPluginStore`).
+
+Each entry is a `RouteHandlerEntry`; `Rebuild` clears and rewrites the
+whole route table, so re-seed it on every indexing run. Set
+`HandlerFunction` to the short `Module.function` serving the route so a
+route's tests link only to that function (a one-function change to a
+multi-route file selects only that route's tests); `None` falls back to a
+whole-file match (every function in the file):
 
 ```fsharp
-open TestPrune.AstAnalyzer // RouteHandlerEntry
+open TestPrune.Ports  // toPluginStore
+open TestPrune.Falco  // RouteStore, RouteHandlerEntry
 
-db.RebuildRouteHandlers [
+let routeStore = RouteStore(toPluginStore db)
+
+routeStore.Rebuild [
     { UrlPattern = "/api/users/{id}"
       HttpMethod = "GET"
       HandlerSourceFile = "src/Web/Handlers/Users.fs"
@@ -47,18 +56,17 @@ db.RebuildRouteHandlers [
 
 ### 2. Create the extension and query affected tests
 
-The extension reads routes through a `RouteStore` — build one from your
-`Database` with `toRouteStore`:
+The extension reads routes through that same `RouteStore`:
 
 ```fsharp
-open TestPrune.Ports        // toRouteStore, toSymbolStore
-open TestPrune.Extensions   // ITestPruneExtension, AffectedTest
+open TestPrune.Ports        // toSymbolStore
+open TestPrune.Extensions   // ITestPruneExtension
 
 let extension =
     FalcoRouteExtension(
         integrationTestProject = "MyApp.IntegrationTests",
         integrationTestDir = "tests/MyApp.IntegrationTests",
-        routeStore = toRouteStore db
+        routeStore = routeStore
     )
 
 // Affected test classes, directly:

@@ -608,137 +608,6 @@ module ``GetAllSymbolNames`` =
             let names = db.GetAllSymbolNames()
             test <@ names = set [ "A.one"; "B.two"; "C.three" ] @>)
 
-module ``Route handler round-trip`` =
-
-    [<Fact>]
-    let ``RebuildRouteHandlers and GetAllRouteHandlers returns inserted entries`` () =
-        withDb (fun db ->
-            let entries =
-                [ { UrlPattern = "/api/users"
-                    HttpMethod = "GET"
-                    HandlerSourceFile = "src/UsersHandler.fs"
-                    HandlerFunction = Some "Users.list" }
-                  { UrlPattern = "/api/users"
-                    HttpMethod = "POST"
-                    HandlerSourceFile = "src/UsersHandler.fs"
-                    HandlerFunction = Some "Users.create" }
-                  { UrlPattern = "/api/orders"
-                    HttpMethod = "GET"
-                    HandlerSourceFile = "src/OrdersHandler.fs"
-                    HandlerFunction = None } ]
-
-            db.RebuildRouteHandlers(entries)
-
-            let all = db.GetAllRouteHandlers()
-            test <@ all.Length = 3 @>
-
-            let patterns = all |> List.map (fun e -> e.UrlPattern) |> Set.ofList
-            test <@ patterns = set [ "/api/users"; "/api/orders" ] @>
-
-            let methods = all |> List.map (fun e -> e.HttpMethod) |> Set.ofList
-            test <@ methods = set [ "GET"; "POST" ] @>
-
-            // HandlerFunction round-trips, including a NULL back to None.
-            let handlerFns = all |> List.map (fun e -> e.HandlerFunction) |> Set.ofList
-            test <@ handlerFns = set [ Some "Users.list"; Some "Users.create"; None ] @>)
-
-    [<Fact>]
-    let ``GetUrlPatternsForSourceFile returns patterns for a given source file`` () =
-        withDb (fun db ->
-            let entries =
-                [ { UrlPattern = "/api/users"
-                    HttpMethod = "GET"
-                    HandlerSourceFile = "src/UsersHandler.fs"
-                    HandlerFunction = None }
-                  { UrlPattern = "/api/users"
-                    HttpMethod = "POST"
-                    HandlerSourceFile = "src/UsersHandler.fs"
-                    HandlerFunction = None }
-                  { UrlPattern = "/api/orders"
-                    HttpMethod = "GET"
-                    HandlerSourceFile = "src/OrdersHandler.fs"
-                    HandlerFunction = None } ]
-
-            db.RebuildRouteHandlers(entries)
-
-            let patterns = db.GetUrlPatternsForSourceFile("src/UsersHandler.fs")
-            test <@ patterns.Length = 2 @>
-            test <@ patterns |> List.contains "/api/users" @>
-
-            let ordersPatterns = db.GetUrlPatternsForSourceFile("src/OrdersHandler.fs")
-            test <@ ordersPatterns = [ "/api/orders" ] @>
-
-            let none = db.GetUrlPatternsForSourceFile("src/NotAHandler.fs")
-            test <@ none |> List.isEmpty @>)
-
-    [<Fact>]
-    let ``GetAllHandlerSourceFiles returns distinct source files`` () =
-        withDb (fun db ->
-            let entries =
-                [ { UrlPattern = "/api/users"
-                    HttpMethod = "GET"
-                    HandlerSourceFile = "src/UsersHandler.fs"
-                    HandlerFunction = None }
-                  { UrlPattern = "/api/users"
-                    HttpMethod = "POST"
-                    HandlerSourceFile = "src/UsersHandler.fs"
-                    HandlerFunction = None }
-                  { UrlPattern = "/api/orders"
-                    HttpMethod = "GET"
-                    HandlerSourceFile = "src/OrdersHandler.fs"
-                    HandlerFunction = None } ]
-
-            db.RebuildRouteHandlers(entries)
-
-            let files = db.GetAllHandlerSourceFiles()
-            test <@ files = set [ "src/UsersHandler.fs"; "src/OrdersHandler.fs" ] @>)
-
-    [<Fact>]
-    let ``RebuildRouteHandlers replaces all previous entries`` () =
-        withDb (fun db ->
-            let first =
-                [ { UrlPattern = "/old/route"
-                    HttpMethod = "GET"
-                    HandlerSourceFile = "src/OldHandler.fs"
-                    HandlerFunction = None } ]
-
-            db.RebuildRouteHandlers(first)
-
-            let second =
-                [ { UrlPattern = "/new/route"
-                    HttpMethod = "POST"
-                    HandlerSourceFile = "src/NewHandler.fs"
-                    HandlerFunction = None } ]
-
-            db.RebuildRouteHandlers(second)
-
-            let all = db.GetAllRouteHandlers()
-            test <@ all.Length = 1 @>
-            test <@ all[0].UrlPattern = "/new/route" @>
-            test <@ all[0].HandlerSourceFile = "src/NewHandler.fs" @>
-
-            let files = db.GetAllHandlerSourceFiles()
-            test <@ files |> Set.contains "src/OldHandler.fs" |> not @>
-            test <@ files |> Set.contains "src/NewHandler.fs" @>)
-
-    [<Fact>]
-    let ``RebuildRouteHandlers with empty list clears all entries`` () =
-        withDb (fun db ->
-            let entries =
-                [ { UrlPattern = "/api/users"
-                    HttpMethod = "GET"
-                    HandlerSourceFile = "src/UsersHandler.fs"
-                    HandlerFunction = None } ]
-
-            db.RebuildRouteHandlers(entries)
-            db.RebuildRouteHandlers([])
-
-            let all = db.GetAllRouteHandlers()
-            test <@ all |> List.isEmpty @>
-
-            let files = db.GetAllHandlerSourceFiles()
-            test <@ files = Set.empty @>)
-
 module ``RebuildProjects with cache keys`` =
 
     [<Fact>]
@@ -834,18 +703,6 @@ module ``Empty database queries`` =
         withDb (fun db ->
             let reachable = db.GetReachableSymbols([ "nonexistent" ])
             test <@ reachable = Set.empty @>)
-
-    [<Fact>]
-    let ``GetAllRouteHandlers returns empty on fresh database`` () =
-        withDb (fun db ->
-            let handlers = db.GetAllRouteHandlers()
-            test <@ handlers |> List.isEmpty @>)
-
-    [<Fact>]
-    let ``GetAllHandlerSourceFiles returns empty on fresh database`` () =
-        withDb (fun db ->
-            let files = db.GetAllHandlerSourceFiles()
-            test <@ files = Set.empty @>)
 
 module ``stringToSymbolKind fallback`` =
 
@@ -1885,14 +1742,6 @@ module ``GetReachableSymbols`` =
             test <@ reachable |> Set.contains "Tests.testA" @>
             test <@ reachable |> Set.contains "Lib.funcB" @>
             test <@ reachable |> Set.contains "Domain.TypeC" @>)
-
-module ``GetUrlPatternsForSourceFile empty result`` =
-
-    [<Fact>]
-    let ``GetUrlPatternsForSourceFile returns empty for unknown file`` () =
-        withDb (fun db ->
-            let patterns = db.GetUrlPatternsForSourceFile "nonexistent.fs"
-            test <@ patterns |> List.isEmpty @>)
 
 module ``ExternRef kind round-trips through database`` =
 

@@ -25,6 +25,7 @@
     <Compile Include="ImpactAnalysisTests.fs" />
     <Compile Include="ProjectFanoutTests.fs" />
     <Compile Include="DeadCodeTests.fs" />
+    <Compile Include="EdgeEmissionTests.fs" />
     <Compile Include="AuditSinkTests.fs" />
     <Compile Include="PortsTests.fs" />
     <Compile Include="InMemoryStoreTests.fs" />

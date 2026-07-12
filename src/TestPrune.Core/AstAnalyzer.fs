@@ -81,16 +81,6 @@ type Dependency =
       Kind: DependencyKind
       Source: string }
 
-/// Maps an HTTP route (method + URL pattern) to its handler's source file and,
-/// when known, the specific handler function serving it. `HandlerFunction` is the
-/// short `Module.function` name (e.g. `Landing.index`); `None` means the function
-/// is unresolved/legacy, in which case route edges fall back to a file-level match.
-type RouteHandlerEntry =
-    { UrlPattern: string
-      HttpMethod: string
-      HandlerSourceFile: string
-      HandlerFunction: string option }
-
 /// Describes a test method's fully-qualified name, project, class, and method name.
 type TestMethodInfo =
     { SymbolFullName: string

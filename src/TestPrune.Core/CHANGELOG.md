@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- feat!: drop the route concept from the public API. HTTP routes are not a core
+  concept — core has no business knowing what a URL is — so `RouteHandlerEntry`
+  (`AstAnalyzer`), the `route_handlers` table and its five `Database` methods
+  (`RebuildRouteHandlers`, `GetAllRouteHandlers`, `GetRouteHandlersForSourceFile`,
+  `GetUrlPatternsForSourceFile`, `GetAllHandlerSourceFiles`), and `RouteStore` /
+  `toRouteStore` (`Ports`) are GONE. They now live in TestPrune.Falco, which owns
+  its own table. BREAKING: seed routes with `TestPrune.Falco.RouteStore(toPluginStore db)`
+  and construct `FalcoRouteExtension` with it.
+- feat!: `Ports.PluginStore` + `Ports.toPluginStore` — the generic seam that replaces
+  them. An extension whose facts are seeded from outside the AST gets a connection to
+  core's cache database (`Database.OpenConnection`) and owns its tables end to end.
+  Core owns the FILE: a `SchemaVersion` mismatch deletes and recreates it, dropping
+  plugin tables with it, so a plugin must issue `CREATE TABLE IF NOT EXISTS` before
+  every use and store only what it can re-derive. Taking a live `Database` is what
+  makes the seam safe — the version check has already run before a plugin sees the
+  connection.
+- feat!: `EdgeEmission` — the shared, tested edge-emission helper every extension
+  should build its edges with. `edgesTo` emits an edge from each dependent to the
+  specific symbol it depends on across the boundary: scoped to the symbol the fact
+  names (`NamedSymbol`), degraded to the whole candidate set when it names none
+  (`UnnamedSymbol`) or names one that no longer resolves — never a cross-product,
+  never empty. Both shipped bugs came from a plugin hand-rolling this step
+  (TestPrune.Falco 2.0.3 over-selected; TestPrune.SqlHydra under-selected). Scoping
+  to the direct symbol is safe because `QueryAffectedTests` is a recursive transitive
+  reverse-walk, which the docs now say out loud.
+- feat!: `Extensions.AffectedTest` moved to TestPrune.Falco — it only ever described
+  that extension's route-matched test classes; nothing in core consumed it.
+- feat!: SchemaVersion 7→8 (`route_handlers` left the core schema). A legacy DB is
+  recreated, which is free: plugin tables are re-created on demand by their owner and
+  Falco's routes are re-seeded every run.
+
 ## 5.0.0 - 2026-07-11
 
 - feat!: function-scoped route attribution. `RouteHandlerEntry` gains a

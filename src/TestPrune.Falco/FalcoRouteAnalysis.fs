@@ -1,11 +1,17 @@
 namespace TestPrune.Falco
 
-open System
 open System.IO
 open System.Text.RegularExpressions
 open TestPrune.AstAnalyzer
+open TestPrune.EdgeEmission
 open TestPrune.Ports
 open TestPrune.Extensions
+
+/// A test class selected by route matching, as returned by
+/// `FalcoRouteExtension.FindAffectedTestClasses`.
+type AffectedTest =
+    { TestProject: string
+      TestClass: string }
 
 /// Route-based integration test filtering.
 /// Scans integration test source files for URL patterns that map to changed handler files.
@@ -108,37 +114,26 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
                         s.FullName.Contains($".%s{testClass}.")
                         || s.FullName.EndsWith($".%s{testClass}"))
 
-                // Edges for one route served by a changed handler file. Tests are
-                // matched by THIS route's URL only (per-route regex), so an unrelated
-                // route in the same file contributes no edges.
+                // Edges for one route served by a changed handler file. Tests are matched by
+                // THIS route's URL only (per-route regex), so an unrelated route in the same
+                // file contributes no edges — and each route's tests are scoped to the handler
+                // function serving it, via core's shared edge-emission helper. `None` (a seed
+                // that cannot name the function) falls back to the whole file's symbols; so
+                // does a name that no longer resolves, since dropping the route's tests
+                // entirely would under-select.
                 let edgesForRoute (changedFile: string) (entry: RouteHandlerEntry) : Dependency list =
                     let regex = urlPatternToRegex entry.UrlPattern
                     let testClasses = findTestClassesInFiles testFiles [ regex ]
-
                     let routeTestMethods = testClasses |> List.collect testMethodsForClass
 
-                    // Handler symbols this route's tests link to. With a resolved
-                    // HandlerFunction, scope to just that function (matched by suffix,
-                    // since the seed carries the short `Module.function` while the store
-                    // holds the fully-qualified name); config-applied handlers carry the
-                    // bare function symbol (e.g. `WellKnown.robots`), which the same
-                    // suffix match resolves. With None, fall back to the whole file's
-                    // symbols (today's file-level cross-product) for that route.
-                    let handlerSymbols =
-                        let fileSymbols = symbolStore.GetSymbolsInFile changedFile
-
+                    let target =
                         match entry.HandlerFunction with
-                        | Some handlerFunction ->
-                            fileSymbols
-                            |> List.filter (fun s -> s.FullName.EndsWith($".%s{handlerFunction}"))
-                        | None -> fileSymbols
+                        | Some handlerFunction -> NamedSymbol handlerFunction
+                        | None -> UnnamedSymbol
 
-                    [ for handler in handlerSymbols do
-                          for testSym in routeTestMethods do
-                              { FromSymbol = testSym.FullName
-                                ToSymbol = handler.FullName
-                                Kind = SharedState
-                                Source = "falco" } ]
+                    let fileSymbols = symbolStore.GetSymbolsInFile changedFile
+
+                    edgesTo "falco" SharedState fileSymbols target routeTestMethods
 
                 changedHandlerFiles
                 |> List.collect (fun changedFile ->

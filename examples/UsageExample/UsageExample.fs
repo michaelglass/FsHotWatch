@@ -148,6 +148,7 @@ module ExtensionExample =
     open TestPrune.Ports
 
     // sync:extension:start
+    open TestPrune.EdgeEmission
     open TestPrune.Extensions
 
     type ExampleExtension() =
@@ -159,6 +160,22 @@ module ExtensionExample =
                 (changedFiles: string list)
                 (repoRoot: string)
                 : Dependency list =
-                // Map out-of-band coupling (routes, snapshots, config) to edges here.
-                []
+                // The out-of-band fact this extension knows and the AST cannot: the tests in
+                // `tests/ApiTests.fs` exercise the handler `Handlers.getUser`.
+                let dependents = symbolStore.GetSymbolsInFile "tests/ApiTests.fs"
+
+                changedFiles
+                |> List.collect (fun changedFile ->
+                    let candidates = symbolStore.GetSymbolsInFile changedFile
+
+                    // `edgesTo` scopes the edge to the symbol the fact names. A fact that
+                    // names none (`UnnamedSymbol`), or names one that no longer resolves,
+                    // falls back to every symbol in the changed file — coarse, but never
+                    // empty: a missing edge is a test that silently stops being re-run.
+                    // Never hand-roll a cross-product of all tests x all symbols.
+                    //
+                    // The DIRECT symbol is enough. Core's `QueryAffectedTests` is a recursive
+                    // TRANSITIVE reverse-walk of the graph, so `test -> getUser` already
+                    // re-selects the test when anything getUser calls changes.
+                    edgesTo "example" SharedState candidates (NamedSymbol "Handlers.getUser") dependents)
 // sync:extension:end
