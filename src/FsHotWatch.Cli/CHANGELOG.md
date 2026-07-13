@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- fix!: `check` surfaces a wedged plugin instead of hanging forever. When the
+  daemon's new hard verdict deadline fires, the CLI recognises it
+  (`IpcOutput.isVerdictWaitTimeout`) and fails with a diagnostic exit 2 naming
+  the stuck plugin, its elapsed time, and the recovery path (inspect
+  `logs/daemon.log`, `fshw stop`, or raise `FSHW_VERDICT_DEADLINE_SEC`).
+  Previously an unbounded wait meant `check` never returned at all.
+- fix: `fshw init` no longer hangs on a devenv/nix repo. `discoverProjects`
+  walked from the REPO ROOT with `SearchOption.AllDirectories`, which follows
+  `.devenv/profile` into the `/nix/store` symlink cycle. It now uses `SafeWalk`.
+  The injectable enumerator seam drops its vestigial `SearchOption` parameter
+  (recursion is now always safe AND always recursive) — a source-breaking change
+  for anyone calling `discoverProjects` with an injected enumerator.
+- chore: bundles the core + TestPrune fixes above (symlink-safe walks,
+  bounded verdict wait).
+
 ## 0.14.0-alpha.3 - 2026-07-11
 
 - chore(deps): bundle TestPrune.Falco 2.0.4 + TestPrune.Core 5.0.0 —

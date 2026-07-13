@@ -292,6 +292,22 @@ let rec isDaemonShutdownDuringWait (ex: exn) : bool =
             && msg.Contains("daemon shutting down", StringComparison.Ordinal))
         || (not (isNull ex.InnerException) && isDaemonShutdownDuringWait ex.InnerException)
 
+/// True when `ex` (walking its inner-exception chain) is the daemon's
+/// verdict-wait deadline breach — the `TimeoutException` raised by
+/// `waitForAllTerminalCore` once `WaitForComplete` overruns its hard bound
+/// (`FSHW_VERDICT_DEADLINE_SEC`, default 60 min). Matched by the stable
+/// "WaitForComplete timed out" message substring because the exception crosses
+/// the RPC boundary as a transport-level remote-invocation error, not as a
+/// typed `TimeoutException`. Distinct from `isDaemonShutdownDuringWait`: this
+/// is the daemon SAYING a plugin is wedged, not the daemon going away.
+let rec isVerdictWaitTimeout (ex: exn) : bool =
+    match ex with
+    | null -> false
+    | _ ->
+        (not (isNull ex.Message)
+         && ex.Message.Contains("WaitForComplete timed out", StringComparison.Ordinal))
+        || (not (isNull ex.InnerException) && isVerdictWaitTimeout ex.InnerException)
+
 /// Poll daemon status, render live progress, then decide a converge-then-verdict
 /// outcome and return its exit code (0 = complete & clean, 1 = failures found,
 /// 2 = completeness unachievable). `renderStatuses` is injected so callers choose
@@ -383,7 +399,18 @@ let pollAndRender
         | CheckVerdict.CheckOutcome.FailuresFound -> ()
 
         CheckVerdict.exitCode outcome
-    with ex when isDaemonShutdownDuringWait ex ->
+    with
+    | ex when isVerdictWaitTimeout ex ->
+        // The daemon's hard verdict deadline fired: a plugin overran the bound
+        // and is most likely wedged. The remote message names the plugin and
+        // its elapsed time (e.g. "still running: test-prune (1h 0m)"). Surface
+        // it verbatim plus the recovery path — bounded and legible, never the
+        // old heartbeat-forever silence.
+        UI.fail
+            $"Check aborted: %s{ex.Message}\nA plugin overran the verdict deadline and is likely wedged — inspect logs/daemon.log, then `fshw stop` to reclaim the daemon. If the suite legitimately needs longer, raise FSHW_VERDICT_DEADLINE_SEC."
+
+        2
+    | ex when isDaemonShutdownDuringWait ex ->
         UI.fail
             "Check aborted: the daemon shut down before producing a verdict — nothing was verified. Re-run `fshw check` (the next command auto-restarts the daemon)."
 

@@ -416,14 +416,13 @@ let internal resolveDependsOnFiles (repoRoot: string) (dependsOn: string list) :
             elif not (Directory.Exists rootFull) then
                 []
             else
-                let allFiles =
-                    try
-                        Directory.EnumerateFiles(rootFull, "*", SearchOption.AllDirectories)
-                    with
-                    | :? IOException
-                    | :? UnauthorizedAccessException -> Seq.empty
-
-                allFiles
+                // Repo-root-rooted walk of EVERY file — the other live instance
+                // of the 2026-07-13 wedge class. `SearchOption.AllDirectories`
+                // here followed `.devenv/profile` into the /nix/store symlink
+                // cycle just as the freshness scan did. SafeWalk owns the
+                // recursion (no symlinked-dir descent, depth-capped), and its
+                // per-subtree IO errors are already swallowed internally.
+                SafeWalk.enumerateFilePaths SafeWalk.ToolingExcludedDirs "*" rootFull
                 |> Seq.filter (fun abs ->
                     let rel = toRel abs
                     globPatterns |> List.exists (fun rx -> rx.IsMatch(rel)))
@@ -826,20 +825,9 @@ let private freshnessSourceExtensions = set [ ".fs"; ".fsi"; ".fsx"; ".cs" ]
 
 /// Directory names never walked when computing the newest source mtime: build
 /// output (where a regenerated obj/ file could masquerade as a newer "source"),
-/// VCS, and tooling state.
-let private freshnessExcludedDirs =
-    set
-        [ "bin"
-          "obj"
-          ".git"
-          ".jj"
-          ".hg"
-          ".svn"
-          ".fshw"
-          ".vs"
-          ".idea"
-          "node_modules"
-          ".workspaces" ]
+/// VCS, and tooling state — `SafeWalk.SourceExcludedDirs` is that set, shared
+/// with every other repo-scale walk so the exclusions cannot drift per-caller.
+let private freshnessExcludedDirs = SafeWalk.SourceExcludedDirs
 
 /// Newest `LastWriteTimeUtc` across the on-disk source files under `repoRoot`
 /// (recursive; build-output and VCS/tooling dirs skipped). `None` when no source
@@ -849,41 +837,35 @@ let private freshnessExcludedDirs =
 /// freshness gate cannot reach `IProjectGraphReader`. Scanning the whole repo is
 /// the conservative superset of any single test project's dependency-closure
 /// sources: an edit ANYWHERE that a (whole-solution) build hasn't yet re-emitted
-/// leaves the test artifact older than that edit. Per-subtree IO errors are
-/// swallowed (best-effort) so a transient hiccup can't crash the gate.
+/// leaves the test artifact older than that edit.
+///
+/// Walks via `SafeWalk.enumerateFiles`: never follows symlinked directories,
+/// depth-capped, per-subtree IO errors swallowed. The hand-rolled predecessor
+/// followed dir symlinks and wedged FOREVER on a /nix/store self-loop cycle
+/// reachable through `.devenv/profile` (2026-07-13 RCA) — every `fshw check`
+/// hung silently at "Waiting for plugins: test-prune". Logs one line naming
+/// the scan + duration so a future pathological walk is diagnosable from the
+/// daemon log instead of being an unattributed silence.
 let internal newestSourceMtime (repoRoot: string) : DateTime option =
-    let rec walk (dir: string) : DateTime list =
-        let filesHere =
-            try
-                Directory.GetFiles dir
-                |> Array.choose (fun f ->
-                    if freshnessSourceExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()) then
-                        Some(File.GetLastWriteTimeUtc f)
-                    else
-                        None)
-                |> Array.toList
-            with
-            | :? IOException
-            | :? UnauthorizedAccessException -> []
+    let sw = Stopwatch.StartNew()
 
-        let fromSubdirs =
-            try
-                Directory.GetDirectories dir
-                |> Array.filter (fun d -> not (freshnessExcludedDirs.Contains(Path.GetFileName d)))
-                |> Array.toList
-                |> List.collect walk
-            with
-            | :? IOException
-            | :? UnauthorizedAccessException -> []
+    let newest =
+        SafeWalk.enumerateFiles freshnessExcludedDirs repoRoot
+        |> Seq.choose (fun f ->
+            if freshnessSourceExtensions.Contains(f.Extension.ToLowerInvariant()) then
+                Some f.LastWriteTimeUtc
+            else
+                None)
+        |> Seq.fold
+            (fun acc t ->
+                match acc with
+                | Some cur when cur >= t -> acc
+                | _ -> Some t)
+            None
 
-        filesHere @ fromSubdirs
+    Logging.info "test-prune" $"freshness scan of %s{repoRoot}: newest source mtime in %d{sw.ElapsedMilliseconds}ms"
 
-    if not (Directory.Exists repoRoot) then
-        None
-    else
-        match walk repoRoot with
-        | [] -> None
-        | times -> Some(List.max times)
+    newest
 
 /// Freshness complement to `tryApphostPresent`: `true` when the test project's
 /// canonical `<assemblyName>.dll` (the managed assembly `dotnet run --no-build`
@@ -906,7 +888,14 @@ let internal newestSourceMtime (repoRoot: string) : DateTime option =
 /// retry-friendly cold-start path, since a build in flight may still land the
 /// apphost; a stale one won't refresh without a real build), or there are no
 /// sources to be stale against.
-let internal apphostStale (args: string) (repoRoot: string) : bool =
+///
+/// `newestSource` is passed in LAZILY and shared across every config of a run:
+/// the repo-wide scan behind it is the expensive part, and the original
+/// `match newestSourceMtime repoRoot, dllMtimes with` shape evaluated it
+/// eagerly per-config — N configs paid N full-repo walks even when no DLL
+/// existed to compare against. Now the walk runs at most ONCE per test run,
+/// and not at all when every config short-circuits.
+let internal apphostStale (args: string) (repoRoot: string) (newestSource: Lazy<DateTime option>) : bool =
     match deriveProjectBin args repoRoot with
     | None -> false
     | Some(_, assemblyName, binDir) ->
@@ -921,12 +910,15 @@ let internal apphostStale (args: string) (repoRoot: string) : bool =
                     None)
             |> Array.toList
 
-        match newestSourceMtime repoRoot, dllMtimes with
-        // The NEWEST built DLL still predates the newest source ⇒ even the
-        // most recent build ran before the last edit ⇒ stale. Using the max
-        // (most-recent) DLL mtime is conservative against false-stale.
-        | Some srcMtime, (_ :: _ as mtimes) -> List.max mtimes < srcMtime
-        | _ -> false
+        match dllMtimes with
+        | [] -> false
+        | mtimes ->
+            match newestSource.Value with
+            // The NEWEST built DLL still predates the newest source ⇒ even the
+            // most recent build ran before the last edit ⇒ stale. Using the max
+            // (most-recent) DLL mtime is conservative against false-stale.
+            | Some srcMtime -> List.max mtimes < srcMtime
+            | None -> false
 
 /// Detect whether a test runner emits a CTRF report we can parse. The
 /// `--report-ctrf` family is provided by xUnit.v3's runner (NOT the MTP core),
@@ -1173,6 +1165,12 @@ let private executeTests
 
         let groups = configs |> List.groupBy (fun c -> c.Group)
 
+        // Repo-wide newest-source scan for the freshness gate, computed at most
+        // ONCE per run and shared across every config (Lazy is thread-safe by
+        // default, so parallel groups race to a single evaluation). Previously
+        // each config re-walked the whole repo.
+        let newestSource = lazy (newestSourceMtime repoRoot)
+
         // Cumulative results built up as groups complete. Mutable under a lock
         // so concurrent group completions see a consistent prefix-chain. Per-
         // group deltas are emitted via TestProgress; the final cumulative is
@@ -1226,7 +1224,7 @@ let private executeTests
                             // its coverage contribution is "nothing new", so mark as filtered.
                             // Elapsed=Zero since we didn't actually run the test runner.
                             results <- (config.Project, TestsPassed("", true, TimeSpan.Zero)) :: results
-                        elif apphostStale config.Args repoRoot then
+                        elif apphostStale config.Args repoRoot newestSource then
                             // FRESHNESS GATE (mirrors BuildPlugin.verifyArtifactsFresh; ADR-008).
                             // The test project's compiled artifact PREDATES the newest source, so
                             // `dotnet run --no-build` would execute STALE bits and report a verdict

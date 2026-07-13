@@ -191,11 +191,15 @@ module FileWatcher =
             if dirs.IsEmpty then
                 { Disposables = slnWatcher :: extraWatchers }
             else
+                // SafeWalk, not `SearchOption.AllDirectories`: this fires on every
+                // coalesced FSEvents batch, so a symlinked dir under a watch root
+                // would drag the cycle blow-up (2026-07-13 wedge) into the hot
+                // watch path.
                 let onCoalesced (dirPath: string) =
                     try
                         if Directory.Exists(dirPath) then
                             for pattern in [| "*.fs"; "*.fsx"; "*.fsproj"; "*.props"; "project.assets.json" |] do
-                                for file in Directory.EnumerateFiles(dirPath, pattern, SearchOption.AllDirectories) do
+                                for file in SafeWalk.enumerateFilePaths SafeWalk.ToolingExcludedDirs pattern dirPath do
                                     if isRelevantFile file then
                                         onChange (classifyChange file)
                     with

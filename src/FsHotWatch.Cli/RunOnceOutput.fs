@@ -129,13 +129,16 @@ let formatErrors (errors: Map<string, (string * ErrorEntry) list>) : string =
 let failIfNoProjects (repoRoot: string) (excludePatterns: string list) : int option =
     let isExcluded = FsHotWatch.PathFilter.isExcludedPath repoRoot excludePatterns
 
+    // SafeWalk (not `SearchOption.AllDirectories`): symlink-safe + depth-capped,
+    // and LAZY — `Seq.exists` stops at the first project instead of materialising
+    // every .fsproj in the repo just to answer "is there at least one?".
     let hasProject =
         [ "src"; "tests" ]
         |> List.map (fun d -> System.IO.Path.Combine(repoRoot, d))
         |> List.filter System.IO.Directory.Exists
         |> List.exists (fun dir ->
-            System.IO.Directory.GetFiles(dir, "*.fsproj", System.IO.SearchOption.AllDirectories)
-            |> Array.exists (fun f -> not (isExcluded f)))
+            FsHotWatch.SafeWalk.enumerateFilePaths FsHotWatch.SafeWalk.ToolingExcludedDirs "*.fsproj" dir
+            |> Seq.exists (fun f -> not (isExcluded f)))
 
     if hasProject then
         None

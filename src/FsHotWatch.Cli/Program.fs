@@ -420,7 +420,11 @@ let private ensureAndQueryErrors
                     // closes the false-green hole — `WaitForScan` alone only waits
                     // for the SCAN generation to be signalled, which can race ahead
                     // of the test-prune run launched by the build's BuildCompleted.
-                    // `-1` = no client-imposed timeout (the daemon bounds the wait).
+                    // `-1` = no client-imposed timeout; the daemon bounds the
+                    // wait with its hard verdict deadline (`resolveVerdictDeadline`,
+                    // FSHW_VERDICT_DEADLINE_SEC, default 60 min) so this can never
+                    // block forever — a breach surfaces via `isVerdictWaitTimeout`
+                    // as a diagnostic exit 2 naming the wedged plugin.
                     (fun () -> ipc.WaitForComplete pipeName -1 |> Async.RunSynchronously)
                     (fun () -> ipc.GetStatus pipeName |> Async.RunSynchronously)
                     (fun () -> ipc.GetDiagnostics pipeName pluginFilter |> Async.RunSynchronously)

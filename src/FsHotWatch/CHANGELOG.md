@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- fix!: **the daemon can no longer wait forever.** A client-unbounded
+  `WaitForComplete` (what `fshw check` issues) used to resolve to
+  `TimeSpan.MaxValue` — a literally infinite wait. When a plugin wedged, the
+  daemon heartbeat-logged `in-flight WaitForComplete running Ns` indefinitely
+  and the gate never returned (observed: 8h36m, silent, no error, no timeout).
+  The daemon now always applies a hard deadline (`Ipc.resolveVerdictDeadline`,
+  default 60 min, override `FSHW_VERDICT_DEADLINE_SEC`; there is deliberately no
+  "infinite" setting). On breach it raises a `TimeoutException` NAMING the
+  still-running plugin and its elapsed time, which the CLI renders as a
+  diagnostic exit 2 plus the recovery path, instead of hanging.
+- fix: `SafeWalk` — a new symlink-safe, depth-bounded directory walker, now THE
+  walker for every repo-scale enumeration (`Discovery`, `Watcher`, plus the CLI
+  and TestPrune plugin walks). It never descends a symlinked directory, so
+  termination is structural. Both `Directory.GetDirectories`-plus-recursion and
+  `SearchOption.AllDirectories` follow directory symlinks into cycles: on a
+  devenv/nix repo, `.devenv/profile` links into `/nix/store`, whose reachable
+  tree has TWO self-loop symlinks in one directory
+  (`ncurses-6.6-dev/include/{ncurses,ncursesw} -> .`). That branches — every
+  level doubles the path count — so within the kernel's ~32-symlink ELOOP
+  envelope there are ~2^32 paths to enumerate (measured with
+  `AllDirectories`: 800k+ files in 52s, still climbing). This is what wedged
+  the gate.
+
 ## 0.10.0-alpha.2 - 2026-07-08
 
 - fix: a compile-item-only `.fsproj` edit no longer wedges the deps-freshness

@@ -41,6 +41,28 @@ let isUnknownCommandReply (reply: string) : bool =
     not (isNull reply)
     && reply.StartsWith(UnknownCommandSentinelPrefix, StringComparison.Ordinal)
 
+/// Default hard bound on a `WaitForComplete` verdict wait when the client
+/// imposes no timeout of its own. Deliberately generous — a legitimate cold
+/// full-suite check (build + every test project) finishes well inside an hour,
+/// so this only ever trips on a genuinely-wedged plugin. The alternative was
+/// what the 2026-07-13 test-prune wedge actually did: heartbeat forever, 8h36m
+/// of silent nothing. Bounded-and-legible beats unbounded-and-silent.
+let DefaultVerdictDeadline = TimeSpan.FromMinutes 60.0
+
+/// Resolve the verdict-wait deadline from an optional override string (the
+/// `FSHW_VERDICT_DEADLINE_SEC` env value). A positive integer count of seconds
+/// wins; anything else (absent, unparseable, non-positive) falls back to
+/// `DefaultVerdictDeadline` — there is intentionally NO "infinite" setting.
+/// Pure so the precedence is unit-testable without touching process env.
+/// Mirrors `ProcessHelper.resolveLaunchDeadline`.
+let resolveVerdictDeadline (overrideSec: string option) : TimeSpan =
+    match overrideSec with
+    | Some s ->
+        match Int32.TryParse(s: string) with
+        | true, n when n > 0 -> TimeSpan.FromSeconds(float n)
+        | _ -> DefaultVerdictDeadline
+    | None -> DefaultVerdictDeadline
+
 /// Serialize PluginStatus as a tagged JSON variant so consumers can round-trip
 /// the discriminated union without string parsing.
 let private statusPayload (status: PluginStatus) : obj =
@@ -310,7 +332,12 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
             })
 
     /// Wait for all plugins to reach a terminal state with 1s stability confirmation.
-    /// timeoutMs <= 0 means no client-imposed timeout.
+    /// timeoutMs <= 0 means no CLIENT-imposed timeout — the daemon then applies
+    /// its own hard bound (`resolveVerdictDeadline`), so the wait is NEVER
+    /// unbounded. A wedged plugin previously heartbeat-looped here forever (the
+    /// 2026-07-13 test-prune symlink-cycle wedge burned 8h36m, fully silent);
+    /// now it surfaces as a TimeoutException naming the still-running plugin,
+    /// which the CLI renders as a diagnostic non-green exit.
     member this.WaitForComplete(timeoutMs: int) : Task<string> =
         trackedTask "WaitForComplete" (fun () ->
             task {
@@ -329,7 +356,9 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
 
                 let timeout =
                     if timeoutMs <= 0 then
-                        TimeSpan.MaxValue
+                        Environment.GetEnvironmentVariable "FSHW_VERDICT_DEADLINE_SEC"
+                        |> Option.ofObj
+                        |> resolveVerdictDeadline
                     else
                         TimeSpan.FromMilliseconds(float timeoutMs)
 

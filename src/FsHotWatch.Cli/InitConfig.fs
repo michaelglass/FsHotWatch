@@ -3,6 +3,7 @@ module FsHotWatch.Cli.InitConfig
 open System.IO
 open System.Text
 open System.Text.Json
+open FsHotWatch
 open FsHotWatch.Cli.DaemonConfig
 
 /// Classification of a discovered .fsproj file.
@@ -27,17 +28,26 @@ let classifyProject (relativePath: string) : ProjectKind =
 
 /// Discover all .fsproj files under a directory, returning paths relative to repoRoot.
 /// Excludes bin/, obj/, and other artifact directories.
-/// An optional enumerateFiles function can be injected for testing (permission errors, etc.).
-let discoverProjects
-    (repoRoot: string)
-    (enumerateFiles: (string -> string -> SearchOption -> seq<string>) option)
-    : string list =
+/// An optional enumerateFiles function (dir -> pattern -> paths) can be injected
+/// for testing (permission errors, etc.).
+///
+/// Rooted at the REPO ROOT, so it is one hop from `.devenv/profile` — this was
+/// the second live instance of the 2026-07-13 walk wedge (`fshw init` on a
+/// devenv repo would hang forever). `SafeWalk` owns the recursion: no
+/// symlinked-dir descent, depth-capped, tooling dirs excluded by name. The seam
+/// no longer carries a `SearchOption` — recursion is now always safe AND always
+/// recursive, so there is nothing left to choose.
+let discoverProjects (repoRoot: string) (enumerateFiles: (string -> string -> seq<string>) option) : string list =
     let enumerate =
-        defaultArg enumerateFiles (fun dir pattern opt -> Directory.EnumerateFiles(dir, pattern, opt))
+        defaultArg enumerateFiles (fun dir pattern ->
+            SafeWalk.enumerateFilePaths SafeWalk.SourceExcludedDirs pattern dir)
 
     try
-        enumerate repoRoot "*.fsproj" SearchOption.AllDirectories
+        enumerate repoRoot "*.fsproj"
         |> Seq.map (fun fullPath -> Path.GetRelativePath(repoRoot, fullPath))
+        // Redundant for the SafeWalk default (SourceExcludedDirs already skips
+        // bin/obj) but retained for INJECTED enumerators, which supply arbitrary
+        // paths and must still be filtered.
         |> Seq.filter (fun p ->
             let n = p.Replace('\\', '/')
             not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
