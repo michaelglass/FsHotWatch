@@ -1859,6 +1859,41 @@ let create
                     "test-prune"
                     $"failed to persist pending-verification queue after commit: %s{ex.Message}; in-memory queue still updated"
 
+    /// The test projects this daemon can actually RUN — i.e. the ones in
+    /// `testConfigs`. Empty when the plugin is analysis-only.
+    ///
+    /// AUTOMATION-99. The symbol DB indexes test methods from EVERY test project it
+    /// analyzed, which is not the same set as the projects fshw is configured to run.
+    /// A symbol covered ONLY by an unconfigured project (e.g. FsHotWatch's own
+    /// IntegrationTests, which the daemon never runs) can never be proven green: its
+    /// covering project never executes, so it never appears in a run's results, so the
+    /// symbol never commits — and it sits in the pending queue FOREVER, re-selecting
+    /// tests that pass while the verdict stays red. That is a permanently stuck gate.
+    ///
+    /// Observed live: two full suites ran and PASSED back-to-back, yet the queue kept
+    /// 2 symbols and `check` exited 1 — because those symbols were covered by
+    /// FsHotWatch.IntegrationTests, which is not in `tests.projects`.
+    ///
+    /// So "covered" must mean "covered by a test we can actually run". A symbol whose
+    /// only covering tests are unrunnable is, for this daemon, indistinguishable from a
+    /// symbol with no covering test at all — and is dropped by the same rule.
+    let runnableProjects: Set<string> =
+        match testConfigs with
+        | Some configs -> configs |> List.map (fun c -> c.Project) |> Set.ofList
+        | None -> Set.empty
+
+    /// Tests covering `symbol` that this daemon can actually run. Empty ⇒ nothing
+    /// runnable can ever verify it. When analysis-only (no test configs at all), the
+    /// runnable filter is not applied — that mode produces no test verdict, so the old
+    /// "any covering test" semantics are preserved.
+    let runnableCoveringTests (symbol: string) =
+        let covering = db.QueryAffectedTests [ symbol ]
+
+        if Set.isEmpty runnableProjects then
+            covering
+        else
+            covering |> List.filter (fun t -> Set.contains t.TestProject runnableProjects)
+
     // Flush pending analysis to DB and query affected tests from changed symbols.
     // Extensions (if any) contribute dependency edges via AnalyzeEdges, written
     // to the DB before QueryAffectedTests so they participate in impact traversal.
@@ -1914,27 +1949,39 @@ let create
             if symbols.IsEmpty then
                 []
             else
-                let affected = db.QueryAffectedTests(symbols)
+                // Scoped to projects this daemon actually runs. Selecting tests in an
+                // unconfigured project would put classes in the run map that never
+                // execute — and make `allChangesUncovered` (and so the zero-affected
+                // skip) disagree with the commit rule. See `runnableCoveringTests`.
+                let affected =
+                    db.QueryAffectedTests(symbols)
+                    |> fun ts ->
+                        if Set.isEmpty runnableProjects then
+                            ts
+                        else
+                            ts |> List.filter (fun t -> Set.contains t.TestProject runnableProjects)
 
                 Logging.info "test-prune" $"QueryAffectedTests(%A{symbols}): %d{affected.Length} affected tests"
 
                 affected
 
-        // Drop queued symbols that have NO covering test from the durable queue
-        // immediately: there is nothing for them to wait on, and retaining them
+        // Drop queued symbols that have no RUNNABLE covering test from the durable
+        // queue immediately: there is nothing for them to wait on, and retaining them
         // would wedge the queue forever (every future run would re-select zero
-        // tests yet the queue would never empty → permanent non-green). A symbol
-        // is "covered" iff QueryAffectedTests([symbol]) returns at least one test.
+        // runnable tests yet the queue would never empty → permanent non-green). A
+        // symbol is "covered" iff it has at least one covering test IN A PROJECT THIS
+        // DAEMON RUNS (see `runnableCoveringTests` — AUTOMATION-99: a symbol covered
+        // only by an unconfigured project is unverifiable here and wedged the gate).
         // Only ever REMOVES from the queue, so it cannot under-test.
         let uncovered =
             symbols
-            |> List.filter (fun s -> (db.QueryAffectedTests [ s ]).IsEmpty)
+            |> List.filter (fun s -> (runnableCoveringTests s).IsEmpty)
             |> Set.ofList
 
         if not (Set.isEmpty uncovered) then
             Logging.info
                 "test-prune"
-                $"Dropping %d{Set.count uncovered} queued symbol(s) with no covering test from pending-verification queue"
+                $"Dropping %d{Set.count uncovered} queued symbol(s) with no runnable covering test from pending-verification queue"
 
             commitPending uncovered
 
@@ -2057,12 +2104,16 @@ let create
                 // throw here must produce the Aborted lifecycle below (an honest,
                 // re-runnable "tests did not run" verdict) rather than escaping to
                 // the framework's `runOne`, which would only log-and-strand the run.
+                // Only RUNNABLE covering projects gate a symbol's commit — the same
+                // rule `flushAndQueryAffected` uses to drop unverifiable symbols, so
+                // the two cannot disagree. Gating on a project this daemon never runs
+                // would block the commit forever (AUTOMATION-99's permanent red).
                 let coveringProjectsBySymbol =
                     launchedSymbols
                     |> Set.toList
                     |> List.map (fun s ->
                         let projs =
-                            db.QueryAffectedTests [ s ] |> List.map (fun t -> t.TestProject) |> Set.ofList
+                            runnableCoveringTests s |> List.map (fun t -> t.TestProject) |> Set.ofList
 
                         s, projs)
                     |> Map.ofList
@@ -2707,7 +2758,79 @@ let create
                         return state
                     | Ok flushedState ->
                         Volatile.Write(&changedSymbolsRef, flushedState.ChangedSymbols)
-                        return flushedState
+
+                        // ── AUTOMATION-95/99: DRAIN THE PENDING QUEUE ────────────────
+                        // The cohort seal is the first moment the symbols this scan
+                        // discovered are known. Before this, `BuildCompleted` was the
+                        // ONLY trigger that ran tests — and on a scan it fires BEFORE
+                        // the FCS pass (Daemon.fs `performScan` awaits the build, then
+                        // dispatches FCS tiers), so scan-discovered symbols could never
+                        // be verified by the run that BuildCompleted launched. They
+                        // silently accumulated in the queue while `check` reported the
+                        // plugin's stale terminal status — green (95) or red (99).
+                        //
+                        // Now: if symbols remain unverified here, we RUN the tests that
+                        // verify them. Convergence, not reporting. A verdict is only
+                        // ever earned by a run.
+                        if Set.isEmpty pendingQueueRef then
+                            return flushedState
+                        else
+                            match testConfigs with
+                            | Some configs when not configs.IsEmpty ->
+                                if ctx.IsRunning "tests" then
+                                    // A run is in flight but was launched against an
+                                    // older queue snapshot, so it cannot clear these
+                                    // symbols. Queue the rerun — TestsFinished drains it.
+                                    Logging.info
+                                        "test-prune"
+                                        $"BatchChecked: %d{Set.count pendingQueueRef} symbol(s) still awaiting verification while a run is in flight — queueing re-run"
+
+                                    return
+                                        { flushedState with
+                                            PendingRerun = true }
+                                else
+                                    // Drain UNCONDITIONALLY. An earlier revision of this fix
+                                    // tried to be clever and defer to "the BuildCompleted
+                                    // that is surely coming" whenever a build looked to be in
+                                    // flight. That is unsound: several `FileChanged` shapes
+                                    // never produce a BuildCompleted at all (BuildPlugin
+                                    // ignores `SolutionChanged`, and DROPS a FileChanged that
+                                    // arrives while a build is already running), so the
+                                    // deferral could wait forever. Caught by CI on this very
+                                    // branch: the gate deferred 3 symbols to a BuildCompleted
+                                    // that never came, ran ZERO tests, and still exited 0 —
+                                    // the exact false green this fix exists to kill. Never
+                                    // predict a future event as a reason to skip work you
+                                    // already owe.
+                                    //
+                                    // Draining here is safe even on a half-built tree: the
+                                    // apphost-freshness gate in `executeTests` already refuses
+                                    // to run `--no-build` against a compiled artifact older
+                                    // than its sources. It defers that project as an honest
+                                    // "waiting on build" WITHOUT spawning a test process, so
+                                    // the stale case costs a status flip, not a run — and the
+                                    // BuildCompleted that follows re-runs it for real.
+                                    Logging.info
+                                        "test-prune"
+                                        $"BatchChecked: %d{Set.count pendingQueueRef} symbol(s) awaiting verification — draining now"
+
+                                    ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
+                                    let hasCachedResults = flushedState.LastResults.IsSome
+                                    let forceRunProjects = flushedState.PendingForceRunProjects
+
+                                    let flushedState =
+                                        { flushedState with
+                                            PendingForceRunProjects = Set.empty }
+
+                                    ctx.RunExclusive
+                                        "tests"
+                                        (runTestsWithImpact ctx configs flushedState hasCachedResults forceRunProjects)
+
+                                    return flushedState
+                            | _ ->
+                                // Analysis-only (no test configs): nothing can verify
+                                // these symbols, so there is nothing to drain.
+                                return flushedState
 
                 | PluginEvent.BuildCompleted buildResult ->
                     match buildResult with
@@ -3234,7 +3357,28 @@ let create
                 )
 
             match event with
-            | BuildCompleted BuildSucceeded -> Some(buildCompletedKey ())
+            | BuildCompleted BuildSucceeded ->
+                // AUTOMATION-95/99. A cache HIT makes the framework replay the cached
+                // terminal status and SKIP the handler entirely (PluginFramework
+                // `tryReplayCache`) — but this handler is a drain trigger for the
+                // pending-verification queue. Replaying a cached verdict while symbols
+                // are still unverified is precisely the "verdict nobody earned" bug:
+                // observed live as `[task-cache] plugin=test-prune hit=true` on a
+                // BuildCompleted, no test run, and `check` green with symbols pending.
+                //
+                // The key already folds in a queue hash, but that is read at DISPATCH
+                // time — and on a scan the queue is mutated afterwards, by the FCS pass
+                // that runs after the build. So the key cannot be trusted to notice
+                // outstanding work. Refuse to participate in the cache at all while the
+                // queue is non-empty: `None` means no replay AND no write, so the
+                // handler always runs and always gets its chance to drain.
+                //
+                // The empty-queue green fast-path (the case the cache exists for) is
+                // untouched.
+                if Set.isEmpty pendingQueueRef then
+                    Some(buildCompletedKey ())
+                else
+                    None
             | Custom(TestsFinished(_, completed, _)) ->
                 // AUTOMATION-5 (2026-06-07): a FAILED test outcome must never be
                 // served from cache as a current verdict. Unlike BuildPlugin —

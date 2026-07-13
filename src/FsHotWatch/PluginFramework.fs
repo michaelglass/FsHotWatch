@@ -334,6 +334,16 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
             | true, running -> running
             | _ -> false)
 
+    /// True when this plugin holds ANY exclusive run slot — i.e. real work
+    /// (a test run, a build) is executing in the background right now, even
+    /// though the mailbox is idle and the handler that launched it has already
+    /// returned. Used to stop a cache replay from reporting a stale terminal
+    /// status over a live `Running` (AUTOMATION-95/99). Keyless because the
+    /// framework does not know a plugin's slot names — any busy slot means "not
+    /// at rest".
+    let anyRunSlotBusy () =
+        lock runSlotsLock (fun () -> runSlots.Values |> Seq.exists id)
+
     // Standard ctx — used both inside the agent loop (via Update) and from
     // IPC command handlers (via the wrapper in `services.RegisterCommand`).
     let ctx: PluginCtx<'Msg> =
@@ -438,7 +448,32 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                     | Failed(err, _) -> Failed(err, nowAt)
                                     | s -> s
 
-                                services.ReportStatus handler.Name replayStatus
+                                // AUTOMATION-95/99: a cached TERMINAL status must never
+                                // claim the plugin is at rest while it is mid-exclusive-run.
+                                //
+                                // Field evidence: on a warm scan every `FileChecked` is a
+                                // cache hit, and each hit re-reported the cached `Completed`
+                                // — stomping the `Running` that the in-flight test run had
+                                // just set. The host's `allPluginsAtRest` then saw "no plugin
+                                // Running" and `WaitForComplete` resolved WHILE the test run
+                                // was still executing (observed: run launched 11:30:17, still
+                                // running at 11:30:34, yet the daemon logged "all plugins
+                                // already terminal" and `check` exited 0). That is a verdict
+                                // nobody earned — the exact false-green of AUTOMATION-95, and
+                                // the "check ends before the queued re-run drains" step of
+                                // AUTOMATION-99.
+                                //
+                                // The live run owns this plugin's status: it set `Running` and
+                                // it will report the real terminal status when it finishes.
+                                // A replay of stale per-file work has nothing to say about it.
+                                // Errors and emitted events still replay — only the status
+                                // claim is suppressed.
+                                if anyRunSlotBusy () then
+                                    FsHotWatch.Logging.debug
+                                        (PluginName.value handler.Name)
+                                        "cache replay: suppressing cached terminal status — an exclusive run is in flight"
+                                else
+                                    services.ReportStatus handler.Name replayStatus
 
                                 // Replay emitted events. Cached test-lifecycle events carry the
                                 // ORIGINAL run's RunId, which would cause RunId-based dedup (e.g.
@@ -644,7 +679,15 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
     { Name = handler.Name
       Dispatch = dispatch
       Teardown = handler.Teardown
-      IsBusy = fun () -> System.Threading.Volatile.Read(&inflightCount.contents) > 0 }
+      // "Busy" must mean "this plugin has work in flight", full stop. It used to
+      // mean only "has events queued in its mailbox" — which is blind to the
+      // background work a handler launches via `RunExclusive` (a test run) and then
+      // returns from. So the host could conclude a plugin was at rest while its test
+      // run was still executing, and `WaitForComplete` would hand `check` a verdict
+      // the run had not yet produced (AUTOMATION-95/99). An exclusive run slot is
+      // released in a `finally`, so this stays bounded — and the verdict deadline
+      // (Ipc.resolveVerdictDeadline) still bounds a genuinely wedged run.
+      IsBusy = fun () -> System.Threading.Volatile.Read(&inflightCount.contents) > 0 || anyRunSlotBusy () }
 
 /// Ergonomic helpers over PluginCtx that every plugin tends to want.
 module PluginCtxHelpers =

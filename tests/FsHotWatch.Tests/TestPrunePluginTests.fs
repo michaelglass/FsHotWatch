@@ -5780,3 +5780,189 @@ let ``detectCtrfCapable: Some false when the project does not reference xunit`` 
 let ``detectCtrfCapable: None when no project can be derived from the args`` () =
     // A --project-less / non-file command → fall back to the dotnet heuristic.
     test <@ detectCtrfCapable "test --no-build" "/tmp" = None @>
+
+// =============================================================================
+// AUTOMATION-95 / AUTOMATION-99 — the gate must CONVERGE, never rest on a
+// verdict nobody earned.
+//
+// One defect, two polarities. The pending-verification queue used to have
+// exactly ONE drain trigger: the `BuildCompleted` handler. But on a scan the
+// daemon runs the FCS pass only AFTER the build goes terminal (Daemon.fs
+// `performScan` awaits BuildPlugin before dispatching the FCS tiers), so every
+// symbol the SCAN discovers lands in the queue strictly AFTER the only event
+// that could have run its tests. `BatchChecked` flushed those symbols, even
+// computed their affected tests — and then returned without running anything.
+// The queue was never drained, and `check` reported whatever terminal status
+// test-prune happened to be holding:
+//
+//   * a stale `Completed` → FALSE GREEN with symbols pending      (AUTOMATION-95)
+//   * a stale `Failed`    → PERMANENTLY STUCK RED, work never runs (AUTOMATION-99)
+//
+// Reproduced live before the fix: `check` returned in ONE SECOND, exit 0, with
+// zero daemon activity, while the symbol it had just discovered sat unverified
+// in the queue and the plugin's own log said "24 affected tests".
+//
+// The contract these tests pin down: whoever DISCOVERS unverified symbols is
+// responsible for RUNNING them. Green is only ever earned by a run.
+// =============================================================================
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-95/99: BatchChecked drains a pending queue instead of resting on a stale verdict`` () =
+    // The cold-scan stranding, in miniature. Symbols discovered by the scan land
+    // in the queue AFTER BuildCompleted has already fired, so BuildCompleted can
+    // never have run them: BatchChecked (the cohort seal — the first moment the
+    // scan's symbols are known) is the only event left that can. It must DRAIN.
+    //
+    // Pre-fix: BatchChecked flushed and returned. No run, queue intact, and the
+    // plugin's last status stood as the verdict — the exact false-green/stuck-red.
+    withTempDir "tp-batch-drain" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.foo" "Lib.fs" "P1" "P1Tests" "fooTest"
+
+        // A symbol awaiting verification (as a scan's FileChecked pass would leave
+        // it), with NO BuildCompleted to follow.
+        FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.foo" ])
+
+        let ranMarker = Path.Combine(tmpDir, "p1-ran")
+
+        let configs =
+            [ { Project = "P1"
+                Command = "sh"
+                Args = $"-c \"touch {ranMarker}; exit 0\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        // BatchChecked ONLY — deliberately no BuildCompleted, which is the whole
+        // point: on a scan it has already come and gone before these symbols existed.
+        let await = beginAwaitNextTerminal host "test-prune"
+        host.EmitBatchChecked(fakeBatchChecked [ "Lib.fs" ])
+        await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+
+        // It RAN the covering tests rather than reporting on them.
+        test <@ File.Exists ranMarker @>
+
+        // …and only then went green — a verdict it earned.
+        let queue = PendingQueueHelpers.loadQueue tmpDir
+        test <@ not (queue.Contains("Lib.foo")) @>
+
+        match host.GetStatus("test-prune") with
+        | Some(Completed _) -> ()
+        | other -> Assert.Fail($"expected an EARNED Completed after the drain, got %A{other}"))
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-99: a symbol covered only by an unconfigured test project drops instead of wedging the gate red`` () =
+    // The permanent wedge. The symbol DB indexes test methods from EVERY project it
+    // analyzed — which is NOT the same set as the projects fshw is configured to run.
+    // A symbol covered only by an unconfigured project can never be proven green: its
+    // covering project never executes, so it never lands in a run's results, so the
+    // symbol never commits. Pre-fix it sat in the queue forever and `check` stayed red
+    // no matter how many times the suite passed.
+    //
+    // Observed live: two full suites ran and PASSED back-to-back, and `check` STILL
+    // exited 1 with the symbols pending — because their only covering tests lived in
+    // FsHotWatch.IntegrationTests, which the daemon does not run.
+    //
+    // "Covered" must mean "covered by a test we can actually run". Anything else is
+    // indistinguishable from having no covering test, and drops by the same rule.
+    withTempDir "tp-unrunnable" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+        let db = Database.create dbPath
+
+        // Lib.orphan's ONLY covering test lives in P2 — which is not in `configs`.
+        PendingQueueHelpers.seedCoveredSymbol db "Lib.orphan" "Orphan.fs" "P2" "P2Tests" "orphanTest"
+
+        FsHotWatch.TestPrune.PendingVerification.save tmpDir (Set.ofList [ "Lib.orphan" ])
+
+        // Only P1 is runnable. P2 is indexed but will never execute.
+        let configs =
+            [ { Project = "P1"
+                Command = "sh"
+                Args = "-c \"exit 0\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        let await = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+        await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+
+        // Unverifiable-by-construction → dropped, not retained forever.
+        let queue = PendingQueueHelpers.loadQueue tmpDir
+        test <@ not (queue.Contains("Lib.orphan")) @>
+
+        // And the gate is NOT stuck red on a symbol no configured test can ever prove.
+        match host.GetStatus("test-prune") with
+        | Some(PluginStatus.Failed(msg, _)) ->
+            Assert.Fail($"gate wedged red on a symbol no runnable test covers: %s{msg}")
+        | _ -> ())
+
+[<Fact(Timeout = 20000)>]
+let ``AUTOMATION-95: a plugin with a test run in flight reports BUSY, so no verdict can resolve mid-run`` () =
+    // The third facet: `check` handed back a verdict WHILE the run that would have
+    // produced it was still executing. "Busy" used to mean only "has events queued in
+    // its mailbox" — blind to the background work a handler launches via RunExclusive
+    // and then returns from. So the host saw an idle mailbox, called the plugin at
+    // rest, and WaitForComplete resolved mid-run.
+    //
+    // Observed live: test run launched 11:30:17, still executing at 11:30:34, and the
+    // daemon logged "all plugins already terminal" and `check` exited 0.
+    //
+    // Busy must mean "has work in flight", full stop.
+    withTempDir "tp-busy-during-run" (fun tmpDir ->
+        let dbPath = Path.Combine(tmpDir, "tp.db")
+
+        let configs =
+            [ { Project = "P1"
+                Command = "sh"
+                Args = "-c \"sleep 2; exit 0\""
+                Group = "default"
+                Environment = []
+                FilterTemplate = None
+                ClassJoin = " "
+                TimeoutSec = None
+                ReportVerificationFormat = AutoDetect } ]
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create dbPath tmpDir (Some configs) None None None None []
+        host.RegisterHandler(handler)
+
+        let await = beginAwaitNextTerminal host "test-prune"
+        host.EmitBuildCompleted(BuildSucceeded)
+
+        // Wait until the run is genuinely in flight (status Running). By this point the
+        // BuildCompleted handler has returned, so the MAILBOX is drained — the only
+        // thing that can still be keeping the plugin busy is the background run itself.
+        let isRunning () =
+            match host.GetStatus("test-prune") with
+            | Some(Running _) -> true
+            | _ -> false
+
+        waitUntil isRunning 5000
+        test <@ isRunning () @>
+
+        // THE ASSERTION: work is in flight, so the host must not call this at rest.
+        // Pre-fix this was false (idle mailbox) and the verdict resolved mid-run.
+        test <@ host.AnyPluginBusy() @>
+
+        // And the run still lands normally.
+        await.Wait(TimeSpan.FromSeconds 15.0) |> ignore
+
+        match host.GetStatus("test-prune") with
+        | Some(Completed _) -> ()
+        | other -> Assert.Fail($"expected Completed once the in-flight run finished, got %A{other}"))
