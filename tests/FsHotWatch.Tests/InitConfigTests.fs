@@ -1,5 +1,6 @@
 module FsHotWatch.Tests.InitConfigTests
 
+open System
 open System.IO
 open Xunit
 open Swensen.Unquote
@@ -392,15 +393,27 @@ let ``discoverProjects returns empty list for missing directory`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``discoverProjects returns empty list on permission error`` () =
-    let failEnumerate _ _ _ =
+    let failEnumerate _ _ =
         raise (System.UnauthorizedAccessException("Access denied"))
+
+    let projects = discoverProjects "/some/path" (Some failEnumerate)
+    test <@ List.isEmpty projects @>
+
+// The DirectoryNotFoundException arm now only guards INJECTED enumerators: the
+// SafeWalk default returns an empty sequence for a missing root rather than
+// throwing (see `discoverProjects returns empty list for missing directory`),
+// so a throwing enumerator is the only way in.
+[<Fact(Timeout = 15000)>]
+let ``discoverProjects returns empty list when an injected enumerator reports a missing directory`` () =
+    let failEnumerate _ _ =
+        raise (DirectoryNotFoundException("gone"))
 
     let projects = discoverProjects "/some/path" (Some failEnumerate)
     test <@ List.isEmpty projects @>
 
 [<Fact(Timeout = 15000)>]
 let ``discoverProjects with injected enumerator uses it`` () =
-    let fakeEnumerate (root: string) (_pattern: string) (_opt: SearchOption) =
+    let fakeEnumerate (root: string) (_pattern: string) =
         seq {
             Path.Combine(root, "src", "Foo", "Foo.fsproj")
             Path.Combine(root, "tests", "Bar.Tests", "Bar.Tests.fsproj")
@@ -413,7 +426,7 @@ let ``discoverProjects with injected enumerator uses it`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``discoverProjects with injected enumerator still filters bin and obj`` () =
-    let fakeEnumerate (root: string) (_pattern: string) (_opt: SearchOption) =
+    let fakeEnumerate (root: string) (_pattern: string) =
         seq {
             Path.Combine(root, "src", "App", "App.fsproj")
             Path.Combine(root, "src", "App", "bin", "App.fsproj")
@@ -422,3 +435,25 @@ let ``discoverProjects with injected enumerator still filters bin and obj`` () =
 
     let projects = discoverProjects "/fake/root" (Some fakeEnumerate)
     test <@ projects.Length = 1 @>
+
+// REGRESSION (2026-07-13 wedge, second live instance): `fshw init` walks from
+// the REPO ROOT, one hop from `.devenv/profile` → /nix/store → two self-loop
+// symlinks in one dir. The pre-SafeWalk `SearchOption.AllDirectories` follows
+// them and enumerates ~2^32 paths; on that code this test trips its Timeout.
+[<Fact(Timeout = 15000)>]
+let ``discoverProjects terminates on a repo containing a symlink cycle`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "init-cycle" (fun tmpDir ->
+            let srcDir = Path.Combine(tmpDir, "src", "App")
+            Directory.CreateDirectory(srcDir) |> ignore
+            File.WriteAllText(Path.Combine(srcDir, "App.fsproj"), "<Project/>")
+
+            // The `.devenv/profile` shape: a hidden dir portalling to a tree
+            // with two self-loops in ONE directory (the branching cycle).
+            let devenv = Path.Combine(tmpDir, ".devenv", "profile", "include")
+            Directory.CreateDirectory(devenv) |> ignore
+            Directory.CreateSymbolicLink(Path.Combine(devenv, "ncurses"), ".") |> ignore
+            Directory.CreateSymbolicLink(Path.Combine(devenv, "ncursesw"), ".") |> ignore
+
+            let projects = discoverProjects tmpDir None
+            test <@ projects = [ Path.Combine("src", "App", "App.fsproj") ] @>)

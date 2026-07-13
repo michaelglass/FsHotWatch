@@ -4,7 +4,7 @@
       {
         "line": 80,
         "branch": 70,
-        "reason": "FCS analyzer paths in IntegrationTests (excluded); \u00a72a + lifecycle + \u00a71 fcs-signature add untested branches; line drifts 74-76% across runs",
+        "reason": "FCS analyzer paths in IntegrationTests (excluded); §2a + lifecycle + §1 fcs-signature add untested branches; line drifts 74-76% across runs",
         "platform": "macos"
       },
       {
@@ -50,7 +50,7 @@
       {
         "line": 80,
         "branch": 50,
-        "reason": "\u00a71 fcsCheckSignature: see macos reason",
+        "reason": "§1 fcsCheckSignature: see macos reason",
         "platform": "linux"
       },
       {
@@ -175,13 +175,13 @@
     "DependencyFanout.fs": {
       "line": 93,
       "branch": 100,
-      "reason": "honest floor for the daemon dependency-fanout primitives. DependencyFanoutTests deterministically cover directPackageVersions (inline + CPM + missing-file), computeProjectFingerprint (DLL-content change, missing-DLL sentinel, own-package-version fold, transitive diamond), and changedProjects. The two remaining uncovered lines are the IOException catch in fileContentHash (a locked/unreadable DLL \u2014 not deterministically triggerable) and the null-Include guard in the PackageReference parse; deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage. Achieved 93.5% line / 100% branch (4/4)."
+      "reason": "honest floor for the daemon dependency-fanout primitives. DependencyFanoutTests deterministically cover directPackageVersions (inline + CPM + missing-file), computeProjectFingerprint (DLL-content change, missing-DLL sentinel, own-package-version fold, transitive diamond), and changedProjects. The two remaining uncovered lines are the IOException catch in fileContentHash (a locked/unreadable DLL — not deterministically triggerable) and the null-Include guard in the PackageReference parse; deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage. Achieved 93.5% line / 100% branch (4/4)."
     },
     "DepsFreshness.fs": [
       {
         "line": 91,
         "branch": 83,
-        "reason": "honest floor (updated 2026-06-07): unit tests cover the pure freshness/orchestration paths (compareFreshness, evaluateProject, dependencyFiles, toolsManifest, detectProjectFreshness \u2014 incl. the defensive not-under-repoRoot ancestor walk) but deliberately NOT productionRestoreRunner, which shells `dotnet restore`/`paket restore`/`tool restore` \u2014 exercising it would be a slow nondeterministic integration test. After splitting the ancestor walk into ancestorDirs + a standalone toolsManifest (removing .config/dotnet-tools.json from the deps-freshness inputs so a dotnet-tool bump no longer false-stales projects), observed line=70.1-72.4% branch=60.0-62.5% across runs. The per-run cobertura class-merge for this file is flaky (branch denominator swings 20<->32), so both floors stay below the jittery low end: branch at the proven-stable 59 and line at 68 (the documented stable baseline, well under the observed 70.1-72.4). Pinned without ExcludeFromCodeCoverage so the productionRestoreRunner gap stays visible.",
+        "reason": "honest floor (updated 2026-06-07): unit tests cover the pure freshness/orchestration paths (compareFreshness, evaluateProject, dependencyFiles, toolsManifest, detectProjectFreshness — incl. the defensive not-under-repoRoot ancestor walk) but deliberately NOT productionRestoreRunner, which shells `dotnet restore`/`paket restore`/`tool restore` — exercising it would be a slow nondeterministic integration test. After splitting the ancestor walk into ancestorDirs + a standalone toolsManifest (removing .config/dotnet-tools.json from the deps-freshness inputs so a dotnet-tool bump no longer false-stales projects), observed line=70.1-72.4% branch=60.0-62.5% across runs. The per-run cobertura class-merge for this file is flaky (branch denominator swings 20<->32), so both floors stay below the jittery low end: branch at the proven-stable 59 and line at 68 (the documented stable baseline, well under the observed 70.1-72.4). Pinned without ExcludeFromCodeCoverage so the productionRestoreRunner gap stays visible.",
         "platform": "macos"
       },
       {
@@ -400,7 +400,7 @@
       {
         "line": 58,
         "branch": 40,
-        "reason": "Linux tests exercise fewer JjHelper branches than macOS even with jj installed \u2014 daemon scan is not hit during unit tests",
+        "reason": "Linux tests exercise fewer JjHelper branches than macOS even with jj installed — daemon scan is not hit during unit tests",
         "platform": "linux"
       }
     ],
@@ -408,13 +408,13 @@
       {
         "line": 90,
         "branch": 72,
-        "reason": "loosened 2026-04-26 \u00a72a: cache-key construction adds match-with-when branches; lint timeout/failure/error paths covered via integration tests, not unit tests",
+        "reason": "loosened 2026-04-26 §2a: cache-key construction adds match-with-when branches; lint timeout/failure/error paths covered via integration tests, not unit tests",
         "platform": "macos"
       },
       {
         "line": 90,
         "branch": 72,
-        "reason": "lower line coverage on Linux CI; branch threshold matches macOS post \u00a72a",
+        "reason": "lower line coverage on Linux CI; branch threshold matches macOS post §2a",
         "platform": "linux"
       }
     ],
@@ -483,13 +483,13 @@
       {
         "line": 87,
         "branch": 71,
-        "reason": "stable floor: enforceGlobalCap concurrent recheck races + the concurrent lock branches (~lines 112-138) are intentionally NOT unit-covered \u2014 behavior-tested in FsHotWatch.IntegrationTests (concurrent-stress + cross-plugin cap tests); deterministic because the racy timing/concurrency tests live there, not here. Observed stable 86.8% line / 71.4% branch across 3 runs; pinned 1pp below observed line floor",
+        "reason": "stable floor: enforceGlobalCap concurrent recheck races + the concurrent lock branches (~lines 112-138) are intentionally NOT unit-covered — behavior-tested in FsHotWatch.IntegrationTests (concurrent-stress + cross-plugin cap tests); deterministic because the racy timing/concurrency tests live there, not here. Observed stable 86.8% line / 71.4% branch across 3 runs; pinned 1pp below observed line floor",
         "platform": "macos"
       },
       {
         "line": 87,
         "branch": 71,
-        "reason": "deterministic remainder is platform-independent \u2014 converged to the macOS floor; racy concurrency/cap paths live in FsHotWatch.IntegrationTests (no coverage), so the unit metric is the same on Linux. Observed stable 86.8% line / 71.4% branch",
+        "reason": "deterministic remainder is platform-independent — converged to the macOS floor; racy concurrency/cap paths live in FsHotWatch.IntegrationTests (no coverage), so the unit metric is the same on Linux. Observed stable 86.8% line / 71.4% branch",
         "platform": "linux"
       }
     ],
@@ -525,13 +525,13 @@
       {
         "line": 95,
         "branch": 100,
-        "reason": "stable floor: kill-on-timeout drain race-handling (~lines 157-196: Kill catch arm, post-kill Task.WaitAll drain catch, stdout/stderr IsCompletedSuccessfully else-branches) is intentionally NOT unit-covered \u2014 behavior-tested in FsHotWatch.IntegrationTests; deterministic because the sleep-30 timeout test lives there. Observed stable 93.1% line across runs; pinned 1pp below with jitter margin",
+        "reason": "stable floor: kill-on-timeout drain race-handling (~lines 157-196: Kill catch arm, post-kill Task.WaitAll drain catch, stdout/stderr IsCompletedSuccessfully else-branches) is intentionally NOT unit-covered — behavior-tested in FsHotWatch.IntegrationTests; deterministic because the sleep-30 timeout test lives there. Observed stable 93.1% line across runs; pinned 1pp below with jitter margin",
         "platform": "macos"
       },
       {
         "line": 93,
         "branch": 100,
-        "reason": "conservative floor (cannot observe Linux locally): kept at the historical Linux value \u2014 ProcessHelper has a real macOS-only path (DOTNET_HOST_PATH symlink resolution) so Linux runs ~6pp below macOS (cf. BuildPlugin 94/88). Racy timeout-kill drain test lives in FsHotWatch.IntegrationTests. Tighten from a green Linux CI run if desired",
+        "reason": "conservative floor (cannot observe Linux locally): kept at the historical Linux value — ProcessHelper has a real macOS-only path (DOTNET_HOST_PATH symlink resolution) so Linux runs ~6pp below macOS (cf. BuildPlugin 94/88). Racy timeout-kill drain test lives in FsHotWatch.IntegrationTests. Tighten from a green Linux CI run if desired",
         "platform": "linux"
       }
     ],
@@ -552,7 +552,7 @@
       {
         "line": 72,
         "branch": 57,
-        "reason": "Hand-settled to 72/57 (2026-06-16): the fail-loud analyzers guard added a `try/with ConfigError` around the `check --run-once` arm whose catch (eprintfn + exit 2) only runs when plugin registration raises \u2014 a real-daemon path not exercised by the unit suite (test-direct), nudging measured macOS coverage to 72.x line / 57.x branch. Hand-lowered the floor to the loosen-measured actuals so normal CLI-glue drift no longer reds the gate (official loosen would also tighten DaemonConfig 78->80 to a flaky lucky-ceiling, which the guard's own untestable-path lesson warns against). CLI entry point; line drifts 66-68% and branch drifts 53-54% across runs \u2014 pin to floor; auto-ratchet bumps to ceiling and breaks CI on the next unlucky run idle-exit daemon-start glue (resolveThreshold call in createDaemon) added a few uncovered lines, nudging the macOS run from 71.0% to 70.9% \u2014 daemon-start path, not unit-testable; floor lowered to 70 to absorb it. Pressure-idle (2026-06-07) adds further createDaemon glue (resolvePressureFloor + pressureIdleFloorMin threading), same untestable daemon-start path; line floor pinned to the documented 66% drift-floor and branch to 53% so normal drift no longer reds the gate. Hand-settled to 72 (2026-06-15): the gating path (test-direct then coverage-check) measures macOS line 72.9 percent, below the run-once drift floor this 73 was pinned from; coverage-ratchet/loosen cannot lower it without illegally bumping DaemonConfig 79 to 80 and CheckPipeline 77 to 78. PRIOR: Pinned at 73 stable-minimum (2026-06-12): line drifts 73.0-74.2 across identical runs (CLI/daemon-lifecycle timing), do NOT auto-ratchet to 74 -- a 73.x sample then fails coverage-check (same pathology as CheckPipeline's 79 pin).",
+        "reason": "Hand-settled to 72/57 (2026-06-16): the fail-loud analyzers guard added a `try/with ConfigError` around the `check --run-once` arm whose catch (eprintfn + exit 2) only runs when plugin registration raises — a real-daemon path not exercised by the unit suite (test-direct), nudging measured macOS coverage to 72.x line / 57.x branch. Hand-lowered the floor to the loosen-measured actuals so normal CLI-glue drift no longer reds the gate (official loosen would also tighten DaemonConfig 78->80 to a flaky lucky-ceiling, which the guard's own untestable-path lesson warns against). CLI entry point; line drifts 66-68% and branch drifts 53-54% across runs — pin to floor; auto-ratchet bumps to ceiling and breaks CI on the next unlucky run idle-exit daemon-start glue (resolveThreshold call in createDaemon) added a few uncovered lines, nudging the macOS run from 71.0% to 70.9% — daemon-start path, not unit-testable; floor lowered to 70 to absorb it. Pressure-idle (2026-06-07) adds further createDaemon glue (resolvePressureFloor + pressureIdleFloorMin threading), same untestable daemon-start path; line floor pinned to the documented 66% drift-floor and branch to 53% so normal drift no longer reds the gate. Hand-settled to 72 (2026-06-15): the gating path (test-direct then coverage-check) measures macOS line 72.9 percent, below the run-once drift floor this 73 was pinned from; coverage-ratchet/loosen cannot lower it without illegally bumping DaemonConfig 79 to 80 and CheckPipeline 77 to 78. PRIOR: Pinned at 73 stable-minimum (2026-06-12): line drifts 73.0-74.2 across identical runs (CLI/daemon-lifecycle timing), do NOT auto-ratchet to 74 -- a 73.x sample then fails coverage-check (same pathology as CheckPipeline's 79 pin).",
         "platform": "macos"
       },
       {
@@ -606,6 +606,20 @@
         "line": 59,
         "branch": 53,
         "reason": "lower coverage on Linux CI",
+        "platform": "linux"
+      }
+    ],
+    "SafeWalk.fs": [
+      {
+        "line": 100,
+        "branch": 87,
+        "reason": "symlink-safe walker (2026-07-13 wedge fix); 14/16 branches covered — the two uncovered are the IOException alternatives of the GetFiles/GetDirectories catch arms (only UnauthorizedAccessException is reliably forceable via a mode-000 dir; a genuine readdir IOException is not)",
+        "platform": "macos"
+      },
+      {
+        "line": 100,
+        "branch": 87,
+        "reason": "symlink-safe walker (2026-07-13 wedge fix); 14/16 branches covered — the two uncovered are the IOException alternatives of the GetFiles/GetDirectories catch arms (only UnauthorizedAccessException is reliably forceable via a mode-000 dir; a genuine readdir IOException is not)",
         "platform": "linux"
       }
     ],

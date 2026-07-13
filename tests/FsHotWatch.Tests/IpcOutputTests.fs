@@ -519,3 +519,50 @@ let ``pollAndRender returns exit 2 when the daemon drops mid-wait`` () =
             (fun () -> "idle") // triggerScan
 
     test <@ exitCode = 2 @>
+
+// --- isVerdictWaitTimeout (verdict-deadline breach classification) ---
+// Regression for the 2026-07-13 test-prune wedge: the daemon now bounds a
+// client-unbounded WaitForComplete (`resolveVerdictDeadline`), and its
+// TimeoutException crosses the RPC boundary as a remote error recognisable
+// only by its message. The check must turn that into a diagnostic exit 2
+// naming the wedged plugin — never an opaque crash, never an endless wait.
+
+[<Fact(Timeout = 15000)>]
+let ``isVerdictWaitTimeout recognises the daemon's deadline breach`` () =
+    test
+        <@
+            isVerdictWaitTimeout (
+                System.TimeoutException("WaitForComplete timed out after 01:00:00 — still running: test-prune (1h 0m)")
+            )
+        @>
+
+    // ...as a remote-invocation error (arbitrary exception type, message-borne) ...
+    test <@ isVerdictWaitTimeout (exn "Error: WaitForComplete timed out after 01:00:00 — still running: x") @>
+    // ...and through the inner-exception chain.
+    test <@ isVerdictWaitTimeout (exn ("outer", exn "WaitForComplete timed out after 00:30:00 — y")) @>
+
+[<Fact(Timeout = 15000)>]
+let ``isVerdictWaitTimeout ignores unrelated faults`` () =
+    test <@ not (isVerdictWaitTimeout (exn "boom")) @>
+    test <@ not (isVerdictWaitTimeout (System.IO.IOException("pipe is broken"))) @>
+    test <@ not (isVerdictWaitTimeout (System.TimeoutException("some other timeout"))) @>
+
+[<Fact(Timeout = 15000)>]
+let ``pollAndRender returns exit 2 when the verdict deadline is breached`` () =
+    // End-to-end: the daemon's deadline TimeoutException drives pollAndRender to
+    // the diagnostic exit-2 path (bounded + legible) instead of crashing.
+    let waitForComplete () : string =
+        raise (System.TimeoutException("WaitForComplete timed out after 01:00:00 — still running: test-prune (1h 0m)"))
+
+    let exitCode =
+        pollAndRender
+            ProgressRenderer.Agent
+            (fun _ -> [])
+            false
+            (fun () -> "idle") // waitForScan
+            waitForComplete
+            (fun () -> "{}") // getStatus
+            (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
+            (fun () -> "idle") // triggerScan
+
+    test <@ exitCode = 2 @>

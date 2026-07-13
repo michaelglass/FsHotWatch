@@ -4759,10 +4759,92 @@ let ``newestSourceMtime returns the newest source and ignores build output`` () 
         | Some got -> test <@ got = File.GetLastWriteTimeUtc newer @>
         | None -> Assert.Fail "expected a source mtime")
 
+// REGRESSION (2026-07-13 wedge): the freshness scan must TERMINATE in the
+// presence of symlink cycles. The production trigger: `.devenv/profile` links
+// into /nix/store where ncurses-6.6-dev/include contains TWO self-loop
+// symlinks (`ncurses -> .`, `ncursesw -> .`) — branching factor 2 per level,
+// bounded only by ENAMETOOLONG ⇒ ~2^90 paths. The pre-fix walk followed
+// symlinked dirs and wedged EVERY `fshw check` forever (observed 8h36m,
+// silent). On the old code this test trips its Timeout; on SafeWalk it
+// returns in milliseconds because symlinked dirs are never entered.
+[<Fact(Timeout = 15000)>]
+let ``newestSourceMtime terminates despite self-loop symlink cycles`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "tp-nsm-cycle" (fun tmpDir ->
+            let src = Path.Combine(tmpDir, "A.fs")
+            File.WriteAllText(src, "")
+
+            // Two self-loops in one directory = the exact /nix/store shape.
+            let cycleDir = Path.Combine(tmpDir, "cycle")
+            Directory.CreateDirectory cycleDir |> ignore
+            Directory.CreateSymbolicLink(Path.Combine(cycleDir, "loop"), ".") |> ignore
+            Directory.CreateSymbolicLink(Path.Combine(cycleDir, "loop2"), ".") |> ignore
+
+            match newestSourceMtime tmpDir with
+            | Some got -> test <@ got = File.GetLastWriteTimeUtc src @>
+            | None -> Assert.Fail "expected a source mtime")
+
+// REGRESSION (same wedge, the other half): a symlinked directory is a portal
+// OUT of the repo tree (`.devenv/profile` → the nix store). Freshness must be
+// computed from the REAL tree only — a newer source behind a symlinked dir
+// must not be counted (it is not part of this repo's sources, and following
+// it is how the walk left the repo in the first place).
+[<Fact(Timeout = 15000)>]
+let ``newestSourceMtime does not follow a symlinked directory out of the root`` () =
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "tp-nsm-outside" (fun tmpDir ->
+            let root = Path.Combine(tmpDir, "repo")
+            let outside = Path.Combine(tmpDir, "outside")
+            Directory.CreateDirectory root |> ignore
+            Directory.CreateDirectory outside |> ignore
+
+            let inRoot = Path.Combine(root, "A.fs")
+            File.WriteAllText(inRoot, "")
+            let outsideSrc = Path.Combine(outside, "Newer.fs")
+            File.WriteAllText(outsideSrc, "")
+
+            let t = DateTime.UtcNow
+            File.SetLastWriteTimeUtc(inRoot, t.AddMinutes(-10.0))
+            File.SetLastWriteTimeUtc(outsideSrc, t)
+
+            Directory.CreateSymbolicLink(Path.Combine(root, "portal"), outside) |> ignore
+
+            match newestSourceMtime root with
+            | Some got -> test <@ got = File.GetLastWriteTimeUtc inRoot @>
+            | None -> Assert.Fail "expected a source mtime")
+
+// `.devenv`/`.direnv` are excluded by NAME as well (nix/devenv tooling dirs) —
+// even a REGULAR (non-symlinked) file under them must not count as a repo
+// source for freshness purposes.
+[<Fact(Timeout = 15000)>]
+let ``newestSourceMtime ignores sources under .devenv and .direnv`` () =
+    withTempDir "tp-nsm-devenv" (fun tmpDir ->
+        let src = Path.Combine(tmpDir, "A.fs")
+        File.WriteAllText(src, "")
+
+        let devenv = Path.Combine(tmpDir, ".devenv", "gen")
+        Directory.CreateDirectory devenv |> ignore
+        let hidden = Path.Combine(devenv, "Tool.fs")
+        File.WriteAllText(hidden, "")
+
+        let t = DateTime.UtcNow
+        File.SetLastWriteTimeUtc(src, t.AddMinutes(-10.0))
+        File.SetLastWriteTimeUtc(hidden, t)
+
+        match newestSourceMtime tmpDir with
+        | Some got -> test <@ got = File.GetLastWriteTimeUtc src @>
+        | None -> Assert.Fail "expected a source mtime")
+
+/// Production pairing: `apphostStale` with the run-wide lazy newest-source scan
+/// (exactly how `executeTests` wires it). Tests exercise the pair so the lazy
+/// seam can't drift from the real call shape.
+let private staleOf (args: string) (repoRoot: string) : bool =
+    apphostStale args repoRoot (lazy (newestSourceMtime repoRoot))
+
 [<Fact(Timeout = 15000)>]
 let ``apphostStale is false when args carry no --project`` () =
-    test <@ not (apphostStale "/tmp/runner.sh" "/repo") @>
-    test <@ not (apphostStale "test" "/repo") @>
+    test <@ not (staleOf "/tmp/runner.sh" "/repo") @>
+    test <@ not (staleOf "test" "/repo") @>
 
 [<Fact(Timeout = 15000)>]
 let ``apphostStale is false when no build output exists`` () =
@@ -4771,7 +4853,7 @@ let ``apphostStale is false when no build output exists`` () =
         Directory.CreateDirectory(projDir) |> ignore
         File.WriteAllText(Path.Combine(projDir, "Foo.fs"), "module Foo")
         // No bin/Debug → absence is tryApphostPresent's job, not staleness.
-        test <@ not (apphostStale $"run --project {projDir} --no-build --" tmpDir) @>)
+        test <@ not (staleOf $"run --project {projDir} --no-build --" tmpDir) @>)
 
 [<Fact(Timeout = 15000)>]
 let ``apphostStale is false when there are no sources to be stale against`` () =
@@ -4781,7 +4863,7 @@ let ``apphostStale is false when there are no sources to be stale against`` () =
         Directory.CreateDirectory(tfmDir) |> ignore
         File.WriteAllText(Path.Combine(tfmDir, "Unit.dll"), "")
         // DLL present, no source files anywhere → nothing to be stale against.
-        test <@ not (apphostStale $"run --project {projDir} --no-build --" tmpDir) @>)
+        test <@ not (staleOf $"run --project {projDir} --no-build --" tmpDir) @>)
 
 [<Fact(Timeout = 15000)>]
 let ``apphostStale is false when the DLL is newer than every source`` () =
@@ -4797,7 +4879,7 @@ let ``apphostStale is false when the DLL is newer than every source`` () =
         File.SetLastWriteTimeUtc(src, t.AddMinutes(-10.0))
         File.SetLastWriteTimeUtc(dll, t)
         // Built AFTER the source → fresh → runnable.
-        test <@ not (apphostStale $"run --project {projDir} --no-build --" tmpDir) @>)
+        test <@ not (staleOf $"run --project {projDir} --no-build --" tmpDir) @>)
 
 [<Fact(Timeout = 15000)>]
 let ``apphostStale is TRUE when the canonical DLL predates a source`` () =
@@ -4819,7 +4901,7 @@ let ``apphostStale is TRUE when the canonical DLL predates a source`` () =
         let t = DateTime.UtcNow
         File.SetLastWriteTimeUtc(dll, t.AddMinutes(-10.0))
         File.SetLastWriteTimeUtc(src, t)
-        test <@ apphostStale $"run --project {projDir} --no-build --" tmpDir @>)
+        test <@ staleOf $"run --project {projDir} --no-build --" tmpDir @>)
 
 // End-to-end: a present-but-stale apphost must DEFER (non-green, "waiting on
 // build") through the plugin, never report a passing run on stale bits. On the

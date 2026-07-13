@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- fix!: **the apphost-freshness gate no longer hangs the daemon forever.** Its
+  repo-wide newest-source scan (`newestSourceMtime`) walked with a hand-rolled
+  recursion that FOLLOWED SYMLINKED DIRECTORIES. On a devenv/nix repo it
+  descended `.devenv/profile` into `/nix/store` and hit two self-loop symlinks
+  in one directory (`ncurses-6.6-dev/include/{ncurses,ncursesw} -> .`), which
+  branches into ~2^32 paths — non-terminating in practice. The plugin went
+  in-flight and NEVER completed (observed 8h36m), spawning zero test processes,
+  so the launch-liveness watchdog (which guards a spawned child) never engaged:
+  the wedge was UPSTREAM of process launch. The scan now runs through
+  `SafeWalk` (no symlinked-dir descent, depth-capped) and `.devenv`/`.direnv`
+  are excluded by name.
+- fix: the `dependsOn` glob resolver had the same defect — a repo-root-rooted
+  `SearchOption.AllDirectories` over EVERY file — and is now on `SafeWalk` too.
+- perf: the freshness scan runs at most ONCE per test run, shared lazily across
+  configs. It previously re-walked the entire repo once PER test project (6x on
+  a 6-project run), and evaluated even when no built DLL existed to compare
+  against. `apphostStale` now short-circuits on "no DLLs" before forcing the
+  scan.
+- feat: the freshness scan logs its duration (`freshness scan of <root>: newest
+  source mtime in Nms`), so a pathological walk is visible in the daemon log
+  instead of being an unattributed silence.
+
 ## 0.13.0-alpha.2 - 2026-07-11
 
 - chore(deps): TestPrune.Core 5.0.0 — function-scoped route attribution

@@ -1311,3 +1311,25 @@ type AcceptLoopFaultTests() =
             cts.Cancel()
             Console.SetError(prevErr)
             FsHotWatch.Logging.setLogLevel original
+
+// --- resolveVerdictDeadline: override precedence (pure — no process env touched) ---
+// Regression for the 2026-07-13 test-prune wedge: a client-unbounded
+// WaitForComplete used to become TimeSpan.MaxValue — an INFINITE wait that
+// heartbeat-logged for 8h36m while a plugin was wedged. The daemon now always
+// applies a finite bound; there is deliberately no "infinite" setting.
+
+[<Fact(Timeout = 15000)>]
+let ``resolveVerdictDeadline: absent override falls back to the default`` () =
+    Assert.Equal(DefaultVerdictDeadline, resolveVerdictDeadline None)
+
+[<Fact(Timeout = 15000)>]
+let ``resolveVerdictDeadline: a positive integer override wins`` () =
+    Assert.Equal(TimeSpan.FromSeconds 7200.0, resolveVerdictDeadline (Some "7200"))
+
+[<Theory(Timeout = 15000)>]
+[<InlineData("0")>]
+[<InlineData("-5")>]
+[<InlineData("nonsense")>]
+[<InlineData("")>]
+let ``resolveVerdictDeadline: junk / non-positive override falls back to the default`` (value: string) =
+    Assert.Equal(DefaultVerdictDeadline, resolveVerdictDeadline (Some value))
