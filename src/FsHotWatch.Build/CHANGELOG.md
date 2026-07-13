@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: build spawns go through the single, always-bounded
+  `ProcessHelper.runProcess` (`ProcessBounds.silent buildTimeout`). A build is a
+  SILENT child — `dotnet build -v q` prints nothing until it finishes, and a
+  `sh -c "dotnet build 2> log; cat log"` wrapper buffers everything to the end —
+  so output cannot prove liveness and no launch deadline is applied (one would
+  false-kill a healthy slow build). What it DOES gain is the polled-exit and the
+  bounded post-exit drain: a build whose grandchild MSBuild node holds the
+  inherited stdout pipe after the child exits no longer wedges the daemon.
+
 ## 0.7.0-alpha.16 - 2026-06-30
 
 - refactor: collapse the now-degenerate single-case `BuildPhase` union into the

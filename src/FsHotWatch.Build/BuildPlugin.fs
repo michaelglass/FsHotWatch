@@ -174,6 +174,15 @@ let create
         | Some s -> TimeSpan.FromSeconds(float s)
         | None -> System.Threading.Timeout.InfiniteTimeSpan
 
+    // A build command is a SILENT child: `dotnet build -v q` prints nothing until
+    // it finishes, and a `sh -c "dotnet build 2> log; cat log"` wrapper (the shape
+    // real repos use) buffers everything to the very end. So its output proves
+    // nothing about liveness and a launch deadline would false-kill a healthy slow
+    // build — `buildTimeout` is the bound. It still gets the polled-exit and
+    // bounded post-exit drain that every spawn gets, which is what closes the
+    // machine-sleep and grandchild-pipe wedges here.
+    let buildBounds = ProcessBounds.silent buildTimeout
+
     // Path normalization happens once at the SourceChanged → AbsFilePath boundary
     // (callers inject `AbsFilePath.create` per file). `isTestFile` drives the
     // template-build path's non-test-project filter (`startTemplateBuild`).
@@ -313,8 +322,7 @@ let create
                 "dotnet build"
                 (async {
                     try
-                        let result =
-                            runProcessWithTimeout buildCommand buildArgs ctx.RepoRoot environment buildTimeout
+                        let result = runProcess buildCommand buildArgs ctx.RepoRoot environment buildBounds
 
                         let (rawOutcome, entries) =
                             decideBuildOutcome (isSucceeded result) (outputOf result)
@@ -402,7 +410,7 @@ let create
                                 ctx.Log $"Running template: %s{cmd} %s{cmdArgs}"
 
                                 try
-                                    let result = runProcessWithTimeout cmd cmdArgs ctx.RepoRoot environment buildTimeout
+                                    let result = runProcess cmd cmdArgs ctx.RepoRoot environment buildBounds
                                     let output = outputOf result
                                     outputs <- output :: outputs
 

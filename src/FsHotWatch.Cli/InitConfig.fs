@@ -91,7 +91,7 @@ let generateConfig (projectPaths: string list) : DaemonConfiguration =
                  TimeoutSec = None |} ]
       Format = Auto
       Lint = true
-      Cache = FileBackend
+      Cache = NoCache
       Analyzers = None
       Tests =
         if testProjects.IsEmpty then
@@ -152,7 +152,6 @@ let serializeConfig (config: DaemonConfiguration) : string =
 
     // Cache
     match config.Cache with
-    | FileBackend -> writer.WriteString("cache", "file")
     | InMemoryOnly _ -> writer.WriteString("cache", "memory")
     | NoCache -> writer.WriteBoolean("cache", false)
 

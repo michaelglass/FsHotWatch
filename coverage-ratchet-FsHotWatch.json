@@ -218,19 +218,6 @@
         "reason": "loosened automatically"
       }
     ],
-    "FileCheckCache.fs": [
-      {
-        "line": 83,
-        "branch": 50,
-        "reason": "loosened 2026-04-24: new branches from UX/correctness sweep (TimedOut outcome, RanFullSuite signal, in-process timeouts, coverage baseline/partial split)",
-        "platform": "macos"
-      },
-      {
-        "line": 83,
-        "branch": 50,
-        "platform": "linux"
-      }
-    ],
     "FileCommandPlugin.fs": [
       {
         "line": 96,

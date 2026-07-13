@@ -86,7 +86,7 @@ type CheckPipeline
 
     /// Clear all registered projects, file mappings, and per-file cancellation tokens.
     ///
-    /// `clearCheckCache` (default `true`) controls whether the FileCheckCache is
+    /// `clearCheckCache` (default `true`) controls whether the check-result cache is
     /// also dropped. The project→options maps are *always* rebuilt — they're
     /// cheap and membership may have changed. The check-result cache is keyed
     /// by `(file content hash, project-options hash)`, so retaining it across a

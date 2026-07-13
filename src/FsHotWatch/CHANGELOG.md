@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+- fix!: **ONE spawn primitive, bounded at both ends.** There were TWO —
+  `runProcessWithTimeout` and `runProcessWithLaunchWatchdog` — and every caller
+  except TestPrune used the unsafe one, so the two wedges the watchdog was built
+  to close stayed wide open in Build / FileCommand / DepsFreshness / hooks: a
+  single blocking `WaitForExit(-1)` that a machine sleep turns into a permanent
+  wait, and an UNBOUNDED `Task.WaitAll` drain **on the success path** that never
+  returns when a child exits while a GRANDCHILD (an MSBuild node, a Playwright
+  driver) still holds the inherited stdout pipe — EOF never comes, and that is
+  the 16 h wedge. Both are now collapsed into `ProcessHelper.runProcess`, which
+  ALWAYS polls `HasExited` and ALWAYS bounds the post-exit drain.
+  - **BREAKING:** `runProcessWithTimeout` and `runProcessWithLaunchWatchdog` are
+    gone; `runProcess` takes a `ProcessBounds` instead of a bare `TimeSpan`.
+  - `ProcessBounds` is constructed only via `ProcessBounds.streaming` (a child
+    whose first byte proves liveness — a test runner) or `ProcessBounds.silent`
+    (a child that may print nothing for its whole run — `dotnet build -v q`, a
+    buffering `sh -c` wrapper — for which a launch deadline would false-kill a
+    healthy slow build, so a finite timeout is the bound). Its fields are
+    private, so a call site cannot assemble "no bound at all" out of two
+    `InfiniteTimeSpan`s.
+- fix!: **`WaitForScan` could reproduce the 8h36m wedge exactly.** It had no
+  deadline: `WaitForScanGeneration` raced only daemon *shutdown*, never a clock;
+  the CLI passes `-1L` (including on every convergence re-scan); and it is
+  `check`'s FIRST step. Any hang inside `performScan` — a Fantomas preprocessor,
+  an Ionide design-time evaluation, an FCS check — meant "Scanning…" forever: no
+  timeout, no error, no verdict. The deadline is now enforced at the
+  `trackedTask` SEAM, so EVERY bracketed RPC is bounded by construction rather
+  than one method at a time (bounding them one at a time is how you get the
+  second `WaitForScan`). An RPC that bounds itself more precisely —
+  `WaitForComplete`, which names the still-running plugins — still wins the race.
+- fix!: **the operation watchdog went blind under concurrency — the one thing it
+  existed for.** It tracked a SINGLE in-flight op while the IPC server runs three
+  acceptors by design: a second `Begin` overwrote the first's record and the
+  first `End` erased the second's. Two parallel `fshw check` clients were enough,
+  and a genuinely wedged op then heartbeat as `idle` with `WedgeReport() = None`.
+  Ops are now keyed by an `OpToken` minted at `Begin` and retired at `End`, and
+  the report names the OLDEST overrunning op.
+  - **BREAKING:** `Watchdog.Begin` returns an `OpToken`; `Watchdog.End` takes one.
+    `WatchdogState.InFlight` is an `InFlightOp list`, not an `InFlightOp option`.
+- fix!: **the on-disk FCS check cache was a structural no-op — removed.**
+  `FileCheckCache.TryGet` always reconstructed `CheckResults = ParseOnly` (FCS
+  types aren't serializable), and `ParseOnly` is exactly what
+  `CheckPipeline.tryGetCachedFullCheck` treats as a MISS. It could not hit —
+  ever, by construction, on any input — while writing and enumerating a dead JSON
+  file per checked file per daemon restart (1,051 measured in one repo). It was
+  also the DEFAULT.
+  - **BREAKING:** the `FsHotWatch.FileCheckCache` module and the
+    `CacheBackendConfig.FileBackend` case are gone, as is
+    `detectDefaultCacheBackend`. The default is now `NoCache` — which is what the
+    file backend already did, minus the dead I/O. `"cache": "file"` / `"jj"` in
+    `.fshw.json` is REJECTED with a loud config warning naming the removal, not
+    silently accepted as a setting that does nothing. `"cache": "memory"` is
+    unaffected and really does cache.
+- fix: the on-disk **task cache grew without bound**. Entries are named
+  `{plugin--file}@{contentHash}.json` so "multiple versions coexist", but only
+  the entry matching the CURRENT content is reachable (`tryGet` reconstructs the
+  exact path), so every edit permanently added a dead sibling: 3,126 files /
+  13 MB in a ~1.5-day-old workspace, while `Stats`/`clearFile`/`clearPlugin`
+  full-scan the directory. A write now collects its superseded siblings. No LRU —
+  an LRU would retain entries that are not merely cold but unreachable.
+
 - fix!: **the daemon can no longer wait forever.** A client-unbounded
   `WaitForComplete` (what `fshw check` issues) used to resolve to
   `TimeSpan.MaxValue` — a literally infinite wait. When a plugin wedged, the

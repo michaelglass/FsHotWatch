@@ -339,7 +339,7 @@ let internal resolveAffectedProjects (knownProjects: string list) (changedPaths:
     loop [] changedPaths
 
 /// Re-discover projects and clear FCS errors for any files that were removed.
-/// `clearCheckCache` controls whether the full FileCheckCache is dropped:
+/// `clearCheckCache` controls whether the full check-result cache is dropped:
 ///   - `true` (full re-discovery): the conservative behavior — every cached
 ///     check result is discarded, so the subsequent re-check recomputes
 ///     everything. Used when the change is repo-wide (`.props`, solution,

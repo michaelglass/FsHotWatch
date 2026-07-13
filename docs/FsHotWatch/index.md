@@ -75,12 +75,15 @@ on their `create` constructors. When set, per-event work is bounded by
 
 **Orphan-task limitation (in-process plugins).** For the three in-process
 plugins above, the timeout is *advisory*: the underlying FCS / FSharpLint /
-Fantomas call is not cancelled, only its result is discarded. Repeated
-timeouts can leak threads under sufficiently broken plugins. A future
-version will plumb `CancellationToken` into FCS / FSharpLint / Fantomas to
-enable real cancellation. Process-spawning plugins (`BuildPlugin`,
-`TestPrunePlugin`, `FileCommandPlugin`) already kill the child process tree
-on expiry via `ProcessHelper.runProcessWithTimeout`.
+Fantomas call is driven under the timeout's `CancellationToken`
+(`ProcessHelper.runWithCancellableTimeout`), so a timed-out unit actually
+unwinds and releases its locks rather than running on as an orphan thread.
+Process-spawning plugins (`BuildPlugin`, `TestPrunePlugin`,
+`FileCommandPlugin`) kill the child process tree on expiry via the single
+spawn primitive, `ProcessHelper.runProcess`, which additionally polls
+`HasExited` and bounds its post-exit stream drain — so neither a
+machine-sleep-killed child nor a grandchild holding the inherited stdout
+pipe can block it forever.
 
 ## Install
 

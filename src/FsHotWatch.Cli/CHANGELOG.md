@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- fix!: **the `beforeRun` hook ran with an INFINITE timeout** — the single most
+  dangerous spawn in the daemon. It executes INSIDE the `RunExclusive "tests"`
+  slot, and a real one is a multi-command shell chain including a network
+  `dotnet restore`. A hook that hung — or, worse, one that EXITED while a
+  grandchild (an MSBuild node, a Playwright driver) still held the inherited
+  stdout pipe, which the old unbounded success-path drain waited on forever —
+  held the tests slot for good: the plugin stayed `Running`, every later `check`
+  burned its full 60-min deadline, and only a daemon restart recovered. Hooks are
+  now bounded by the same `timeoutSec` default (600s) every other spawn uses, and
+  a hung hook TIMES OUT into a legible failure.
+- fix: the format preprocessor is now registered with the configured `timeoutSec`
+  (see FsHotWatch.Fantomas) — an unbounded Fantomas run inside the change agent
+  could silently stop the daemon from ever processing another file change.
+- **BREAKING:** `"cache": "file"` / `"jj"` in `.fshw.json` is rejected with a loud
+  warning and runs with no check cache (which is what it already did — the on-disk
+  FCS check cache could never produce a hit; see FsHotWatch core).
+  `CacheBackendConfig.FileBackend` and `detectDefaultCacheBackend` are gone.
+
 - fix!: `check` surfaces a wedged plugin instead of hanging forever. When the
   daemon's new hard verdict deadline fires, the CLI recognises it
   (`IpcOutput.isVerdictWaitTimeout`) and fails with a diagnostic exit 2 naming
