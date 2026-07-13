@@ -73,6 +73,17 @@ module ErrorEntry =
           Column = 0
           Detail = Some detail }
 
+    /// Create a Warning-severity entry with detail. For conditions that deny a
+    /// clean verdict under the default warn-fail policy but are not themselves a
+    /// failed check — e.g. a source file the symbol analyser could not read, which
+    /// leaves a hole in the impact graph the gate must not silently paper over.
+    let warningWithDetail (message: string) (detail: string) : ErrorEntry =
+        { Message = message
+          Severity = Warning
+          Line = 0
+          Column = 0
+          Detail = Some detail }
+
 /// Per-plugin tally of ledger entries by severity — a lightweight projection of the ledger
 /// used by the status renderer to decide the "completed-with-issues" glyph without pulling
 /// the full entry list across the IPC wire.

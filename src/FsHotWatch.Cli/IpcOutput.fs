@@ -315,12 +315,14 @@ let rec isVerdictWaitTimeout (ex: exn) : bool =
 /// and is invoked only on the convergence path (incomplete coverage, no failures).
 let pollAndRender
     (mode: ProgressRenderer.RenderMode)
+    (checkMode: CheckVerdict.CheckMode)
     (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
     (noWarnFail: bool)
     (waitForScan: unit -> string)
     (waitForComplete: unit -> string)
     (getStatus: unit -> string)
     (getErrors: unit -> string)
+    (getTestScope: unit -> TestScope)
     (triggerScan: unit -> string)
     : int =
     // Run `fn` under a spinner when interactive, else announce it with a plain
@@ -372,19 +374,23 @@ let pollAndRender
 
             settle ()
 
-        // Re-read diagnostics + coverage and render. Called after each rescan.
-        let reread () : bool * Coverage =
+        // Re-read diagnostics + coverage + test scope and render. Called after each
+        // rescan. The scope is read from the daemon EVERY time alongside the
+        // diagnostics — never carried over from an earlier read — so the verdict is
+        // always computed against what the latest run actually covered.
+        let reread () : bool * Coverage * TestScope =
             let resp = parseDiagnosticsResponse (getErrors ())
             let output = formatDiagnosticsResponse mode renderStatuses resp
             eprintfn "%s" output
-            (hasFailures noWarnFail resp, resp.Coverage)
+            (hasFailures noWarnFail resp, resp.Coverage, getTestScope ())
 
         let outcome =
             CheckVerdict.converge
+                checkMode
                 MaxConvergeAttempts
                 rescan
                 reread
-                (hasFailures noWarnFail firstResp, firstResp.Coverage)
+                (hasFailures noWarnFail firstResp, firstResp.Coverage, getTestScope ())
 
         match outcome with
         | CheckVerdict.CheckOutcome.Incomplete n ->
@@ -395,6 +401,15 @@ let pollAndRender
                     "coverage could not be confirmed"
 
             UI.fail $"Check incomplete: {detail} after %d{MaxConvergeAttempts} re-scan attempt(s)"
+        | CheckVerdict.CheckOutcome.UnearnedScope scope ->
+            // Nothing failed — and that is precisely the point. The gate was asked for
+            // a claim about the whole suite and the tests that ran do not support one,
+            // so it has no verdict to give. Say so; never launder it into a green.
+            UI.fail
+                $"Merge gate: NO VERDICT — the tests that ran were %s{TestScope.describe scope}, \
+                   not the full suite.\nAn impact-filtered green means \"your change didn't break anything I chose to \
+                   look at\", which is not the claim a merge needs. Nothing is reported broken, but nothing is \
+                   reported sound either."
         | CheckVerdict.CheckOutcome.Clean
         | CheckVerdict.CheckOutcome.FailuresFound -> ()
 
