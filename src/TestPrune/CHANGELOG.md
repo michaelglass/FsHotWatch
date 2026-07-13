@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix: project discovery no longer follows directory symlinks. `findProjectFiles`
+  used `SearchOption.AllDirectories`, which traverses symlinked dirs — in a
+  devenv/nix repo that reaches /nix/store's self-loop symlinks and never
+  terminates. It now walks via `TestPrune.SafeWalk`.
+- refactor: the `isOutputPath` post-filter is gone. `SafeWalk` prunes `bin`/`obj`
+  during traversal, so a caller-side "/bin/"-substring filter could never fire —
+  the walker owns build-output pruning, and callers must not re-filter.
+- chore(deps): TestPrune.Core 6.0.0.
+
 ## 5.0.0 - 2026-07-11
 
 - chore(deps): TestPrune.Core 5.0.0 — function-scoped route attribution
