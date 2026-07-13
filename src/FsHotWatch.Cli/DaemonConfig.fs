@@ -1135,7 +1135,13 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
             | [] -> None
             | exts ->
                 Some(fun (db: TestPrune.Database.Database) ->
-                    let routeStore = TestPrune.Ports.toRouteStore db
+                    // TestPrune.Core 6.0.0 dropped the route concept: routes are not a
+                    // core idea, so the route table and its store moved to the Falco
+                    // extension that actually owns them. Core now exposes only the
+                    // generic `PluginStore` seam (a connection to its cache DB), and
+                    // Falco's RouteStore creates/owns `route_handlers` on top of it.
+                    let routeStore =
+                        TestPrune.Falco.RouteStore(TestPrune.Ports.toPluginStore db)
 
                     exts
                     |> List.choose (fun ext ->
