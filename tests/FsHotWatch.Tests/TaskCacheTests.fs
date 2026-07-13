@@ -536,6 +536,108 @@ let ``plugin runs Update when cache key changes`` () =
 
 // --- FileTaskCache tests ---
 
+// ---------------------------------------------------------------------------
+// AUTOMATION-98 finding 5 — the task cache grew without bound.
+// ---------------------------------------------------------------------------
+//
+// Entries are named `{plugin--file}@{contentHash}.json` "so multiple versions
+// coexist", but `tryGet` reconstructs the exact path from the key — so only the
+// entry matching the CURRENT content is reachable, and every prior one is dead
+// weight that nothing ever removed. Each edit to a file added one, forever:
+// 3,126 files / 13 MB in a ~1.5-day-old workspace, across ~6 live workspaces,
+// while `Stats`/`clearFile`/`clearPlugin` full-scan the directory each call.
+//
+// RED-BEFORE-GREEN: remove the `pruneSiblingsOf` call from `set` and the file
+// count is 3, not 1.
+
+[<Fact(Timeout = 15000)>]
+let ``FileTaskCache keeps only the newest entry per plugin+file`` () =
+    withTempDir "ftc-prune" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir) :> ITaskCache
+        let key = ck "lint" "/src/A.fs"
+
+        let resultFor (h: string) =
+            { CacheKey = hash h
+              Errors = []
+              Status = Completed(at = fixedTime)
+              EmittedEvents = [] }
+
+        // Three successive edits to the same file — three content hashes.
+        for h in [ "v1"; "v2"; "v3" ] do
+            cache.Set key (hash h) (resultFor h)
+
+        let files = System.IO.Directory.GetFiles(tmpDir, "*.json")
+        test <@ files.Length = 1 @>
+
+        // The survivor is the NEWEST, and it is readable.
+        test <@ (cache.TryGet key (hash "v3")).IsSome @>
+        // The superseded ones are gone — which costs nothing, because they were
+        // already unreachable: a lookup keyed by old content could never be issued
+        // for a file whose content has moved on.
+        test <@ (cache.TryGet key (hash "v1")).IsNone @>
+        test <@ (cache.TryGet key (hash "v2")).IsNone @>)
+
+[<Fact(Timeout = 15000)>]
+let ``FileTaskCache pruning never touches a DIFFERENT plugin or file`` () =
+    withTempDir "ftc-prune-scope" (fun tmpDir ->
+        let cache = FileTaskCache(tmpDir) :> ITaskCache
+
+        let result =
+            { CacheKey = hash "k"
+              Errors = []
+              Status = Completed(at = fixedTime)
+              EmittedEvents = [] }
+
+        // Same file, different plugin; same plugin, different file; and a
+        // plugin-only (file-less) key — none may be collected by a sibling prune.
+        cache.Set (ck "lint" "/src/A.fs") (hash "k") { result with CacheKey = hash "k" }
+        cache.Set (ck "analyzers" "/src/A.fs") (hash "k") { result with CacheKey = hash "k" }
+        cache.Set (ck "lint" "/src/B.fs") (hash "k") { result with CacheKey = hash "k" }
+        cache.Set (ckPlugin "build") (hash "k") { result with CacheKey = hash "k" }
+
+        // Now supersede ONE of them.
+        cache.Set (ck "lint" "/src/A.fs") (hash "k2") { result with CacheKey = hash "k2" }
+
+        test <@ (cache.TryGet (ck "lint" "/src/A.fs") (hash "k2")).IsSome @>
+        test <@ (cache.TryGet (ck "analyzers" "/src/A.fs") (hash "k")).IsSome @>
+        test <@ (cache.TryGet (ck "lint" "/src/B.fs") (hash "k")).IsSome @>
+        test <@ (cache.TryGet (ckPlugin "build") (hash "k")).IsSome @>
+        test <@ System.IO.Directory.GetFiles(tmpDir, "*.json").Length = 4 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``FileTaskCache prune failure never propagates (cache hygiene must not fail a task)`` () =
+    // The prune runs immediately AFTER a successful write, so a failure here would
+    // otherwise throw away a result the task had already earned. It must not — and
+    // this cannot be staged through `Set`, because a directory that refuses a delete
+    // also refuses the write that precedes it. So drive the prune directly.
+    if not (OperatingSystem.IsWindows()) then
+        withTempDir "ftc-prune-fail" (fun tmpDir ->
+            let key = ck "lint" "/src/A.fs"
+            let sibling = System.IO.Path.Combine(tmpDir, "lint---src-A.fs@deadbeefcafe.json")
+            System.IO.File.WriteAllText(sibling, "{}")
+
+            // Deleting a directory ENTRY needs write permission on the DIRECTORY.
+            System.IO.File.SetUnixFileMode(
+                tmpDir,
+                System.IO.UnixFileMode.UserRead ||| System.IO.UnixFileMode.UserExecute
+            )
+
+            try
+                // Must not throw.
+                pruneSupersededSiblings tmpDir key "/some/other/keep.json"
+            finally
+                System.IO.File.SetUnixFileMode(
+                    tmpDir,
+                    System.IO.UnixFileMode.UserRead
+                    ||| System.IO.UnixFileMode.UserWrite
+                    ||| System.IO.UnixFileMode.UserExecute
+                )
+
+            // The sibling survived — the delete really did fail, so we proved the
+            // swallow, not merely that nothing was there to delete. The next write
+            // to this key collects it.
+            test <@ System.IO.File.Exists sibling @>)
+
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache persists and retrieves across instances`` () =
     withTempDir "ftc-persist" (fun tmpDir ->
@@ -1081,3 +1183,124 @@ let ``FileTaskCache TryGet on missing file returns None`` () =
         let c = cache :> ITaskCache
         let result = c.TryGet (ck "build" "Nonexistent.fs") (hash "k")
         test <@ result = None @>)
+
+// ---------------------------------------------------------------------------
+// A cache replay must NEVER claim the plugin is at rest while an exclusive run
+// is in flight (AUTOMATION-95/99 — "a verdict nobody earned").
+// ---------------------------------------------------------------------------
+//
+// On a warm scan EVERY FileChecked is a cache hit, and each hit re-reported its
+// cached `Completed` — stomping the `Running` that the in-flight test run had
+// just set. `allPluginsAtRest` then saw no plugin Running and `WaitForComplete`
+// resolved WHILE the tests were still executing (field evidence: run launched
+// 11:30:17, still running at 11:30:34, daemon logged "all plugins already
+// terminal", `check` exited 0). The suppression that fixes it shipped without a
+// test; this is that test.
+//
+// The replay is proven to have actually HAPPENED — via the errors it replays —
+// so this cannot pass by accident on a replay that never ran.
+//
+// RED-BEFORE-GREEN: drop the `anyRunSlotBusy ()` guard in PluginFramework's
+// replay path and the status is Completed while the run is still in flight.
+
+[<Fact(Timeout = 20000)>]
+let ``cache replay does not stomp a Running status while an exclusive run is in flight`` () =
+    let cache = InMemoryTaskCache()
+
+    // The cached entry for B: terminal, and carrying an error so the replay is
+    // observable.
+    cache.Set(
+        ck "test-plugin" "/src/B.fs",
+        hash "k-B",
+        { CacheKey = hash "k-B"
+          Errors =
+            [ "/src/B.fs",
+              [ { Message = "replayed"
+                  Severity = DiagnosticSeverity.Warning
+                  Line = 1
+                  Column = 0
+                  Detail = None } ] ]
+          Status = Completed(at = fixedTime)
+          EmittedEvents = [] }
+    )
+
+    // Held for the duration of the "test run", so the exclusive slot is busy on
+    // our schedule rather than on a timer.
+    use runGate = new SemaphoreSlim(0, 1)
+    let host = PluginHost(nullChecker, "/tmp/test", taskCache = (cache :> ITaskCache))
+
+    let handler: PluginHandler<unit, unit> =
+        { Name = PluginName.create "test-plugin"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChecked _ ->
+                        // Launch a long "test run" and go Running, exactly as
+                        // TestPrune does before `RunExclusive "tests"`.
+                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
+
+                        ctx.RunExclusive
+                            "tests"
+                            (async {
+                                do! runGate.WaitAsync() |> Async.AwaitTask
+                                return ()
+                            })
+                    | Custom() ->
+                        // The run finished and reported its own real verdict.
+                        ctx.ReportStatus(Completed(at = DateTime.UtcNow))
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.ofList [ SubscribeFileChecked ]
+          // A is a cache MISS (drives the run); B is a HIT (drives the replay).
+          CacheKey =
+            Some(fun event ->
+                match event with
+                | FileChecked r when (AbsFilePath.value r.File).EndsWith("B.fs") -> Some(hash "k-B")
+                | _ -> None)
+          Teardown = None }
+
+    host.RegisterHandler(handler)
+
+    // 1. A: cache miss → Update runs → Running + an exclusive run that is now stuck
+    //    on the gate.
+    host.EmitFileChecked(dummyFileCheckResult "/src/A.fs")
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("test-plugin") with
+            | Some(Running _) -> true
+            | _ -> false)
+        12000
+
+    // 2. B: cache HIT → the replay path runs. Wait for the replayed ERROR, which
+    //    proves the replay really happened (and isn't merely slow).
+    host.EmitFileChecked(dummyFileCheckResult "/src/B.fs")
+    waitUntil (fun () -> host.HasFailingReasons(warningsAreFailures = true)) 12000
+
+    // 3. THE ASSERTION. The run is still in flight — nobody has earned a verdict —
+    //    so the cached terminal status must not have been reported over it.
+    test
+        <@
+            match host.GetStatus("test-plugin") with
+            | Some(Running _) -> true
+            | _ -> false
+        @>
+
+    // 4. Let the run finish; the REAL verdict (from the run itself) lands.
+    runGate.Release() |> ignore
+    waitForTerminalStatus host "test-plugin" 12000
+
+    // NOT the cached `fixedTime` — the verdict came from the run, not the replay.
+    test <@ host.GetStatus("test-plugin") <> Some(Completed(at = fixedTime)) @>
+
+    test
+        <@
+            match host.GetStatus("test-plugin") with
+            | Some(Completed _) -> true
+            | _ -> false
+        @>

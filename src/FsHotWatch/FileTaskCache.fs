@@ -344,8 +344,37 @@ let private compositeKeyToString (key: CompositeKey) =
 [<Struct>]
 type CacheStats = { EntryCount: int; SizeBytes: int64 }
 
-/// On-disk task cache. Each entry is a JSON file in the cache directory.
-/// Files are named `{compositeKey}@{cacheKeyHash}.json` so multiple versions coexist.
+/// Delete every entry for `compositeKey` EXCEPT `keepPath` — i.e. the superseded
+/// siblings of the entry just written.
+///
+/// AUTOMATION-98: entries are named `{plugin--file}@{contentHash}.json` so that
+/// "multiple versions coexist" — but nothing ever removed the predecessors, and only
+/// the entry whose hash matches the CURRENT content can ever be READ (`tryGet`
+/// reconstructs the exact path from the key). So every edit to a file permanently
+/// added a dead, unreachable sibling: 3,126 files / 13 MB measured in a ~1.5-day-old
+/// workspace, across ~6 live workspaces — while `Stats`/`clearFile`/`clearPlugin`
+/// each full-scan the directory and degrade right along with it.
+///
+/// No LRU is needed, and an LRU would be the wrong tool: it would retain entries
+/// that are not merely cold but UNREACHABLE. Only the newest content-hash entry for
+/// a plugin+file is ever useful, so on write we collect the rest.
+///
+/// Never propagates. A cache-hygiene failure must not fail the task whose result we
+/// just successfully wrote — and whatever this call fails to collect, the next write
+/// to the same key will.
+let internal pruneSupersededSiblings (cacheDir: string) (compositeKey: CompositeKey) (keepPath: string) : unit =
+    let prefix = sanitizeKey (compositeKeyToString compositeKey) + "@"
+
+    try
+        for f in Directory.EnumerateFiles(cacheDir, prefix + "*.json") do
+            if not (String.Equals(f, keepPath, StringComparison.Ordinal)) then
+                File.Delete f
+    with _ ->
+        ()
+
+/// On-disk task cache. Each entry is a JSON file in the cache directory, named
+/// `{compositeKey}@{cacheKeyHash}.json`. Only the newest hash per key survives a
+/// write (see `pruneSupersededSiblings`).
 type FileTaskCache(cacheDir: string) =
     do Directory.CreateDirectory(cacheDir) |> ignore
     // Sweep orphan *.tmp files left from prior process crashes mid-write.
@@ -385,6 +414,8 @@ type FileTaskCache(cacheDir: string) =
         let path = filePath compositeKey cacheKey
         let json = serializeResult result
         FsHwPaths.atomicWriteAllText path (json.ToJsonString(jsonWriteOptions))
+        // AFTER the write, so a crash mid-set can never leave the key with NO entry.
+        pruneSupersededSiblings cacheDir compositeKey path
 
     let clear () =
         for f in Directory.EnumerateFiles(cacheDir, "*.json") do

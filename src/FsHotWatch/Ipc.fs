@@ -63,6 +63,26 @@ let resolveVerdictDeadline (overrideSec: string option) : TimeSpan =
         | _ -> DefaultVerdictDeadline
     | None -> DefaultVerdictDeadline
 
+/// The ambient RPC deadline: `FSHW_VERDICT_DEADLINE_SEC`, else 60 min.
+let internal ambientRpcDeadline () =
+    Environment.GetEnvironmentVariable "FSHW_VERDICT_DEADLINE_SEC"
+    |> Option.ofObj
+    |> resolveVerdictDeadline
+
+/// Grace added to the deadline at the tracking SEAM, on top of whatever an RPC
+/// bounds itself by.
+///
+/// The seam (`trackedTask`) is a BACKSTOP, not the primary bound. An RPC that
+/// bounds its own wait — `WaitForComplete` does, and names the still-running
+/// plugins when it fires — produces a far better diagnostic than a generic
+/// "RPC exceeded its deadline", so it must win the race. The grace guarantees it
+/// does. What the seam guarantees in exchange is that an RPC which bounds itself
+/// by NOTHING (as `WaitForScan` did — an unbounded `Task` that could sit inside
+/// `performScan` forever, and it is `check`'s FIRST step) still cannot wait
+/// forever, and that the same is true of every RPC written from here on WITHOUT
+/// anyone having to remember to bound it.
+let internal RpcDeadlineGrace = TimeSpan.FromSeconds 30.0
+
 /// Serialize PluginStatus as a tagged JSON variant so consumers can round-trip
 /// the discriminated union without string parsing.
 let private statusPayload (status: PluginStatus) : obj =
@@ -169,35 +189,67 @@ let WedgeStatusKey = "fshw-wedge"
 /// FREE accept task (the IPC server keeps several acceptors running) and reads
 /// the watchdog — so `GetStatus`/`ScanStatus` report the wedge + stuck op +
 /// inline recovery instead of the consumer blindly timing out on the socket.
-type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watchdog) =
+type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watchdog, ?deadline: TimeSpan) =
 
-    /// Bracket a unit of RPC work so the watchdog tracks it as the in-flight op.
-    /// `status`/`scanStatus` are intentionally NOT bracketed — they must stay
-    /// cheap and readable even while another op is wedged.
-    let tracked (name: string) (f: unit -> 'a) : 'a =
-        match watchdog with
-        | Some w ->
-            w.Begin name
+    /// The seam deadline. A caller-supplied one is honoured only when it is a
+    /// real, finite bound — `Infinite`/zero/negative would reintroduce exactly the
+    /// unbounded wait this seam exists to abolish, so they fall back to the
+    /// ambient deadline rather than being obeyed. (Tests pass a short finite one.)
+    let seamDeadline () =
+        match deadline with
+        | Some d when d > TimeSpan.Zero && d <> Threading.Timeout.InfiniteTimeSpan -> d
+        | _ -> ambientRpcDeadline () + RpcDeadlineGrace
 
-            try
-                f ()
-            finally
-                w.End()
-        | None -> f ()
-
-    /// Async variant of `tracked` for the Task-returning RPC methods.
+    /// Bracket a unit of RPC work: the watchdog tracks it, AND it is bounded.
+    ///
+    /// The bound lives HERE — at the seam every real RPC already passes through —
+    /// rather than being retrofitted method by method. That is the whole point.
+    /// `WaitForComplete` had been given a deadline; `WaitForScan` had not, and was
+    /// therefore able to reproduce the 8h36m wedge exactly (it is `check`'s FIRST
+    /// step, the client passes `-1L` on every convergence re-scan, and any hang
+    /// inside `performScan` — a Fantomas preprocessor, an Ionide design-time
+    /// evaluation, an FCS check — meant "Scanning…" forever, with no timeout, no
+    /// error, and no verdict). Bounding one method at a time is how you get the
+    /// second `WaitForScan`. Bounding the bracket means an unbounded RPC cannot be
+    /// WRITTEN without deliberately stepping outside it.
+    ///
+    /// A timed-out RPC faults with `TimeoutException`, which StreamJsonRpc carries
+    /// to the client as an error — bounded-and-legible beats unbounded-and-silent.
+    /// The orphaned work is not force-killed (in-process work cannot be), but the
+    /// client is released and the daemon stays answerable.
+    ///
+    /// `status`/`scanStatus`/`cache-clear` are intentionally NOT bracketed — they
+    /// must stay cheap and readable even while another op is wedged, and reading
+    /// the wedge report is how a consumer LEARNS about the wedge.
     let trackedTask (name: string) (f: unit -> Task<'a>) : Task<'a> =
-        match watchdog with
-        | Some w ->
-            w.Begin name
+        let token = watchdog |> Option.map (fun w -> w.Begin name)
 
-            task {
-                try
-                    return! f ()
-                finally
-                    w.End()
-            }
-        | None -> f ()
+        task {
+            try
+                let work = f ()
+                let d = seamDeadline ()
+
+                use timeoutCts = new CancellationTokenSource()
+                let expiry = Task.Delay(d, timeoutCts.Token)
+                let! winner = Task.WhenAny(work :> Task, expiry)
+
+                if obj.ReferenceEquals(winner, expiry) then
+                    return
+                        raise (
+                            TimeoutException(
+                                $"%s{name} exceeded its %d{int d.TotalSeconds}s deadline — the daemon is wedged on this \
+                                  operation. %s{OperationWatchdog.RecoveryAction}"
+                            )
+                        )
+                else
+                    // Cancel the timer so its registration doesn't outlive the call.
+                    timeoutCts.Cancel()
+                    return! work
+            finally
+                match watchdog, token with
+                | Some w, Some t -> w.End t
+                | _ -> ()
+        }
 
     /// The wedge entry to splice into a status map, if the daemon is wedged.
     let wedgeEntry () : (string * obj) option =
@@ -323,6 +375,12 @@ type DaemonRpcTarget(config: DaemonRpcConfig, ?watchdog: OperationWatchdog.Watch
 
     /// Wait for scan generation to advance past afterGeneration, then return the final status.
     /// Negative afterGeneration means "wait for any scan completion" (legacy path).
+    ///
+    /// The wait itself (`WaitForScanGeneration`) races only daemon SHUTDOWN, never a
+    /// clock — deliberately, because the scan has no meaningful per-scan budget of
+    /// its own. Its boundedness comes from the `trackedTask` seam, which is the
+    /// point of putting the deadline there: this method needs no timeout code and
+    /// still cannot wait forever.
     member _.WaitForScan(afterGeneration: int64) : Task<string> =
         trackedTask "WaitForScan" (fun () ->
             task {

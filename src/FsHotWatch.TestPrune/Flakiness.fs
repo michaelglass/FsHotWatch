@@ -241,18 +241,65 @@ let internal loadHistory (path: string) : Map<string, TestRunRecord list> =
     with _ ->
         Map.empty
 
-/// Append the given records to the history file, then trim each per-test
-/// list to `keepN` most-recent entries. Atomic via temp + rename so a daemon
-/// crash mid-write can't corrupt the on-disk file.
-let internal appendRecords (path: string) (keepN: int) (records: TestRunRecord list) : unit =
-    let existing = loadHistory path
+/// How long a test's history survives after its LAST recorded run.
+///
+/// `keepN` bounds each test's record list, but nothing bounded the set of test
+/// NAMES: a renamed, deleted, or one-off-parameterised test kept its entry
+/// forever, so the file only ever grew (5.5 MB observed live) and every write
+/// re-parsed and re-serialised all of it. A test that has not run in 30 days
+/// cannot inform a flakiness score anyone cares about; it is history of a test
+/// that no longer exists.
+let DefaultHistoryRetention = TimeSpan.FromDays 30.0
 
+/// Drop tests whose NEWEST run is older than `retention` as of `now`, and drop
+/// tests left with no records at all. Pure, so the retention rule is testable
+/// without touching disk.
+let internal expireHistory
+    (now: DateTime)
+    (retention: TimeSpan)
+    (history: Map<string, TestRunRecord list>)
+    : Map<string, TestRunRecord list> =
+    let cutoff = now - retention
+
+    history
+    |> Map.filter (fun _ recs ->
+        match recs with
+        | [] -> false
+        | recs -> recs |> List.exists (fun r -> r.RunStartedAt >= cutoff))
+
+/// Merge `records` into `history`, keeping each test's `keepN` most-recent
+/// entries (most-recent-first), then expire tests whose newest run predates
+/// `retention`. Pure — `appendRecords` is this plus the file I/O.
+let internal mergeRecords
+    (now: DateTime)
+    (retention: TimeSpan)
+    (keepN: int)
+    (records: TestRunRecord list)
+    (history: Map<string, TestRunRecord list>)
+    : Map<string, TestRunRecord list> =
+    (history, records)
+    ||> List.fold (fun acc r ->
+        let prior = Map.tryFind r.Name acc |> Option.defaultValue []
+        let trimmed = (r :: prior) |> List.truncate (max 1 keepN)
+        Map.add r.Name trimmed acc)
+    |> expireHistory now retention
+
+/// Append the given records to the history file, trim each per-test list to
+/// `keepN` most-recent entries, and expire tests that have not run in
+/// `DefaultHistoryRetention`. Atomic via temp + rename so a daemon crash
+/// mid-write can't corrupt the on-disk file.
+///
+/// AUTOMATION-98: call this ONCE PER RUN, with every project's records. It is a
+/// full `loadHistory` + full rewrite of the whole file, and it used to be invoked
+/// per test CONFIG from inside `executeTests` — 6 projects meant 6 sequential
+/// parse+rewrite cycles of a 5.5 MB file per run. Worse, those configs run under
+/// `Async.Parallel`, so the read-modify-write raced itself: two projects finishing
+/// together could each load the same `existing` and the second write would silently
+/// drop the first's records. One call, after the parallel section, fixes both.
+let internal appendRecords (path: string) (keepN: int) (records: TestRunRecord list) : unit =
     let merged =
-        (existing, records)
-        ||> List.fold (fun acc r ->
-            let prior = Map.tryFind r.Name acc |> Option.defaultValue []
-            let trimmed = (r :: prior) |> List.truncate (max 1 keepN)
-            Map.add r.Name trimmed acc)
+        loadHistory path
+        |> mergeRecords DateTime.UtcNow DefaultHistoryRetention keepN records
 
     let root = JsonObject()
 

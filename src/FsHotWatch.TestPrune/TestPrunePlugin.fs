@@ -1131,7 +1131,7 @@ let private executeTests
         let runId = Guid.NewGuid()
 
         // Launch-liveness deadline (AUTOMATION-65 QA finding). Between a test
-        // config's spawn and its first sign of life, `runProcessWithLaunchWatchdog`
+        // config's spawn and its first sign of life, `ProcessBounds.streaming`
         // bounds the wait so an overloaded box / a sleep-killed child can never
         // wedge the plugin at `Running` forever. Default 5 min, overridable with
         // `FSHW_LAUNCH_DEADLINE_SEC` (read once per run).
@@ -1188,6 +1188,17 @@ let private executeTests
         // captured once so the DB is emitted to a single file after the run.
         let mutable coverageOutput: string option = None
         let coverageRawPathsLock = obj ()
+
+        // AUTOMATION-98: per-test flakiness records, COLLECTED here and written ONCE
+        // after the parallel section — exactly like `coverageRawPaths` above, and for
+        // both of the same reasons. `Flakiness.appendRecords` is a full parse + full
+        // rewrite of the whole history file (5.5 MB live), and it used to be called
+        // per CONFIG from inside the parallel group body: 6 projects → 6 sequential
+        // parse+rewrite cycles per run, AND a read-modify-write racing itself across
+        // parallel groups, where two projects finishing together could each load the
+        // same history and the second writer would silently drop the first's records.
+        let mutable flakinessRecords: Flakiness.TestRunRecord list = []
+        let flakinessLock = obj ()
 
         let foldAndEmit (groupOutput: (string * TestResult) list) =
             lock accumulatorLock (fun () ->
@@ -1329,16 +1340,19 @@ let private executeTests
 
                             let projectSw = Stopwatch.StartNew()
 
+                            // A test runner STREAMS (discovery banner, progress, per-test
+                            // lines), so its first byte is a sound liveness proof and the
+                            // launch deadline can bound the spawn even when the config sets
+                            // no TimeoutSec at all.
                             let runOnce =
                                 async {
                                     return
-                                        runProcessWithLaunchWatchdog
+                                        runProcess
                                             config.Command
                                             finalArgs
                                             repoRoot
                                             config.Environment
-                                            timeoutSpan
-                                            launchDeadline
+                                            (ProcessBounds.streaming timeoutSpan launchDeadline)
                                 }
 
                             // Issue 2: STRUCTURAL apphost-missing detection. Prefer
@@ -1549,16 +1563,17 @@ let private executeTests
                             | _ -> ()
 
                             // Per-test flakiness tracking: reuse the report content
-                            // already read for the verdict; append per-test records to
-                            // the rolling history file (capped at 20 runs per test).
-                            // Best-effort — exceptions never fail the run.
+                            // already read for the verdict; COLLECT this project's
+                            // per-test records for the single post-parallel write (see
+                            // `flakinessRecords`). Best-effort — exceptions never fail
+                            // the run.
                             match ctrfPath, reportJson with
                             | Some p, Some json ->
                                 try
                                     let records = Flakiness.parseCtrfTests json
 
                                     if not records.IsEmpty then
-                                        Flakiness.appendRecords (flakinessHistoryPath repoRoot) 20 records
+                                        lock flakinessLock (fun () -> flakinessRecords <- flakinessRecords @ records)
 
                                     File.Delete p
                                 with
@@ -1600,6 +1615,20 @@ let private executeTests
             lock coverageRawPathsLock (fun () -> List.rev coverageRawPaths, coverageOutput)
 
         ingestAndEmitCoverage db repoRoot sharedOutput collectedRawPaths
+
+        // Flakiness: ONE parse + ONE rewrite of the history file for the whole run,
+        // with every project's records — not one per project, and not racing itself
+        // from inside Async.Parallel. Best-effort: the history is a diagnostic, so a
+        // failure to record it must never fail the run that produced it.
+        let collectedFlakiness = lock flakinessLock (fun () -> flakinessRecords)
+
+        if not collectedFlakiness.IsEmpty then
+            try
+                Flakiness.appendRecords (flakinessHistoryPath repoRoot) 20 collectedFlakiness
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException
+            | :? JsonException as ex -> Logging.warn "test-prune" $"flakiness: failed to record run: %s{ex.Message}"
 
         sw.Stop()
 
@@ -1778,6 +1807,130 @@ let internal clearFcsCheckCache (repoRoot: string) : int =
         files.Length
     else
         0
+
+/// Build the TestPrune task-cache key for one event, from its three state inputs.
+///
+/// Every input is a THUNK, and that is load-bearing rather than stylistic.
+/// `FileChecked` is the per-FILE, highest-frequency probe — ONE EVENT PER FILE on
+/// every scan — and it splices NONE of the three. Taking them by value is exactly
+/// how the `dependsOn` hash (a full-repo `SafeWalk` plus a SHA256 of every matched
+/// file) came to be computed once per checked file for a value that arm then threw
+/// away (AUTOMATION-98; the comment defending it claimed "cacheKey runs once per
+/// event, not per file", which is true of BuildCompleted and false of FileChecked).
+///
+/// Lifted out of the `create` closure so the property is STRUCTURAL: an arm cannot
+/// pay for an input it does not name, and a test can prove it by counting calls
+/// rather than by reading the code and trusting it.
+///
+/// `pendingQueueHash`/`dependsOnHash` return `None` for "nothing to contribute",
+/// which keeps the corresponding merkle entry OMITTED — the empty-queue,
+/// no-dependsOn key stays byte-identical to the pre-feature key, so existing
+/// on-disk caches keep hitting.
+let internal cacheKeyFor
+    (changedSymbolsHash: unit -> string)
+    (pendingQueueHash: unit -> string option)
+    (dependsOnHash: unit -> string option)
+    (event: PluginEvent<TestPruneMsg>)
+    : ContentHash option =
+    let optionalEntry (name: string) (value: string option) =
+        match value with
+        | Some v -> [ name, v ]
+        | None -> []
+
+    // Reuses the same merkle for BuildCompleted and Custom TestsFinished so the
+    // cache writes on TestsFinished (synchronous handler — captures EmittedEvents)
+    // and the next BuildCompleted hits via the matching key. TestsFinished only
+    // fires after BuildSucceeded (BuildFailed short-circuits earlier), so
+    // outcome="succeeded" is correct for the Custom path.
+    //
+    // AUTOMATION-5: salt bumped v1→v2 so any entry written by the prior code (which
+    // cached FAILED test verdicts and could replay them on a now-green tree) can
+    // never match a key computed here. Orphans legacy poison on disk without needing
+    // a manual cache wipe.
+    let outcomeKey (buildOutcome: string) =
+        FsHotWatch.TaskCache.merkleCacheKey (
+            [ "plugin-version", "test-prune-merkle-v2"
+              "event", "BuildCompleted"
+              "changed-symbols", changedSymbolsHash ()
+              "build-outcome", buildOutcome ]
+            @ optionalEntry "pending-queue" (pendingQueueHash ())
+            @ optionalEntry "depends-on" (dependsOnHash ())
+        )
+
+    match event with
+    | BuildCompleted BuildSucceeded ->
+        // AUTOMATION-95/99. A cache HIT makes the framework replay the cached
+        // terminal status and SKIP the handler entirely (PluginFramework
+        // `tryReplayCache`) — but this handler is a drain trigger for the
+        // pending-verification queue. Replaying a cached verdict while symbols are
+        // still unverified is precisely the "verdict nobody earned" bug: observed
+        // live as `[task-cache] plugin=test-prune hit=true` on a BuildCompleted, no
+        // test run, and `check` green with symbols pending.
+        //
+        // The key already folds in a queue hash, but that is read at DISPATCH time —
+        // and on a scan the queue is mutated afterwards, by the FCS pass that runs
+        // after the build. So the key cannot be trusted to notice outstanding work.
+        // Refuse to participate in the cache at all while the queue is non-empty:
+        // `None` means no replay AND no write, so the handler always runs and always
+        // gets its chance to drain.
+        //
+        // The empty-queue green fast-path (the case the cache exists for) is untouched.
+        match pendingQueueHash () with
+        | Some _ -> None
+        | None -> Some(outcomeKey "succeeded")
+    | Custom(TestsFinished(_, completed, _)) ->
+        // AUTOMATION-5 (2026-06-07): a FAILED test outcome must never be served from
+        // cache as a current verdict. Unlike BuildPlugin — whose result is a pure
+        // function of its content-merkle inputs, so replaying a cached failure on an
+        // identical tree is correct — a test outcome is NOT pinned by the
+        // changed-symbols merkle: the same key recurs after the tree is fixed (or for
+        // a flaky test), and a cached `Failed` would then replay as a stale red on a
+        // green tree ("green tree read as red"). Field evidence: an 08:35 failure
+        // replayed at 10:19/10:49 and through four deploy-preflights on a `failed: 0`
+        // tree. Returning None here makes a non-passing run UNCACHEABLE, so
+        // `runAndCache` skips the write and the next matching BuildCompleted finds no
+        // poisoned entry and re-runs. A fully-passing run still caches (key matches
+        // BuildSucceeded) and replays cleanly — the desired green fast-path.
+        //
+        // §3d also requires the queue to be EMPTY for a green to be cacheable: a green
+        // that left symbols queued is not a sound "safe to skip" verdict, so it must
+        // re-run rather than replay. The Aborted-outcome / abort short-circuit is
+        // covered because an aborted run has empty Results that the all-passed check
+        // treats as trivially passing — so we ALSO gate on a non-Aborted outcome here.
+        let allPassed = completed.Results |> Map.forall (fun _ r -> TestResult.isPassed r)
+
+        let notAborted =
+            match completed.Outcome with
+            | Aborted _ -> false
+            | Normal -> true
+
+        if allPassed && notAborted && (pendingQueueHash ()).IsNone then
+            Some(outcomeKey "succeeded")
+        else
+            None
+    | BuildCompleted(BuildFailed errs) ->
+        // Salt bumped v1→v2 in lockstep with the BuildSucceeded key so the two never
+        // split across versions; the pending-queue and dependsOn salts mirror it too
+        // (the same external-input invalidation applies to a failed build).
+        Some(outcomeKey ("failed:" + String.concat "|" (List.sort errs)))
+    | FileChecked r ->
+        // §1: fcs-signature captures cross-file FCS state so symbol changes upstream
+        // invalidate this file's cached symbol-diff.
+        //
+        // Note what this arm does NOT read: not the changed symbols, not the pending
+        // queue, not the dependsOn globs. It is a pure function of THIS file. That is
+        // why all three are thunks.
+        let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature r.CheckResults
+
+        Some(
+            FsHotWatch.TaskCache.merkleCacheKey
+                [ "plugin-version", "test-prune-merkle-v2"
+                  "event", "FileChecked"
+                  "file", AbsFilePath.value r.File
+                  "source", r.Source
+                  "fcs-signature", fcsSignature ]
+        )
+    | _ -> None
 
 /// Create a TestPrune plugin handler using the declarative plugin framework.
 /// `buildExtensions` receives the plugin's own `Database` so extensions that
@@ -3292,49 +3445,11 @@ let create
             [ SubscribeFileChecked; SubscribeBatchChecked; SubscribeBuildCompleted ]
         )
       CacheKey =
-        // §2a: pure-content cache key. For BuildCompleted: changed symbols +
-        // build outcome — together these dictate which tests run. For
-        // FileChecked: file path + source content (TestPrune updates internal
-        // symbol state from the source bytes).
+        // §2a: pure-content cache key, built by the lifted `cacheKeyFor` so the
+        // per-arm input dependencies are structural rather than a convention. The
+        // three thunks are this closure's live state; `cacheKeyFor` decides which
+        // arm forces which — and `FileChecked`, the per-file probe, forces none.
         let cacheKey (event: PluginEvent<TestPruneMsg>) : ContentHash option =
-            // Reuses the same merkle for BuildCompleted and Custom TestsFinished
-            // so the cache writes on TestsFinished (synchronous handler — captures
-            // EmittedEvents) and the next BuildCompleted hits via the matching key.
-            // TestsFinished only fires after BuildSucceeded (BuildFailed short-circuits
-            // earlier), so outcome="succeeded" is correct for the Custom path.
-            // External-dependency salt: a content hash of the files matched by
-            // the configured `dependsOn` globs. Editing a matched file (e.g. a DB
-            // migration that changes the TEST database schema but no test SOURCE)
-            // changes this hash → the key below changes → cache miss → genuine
-            // re-execution on the next BuildCompleted. Empty `dependsOn` → "",
-            // and the entry is OMITTED entirely, so the key stays byte-identical
-            // to the pre-feature key and existing on-disk caches keep hitting.
-            // Computed once per cacheKey invocation (cacheKey runs once per event,
-            // not per file), so the file reads are bounded.
-            let dependsOnEntries =
-                match externalDependencyHash repoRoot dependsOn with
-                | "" -> []
-                | h -> [ "depends-on", h ]
-
-            // §3d — fold the persisted needs-testing queue hash into the key so a
-            // cached green `TestRunCompleted` can be replayed ONLY for a state whose
-            // pending queue is identical to the one the cached run produced. Without
-            // this, a green that left symbols queued (a fully-passing FILTERED run
-            // that didn't cover every queued symbol) shares the changed-symbols
-            // merkle with a later BuildCompleted and could replay a green while
-            // symbols still await verification. Empty queue → empty entry, keeping
-            // the empty-queue green fast-path key byte-stable. Thunked: FileChecked
-            // — the per-file, highest-frequency probe — never splices this entry,
-            // so the queue is hashed only on the BuildCompleted/TestsFinished paths.
-            let pendingQueueEntry () =
-                if Set.isEmpty pendingQueueRef then
-                    []
-                else
-                    [ "pending-queue", PendingVerification.hash pendingQueueRef ]
-
-            // One definition shared by the BuildSucceeded and BuildFailed keys so
-            // the two branches cannot drift; thunked so probes that never splice it
-            // don't pay the sort/concat/hash.
             let changedSymbolsHash () =
                 Volatile.Read(&changedSymbolsRef)
                 |> List.distinct
@@ -3342,106 +3457,28 @@ let create
                 |> String.concat "|"
                 |> FsHotWatch.CheckCache.sha256Hex
 
-            let buildCompletedKey () =
-                // AUTOMATION-5: salt bumped v1→v2 so any entry written by the
-                // prior code (which cached FAILED test verdicts and could replay
-                // them on a now-green tree) can never match a key computed here.
-                // Orphans legacy poison on disk without needing a manual cache wipe.
-                FsHotWatch.TaskCache.merkleCacheKey (
-                    [ "plugin-version", "test-prune-merkle-v2"
-                      "event", "BuildCompleted"
-                      "changed-symbols", changedSymbolsHash ()
-                      "build-outcome", "succeeded" ]
-                    @ pendingQueueEntry ()
-                    @ dependsOnEntries
-                )
-
-            match event with
-            | BuildCompleted BuildSucceeded ->
-                // AUTOMATION-95/99. A cache HIT makes the framework replay the cached
-                // terminal status and SKIP the handler entirely (PluginFramework
-                // `tryReplayCache`) — but this handler is a drain trigger for the
-                // pending-verification queue. Replaying a cached verdict while symbols
-                // are still unverified is precisely the "verdict nobody earned" bug:
-                // observed live as `[task-cache] plugin=test-prune hit=true` on a
-                // BuildCompleted, no test run, and `check` green with symbols pending.
-                //
-                // The key already folds in a queue hash, but that is read at DISPATCH
-                // time — and on a scan the queue is mutated afterwards, by the FCS pass
-                // that runs after the build. So the key cannot be trusted to notice
-                // outstanding work. Refuse to participate in the cache at all while the
-                // queue is non-empty: `None` means no replay AND no write, so the
-                // handler always runs and always gets its chance to drain.
-                //
-                // The empty-queue green fast-path (the case the cache exists for) is
-                // untouched.
+            // §3d — the persisted needs-testing queue. `None` = empty, which both
+            // omits the merkle entry (keeping the empty-queue green fast-path key
+            // byte-stable) and, on BuildCompleted, is what makes the event cacheable
+            // at all: a green that left symbols queued must re-run, never replay.
+            let pendingQueueHash () =
                 if Set.isEmpty pendingQueueRef then
-                    Some(buildCompletedKey ())
-                else
                     None
-            | Custom(TestsFinished(_, completed, _)) ->
-                // AUTOMATION-5 (2026-06-07): a FAILED test outcome must never be
-                // served from cache as a current verdict. Unlike BuildPlugin —
-                // whose result is a pure function of its content-merkle inputs, so
-                // replaying a cached failure on an identical tree is correct — a
-                // test outcome is NOT pinned by the changed-symbols merkle: the same
-                // key recurs after the tree is fixed (or for a flaky test), and a
-                // cached `Failed` would then replay as a stale red on a green tree
-                // ("green tree read as red"). Field evidence: an 08:35 failure
-                // replayed at 10:19/10:49 and through four deploy-preflights on a
-                // `failed: 0` tree. Returning None here makes a non-passing run
-                // UNCACHEABLE, so `runAndCache` skips the write and the next
-                // matching BuildCompleted finds no poisoned entry and re-runs.
-                // A fully-passing run still caches (key matches BuildSucceeded) and
-                // replays cleanly — the desired green fast-path.
-                //
-                // §3d also requires the queue to be EMPTY for a green to be
-                // cacheable: a green that left symbols queued is not a sound
-                // "safe to skip" verdict, so it must re-run rather than replay.
-                // The Aborted-outcome / abort short-circuit is covered because an
-                // aborted run has empty Results that the all-passed check treats as
-                // trivially passing — so we ALSO gate on a non-Aborted outcome here.
-                let allPassed = completed.Results |> Map.forall (fun _ r -> TestResult.isPassed r)
-
-                let notAborted =
-                    match completed.Outcome with
-                    | Aborted _ -> false
-                    | Normal -> true
-
-                if allPassed && notAborted && Set.isEmpty pendingQueueRef then
-                    Some(buildCompletedKey ())
                 else
-                    None
-            | BuildCompleted(BuildFailed errs) ->
-                Some(
-                    // AUTOMATION-5: salt bumped v1→v2 in lockstep with the
-                    // BuildSucceeded key so the two never split across versions.
-                    // dependsOn salt mirrors the BuildSucceeded key (same
-                    // external-input invalidation applies to a failed build).
-                    // pending-queue salt mirrors the BuildSucceeded key too.
-                    FsHotWatch.TaskCache.merkleCacheKey (
-                        [ "plugin-version", "test-prune-merkle-v2"
-                          "event", "BuildCompleted"
-                          "changed-symbols", changedSymbolsHash ()
-                          "build-outcome", "failed:" + String.concat "|" (List.sort errs) ]
-                        @ pendingQueueEntry ()
-                        @ dependsOnEntries
-                    )
-                )
-            | FileChecked r ->
-                // §1: fcs-signature captures cross-file FCS state so symbol
-                // changes upstream invalidate this file's cached symbol-diff.
-                let fcsSignature = FsHotWatch.CheckCache.fcsCheckSignature r.CheckResults
+                    Some(PendingVerification.hash pendingQueueRef)
 
-                Some(
-                    FsHotWatch.TaskCache.merkleCacheKey
-                        [ "plugin-version", "test-prune-merkle-v2"
-                          "event", "FileChecked"
-                          "file", AbsFilePath.value r.File
-                          "source", r.Source
-                          "fcs-signature", fcsSignature ]
-                )
-            | _ -> None
+            // External-dependency salt: a content hash of the files matched by the
+            // configured `dependsOn` globs. Editing a matched file (a DB migration
+            // that changes the TEST database schema but no test SOURCE) changes this
+            // hash → cache miss → genuine re-run. `None` when unconfigured or when
+            // the globs match nothing, so the entry is omitted and existing on-disk
+            // caches keep hitting.
+            let dependsOnHash () =
+                match externalDependencyHash repoRoot dependsOn with
+                | "" -> None
+                | h -> Some h
+
+            cacheKeyFor changedSymbolsHash pendingQueueHash dependsOnHash event
 
         Some cacheKey
       Teardown = None }

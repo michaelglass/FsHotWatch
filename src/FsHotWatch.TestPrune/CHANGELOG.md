@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- fix: the **flakiness history file only ever grew, and racing writes lost
+  records.** `keepN` bounded each test's record list but nothing bounded the set
+  of test NAMES, so a renamed/deleted test kept its entry forever (5.5 MB
+  observed). Worse, `appendRecords` — a full parse plus a full rewrite of the
+  whole file — was called once per test CONFIG from inside `executeTests`, so six
+  projects meant six sequential parse+rewrite cycles per run; and because those
+  configs run under `Async.Parallel`, that read-modify-write raced itself and
+  could silently drop a project's records. Records are now collected across all
+  projects and written ONCE per run (the shape coverage collection already used),
+  and a test whose newest run is older than `Flakiness.DefaultHistoryRetention`
+  (30 days) is expired.
+- perf: the `dependsOn` cache-key hash is no longer computed EAGERLY on every
+  event. It sat above the `match`, so `FileChecked` — which never splices it, and
+  which is ONE EVENT PER FILE, not per batch — paid for a full-repo `SafeWalk`
+  plus a SHA256 of every matched file, and threw the result away. With one glob
+  configured, a cold scan of N files did N full-repo walks. The cache-key builder
+  (`cacheKeyFor`) now takes its state as thunks, so an arm cannot pay for an input
+  it does not name.
+- perf: test-runner spawns now go through the single `ProcessHelper.runProcess`
+  with `ProcessBounds.streaming` (behaviour unchanged — a test runner's first byte
+  still proves liveness, and the launch deadline still bounds a spawn that goes
+  nowhere).
+
 - fix!: **the apphost-freshness gate no longer hangs the daemon forever.** Its
   repo-wide newest-source scan (`newestSourceMtime`) walked with a hand-rolled
   recursion that FOLLOWED SYMLINKED DIRECTORIES. On a devenv/nix repo it

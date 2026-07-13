@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- fix!: **`FormatPreprocessor` ran Fantomas with NO timeout** while its twin
+  `createFormatCheck` wrapped the IDENTICAL call in `runWithCancellableTimeout` —
+  one bounded, one not, and the unbounded one on the worse path. A preprocessor
+  runs inside the daemon's `processBatch`, so a Fantomas hang there wedges the
+  **change agent**: the daemon silently stops processing file changes, forever.
+  It also runs inside `performScan`, which `WaitForScan` (`check`'s first step)
+  blocks on. It is now bounded by the same `timeoutSec` the read-only twin
+  already honoured, driven under the timeout's cancellation token; a timed-out
+  file is left unformatted and logged, never half-written.
+  - `FormatPreprocessor` takes an optional `timeoutSec` (default 60s, matching
+    `FormatTimeoutDefaultSec`). `FormatPreprocessor()` still compiles.
+
 ## 0.7.0-alpha.14 - 2026-06-24
 
 - chore(deps): dependency refresh (version-coupled release; no functional change).

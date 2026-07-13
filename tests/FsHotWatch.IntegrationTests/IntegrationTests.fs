@@ -32,7 +32,6 @@ open FsHotWatch.Build
 open FsHotWatch.FileCommand.FileCommandPlugin
 open FsHotWatch.CheckCache
 open FsHotWatch.Tests.TestHelpers
-open FsHotWatch.FileCheckCache
 open FsHotWatch.Tests.TestHelpers
 open FsHotWatch.ProcessHelper
 open FsHotWatch.Ipc
@@ -1629,119 +1628,6 @@ let ``TestPrunePlugin does not run concurrent test suites`` () =
         with _ ->
             ()
 
-[<Fact(Timeout = 5000)>]
-let ``file cache enables fast cold-start check`` () =
-    let repoRoot = findRepoRoot ()
-    let cacheDir = Path.Combine(Path.GetTempPath(), $"fshw-cache-{Guid.NewGuid():N}")
-
-    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
-
-    let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
-    let source = File.ReadAllText(sourceFile)
-    let sourceText = SourceText.ofString source
-
-    let projOptions =
-        checker.GetProjectOptionsFromScript(sourceFile, sourceText, assumeDotNetFramework = false)
-        |> Async.RunSynchronously
-        |> fst
-
-    try
-        // --- Cold check (populates cache) ---
-        let backend1 = FileCheckCache(cacheDir) :> ICheckCacheBackend
-        let pipeline1 = CheckPipeline(checker, cacheBackend = backend1)
-        pipeline1.RegisterProject("FsHotWatch", projOptions)
-
-        let sw1 = Stopwatch.StartNew()
-
-        let result1 =
-            pipeline1.CheckFile(AbsFilePath.create sourceFile) |> Async.RunSynchronously
-
-        sw1.Stop()
-
-        test <@ result1.IsSome @>
-        test <@ AbsFilePath.value result1.Value.File = Path.GetFullPath(sourceFile) @>
-
-        // Verify cache file was written
-        let cacheFiles = Directory.GetFiles(cacheDir, "*.json")
-        test <@ cacheFiles.Length > 0 @>
-
-        // --- Warm check (new pipeline, same cache dir = simulated cold restart) ---
-        // FileCheckCache stores only metadata (no FCS types). Partial cache hits
-        // fall through to FCS re-check so plugins get real data on daemon restart.
-        let backend2 = FileCheckCache(cacheDir) :> ICheckCacheBackend
-        let pipeline2 = CheckPipeline(checker, cacheBackend = backend2)
-        pipeline2.RegisterProject("FsHotWatch", projOptions)
-
-        let result2 =
-            pipeline2.CheckFile(AbsFilePath.create sourceFile) |> Async.RunSynchronously
-
-        // Partial cache hit triggers FCS re-check — result has real CheckResults
-        test <@ result2.IsSome @>
-
-        test
-            <@
-                match result2.Value.CheckResults with
-                | FullCheck _ -> true
-                | ParseOnly -> false
-            @>
-    finally
-        if Directory.Exists(cacheDir) then
-            Directory.Delete(cacheDir, true)
-
-[<Fact(Timeout = 5000)>]
-let ``cached check returns None because partial FCS results are unusable by plugins`` () =
-    let repoRoot = findRepoRoot ()
-
-    let cacheDir =
-        Path.Combine(Path.GetTempPath(), $"fshw-cache-meta-{Guid.NewGuid():N}")
-
-    let checker = FsHotWatch.Tests.TestHelpers.sharedChecker.Value
-
-    let sourceFile = Path.Combine(repoRoot, "src", "FsHotWatch", "Events.fs")
-    let source = File.ReadAllText(sourceFile)
-    let sourceText = SourceText.ofString source
-
-    let projOptions =
-        checker.GetProjectOptionsFromScript(sourceFile, sourceText, assumeDotNetFramework = false)
-        |> Async.RunSynchronously
-        |> fst
-
-    try
-        // Populate cache
-        let backend1 = FileCheckCache(cacheDir) :> ICheckCacheBackend
-        let pipeline1 = CheckPipeline(checker, cacheBackend = backend1)
-        pipeline1.RegisterProject("FsHotWatch", projOptions)
-
-        let warm =
-            pipeline1.CheckFile(AbsFilePath.create sourceFile) |> Async.RunSynchronously
-
-        test <@ warm.IsSome @>
-
-        // Verify cache file was written
-        let cacheFiles = Directory.GetFiles(cacheDir, "*.json")
-        test <@ cacheFiles.Length > 0 @>
-
-        // Read from cache (new pipeline = cold restart)
-        // Partial cache hit (null FCS types) falls through to real FCS check
-        let backend2 = FileCheckCache(cacheDir) :> ICheckCacheBackend
-        let pipeline2 = CheckPipeline(checker, cacheBackend = backend2)
-        pipeline2.RegisterProject("FsHotWatch", projOptions)
-
-        let cached =
-            pipeline2.CheckFile(AbsFilePath.create sourceFile) |> Async.RunSynchronously
-
-        test <@ cached.IsSome @>
-
-        test
-            <@
-                match cached.Value.CheckResults with
-                | FullCheck _ -> true
-                | ParseOnly -> false
-            @>
-    finally
-        if Directory.Exists(cacheDir) then
-            Directory.Delete(cacheDir, true)
-
 // ===========================================================================
 // Real-world validation: confirms the DI seams in unit tests reflect
 // actual production behavior. Excluded from coverage on purpose — these
@@ -1786,23 +1672,25 @@ let ``hashFileWith: real File.ReadAllBytes throws on unreadable file`` () =
 // ===========================================================================
 
 [<Fact(Timeout = 10000)>]
-let ``runProcessWithTimeout kills child when exceeded`` () =
+let ``runProcess kills child when exceeded`` () =
     let sw = System.Diagnostics.Stopwatch.StartNew()
 
     let result =
-        runProcessWithTimeout "sleep" "10" "." [] (TimeSpan.FromMilliseconds 200.0)
+        runProcess "sleep" "10" "." [] (ProcessBounds.silent (TimeSpan.FromMilliseconds 200.0))
 
     sw.Stop()
     Assert.True(isTimedOut result)
     Assert.True(sw.Elapsed < TimeSpan.FromSeconds 3.0, $"took {sw.Elapsed}")
 
 [<Fact(Timeout = 10000)>]
-let ``runProcessWithTimeout reports TimedOut on kill`` () =
+let ``runProcess reports TimedOut on kill`` () =
     // The earlier variant asserted partial stdout reached the `tail` field, but
     // capturing pre-kill stdout races subprocess startup under load. The
     // contract worth pinning is just that we get the TimedOut tag — the tail is
     // best-effort drain.
-    match runProcessWithTimeout "sh" "-c \"echo partial; sleep 10\"" "." [] (TimeSpan.FromMilliseconds 300.0) with
+    match
+        runProcess "sh" "-c \"echo partial; sleep 10\"" "." [] (ProcessBounds.silent (TimeSpan.FromMilliseconds 300.0))
+    with
     | TimedOut _ -> ()
     | other -> Assert.Fail $"expected TimedOut, got %A{other}"
 
@@ -1825,7 +1713,7 @@ let ``ProcessRegistry.killAll terminates tracked live processes`` () =
 // deadline + 5s task.Wait = 13s) so a real failure surfaces as an assertion
 // rather than a silent xUnit timeout.
 [<Fact(Timeout = 20000)>]
-let ``ProcessRegistry.killAll kills a child started via runProcessWithTimeout from another thread`` () =
+let ``ProcessRegistry.killAll kills a child started via runProcess from another thread`` () =
     let registry = FsHotWatch.ProcessRegistry.Registry()
     use _ = FsHotWatch.ProcessRegistry.install registry
 
@@ -1833,7 +1721,7 @@ let ``ProcessRegistry.killAll kills a child started via runProcessWithTimeout fr
     // registers against this test's registry — not a process-wide global.
     let task =
         System.Threading.Tasks.Task.Run(fun () ->
-            runProcessWithTimeout "sleep" "30" "." [] System.Threading.Timeout.InfiniteTimeSpan)
+            runProcess "sleep" "30" "." [] (ProcessBounds.silent System.Threading.Timeout.InfiniteTimeSpan))
 
     // Wait for the child to register (Process.Start is fast; track is the next line).
     // 8s deadline tolerates parallel-test thread-pool contention — a Task.Run body
@@ -1848,7 +1736,7 @@ let ``ProcessRegistry.killAll kills a child started via runProcessWithTimeout fr
     registry.KillAll()
 
     let completed = task.Wait(5000)
-    Assert.True(completed, "runProcessWithTimeout did not return after killAll")
+    Assert.True(completed, "runProcess did not return after killAll")
 
 // ===========================================================================
 // TestPrune timeout test — moved from FsHotWatch.Tests because it spawns a

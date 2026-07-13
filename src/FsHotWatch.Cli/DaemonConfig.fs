@@ -12,29 +12,38 @@ open FsHotWatch.Plugin
 open FsHotWatch.ProcessHelper
 open FsHotWatch.TestPrune.TestPrunePlugin
 
-/// Cache backend configuration.
+/// Cache backend for the FCS check pipeline.
+///
+/// AUTOMATION-98 removed the `FileBackend` (`"cache": "file"` / `"jj"`), which was
+/// the DEFAULT and a structural NO-OP: FCS types are not serializable, so its
+/// `TryGet` always reconstructed `CheckResults = ParseOnly`, and `ParseOnly` is the
+/// one thing `CheckPipeline.tryGetCachedFullCheck` treats as a MISS. It could not
+/// hit — ever, by construction, on any input. What it DID do was write and
+/// enumerate a JSON file per checked file per daemon restart (1,051 dead entries
+/// measured in one repo, 110 in this one), and mislead the code downstream that
+/// reasoned about it as if it were real (`clearFcsCheckCache` "so cache-hit files
+/// re-index" — vacuous; there are no cache-hit files).
+///
+/// Making it real would mean serialising FCS check results, which is a large
+/// redesign with no demonstrated need. So it is gone, and the config value that
+/// selected it is rejected out loud rather than silently accepted.
 type CacheBackendConfig =
-    /// Disable caching entirely
+    /// No check-result cache. This is the DEFAULT, and — being honest about it — it
+    /// is also exactly what the old `FileBackend` default actually did.
     | NoCache
-    /// In-memory LRU cache only (lost on restart)
+    /// In-memory LRU cache (lost on restart). Unlike the removed file backend this
+    /// one really works: it holds the live `FileCheckResult`, FCS types and all.
     | InMemoryOnly of maxSize: int
-    /// File-based cache (content-hashed keys)
-    | FileBackend
 
 /// Create cache backend and key provider from config.
 let createCacheComponents
-    (repoRoot: string)
+    (_repoRoot: string)
     (config: CacheBackendConfig)
     : (ICheckCacheBackend option * ICacheKeyProvider option) =
-    let cacheDir = Path.Combine(FsHotWatch.FsHwPaths.root repoRoot, "cache")
-
     match config with
     | NoCache -> (None, None)
     | InMemoryOnly maxSize ->
         (Some(FsHotWatch.InMemoryCheckCache.InMemoryCheckCache(maxSize) :> ICheckCacheBackend),
-         Some(TimestampCacheKeyProvider() :> ICacheKeyProvider))
-    | FileBackend ->
-        (Some(FsHotWatch.FileCheckCache.FileCheckCache(cacheDir) :> ICheckCacheBackend),
          Some(TimestampCacheKeyProvider() :> ICacheKeyProvider))
 
 /// Resolves which paths from `paths` exist, retrying with short backoff to
@@ -85,9 +94,6 @@ let analyzerPathFailures (loadedByPath: (string * int) list) : string option =
             $"Analyzer path(s) loaded 0 analyzers (missing/empty or built in the wrong configuration): \
               %s{joined} — check .fshw.json analyzers.paths vs the build config"
 
-/// Detect the default cache backend. Always file-based now that jj-specific
-/// caching has been removed; kept for API compatibility.
-let detectDefaultCacheBackend (_repoRoot: string) : CacheBackendConfig = FileBackend
 
 /// Default global per-operation timeout (seconds) applied when neither a
 /// per-entry `timeoutSec` nor the global `.fshw.json` `timeoutSec` is set.
@@ -227,7 +233,7 @@ let private defaultConfigFor (repoRoot: string) =
                  TimeoutSec = None |} ]
       Format = Auto
       Lint = true
-      Cache = detectDefaultCacheBackend repoRoot
+      Cache = NoCache
       Analyzers = None
       Tests = None
       FileCommands = []
@@ -316,10 +322,19 @@ let parseConfig (json: string) (defaults: DaemonConfiguration) : DaemonConfigura
         | true, v when v.ValueKind = JsonValueKind.String ->
             match v.GetString().ToLowerInvariant() with
             | "memory" -> InMemoryOnly 500
-            | "file"
-            | "jj" -> FileBackend // "jj" was an alias for the jj-aware variant; now always file-based
             | "none"
             | "false" -> NoCache
+            | ("file" | "jj") as removed ->
+                // Rejected LOUDLY, not silently mapped. `"cache": "file"` promised an
+                // on-disk FCS check cache that could never hit (see CacheBackendConfig)
+                // — a repo carrying this setting has been paying for dead JSON writes
+                // and believing it had a warm cold-start. Say so, and be explicit that
+                // the resulting behaviour is unchanged, because it always WAS NoCache.
+                Logging.warn
+                    "config"
+                    $"cache: '%s{removed}' has been REMOVED — the on-disk FCS check cache could never produce a                       hit (FCS results aren't serializable, so every lookup returned ParseOnly, which the check                       pipeline treats as a miss) and only wrote dead JSON. Running with no check cache, which is                       what this setting already did. Remove the key, or set \"cache\": \"memory\" for a real                       (in-process) cache."
+
+                NoCache
             | other ->
                 Logging.warn "config" $"Unknown cache value '%s{other}', using default"
                 defaults.Cache
@@ -908,11 +923,38 @@ let shellInvocation (cmd: string) : string * string =
     let escaped = cmd.Replace("\"", "\\\"")
     "/bin/sh", "-c \"" + escaped + "\""
 
-let private makeShellHookWithResult (label: string) (repoRoot: string) (cmd: string) : unit -> bool * string =
+/// Wrap a shell command string into a callback that runs it as a bounded child.
+///
+/// AUTOMATION-98: this used to call `runProcess` with `InfiniteTimeSpan`, which
+/// made the `beforeRun` hook the single most dangerous spawn in the daemon. It
+/// runs INSIDE the `RunExclusive "tests"` slot, so a hook that hangs — a
+/// `dotnet restore` stuck on the network, or (worse) a hook that EXITS while a
+/// grandchild MSBuild node still holds the inherited stdout pipe, which the old
+/// unbounded success-path `Task.WaitAll` waited on forever — held the tests slot
+/// for good: the plugin stayed `Running`, every later `check` burned its full
+/// deadline, and the only recovery was a daemon restart.
+///
+/// Now it is a `ProcessBounds.silent` child (`dotnet restore --verbosity quiet`
+/// prints nothing, so output cannot prove liveness) bounded by `timeoutSec` —
+/// which carries the same `DefaultGlobalTimeoutSec` default as every other spawn.
+/// A hung hook now TIMES OUT into `Failed`/`Aborted` with a legible diagnostic.
+let internal makeShellHookWithResult
+    (label: string)
+    (timeoutSec: int option)
+    (repoRoot: string)
+    (cmd: string)
+    : unit -> bool * string =
+    let bounds =
+        ProcessBounds.silent (
+            match timeoutSec with
+            | Some s -> TimeSpan.FromSeconds(float s)
+            | None -> Threading.Timeout.InfiniteTimeSpan
+        )
+
     fun () ->
         Logging.info label $"Running %s{label}: %s{cmd}"
         let (command, args) = shellInvocation cmd
-        let result = runProcess command args repoRoot []
+        let result = runProcess command args repoRoot [] bounds
         let success = isSucceeded result
         let output = outputOf result
 
@@ -923,8 +965,14 @@ let private makeShellHookWithResult (label: string) (repoRoot: string) (cmd: str
 
 /// Wrap a shell command string into a fire-and-forget callback.
 /// If failOnError is true, raises on failure; otherwise only logs.
-let private makeShellHook (label: string) (failOnError: bool) (repoRoot: string) (cmd: string) : unit -> unit =
-    let hook = makeShellHookWithResult label repoRoot cmd
+let private makeShellHook
+    (label: string)
+    (failOnError: bool)
+    (timeoutSec: int option)
+    (repoRoot: string)
+    (cmd: string)
+    : unit -> unit =
+    let hook = makeShellHookWithResult label timeoutSec repoRoot cmd
 
     fun () ->
         let (success, output) = hook ()
@@ -944,7 +992,15 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
     match config.Format with
     | Auto ->
         Logging.info "config" "Registering FormatPreprocessor"
-        daemon.RegisterPreprocessor(FsHotWatch.Fantomas.FormatCheckPlugin.FormatPreprocessor())
+
+        // Same `timeoutSec` the read-only twin below already honoured. A
+        // preprocessor runs inside the change agent AND inside the scan, so an
+        // unbounded one is the worse of the two to leave uncapped.
+        daemon.RegisterPreprocessor(
+            match config.TimeoutSec with
+            | Some s -> FsHotWatch.Fantomas.FormatCheckPlugin.FormatPreprocessor(timeoutSec = s)
+            | None -> FsHotWatch.Fantomas.FormatCheckPlugin.FormatPreprocessor()
+        )
     | Check ->
         Logging.info "config" "Registering FormatCheckPlugin (read-only)"
         daemon.RegisterHandler(FsHotWatch.Fantomas.FormatCheckPlugin.createFormatCheck config.TimeoutSec)
@@ -1073,7 +1129,9 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                   TimeoutSec = p.TimeoutSec
                   ReportVerificationFormat = p.ReportVerificationFormat })
 
-        let beforeRun = t.BeforeRun |> Option.map (makeShellHook "beforeRun" true repoRoot)
+        let beforeRun =
+            t.BeforeRun
+            |> Option.map (makeShellHook "beforeRun" true config.TimeoutSec repoRoot)
 
         // Coverage paths — resolve per-project artifact locations (respecting per-project opt-out).
         // TestPrune itself decides whether a given run writes baseline.json or partial.json

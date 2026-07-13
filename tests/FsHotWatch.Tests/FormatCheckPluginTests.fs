@@ -464,3 +464,42 @@ let ``format check clears errors when file becomes formatted`` () =
     finally
         if Directory.Exists tmpDir then
             Directory.Delete(tmpDir, true)
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-98 finding 1(a) — the FormatPreprocessor must be BOUNDED.
+// ---------------------------------------------------------------------------
+//
+// The regression this pins: `FormatPreprocessor.Process` ran Fantomas via a bare
+// `Async.RunSynchronously` with NO timeout, while its twin `createFormatCheck`
+// wrapped the IDENTICAL call in `runWithCancellableTimeout` — one bounded, one
+// not, and the unbounded one on the WORSE path. A preprocessor runs inside the
+// daemon's `processBatch`, so a Fantomas hang there wedges the changeAgent: the
+// daemon silently stops processing file changes, forever. It also runs inside
+// `performScan`, which `WaitForScan` — `check`'s first step — blocks on.
+//
+// A zero budget is the boundary case of "cannot finish in time": the work is
+// started and the wait expires before it can complete, which is exactly the shape
+// of a hang, minus the waiting.
+
+[<Fact(Timeout = 15000)>]
+let ``FormatPreprocessor leaves a file alone when formatting exceeds its timeout`` () =
+    let tmpDir =
+        Path.Combine(Path.GetTempPath(), $"fshw-fmt-timeout-{Guid.NewGuid():N}")
+
+    Directory.CreateDirectory(tmpDir) |> ignore
+
+    try
+        let file = Path.Combine(tmpDir, "Bad.fs")
+        let original = "module Bad\nlet   x=1\nlet   y   =   2\n"
+        File.WriteAllText(file, original)
+
+        let preprocessor = FormatPreprocessor(timeoutSec = 0) :> IFsHotWatchPreprocessor
+        let modified = preprocessor.Process [ file ] tmpDir
+
+        // No rewrite is reported...
+        test <@ modified.IsEmpty @>
+        // ...and the file is untouched — a timed-out format must never write a
+        // half-formatted document.
+        test <@ File.ReadAllText(file) = original @>
+    finally
+        Directory.Delete(tmpDir, true)

@@ -318,9 +318,9 @@ let testRunCompletedRecorder () =
 /// than ~20 mechanical edits across the test suite.
 ///
 /// Values mirror the product defaults (`DaemonConfig.defaultConfigFor`) except
-/// where determinism matters: `Cache = FileBackend` is set explicitly (the
-/// product default is `detectDefaultCacheBackend`, which today always returns
-/// `FileBackend` but is env-probing in principle), so config-shape tests stay
+/// where determinism matters: `Cache = NoCache` is set explicitly (matching the
+/// product default, which AUTOMATION-98 made honest — it was the never-hitting
+/// file backend, which behaved as NoCache anyway), so config-shape tests stay
 /// stable regardless of environment.
 let defaultTestConfig () : FsHotWatch.Cli.DaemonConfig.DaemonConfiguration =
     { Build =
@@ -332,7 +332,7 @@ let defaultTestConfig () : FsHotWatch.Cli.DaemonConfig.DaemonConfiguration =
                  TimeoutSec = None |} ]
       Format = FsHotWatch.Cli.DaemonConfig.Auto
       Lint = true
-      Cache = FsHotWatch.Cli.DaemonConfig.FileBackend
+      Cache = FsHotWatch.Cli.DaemonConfig.NoCache
       Analyzers = None
       Tests = None
       FileCommands = []

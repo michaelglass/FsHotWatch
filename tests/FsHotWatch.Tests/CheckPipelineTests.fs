@@ -439,12 +439,12 @@ let ``CheckFile honors a pre-cancelled caller token and returns None`` () =
 
         test <@ result = None @>)
 
-// --- Cache hit returns None (plugins can't use partial results) ---
-
-// Cache hit behavior is tested in IntegrationTests.fs:
-// - "file cache enables fast cold-start check" verifies FileCheckCache hits return None
-// - "cached check returns None because partial FCS results are unusable by plugins"
-// - These use real FCS with unique project options for proper isolation
+// The two integration tests that used to live here ("file cache enables fast
+// cold-start check", "cached check returns None because partial FCS results are
+// unusable by plugins") went away with the on-disk `FileCheckCache` in
+// AUTOMATION-98 — read their names again and they were, all along, a description
+// of a cache that could not hit. `tryGetCachedFullCheck` below is the surviving
+// invariant they were really pinning: a `ParseOnly` entry is a MISS.
 
 // --- tryGetCachedFullCheck pure-logic tests (no disk, no FCS) ---
 

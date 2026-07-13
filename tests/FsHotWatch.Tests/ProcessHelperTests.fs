@@ -6,6 +6,21 @@ open Xunit
 open FsHotWatch.ProcessHelper
 open FsHotWatch.Tests.TestHelpers
 
+/// Bounds for the spawn tests that care about something OTHER than the bounds
+/// (the child-env contract, the process registry): every one of them runs a
+/// trivial `sh -c echo` that exits in milliseconds, so a plain finite timeout is
+/// all they need. Named so a reader is never in doubt that the bounds are
+/// incidental here — the bound-specific behaviour has its own tests below.
+let private quick = ProcessBounds.silent (TimeSpan.FromSeconds 30.0)
+
+/// Shadows `ProcessHelper.runProcess` with the 4-arg form those tests want.
+let private runProcess command args workDir env =
+    FsHotWatch.ProcessHelper.runProcess command args workDir env quick
+
+/// The bound-specific tests: same spawn, explicit bounds, no env / workDir noise.
+let private runProcessBounded command args bounds =
+    FsHotWatch.ProcessHelper.runProcess command args "." [] bounds
+
 // --- drainedOrEmpty: post-kill drain tail (internal, via InternalsVisibleTo) ---
 // The timeout-kill call sites are exercised end-to-end in
 // FsHotWatch.IntegrationTests; these deterministic unit tests pin both arms so
@@ -28,8 +43,8 @@ let ``drainedOrEmpty returns empty for a faulted task`` () =
     Assert.Equal("", drainedOrEmpty tcs.Task)
 
 [<Fact(Timeout = 20000)>]
-let ``runProcessWithTimeout returns Succeeded when fast`` () =
-    match runProcessWithTimeout "echo" "hi" "." [] (TimeSpan.FromSeconds 5.0) with
+let ``runProcess returns Succeeded when fast`` () =
+    match runProcess "echo" "hi" "." [] with
     | Succeeded out -> Assert.Equal("hi", out.Trim())
     | other -> Assert.Fail $"expected Succeeded, got %A{other}"
 
@@ -138,7 +153,7 @@ let ``runProcess reports nonzero exit as Failed`` () =
     | other -> Assert.Fail $"expected Failed, got %A{other}"
 
 [<Fact(Timeout = 15000)>]
-let ``runProcessWithTimeout registers the child while running and unregisters on exit`` () =
+let ``runProcess registers the child while running and unregisters on exit`` () =
     use _ = FsHotWatch.ProcessRegistry.install (FsHotWatch.ProcessRegistry.Registry())
 
     Assert.Empty(FsHotWatch.ProcessRegistry.snapshot ())
@@ -601,40 +616,34 @@ let ``launchWatchdogLoopWith: overall timeout ends a progressing run`` () =
 
     Assert.Equal(LaunchOutcome.TimedOut, step)
 
-// runProcessWithLaunchWatchdog: fast real-process arms (no global state).
+// runProcess under `ProcessBounds.streaming`: fast real-process arms (no global state).
 
 [<Fact(Timeout = 20000)>]
-let ``runProcessWithLaunchWatchdog: a fast normal process returns Succeeded`` () =
+let ``runProcess streaming: a fast normal process returns Succeeded`` () =
     // A progressing, quickly-exiting process is never launch-killed.
     match
-        runProcessWithLaunchWatchdog
+        runProcessBounded
             "echo"
             "hi"
-            "."
-            []
-            System.Threading.Timeout.InfiniteTimeSpan
-            (TimeSpan.FromSeconds 5.0)
+            (ProcessBounds.streaming System.Threading.Timeout.InfiniteTimeSpan (TimeSpan.FromSeconds 5.0))
     with
     | Succeeded out -> Assert.Equal("hi", out.Trim())
     | other -> Assert.Fail $"expected Succeeded, got %A{other}"
 
 [<Fact(Timeout = 20000)>]
-let ``runProcessWithLaunchWatchdog: a real failing test with output stays Failed`` () =
+let ``runProcess streaming: a real failing test with output stays Failed`` () =
     // A genuine nonzero verdict is preserved, never converted to a stall.
     match
-        runProcessWithLaunchWatchdog
+        runProcessBounded
             "sh"
             "-c \"echo boom; exit 3\""
-            "."
-            []
-            System.Threading.Timeout.InfiniteTimeSpan
-            (TimeSpan.FromSeconds 5.0)
+            (ProcessBounds.streaming System.Threading.Timeout.InfiniteTimeSpan (TimeSpan.FromSeconds 5.0))
     with
     | Failed(3, out) -> Assert.Contains("boom", out)
     | other -> Assert.Fail $"expected Failed 3, got %A{other}"
 
 [<Fact(Timeout = 20000)>]
-let ``runProcessWithLaunchWatchdog: a nonzero exit with NO output is Failed, not a stall`` () =
+let ``runProcess streaming: a nonzero exit with NO output is Failed, not a stall`` () =
     // Critical distinction (the regression that motivated dropping a silent-death
     // heuristic): a child that EXITS nonzero having produced nothing is a genuine
     // failing / zero-match test — a runner filtered to no tests exits nonzero with
@@ -643,47 +652,79 @@ let ``runProcessWithLaunchWatchdog: a nonzero exit with NO output is Failed, not
     // verdict. The machine-sleep case is covered by the poll observing the exit at
     // all (closing the wedge), not by guessing a death here.
     match
-        runProcessWithLaunchWatchdog
+        runProcessBounded
             "sh"
             "-c \"exit 8\""
-            "."
-            []
-            System.Threading.Timeout.InfiniteTimeSpan
-            (TimeSpan.FromSeconds 5.0)
+            (ProcessBounds.streaming System.Threading.Timeout.InfiniteTimeSpan (TimeSpan.FromSeconds 5.0))
     with
     | Failed(8, _) -> ()
     | other -> Assert.Fail $"expected Failed 8, got %A{other}"
 
 [<Fact(Timeout = 20000)>]
-let ``runProcessWithLaunchWatchdog: a child producing no output within the launch deadline raises`` () =
+let ``runProcess streaming: a child producing no output within the launch deadline raises`` () =
     // `sleep` produces no output and won't exit inside a 250 ms launch deadline —
     // the overloaded-spawn case. The tree is killed and a stall is raised.
     let ex =
         Assert.Throws<LaunchStalledException>(fun () ->
-            runProcessWithLaunchWatchdog
+            runProcessBounded
                 "sleep"
                 "30"
-                "."
-                []
-                System.Threading.Timeout.InfiniteTimeSpan
-                (TimeSpan.FromMilliseconds 250.0)
+                (ProcessBounds.streaming System.Threading.Timeout.InfiniteTimeSpan (TimeSpan.FromMilliseconds 250.0))
             |> ignore)
 
     Assert.Contains("no live process", ex.Data0)
 
 [<Fact(Timeout = 20000)>]
-let ``runProcessWithLaunchWatchdog: a progressing run that overruns the overall timeout is TimedOut`` () =
+let ``runProcess streaming: a progressing run that overruns the overall timeout is TimedOut`` () =
     // Progresses (emits "go") so the launch deadline never trips, but the overall
     // per-config timeout is a hard cap that still kills the tree → TimedOut. Proves
     // an alive run is bounded by the caller's timeout, never by the launch deadline.
     match
-        runProcessWithLaunchWatchdog
+        runProcessBounded
             "sh"
             "-c \"echo go; sleep 30\""
-            "."
-            []
-            (TimeSpan.FromMilliseconds 300.0)
-            (TimeSpan.FromSeconds 10.0)
+            (ProcessBounds.streaming (TimeSpan.FromMilliseconds 300.0) (TimeSpan.FromSeconds 10.0))
     with
     | TimedOut(_, tail) -> Assert.Contains("go", tail)
     | other -> Assert.Fail $"expected TimedOut, got %A{other}"
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-98 finding 2 — the UNBOUNDED POST-EXIT DRAIN, on the SUCCESS path.
+//
+// The regression this pins: `runProcessWithTimeout`'s success arm ended in a bare
+// `Task.WaitAll(stdoutTask, stderrTask)` with NO timeout. Those tasks complete at
+// stream EOF, and EOF never arrives while ANY process holds the write end of the
+// inherited stdout pipe — so a child that exits cleanly while a GRANDCHILD (an
+// MSBuild node, a Playwright driver, a backgrounded `sleep`) still holds the pipe
+// blocks that WaitAll FOREVER. The child is gone, the exit code is right there,
+// and the daemon waits anyway. That is the 16 h wedge, and every hook / build /
+// fileCommand spawn went through this path.
+//
+// `sh -c "( sleep 30 & ) ; echo done"` reproduces it exactly: `sh` exits at once
+// (leaving `done` on the pipe), and the orphaned `sleep 30` inherits the pipe and
+// holds it open for 30 s. Bounded drain → returns in ~PostExitDrainMs with the
+// output it did capture. Unbounded drain → 30 s, blowing this test's 15 s budget.
+//
+// RED-BEFORE-GREEN: restore `Task.WaitAll(stdoutTask, stderrTask)` (no timeout) on
+// the Exited arm and this test hangs until the xUnit timeout kills it.
+// ---------------------------------------------------------------------------
+[<Fact(Timeout = 15000)>]
+let ``runProcess does not wait for a grandchild that inherited the stdout pipe`` () =
+    let sw = System.Diagnostics.Stopwatch.StartNew()
+
+    let outcome =
+        runProcessBounded "sh" "-c \"( sleep 30 & ) ; echo done\"" (ProcessBounds.silent (TimeSpan.FromSeconds 60.0))
+
+    sw.Stop()
+
+    // Classified by the child's EXIT CODE, not by stream EOF.
+    match outcome with
+    | Succeeded out -> Assert.Contains("done", out)
+    | other -> Assert.Fail $"expected Succeeded, got %A{other}"
+
+    // The grandchild holds the pipe for 30 s; we must be long gone by then.
+    Assert.True(
+        sw.Elapsed < TimeSpan.FromSeconds 10.0,
+        $"post-exit drain was not bounded: took %.1f{sw.Elapsed.TotalSeconds}s waiting on a \
+          grandchild-held pipe for a child that had already exited"
+    )

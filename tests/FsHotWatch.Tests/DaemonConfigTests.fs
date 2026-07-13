@@ -31,7 +31,7 @@ let ``parseConfig with empty JSON returns defaults`` () =
 
     test <@ config.Format = Auto @>
     test <@ config.Lint = true @>
-    test <@ config.Cache = FileBackend @>
+    test <@ config.Cache = NoCache @>
     test <@ config.Analyzers = None @>
     test <@ config.Tests = None @>
     test <@ config.FileCommands |> List.isEmpty @>
@@ -388,20 +388,21 @@ let ``parseConfig cache memory returns InMemoryOnly 500`` () =
     let config = parseConfig """{"cache": "memory"}""" defaults
     test <@ config.Cache = InMemoryOnly 500 @>
 
-[<Fact(Timeout = 15000)>]
-let ``parseConfig cache file returns FileBackend`` () =
-    let config = parseConfig """{"cache": "file"}""" defaults
-    test <@ config.Cache = FileBackend @>
-
-[<Fact(Timeout = 15000)>]
-let ``parseConfig cache jj is treated as file (legacy alias)`` () =
-    let config = parseConfig """{"cache": "jj"}""" defaults
-    test <@ config.Cache = FileBackend @>
+// AUTOMATION-98: `"cache": "file"` / `"jj"` selected an on-disk FCS check cache
+// that could never produce a hit. The value is now REJECTED — mapped to the
+// NoCache it always effectively was, with a loud config warning naming the
+// removal — rather than silently accepted as a setting that does nothing.
+[<Theory(Timeout = 15000)>]
+[<InlineData("file")>]
+[<InlineData("jj")>]
+let ``parseConfig REJECTS the removed file cache backend and falls back to NoCache`` (value: string) =
+    let config = parseConfig $$"""{"cache": "{{value}}"}""" defaults
+    test <@ config.Cache = NoCache @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig cache unknown string returns defaults cache`` () =
     let config = parseConfig """{"cache": "redis"}""" defaults
-    test <@ config.Cache = FileBackend @>
+    test <@ config.Cache = defaults.Cache @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseConfig cache missing uses defaults`` () =
@@ -769,7 +770,7 @@ let ``parseConfig with full configuration`` () =
 
     test <@ config.Format = Off @>
     test <@ config.Lint = false @>
-    test <@ config.Cache = FileBackend @>
+    test <@ config.Cache = NoCache @>
 
     test
         <@
@@ -780,21 +781,6 @@ let ``parseConfig with full configuration`` () =
 
     test <@ config.Tests.IsSome @>
     test <@ config.FileCommands.Length = 1 @>
-
-// --- detectDefaultCacheBackend ---
-
-[<Fact(Timeout = 15000)>]
-let ``detectDefaultCacheBackend returns FileBackend regardless of .jj presence`` () =
-    withTempDir "cfg-jj" (fun tmpDir ->
-        Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
-        let result = detectDefaultCacheBackend tmpDir
-        test <@ result = FileBackend @>)
-
-[<Fact(Timeout = 15000)>]
-let ``detectDefaultCacheBackend returns FileBackend when no .jj`` () =
-    withTempDir "cfg-nojj" (fun tmpDir ->
-        let result = detectDefaultCacheBackend tmpDir
-        test <@ result = FileBackend @>)
 
 // --- createCacheComponents ---
 
@@ -809,13 +795,6 @@ let ``createCacheComponents NoCache returns None None`` () =
 let ``createCacheComponents InMemoryOnly returns Some backend and Some keyProvider`` () =
     withTempDir "cfg-cc-mem" (fun tmpDir ->
         let (backend, keyProvider) = createCacheComponents tmpDir (InMemoryOnly 100)
-        test <@ backend.IsSome @>
-        test <@ keyProvider.IsSome @>)
-
-[<Fact(Timeout = 15000)>]
-let ``createCacheComponents FileBackend returns Some backend and Some keyProvider`` () =
-    withTempDir "cfg-cc-file" (fun tmpDir ->
-        let (backend, keyProvider) = createCacheComponents tmpDir FileBackend
         test <@ backend.IsSome @>
         test <@ keyProvider.IsSome @>)
 
@@ -838,7 +817,7 @@ let ``loadConfig with no config file returns expected defaults`` () =
 
         test <@ config.Format = Auto @>
         test <@ config.Lint = true @>
-        test <@ config.Cache = FileBackend @>
+        test <@ config.Cache = NoCache @>
         test <@ config.Analyzers = None @>
         test <@ config.Tests = None @>
         test <@ config.FileCommands |> List.isEmpty @>)
@@ -990,11 +969,11 @@ let ``parseConfig tests without extensions defaults to empty`` () =
     test <@ config.Tests.Value.Extensions |> List.isEmpty @>
 
 [<Fact(Timeout = 15000)>]
-let ``loadConfig defaults to FileBackend regardless of .jj presence`` () =
+let ``loadConfig defaults to NoCache regardless of .jj presence`` () =
     withTempDir "cfg-def-jj" (fun tmpDir ->
         Directory.CreateDirectory(Path.Combine(tmpDir, ".jj")) |> ignore
         let config = loadConfig tmpDir
-        test <@ config.Cache = FileBackend @>)
+        test <@ config.Cache = NoCache @>)
 
 // --- parseConfig: build dependsOn ---
 
@@ -1516,6 +1495,62 @@ let ``shellInvocation escapes double quotes in the passed command`` () =
     let (_, args) = FsHotWatch.Cli.DaemonConfig.shellInvocation "echo \"hello world\""
 
     test <@ args.Contains("\\\"hello world\\\"") @>
+
+// ---------------------------------------------------------------------------
+// makeShellHookWithResult — the `beforeRun` hook must be BOUNDED (AUTOMATION-98)
+// ---------------------------------------------------------------------------
+//
+// The regression these pin: the hook ran through `runProcess` with
+// `InfiniteTimeSpan`. `beforeRun` executes INSIDE the `RunExclusive "tests"`
+// slot, so a hook that hangs — intelligence's is a 7-command chain including a
+// network `dotnet restore` — held that slot forever: TestPrune stayed `Running`,
+// every later `check` burned its full 60-min deadline, and only a daemon restart
+// recovered. Two distinct ways to hang, one test each.
+
+[<Fact(Timeout = 20000)>]
+let ``a beforeRun hook that hangs TIMES OUT instead of wedging the tests slot`` () =
+    // RED-BEFORE-GREEN: pass `None` for the timeout (the old InfiniteTimeSpan
+    // behaviour) and this blocks for 60s, past the xUnit budget.
+    let sw = System.Diagnostics.Stopwatch.StartNew()
+
+    let hook =
+        FsHotWatch.Cli.DaemonConfig.makeShellHookWithResult "beforeRun" (Some 1) "." "sleep 60"
+
+    let (success, output) = hook ()
+    sw.Stop()
+
+    test <@ not success @>
+    test <@ output.Contains("timed out") @>
+
+    Assert.True(
+        sw.Elapsed < System.TimeSpan.FromSeconds 15.0,
+        $"hook was not bounded: took %.1f{sw.Elapsed.TotalSeconds}s"
+    )
+
+[<Fact(Timeout = 20000)>]
+let ``a beforeRun hook whose grandchild holds the stdout pipe still returns`` () =
+    // The nastier shape, and the one no timeout would have caught quickly: the
+    // hook itself EXITS immediately and successfully, but a grandchild it spawned
+    // (an MSBuild node, a Playwright driver — here a backgrounded `sleep`)
+    // inherited the stdout pipe and holds it open. The old success-path
+    // `Task.WaitAll` waited on stream EOF that would never come, so a hook that
+    // had already SUCCEEDED never returned. Bounded post-exit drain → it does.
+    let sw = System.Diagnostics.Stopwatch.StartNew()
+
+    let hook =
+        FsHotWatch.Cli.DaemonConfig.makeShellHookWithResult "beforeRun" (Some 60) "." "( sleep 30 & ) ; echo ready"
+
+    let (success, output) = hook ()
+    sw.Stop()
+
+    test <@ success @>
+    test <@ output.Contains("ready") @>
+
+    Assert.True(
+        sw.Elapsed < System.TimeSpan.FromSeconds 15.0,
+        $"hook waited on a grandchild-held pipe for a child that had already exited: \
+          took %.1f{sw.Elapsed.TotalSeconds}s"
+    )
 
 // --- resolveExistingPathsWithRetry ---
 

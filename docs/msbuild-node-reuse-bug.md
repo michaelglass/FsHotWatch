@@ -74,7 +74,7 @@ corroborate the orphan-accumulation phenomenon.
 
 ## Fix Location
 
-`src/FsHotWatch/ProcessHelper.fs` — `runProcessWithTimeout` injects
+`src/FsHotWatch/ProcessHelper.fs` — `runProcess` injects
 `MSBUILDDISABLENODEREUSE=1` whenever the command basename is `dotnet`
 (or `dotnet.exe`) and the caller hasn't already set the key. This means
 all callers — BuildPlugin, TestPrunePlugin's per-project `dotnet run`,

@@ -534,7 +534,10 @@ let private runRestoreSteps (steps: RestoreStep list) : ProcessOutcome =
         match remaining with
         | [] -> Succeeded ""
         | step :: rest ->
-            match runProcessWithTimeout "dotnet" step.Args step.WorkingDir [] restoreStepTimeout with
+            // `dotnet restore --verbosity quiet` prints nothing on success, so a
+            // launch deadline could not tell a healthy slow restore from a wedged
+            // one — `restoreStepTimeout` is the bound (see ProcessBounds.silent).
+            match runProcess "dotnet" step.Args step.WorkingDir [] (ProcessBounds.silent restoreStepTimeout) with
             | Succeeded _ -> run rest
             | other -> other
 

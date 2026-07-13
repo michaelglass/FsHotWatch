@@ -93,8 +93,7 @@ let wildcardAnalyzer: Analyzer<CliContext> =
                 |> Seq.toList
                 |> List.map (fun range ->
                     { Type = "Wildcard on DU"
-                      Message =
-                        "Catch-all wildcard on DU hides exhaustiveness checking. List all cases explicitly."
+                      Message = "Catch-all wildcard on DU hides exhaustiveness checking. List all cases explicitly."
                       Code = "EXAMPLE-WILDCARD-001"
                       Severity = Severity.Warning
                       Range = range

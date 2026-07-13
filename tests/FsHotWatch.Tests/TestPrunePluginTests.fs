@@ -3375,6 +3375,82 @@ let ``externalDependencyHash: deterministic and content-sensitive; missing files
         let h4 = externalDependencyHash tmpDir globs
         test <@ h4 = "" @>)
 
+// ---------------------------------------------------------------------------
+// AUTOMATION-98 finding 6 — the cache key must not pay for inputs it discards.
+// ---------------------------------------------------------------------------
+//
+// The regression this pins: the `dependsOn` hash was computed EAGERLY, above the
+// `match event with`, so EVERY event paid for it — including `FileChecked`, which
+// never splices it. And `FileChecked` is one event PER FILE, not per batch (the
+// comment justifying the eager computation asserted the opposite). With one glob
+// configured, a cold scan of N files therefore did N full-repo SafeWalks, each
+// followed by a SHA256 of every matched file, and threw all N results away. It
+// was free only because no consumer sets `dependsOn` — the day one does, a cold
+// scan goes quadratic.
+//
+// `cacheKeyFor` takes its state as thunks precisely so this is countable.
+//
+// RED-BEFORE-GREEN: hoist any of these three thunks to a value at the top of
+// `cacheKeyFor` and the FileChecked counts go from 0 to 1.
+
+[<Fact(Timeout = 10000)>]
+let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
+    let mutable dependsOnCalls = 0
+    let mutable pendingQueueCalls = 0
+    let mutable changedSymbolsCalls = 0
+
+    let key =
+        cacheKeyFor
+            (fun () ->
+                changedSymbolsCalls <- changedSymbolsCalls + 1
+                "symbols")
+            (fun () ->
+                pendingQueueCalls <- pendingQueueCalls + 1
+                None)
+            (fun () ->
+                dependsOnCalls <- dependsOnCalls + 1
+                Some "depends")
+            (FileChecked(fakeFileCheckResult "/src/A.fs"))
+
+    // It still produces a key — it is a pure function of THIS file.
+    test <@ key.IsSome @>
+
+    // And it computed nothing else. The dependsOn one is the finding; the other two
+    // are pinned with it so a future edit can't quietly re-hoist a sibling instead.
+    test <@ dependsOnCalls = 0 @>
+    test <@ pendingQueueCalls = 0 @>
+    test <@ changedSymbolsCalls = 0 @>
+
+[<Fact(Timeout = 10000)>]
+let ``cacheKeyFor: a BuildCompleted key DOES read the dependsOn + symbol state`` () =
+    // The other half of the contract: thunking must not have made the salt vanish.
+    // BuildCompleted is the arm the dependsOn salt exists for, and it must force it.
+    let mutable dependsOnCalls = 0
+    let mutable changedSymbolsCalls = 0
+
+    let keyWith (dependsOn: string option) =
+        cacheKeyFor
+            (fun () ->
+                changedSymbolsCalls <- changedSymbolsCalls + 1
+                "symbols")
+            (fun () -> None)
+            (fun () ->
+                dependsOnCalls <- dependsOnCalls + 1
+                dependsOn)
+            (BuildCompleted BuildSucceeded)
+
+    let salted = keyWith (Some "migration-hash-v1")
+    let resalted = keyWith (Some "migration-hash-v2")
+    let unsalted = keyWith None
+
+    test <@ dependsOnCalls = 3 @>
+    test <@ changedSymbolsCalls = 3 @>
+
+    // Editing a dependsOn-matched file moves the key (cache miss → genuine re-run).
+    test <@ salted <> resalted @>
+    // No dependsOn → the entry is omitted, so the key differs from any salted one.
+    test <@ unsalted <> salted @>
+
 [<Fact(Timeout = 10000)>]
 let ``dependsOnGlobToRegex: ** crosses dirs, * does not, literals match exactly`` () =
     let m (glob: string) (rel: string) =

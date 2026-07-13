@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix: fileCommand spawns go through the single, always-bounded
+  `ProcessHelper.runProcess` (`ProcessBounds.silent cmdTimeout`), so a command
+  whose grandchild holds the inherited stdout pipe after it exits no longer
+  wedges the run on an unbounded stream drain.
+
 ## 0.7.0-alpha.13 - 2026-06-17
 
 - docs: README accuracy & early-alpha status-note pass.

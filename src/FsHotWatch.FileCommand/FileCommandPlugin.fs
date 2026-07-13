@@ -185,6 +185,13 @@ let create
         | Some s -> TimeSpan.FromSeconds(float s)
         | None -> System.Threading.Timeout.InfiniteTimeSpan
 
+    // A fileCommand is an arbitrary user command — it may print nothing at all
+    // (a linter that only speaks on failure), so its output cannot prove
+    // liveness and `cmdTimeout` is the bound. It still gets the polled-exit and
+    // bounded post-exit drain every spawn gets: a fileCommand whose grandchild
+    // (an MSBuild node) holds the inherited stdout pipe no longer wedges the run.
+    let cmdBounds = ProcessBounds.silent cmdTimeout
+
     /// Run the command and return the resulting CommandResult. Callers merge
     /// this into the full plugin state so runCommand stays agnostic of
     /// trigger-specific fields.
@@ -205,8 +212,7 @@ let create
                     $"running {nameStr}"
                     (async {
                         try
-                            let processResult =
-                                runProcessWithTimeout command args ctx.RepoRoot extraEnv cmdTimeout
+                            let processResult = runProcess command args ctx.RepoRoot extraEnv cmdBounds
 
                             let output = outputOf processResult
 

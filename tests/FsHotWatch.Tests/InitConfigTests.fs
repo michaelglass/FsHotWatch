@@ -81,7 +81,7 @@ let ``generateConfig test project args use run with project path`` () =
 [<Fact(Timeout = 15000)>]
 let ``generateConfig sets cache to file`` () =
     let config = generateConfig [ "src/App/App.fsproj" ]
-    test <@ config.Cache = FileBackend @>
+    test <@ config.Cache = NoCache @>
 
 [<Fact(Timeout = 15000)>]
 let ``generateConfig with multiple test projects groups by default`` () =

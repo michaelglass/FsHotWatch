@@ -350,7 +350,7 @@ let ``GetStatus splices a WEDGED report when the watchdog has a stuck op`` () =
             tick = TimeSpan.FromMilliseconds(50.0)
         )
 
-    watchdog.Begin "RunCommand:run-tests"
+    watchdog.Begin "RunCommand:run-tests" |> ignore
     // Advance the injected clock past the threshold so it reads as wedged.
     clock.Value <- clock.Value.AddSeconds 30.0
 
@@ -396,7 +396,7 @@ let ``ScanStatus prefixes the wedge report when a stuck op is in flight`` () =
             tick = TimeSpan.FromMilliseconds(50.0)
         )
 
-    watchdog.Begin "WaitForComplete"
+    watchdog.Begin "WaitForComplete" |> ignore
     clock.Value <- clock.Value.AddSeconds 30.0
 
     let config =
@@ -1333,3 +1333,70 @@ let ``resolveVerdictDeadline: a positive integer override wins`` () =
 [<InlineData("")>]
 let ``resolveVerdictDeadline: junk / non-positive override falls back to the default`` (value: string) =
     Assert.Equal(DefaultVerdictDeadline, resolveVerdictDeadline (Some value))
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-98 finding 1 — EVERY tracked RPC is bounded, at the seam.
+// ---------------------------------------------------------------------------
+//
+// The regression this pins: `WaitForScan` had NO deadline. `WaitForScanGeneration`
+// raced only daemon shutdown, never a clock; the CLI passes `-1L` (including on
+// every convergence re-scan); and it is `check`'s FIRST step. So any hang inside
+// `performScan` — the Fantomas preprocessor, an Ionide design-time evaluation, an
+// FCS `ParseAndCheckFileInProject` — meant "Scanning…" forever: no timeout, no
+// error, no verdict. Exactly the 8h36m wedge, on a path nobody had bounded.
+//
+// The fix is at the `trackedTask` SEAM rather than in `WaitForScan`, so the
+// property holds for every bracketed RPC — including ones not yet written. These
+// tests therefore assert the SEAM, using an RPC (`WaitForScan`) whose own body
+// still contains no timeout code at all.
+//
+// RED-BEFORE-GREEN: drop the deadline race from `trackedTask` and the first test
+// hangs until xUnit kills it at 15s.
+
+[<Fact(Timeout = 15000)>]
+let ``an RPC whose work never completes faults with TimeoutException at the seam`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    // A scan that never signals — a Fantomas preprocessor wedged inside performScan.
+    let config =
+        { defaultRpcConfig host with
+            WaitForScanGeneration = fun _ -> TaskCompletionSource<unit>().Task }
+
+    let target = DaemonRpcTarget(config, deadline = TimeSpan.FromMilliseconds 300.0)
+
+    let ex = Assert.Throws<AggregateException>(fun () -> target.WaitForScan(-1L).Wait())
+
+    let inner = ex.InnerException
+    Assert.IsType<TimeoutException>(inner) |> ignore
+    test <@ inner.Message.Contains("WaitForScan") @>
+    // The wedge report's inline recovery rides along, so the client is never left
+    // to guess what to do.
+    test <@ inner.Message.Contains("fshw stop") @>
+
+[<Fact(Timeout = 15000)>]
+let ``an RPC that completes inside the deadline returns normally`` () =
+    // The seam must not fire on healthy work — the deadline is a backstop, not a
+    // budget. A scan that signals immediately still returns its scan status.
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let config =
+        { defaultRpcConfig host with
+            GetScanStatus = fun () -> "complete: 3 files checked in 0.1s" }
+
+    let target = DaemonRpcTarget(config, deadline = TimeSpan.FromSeconds 10.0)
+    let result = target.WaitForScan(-1L).Result
+    test <@ result = "complete: 3 files checked in 0.1s" @>
+
+[<Fact(Timeout = 15000)>]
+let ``the seam refuses an infinite deadline rather than obeying it`` () =
+    // The one way left to ask for an unbounded RPC is to pass an infinite deadline
+    // to the seam. It is not honoured: it falls back to the ambient deadline. A
+    // caller cannot re-open the hole by "configuring" it shut.
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let target =
+        DaemonRpcTarget(defaultRpcConfig host, deadline = Timeout.InfiniteTimeSpan)
+
+    // Healthy work still returns (proving the fallback deadline is finite-but-ample,
+    // not zero).
+    test <@ target.WaitForScan(-1L).Result = "idle" @>

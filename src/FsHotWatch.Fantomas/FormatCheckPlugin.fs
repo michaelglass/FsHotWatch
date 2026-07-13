@@ -19,8 +19,21 @@ let FormatTimeoutDefaultSec = 60
 /// Format-on-save preprocessor. Runs before other plugins receive events.
 /// Formats unformatted files and returns the list of files that were rewritten.
 /// Respects .gitignore and .fantomasignore files in the repo root.
-type FormatPreprocessor() =
+///
+/// AUTOMATION-98: the Fantomas call here used to run with NO timeout, while its
+/// twin in `createFormatCheck` below wrapped the IDENTICAL call in
+/// `runWithCancellableTimeout` — one bounded, one not, which is precisely the
+/// two-primitives smell. And the unbounded one sat on the worse path: a
+/// preprocessor runs inside the daemon's `processBatch`, so a Fantomas hang here
+/// wedges the CHANGE AGENT — the daemon then never processes another file change,
+/// silently, forever — and it runs inside `performScan`, which `WaitForScan`
+/// blocks on as `check`'s very first step. Same timeout, same cancellation token,
+/// same `WorkTimedOut` handling as the twin: a stuck file is skipped, loudly.
+type FormatPreprocessor(?timeoutSec: int) =
     let ignoreCache = FsHotWatch.PathFilter.IgnoreFilterCache()
+
+    let formatTimeout =
+        TimeSpan.FromSeconds(float (defaultArg timeoutSec FormatTimeoutDefaultSec))
 
     interface IFsHotWatchPreprocessor with
         member _.Name = "format"
@@ -39,12 +52,25 @@ type FormatPreprocessor() =
                         let source = File.ReadAllText(file)
                         let isSignature = file.EndsWith(".fsi")
 
-                        let formatted =
-                            CodeFormatter.FormatDocumentAsync(isSignature, source) |> Async.RunSynchronously
+                        // Driven under the timeout's token so a stuck format is
+                        // actually CANCELLED (thread released) rather than orphaned
+                        // while still holding the batch.
+                        let work (ct: System.Threading.CancellationToken) =
+                            Async.RunSynchronously(
+                                CodeFormatter.FormatDocumentAsync(isSignature, source),
+                                cancellationToken = ct
+                            )
 
-                        if formatted.Code <> source then
-                            File.WriteAllText(file, formatted.Code)
-                            modifiedFiles <- file :: modifiedFiles
+                        match runWithCancellableTimeout formatTimeout work with
+                        | WorkTimedOut after ->
+                            Logging.error
+                                "format"
+                                $"format TIMED OUT for %s{file} after %d{int after.TotalSeconds}s — file left \
+                                  unformatted (the format-check plugin will still report it)"
+                        | WorkCompleted formatted ->
+                            if formatted.Code <> source then
+                                File.WriteAllText(file, formatted.Code)
+                                modifiedFiles <- file :: modifiedFiles
                     with ex ->
                         Logging.error "format" $"failed to format %s{file}: %s{ex.Message}"
 

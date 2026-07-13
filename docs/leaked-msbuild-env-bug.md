@@ -50,7 +50,7 @@ tree; unsetting them makes the build pass again.
 
 ## Fix
 
-`ProcessHelper.runProcessWithTimeout` strips `MSBUILD_EXE_PATH`,
+`ProcessHelper.runProcess` strips `MSBUILD_EXE_PATH`,
 `MSBuildExtensionsPath`, and `MSBuildSDKsPath` from the child environment before
 every spawn (alongside the existing arch-specific `DOTNET_ROOT_*` strip). They
 are meaningful only to an *in-process* MSBuild host, so dropping them is a no-op
