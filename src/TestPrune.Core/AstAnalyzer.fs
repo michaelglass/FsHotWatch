@@ -5,6 +5,7 @@ open System.IO
 open System.Threading.Tasks
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.CodeAnalysis.ProjectSnapshot
+open FSharp.Compiler.Diagnostics
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
@@ -638,6 +639,31 @@ let private hashSourceLines (lines: string array) (startLine: int) (endLine: int
 
     System.Convert.ToHexStringLower(bytes)
 
+/// The parse diagnostics that actually make an AST unusable: Error severity, and
+/// nothing else.
+///
+/// `FSharpParseFileResults.ParseHadErrors` is NOT that predicate, and refusing a
+/// file on it silently drops the file from the symbol graph — under-selection,
+/// "the one failure mode a test-impact tool must not have" (see `EdgeEmission`).
+/// Under the TransparentCompiler (`FSharpChecker.Create(useTransparentCompiler = true)`,
+/// which is how FsHotWatch's daemon builds its checker) FCS reports
+/// `ParseHadErrors = true` for a file whose ONLY parse diagnostic is
+/// INFORMATIONAL — e.g. FS3520 "XML comment is not placed on a valid language
+/// element", severity `Info`. The legacy compiler reports `false` for the same
+/// file. Such a file compiles cleanly, its ParseTree is complete, and every
+/// symbol in it is extractable — yet the whole file was being refused, so an
+/// edit to it selected NO tests and the gate went green having run nothing
+/// relevant.
+///
+/// So: gate on the diagnostics' SEVERITY, which is the honest question ("is the
+/// tree trustworthy?"), not on a flag whose meaning varies by compiler backend.
+/// A real syntax error still yields Error-severity diagnostics and is still
+/// refused — but a refusal is now always a refusal for cause, and callers are
+/// expected to treat it as owed work (over-select), never as "nothing to do".
+let internal parseErrorDiagnostics (parseResults: FSharpParseFileResults) : FSharpDiagnostic array =
+    parseResults.Diagnostics
+    |> Array.filter (fun d -> d.Severity = FSharpDiagnosticSeverity.Error)
+
 /// Extract analysis results from parse and type-check results.
 /// Note: Some branches (Aborted case, exception handlers in tryClassify* functions,
 /// and catch-all cases in classifyDependency) are defensive against rare FCS edge cases
@@ -650,9 +676,10 @@ let private extractResults
     (checkAnswer: FSharpCheckFileAnswer)
     (projectName: string)
     : Result<AnalysisResult, string> =
-    if parseResults.ParseHadErrors then
-        let errors =
-            parseResults.Diagnostics |> Array.map (fun d -> d.Message) |> String.concat "; "
+    let parseErrors = parseErrorDiagnostics parseResults
+
+    if parseErrors.Length > 0 then
+        let errors = parseErrors |> Array.map (fun d -> d.Message) |> String.concat "; "
 
         Error $"Parse errors: %s{errors}"
     else

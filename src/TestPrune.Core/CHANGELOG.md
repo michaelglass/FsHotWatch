@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## 6.0.1 - 2026-07-13
+
+- fix: **a file with a misplaced `///` doc comment was silently dropped from the
+  symbol graph, so editing it selected NO tests.** `extractResults` refused a file
+  whenever `FSharpParseFileResults.ParseHadErrors` was set. Under the
+  TransparentCompiler — which is how FsHotWatch's daemon builds its checker
+  (`FSharpChecker.Create(useTransparentCompiler = true)`) — FCS sets that flag for a
+  file whose ONLY parse diagnostic is **informational**: FS3520 "XML comment is not
+  placed on a valid language element" has severity `Info`, and the legacy compiler
+  leaves `ParseHadErrors` unset for the very same file. Such a file compiles cleanly
+  and its ParseTree is complete, yet it was refused wholesale — contributing no
+  symbols, so a change to it had nothing to diff, selected no tests, and the gate
+  reported green having run nothing relevant. Silent under-selection: the one failure
+  mode a test-impact tool must not have (see `EdgeEmission`). The guard now gates on
+  the diagnostics' **severity** (`Error` and nothing else), which is the honest
+  question — "is this tree trustworthy?" — rather than on a flag whose meaning varies
+  by compiler backend. A real syntax error is still refused. The old message was
+  misleading too: it printed *every* diagnostic under the heading "Parse errors",
+  which is how an `Info` came to be reported as an error in the first place.
+
 ## 6.0.0 - 2026-07-13
 
 - fix: **directory walks no longer follow symlinks, and no longer hang forever.**
