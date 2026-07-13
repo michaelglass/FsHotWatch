@@ -74,7 +74,7 @@
              schema version before opening (so we never recreate the daemon's DB). -->
         <!-- Keep in lockstep with FsHotWatch.TestPrune's TestPrune.Core pin so
              NuGet doesn't see a downgrade. -->
-        <PackageReference Include="TestPrune.Core" Version="6.0.0" />
+        <PackageReference Include="TestPrune.Core" Version="6.0.1" />
         <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
         <!-- Explicit top-level pin: Microsoft.Data.Sqlite (and TestPrune.Core's
              SqliteSymbolStore) pull SQLitePCLRaw.lib.e_sqlite3 2.1.11 transitively,

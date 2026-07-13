@@ -5,6 +5,12 @@ open Swensen.Unquote
 open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Cli.CheckVerdict
 
+/// The scope these coverage-convergence tests are indifferent to. Convergence is
+/// about COMPLETENESS (did every file get checked), not about what the tests
+/// covered — so these cases pin the InnerLoop mode, which ignores the scope
+/// entirely. The scope's own behaviour is pinned by the MergeGate tests below.
+let private anyScope = FullSuite 1
+
 // ----------------------------------------------------------------------------
 // Pure verdict mapping. The exit code is a TOTAL function over an explicit
 // CheckOutcome — no wildcard branch can swallow a new case. Coverage is a
@@ -15,31 +21,31 @@ open FsHotWatch.Cli.CheckVerdict
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: failures + Complete -> FailuresFound`` () =
-    test <@ verdict true Complete = CheckOutcome.FailuresFound @>
+    test <@ verdict InnerLoop true Complete anyScope = CheckOutcome.FailuresFound @>
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: failures + Incomplete -> FailuresFound (failures short-circuit)`` () =
-    test <@ verdict true (Incomplete 5) = CheckOutcome.FailuresFound @>
+    test <@ verdict InnerLoop true (Incomplete 5) anyScope = CheckOutcome.FailuresFound @>
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: failures + Unknown -> FailuresFound`` () =
-    test <@ verdict true Unknown = CheckOutcome.FailuresFound @>
+    test <@ verdict InnerLoop true Unknown anyScope = CheckOutcome.FailuresFound @>
 
 // no failures: coverage decides.
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: clean + Complete -> Clean`` () =
-    test <@ verdict false Complete = CheckOutcome.Clean @>
+    test <@ verdict InnerLoop false Complete anyScope = CheckOutcome.Clean @>
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: clean + Incomplete -> Incomplete`` () =
-    test <@ verdict false (Incomplete 3) = CheckOutcome.Incomplete 3 @>
+    test <@ verdict InnerLoop false (Incomplete 3) anyScope = CheckOutcome.Incomplete 3 @>
 
 [<Fact(Timeout = 15000)>]
 let ``verdict: clean + Unknown -> Incomplete (Unknown never reads as Clean)`` () =
     // Unknown must enter convergence, never map to Clean. We model that by
     // mapping it to an Incomplete outcome (unchecked count unknown -> -1).
-    match verdict false Unknown with
+    match verdict InnerLoop false Unknown anyScope with
     | CheckOutcome.Incomplete _ -> ()
     | other -> failwithf "expected Incomplete, got %A" other
 
@@ -61,7 +67,7 @@ let ``exitCode: Incomplete -> 2`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``Unknown coverage with no failures never yields exit 0`` () =
-    let code = exitCode (verdict false Unknown)
+    let code = exitCode (verdict InnerLoop false Unknown anyScope)
     test <@ code <> 0 @>
 
 // ----------------------------------------------------------------------------
@@ -84,14 +90,18 @@ let private scripted (responses: (bool * Coverage) list) =
         if queue.Count > 0 then
             last <- queue.Dequeue()
 
-        last
+        let (failures, coverage) = last
+        (failures, coverage, anyScope)
 
     (triggerScan, reread, scans)
 
 [<Fact(Timeout = 15000)>]
 let ``converge: already complete after first re-read -> Clean`` () =
     let (triggerScan, reread, scans) = scripted [ (false, Complete) ]
-    let outcome = converge 3 triggerScan reread (false, Incomplete 2)
+
+    let outcome =
+        converge InnerLoop 3 triggerScan reread (false, Incomplete 2, anyScope)
+
     test <@ outcome = CheckOutcome.Clean @>
     test <@ scans.Value >= 1 @>
 
@@ -101,7 +111,9 @@ let ``converge: failures appear mid-convergence -> FailuresFound`` () =
     let (triggerScan, reread, _) =
         scripted [ (false, Incomplete 3); (true, Incomplete 1) ]
 
-    let outcome = converge 3 triggerScan reread (false, Incomplete 5)
+    let outcome =
+        converge InnerLoop 3 triggerScan reread (false, Incomplete 5, anyScope)
+
     test <@ outcome = CheckOutcome.FailuresFound @>
 
 [<Fact(Timeout = 15000)>]
@@ -109,7 +121,8 @@ let ``converge: no progress (5,5,5) -> Incomplete`` () =
     let (triggerScan, reread, _) =
         scripted [ (false, Incomplete 5); (false, Incomplete 5); (false, Incomplete 5) ]
 
-    let outcome = converge 3 triggerScan reread (false, Incomplete 5)
+    let outcome =
+        converge InnerLoop 3 triggerScan reread (false, Incomplete 5, anyScope)
 
     match outcome with
     | CheckOutcome.Incomplete _ -> ()
@@ -120,7 +133,9 @@ let ``converge: progress then complete (5 -> 2 -> 0) -> Clean`` () =
     let (triggerScan, reread, scans) =
         scripted [ (false, Incomplete 2); (false, Complete) ]
 
-    let outcome = converge 3 triggerScan reread (false, Incomplete 5)
+    let outcome =
+        converge InnerLoop 3 triggerScan reread (false, Incomplete 5, anyScope)
+
     test <@ outcome = CheckOutcome.Clean @>
     test <@ scans.Value = 2 @>
 
@@ -135,7 +150,8 @@ let ``converge: bounded to 3 attempts when shrinking but never complete`` () =
               (false, Incomplete 2)
               (false, Incomplete 1) ]
 
-    let outcome = converge 3 triggerScan reread (false, Incomplete 5)
+    let outcome =
+        converge InnerLoop 3 triggerScan reread (false, Incomplete 5, anyScope)
 
     match outcome with
     | CheckOutcome.Incomplete _ -> ()
@@ -148,7 +164,7 @@ let ``converge: Unknown that stays Unknown -> Incomplete (never Clean)`` () =
     let (triggerScan, reread, _) =
         scripted [ (false, Unknown); (false, Unknown); (false, Unknown) ]
 
-    let outcome = converge 3 triggerScan reread (false, Unknown)
+    let outcome = converge InnerLoop 3 triggerScan reread (false, Unknown, anyScope)
 
     match outcome with
     | CheckOutcome.Incomplete _ -> ()
@@ -157,5 +173,134 @@ let ``converge: Unknown that stays Unknown -> Incomplete (never Clean)`` () =
 [<Fact(Timeout = 15000)>]
 let ``converge: Unknown then complete -> Clean`` () =
     let (triggerScan, reread, _) = scripted [ (false, Complete) ]
-    let outcome = converge 3 triggerScan reread (false, Unknown)
+    let outcome = converge InnerLoop 3 triggerScan reread (false, Unknown, anyScope)
     test <@ outcome = CheckOutcome.Clean @>
+
+// ----------------------------------------------------------------------------
+// AUTOMATION-112 — a merge verdict cannot be produced from an impact-filtered run.
+//
+// Impact filtering is a latency optimization for the inner loop. A merge gate is a
+// correctness claim. An impact-filtered green means "your change didn't break
+// anything I chose to look at" — not "the suite is green". These tests pin the
+// difference in the TYPE, because "remember to also run an unfiltered test-rerun
+// before merging" is exactly the discipline that already failed.
+// ----------------------------------------------------------------------------
+
+[<Fact(Timeout = 15000)>]
+let ``MergeGate: a full-suite run with no failures is the ONLY route to Clean`` () =
+    test <@ verdict MergeGate false Complete (FullSuite 4) = CheckOutcome.Clean @>
+
+[<Fact(Timeout = 15000)>]
+let ``MergeGate: an impact-filtered run cannot yield Clean`` () =
+    // The exact shape of the bug: nothing failed, coverage complete — and the run
+    // looked at a selected subset. That is not a merge verdict.
+    let outcome = verdict MergeGate false Complete (ImpactFiltered(1, 4))
+
+    test <@ outcome = CheckOutcome.UnearnedScope(ImpactFiltered(1, 4)) @>
+    test <@ exitCode outcome <> 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``MergeGate: a run that executed no tests at all cannot yield Clean`` () =
+    // AUTOMATION-108's shape: the daemon skipped the run (cached/baseline-equivalent)
+    // and nothing ran. 35 tests were red on `main` throughout. "No tests ran" is not
+    // evidence of a green suite.
+    let outcome = verdict MergeGate false Complete NoTestsRun
+
+    test <@ outcome = CheckOutcome.UnearnedScope NoTestsRun @>
+    test <@ exitCode outcome <> 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``MergeGate: an unknown scope cannot yield Clean`` () =
+    // The cross-version backstop. An old daemon, an absent test-prune plugin, a
+    // transport fault — every one of them lands here, and none of them is a
+    // full-suite run. A gate goes green only on a scope it POSITIVELY established.
+    let outcome = verdict MergeGate false Complete ScopeUnknown
+
+    test <@ outcome = CheckOutcome.UnearnedScope ScopeUnknown @>
+    test <@ exitCode outcome <> 0 @>
+
+[<Fact(Timeout = 15000)>]
+let ``MergeGate: real failures still short-circuit ahead of scope`` () =
+    // A failing test is a failing test; don't bury it behind a scope complaint.
+    test <@ verdict MergeGate true Complete (ImpactFiltered(1, 4)) = CheckOutcome.FailuresFound @>
+
+[<Fact(Timeout = 15000)>]
+let ``MergeGate: incomplete coverage still outranks scope`` () =
+    // Files that were never checked are a completeness problem, reported as such.
+    test <@ verdict MergeGate false (Incomplete 7) (FullSuite 4) = CheckOutcome.Incomplete 7 @>
+
+[<Fact(Timeout = 15000)>]
+let ``InnerLoop: an impact-filtered run IS Clean — that is what filtering is for`` () =
+    // The fast loop keeps its optimization. Making it demand the whole suite would
+    // defeat the point of having one; the gate is where the claim gets made.
+    test <@ verdict InnerLoop false Complete (ImpactFiltered(1, 4)) = CheckOutcome.Clean @>
+    test <@ verdict InnerLoop false Complete NoTestsRun = CheckOutcome.Clean @>
+    test <@ verdict InnerLoop false Complete ScopeUnknown = CheckOutcome.Clean @>
+
+[<Fact(Timeout = 15000)>]
+let ``exitCode: UnearnedScope is its own code, distinct from failure and incompleteness`` () =
+    // A merge that has no verdict is not the same event as a merge that failed, and
+    // an autonomous caller must be able to tell them apart.
+    let unearned = exitCode (CheckOutcome.UnearnedScope(ImpactFiltered(1, 4)))
+
+    test <@ unearned = 3 @>
+    test <@ unearned <> exitCode CheckOutcome.Clean @>
+    test <@ unearned <> exitCode CheckOutcome.FailuresFound @>
+    test <@ unearned <> exitCode (CheckOutcome.Incomplete 1) @>
+
+[<Fact(Timeout = 15000)>]
+let ``converge: a MergeGate never scans its way out of an unearned scope`` () =
+    // Re-scanning cannot widen the scope of a run that already happened. The gate's
+    // job is to report that it has no verdict — not to keep scanning for a better one.
+    let queue =
+        System.Collections.Generic.Queue<bool * Coverage * TestScope>([ (false, Complete, ImpactFiltered(1, 4)) ])
+
+    let scans = ref 0
+    let triggerScan () = incr scans
+
+    let reread () =
+        if queue.Count > 0 then
+            queue.Dequeue()
+        else
+            (false, Complete, ImpactFiltered(1, 4))
+
+    let outcome =
+        converge MergeGate 3 triggerScan reread (false, Complete, ImpactFiltered(1, 4))
+
+    test <@ outcome = CheckOutcome.UnearnedScope(ImpactFiltered(1, 4)) @>
+    test <@ scans.Value = 0 @>
+
+// --- TestScope parsing: the daemon's answer, and every way it can fail to give one ---
+
+[<Fact(Timeout = 15000)>]
+let ``parseTestScope: a full-suite reply parses as FullSuite`` () =
+    let json = """{"scope":"full","ranProjects":3,"totalProjects":3}"""
+    test <@ parseTestScope json = FullSuite 3 @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseTestScope: a filtered reply parses as ImpactFiltered`` () =
+    let json = """{"scope":"filtered","ranProjects":1,"totalProjects":3}"""
+    test <@ parseTestScope json = ImpactFiltered(1, 3) @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseTestScope: a none reply parses as NoTestsRun`` () =
+    let json = """{"scope":"none","ranProjects":0,"totalProjects":3}"""
+    test <@ parseTestScope json = NoTestsRun @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseTestScope: every unusable reply collapses to ScopeUnknown, never FullSuite`` () =
+    // The safe direction, by construction: an error reply (no test-prune plugin), a
+    // still-running run, an old daemon that echoes nothing useful, and outright
+    // garbage all fail CLOSED.
+    test <@ parseTestScope """{"error":"unknown command 'test-scope'"}""" = ScopeUnknown @>
+    test <@ parseTestScope """{"scope":"running"}""" = ScopeUnknown @>
+    test <@ parseTestScope """{"scope":"full"}""" = ScopeUnknown @>
+    test <@ parseTestScope "not json at all" = ScopeUnknown @>
+    test <@ parseTestScope "" = ScopeUnknown @>
+
+[<Fact(Timeout = 15000)>]
+let ``parseTestScope: a full reply that did not actually cover every project is not FullSuite`` () =
+    // A daemon claiming "full" while reporting 2 of 4 projects is not trusted: the
+    // counts are the evidence, the label is not.
+    test <@ parseTestScope """{"scope":"full","ranProjects":2,"totalProjects":4}""" = ScopeUnknown @>
+    test <@ parseTestScope """{"scope":"full","ranProjects":0,"totalProjects":0}""" = ScopeUnknown @>

@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+- fix!: **a file whose symbol analysis failed was silently dropped from the impact
+  graph — so a change to it selected NO tests and the gate went green having run
+  nothing relevant.** The `FileChecked` error branch logged and `return state`d: the
+  file contributed no symbols, the impact graph never saw it, the symbol diff found
+  nothing changed in it, and selection was empty. The one trace it left — a `Failed`
+  plugin status — was overwritten by the very next file's `Completed`, so in practice
+  nothing in the system would ever have told anyone. Now an unanalysable file is
+  REMEMBERED (`TestPruneState.UnanalyzableFiles`), and while any file is in that set
+  the run falls back to the **coarse selection**: every configured test project, in
+  full. Safe over-selection beats silent under-selection — exactly the rule
+  `EdgeEmission` follows when a seed names a symbol it can no longer resolve. A
+  WARNING naming the file and the reason lands in the error ledger, so `fshw check`
+  prints it and (under the default warn-fail policy) refuses a green verdict; and
+  because the force-run set is non-empty, the run can no longer terminate through the
+  zero-affected skip gate as "0 affected — green, 0 ran". A file leaves the set the
+  moment it analyses cleanly, so a healthy tree pays nothing. Paired with the
+  TestPrune.Core 6.0.1 root fix, which stops files being refused for a merely
+  *informational* parse diagnostic in the first place. (AUTOMATION-113)
+
+- feat!: **the merge gate runs the full suite, and a merge verdict can no longer be
+  produced from an impact-filtered run.** Impact filtering is a latency optimization
+  for the inner dev loop; a merge gate is a correctness claim, and we had been using
+  the first as the second. An impact-filtered green means "your change didn't break
+  anything I chose to look at" — not "the suite is green". Two new plugin commands
+  make the distinction real rather than remembered: `set-scope` puts the daemon in
+  full-suite scope (every project force-run, unfiltered — reusing the force-run
+  machinery the dependency-fanout already relies on), and `test-scope` reports what
+  the last completed run **actually covered**, which is the evidence the CLI's
+  merge-gate verdict is computed from. The requested scope is also folded into the
+  §2a cache key, so a gate cannot HIT the entry an earlier filtered run wrote and
+  replay its green without a test process ever starting. `classifyRunScope` refuses
+  to launder the degenerate case: `TestRunCompleted.RanFullSuite` is vacuously true
+  for an empty results map (nothing was filtered because nothing ran), which is
+  precisely the shape in which 35 tests sat red on `main`, never selected, gate green
+  throughout. (AUTOMATION-112)
+
 - fix: the **flakiness history file only ever grew, and racing writes lost
   records.** `keepN` bounded each test's record list but nothing bounded the set
   of test NAMES, so a renamed/deleted test kept its entry forever (5.5 MB

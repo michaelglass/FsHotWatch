@@ -40,6 +40,37 @@ type DiagnosticsResponse =
       Statuses: Map<string, ParsedPluginStatus>
       Coverage: Coverage }
 
+/// What the last completed test run actually COVERED (AUTOMATION-112).
+///
+/// Impact filtering is a latency optimization for the inner dev loop. A merge gate is
+/// a correctness claim. An impact-filtered green means "your change didn't break
+/// anything I chose to look at" — NOT "the suite is green". Those are different claims
+/// and reading one as the other is how 35 tests sat red on `main` for an unknown period
+/// while the gate stayed green: they were never selected, so nothing ever ran them.
+///
+/// So the scope is a VALUE the verdict is a total function over, not an assumption a
+/// caller is trusted to make. `ScopeUnknown` is the cross-version / parse-gap backstop
+/// — a daemon too old to answer, an absent test-prune plugin, an unparseable reply —
+/// and it must NEVER read as full-suite, exactly as `Coverage.Unknown` must never read
+/// as `Complete`.
+type TestScope =
+    /// Every configured test project ran, none of them impact-filtered.
+    | FullSuite of projects: int
+    /// A subset ran: some project was filtered to selected classes, or did not run.
+    | ImpactFiltered of ranProjects: int * totalProjects: int
+    /// No test run has completed, or the run executed no tests at all.
+    | NoTestsRun
+    /// The scope could not be determined. Never treated as full-suite.
+    | ScopeUnknown
+
+module TestScope =
+    let describe (scope: TestScope) : string =
+        match scope with
+        | FullSuite n -> $"full suite (%d{n}/%d{n} projects, unfiltered)"
+        | ImpactFiltered(ran, total) -> $"impact-filtered (%d{ran}/%d{total} projects)"
+        | NoTestsRun -> "no tests ran"
+        | ScopeUnknown -> "unknown (the daemon did not report a test scope)"
+
 let private tryParseUtcOpt (s: string) : DateTime option =
     match DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal) with
     | true, dt -> Some dt
@@ -244,6 +275,31 @@ let parseDiagnosticsResponse (json: string) : DiagnosticsResponse =
       Files = files
       Statuses = statuses
       Coverage = coverage }
+
+/// Parse the JSON reply from the test-prune `test-scope` command. Anything the
+/// contract does not explicitly recognize collapses to `ScopeUnknown` — including an
+/// `{"error": ...}` reply from a daemon with no test-prune plugin, and a `running`
+/// reply from a run still in flight (no scope has been earned yet).
+let parseTestScope (json: string) : TestScope =
+    try
+        use doc = JsonDocument.Parse(json)
+        let root = doc.RootElement
+
+        let readInt (name: string) =
+            match root.TryGetProperty(name) with
+            | true, v when v.ValueKind = JsonValueKind.Number ->
+                match v.TryGetInt32() with
+                | true, n -> Some n
+                | _ -> None
+            | _ -> None
+
+        match tryGetStringProp root "scope", readInt "ranProjects", readInt "totalProjects" with
+        | Some "full", Some ran, Some total when ran > 0 && ran = total -> FullSuite total
+        | Some "filtered", Some ran, Some total -> ImpactFiltered(ran, total)
+        | Some "none", _, _ -> NoTestsRun
+        | _ -> ScopeUnknown
+    with _ ->
+        ScopeUnknown
 
 /// Check if all statuses are quiescent (Completed, Failed, or Idle).
 /// Returns false for empty maps (no plugins registered yet).

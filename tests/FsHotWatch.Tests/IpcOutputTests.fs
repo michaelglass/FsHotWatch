@@ -406,12 +406,14 @@ let ``pollAndRender waits for the test-prune verdict before deciding (no false g
     let exitCode =
         pollAndRender
             ProgressRenderer.Agent
+            CheckVerdict.InnerLoop
             (fun _ -> [])
             false
             waitForScan
             waitForComplete
             getStatus
             getErrors
+            (fun () -> IpcParsing.FullSuite 1)
             triggerScan
 
     // The authoritative settle MUST have been consulted...
@@ -461,12 +463,14 @@ let ``pollAndRender surfaces a clean verdict once the test-prune run passes`` ()
     let exitCode =
         pollAndRender
             ProgressRenderer.Agent
+            CheckVerdict.InnerLoop
             (fun _ -> [])
             false
             (fun () -> "idle")
             waitForComplete
             getStatus
             cleanDiagnostics
+            (fun () -> IpcParsing.FullSuite 1)
             (fun () -> "idle")
 
     test <@ exitCode = 0 @>
@@ -510,12 +514,14 @@ let ``pollAndRender returns exit 2 when the daemon drops mid-wait`` () =
     let exitCode =
         pollAndRender
             ProgressRenderer.Agent
+            CheckVerdict.InnerLoop
             (fun _ -> [])
             false
             (fun () -> "idle") // waitForScan
             waitForComplete
             (fun () -> "{}") // getStatus
             (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
+            (fun () -> IpcParsing.FullSuite 1)
             (fun () -> "idle") // triggerScan
 
     test <@ exitCode = 2 @>
@@ -557,12 +563,14 @@ let ``pollAndRender returns exit 2 when the verdict deadline is breached`` () =
     let exitCode =
         pollAndRender
             ProgressRenderer.Agent
+            CheckVerdict.InnerLoop
             (fun _ -> [])
             false
             (fun () -> "idle") // waitForScan
             waitForComplete
             (fun () -> "{}") // getStatus
             (fun () -> """{"count":0,"files":{},"statuses":{},"unchecked":0}""") // getErrors
+            (fun () -> IpcParsing.FullSuite 1)
             (fun () -> "idle") // triggerScan
 
     test <@ exitCode = 2 @>

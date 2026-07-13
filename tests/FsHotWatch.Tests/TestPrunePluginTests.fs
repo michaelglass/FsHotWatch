@@ -3398,6 +3398,7 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
     let mutable dependsOnCalls = 0
     let mutable pendingQueueCalls = 0
     let mutable changedSymbolsCalls = 0
+    let mutable gateScopeCalls = 0
 
     let key =
         cacheKeyFor
@@ -3410,6 +3411,9 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
             (fun () ->
                 dependsOnCalls <- dependsOnCalls + 1
                 Some "depends")
+            (fun () ->
+                gateScopeCalls <- gateScopeCalls + 1
+                None)
             (FileChecked(fakeFileCheckResult "/src/A.fs"))
 
     // It still produces a key — it is a pure function of THIS file.
@@ -3420,6 +3424,7 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
     test <@ dependsOnCalls = 0 @>
     test <@ pendingQueueCalls = 0 @>
     test <@ changedSymbolsCalls = 0 @>
+    test <@ gateScopeCalls = 0 @>
 
 [<Fact(Timeout = 10000)>]
 let ``cacheKeyFor: a BuildCompleted key DOES read the dependsOn + symbol state`` () =
@@ -3437,6 +3442,7 @@ let ``cacheKeyFor: a BuildCompleted key DOES read the dependsOn + symbol state``
             (fun () ->
                 dependsOnCalls <- dependsOnCalls + 1
                 dependsOn)
+            (fun () -> None)
             (BuildCompleted BuildSucceeded)
 
     let salted = keyWith (Some "migration-hash-v1")
@@ -6042,3 +6048,222 @@ let ``AUTOMATION-95: a plugin with a test run in flight reports BUSY, so no verd
         match host.GetStatus("test-prune") with
         | Some(Completed _) -> ()
         | other -> Assert.Fail($"expected Completed once the in-flight run finished, got %A{other}"))
+
+// --- AUTOMATION-113: an unanalysable file must not vanish from the impact graph ---
+//
+// A file whose symbol analysis fails contributes NO symbols. Before this fix the
+// plugin's `Error` branch simply `return state`d — the file was dropped, the impact
+// graph never saw it, a change to it diffed against nothing and selected NO tests,
+// and the gate went green having run nothing relevant. Completely silent.
+//
+// The contract now: an unanalysable file forces the COARSE selection (every test
+// project, in full), and says so loudly. Safe over-selection beats silent
+// under-selection — "the one failure mode a test-impact tool must not have".
+
+let private testConfigNamed (project: string) : TestConfig =
+    { Project = project
+      Command = "dotnet"
+      Args = "test"
+      Group = "default"
+      Environment = []
+      FilterTemplate = Some "--filter-class {classes}"
+      ClassJoin = " "
+      TimeoutSec = None
+      ReportVerificationFormat = AutoDetect }
+
+let private threeProjects =
+    [ testConfigNamed "Alpha.Tests"
+      testConfigNamed "Beta.Tests"
+      testConfigNamed "Gamma.Tests" ]
+
+[<Fact(Timeout = 15000)>]
+let ``coarseFallbackProjects is a no-op while every file analyses cleanly`` () =
+    // The healthy tree pays nothing: the precise, symbol-scoped selection stands and
+    // the dependency-fanout set passes through untouched.
+    let fanout = Set.ofList [ "Beta.Tests" ]
+
+    let result = coarseFallbackProjects threeProjects Set.empty fanout
+
+    test <@ result = fanout @>
+
+[<Fact(Timeout = 15000)>]
+let ``one unanalysable file force-runs EVERY test project`` () =
+    // The file is invisible to the symbol graph, so no per-symbol selection can be
+    // trusted to cover it. The honest answer is "I cannot tell you what is affected",
+    // and the only sound response to that is the whole suite.
+    let unanalyzable = Set.ofList [ "src/Lib/Broken.fs" ]
+
+    let result = coarseFallbackProjects threeProjects unanalyzable Set.empty
+
+    test <@ result = Set.ofList [ "Alpha.Tests"; "Beta.Tests"; "Gamma.Tests" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``the coarse fallback is a superset of the dependency fanout, never a replacement`` () =
+    // Both widenings are safe directions; neither may cancel the other out.
+    let unanalyzable = Set.ofList [ "src/Lib/Broken.fs" ]
+    let fanout = Set.ofList [ "Beta.Tests" ]
+
+    let result = coarseFallbackProjects threeProjects unanalyzable fanout
+
+    test <@ Set.isSubset fanout result @>
+    test <@ result = Set.ofList [ "Alpha.Tests"; "Beta.Tests"; "Gamma.Tests" ] @>
+
+[<Fact(Timeout = 15000)>]
+let ``a non-empty coarse fallback disables the zero-affected skip gate`` () =
+    // The skip gate in `runTestsWithImpact` terminates as a clean green with 0 tests
+    // run when there are no affected classes AND no force-run projects. An
+    // unanalysable file must never be able to reach that verdict — which is exactly
+    // what a non-empty force-run set guarantees, so assert the emptiness predicate the
+    // gate actually reads.
+    let forceRun =
+        coarseFallbackProjects threeProjects (Set.ofList [ "src/Lib/Broken.fs" ]) Set.empty
+
+    test <@ not (Set.isEmpty forceRun) @>
+
+[<Fact(Timeout = 15000)>]
+let ``an unanalysable file is reported LOUDLY, naming the file and the reason`` () =
+    // The old behaviour reported nothing a consumer could see: a log line, and a
+    // plugin status the very next file's `Completed` overwrote. The diagnostic must
+    // name the file, carry the reason, and be at least Warning severity so the
+    // default warn-fail policy denies the check a green verdict.
+    let reason = "Parse errors: XML comment is not placed on a valid language element."
+
+    let entry = unanalyzableFileDiagnostic "src/Lib/Broken.fs" reason
+
+    test <@ entry.Severity = FsHotWatch.ErrorLedger.Warning @>
+    test <@ entry.Message.Contains "src/Lib/Broken.fs" @>
+    test <@ entry.Message.Contains "XML comment is not placed on a valid language element." @>
+    test <@ FsHotWatch.ErrorLedger.ErrorEntry.isFailing true entry @>
+
+    let detail = entry.Detail |> Option.defaultValue ""
+    test <@ detail.Contains "INVISIBLE to the impact graph" @>
+
+// --- AUTOMATION-112: the merge gate's scope is part of the §2a cache key ---
+
+[<Fact(Timeout = 10000)>]
+let ``cacheKeyFor: a merge gate cannot replay an impact-filtered run's cached verdict`` () =
+    // The subtlest road to the bug. Everything else about the tree is identical — same
+    // symbols, empty queue, same deps — so WITHOUT the scope in the key, the first
+    // thing `fshw gate` does on an unchanged tree is HIT the entry an earlier
+    // impact-filtered `fshw check` wrote, replay its green, and never start a test
+    // process. A filtered verdict, laundered into a merge verdict, with no run at all.
+    let keyWithScope (gateScope: string option) =
+        cacheKeyFor
+            (fun () -> "same-symbols")
+            (fun () -> None)
+            (fun () -> None)
+            (fun () -> gateScope)
+            (BuildCompleted BuildSucceeded)
+
+    let innerLoopKey = keyWithScope None
+    let mergeGateKey = keyWithScope (Some "full")
+
+    test <@ innerLoopKey.IsSome @>
+    test <@ mergeGateKey.IsSome @>
+    test <@ innerLoopKey <> mergeGateKey @>
+
+[<Fact(Timeout = 10000)>]
+let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
+    // `None` (not "impact") for the inner loop keeps the merkle entry OMITTED, so the
+    // ordinary key stays byte-identical to the pre-feature one and every existing
+    // on-disk cache entry keeps hitting. The gate pays the cost of its own scope; the
+    // fast loop pays nothing.
+    let withScopeThunk =
+        cacheKeyFor
+            (fun () -> "s")
+            (fun () -> None)
+            (fun () -> Some "deps")
+            (fun () -> None)
+            (BuildCompleted BuildSucceeded)
+
+    // Same inputs, hand-built without any gate-scope entry at all.
+    let expected =
+        FsHotWatch.TaskCache.merkleCacheKey
+            [ "plugin-version", "test-prune-merkle-v2"
+              "event", "BuildCompleted"
+              "changed-symbols", "s"
+              "build-outcome", "succeeded"
+              "depends-on", "deps" ]
+
+    test <@ withScopeThunk = Some expected @>
+
+[<Fact(Timeout = 10000)>]
+let ``cacheKeyFor: two merge-gate runs over the same tree DO share a key`` () =
+    // The gate is not gratuitously cache-hostile: a second gate over an unchanged tree
+    // replays a run that genuinely WAS full-suite. Sound, and fast.
+    let gateKey () =
+        cacheKeyFor
+            (fun () -> "same")
+            (fun () -> None)
+            (fun () -> None)
+            (fun () -> Some "full")
+            (BuildCompleted BuildSucceeded)
+
+    test <@ gateKey () = gateKey () @>
+
+// --- AUTOMATION-112: what a completed run actually covered ---
+
+[<Fact(Timeout = 10000)>]
+let ``classifyRunScope: every project ran, none filtered -> RanEverything`` () =
+    let results: TestResults =
+        { Results =
+            Map.ofList
+                [ "Alpha.Tests", TestsPassed("ok", false, TimeSpan.Zero)
+                  "Beta.Tests", TestsPassed("ok", false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let scope =
+        classifyRunScope [ testConfigNamed "Alpha.Tests"; testConfigNamed "Beta.Tests" ] (Some results)
+
+    test <@ scope = RanEverything 2 @>
+
+[<Fact(Timeout = 10000)>]
+let ``classifyRunScope: a filtered project -> RanSubset`` () =
+    // `wasFiltered = true` on any project means a selection was applied. Whatever else
+    // is true, this run did not look at the whole suite.
+    let results: TestResults =
+        { Results =
+            Map.ofList
+                [ "Alpha.Tests", TestsPassed("ok", true, TimeSpan.Zero)
+                  "Beta.Tests", TestsPassed("ok", false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let scope =
+        classifyRunScope [ testConfigNamed "Alpha.Tests"; testConfigNamed "Beta.Tests" ] (Some results)
+
+    test <@ scope = RanSubset(2, 2) @>
+
+[<Fact(Timeout = 10000)>]
+let ``classifyRunScope: an unfiltered run that skipped a project -> RanSubset`` () =
+    // Filtering nothing is not the same as covering everything. A run that simply
+    // didn't execute half the suite covered no more of it than a filtered one did.
+    let results: TestResults =
+        { Results = Map.ofList [ "Alpha.Tests", TestsPassed("ok", false, TimeSpan.Zero) ]
+          Elapsed = TimeSpan.Zero }
+
+    let scope =
+        classifyRunScope
+            [ testConfigNamed "Alpha.Tests"
+              testConfigNamed "Beta.Tests"
+              testConfigNamed "Gamma.Tests" ]
+            (Some results)
+
+    test <@ scope = RanSubset(1, 3) @>
+
+[<Fact(Timeout = 10000)>]
+let ``classifyRunScope: the zero-affected skip's empty green is RanNothing, NOT full-suite`` () =
+    // The trap. `TestRunCompleted.RanFullSuite` is vacuously TRUE for an empty Results
+    // map (nothing was filtered because nothing ran), and the degenerate
+    // zero-affected skip produces exactly that. A merge gate reading that flag would
+    // see "full suite: true" for a run in which no test executed — AUTOMATION-108's
+    // shape precisely. `classifyRunScope` refuses to launder it.
+    let skipped: TestResults =
+        { Results = Map.empty
+          Elapsed = TimeSpan.Zero }
+
+    test <@ TestResult.ranFullSuite skipped.Results @>
+    test <@ classifyRunScope [ testConfigNamed "Alpha.Tests" ] (Some skipped) = RanNothing @>
+
+[<Fact(Timeout = 10000)>]
+let ``classifyRunScope: no run at all is RanNothing`` () =
+    test <@ classifyRunScope [ testConfigNamed "Alpha.Tests" ] None = RanNothing @>

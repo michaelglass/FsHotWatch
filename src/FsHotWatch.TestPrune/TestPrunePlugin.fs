@@ -265,6 +265,18 @@ type TestPruneState =
         /// the full-suite baseline to establish one (guarded by `hasCachedResults`).
         /// Recomputed on every flush; only read right after one, by the run-trigger.
         ChangedSymbolsAllUncovered: bool
+        /// Repo-relative paths of files whose symbol analysis FAILED and has not
+        /// since succeeded. These files contribute NO symbols, so they are invisible
+        /// to the impact graph — an edit to one has nothing to diff and selects
+        /// nothing on its own (AUTOMATION-113). While this set is non-empty the run
+        /// falls back to the coarse selection (`coarseFallbackProjects`: every test
+        /// project, in full), because "I cannot analyse this file" means the gate
+        /// cannot know what to select, and a superset is safe where a gap is not.
+        ///
+        /// A file leaves the set as soon as it analyses cleanly, so the fallback is
+        /// self-clearing and costs nothing on a healthy tree. NOT persisted: every
+        /// file is re-checked on a cold scan, which repopulates the set from scratch.
+        UnanalyzableFiles: Set<string>
     }
 
 /// Custom message posted from the async test runner back to the synchronous
@@ -536,6 +548,101 @@ let internal parseRunTestsWaitMs (argStr: string) (fallbackMs: int) : int =
         | _ -> fallbackMs
     with _ ->
         fallbackMs
+
+/// Every configured test project, each with an EMPTY affected-class list — which
+/// `buildFilterArgs` reads as "no filter, run this project in full". This is the
+/// unfiltered scope: the whole suite, no selection, nothing chosen.
+///
+/// Used by the two callers that may not trust a selection: the merge gate
+/// (AUTOMATION-112 — impact filtering is a latency optimization for the inner loop,
+/// never the basis of a correctness claim) and the unanalysable-file fallback
+/// (AUTOMATION-113 — a file the analyser cannot read has no symbols to select by).
+let internal fullSuiteProjects (configs: TestConfig list) : Set<string> =
+    configs |> List.map (fun c -> c.Project) |> Set.ofList
+
+/// The coarse fallback for files the symbol analyser could not read (AUTOMATION-113).
+///
+/// A file whose analysis FAILED contributes no symbols. The impact graph therefore
+/// cannot see it, the symbol diff finds nothing changed in it, and the selection it
+/// deserves is EMPTY — so an edit to such a file used to select zero tests and the
+/// gate went green having run nothing relevant. That is silent UNDER-selection: "the
+/// one failure mode a test-impact tool must not have" (`TestPrune.EdgeEmission`).
+///
+/// The honest reading of an unanalysable file is not "nothing is affected" — it is
+/// "I cannot tell you what is affected". The only sound answer to that is the coarse
+/// one: run EVERY test project, because any of them could cover the file. A superset
+/// is safe where a gap is not — exactly the rule `EdgeEmission.resolveTargets` follows
+/// when a seed names a symbol it can no longer resolve.
+///
+/// Returned as force-run projects, which `runTestsWithImpact` already knows how to
+/// honour: a project present with an empty class list runs IN FULL (unfiltered), and a
+/// non-empty force-run set also disables the zero-affected skip gate — so an
+/// unanalysable file can never reach the "0 affected, green, 0 ran" verdict either.
+let internal coarseFallbackProjects
+    (configs: TestConfig list)
+    (unanalyzableFiles: Set<string>)
+    (fanout: Set<string>)
+    : Set<string> =
+    if Set.isEmpty unanalyzableFiles then
+        fanout
+    else
+        Set.union fanout (fullSuiteProjects configs)
+
+/// What a completed test run actually COVERED — the honest scope of the evidence it
+/// produced (AUTOMATION-112).
+///
+/// An impact-filtered green means "your change didn't break anything I chose to look
+/// at". It does NOT mean "the suite is green". Those are different claims, and a merge
+/// gate may only consume the second. So the scope is reported as a value the verdict
+/// can be a total function OVER, rather than left implicit for a caller to assume.
+///
+/// `RanEverything` requires BOTH that no project was impact-filtered AND that every
+/// configured project actually produced a result: a run that filtered nothing but
+/// skipped half the projects covered no more of the suite than one that filtered.
+/// A run whose Results map is empty (the zero-affected skip's degenerate green)
+/// verified NOTHING and is `RanNothing` — never full-suite, whatever
+/// `TestRunCompleted.RanFullSuite` says about it (that flag is vacuously true for an
+/// empty map, which is exactly the trap a merge gate must not fall into).
+type internal RunScope =
+    /// Every configured test project ran, none of them filtered. The only scope from
+    /// which a merge-gate verdict may be produced.
+    | RanEverything of projects: int
+    /// A subset ran: some project was impact-filtered, or some project did not run.
+    | RanSubset of ranProjects: int * totalProjects: int
+    /// No test run has completed in this session, or the one that did executed no
+    /// tests at all.
+    | RanNothing
+
+/// Classify the last completed run against the configured projects.
+let internal classifyRunScope (configs: TestConfig list) (lastResults: TestResults option) : RunScope =
+    let total = List.length configs
+
+    match lastResults with
+    | None -> RanNothing
+    | Some results when Map.isEmpty results.Results -> RanNothing
+    | Some results ->
+        let ran = Map.count results.Results
+        let noneFiltered = TestResult.ranFullSuite results.Results
+
+        if noneFiltered && ran >= total && total > 0 then
+            RanEverything total
+        else
+            RanSubset(ran, total)
+
+/// The ledger diagnostic for a file the symbol analyser could not read. LOUD by
+/// construction: it is a WARNING (so it surfaces in `fshw check` output and, under
+/// the default warn-fail policy, denies the check a green verdict) keyed to the file
+/// itself, naming the file and the reason. The previous behaviour reported nothing a
+/// consumer could see — the plugin logged, set a status that the very next file's
+/// `Completed` overwrote, and dropped the file. Nothing in the system would ever have
+/// told anyone.
+let internal unanalyzableFileDiagnostic (relPath: string) (reason: string) : ErrorLedger.ErrorEntry =
+    ErrorLedger.ErrorEntry.warningWithDetail
+        $"%s{relPath}: symbol analysis failed — %s{reason}"
+        $"TestPrune could not extract symbols from this file, so it is INVISIBLE to the impact graph: a change to it \
+           has no symbols to diff and would select no tests on its own. Every test project is being run in full for \
+           this cycle (safe over-selection) until the file analyses cleanly. Fix the reported parse/check error — a \
+           misplaced `///` doc comment (FS3520) is the usual cause."
 
 /// Build the filter arg string for a config given affected classes.
 let internal buildFilterArgs (config: TestConfig) (classesByProject: Map<string, string list>) : string option =
@@ -1830,6 +1937,19 @@ let internal cacheKeyFor
     (changedSymbolsHash: unit -> string)
     (pendingQueueHash: unit -> string option)
     (dependsOnHash: unit -> string option)
+    // AUTOMATION-112. `Some "full"` while the merge gate has asked for the whole
+    // suite; `None` for the impact-filtered inner loop.
+    //
+    // Load-bearing: without it, the FIRST thing a gate does on an unchanged tree is
+    // HIT the cache entry written by an earlier impact-filtered run and replay its
+    // verdict — a filtered green, laundered into a merge verdict, with no test
+    // process ever starting. That is the whole bug, arrived at by a different road.
+    //
+    // Keeping it `None` (rather than "impact") for the inner loop leaves the ordinary
+    // key byte-identical to the pre-feature one, so existing on-disk caches keep
+    // hitting; only a gate's key differs. A second gate over the same tree still hits
+    // its OWN entry and replays a run that genuinely was full-suite — sound and fast.
+    (gateScopeHash: unit -> string option)
     (event: PluginEvent<TestPruneMsg>)
     : ContentHash option =
     let optionalEntry (name: string) (value: string option) =
@@ -1855,6 +1975,7 @@ let internal cacheKeyFor
               "build-outcome", buildOutcome ]
             @ optionalEntry "pending-queue" (pendingQueueHash ())
             @ optionalEntry "depends-on" (dependsOnHash ())
+            @ optionalEntry "gate-scope" (gateScopeHash ())
         )
 
     match event with
@@ -1984,6 +2105,23 @@ let create
     // (mailbox + cache intercept).
     let mutable pendingQueueRef: PendingVerification.Queue =
         PendingVerification.load repoRoot
+
+    /// AUTOMATION-112. When set, every test run this plugin launches is UNFILTERED —
+    /// every configured project, in full. Requested by `fshw gate` (the merge gate)
+    /// through the `set-scope` command BEFORE it triggers the scan, so the run the
+    /// scan provokes is already full-suite and the gate never pays for two runs.
+    ///
+    /// Deliberately one-way within a daemon session in the safe direction: `fshw
+    /// check` does not reset it. A gate followed by an inner-loop check is merely
+    /// slower; the reverse — a filtered run silently satisfying a gate — is the whole
+    /// bug. To go back to impact filtering, ask for it explicitly (`set-scope impact`)
+    /// or restart the daemon.
+    ///
+    /// Note this only makes the run unfiltered. It does NOT let the CLI *claim* a
+    /// full-suite verdict: the gate reads back what the run actually covered
+    /// (`test-scope` → `classifyRunScope`) and refuses to go green on anything less.
+    /// The flag is a request; the scope report is the evidence.
+    let mutable fullSuiteScopeRef = false
 
     /// Add `symbols` to the in-memory queue. Called at the FileChecked
     /// accumulation point; the durable persist is batched to the flush
@@ -2207,7 +2345,8 @@ let create
           BuildCompletedInThisSession = false
           PriorProjectFingerprints = Map.empty
           PendingForceRunProjects = Set.empty
-          ChangedSymbolsAllUncovered = false }
+          ChangedSymbolsAllUncovered = false
+          UnanalyzableFiles = Set.empty }
 
     // Keep the cache-key snapshot consistent with the seeded queue from the
     // very first event (the cache intercept runs before any Update handler).
@@ -2237,9 +2376,39 @@ let create
         // change the symbol diff can't see still re-runs the dependent tests.
         // Empty in the common case (no dependency change), so ordinary
         // source-symbol edits keep their precise, minimal selection.
-        (forceRunProjects: Set<string>)
+        (fanoutProjects: Set<string>)
         : Async<TestPruneMsg> =
         async {
+            // The single chokepoint every launch path funnels through (BatchChecked
+            // drain, BuildCompleted, deferred rerun). Both widenings live here rather
+            // than at each call site, so no future launch path can forget one and
+            // quietly reintroduce a filtered run where an unfiltered one was owed.
+            //
+            //  * AUTOMATION-112 — merge-gate scope: run EVERY project, unfiltered.
+            //  * AUTOMATION-113 — unanalysable files: run every project, because a
+            //    selection made without them cannot be trusted.
+            let gateScopeIsFullSuite = Volatile.Read(&fullSuiteScopeRef)
+
+            let forceRunProjects =
+                let widened = coarseFallbackProjects configs state.UnanalyzableFiles fanoutProjects
+
+                if gateScopeIsFullSuite then
+                    Set.union widened (fullSuiteProjects configs)
+                else
+                    widened
+
+            if gateScopeIsFullSuite then
+                Logging.info
+                    "test-prune"
+                    "Scope: FULL SUITE (merge gate) — impact filtering is disabled for this run; every configured test project runs in full"
+
+            if not (Set.isEmpty state.UnanalyzableFiles) then
+                let names = state.UnanalyzableFiles |> Set.toList |> String.concat ", "
+
+                Logging.warn
+                    "test-prune"
+                    $"%d{Set.count state.UnanalyzableFiles} file(s) could not be analysed (%s{names}) — their symbols are missing from the impact graph, so this run falls back to EVERY test project in full rather than trusting a selection made without them"
+
             // The queue snapshot this run is LAUNCHED against — the durable
             // queue UNION the in-memory hot view. Captured here (not read from
             // state at completion time) because mid-run BatchChecked flushes
@@ -2478,12 +2647,88 @@ let create
                   return JsonSerializer.Serialize({| tests = payload |})
               } ]
 
-    // run-tests command (only if testConfigs are provided)
+    // run-tests / scope commands (only if testConfigs are provided). The scope verbs
+    // live behind the same gate on purpose: a repo with no test projects has no suite
+    // to run in full, so `fshw gate` finds no `set-scope` command, cannot establish
+    // the full-suite scope, and refuses to produce a merge verdict — rather than
+    // silently issuing a green one it never earned.
     let allCommands =
         match testConfigs with
         | Some allConfigs when not allConfigs.IsEmpty ->
             commands
-            @ [ "run-tests",
+            @ [ "set-scope",
+                fun (_ctx: PluginCtx<TestPruneMsg>) (_state: TestPruneState) (args: string array) ->
+                    async {
+                        // AUTOMATION-112. `fshw gate` calls this BEFORE triggering its
+                        // scan, so the test run the scan provokes is already unfiltered.
+                        let requested =
+                            let argStr = if args.Length > 0 then args.[0].Trim() else "{}"
+
+                            try
+                                use doc = JsonDocument.Parse(argStr)
+
+                                match doc.RootElement.TryGetProperty("scope") with
+                                | true, v when v.ValueKind = JsonValueKind.String -> v.GetString()
+                                | _ -> "impact"
+                            with _ ->
+                                "impact"
+
+                        match requested with
+                        | "full" ->
+                            Volatile.Write(&fullSuiteScopeRef, true)
+
+                            Logging.info
+                                "test-prune"
+                                "Scope set to FULL SUITE — impact filtering disabled for subsequent runs in this daemon session"
+
+                            return JsonSerializer.Serialize({| scope = "full" |})
+                        | "impact" ->
+                            Volatile.Write(&fullSuiteScopeRef, false)
+                            Logging.info "test-prune" "Scope set to IMPACT-FILTERED (inner-loop default)"
+                            return JsonSerializer.Serialize({| scope = "impact" |})
+                        | other ->
+                            return
+                                JsonSerializer.Serialize(
+                                    {| error = $"unknown scope '%s{other}' (expected 'full' or 'impact')" |}
+                                )
+                    }
+
+                "test-scope",
+                fun (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
+                    async {
+                        // What the last completed run ACTUALLY covered — the evidence a
+                        // merge verdict is computed from. Never a restatement of what was
+                        // requested: `set-scope full` is a request, this is the receipt.
+                        // A run still in flight reports `running`, which the gate treats
+                        // as "no verdict yet" rather than as a scope.
+                        if ctx.IsRunning "tests" then
+                            return JsonSerializer.Serialize({| scope = "running" |})
+                        else
+                            match classifyRunScope allConfigs state.LastResults with
+                            | RanEverything projects ->
+                                return
+                                    JsonSerializer.Serialize(
+                                        {| scope = "full"
+                                           ranProjects = projects
+                                           totalProjects = projects |}
+                                    )
+                            | RanSubset(ran, total) ->
+                                return
+                                    JsonSerializer.Serialize(
+                                        {| scope = "filtered"
+                                           ranProjects = ran
+                                           totalProjects = total |}
+                                    )
+                            | RanNothing ->
+                                return
+                                    JsonSerializer.Serialize(
+                                        {| scope = "none"
+                                           ranProjects = 0
+                                           totalProjects = List.length allConfigs |}
+                                    )
+                    }
+
+                "run-tests",
                 fun (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (args: string array) ->
                     async {
                         // FORCE semantics: `test-rerun` is the explicit "run it now"
@@ -2833,7 +3078,13 @@ let create
                                 ChangedFiles = newChangedFiles
                                 PendingAnalysis = newPending
                                 ChangedSymbols = newChangedSymbols
-                                TestClassFiles = newClassFiles }
+                                TestClassFiles = newClassFiles
+                                // The file analysed cleanly, so it is back in the impact
+                                // graph and no longer owes the coarse fallback. The
+                                // framework already cleared this plugin's ledger entries
+                                // for the file when the FileChecked arrived, so the
+                                // warning disappears with it.
+                                UnanalyzableFiles = Set.remove relPath state.UnanalyzableFiles }
 
                         // Keep the mutable snapshot in sync for the cache key function
                         Volatile.Write(&changedSymbolsRef, newState.ChangedSymbols)
@@ -2869,12 +3120,39 @@ let create
 
                         return newState
                     | Error msg ->
-                        Logging.error "test-prune" $"Analysis failed for %s{relPath}: %s{msg}"
+                        // AUTOMATION-113. This branch used to `return state` — the file
+                        // was DROPPED. It contributed no symbols, so the impact graph
+                        // never saw it, so a change to it diffed against nothing and
+                        // selected NO tests, and the gate reported green having run
+                        // nothing relevant. The `Failed` status below was the only trace,
+                        // and it is overwritten by the very next file's `Completed`, so
+                        // in practice the failure was invisible. Silent under-selection:
+                        // the one failure mode a test-impact tool must not have.
+                        //
+                        // Now the file is REMEMBERED as unanalysable. Three consequences,
+                        // none of them silent:
+                        //   1. a WARNING lands in the error ledger, keyed to the file, so
+                        //      `fshw check` prints it and (under the default warn-fail
+                        //      policy) refuses a green verdict;
+                        //   2. `runTestsWithImpact` falls back to EVERY test project in
+                        //      full while the set is non-empty — safe over-selection
+                        //      instead of a selection made without the file;
+                        //   3. the non-empty force-run set also disables the
+                        //      zero-affected skip gate, so this can never terminate as
+                        //      "0 affected — green, 0 ran".
+                        // The file leaves the set the moment it analyses cleanly.
+                        Logging.error
+                            "test-prune"
+                            $"Analysis failed for %s{relPath}: %s{msg} — this file is INVISIBLE to the impact graph (no symbols), so every test project will be run in full until it analyses cleanly"
+
+                        ctx.ReportErrors fileStr [ unanalyzableFileDiagnostic relPath msg ]
 
                         if isIdle then
                             ctx.ReportStatus(PluginStatus.Failed($"Analysis failed: %s{msg}", DateTime.UtcNow))
 
-                        return state
+                        return
+                            { state with
+                                UnanalyzableFiles = Set.add relPath state.UnanalyzableFiles }
 
                 | PluginEvent.BatchChecked _ ->
                     // Cohort-complete flush. Per-file accumulation already
@@ -3478,7 +3756,16 @@ let create
                 | "" -> None
                 | h -> Some h
 
-            cacheKeyFor changedSymbolsHash pendingQueueHash dependsOnHash event
+            // AUTOMATION-112: a merge gate must never REPLAY an impact-filtered run's
+            // cached verdict. Salting the key with the requested scope makes that
+            // impossible rather than merely unlikely.
+            let gateScopeHash () =
+                if Volatile.Read(&fullSuiteScopeRef) then
+                    Some "full"
+                else
+                    None
+
+            cacheKeyFor changedSymbolsHash pendingQueueHash dependsOnHash gateScopeHash event
 
         Some cacheKey
       Teardown = None }

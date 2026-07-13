@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- feat: `ErrorLedger.ErrorEntry.warningWithDetail` — a Warning-severity entry with a
+  detail body, the sibling `errorWithDetail` never had. For conditions that deny a
+  clean verdict under the default warn-fail policy without themselves being a failed
+  check: the first is a source file the symbol analyser could not read, which leaves a
+  hole in the impact graph the gate must not silently paper over. (AUTOMATION-113)
+
 - fix!: **ONE spawn primitive, bounded at both ends.** There were TWO —
   `runProcessWithTimeout` and `runProcessWithLaunchWatchdog` — and every caller
   except TestPrune used the unsafe one, so the two wedges the watchdog was built

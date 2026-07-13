@@ -8,6 +8,7 @@ open System.Text.Json
 open System.Threading
 open CommandTree
 open FsHotWatch.Cli.DaemonConfig
+open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Daemon
 open FsHotWatch.Ipc
 
@@ -94,6 +95,11 @@ type Command =
     | [<CmdExample("", "--no-cache"); Cmd("Start the daemon")>] Start
     | [<Cmd("Stop the daemon")>] Stop
     | [<CmdExample("", "--run-once"); Cmd("Run all checks")>] Check of RunFlag list
+    /// The merge gate (AUTOMATION-112). Same checks as `check`, but the tests run
+    /// UNFILTERED — and the verdict is refused unless they actually did. `check` is the
+    /// inner loop and keeps impact filtering, which is a latency optimization; a merge
+    /// is a correctness claim and cannot be built on a heuristic selection.
+    | [<Cmd("Merge gate: run all checks with the FULL test suite (no impact filtering) and refuse a green verdict from anything less")>] Gate
     | [<CmdExample("--filter-class *CryptoTests*", "--filter-trait Category=Browser");
         Cmd("Rerun tests with an xUnit v3 --filter-class / --filter-trait slice", Name = "test-rerun")>] TestRerun of
         RerunFlag list
@@ -374,8 +380,45 @@ let private withCheckIpc (action: unit -> int) : int =
         2
 
 /// Ensure daemon, poll for progress, render colored output.
+/// Ask the test-prune plugin what the last completed run actually covered.
+///
+/// Any failure to get a straight answer — no test-prune plugin, an old daemon that
+/// doesn't know the command, a transport fault, an unparseable reply — becomes
+/// `ScopeUnknown`, which a merge gate treats as "not full-suite" and therefore refuses
+/// to go green on. The failure direction is the safe one BY CONSTRUCTION: a gate can
+/// only ever go green on a scope it positively established.
+let private readTestScope (ipc: IpcOps) (pipeName: string) : TestScope =
+    try
+        ipc.RunCommand pipeName "test-prune" "test-scope"
+        |> Async.RunSynchronously
+        |> IpcParsing.parseTestScope
+    with ex ->
+        FsHotWatch.Logging.debug "cli-gate" $"could not read the test scope: %s{ex.Message}"
+        ScopeUnknown
+
+/// Put the daemon's test-prune plugin into full-suite scope for the rest of this
+/// session. Called BEFORE the gate triggers its scan, so the test run the scan provokes
+/// is already unfiltered and the gate never pays for two runs.
+///
+/// A failure here is NOT fatal on its own — the gate does not trust this call's return
+/// value anyway. It trusts `readTestScope`, which reports what actually ran. If the
+/// scope could not be set, the run will come back impact-filtered and the verdict will
+/// be `UnearnedScope`. The request is not the evidence.
+let private requestFullSuiteScope (ipc: IpcOps) (pipeName: string) : unit =
+    try
+        let reply =
+            ipc.RunCommand pipeName "test-prune" "set-scope {\"scope\":\"full\"}"
+            |> Async.RunSynchronously
+
+        FsHotWatch.Logging.debug "cli-gate" $"set-scope reply: %s{reply}"
+    with ex ->
+        eprintfn
+            $"fshw gate: could not put the daemon in full-suite scope (%s{ex.Message}). \
+               The tests will run impact-filtered, and the gate will refuse the verdict."
+
 let private ensureAndQueryErrors
     (mode: ProgressRenderer.RenderMode)
+    (checkMode: CheckVerdict.CheckMode)
     (noWarnFail: bool)
     (ensureDaemon: unit -> bool)
     (waitReady: unit -> DaemonReadiness)
@@ -408,9 +451,16 @@ let private ensureAndQueryErrors
 
             2
         | DaemonReadiness.Ready ->
+            // The merge gate declares its scope BEFORE anything runs. Ordering is
+            // load-bearing: the scan below provokes the test run, and that run must
+            // already be unfiltered — asking afterwards would only learn that it wasn't.
+            if checkMode = CheckVerdict.MergeGate then
+                requestFullSuiteScope ipc pipeName
+
             withCheckIpc (fun () ->
                 IpcOutput.pollAndRender
                     mode
+                    checkMode
                     (renderLines mode (not noWarnFail))
                     noWarnFail
                     (fun () -> ipc.WaitForScan pipeName -1L |> Async.RunSynchronously)
@@ -428,6 +478,11 @@ let private ensureAndQueryErrors
                     (fun () -> ipc.WaitForComplete pipeName -1 |> Async.RunSynchronously)
                     (fun () -> ipc.GetStatus pipeName |> Async.RunSynchronously)
                     (fun () -> ipc.GetDiagnostics pipeName pluginFilter |> Async.RunSynchronously)
+                    // What the last completed run actually covered. Read fresh at every
+                    // verdict point, from the daemon, never inferred from what we asked
+                    // for. The inner loop reads it too — and ignores it — so there is one
+                    // verdict path, not two that can drift.
+                    (fun () -> readTestScope ipc pipeName)
                     // Convergence re-scan: start a scan and block until it (and the
                     // plugins it triggers) settle, so the next GetDiagnostics read
                     // reflects the fresh scan. `Scan` returns "scan started:<gen>";
@@ -812,6 +867,7 @@ let executeCommand
         match command with
         | Start
         | Check _
+        | Gate
         | TestRerun _
         | Format _
         | Rerun _ -> true
@@ -847,8 +903,15 @@ let executeCommand
         let waitReadyFn () =
             waitForDaemonReady ipc repoRoot pipeName (max startupTimeoutSeconds DaemonReadinessTimeoutSeconds)
 
+        let queryPluginIn
+            (checkMode: CheckVerdict.CheckMode)
+            (mode: ProgressRenderer.RenderMode)
+            (filter: string)
+            : int =
+            ensureAndQueryErrors mode checkMode noWarnFail ensureDaemonFn waitReadyFn ipc pipeName filter
+
         let queryPluginWith (mode: ProgressRenderer.RenderMode) (filter: string) : int =
-            ensureAndQueryErrors mode noWarnFail ensureDaemonFn waitReadyFn ipc pipeName filter
+            queryPluginIn CheckVerdict.InnerLoop mode filter
 
         let queryPlugin filter =
             queryPluginWith ProgressRenderer.Verbose filter
@@ -1098,6 +1161,12 @@ let executeCommand
                 eprintfn $"fshw: config error: %s{msg}"
                 2
         | Check flags -> queryPluginWith (mode) ""
+        | Gate ->
+            // Same pipeline as `check` — build, format, lint, analyzers, coverage — but
+            // the daemon is put in full-suite scope first, so the test run this scan
+            // provokes is unfiltered, and the verdict is computed in `MergeGate` mode,
+            // which has no path to a green that does not go through a full-suite run.
+            queryPluginIn CheckVerdict.MergeGate mode ""
         | Config ConfigCommand.Check ->
             // Config has already been parsed by main; reaching here means it's valid.
             printfn "config: OK (%d plugins configured)" (countPlugins config)

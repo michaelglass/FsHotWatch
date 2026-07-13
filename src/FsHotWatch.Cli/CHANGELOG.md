@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- feat!: **new `fshw gate` verb — the merge gate, which runs the FULL test suite and
+  refuses a green verdict from anything less.** `fshw check` remains the inner dev
+  loop and keeps impact filtering, which is what filtering is genuinely good for.
+  `fshw gate` runs the same checks (build, format, lint, analyzers, coverage) but puts
+  the daemon in full-suite scope BEFORE it triggers its scan — so the test run the
+  scan provokes is already unfiltered, and the gate never pays for two runs.
+
+  The enforcement is in the TYPE, not in a docs note: `CheckVerdict.verdict` now takes
+  a `CheckMode` (`InnerLoop` | `MergeGate`) and a `TestScope` (what the run actually
+  covered), and `MergeGate` has **no branch that reaches `Clean` without a
+  `FullSuite`** scope. An impact-filtered run, a run that executed no tests, and a
+  scope the daemon could not report (old daemon, no test-prune plugin, transport
+  fault) all land on the new `CheckOutcome.UnearnedScope` — **exit 3**, distinct from
+  failure (1) and incompleteness (2), because "the gate has no verdict" is a different
+  event from "the gate found a problem", and an autonomous caller must be able to tell
+  them apart. Failing closed on an unknown scope is the safe direction by
+  construction: a gate goes green only on a scope it positively established.
+
+  Why enforce it structurally at all: "remember to also run an unfiltered `test-rerun`
+  before merging" is exactly the discipline that has already failed. A gate that
+  depends on someone remembering is not a gate. (AUTOMATION-112)
+
 - fix!: **the `beforeRun` hook ran with an INFINITE timeout** — the single most
   dangerous spawn in the daemon. It executes INSIDE the `RunExclusive "tests"`
   slot, and a real one is a multi-command shell chain including a network

@@ -31,14 +31,14 @@ type BuildOutcome =
     | BuildArtifactsStale of stale: StaleArtifact list * output: string
     | BuildOutputFailed of outputs: string list
 
+/// The build plugin has no in-flight build of its own (the framework's
+/// `RunExclusive "build"` owns single-flighting). `PendingFiles` buffers
+/// file changes that arrived before this plugin's `dependsOn` were satisfied.
+/// Every source change — test files included — drives a real build: there is
+/// no longer a "skip the build for test-only changes" phase, because that
+/// skip left a stale on-disk test DLL for `dotnet run --no-build` to execute
+/// (see ADR-012). `LastBuild` carries the most recent build's lifecycle.
 type BuildState =
-    /// The build plugin has no in-flight build of its own (the framework's
-    /// `RunExclusive "build"` owns single-flighting). `PendingFiles` buffers
-    /// file changes that arrived before this plugin's `dependsOn` were satisfied.
-    /// Every source change — test files included — drives a real build: there is
-    /// no longer a "skip the build for test-only changes" phase, because that
-    /// skip left a stale on-disk test DLL for `dotnet run --no-build` to execute
-    /// (see ADR-012). `LastBuild` carries the most recent build's lifecycle.
     { LastBuild: Lifecycle<Idle, BuildOutcome option>
       PendingFiles: FileChangeKind list
       SatisfiedDeps: Set<string> }
