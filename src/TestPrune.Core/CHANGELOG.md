@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 6.0.0 - 2026-07-13
+
 - fix: **directory walks no longer follow symlinks, and no longer hang forever.**
   `discoverTestProjects` used `SearchOption.AllDirectories`, which FOLLOWS DIRECTORY
   SYMLINKS. In a devenv/nix repo the reachable tree contains self-loop symlinks

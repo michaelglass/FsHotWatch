@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 6.0.0 - 2026-07-13
+
 - fix: project discovery no longer follows directory symlinks. `findProjectFiles`
   used `SearchOption.AllDirectories`, which traverses symlinked dirs — in a
   devenv/nix repo that reaches /nix/store's self-loop symlinks and never
