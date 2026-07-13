@@ -30,6 +30,7 @@
     </ItemGroup>
 
     <ItemGroup>
+        <Compile Include="SafeWalk.fs" />
         <Compile Include="Domain.fs" />
         <Compile Include="AstAnalyzer.fs" />
         <Compile Include="ProjectFanout.fs" />

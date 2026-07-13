@@ -2,6 +2,7 @@ namespace TestPrune.Falco
 
 open System.IO
 open System.Text.RegularExpressions
+open TestPrune
 open TestPrune.AstAnalyzer
 open TestPrune.EdgeEmission
 open TestPrune.Ports
@@ -59,11 +60,14 @@ type FalcoRouteExtension(integrationTestProject: string, integrationTestDir: str
         if not (Directory.Exists(testDir)) then
             []
         else
-            Directory.GetFiles(testDir, "*.fs", SearchOption.AllDirectories)
-            |> Array.filter (fun f ->
-                let n = f.Replace('\\', '/')
-                not (n.Contains("/obj/")) && not (n.Contains("/bin/")))
-            |> Array.toList
+            // SafeWalk, never AllDirectories: the latter follows directory
+            // symlinks, and tests/*/bin holds Playwright's Nix-store browser
+            // symlinks — walking those reaches /nix/store's self-loop symlinks
+            // and never terminates (the 2026-07-13 wedge: fshw check hung 8h36m
+            // here, silently, without ever launching a test). SafeWalk also
+            // prunes bin/ and obj/ during traversal rather than filtering them
+            // out afterwards, so their subtrees are never entered at all.
+            SafeWalk.enumerateFiles "*.fs" testDir
 
     /// Find affected test classes using route-based matching.
     /// Returns AffectedTest list for backward compatibility.

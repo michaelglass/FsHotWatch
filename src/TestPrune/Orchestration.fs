@@ -34,12 +34,6 @@ let findRepoRoot (startDir: string) : string option =
 
     walk startDir
 
-let private isOutputPath (path: string) =
-    let n = path.Replace('\\', '/')
-
-    n.Contains("/obj/", StringComparison.Ordinal)
-    || n.Contains("/bin/", StringComparison.Ordinal)
-
 /// Parse a single .fs file with FCS, returning analysis result or error message.
 let parseFile (checker: FSharpChecker) (filePath: string) : Result<AnalysisResult, string> =
     try
@@ -55,17 +49,19 @@ let parseFile (checker: FSharpChecker) (filePath: string) : Result<AnalysisResul
         Error $"Exception reading %s{filePath}: %s{ex.Message}"
 
 /// Discover all .fsproj files in src/ and tests/ directories.
+///
+/// Build output is pruned by SafeWalk during traversal (bin/ and obj/ subtrees
+/// are never entered), so there is no post-filter here: the walker owns that
+/// concern. A caller-side "/bin/"-substring filter would be dead code.
 let findProjectFiles (repoRoot: string) : string list =
     [ "src"; "tests" ]
     |> List.collect (fun dir ->
         let fullDir = Path.Combine(repoRoot, dir)
 
         if Directory.Exists(fullDir) then
-            Directory.GetFiles(fullDir, "*.fsproj", SearchOption.AllDirectories)
-            |> Array.toList
+            SafeWalk.enumerateFiles "*.fsproj" fullDir
         else
             [])
-    |> List.filter (fun p -> not (isOutputPath p))
 
 /// Builds the solution. Returns exit code (0 = success).
 type BuildRunner = string -> int

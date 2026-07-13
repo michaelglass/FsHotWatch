@@ -83,20 +83,21 @@ let runFilteredTests (projectDll: string) (testClasses: string list) : TestResul
     runFilteredTestsWith runProcess projectDll testClasses
 
 /// Discover test projects by scanning for .fsproj files with xunit references.
-/// Only scans tests/ directory to avoid .devenv/ symlink issues.
+/// Walks via SafeWalk: scoping to tests/ is NOT sufficient protection against
+/// symlink cycles (tests/*/bin holds Playwright's Nix-store browser symlinks),
+/// so the walk must refuse to traverse symlinked dirs. See TestPrune.SafeWalk.
 let discoverTestProjects (repoRoot: string) : string list =
     let testsDir = Path.Combine(repoRoot, "tests")
 
     if not (Directory.Exists(testsDir)) then
         []
     else
-        Directory.GetFiles(testsDir, "*.fsproj", SearchOption.AllDirectories)
-        |> Array.filter (fun path ->
+        SafeWalk.enumerateFiles "*.fsproj" testsDir
+        |> List.filter (fun path ->
             try
                 let content = File.ReadAllText(path)
                 content.Contains("xunit", StringComparison.OrdinalIgnoreCase)
             with
             | :? System.IO.IOException
             | :? System.UnauthorizedAccessException -> false)
-        |> Array.toList
         |> List.sort

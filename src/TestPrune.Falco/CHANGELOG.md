@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- fix: **`findTestFiles` no longer hangs forever.** It scanned the integration-test
+  directory with `SearchOption.AllDirectories`, which follows directory symlinks —
+  and `tests/*/bin` holds Playwright's Nix-provisioned browser symlinks, so the walk
+  escaped into /nix/store and reached its self-loop symlinks (`ncurses -> .`), which
+  double the path count per level. Effectively non-terminating. Because this runs
+  inside `FindAffectedTestClasses`, it hung impact analysis itself: `fshw check`
+  logged `QueryAffectedTests: 1964 affected tests` and then went silent for hours
+  without ever launching a test. Now walks via `TestPrune.SafeWalk`, which never
+  traverses a symlinked directory and prunes `bin`/`obj` during traversal rather than
+  filtering them out afterwards.
 - feat!: TestPrune.Falco owns the route table. `RouteHandlerEntry` and a new
   `RouteStore` type (its own `route_handlers` table, created on demand inside
   TestPrune's cache database through core's `Ports.PluginStore` seam) live here now,

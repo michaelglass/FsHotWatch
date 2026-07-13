@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- fix: **directory walks no longer follow symlinks, and no longer hang forever.**
+  `discoverTestProjects` used `SearchOption.AllDirectories`, which FOLLOWS DIRECTORY
+  SYMLINKS. In a devenv/nix repo the reachable tree contains self-loop symlinks
+  (`ncurses-6.6-dev/include/{ncurses,ncursesw} -> .`), and each one DOUBLES the path
+  count per level, so a walk that reaches one is effectively non-terminating. This
+  silently wedged `fshw check` — observed at 8h36m with no output, no timeout, no
+  error and no test ever launched. Scoping the walk to a narrower root (the old
+  `discoverTestProjects` comment claimed "only scans tests/ to avoid .devenv/ symlink
+  issues") is NOT protection: `tests/*/bin` holds Playwright's Nix-store browser
+  symlinks, so the walk escapes into /nix/store from inside `tests/` anyway.
+- feat: new `TestPrune.SafeWalk` — THE one walker for every "files under this root"
+  job. Never descends a reparse-point directory (termination is structural, not
+  heuristic), prunes `bin`/`obj`/`.git`/`.jj`/`.devenv`/`.direnv`/`node_modules`
+  during traversal, and is depth-capped as a belt against cycles that could evade the
+  symlink guard. `SearchOption.AllDirectories` is banned in this codebase — route
+  every repo-scale walk through `SafeWalk.enumerateFiles`.
 - feat!: drop the route concept from the public API. HTTP routes are not a core
   concept — core has no business knowing what a URL is — so `RouteHandlerEntry`
   (`AstAnalyzer`), the `route_handlers` table and its five `Database` methods
