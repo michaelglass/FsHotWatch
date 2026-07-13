@@ -1140,8 +1140,7 @@ let registerPlugins (daemon: Daemon) (repoRoot: string) (config: DaemonConfigura
                     // extension that actually owns them. Core now exposes only the
                     // generic `PluginStore` seam (a connection to its cache DB), and
                     // Falco's RouteStore creates/owns `route_handlers` on top of it.
-                    let routeStore =
-                        TestPrune.Falco.RouteStore(TestPrune.Ports.toPluginStore db)
+                    let routeStore = TestPrune.Falco.RouteStore(TestPrune.Ports.toPluginStore db)
 
                     exts
                     |> List.choose (fun ext ->
