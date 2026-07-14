@@ -329,7 +329,7 @@ let rec isVerdictWaitTimeout (ex: exn) : bool =
 ///
 /// Best-effort by design: a repo whose `.fshw/` cannot be written must still get
 /// its exit code. The verdict is an additional surface, never a new way to fail.
-let private publishVerdict
+let internal publishVerdict
     (repoRoot: string)
     (excludePatterns: string list)
     (checkMode: CheckVerdict.CheckMode)
@@ -404,6 +404,14 @@ let pollAndRender
     (getStatus: unit -> string)
     (getErrors: unit -> string)
     (getTestRun: unit -> TestRunReport)
+    // Run EVERY configured test project, now, and don't come back until it is done
+    // (`run-tests` with no filter). This is the gate's teeth: `set-scope full` only
+    // makes the next run unfiltered, and on a warm daemon whose impact DB says nothing
+    // changed there IS no next run — so the gate would refuse for want of evidence it
+    // was never willing to go and get. Invoked ONLY in `MergeGate`, and only when the
+    // settled scope is not already full-suite, so the common case (a cold daemon whose
+    // scan already provoked the unfiltered run) pays for exactly one suite.
+    (forceFullRun: unit -> unit)
     (triggerScan: unit -> string)
     : int =
     // Run `fn` under a spinner when interactive, else announce it with a plain
@@ -480,13 +488,36 @@ let pollAndRender
         let firstRun = getTestRun ()
         finalRun.Value <- firstRun
 
-        let outcome =
-            CheckVerdict.converge
-                checkMode
-                MaxConvergeAttempts
-                rescan
-                reread
+        // THE GATE EARNS ITS EVIDENCE (AUTOMATION-117).
+        //
+        // `set-scope full` was already sent (before the scan), so any run the scan
+        // provoked is unfiltered — and on a cold daemon that is the whole story: the
+        // scope reads `FullSuite` here and nothing more is run. But a WARM daemon whose
+        // impact DB says nothing changed provokes NO run at all, and the scope we just
+        // read is the last (filtered) run's. Refusing there is correct — there is no
+        // whole-suite evidence — but refusing and STOPPING makes the gate unsatisfiable,
+        // and an unsatisfiable gate is one people route around with a shell script.
+        //
+        // So: no full-suite evidence ⇒ go and produce some. Then re-settle and re-read,
+        // because a forced run can fail, and its failures are the answer.
+        let initialRead =
+            if CheckVerdict.gateNeedsFullRun checkMode firstRun.Scope then
+                eprintfn
+                    "  Merge gate: the tests that ran were %s — running the FULL suite to earn a verdict..."
+                    (TestScope.describe firstRun.Scope)
+
+                withProgress "Running the full suite (merge gate)" "Running the full suite (merge gate)..." (fun () ->
+                    forceFullRun ())
+
+                settle ()
+                // `reread` refreshes finalStatuses/finalRun too, so the verdict is
+                // computed — and PUBLISHED — from what the forced run actually did.
+                reread ()
+            else
                 (hasFailures noWarnFail firstResp, firstResp.Coverage, firstRun.Scope)
+
+        let outcome =
+            CheckVerdict.converge checkMode MaxConvergeAttempts rescan reread initialRead
 
         publishVerdict repoRoot excludePatterns checkMode noWarnFail finalRun.Value finalStatuses.Value outcome
 

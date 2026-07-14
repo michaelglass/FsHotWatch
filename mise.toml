@@ -164,8 +164,15 @@ run = "dotnet build"
 depends = ["restore"]
 
 [tasks.ci]
-description = "Run all CI checks (single pass, no daemon)"
-run = "dotnet run --project src/FsHotWatch.Cli --no-build -- check --run-once"
+description = "Run the merge gate (single pass, no daemon) — the same command GitHub Actions runs"
+# `gate`, not `check`: the full suite runs UNFILTERED and a green verdict is refused
+# (exit 3) from anything less. `check` keeps impact filtering, which is a latency
+# optimization for the inner loop and not the basis for a merge decision.
+#
+# This MUST stay identical to `lint-cmd` in .github/workflows/ci.yml. A local `ci` that
+# runs a different command from the real CI is a local `ci` that can go green on work
+# CI will reject — the drift is the bug (AUTOMATION-117).
+run = "dotnet run --project src/FsHotWatch.Cli --no-build -- gate --run-once"
 depends = ["compile", "lint-project", "coverage-check"]
 
 [tasks.run]

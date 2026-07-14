@@ -126,6 +126,30 @@ let verdict (mode: CheckMode) (hasFailures: bool) (coverage: Coverage) (testScop
         | Incomplete n -> CheckOutcome.Incomplete n
         | Unknown -> CheckOutcome.Incomplete -1
 
+/// Must the gate go and PRODUCE the evidence it is about to demand?
+///
+/// A GATE THAT ONLY DEMANDS IS A GATE NOBODY CAN SATISFY (AUTOMATION-117). Setting
+/// full-suite scope makes the next run unfiltered; it does not make a run HAPPEN. So a
+/// gate asked "may I merge this?" on a tree whose suite has not run — a fresh CI
+/// checkout, or a warm daemon whose impact DB says nothing changed — would refuse for
+/// want of evidence while offering no way to produce any. That is not a strict gate,
+/// it is a broken one, and the documented workaround for a broken gate is the 40-line
+/// bash harness this whole release exists to delete. So the gate RUNS the suite it
+/// demands, and only then judges it.
+///
+/// Deliberately expressed as the exact negation of what `verdict` will accept: this
+/// says "go and earn a `FullSuite`", `verdict` says "only a `FullSuite` may pass". Two
+/// readings of ONE rule (`TestScope.isFullSuite`). If they could drift, the gate could
+/// force a run it then refused — an infinite-work gate — or, far worse, skip the run
+/// and accept what it never asked for.
+///
+/// `InnerLoop` never forces: an impact-filtered green IS the answer it wants, and a
+/// fast loop that secretly runs the whole suite is not a fast loop.
+let gateNeedsFullRun (mode: CheckMode) (scope: TestScope) : bool =
+    match mode with
+    | InnerLoop -> false
+    | MergeGate -> not (TestScope.isFullSuite scope)
+
 /// Comparable "unchecked" magnitude used for progress tracking across
 /// convergence attempts. Complete is 0; Incomplete carries its count; Unknown
 /// is treated as the largest possible value so that an Unknown→Incomplete

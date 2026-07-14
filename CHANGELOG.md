@@ -4,6 +4,31 @@ All notable changes to FsHotWatch packages are documented here.
 
 ## Unreleased
 
+### The merge gate is reachable without a daemon — and CI now runs it
+
+`fshw gate` (the unforgeable merge verdict: full-suite scope, `UnearnedScope` → exit 3)
+existed **only** on the daemon IPC path. `--run-once` bypasses the daemon entirely, and
+`--run-once` is what CI uses — so our own CI could not invoke the gate it is supposed to
+be gated by, and ran `check --run-once` instead.
+
+That was fine only by accident. In CI the impact DB starts **cold**, and a cold DB
+selects everything, so the full suite ran anyway. Warm that cache and the same green
+would silently start coming from a subset.
+
+`fshw gate --run-once` closes it, and CI (`lint-cmd`) plus `mise run ci` now use it.
+The gate also **runs the suite it demands** rather than merely asking for it: setting
+full-suite scope makes the next run unfiltered, but does not make a run *happen*, so a
+gate on a tree whose suite had not run would refuse forever with no way to satisfy it.
+
+**Breaking (API):** `Gate of RunFlag list`; `IpcOutput.pollAndRender` gains a
+`forceFullRun` seam. **Breaking (behaviour):** `--run-once` now writes
+`.fshw/verdict.json` and computes a real `CheckOutcome`, so `check --run-once` can exit
+2 (incomplete) where it previously exited 0.
+
+"Full suite" means every test project **`.fshw.json` knows about** — today
+`FsHotWatch.Tests` alone; `FsHotWatch.IntegrationTests` is not in `.fshw.json`
+(AUTOMATION-158).
+
 ### A process tree we failed to kill is no longer reported as killed
 
 **Breaking (API):** `ProcessOutcome.TimedOut` now carries a third field —

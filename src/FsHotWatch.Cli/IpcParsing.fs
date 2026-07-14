@@ -72,6 +72,53 @@ module TestScope =
         | NoTestsRun -> "no tests ran"
         | ScopeUnknown -> "unknown (the daemon did not report a test scope)"
 
+    /// Is this scope the EVIDENCE a merge verdict is made of?
+    ///
+    /// The ONE predicate. `CheckVerdict.verdict` decides what a scope is WORTH; this
+    /// decides whether the gate must still go and EARN one, and both must agree on
+    /// what "full suite" means or the gate would demand evidence it then refuses (or,
+    /// far worse, accept evidence it never demanded). Every non-`FullSuite` case is
+    /// listed, so a new scope defaults to "not evidence" only by an explicit edit here.
+    ///
+    /// NOTE ON WHAT "FULL" MEANS. `FullSuite n` says every test project THE CONFIG
+    /// KNOWS ABOUT ran unfiltered — it is not a claim about every test in the repo. A
+    /// suite missing from `.fshw.json` is missing from this number too (AUTOMATION-158).
+    let isFullSuite (scope: TestScope) : bool =
+        match scope with
+        | FullSuite _ -> true
+        | ImpactFiltered _
+        | NoTestsRun
+        | ScopeUnknown -> false
+
+/// The test-prune plugin commands the merge gate speaks.
+///
+/// `RunCommand` dispatches on the COMMAND name — a plugin's own name is not a command
+/// and resolves to nothing. Passing `"test-prune"` here is precisely the bug
+/// AUTOMATION-129 fixed: the host found no such command, returned the unknown-command
+/// sentinel, and the gate read it as `ScopeUnknown` → exit 3 on every repo, forever.
+///
+/// They live HERE, next to the parser of their replies, because there are now FOUR
+/// callers — `gate` and `gate --run-once`, over two different transports — and a
+/// literal that four call sites can spell independently is a literal three of them can
+/// spell wrong.
+[<Literal>]
+let TestScopeCommand = "test-scope"
+
+[<Literal>]
+let SetScopeCommand = "set-scope"
+
+/// The `run-tests` command, with no filter and no project selection: run EVERY
+/// configured test project. This is how the gate FORCES the run it demands rather
+/// than merely asking for it (see `RunOnceCheck` / `IpcOutput.pollAndRender`).
+[<Literal>]
+let RunTestsCommand = "run-tests"
+
+/// The `set-scope` payload that turns impact filtering OFF for the rest of the
+/// session. A REQUEST, never evidence: the gate reads back what actually ran
+/// (`TestScopeCommand`) and refuses anything less.
+[<Literal>]
+let FullSuiteScopeArgs = """{"scope":"full"}"""
+
 let private tryParseUtcOpt (s: string) : DateTime option =
     match DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal) with
     | true, dt -> Some dt
