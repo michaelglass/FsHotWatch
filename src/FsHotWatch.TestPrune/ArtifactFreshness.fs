@@ -27,22 +27,65 @@
 ///
 ///   1. It COMPILES each project's sources into that project's own assembly.
 ///      ⇒ `AssemblyOlderThanSource`: a compile input newer than the assembly
-///        built from it means the compile did not run since the edit.
+///        built from it means the compile did not run since the edit. A `.fs` and
+///        the `.dll` compiled from it have no content relation, so an mtime is the
+///        ONLY signal available here — and this half of the module is right to use
+///        one.
 ///   2. It COPIES files into the test project's output dir — dependency
 ///      assemblies, and content/fixture items (transitively, from referenced
-///      projects). MSBuild copies with `File.Copy`, which PRESERVES the source's
-///      mtime, so after a copy the two are EQUAL.
-///      ⇒ `CopyOlderThanOrigin`: a copy strictly older than its origin means the
-///        copy did not happen since the edit.
+///      projects).
+///      ⇒ `CopyDiffersFromOrigin`: a copy whose BYTES are not the bytes of any
+///        output it could have been copied from means the copy did not happen
+///        since the edit.
+///
+/// ## Why a copy is judged by CONTENT and never by an mtime (AUTOMATION-169)
+///
+/// The copy check used to ask `copyMtime < originMtime`. It cried wolf again, and
+/// the second wolf-cry came through the TARGET FRAMEWORK.
+///
+/// A multi-targeted dependency (`netstandard2.0; net8.0; net9.0; net10.0` — a
+/// vendored SqlHydra fork) was consumed by a test project on net10.0. MSBuild
+/// copies the dependency's net10.0 output; this gate resolved the origin to
+/// whichever per-TFM output was NEWEST — which was net8.0, built nine minutes
+/// later. So it compared a net10.0 copy against a net8.0 origin and condemned a
+/// PERFECT copy. The message indicted itself: the origin it printed ended
+/// `/net8.0/`, the destination `/net10.0/`. And no plain `dotnet build` could
+/// answer it — a correct rebuild re-copies net10.0, so the accusation re-fired
+/// forever. Four of six test projects refused to run.
+///
+/// Different TFMs of one project build at DIFFERENT TIMES, so an mtime comparison
+/// ACROSS TFMs is not a bad heuristic — it is a CATEGORY ERROR. Correcting the
+/// resolution would leave the error expressible; so the mtimes are gone from the
+/// copy verdict entirely, and with them the whole bug class:
+///
+///   * TFM confusion — the question "which TFM did MSBuild pick?" is one this
+///     graph-free module cannot answer (nearest-compatible-framework, netstandard
+///     fallback), and it no longer has to ASK. Content is TFM-agnostic.
+///   * a `jj`/`git` working-copy restamp of an unchanged file;
+///   * coarse filesystem timestamps, and a rebuild inside one timestamp tick.
+///
+/// The rule, and it is ONE rule with two applications: **a copy is current iff its
+/// bytes are the bytes of one of the outputs the build could have copied it from**
+/// — for a content item, the file at that relative path in a closure project; for
+/// a dependency assembly, any of that project's per-TFM outputs. That question
+/// never mentions a target framework, so it cannot get one wrong. (Confirmed
+/// against the real consumer, 2026-07-14: the fork's four per-TFM DLLs hash to
+/// four DIFFERENT digests, and every consumer's copy is byte-identical to
+/// net10.0's — so a genuinely stale copy matches NONE of them and is still caught.)
+///
+/// This is the same doctrine `TreeHash` already states — *"The hash is over
+/// CONTENT, never mtimes. mtime is precisely what lied in APPLIC-24"* — and the
+/// two sibling modules no longer give opposite advice. It uses core's ONE hasher,
+/// `ContentHash`, and so inherits its fail-closed sentinel: a file we cannot read
+/// is `InputsUndeterminable`, never "fresh".
 ///
 /// Both are exactly what a plain `dotnet build` fixes, and NOTHING else is
 /// asserted — so a file outside the closure cannot make the gate fire, and every
 /// firing names a file a normal build will re-emit. Verified against real MSBuild
 /// (2026-07-14): an out-of-closure edit leaves the test DLL untouched across
 /// repeated incremental builds (the old false positive, now unrepresentable); an
-/// in-closure edit restamps the dependency's DLL, its copy in the consumer's
-/// output dir, and the consumer's own DLL; and a changed content item is
-/// re-copied into the consumer's output dir with the source's mtime.
+/// in-closure edit re-emits the dependency's DLL and re-copies it into the
+/// consumer's output dir; and a changed content item is re-copied likewise.
 ///
 /// ## Content items — the fake green this also closes
 ///
@@ -50,11 +93,23 @@
 /// copied in from a shared project was invisible to it: the tests ran
 /// `--no-build` against the OLD copy still sitting in `bin/`, PASSED, and the red
 /// only surfaced after a forced rebuild (intelligence, `dsa-scope-4.json`,
-/// 2026-07-14 — a green merge that left main red for hours). `CopyOlderThanOrigin`
+/// 2026-07-14 — a green merge that left main red for hours). `CopyDiffersFromOrigin`
 /// covers content and dependency assemblies alike, because it keys on the COPY:
 /// a file in a project's directory is only ever compared against a destination
 /// that the build actually produced. A file the build does not copy has no
 /// destination, so it can never make the gate fire.
+///
+/// ## Shadowing — when two projects claim one destination
+///
+/// A relative path can be claimed by SEVERAL projects in one closure
+/// (`xunit.runner.json` sits in five of them in the consumer above). MSBuild copies
+/// them all to the same destination and the last writer wins, so one copy survives
+/// and the others are shadowed. A copy is therefore checked against EVERY claimant
+/// in the closure and is current if it matches ANY — otherwise the shadowed project
+/// would be condemned for a build doing exactly what it means to do, and no build
+/// could answer the charge. (Under the old mtime rule this misfired only when the
+/// shadowed file happened to be newer; under a content rule it would have been
+/// PERMANENT, so the fix for one bug had to bring the guard for the other.)
 ///
 /// This module is deliberately self-contained (on-disk `.fsproj` parse rather
 /// than `IProjectGraphReader`): `executeTests` is graph-free — it is shared with
@@ -91,19 +146,31 @@ type RunnerTarget =
     }
 
 /// Why a test project's build output cannot be trusted for a `--no-build` run.
-/// Every case names the exact pair of files whose mtimes prove the build did not
-/// run — so the gate's message is actionable, and a plain `dotnet build` (never
+/// Every case names the exact pair of files that prove the build did not run — so
+/// the gate's message is actionable, and a plain `dotnet build` (never
 /// `-t:Rebuild`) is always the remedy.
 type StaleInput =
     /// A compile input is newer than the assembly compiled from it: the compile
     /// did not run since the edit. `Project` is the owning project's directory
     /// leaf — it may be the test project itself or any project in its closure.
+    ///
+    /// The one MTIME judgement left in this module, and the only one that can be
+    /// made: a `.fs` source and the `.dll` compiled from it share no bytes, so
+    /// there is nothing to compare but the clock.
     | AssemblyOlderThanSource of project: string * source: string * sourceMtime: DateTime * assemblyMtime: DateTime
     /// A file the build copies into the test project's output dir (a dependency
     /// assembly, or a content/fixture item — its own, or one carried in from a
-    /// referenced project) is strictly older than the file it is copied from: the
-    /// copy did not happen since the edit, so the run would read the old bytes.
-    | CopyOlderThanOrigin of origin: string * copy: string * originMtime: DateTime * copyMtime: DateTime
+    /// referenced project) does not hold the BYTES of any output it could have
+    /// been copied from: the copy did not happen since the edit, so the run would
+    /// read the old bytes.
+    ///
+    /// Deliberately carries NO MTIMES. Two per-TFM outputs of one project are
+    /// built minutes apart, so comparing a copy's mtime against an origin's is
+    /// meaningless unless their frameworks match — and this module cannot know
+    /// which framework MSBuild chose (AUTOMATION-169). A verdict that has no
+    /// mtimes in it cannot compare two of them across a TFM boundary: the error is
+    /// not corrected here, it is UNREPRESENTABLE.
+    | CopyDiffersFromOrigin of origin: string * copy: string
     /// The gate could not determine what this run's inputs ARE — an unreadable or
     /// unparseable project file, or a `ProjectReference` it cannot resolve. This is
     /// the FAIL-CLOSED case: a freshness gate that answers "up to date" because it
@@ -130,13 +197,8 @@ let describe (stale: StaleInput) : string =
             assemblyMtime
             source
             sourceMtime
-    | CopyOlderThanOrigin(origin, copy, originMtime, copyMtime) ->
-        sprintf
-            "%s (edited %O) has not been copied into the test output since — %s is from %O"
-            origin
-            originMtime
-            copy
-            copyMtime
+    | CopyDiffersFromOrigin(origin, copy) ->
+        sprintf "%s has not been copied into the test output since it changed — %s holds different bytes" origin copy
     | InputsUndeterminable(project, reason) ->
         sprintf
             "%s: cannot determine what this test run's inputs are (%s) — refusing to call it fresh; build it and let the build report the error"
@@ -198,6 +260,8 @@ type Cache() =
     let closures = OnceMemo<string, Result<string list, string>>()
     let files = OnceMemo<string, (string * DateTime) list>()
     let assemblies = OnceMemo<string, (string * DateTime) option>()
+    let outputs = OnceMemo<string, string list>()
+    let hashes = OnceMemo<string, string>()
 
     /// Direct `ProjectReference` includes of a project file, absolute and
     /// resolved.
@@ -278,57 +342,166 @@ type Cache() =
                 |> List.ofSeq
         )
 
-    /// The project's own most recently built `<assemblyName>.dll` — its path and
-    /// mtime — across its per-TFM output dirs, or `None` when the project has not
-    /// been built yet. `None` is NOT staleness: a missing artifact is the presence
-    /// probe's business (a build in flight may still land it), and this gate only
-    /// judges artifacts that exist. The newest is the right one to compare against:
-    /// it is the one a rebuild would have just written.
-    member _.OwnAssembly(projectDir: string, assemblyName: string) : (string * DateTime) option =
-        assemblies.GetOrAdd(
+    /// EVERY `<assemblyName>.dll` this project has built, one per per-TFM output
+    /// dir. These are the outputs a consumer's copy of this assembly could have
+    /// come from — and the gate deliberately does NOT try to work out WHICH of them
+    /// MSBuild chose. That question needs the nearest-compatible-framework rules
+    /// (a net10.0 consumer takes a netstandard2.0 dependency's netstandard2.0
+    /// output quite happily), and a graph-free on-disk parse cannot answer it. It
+    /// does not need to: the copy is judged against these outputs by CONTENT, and
+    /// content does not care which framework produced it. Guessing here — picking
+    /// the newest — is exactly what condemned four test projects in AUTOMATION-169.
+    ///
+    /// Empty when the project has not been built yet. That is NOT staleness: a
+    /// missing artifact is the presence probe's business (a build in flight may
+    /// still land it), and this gate only judges artifacts that exist.
+    member _.OwnAssemblyOutputs(projectDir: string, assemblyName: string) : string list =
+        outputs.GetOrAdd(
             Path.Combine(projectDir, assemblyName),
             fun _ ->
                 tfmOutputDirs (binDirOf projectDir)
                 |> Array.choose (fun tfmDir ->
                     let dll = Path.Combine(tfmDir, assemblyName + ".dll")
 
-                    if File.Exists dll then
-                        Some(dll, File.GetLastWriteTimeUtc dll)
-                    else
-                        None)
+                    if File.Exists dll then Some dll else None)
                 |> Array.toList
+        )
+
+    /// The project's own most recently built `<assemblyName>.dll` — its path and
+    /// mtime — across its per-TFM output dirs, or `None` when the project has not
+    /// been built yet. `None` is NOT staleness (see `OwnAssemblyOutputs`).
+    ///
+    /// Used ONLY by the compile check, where the comparison is against the
+    /// project's OWN sources and the NEWEST output is the lenient — and so
+    /// conservative-against-false-stale — choice: if any framework was compiled
+    /// after the edit, the compile ran. It must never be used as the ORIGIN of a
+    /// copy: across TFMs, "newest" and "the one that was copied" are different
+    /// files (AUTOMATION-169).
+    member this.OwnAssembly(projectDir: string, assemblyName: string) : (string * DateTime) option =
+        assemblies.GetOrAdd(
+            Path.Combine(projectDir, assemblyName),
+            fun _ ->
+                this.OwnAssemblyOutputs(projectDir, assemblyName)
+                |> List.map (fun dll -> dll, File.GetLastWriteTimeUtc dll)
                 |> function
                     | [] -> None
                     | built -> Some(built |> List.maxBy snd)
         )
+
+    /// The content hash of a file, memoised — the gate hashes a dependency
+    /// assembly once and then compares it against every consumer's copy of it.
+    /// `ContentHash.ofFile` never throws: an unreadable file hashes to the
+    /// `UnhashableContent` sentinel, which matches nothing, and callers turn that
+    /// into `InputsUndeterminable` rather than a pass.
+    member _.Hash(path: string) : string =
+        hashes.GetOrAdd(path, ContentHash.ofFile)
 
 /// The leaf name a project is known by (its directory name, which by convention
 /// is also its assembly name).
 let private projectLabel (projectDir: string) =
     Path.GetFileName(projectDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
 
-/// The mtime of the build's copy at `rel`, or `None` when the build put nothing
-/// there. The whole of the copy check keys on this `None` — a file the build does
-/// not copy has no destination and is never asserted about — so it is worth having
-/// the lookup SAY `None` rather than leaving a bare `TryGetValue` bool at the one
-/// site that reads it.
-let private tryCopyMtime (outputs: IReadOnlyDictionary<string, DateTime>) (rel: string) : DateTime option =
-    match outputs.TryGetValue rel with
-    | true, mtime -> Some mtime
-    | false, _ -> None
+/// THE copy rule, and the only one: **is `copy` — the file the `--no-build` run
+/// will actually load — byte-identical to one of the `candidates` the build could
+/// have copied it from?**
+///
+/// `None` = current. `Some` = the run would read bytes no current build produces.
+///
+/// There is deliberately no mtime anywhere in here, and no attempt to work out
+/// WHICH candidate MSBuild picked. Both are the same mistake in different clothes:
+/// the module cannot know the chosen target framework, and the moment it guesses
+/// (AUTOMATION-169: it took the newest, which was net8.0, and condemned a perfect
+/// net10.0 copy) it starts making accusations no build can answer. It does not
+/// need to know. If the copy's bytes are the bytes of ANY current output of its
+/// origin, then the run loads code that matches the sources on disk — which is the
+/// only question this gate was ever asking. If they match NONE of them, the copy
+/// is old bytes whichever framework produced it, and the run must not happen.
+///
+/// FAILS CLOSED on a file it cannot read (`ContentHash`'s sentinel matches
+/// nothing, so an unreadable file could otherwise masquerade as a mismatch — or,
+/// worse, a match): "I could not read it" is `InputsUndeterminable`, never a
+/// verdict.
+let private copyVerdict (cache: Cache) (project: string) (copy: string) (candidates: string list) : StaleInput option =
+    let copyHash = cache.Hash copy
+
+    if not (ContentHash.isReadable copyHash) then
+        Some(InputsUndeterminable(project, $"could not read the build's copy at %s{copy}"))
+    else
+        let hashed = candidates |> List.map (fun c -> c, cache.Hash c)
+
+        if hashed |> List.exists (fun (_, h) -> h = copyHash) then
+            None // the copy IS one of the origin's current outputs
+        else
+            // No match. Before calling it stale, make sure we could actually READ
+            // everything we compared against — a mismatch we could not fully check
+            // is ignorance, not evidence.
+            match hashed |> List.tryFind (fun (_, h) -> not (ContentHash.isReadable h)) with
+            | Some(unreadable, _) -> Some(InputsUndeterminable(project, $"could not read %s{unreadable}"))
+            | None -> Some(CopyDiffersFromOrigin(List.head candidates, copy))
+
+/// The origin candidates, ordered so the one the consumer most likely consumes is
+/// FIRST — purely so a stale message names the framework the reader is looking at.
+/// The VERDICT does not depend on this order (it is content, over the whole set);
+/// only the wording does. Naming a net8.0 origin to a reader staring at a net10.0
+/// output dir is what made the AUTOMATION-169 message read as nonsense.
+let private consumerTfmFirst (tfmDir: string) (candidates: string list) : string list =
+    let consumerTfm =
+        Path.GetFileName(tfmDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+
+    let tfmOf (candidate: string) =
+        Path.GetFileName(Path.GetDirectoryName candidate)
+
+    let matching, rest =
+        candidates
+        |> List.partition (fun c -> String.Equals(tfmOf c, consumerTfm, StringComparison.OrdinalIgnoreCase))
+
+    matching @ rest
 
 /// Is one project's contribution to `tfmDir` stale? `projectDir`/`assemblyName`
 /// name a project in the test project's closure (possibly the test project
-/// itself); `outputs` maps every file the build has placed under `tfmDir` to its
-/// mtime, keyed by path relative to `tfmDir`.
+/// itself); `outputs` holds the path — relative to `tfmDir` — of every file the
+/// build has placed there.
+///
+/// `outputs` is a SET, not a map to mtimes. All the copy check ever asks of it is
+/// *"did the build put something here?"*, because a file the build does not copy
+/// has no destination and is never asserted about — that is what keeps a false
+/// positive unrepresentable. What is at that destination is then settled by
+/// content, so its mtime was never wanted.
 let private staleContribution
     (cache: Cache)
     (tfmDir: string)
-    (outputs: IReadOnlyDictionary<string, DateTime>)
+    (outputs: IReadOnlySet<string>)
+    (closure: (string * string) list)
     (projectDir: string)
     (assemblyName: string)
     : StaleInput option =
     let sources = cache.FilesUnder projectDir
+    let project = projectLabel projectDir
+
+    /// Every file in the CLOSURE that the build could have copied to `rel` — this
+    /// project's first, so a stale message names the project being judged.
+    ///
+    /// It is not always this project's alone. Two projects in one closure may hold
+    /// a file at the SAME relative path (`xunit.runner.json` sits in five of them in
+    /// the consumer this gate was fixed against); MSBuild copies both to the same
+    /// destination and the last writer wins. Compare the surviving copy against only
+    /// ONE claimant and the other is condemned for being SHADOWED — an accusation no
+    /// build can answer, because the build is doing exactly what it means to do.
+    ///
+    /// So the copy is checked against every claimant, and is current if it matches
+    /// ANY of them. That is not a loosening: the copy the run loads came from one of
+    /// these files, and if it matches one of them it holds bytes a current build
+    /// produces — which is the only thing this gate asserts. If it matches NONE, it
+    /// is stale whoever wrote it.
+    let claimantsOf (rel: string) =
+        let mine = Path.Combine(projectDir, rel)
+
+        let others =
+            closure
+            |> List.map (fun (dir, _) -> Path.Combine(dir, rel))
+            |> List.filter (fun candidate -> candidate <> mine && File.Exists candidate)
+
+        mine :: others
 
     // (1) COMPILE. The project's own assembly must be newer than every compile
     //     input it was built from. Judged against the project's OWN output, never
@@ -344,50 +517,61 @@ let private staleContribution
             |> List.filter (fun (rel, _) -> compileExtensions.Contains(Path.GetExtension(rel).ToLowerInvariant()))
             |> List.tryFind (fun (_, mtime) -> mtime > assemblyMtime)
             |> Option.map (fun (rel, mtime) ->
-                AssemblyOlderThanSource(projectLabel projectDir, Path.Combine(projectDir, rel), mtime, assemblyMtime))
+                AssemblyOlderThanSource(project, Path.Combine(projectDir, rel), mtime, assemblyMtime))
 
     // (2) COPY. Every file of this project that the build has copied into the test
-    //     project's output dir must be no older than its origin. Keyed on the COPY
-    //     existing, so a file the build does not copy is never asserted about —
-    //     that is what makes a false positive unrepresentable here. Covers content
+    //     project's output dir must hold the bytes it was copied from. Keyed on the
+    //     COPY existing, so a file the build does not copy is never asserted about
+    //     — that is what makes a false positive unrepresentable here. Covers content
     //     and fixture items (its own, and those carried in transitively) …
     let staleCopy () =
         sources
-        |> List.tryPick (fun (rel, originMtime) ->
-            match tryCopyMtime outputs rel with
-            | Some copyMtime when copyMtime < originMtime ->
-                Some(
-                    CopyOlderThanOrigin(
-                        Path.Combine(projectDir, rel),
-                        Path.Combine(tfmDir, rel),
-                        originMtime,
-                        copyMtime
-                    )
-                )
-            | _ -> None)
+        |> List.tryPick (fun (rel, _) ->
+            if outputs.Contains rel then
+                copyVerdict cache project (Path.Combine(tfmDir, rel)) (claimantsOf rel)
+            else
+                None)
 
-    // … and (3) the dependency's ASSEMBLY, which is copied into the consumer's
-    //     output dir by the same mtime-preserving copy. Catches "only the
-    //     dependency was rebuilt": its own DLL is fresh, but the copy the test run
-    //     would actually load is not. (For the test project itself the copy IS the
-    //     origin — same path, equal mtimes — so this is a no-op.)
+    // … and (3) the dependency's ASSEMBLY, which the same copy carries into the
+    //     consumer's output dir. Catches "only the dependency was rebuilt": its own
+    //     DLL is fresh, but the copy the test run would actually load is not.
+    //
+    //     The candidates are ALL of the dependency's per-TFM outputs, because which
+    //     one MSBuild copied is not knowable here — and, judged by content, does
+    //     not need to be. (For the test project itself the copy IS one of the
+    //     candidates — the very same path — so this is a no-op, as it should be.)
     let staleAssemblyCopy () =
         let copy = Path.Combine(tfmDir, assemblyName + ".dll")
 
-        let copyMtime =
-            if File.Exists copy then
-                Some(File.GetLastWriteTimeUtc copy)
-            else
-                None
-
-        match cache.OwnAssembly(projectDir, assemblyName), copyMtime with
-        | Some(origin, originMtime), Some copyMtime when copyMtime < originMtime ->
-            Some(CopyOlderThanOrigin(origin, copy, originMtime, copyMtime))
-        | _ -> None
+        if not (File.Exists copy) then
+            None // not copied yet — the presence probe's business, not ours
+        else
+            match cache.OwnAssemblyOutputs(projectDir, assemblyName) with
+            | [] -> None // not built yet — likewise
+            | candidates -> copyVerdict cache project copy (consumerTfmFirst tfmDir candidates)
 
     staleCompile
     |> Option.orElseWith staleCopy
     |> Option.orElseWith staleAssemblyCopy
+
+/// Is the test project's output at `tfmDir` stale — i.e. is ANY project in its
+/// closure contributing something out of date to it? `ordered` is that closure,
+/// test project first.
+let private staleInTfmDir (cache: Cache) (ordered: (string * string) list) (tfmDir: string) : StaleInput option =
+    // A hash SET, not an F# `Map` and not a map to mtimes. This is read exactly one
+    // way — "is there a copy at `rel`?" — and it is built from a full walk of the
+    // output dir (hundreds of DLLs here, before content and fixtures). A `Map`
+    // would pay O(n log n) and one heap node per file to build an ordering nothing
+    // ever asks for; a map to mtimes would carry a value no caller may use any
+    // more. `HashSet` builds in O(n) and answers the one question asked.
+    let outputs =
+        SafeWalk.enumerateFiles Set.empty tfmDir
+        |> Seq.map (fun f -> Path.GetRelativePath(tfmDir, f.FullName))
+        |> HashSet
+
+    ordered
+    |> List.tryPick (fun (projectDir, assemblyName) ->
+        staleContribution cache tfmDir outputs ordered projectDir assemblyName)
 
 /// Would a `--no-build` run of this test project execute bits that do not match
 /// the sources? `Some reason` blocks the run (and names the file pair proving
@@ -447,24 +631,7 @@ let stale (cache: Cache) (target: RunnerTarget) : StaleInput option =
         | Ok _ when Array.isEmpty candidateTfmDirs -> None // nothing built to be stale — presence probe's business
         | Ok ordered ->
             // Stale iff NO output dir is fresh (see the multi-TFM note above).
-            let perTfm =
-                candidateTfmDirs
-                |> Array.map (fun tfmDir ->
-                    // A hash table, not an F# `Map`. This is a lookup table read exactly
-                    // one way — `TryGetValue rel` — and it is built from a full walk of
-                    // the output dir (hundreds of DLLs here, before content and fixtures).
-                    // A `Map` would pay O(n log n) and one heap node per file to build an
-                    // ordering nothing ever asks for. `readOnlyDict` builds in O(n),
-                    // answers the one question asked, and keeps `Map.ofSeq`'s
-                    // last-writer-wins on a repeated relative path.
-                    let outputs =
-                        SafeWalk.enumerateFiles Set.empty tfmDir
-                        |> Seq.map (fun f -> Path.GetRelativePath(tfmDir, f.FullName), f.LastWriteTimeUtc)
-                        |> readOnlyDict
-
-                    ordered
-                    |> List.tryPick (fun (projectDir, assemblyName) ->
-                        staleContribution cache tfmDir outputs projectDir assemblyName))
+            let perTfm = candidateTfmDirs |> Array.map (staleInTfmDir cache ordered)
 
             if Array.forall Option.isSome perTfm then
                 Array.head perTfm

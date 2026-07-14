@@ -5198,14 +5198,20 @@ let ``a dependency edit followed by a plain rebuild of that dependency is FRESH`
 
 // Only the dependency was rebuilt — its DLL is fresh in its OWN bin, but the copy
 // the test run would actually load was never refreshed. That is stale bits.
+//
+// A rebuild emits new BYTES, and that — not a moved timestamp — is what this test
+// simulates since AUTOMATION-169. It used to move the origin's mtime alone, which
+// asserted the old contract (`copy < origin` ⇒ stale) rather than the real event.
+// Content is now the signal, so the test states the real event.
 [<Fact(Timeout = 15000)>]
-let ``a dependency DLL newer than its COPY in the test output is STALE`` () =
+let ``a dependency DLL rebuilt but not re-copied into the test output is STALE`` () =
     withTempDir "tp-stale-depcopy" (fun tmpDir ->
         let s = synth tmpDir
+        File.WriteAllText(s.CommonDll, "rebuilt bits")
         File.SetLastWriteTimeUtc(s.CommonDll, s.BuiltAt.AddMinutes(30.0))
 
         match synthStale s with
-        | Some(ArtifactFreshness.CopyOlderThanOrigin(origin, copy, _, _)) ->
+        | Some(ArtifactFreshness.CopyDiffersFromOrigin(origin, copy)) ->
             test <@ origin = s.CommonDll @>
             test <@ copy = s.CommonDllCopy @>
         | other -> Assert.Fail($"expected the un-refreshed dependency copy to be STALE, got %A{other}"))
@@ -5236,7 +5242,7 @@ let ``a FIXTURE edited but not re-copied into the test output is STALE`` () =
         // green against 36 leaves.
 
         match synthStale s with
-        | Some(ArtifactFreshness.CopyOlderThanOrigin(origin, copy, _, _)) ->
+        | Some(ArtifactFreshness.CopyDiffersFromOrigin(origin, copy)) ->
             test <@ origin = s.CommonFixture @>
             test <@ copy = s.FixtureCopy @>
         | other -> Assert.Fail($"expected the un-copied fixture to be STALE, got %A{other}"))
@@ -5268,10 +5274,45 @@ let ``the test project's OWN stale fixture copy is STALE`` () =
         writeAt ownFixture "{ \"v\": 2 }" (s.BuiltAt.AddMinutes(30.0))
 
         match synthStale s with
-        | Some(ArtifactFreshness.CopyOlderThanOrigin(origin, copy, _, _)) ->
+        | Some(ArtifactFreshness.CopyDiffersFromOrigin(origin, copy)) ->
             test <@ origin = ownFixture @>
             test <@ copy = ownCopy @>
         | other -> Assert.Fail($"expected the test project's own stale fixture to be STALE, got %A{other}"))
+
+// SHADOWING. Two projects in one closure can hold a file at the SAME relative path
+// — `xunit.runner.json` sits in five projects of the repo this gate was fixed
+// against. MSBuild copies both to the same destination and the last writer wins, so
+// exactly one of them survives in the output dir.
+//
+// Judge the survivor against only ONE claimant and the other project is condemned
+// for being shadowed — and no build can answer that, because the build is doing
+// precisely what it means to do. That is the unanswerable accusation this module
+// exists to prevent, and a CONTENT comparison would make it PERMANENT (an mtime one
+// only fired when the shadowed file happened to be newer). So a copy is checked
+// against every claimant in the closure, and is current if it matches ANY of them.
+[<Fact(Timeout = 15000)>]
+let ``a fixture SHADOWED by another project's file at the same path is not stale`` () =
+    withTempDir "tp-stale-shadowed" (fun tmpDir ->
+        let s = synth tmpDir
+        let editedAt = s.BuiltAt.AddMinutes(30.0)
+
+        // Tests has its OWN Fixtures/data.json — same relative path as Common's, and
+        // different bytes. Its copy is the one that survives in the output dir.
+        let testsFixture = p [ s.TestsDir; "Fixtures"; "data.json" ]
+        writeAt testsFixture "{ \"leaves\": 99 }" editedAt
+        writeAt s.FixtureCopy "{ \"leaves\": 99 }" editedAt
+
+        // Common's fixture is now shadowed: its bytes appear nowhere in the output.
+        // It must NOT be reported stale — a build would change nothing.
+        test <@ synthStale s = None @>
+
+        // But a copy matching NEITHER claimant is still stale: shadowing is not a
+        // licence to stop checking.
+        File.WriteAllText(s.FixtureCopy, "{ \"leaves\": 0 }")
+
+        match synthStale s with
+        | Some(ArtifactFreshness.CopyDiffersFromOrigin(_, copy)) -> test <@ copy = s.FixtureCopy @>
+        | other -> Assert.Fail($"a copy matching no claimant must still be STALE, got %A{other}"))
 
 // The other half of "keyed on the copy": a file the build does NOT copy has no
 // destination in the output dir, so editing it can never fire the gate. Without
@@ -5292,6 +5333,7 @@ let ``a file the build never copies cannot make the run stale`` () =
 let ``the stale reason names the offending file`` () =
     withTempDir "tp-stale-describe" (fun tmpDir ->
         let s = synth tmpDir
+        File.WriteAllText(s.CommonFixture, "{ \"leaves\": 40 }")
         File.SetLastWriteTimeUtc(s.CommonFixture, s.BuiltAt.AddMinutes(30.0))
 
         match synthStale s with
@@ -5400,6 +5442,159 @@ let ``a dependency assembly not yet copied into the test output is not reported 
 
         test <@ synthStale s = None @>)
 
+// =============================================================================
+// AUTOMATION-169 — THE WOLF-CRY, BACK THROUGH A DIFFERENT DOOR. Not the wrong
+// project this time: the wrong TARGET FRAMEWORK.
+//
+// A multi-targeted dependency (`netstandard2.0; net8.0; net9.0; net10.0` — the
+// vendored SqlHydra fork) consumed by a test project on net10.0. MSBuild copies
+// the dependency's net10.0 output; the gate resolved the ORIGIN to whichever TFM
+// output happened to be NEWEST, which was net8.0. Different TFMs of one project
+// build at different times — nine minutes apart, in the observed case — so the
+// gate compared a net10.0 copy against a net8.0 origin, found it "older", and
+// condemned it.
+//
+// Live evidence from the consumer (intelligence, 2026-07-14): the fork's four
+// per-TFM DLLs hash to four DIFFERENT digests, `ls -t` puts net8.0 newest, and
+// every consumer's copy is byte-identical to net10.0's digest. So the copy was
+// PERFECT and the gate said stale — and a plain `dotnet build` could not answer
+// it, because a correct rebuild re-copies net10.0 and the accusation re-fires.
+// 4 of 6 test projects refused to run; verdict red.
+//
+// An mtime comparison ACROSS TFMs is meaningless by construction. These tests pin
+// that the comparison is no longer expressible.
+// =============================================================================
+
+/// A dependency multi-targeting net8.0 and net10.0, consumed by a net10.0 test
+/// project. The two TFM outputs carry DIFFERENT BYTES (as real per-TFM builds do
+/// — they differ at minimum in `TargetFrameworkAttribute`) and DIFFERENT MTIMES,
+/// with **net8.0 the newer**: exactly the shape that makes "newest output dir
+/// wins" pick the framework nobody consumes.
+///
+/// Returns the path of the copy MSBuild actually placed in the test output.
+type private MultiTfm =
+    { Root: string
+      TestsDir: string
+      DepNet8Dll: string
+      DepNet10Dll: string
+      DepDllCopy: string
+      BuiltAt: DateTime }
+
+let private multiTfmSynth (root: string) : MultiTfm =
+    let builtAt = DateTime.UtcNow.AddHours(-1.0)
+    let sourcedAt = builtAt.AddMinutes(-10.0)
+
+    let depDir = p [ root; "Dep" ]
+    let testsDir = p [ root; "Tests" ]
+    let depNet8 = p [ depDir; "bin"; "Debug"; "net8.0" ]
+    let depNet10 = p [ depDir; "bin"; "Debug"; "net10.0" ]
+    let testsOut = p [ testsDir; "bin"; "Debug"; "net10.0" ]
+
+    writeAt (p [ depDir; "Dep.fsproj" ]) "<Project Sdk=\"Microsoft.NET.Sdk\" />" sourcedAt
+    writeAt (p [ depDir; "Dep.fs" ]) "module Dep" sourcedAt
+
+    // The dependency's two TFM outputs: different bytes, and net8.0 built NINE
+    // MINUTES LATER than net10.0 — so net8.0 is the newest, and the pre-fix gate
+    // resolves the origin to it.
+    writeAt (p [ depNet10; "Dep.dll" ]) "net10.0 bits" builtAt
+    writeAt (p [ depNet8; "Dep.dll" ]) "net8.0 bits" (builtAt.AddMinutes(9.0))
+
+    writeAt
+        (p [ testsDir; "Tests.fsproj" ])
+        "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <ProjectReference Include=\"../Dep/Dep.fsproj\" />\n  </ItemGroup>\n</Project>"
+        sourcedAt
+
+    writeAt (p [ testsDir; "Tests.fs" ]) "module Tests" sourcedAt
+    writeAt (p [ testsOut; "Tests" ]) "" builtAt // apphost
+    writeAt (p [ testsOut; "Tests.dll" ]) "" builtAt
+    // THE COPY. MSBuild copied the net10.0 output — the TFM this consumer targets
+    // — preserving its mtime. It is a PERFECT, CURRENT copy.
+    writeAt (p [ testsOut; "Dep.dll" ]) "net10.0 bits" builtAt
+
+    { Root = root
+      TestsDir = testsDir
+      DepNet8Dll = p [ depNet8; "Dep.dll" ]
+      DepNet10Dll = p [ depNet10; "Dep.dll" ]
+      DepDllCopy = p [ testsOut; "Dep.dll" ]
+      BuiltAt = builtAt }
+
+let private multiTfmStale (m: MultiTfm) =
+    let fsproj = Path.Combine(m.TestsDir, "Tests.fsproj")
+    staleOf $"run --project {fsproj} --no-build --" m.Root
+
+// THE REGRESSION. Nothing is stale: the copy is byte-identical to the net10.0
+// output it was copied from. Pre-fix this FAILS — the gate resolves the origin to
+// net8.0 (newest mtime), sees the net10.0 copy is nine minutes "older", and cries
+// stale. The message indicts itself: origin ends /net8.0/, copy ends /net10.0/.
+[<Fact(Timeout = 15000)>]
+let ``a copy of a multi-TFM dependency is FRESH even when a SIBLING TFM is newer`` () =
+    withTempDir "tp-stale-tfm-sibling" (fun tmpDir ->
+        let m = multiTfmSynth tmpDir
+
+        test <@ multiTfmStale m = None @>)
+
+// The converse, and the reason this is not a weakening: a copy whose bytes match
+// NO current output of its origin is still caught. Note the copy's MTIME here is
+// EQUAL to its origin's — so the old mtime rule (`copy < origin`) calls this
+// FRESH and would run the stale bits. Content sees through it.
+//
+// This is the `jj`/`git` working-copy restamp, and the coarse-timestamp
+// filesystem, and the "rebuilt within the same second" case — all at once.
+[<Fact(Timeout = 15000)>]
+let ``a copy whose bytes match NO output of its origin is STALE, even at an equal mtime`` () =
+    withTempDir "tp-stale-tfm-realstale" (fun tmpDir ->
+        let m = multiTfmSynth tmpDir
+
+        // The dependency was rebuilt — both TFM outputs carry new bytes — but the
+        // copy in the test output dir was never refreshed. It holds the OLD bits.
+        File.WriteAllText(m.DepNet10Dll, "net10.0 bits v2")
+        File.WriteAllText(m.DepNet8Dll, "net8.0 bits v2")
+        File.SetLastWriteTimeUtc(m.DepNet10Dll, m.BuiltAt)
+        File.SetLastWriteTimeUtc(m.DepNet8Dll, m.BuiltAt)
+        // … and every mtime is IDENTICAL, so no mtime comparison can see it.
+        File.SetLastWriteTimeUtc(m.DepDllCopy, m.BuiltAt)
+
+        match multiTfmStale m with
+        | Some(ArtifactFreshness.CopyDiffersFromOrigin(origin, copy)) ->
+            test <@ origin = m.DepNet10Dll @> // named for the TFM the consumer consumes
+            test <@ copy = m.DepDllCopy @>
+        | other -> Assert.Fail($"a copy holding OLD bytes must be STALE whatever the mtimes say, got %A{other}"))
+
+// FAIL CLOSED on ignorance, at the copy check too. A file we cannot read is not a
+// file we may certify: `ContentHash` hands back its `UnhashableContent` sentinel,
+// and an unhashable input is `InputsUndeterminable`, never "fresh". (An exclusive
+// lock is how a real build in flight holds a file it is mid-write on.)
+[<Fact(Timeout = 15000)>]
+let ``an UNREADABLE copy is REFUSED, not called fresh`` () =
+    withTempDir "tp-stale-unreadable-copy" (fun tmpDir ->
+        let m = multiTfmSynth tmpDir
+
+        use _lock =
+            new FileStream(m.DepDllCopy, FileMode.Open, FileAccess.Read, FileShare.None)
+
+        match multiTfmStale m with
+        | Some(ArtifactFreshness.InputsUndeterminable _) -> ()
+        | other -> Assert.Fail($"an unreadable copy must fail CLOSED, got %A{other}"))
+
+// The other side of the comparison, and the subtler one. The copy reads fine, but
+// an ORIGIN it must be checked against does not — so "it matches none of them" is
+// a conclusion we did not earn. An unhashable origin cannot match anything, and
+// calling that a MISMATCH would manufacture a stale verdict out of a permissions
+// error. Ignorance is `InputsUndeterminable`, in both directions.
+[<Fact(Timeout = 15000)>]
+let ``an UNREADABLE origin is REFUSED, not called stale`` () =
+    withTempDir "tp-stale-unreadable-origin" (fun tmpDir ->
+        let m = multiTfmSynth tmpDir
+
+        // Make the copy match NO readable candidate: net8.0 holds different bytes
+        // by construction, and net10.0 — the one it does match — cannot be read.
+        use _lock =
+            new FileStream(m.DepNet10Dll, FileMode.Open, FileAccess.Read, FileShare.None)
+
+        match multiTfmStale m with
+        | Some(ArtifactFreshness.InputsUndeterminable(_, reason)) -> test <@ reason.Contains "net10.0" @>
+        | other -> Assert.Fail($"an unreadable ORIGIN must fail CLOSED, not read as stale, got %A{other}"))
+
 // A multi-targeted project is stale only when EVERY per-TFM output dir is stale:
 // which TFM `dotnet run` selects is not knowable here, so one fresh output dir
 // means there is a fresh way to run. Conservative against false-stale — the whole
@@ -5410,7 +5605,9 @@ let ``a multi-TFM project with one FRESH output dir is not stale`` () =
         let s = synth tmpDir
         let editedAt = s.BuiltAt.AddMinutes(30.0)
 
-        // The fixture changes; net10.0's copy goes stale …
+        // The fixture changes; net10.0's copy still holds the OLD bytes, so it is
+        // stale …
+        File.WriteAllText(s.CommonFixture, "{ \"leaves\": 40 }")
         File.SetLastWriteTimeUtc(s.CommonFixture, editedAt)
         test <@ (synthStale s).IsSome @>
 
@@ -5427,6 +5624,31 @@ let ``a multi-TFM project with one FRESH output dir is not stale`` () =
         |> ignore
 
         test <@ synthStale s = None @>)
+
+// A TFM output dir of the TEST PROJECT ITSELF that holds no assembly is not a
+// candidate to be judged — it is not a build output at all. A partial or
+// interrupted build leaves such a directory behind, and an empty dir has nothing
+// in it to be stale: treating it as a candidate would mean walking an empty output
+// tree, finding no copy of anything, and — because every project in the closure
+// would then contribute no finding — quietly calling the run fresh on the strength
+// of a directory that contains nothing.
+[<Fact(Timeout = 15000)>]
+let ``a TFM dir of the test project holding no assembly is not a candidate`` () =
+    withTempDir "tp-stale-empty-tfmdir" (fun tmpDir ->
+        let s = synth tmpDir
+
+        // A leftover output dir with no Tests.dll in it. The real net10.0 output is
+        // untouched and fresh, so the verdict must still be "fresh" — and must be
+        // reached without ever treating this empty dir as an output to judge.
+        Directory.CreateDirectory(p [ s.TestsDir; "bin"; "Debug"; "net9.0" ]) |> ignore
+
+        test <@ synthStale s = None @>
+
+        // … and the real output dir is still the one that decides: break it, and the
+        // gate must fire, rather than being placated by the empty sibling.
+        File.WriteAllText(s.CommonFixture, "{ \"leaves\": 40 }")
+        File.SetLastWriteTimeUtc(s.CommonFixture, s.BuiltAt.AddMinutes(30.0))
+        test <@ (synthStale s).IsSome @>)
 
 // REGRESSION (2026-07-13 wedge): the freshness walk must TERMINATE in the
 // presence of symlink cycles. The production trigger: `.devenv/profile` links
