@@ -234,18 +234,23 @@ let create
                                 ctx.ReportStatus(
                                     Completed(finishedAt, RunVerdict.create $"%s{nameStr}: succeeded" elapsed)
                                 )
-                            | ProcessOutcome.TimedOut(after, _) ->
+                            | ProcessOutcome.TimedOut(after, _, kill) ->
+                                // `output` is `outputOf processResult`, so a failed kill is
+                                // already spelled out in full in the error entry; the verdict
+                                // and summary are one-liners, so they carry the short marker.
+                                let killNote = renderKillBrief kill
+
                                 ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error output ]
                                 // Flip the recorded outcome to TimedOut; the verdict
                                 // below carries the summary (one channel).
-                                ctx.CompleteWithTimeout $"%d{int after.TotalSeconds}s"
+                                ctx.CompleteWithTimeout $"%d{int after.TotalSeconds}s%s{killNote}"
 
                                 ctx.ReportStatus(
                                     PluginStatus.Failed(
                                         $"%s{nameStr} timed out",
                                         finishedAt,
                                         RunVerdict.create
-                                            $"%s{nameStr}: timed out after %d{int after.TotalSeconds}s"
+                                            $"%s{nameStr}: timed out after %d{int after.TotalSeconds}s%s{killNote}"
                                             elapsed
                                     )
                                 )

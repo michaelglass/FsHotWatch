@@ -1057,10 +1057,15 @@ let internal classifyTestOutcome
     (outcome: ProcessOutcome)
     : TestResult =
     match outcome with
-    | ProcessOutcome.TimedOut(after, output) ->
+    | ProcessOutcome.TimedOut(after, output, kill) ->
         // A timeout KILL is a real "stuck" signal; a partial report it may have
         // flushed must not override it. Keep it distinct (unchanged).
-        TestsTimedOut(renderOutput output, after, wasFiltered, elapsed)
+        //
+        // This arm renders the tail itself rather than going through `outputOf`, so it
+        // must append `renderKill` explicitly — otherwise a test-runner tree we FAILED
+        // to kill would be reported as a plain "stuck" timeout while it kept running,
+        // holding the test DB / the port / the lock that makes the NEXT run fail too.
+        TestsTimedOut(renderOutput output + renderKill kill, after, wasFiltered, elapsed)
     | _ ->
         let output = outputOf outcome
         let succeeded = isSucceeded outcome
