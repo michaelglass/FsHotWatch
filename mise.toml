@@ -173,7 +173,13 @@ description = "Run the full-suite confirm (single pass, no daemon) — the same 
 # runs a different command from the real CI is a local `ci` that can go green on work
 # CI will reject — the drift is the bug (AUTOMATION-117).
 run = "dotnet run --project src/FsHotWatch.Cli --no-build -- confirm --run-once"
-depends = ["compile", "lint-project", "coverage-check"]
+# `sync-docs-check`: the examples are compiled (they are members of FsHotWatch.slnx),
+# and the README/docs code blocks are SOURCED from them via syncdocs `src=` regions.
+# Compiling the example proves the code is real; only this check proves the block a
+# reader actually copies still MATCHES it. Without it the drift guard was a guard
+# nothing ran — an unenforced check and a passing one look alike from the outside,
+# which is the very thing this repo refuses to ship.
+depends = ["compile", "lint-project", "coverage-check", "sync-docs-check"]
 
 [tasks.run]
 description = "Run the CLI"

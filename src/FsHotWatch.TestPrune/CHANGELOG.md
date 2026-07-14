@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- fix!: **a PROCESS may not assert a test result it has no record of running.**
+  (AUTOMATION-161) On a warm task cache the first `BuildCompleted` of a new process was a
+  cache **hit**, which skips the handler — so no test run happened, no `TestsFinished`
+  landed, and `LastCoverage` stayed empty. The plugin then told everyone who reads its
+  *state* (`test-scope`, and through it `.fshw/verdict.json`) that **NO TESTS RAN**, while
+  its *status line* simultaneously reported *"1 passed (cached)"*. One tree, two surfaces,
+  opposite answers — and **both `fshw check` and `fshw confirm` exited 3 on a green tree,
+  on the second run, every time**.
+  - The key cannot rescue this, because **the key does not pin the tree**. On a cold scan
+    `BuildCompleted` is dispatched *before* the FCS pass, so `changed-symbols` is empty
+    whatever the tree contains; two different trees that both build clean with an empty
+    queue compute the *same* key. What makes a replay sound in a warm daemon is not the key
+    but the symbol-diff pipeline that runs *after* it — and a new process has no such run
+    to supersede the replay with.
+  - So test-prune no longer participates in the task cache on `BuildCompleted` (no replay,
+    **and** no write) until a run in *this* process has covered something — the same
+    fail-closed shape as the existing pending-queue and outstanding-failure guards. This
+    also **restores `hasCachedResults`** ("a cold start with no session baseline must run
+    the full suite to establish one"), an invariant the cache was quietly defeating by
+    skipping the handler it lives in.
+  - **Analysis-only mode is exempt** (no runnable test projects ⇒ no test claim ⇒ nothing
+    to fail closed about), and the **warm in-session inner loop is untouched**: once this
+    session's first run lands, every later `BuildCompleted` replays as before.
+  - Deliberately **not** done: minting a CTRF receipt for the replayed run id. That would
+    manufacture merge-grade evidence from a key that cannot see the tree — the vacuous
+    green, rebuilt inside the fix for it. The fast path a repeat `confirm` wants runs
+    through `.fshw/verdict.json`, which *is* content-addressed to the tree.
+
 - fix: **`DependencyFanout` no longer silently DROPS a dependency it cannot resolve.**
   The fingerprint was built with `List.choose graph.GetCanonicalDllPath`, so a
   referenced project whose DLL path would not resolve was dropped. A dropped project

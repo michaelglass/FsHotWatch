@@ -2271,6 +2271,36 @@ let internal cacheKeyFor
     // empty post-run set, so a genuinely green run is still cacheable, and a run that
     // CLEARS a red merely forgoes one cache write.
     (hasOutstandingFailures: unit -> bool)
+    // AUTOMATION-161. Has a run in THIS PROCESS produced test evidence — i.e. is there
+    // any project this session's `RunCoverage` actually covers?
+    //
+    // A cached BuildCompleted entry ASSERTS a test result. Serving it skips the handler,
+    // so no run happens and no `TestsFinished` lands — which leaves `LastCoverage` empty.
+    // The plugin then answers every consumer that reads its STATE (`test-scope`, and
+    // through it the verdict file) with "NO TESTS RAN", while its status line
+    // simultaneously reports "1 passed (cached)". One run, two surfaces, opposite
+    // answers — and both `check` and `confirm` exit 3 on a tree they were just told is
+    // green.
+    //
+    // The key cannot rescue this, because the key does not pin the TREE. On a cold scan
+    // `BuildCompleted` is dispatched BEFORE the FCS pass, so `changed-symbols` is empty
+    // whatever the tree contains; two different trees that both build clean with an empty
+    // queue compute the SAME key. What makes the cache sound in a warm daemon is not the
+    // key but the symbol-diff pipeline that runs AFTER it — the entry is a status stamp
+    // that a real run supersedes. Across a PROCESS boundary there is no such run to
+    // supersede it, and minting a full-suite receipt from a key that cannot see the tree
+    // would manufacture merge-grade evidence for a tree nobody tested: the vacuous green,
+    // rebuilt inside the fix for it.
+    //
+    // So fail closed — no replay AND no write — exactly as a non-empty pending queue and
+    // an outstanding failure already do. This also RESTORES an invariant the plugin
+    // already believed and the cache was quietly defeating: `hasCachedResults` says a
+    // cold start with no session baseline must run the full suite to establish one. A
+    // cache hit skipped the handler that rule lives in, so the baseline was never run.
+    //
+    // The warm-daemon inner loop is untouched: once this session's first run lands, there
+    // IS coverage, and every later BuildCompleted replays as before.
+    (sessionHasTestEvidence: unit -> bool)
     (event: PluginEvent<TestPruneMsg>)
     : ContentHash option =
     let optionalEntry (name: string) (value: string option) =
@@ -2322,10 +2352,16 @@ let internal cacheKeyFor
         // reason: replaying a cached green while a failing test has never re-passed IS
         // the laundered verdict, arrived at through the cache instead of through a
         // filtered run.
-        match pendingQueueHash (), hasOutstandingFailures () with
-        | Some _, _
-        | _, true -> None
-        | None, false -> Some(outcomeKey "succeeded")
+        //
+        // And a process with NO test evidence of its own (AUTOMATION-161) refuses for the
+        // sharpest version of the same reason: a replay here would have this process
+        // ASSERT a test result while its own state records no run — which is precisely
+        // the split-brain that made `confirm` (and `check`) exit 3 on a warm tree.
+        match pendingQueueHash (), hasOutstandingFailures (), sessionHasTestEvidence () with
+        | Some _, _, _
+        | _, true, _
+        | _, _, false -> None
+        | None, false, true -> Some(outcomeKey "succeeded")
     | Custom(TestsFinished(_, completed, _)) ->
         // AUTOMATION-5 (2026-06-07): a FAILED test outcome must never be served from
         // cache as a current verdict. Unlike BuildPlugin — whose result is a pure
@@ -2356,6 +2392,14 @@ let internal cacheKeyFor
         // while an earlier, uncovered failure is still outstanding is NOT green (its
         // terminal status is a Failed carrying the carried-over red), so it is not a
         // "safe to skip" verdict and must never be replayed as one.
+        //
+        // AUTOMATION-161: this arm is deliberately NOT gated on `sessionHasTestEvidence`.
+        // It is the WRITE — the only thing that mints the entry the next `BuildCompleted`
+        // hits — and it is read at DISPATCH time, when the run this message carries has
+        // not yet been folded into state and there is therefore no evidence to see. The
+        // key it returns is never used for a LOOKUP: the framework does not replay over a
+        // `Custom` message at all (a Custom's payload is not in its key, so a hit there is
+        // a collision, not a proof — see `PluginFramework`'s dispatch loop).
         if
             allPassed
             && notAborted
@@ -2569,6 +2613,22 @@ let create
     /// written to disk where a later, genuinely-fixed tree could replay it
     /// (AUTOMATION-5's stale-red-on-a-green-tree, in reverse).
     let mutable outstandingFailuresRef: OutstandingFailure list = []
+
+    /// What the runs in THIS PROCESS have actually covered (AUTOMATION-161), mirrored out
+    /// of the mailbox state for the CACHE-KEY intercept — same closure-local + `Volatile`
+    /// shape as `outstandingFailuresRef`, and for the same reason: the key is computed
+    /// before `Update`, on another thread, so it cannot read the state.
+    ///
+    /// EMPTY means this process holds NO test evidence, and while that is so the plugin
+    /// does not participate in the task cache on `BuildCompleted` at all (no replay, no
+    /// write — see `cacheKeyFor`). A replay would have this process assert a test result
+    /// that its own state has no record of, and every consumer that reads the state —
+    /// `test-scope`, and through it `.fshw/verdict.json` — would go on correctly
+    /// reporting that nothing ran.
+    ///
+    /// An ABORTED run leaves it empty (its launch selection is empty, so it covers
+    /// nothing), which is right: a run that never executed establishes nothing.
+    let mutable sessionCoverageRef: RunCoverage = RunCoverage.none
 
     /// The test projects this daemon can actually RUN — i.e. the ones in
     /// `testConfigs`. Empty when the plugin is analysis-only.
@@ -4047,6 +4107,12 @@ let create
                     reportOutstanding ctx state.UnanalyzableFiles outstandingFailures
                     Volatile.Write(&outstandingFailuresRef, outstandingFailures)
 
+                    // AUTOMATION-161. THIS is the moment the process acquires test
+                    // evidence — a run completed and we know what it covered. Until it
+                    // happens, the cache key intercept refuses to let a cached
+                    // BuildCompleted assert a result this process never ran.
+                    Volatile.Write(&sessionCoverageRef, coverage)
+
                     // Carried into EVERY return branch below (rerun-drain, queued
                     // force-run, idle) by rebinding here — a branch that forgot would
                     // silently resurrect the laundering bug. `LastCoverage` rides along
@@ -4567,12 +4633,27 @@ let create
             let hasOutstandingFailures () =
                 not (List.isEmpty (Volatile.Read(&outstandingFailuresRef)))
 
+            // AUTOMATION-161: no cache participation on BuildCompleted until a run in
+            // THIS process has covered something. A cached result is an assertion about
+            // tests, and a process may not make one it has no record of earning.
+            //
+            // ANALYSIS-ONLY IS EXEMPT, and the exemption is the rule seen from the other
+            // side. With no runnable test projects this plugin makes no test CLAIM at all
+            // — its terminal status is a symbol-analysis summary, and `runnableProjects`
+            // is empty precisely because "that mode produces no test verdict". There is
+            // no verdict to launder, so there is nothing to fail closed about; gating it
+            // would delete a working cache to guard against an assertion it never makes.
+            let sessionHasTestEvidence () =
+                Set.isEmpty runnableProjects
+                || not (Set.isEmpty (RunCoverage.coveredProjects (Volatile.Read(&sessionCoverageRef))))
+
             cacheKeyFor
                 changedSymbolsHash
                 pendingQueueHash
                 dependsOnHash
                 fullSuiteScopeHash
                 hasOutstandingFailures
+                sessionHasTestEvidence
                 event
 
         Some cacheKey

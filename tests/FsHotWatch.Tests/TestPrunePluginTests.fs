@@ -3443,6 +3443,7 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
     let mutable changedSymbolsCalls = 0
     let mutable fullSuiteScopeCalls = 0
     let mutable outstandingCalls = 0
+    let mutable sessionEvidenceCalls = 0
 
     let key =
         cacheKeyFor
@@ -3461,6 +3462,9 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
             (fun () ->
                 outstandingCalls <- outstandingCalls + 1
                 false)
+            (fun () ->
+                sessionEvidenceCalls <- sessionEvidenceCalls + 1
+                true)
             (FileChecked(fakeFileCheckResult "/src/A.fs"))
 
     // It still produces a key — it is a pure function of THIS file.
@@ -3473,6 +3477,7 @@ let ``cacheKeyFor: a FileChecked key reads NONE of the expensive state`` () =
     test <@ changedSymbolsCalls = 0 @>
     test <@ fullSuiteScopeCalls = 0 @>
     test <@ outstandingCalls = 0 @>
+    test <@ sessionEvidenceCalls = 0 @>
 
 [<Fact(Timeout = 10000)>]
 let ``cacheKeyFor: a BuildCompleted key DOES read the dependsOn + symbol state`` () =
@@ -3492,6 +3497,7 @@ let ``cacheKeyFor: a BuildCompleted key DOES read the dependsOn + symbol state``
                 dependsOn)
             (fun () -> None)
             (fun () -> false)
+            (fun () -> true)
             (BuildCompleted BuildSucceeded)
 
     let salted = keyWith (Some "migration-hash-v1")
@@ -3565,8 +3571,24 @@ let ``AUTOMATION-5: a failed test run is not cached, so a later run on the same 
         host.RegisterHandler(handler)
 
         let key: FsHotWatch.TaskCache.CompositeKey = { Plugin = "test-prune"; File = None }
-        let cacheKeyFn = handler.CacheKey.Value
-        let computedKey = (cacheKeyFn (BuildCompleted BuildSucceeded)).Value
+
+        // The key a GREEN run would be written under. Computed from the pure `cacheKeyFor`
+        // rather than from the live handler, because the live handler (correctly) refuses
+        // to produce a BuildCompleted key at all until this process has test evidence
+        // (AUTOMATION-161) — and the question here is not "does the plugin participate",
+        // it is "was a FAILING outcome written under the key a passing one would use".
+        // Same merkle terms the plugin's own thunks feed in at this point: no changed
+        // symbols, empty queue, no dependsOn, inner-loop scope, no outstanding red.
+        let computedKey =
+            (cacheKeyFor
+                (fun () -> FsHotWatch.CheckCache.sha256Hex "")
+                (fun () -> None)
+                (fun () -> None)
+                (fun () -> None)
+                (fun () -> false)
+                (fun () -> true)
+                (BuildCompleted BuildSucceeded))
+                .Value
 
         // --- Cycle 1: FAIL (cold BuildCompleted runs the suite) ---
         File.WriteAllText(flag, "")
@@ -3677,13 +3699,29 @@ let ``executeTests runs project on BuildSucceeded`` () =
         test <@ not staleWarning @>)
 
 [<Fact(Timeout = 25000)>]
-let ``cold-start BuildCompleted with unchanged state replays from task cache`` () =
-    // The design that introduced BatchChecked deletes the RequireWarmStart
-    // workaround. On a cold daemon restart with NO changes since the prior
-    // session, BuildCompleted's cache key (changed-symbols ⊕ outcome) matches
-    // the prior session's entry — the framework replays without re-running
-    // tests. The pre-BatchChecked behavior of "cold-start always re-runs once"
-    // was a workaround for a half-formed-key window that no longer exists.
+let ``AUTOMATION-161: a cold-start BuildCompleted must NOT replay a test result from the task cache`` () =
+    // THIS TEST USED TO ASSERT THE BUG.
+    //
+    // It was called "cold-start BuildCompleted with unchanged state replays from task
+    // cache", and it pinned exactly that: session 2 must NOT re-create the sentinel,
+    // because the cached entry replays. What nobody traced was the consequence. A replay
+    // SKIPS THE HANDLER, so no run happens and no `TestsFinished` lands, so `LastCoverage`
+    // stays empty — and the plugin then tells `test-scope` (and through it
+    // `.fshw/verdict.json`) that NO TESTS RAN, while its own status line reports
+    // "1 passed (cached)". One tree, two surfaces, opposite answers. Both `fshw check`
+    // and `fshw confirm` exited 3 — "NO TESTS RAN — nothing was verified" — on a green
+    // tree, on the second run, every time.
+    //
+    // The belief underneath was that the cache key proves the inputs are identical. It
+    // does not. On a cold scan `BuildCompleted` is dispatched BEFORE the FCS pass, so
+    // `changed-symbols` is empty whatever the tree contains; what makes the entry sound in
+    // a WARM daemon is not the key but the symbol-diff pipeline that runs after it, and a
+    // new process has no such run to supersede the replay with.
+    //
+    // So the rule inverts: a process may not assert a test result it has no record of
+    // running. Fail closed — run. (The fast path a repeat `confirm` actually wants runs
+    // through `.fshw/verdict.json`, which IS content-addressed to the tree AND to the
+    // producing binary — see `Verdict.priorConfirmation`.)
     withTempDir "tp-cold-cache-replay" (fun tmpDir ->
         let taskCache =
             FsHotWatch.FileTaskCache.FileTaskCache(Path.Combine(tmpDir, "task-cache"))
@@ -3713,11 +3751,13 @@ let ``cold-start BuildCompleted with unchanged state replays from task cache`` (
             host1.EmitBuildCompleted(BuildSucceeded)
             waitForTerminalStatus host1 "test-prune" 10000
 
-        // Delete sentinel — session 2 must NOT re-create it (cache replay path).
+        // Delete the sentinel. Session 2 must RE-CREATE it: it holds no test evidence of
+        // its own, and it is about to be asked what its tests covered.
         if File.Exists sentinel then
             File.Delete sentinel
 
-        // Session 2: new plugin instance (simulates daemon restart) using same on-disk cache.
+        // Session 2: new plugin instance (a daemon restart / a fresh `--run-once`
+        // process) over the SAME on-disk cache and the SAME tree.
         let dbPath2 = Path.Combine(tmpDir, "tp2.db")
         let host2 = PluginHost(Unchecked.defaultof<_>, tmpDir, taskCache = taskCache)
 
@@ -3728,9 +3768,14 @@ let ``cold-start BuildCompleted with unchanged state replays from task cache`` (
         host2.EmitBuildCompleted(BuildSucceeded)
         waitForTerminalStatus host2 "test-prune" 10000
 
-        // Cold start with unchanged state replays the cached run — the test
-        // command (touch sentinel) must NOT have executed.
-        test <@ not (File.Exists sentinel) @>)
+        // The run ACTUALLY happened.
+        test <@ File.Exists sentinel @>
+
+        // And — the load-bearing half — the plugin SAYS so. `scope: none` here is the
+        // release blocker: `confirm` reads this and refuses ("NO TESTS RAN") on a tree
+        // the very same plugin's status line is simultaneously calling green.
+        let scope = host2.RunCommand("test-scope", [||]) |> Async.RunSynchronously
+        test <@ scope.IsSome && scope.Value.Contains "\"scope\":\"full\"" @>)
 
 // =============================================================================
 // FCS cache-poisoning gate: don't flush symbols for files whose FCS check
@@ -6847,6 +6892,7 @@ let ``cacheKeyFor: a confirm cannot replay an impact-filtered run's cached verdi
             (fun () -> None)
             (fun () -> fullSuiteScope)
             (fun () -> false)
+            (fun () -> true)
             (BuildCompleted BuildSucceeded)
 
     let innerLoopKey = keyWithScope None
@@ -6869,6 +6915,7 @@ let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
             (fun () -> Some "deps")
             (fun () -> None)
             (fun () -> false)
+            (fun () -> true)
             (BuildCompleted BuildSucceeded)
 
     // Same inputs, hand-built without any full-suite-scope entry at all.
@@ -6884,8 +6931,17 @@ let ``cacheKeyFor: the inner-loop key is unchanged by the scope salt`` () =
 
 [<Fact(Timeout = 10000)>]
 let ``cacheKeyFor: two full-suite runs over the same tree DO share a key`` () =
-    // `confirm` is not gratuitously cache-hostile: a second `confirm` over an unchanged tree
-    // replays a run that genuinely WAS full-suite. Sound, and fast.
+    // The key is DETERMINISTIC — same inputs, same key. That is all this says, and the
+    // comment it used to carry ("a second `confirm` over an unchanged tree replays a run
+    // that genuinely WAS full-suite — sound, and fast") is the belief that produced
+    // AUTOMATION-161. It is not sound. The key does not pin the TREE: on a cold scan
+    // BuildCompleted is dispatched before the FCS pass, so `changed-symbols` is empty
+    // whatever the tree holds. Determinism of the key is not equivalence of the world.
+    //
+    // Sharing the key is still right — it is what lets a WARM daemon skip a redundant run
+    // in-session, and what lets the entry a `TestsFinished` writes be found by the next
+    // `BuildCompleted`. What must not follow from it is a REPLAY into a process that has
+    // no run of its own; the session-evidence gate below is what forbids that.
     let fullSuiteKey () =
         cacheKeyFor
             (fun () -> "same")
@@ -6893,9 +6949,68 @@ let ``cacheKeyFor: two full-suite runs over the same tree DO share a key`` () =
             (fun () -> None)
             (fun () -> Some "full")
             (fun () -> false)
+            (fun () -> true)
             (BuildCompleted BuildSucceeded)
 
     test <@ fullSuiteKey () = fullSuiteKey () @>
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-161: cacheKeyFor refuses BuildCompleted while the process has NO test evidence`` () =
+    // The gate, in isolation. A cached BuildCompleted entry ASSERTS a test result; a
+    // process whose own state records no run may not make that assertion. `None` = no
+    // replay AND no write, exactly as a non-empty pending queue and an outstanding
+    // failure already do.
+    let keyWithEvidence (hasEvidence: bool) =
+        cacheKeyFor
+            (fun () -> "same")
+            (fun () -> None)
+            (fun () -> None)
+            (fun () -> Some "full")
+            (fun () -> false)
+            (fun () -> hasEvidence)
+            (BuildCompleted BuildSucceeded)
+
+    // No run in this process yet: do not participate. GO AND RUN.
+    test <@ (keyWithEvidence false).IsNone @>
+
+    // Once a run has covered something, the warm in-session fast path is back.
+    test <@ (keyWithEvidence true).IsSome @>
+
+[<Fact(Timeout = 10000)>]
+let ``AUTOMATION-161: the TestsFinished WRITE is not gated on session evidence`` () =
+    // The WRITE is what mints the entry the next BuildCompleted hits, and it is computed
+    // at DISPATCH time — when the run this message carries has not yet been folded into
+    // state, so there IS no evidence to see. Gating it would mean the cache is never
+    // written at all, and the warm in-session fast path would die with it.
+    //
+    // Safe, because this key is never used for a LOOKUP: the framework does not replay
+    // over a `Custom` message (its payload is not in its key — see PluginFrameworkTests).
+    let allPassed =
+        Custom(
+            TestsFinished(
+                { RunId = Guid.NewGuid()
+                  StartedAt = DateTime.UtcNow },
+                { RunId = Guid.NewGuid()
+                  TotalElapsed = TimeSpan.Zero
+                  Outcome = Normal
+                  Results = Map.ofList [ "ProjA", TestsPassed("ok", false, TimeSpan.Zero) ]
+                  RanFullSuite = true },
+                fullSuiteLaunch [ "ProjA" ]
+            )
+        )
+
+    let key =
+        cacheKeyFor
+            (fun () -> "same")
+            (fun () -> None)
+            (fun () -> None)
+            (fun () -> Some "full")
+            (fun () -> false)
+            // No evidence yet — this run is the one about to provide it.
+            (fun () -> false)
+            allPassed
+
+    test <@ key.IsSome @>
 
 // --- AUTOMATION-129: `confirm`'s scope is a PROJECTION of RunCoverage ---
 //
@@ -7666,6 +7781,7 @@ let ``AUTOMATION-125: no cache participation while a red is outstanding`` () =
             (fun () -> None)
             (fun () -> None)
             (fun () -> hasOutstanding)
+            (fun () -> true)
             event
 
     // Clean plugin: the green fast-path is untouched.

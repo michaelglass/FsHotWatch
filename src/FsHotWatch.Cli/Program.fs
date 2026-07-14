@@ -1500,16 +1500,46 @@ let executeCommand
                 1
         | Check flags when isRunOnce flags -> runOnceIn CheckVerdict.InnerLoop
         | Check flags -> queryPluginWith (mode) ""
-        // Same pipeline as `check` — build, format, lint, analyzers, coverage — but
-        // full-suite scope is set FIRST, so the test run the scan provokes is unfiltered;
-        // the suite is FORCED if the scan did not produce one; and the verdict is computed
-        // in `Confirmation` mode, which has no path to a green that does not go through a
-        // full-suite run.
-        //
-        // Both transports, one verdict. `--run-once` needs no daemon — which is the only
-        // reason CI can invoke `confirm` at all (AUTOMATION-117).
-        | Confirm flags when isRunOnce flags -> runOnceIn CheckVerdict.Confirmation
-        | Confirm _ -> queryPluginIn CheckVerdict.Confirmation mode ""
+        | Confirm flags ->
+            // AUTOMATION-161 — the evidence may ALREADY have been earned.
+            //
+            // `confirm` is the verb you run before a merge, which means you run it more
+            // than once, and on a tree that has not moved the honest answer to "is the
+            // suite green?" was settled the first time. Asking again is not a fresh
+            // question; it is the SAME question about the SAME bytes.
+            //
+            // So look before you run — and look at the ONE artifact entitled to answer:
+            // `.fshw/verdict.json`, content-addressed to the tree it verified AND to the
+            // binary that verified it (see `Verdict.priorConfirmation`). Both must match,
+            // byte for byte, and the recorded verdict must be a full-suite green. Anything
+            // else — a moved tree, a different fshw, a filtered green, a red — is not an
+            // answer, and `confirm` goes and earns one.
+            //
+            // This is the ONLY thing in fshw allowed to carry a green across a process
+            // boundary. A cached PLUGIN result explicitly may not (its key does not pin
+            // the tree; see `TestPrunePlugin.cacheKeyFor`), and that asymmetry is the
+            // whole point: the fast path runs through the artifact BUILT to be trusted,
+            // not through one that merely happens to be lying around.
+            match Verdict.priorConfirmation repoRoot config.Exclude with
+            | Verdict.PriorConfirmation.StillApplies v ->
+                UI.success $"confirm — %s{Verdict.describeStillApplies v}"
+                eprintfn ""
+                eprintfn "  AGENTS: don't parse this output. Machine-readable results:"
+                eprintfn $"    verdict  %s{Verdict.RelativePath}   (this verdict, re-checked against the tree on disk)"
+                0
+            | Verdict.PriorConfirmation.MustEarn ->
+                // Same pipeline as `check` — build, format, lint, analyzers, coverage — but
+                // full-suite scope is set FIRST, so the test run the scan provokes is
+                // unfiltered; the suite is FORCED if the scan did not produce one; and the
+                // verdict is computed in `Confirmation` mode, which has no path to a green
+                // that does not go through a full-suite run.
+                //
+                // Both transports, one verdict. `--run-once` needs no daemon — which is the
+                // only reason CI can invoke `confirm` at all (AUTOMATION-117).
+                if isRunOnce flags then
+                    runOnceIn CheckVerdict.Confirmation
+                else
+                    queryPluginIn CheckVerdict.Confirmation mode ""
         | Verdict ->
             // Pure read. No daemon, no IPC, no run — so it cannot perturb the thing it
             // is measuring, and it costs nothing to call in a loop.

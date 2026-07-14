@@ -794,6 +794,95 @@ let report (repoRoot: string) (excludePatterns: string list) : Report =
                 $"stale: the verdict was produced by a DIFFERENT fshw binary (verdict %s{verdictBinary}, current %s{current}) — a stale daemon's green about an unchanged tree is still a stale daemon's green"
             )
 
+// ---------------------------------------------------------------------------
+// Has `confirm`'s evidence ALREADY been earned? (AUTOMATION-161)
+// ---------------------------------------------------------------------------
+
+/// Is this verdict, ON ITS OWN TERMS, the claim `confirm` makes?
+///
+/// A GREEN outcome earned by a run that covered the FULL SUITE. Nothing else: an
+/// impact-filtered green is not the claim a merge needs, and `NoTestsRun` is not
+/// evidence at all. Exhaustive on both axes, so a new outcome or a new scope must be
+/// classified here by an explicit edit rather than defaulting into "good enough".
+///
+/// Deliberately BLIND to which verb produced it. `check` and `confirm` differ in exactly
+/// one thing — whether a non-full scope may reach `Clean` (`CheckVerdict.verdict`) — so a
+/// `check` that RECORDS `FullSuite` + `Green` has, by construction, the identical
+/// evidence: complete coverage, no failing plugin, no failing diagnostic, and every
+/// configured project run in full. The EVIDENCE is what a merge rests on, not the name of
+/// the command that happened to produce it.
+let isFullSuiteGreen (v: Verdict) : bool =
+    match v.Outcome with
+    | Red
+    | Incomplete _ -> false
+    | Green ->
+        match v.Scope with
+        | FullSuite _ -> true
+        | ImpactFiltered _
+        | NoTestsRun
+        | ScopeUnknown -> false
+
+/// What `confirm` finds when it asks "do I already have the answer?" — BEFORE it starts a
+/// daemon, sets a scope, or runs a test.
+[<RequireQualifiedAccess>]
+type PriorConfirmation =
+    /// A full-suite green, earned over THIS tree by THIS binary. `confirm` may report it
+    /// and exit 0 without running anything.
+    | StillApplies of Verdict
+    /// Nothing on disk discharges this `confirm`. Go and earn it.
+    | MustEarn
+
+/// THE fast path — and the only thing in fshw allowed to carry a green across a process
+/// boundary.
+///
+/// A cached PLUGIN RESULT may not do this (see `TestPrunePlugin.cacheKeyFor`): its key is
+/// a merkle of changed symbols and build outcome, which does not pin the tree, so a hit
+/// proves nothing about what is on disk. The verdict file is the artifact built to answer
+/// exactly this question and nothing else — content-addressed to its SUBJECT (`treeHash`)
+/// and to its PRODUCER (the binary's content hash), both compared for byte equality, with
+/// no mtime, no heuristic, and no way to fail open (`applicability`). That is what
+/// content-addressing is FOR, and it is why `confirm` can be honest and fast at the same
+/// time instead of choosing.
+///
+/// Everything that is not an exact match is `MustEarn` — a stale tree, a stale producer, a
+/// filtered green, a red, an incomplete, an unreadable file, no file. Total, and every
+/// one of those roads leads to the same place: run the suite.
+let priorConfirmation (repoRoot: string) (excludePatterns: string list) : PriorConfirmation =
+    match report repoRoot excludePatterns with
+    | Report.Applies v when isFullSuiteGreen v -> PriorConfirmation.StillApplies v
+    | Report.Applies _
+    | Report.Stale _
+    | Report.NoVerdict _ -> PriorConfirmation.MustEarn
+
+/// One line for a human: WHAT still applies, WHEN it was earned, and on WHAT evidence.
+///
+/// It names the two things that had to match — and it names them because a green a reader
+/// cannot audit is a green a reader has to take on trust, which is the habit this whole
+/// release exists to break.
+let describeStillApplies (v: Verdict) : string =
+    let earnedAt = v.ProducedAt.ToLocalTime().ToString("HH:mm")
+
+    let evidence =
+        let suite =
+            match v.Scope with
+            | FullSuite n when n = 1 -> "full suite, 1 project"
+            | FullSuite n -> $"full suite, %d{n} projects"
+            // Unreachable: `isFullSuiteGreen` is the only door in. Named, not
+            // wildcarded, so a future scope cannot slip through as "full suite".
+            | ImpactFiltered _
+            | NoTestsRun
+            | ScopeUnknown -> TestScope.describe v.Scope
+
+        // A count that is absent is NOT a count of zero — say nothing rather than
+        // report "0 passed" over a suite whose reports this build could not read.
+        match v.Suites with
+        | [] -> suite
+        | suites ->
+            let passed = suites |> List.sumBy (fun s -> s.Passed)
+            $"%s{suite}, %d{passed} passed"
+
+    $"the verdict from %s{earnedAt} still applies\n            (treeHash + producer match; %s{evidence})"
+
 /// The machine-readable envelope `fshw verdict` prints on stdout.
 ///
 /// It carries `applies` — it never prints a bare verdict that a reader could

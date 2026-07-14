@@ -1684,3 +1684,142 @@ let ``a "no tests ran" scope states NO counts rather than a fabricated zero`` ()
             Verdict.outcomeOfCheck (CheckVerdict.CheckOutcome.UnearnedScope NoTestsRun)
             <> Verdict.Green
         @>
+
+// ---------------------------------------------------------------------------
+// AUTOMATION-161 — `confirm` HONOURS a verdict it has already earned.
+//
+// `confirm` is the pre-merge verb, so it gets run more than once, and on a tree that has
+// not moved the honest answer to "is the suite green?" was settled the first time. It
+// used to refuse anyway (exit 3, "NO TESTS RAN") — a false NEGATIVE, and the exact
+// inverse of the failure this release is about: not a green without evidence, but a
+// REFUSAL despite evidence.
+//
+// The fast path runs through the ONE artifact built to be trusted across a process
+// boundary: the verdict file, content-addressed to its SUBJECT (`treeHash`) and its
+// PRODUCER. Both must match, and the verdict must be a FULL-SUITE GREEN. Everything else
+// is `MustEarn`, and these tests pin each road to it — because a fast path that fails
+// open is not a fast path, it is the bug with better latency.
+// ---------------------------------------------------------------------------
+
+[<Fact>]
+let ``AUTOMATION-161: a full-suite green over THIS tree, from THIS binary, still applies`` () =
+    withTempDir "confirm-still-applies" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+
+        let runId = Guid.NewGuid()
+        writeReport root runId "Lib.Tests" 1965 0 |> ignore
+
+        writeSpec
+            root
+            { greenVerdict tree.Hash tree.FileCount with
+                RunId = Some runId
+                Scope = FullSuite 1
+                Suites =
+                    [ { Project = "Lib.Tests"
+                        Ctrf = ".fshw/test-runs/x/Lib.Tests.ctrf.json"
+                        Total = 1965
+                        Passed = 1965
+                        Failed = 0
+                        Skipped = 0 } ] }
+
+        match Verdict.priorConfirmation root [] with
+        | Verdict.PriorConfirmation.StillApplies v ->
+            test <@ Verdict.isFullSuiteGreen v @>
+            // It must NAME its evidence — a green a reader cannot audit is a green a
+            // reader has to take on trust.
+            let described = Verdict.describeStillApplies v
+            test <@ described.Contains "still applies" @>
+            test <@ described.Contains "treeHash + producer match" @>
+            test <@ described.Contains "full suite" @>
+            test <@ described.Contains "1965 passed" @>
+        | Verdict.PriorConfirmation.MustEarn -> failwith "a full-suite green over this very tree must still apply")
+
+[<Fact>]
+let ``AUTOMATION-161: a CHANGED tree is never satisfied by the stale verdict`` () =
+    // The converse, and the one that matters most: edit a byte and the green is not an
+    // answer any more. `confirm` must go and earn a new one.
+    withTempDir "confirm-tree-moved" (fun root ->
+        makeRepo root
+        let before = TreeHash.compute root []
+
+        writeSpec
+            root
+            { greenVerdict before.Hash before.FileCount with
+                Scope = FullSuite 1 }
+
+        // Applies — until the tree moves.
+        test <@ Verdict.priorConfirmation root [] <> Verdict.PriorConfirmation.MustEarn @>
+
+        File.WriteAllText(Path.Combine(root, "src", "Lib", "Lib.fs"), "module Lib\nlet answer = 43\n")
+
+        test <@ Verdict.priorConfirmation root [] = Verdict.PriorConfirmation.MustEarn @>)
+
+[<Fact>]
+let ``AUTOMATION-161: a verdict from a DIFFERENT fshw binary is never satisfied`` () =
+    // A stale daemon's green about an unchanged tree is still a stale daemon's green.
+    // The tree matches perfectly here; the producer does not.
+    withTempDir "confirm-other-binary" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+
+        writeVerdictClaimingAnotherBinary
+            root
+            { greenVerdict tree.Hash tree.FileCount with
+                Scope = FullSuite 1 }
+
+        test <@ Verdict.priorConfirmation root [] = Verdict.PriorConfirmation.MustEarn @>)
+
+[<Fact>]
+let ``AUTOMATION-161: an impact-filtered green is NOT the claim confirm makes`` () =
+    // The UnearnedScope rule, on the fast path. "Your change didn't break anything I
+    // chose to look at" is not "the suite is green", however current the tree is.
+    withTempDir "confirm-filtered" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+
+        writeSpec
+            root
+            { greenVerdict tree.Hash tree.FileCount with
+                Scope = ImpactFiltered(1, 4) }
+
+        test <@ Verdict.priorConfirmation root [] = Verdict.PriorConfirmation.MustEarn @>)
+
+[<Fact>]
+let ``AUTOMATION-161: NoTestsRun is an absence of evidence, and stays a refusal`` () =
+    // The bug was that a replayed full-suite pass got MISREPORTED as `NoTestsRun`. The
+    // rule itself does not move: nothing ran ⇒ nothing was verified ⇒ never a green, and
+    // never a shortcut past the run either.
+    withTempDir "confirm-no-tests" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+
+        writeSpec
+            root
+            { greenVerdict tree.Hash tree.FileCount with
+                Scope = NoTestsRun
+                Outcome = Verdict.Incomplete "NO TESTS RAN"
+                ExitCode = 3 }
+
+        test <@ Verdict.priorConfirmation root [] = Verdict.PriorConfirmation.MustEarn @>)
+
+[<Fact>]
+let ``AUTOMATION-161: a RED verdict does not short-circuit — confirm re-runs and reports it`` () =
+    withTempDir "confirm-red" (fun root ->
+        makeRepo root
+        let tree = TreeHash.compute root []
+
+        writeSpec
+            root
+            { greenVerdict tree.Hash tree.FileCount with
+                Scope = FullSuite 1
+                Outcome = Verdict.Red
+                ExitCode = 1 }
+
+        test <@ Verdict.priorConfirmation root [] = Verdict.PriorConfirmation.MustEarn @>)
+
+[<Fact>]
+let ``AUTOMATION-161: no verdict on disk means earn one — a fresh checkout is not green`` () =
+    withTempDir "confirm-no-verdict" (fun root ->
+        makeRepo root
+        test <@ Verdict.priorConfirmation root [] = Verdict.PriorConfirmation.MustEarn @>)
