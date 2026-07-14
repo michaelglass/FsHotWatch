@@ -86,10 +86,21 @@ let private currentOpt () =
     let r = currentRegistry.Value
     if isNull (box r) then None else Some r
 
+/// Register `p` with the current scope's registry so daemon shutdown can tear it
+/// down. A child spawned with NO registry in scope can never be reaped — it will
+/// outlive the daemon as an init-reparented orphan — so the miss is WARNED, never
+/// swallowed. It used to be a silent `| None -> ()`, and that silence is exactly
+/// how every plugin child came to leak (AUTOMATION-147): the daemon installed its
+/// registry too late for the dispatching ExecutionContext to see it, `track`
+/// dropped every child without a word, and `KillAll` truthfully reported nothing
+/// to kill. A leak you cannot see is a leak you cannot fix.
 let track (p: Process) =
     match currentOpt () with
     | Some r -> r.Track p
-    | None -> ()
+    | None ->
+        Logging.warn
+            "process-registry"
+            $"spawned pid %d{p.Id} with no registry in scope — it cannot be reaped on shutdown and will be orphaned"
 
 let untrack (p: Process) =
     match currentOpt () with

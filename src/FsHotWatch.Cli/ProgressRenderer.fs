@@ -64,6 +64,26 @@ let private isTimedOut (parsed: ParsedPluginStatus) : bool =
     | Some { Outcome = TimedOut _ } -> true
     | _ -> false
 
+/// Wedge classification for a Running plugin (AUTOMATION-147) — the SAME
+/// ambient bound and the SAME words as the daemon-side monitor, so `fshw
+/// status` and the daemon log can never disagree about a wedge. Past the
+/// bound a plugin is never rendered as merely "running": the fault is named.
+let private runningWedge (now: DateTime) (since: DateTime) : FsHotWatch.PluginWedge.RunningHealth =
+    FsHotWatch.PluginWedge.classifyRunning (FsHotWatch.PluginWedge.ambientBound ()) now since
+
+/// The one wedged status line body (name-independent part), local-time clock
+/// to match the renderer's other timestamps.
+let private wedgedBody (since: DateTime) (elapsed: TimeSpan) : string =
+    FsHotWatch.PluginWedge.wedgedText (since.ToLocalTime()) elapsed
+
+/// The words shown for a Completed status that carries NO run record. A
+/// content-free ✓ is exactly the AUTOMATION-99/147 trap (the operator had to
+/// diagnose a wedge from a MISSING `elapsed:` field), so the renderer fails
+/// closed: no record ⇒ no ✓, and the absence is stated in words.
+[<Literal>]
+let CompletedNoRecordText =
+    "completed, but no run record was posted — cannot verify what ran"
+
 /// Pull the elapsed-time display for a terminal status. Returns `Some` only
 /// when the run record is present AND its elapsed is non-zero — a missing
 /// record or a zero elapsed almost always means the cache-replay path
@@ -87,6 +107,15 @@ let private renderCompact
 
     let line =
         match parsed.Status with
+        // Fail closed: Completed with NO run record must never render as a
+        // bare ✓ — the absence is stated in words instead of left to be
+        // noticed. (When the ledger has failing diagnostics the issue-count
+        // path below is already honest, so it takes precedence.)
+        | StatusView.Completed _ when
+            parsed.LastRun.IsNone
+            && not (DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics)
+            ->
+            $"  %s{Glyph.warn} %s{padded} %s{Color.dim}{Glyph.sep} %s{CompletedNoRecordText}%s{Color.reset}"
         | StatusView.Completed _ ->
             let withIssues = DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics
 
@@ -131,31 +160,36 @@ let private renderCompact
 
             $"  %s{glyph} %s{padded}%s{timingPart} %s{Color.dim}{Glyph.sep} %s{label}%s{Color.reset}"
         | StatusView.Running since ->
-            let elapsed = now - since
-            let timingStr = UI.timing elapsed
+            match runningWedge now since with
+            | FsHotWatch.PluginWedge.RunningHealth.Wedged(s, e) ->
+                // Past the bound a plugin is BY DEFINITION wedged — say so,
+                // never render it as merely running (AUTOMATION-147).
+                $"  %s{Glyph.warn} %s{padded} %s{Color.red}%s{wedgedBody s e}%s{Color.reset}"
+            | FsHotWatch.PluginWedge.RunningHealth.StillRunning elapsed ->
+                let timingStr = UI.timing elapsed
 
-            let detail =
-                match parsed.Subtasks with
-                | [] ->
-                    let la = latestActivity parsed.ActivityTail
+                let detail =
+                    match parsed.Subtasks with
+                    | [] ->
+                        let la = latestActivity parsed.ActivityTail
 
-                    if la = "" then
-                        ""
-                    else
-                        $" %s{Color.dim}{Glyph.sep} %s{la}%s{Color.reset}"
-                | xs ->
-                    // Prefer the primary subtask's descriptive label when present;
-                    // otherwise summarise concurrent subtasks by key.
-                    let primary = xs |> List.tryFind (fun s -> s.Key = PrimarySubtaskKey)
+                        if la = "" then
+                            ""
+                        else
+                            $" %s{Color.dim}{Glyph.sep} %s{la}%s{Color.reset}"
+                    | xs ->
+                        // Prefer the primary subtask's descriptive label when present;
+                        // otherwise summarise concurrent subtasks by key.
+                        let primary = xs |> List.tryFind (fun s -> s.Key = PrimarySubtaskKey)
 
-                    match primary with
-                    | Some p -> $" %s{Color.dim}{Glyph.sep} %s{p.Label}%s{Color.reset}"
-                    | None ->
-                        let n = List.length xs
-                        let names = xs |> List.map (fun s -> s.Key) |> String.concat ", "
-                        $" %s{Color.dim}{Glyph.sep} %d{n} running: %s{names}%s{Color.reset}"
+                        match primary with
+                        | Some p -> $" %s{Color.dim}{Glyph.sep} %s{p.Label}%s{Color.reset}"
+                        | None ->
+                            let n = List.length xs
+                            let names = xs |> List.map (fun s -> s.Key) |> String.concat ", "
+                            $" %s{Color.dim}{Glyph.sep} %d{n} running: %s{names}%s{Color.reset}"
 
-            $"  %s{Glyph.ellipsis} %s{padded} %s{timingStr}%s{detail}"
+                $"  %s{Glyph.ellipsis} %s{padded} %s{timingStr}%s{detail}"
         | StatusView.Idle ->
             match parsed.LastRun with
             | Some r ->
@@ -194,16 +228,28 @@ let private verboseHeader
 
     match parsed.Status with
     | StatusView.Running since ->
-        let elapsed = now - since
-        let n = List.length parsed.Subtasks
+        match runningWedge now since with
+        | FsHotWatch.PluginWedge.RunningHealth.Wedged(s, e) ->
+            // Past the bound: named as wedged, never rendered as merely
+            // running (AUTOMATION-147).
+            $"  %s{Glyph.warn} %s{padded} %s{Color.red}%s{wedgedBody s e}%s{Color.reset}"
+        | FsHotWatch.PluginWedge.RunningHealth.StillRunning elapsed ->
+            let n = List.length parsed.Subtasks
 
-        let detail =
-            if n > 0 then
-                $" %s{Color.dim}{Glyph.sep} %d{n} running%s{Color.reset}"
-            else
-                ""
+            let detail =
+                if n > 0 then
+                    $" %s{Color.dim}{Glyph.sep} %d{n} running%s{Color.reset}"
+                else
+                    ""
 
-        $"  %s{glyph} %s{padded} %s{UI.timing elapsed}%s{detail}"
+            $"  %s{glyph} %s{padded} %s{UI.timing elapsed}%s{detail}"
+    // Fail closed: Completed with NO run record never renders as a bare ✓ —
+    // the absence is stated in words (see CompletedNoRecordText).
+    | StatusView.Completed _ when
+        parsed.LastRun.IsNone
+        && not (DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics)
+        ->
+        $"  %s{Glyph.warn} %s{padded} %s{Color.dim}{Glyph.sep} %s{CompletedNoRecordText}%s{Color.reset}"
     | StatusView.Completed _ ->
         let timingPart =
             match terminalTimingStr parsed with
@@ -290,11 +336,18 @@ let private renderVerbose
                     let startedLine =
                         $"      %s{Color.dim}started: %s{clock (r.StartedAt.ToLocalTime())}%s{Color.reset}"
 
+                    // The `elapsed:` line is ALWAYS present. A `started:` with
+                    // no `elapsed:` was the home-made wedge detector the
+                    // 2026-07-14 operator had to invent — a tool must never
+                    // require its user to detect a fault by noticing what
+                    // ISN'T printed (AUTOMATION-147). Zero elapsed is stated
+                    // as what it is (a replayed/synthetic record), not omitted.
                     if r.Elapsed > TimeSpan.Zero then
                         [ startedLine
                           $"      %s{Color.dim}elapsed: %s{UI.timing r.Elapsed}%s{Color.reset}" ]
                     else
-                        [ startedLine ]
+                        [ startedLine
+                          $"      %s{Color.dim}elapsed: not measured (replayed or synthetic run record)%s{Color.reset}" ]
                 | None -> []
 
             let summary =
@@ -324,6 +377,10 @@ module private Agent =
         | TimedOut
         | Warn
         | Running
+        /// Running past the wedge bound with no completion posted — by
+        /// definition wedged (AUTOMATION-147). Its own token so an agent
+        /// consumer can never read a wedge as mere "running".
+        | Wedged
 
     let private tokenOf =
         function
@@ -332,6 +389,7 @@ module private Agent =
         | State.TimedOut -> "timed-out"
         | State.Warn -> "warn"
         | State.Running -> "running"
+        | State.Wedged -> "wedged"
 
     /// Escape a summary for `summary="..."`: collapse newlines to spaces,
     /// escape embedded double quotes, truncate to 80 chars.
@@ -344,7 +402,7 @@ module private Agent =
 
     /// Determine the state for a plugin. Returns None when the plugin
     /// should be omitted (Idle with no lastRun).
-    let stateToken (warningsAreFailures: bool) (parsed: ParsedPluginStatus) : State option =
+    let stateToken (warningsAreFailures: bool) (now: DateTime) (parsed: ParsedPluginStatus) : State option =
         let okOrDiag () =
             if DiagnosticCounts.isFailing warningsAreFailures parsed.Diagnostics then
                 if parsed.Diagnostics.Errors > 0 then
@@ -363,9 +421,19 @@ module private Agent =
             | None -> false
 
         match parsed.Status with
-        | StatusView.Running _ -> Some State.Running
+        | StatusView.Running since ->
+            match runningWedge now since with
+            | FsHotWatch.PluginWedge.RunningHealth.Wedged _ -> Some State.Wedged
+            | FsHotWatch.PluginWedge.RunningHealth.StillRunning _ -> Some State.Running
         | StatusView.Failed _ when timedOutLastRun () -> Some State.TimedOut
         | StatusView.Failed _ -> Some State.Fail
+        // Fail closed: Completed with no run record can never token as "ok"
+        // (the agent-mode ✓) — see CompletedNoRecordText. Failing diagnostics
+        // still take precedence (fail/warn); a clean ledger downgrades to warn.
+        | StatusView.Completed _ when parsed.LastRun.IsNone ->
+            match okOrDiag () with
+            | State.Ok -> Some State.Warn
+            | other -> Some other
         | StatusView.Completed _ -> Some(okOrDiag ())
         | StatusView.Idle ->
             parsed.LastRun
@@ -390,16 +458,33 @@ module private Agent =
             |> Option.bind nonEmpty
             |> Option.orElseWith (fun () -> nonEmpty err)
         | StatusView.Running _ -> fromLastRun ()
+        // Fail closed: the missing run record is stated in words, never
+        // left as a bare token the consumer must decode.
+        | StatusView.Completed _ when parsed.LastRun.IsNone ->
+            DiagnosticCounts.summary parsed.Diagnostics
+            |> nonEmpty
+            |> Option.orElse (Some CompletedNoRecordText)
         | StatusView.Completed _
         | StatusView.Idle ->
             DiagnosticCounts.summary parsed.Diagnostics
             |> nonEmpty
             |> Option.orElseWith fromLastRun
 
-    let private formatLineWith (state: State) (name: string) (parsed: ParsedPluginStatus) : string =
+    let private formatLineWith (now: DateTime) (state: State) (name: string) (parsed: ParsedPluginStatus) : string =
         match state with
         | State.Ok
         | State.Running -> $"%s{name}: %s{tokenOf state}"
+        | State.Wedged ->
+            // The wedge is stated in the same words as verbose/compact status
+            // and the daemon log — no inference from a missing field.
+            let body =
+                match parsed.Status with
+                | StatusView.Running since ->
+                    let elapsed = if now > since then now - since else TimeSpan.Zero
+                    wedgedBody since elapsed
+                | _ -> "WEDGED"
+
+            $"%s{name}: %s{tokenOf state} summary=\"%s{escapeSummary body}\""
         | State.TimedOut ->
             let summary =
                 summaryFor parsed |> Option.map escapeSummary |> Option.defaultValue ""
@@ -418,9 +503,14 @@ module private Agent =
             | _ -> $"%s{name}: %s{tokenOf state}"
 
     /// Format one plugin line. None when the plugin should be omitted.
-    let formatLine (warningsAreFailures: bool) (name: string) (parsed: ParsedPluginStatus) : string option =
-        stateToken warningsAreFailures parsed
-        |> Option.map (fun s -> formatLineWith s name parsed)
+    let formatLine
+        (warningsAreFailures: bool)
+        (now: DateTime)
+        (name: string)
+        (parsed: ParsedPluginStatus)
+        : string option =
+        stateToken warningsAreFailures now parsed
+        |> Option.map (fun s -> formatLineWith now s name parsed)
 
     /// Compute the `next:` line from a plugin-name → resolved-state map.
     /// Callers pass the same map used for per-plugin line rendering.
@@ -428,7 +518,9 @@ module private Agent =
         let isFail name =
             match Map.tryFind name stateByName with
             | Some State.Fail
-            | Some State.TimedOut -> true
+            | Some State.TimedOut
+            // A wedged plugin is a fault to inspect, not work to wait on.
+            | Some State.Wedged -> true
             | _ -> false
 
         // The collapsed CLI: `check` is the only gate (it re-runs every plugin
@@ -442,17 +534,22 @@ module private Agent =
 
             match priority |> List.tryFind isFail with
             | Some p -> $"next: fshw --agent status %s{p}"
+            | None when Set.contains State.Wedged activeStates -> "next: fshw --agent status"
             | None when Set.contains State.Warn activeStates && warningsAreFailures -> "next: fshw --agent status"
             | None -> "next: done"
 
     /// Render full Agent-mode output: banner, per-plugin lines, next-step line.
     /// Computes each plugin's state once and reuses it for both the
     /// per-plugin line and the next-step priority scan.
-    let render (warningsAreFailures: bool) (statuses: (string * ParsedPluginStatus) list) : string list =
+    let render
+        (warningsAreFailures: bool)
+        (now: DateTime)
+        (statuses: (string * ParsedPluginStatus) list)
+        : string list =
         let folder (lines, stateByName, activeStates) (name, parsed) =
-            match stateToken warningsAreFailures parsed with
+            match stateToken warningsAreFailures now parsed with
             | None -> lines, stateByName, activeStates
-            | Some s -> formatLineWith s name parsed :: lines, Map.add name s stateByName, Set.add s activeStates
+            | Some s -> formatLineWith now s name parsed :: lines, Map.add name s stateByName, Set.add s activeStates
 
         let revLines, stateByName, activeStates =
             statuses |> List.fold folder ([], Map.empty, Set.empty)
@@ -476,7 +573,7 @@ let renderPlugin
     | Compact -> renderCompact warningsAreFailures now name parsed
     | Verbose -> renderVerbose warningsAreFailures now name parsed
     | Agent ->
-        match Agent.formatLine warningsAreFailures name parsed with
+        match Agent.formatLine warningsAreFailures now name parsed with
         | Some line -> [ line ]
         | None -> []
 
@@ -489,7 +586,7 @@ let renderAll
     (statuses: Map<string, ParsedPluginStatus>)
     : string list =
     match mode with
-    | Agent -> Agent.render warningsAreFailures (Map.toList statuses)
+    | Agent -> Agent.render warningsAreFailures now (Map.toList statuses)
     | Compact
     | Verbose ->
         statuses

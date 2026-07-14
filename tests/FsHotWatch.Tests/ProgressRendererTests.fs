@@ -764,3 +764,116 @@ let ``agent Failed with TimedOut outcome emits timed-out token`` () =
     let line = renderPlugin Agent true now "build" parsed |> List.head |> stripAnsi
     test <@ line.Contains "build: timed-out" @>
     test <@ line.Contains "timed out" @>
+
+// ---------------- Wedge + fail-closed rendering (AUTOMATION-147) ----------------
+//
+// A plugin that has not completed is NEVER rendered ✓, and a plugin Running
+// past the wedge bound is NAMED as wedged — in words, in every mode. The
+// operator must never have to detect a fault by noticing what isn't printed.
+
+module private WedgeFixtures =
+    /// Running long past the default wedge bound (verdict deadline 60m + 5m grace).
+    let wedgedSince = now - TimeSpan.FromHours 2.0
+
+    let running (since: DateTime) : ParsedPluginStatus =
+        { Status = StatusView.Running since
+          Subtasks = []
+          ActivityTail = []
+          LastRun = None
+          Diagnostics = DiagnosticCounts.empty }
+
+    let completedNoRecord () : ParsedPluginStatus =
+        { Status = StatusView.Completed(now - TimeSpan.FromSeconds 2.0)
+          Subtasks = []
+          ActivityTail = []
+          LastRun = None
+          Diagnostics = DiagnosticCounts.empty }
+
+open WedgeFixtures
+
+[<Fact(Timeout = 15000)>]
+let ``compact Running past the wedge bound is named WEDGED, not merely running`` () =
+    let lines =
+        renderPlugin Compact true now "analyzers" (running wedgedSince) |> stripMany
+
+    test <@ lines.Length = 1 @>
+    test <@ lines.[0].Contains "WEDGED" @>
+    test <@ lines.[0].Contains "no completion in" @>
+    test <@ lines.[0].Contains "⚠" @>
+    test <@ not (lines.[0].Contains "…") @>
+
+[<Fact(Timeout = 15000)>]
+let ``compact Running under the bound is NOT declared wedged`` () =
+    // Guard against over-correction: a 12-minute run is "cannot tell yet",
+    // not a wedge — the daemon-side log escalations carry the uncertainty.
+    let lines =
+        renderPlugin Compact true now "test-prune" (running (now - TimeSpan.FromMinutes 12.0))
+        |> stripMany
+
+    test <@ not (lines.[0].Contains "WEDGED") @>
+    test <@ lines.[0].Contains "…" @>
+
+[<Fact(Timeout = 15000)>]
+let ``verbose Running past the wedge bound is named WEDGED in the header`` () =
+    let lines =
+        renderPlugin Verbose true now "analyzers" (running wedgedSince) |> stripMany
+
+    test <@ lines.[0].Contains "WEDGED" @>
+    test <@ lines.[0].Contains "⚠" @>
+
+[<Fact(Timeout = 15000)>]
+let ``agent Running past the wedge bound tokens as wedged with the wedge words`` () =
+    let lines = agentLine "analyzers" (running wedgedSince)
+    test <@ lines.Length = 1 @>
+    test <@ lines.[0].StartsWith "analyzers: wedged" @>
+    test <@ lines.[0].Contains "WEDGED: started" @>
+    test <@ lines.[0].Contains "no completion in" @>
+
+[<Fact(Timeout = 15000)>]
+let ``agent nextStep for a wedged plugin points at status, never done`` () =
+    let lines = agentAll [ "analyzers", running wedgedSince ]
+    let next = lines |> List.last
+    test <@ next.Contains "status" @>
+    test <@ not (next.Contains "done") @>
+
+[<Fact(Timeout = 15000)>]
+let ``compact Completed with no run record renders a warn with words, never a bare check`` () =
+    let lines =
+        renderPlugin Compact true now "build" (completedNoRecord ()) |> stripMany
+
+    test <@ lines.Length = 1 @>
+    test <@ lines.[0].Contains "⚠" @>
+    test <@ not (lines.[0].Contains "✓") @>
+    test <@ lines.[0].Contains "no run record" @>
+
+[<Fact(Timeout = 15000)>]
+let ``verbose Completed with no run record renders a warn with words, never a bare check`` () =
+    let lines =
+        renderPlugin Verbose true now "build" (completedNoRecord ()) |> stripMany
+
+    test <@ lines.[0].Contains "⚠" @>
+    test <@ not (lines.[0].Contains "✓") @>
+    test <@ lines.[0].Contains "no run record" @>
+
+[<Fact(Timeout = 15000)>]
+let ``agent Completed with no run record tokens as warn with the missing-record words`` () =
+    let lines = agentLine "build" (completedNoRecord ())
+    test <@ lines.Length = 1 @>
+    test <@ lines.[0].StartsWith "build: warn" @>
+    test <@ lines.[0].Contains "no run record" @>
+
+[<Fact(Timeout = 15000)>]
+let ``verbose Completed with zero elapsed states it in words instead of omitting the line`` () =
+    // The operator's home-made wedge detector was grepping for a MISSING
+    // `elapsed:` line. The line is now always present: zero elapsed is stated
+    // as a replayed/synthetic record, never left to be inferred from absence.
+    let parsed: ParsedPluginStatus =
+        { Status = StatusView.Completed(now - TimeSpan.FromSeconds(2.0))
+          Subtasks = []
+          ActivityTail = []
+          LastRun = Some(completedRun (TimeSpan.FromSeconds 0.0) TimeSpan.Zero (Some "replayed"))
+          Diagnostics = DiagnosticCounts.empty }
+
+    let lines = renderPlugin Verbose true now "build" parsed |> stripMany
+    test <@ lines |> List.exists (fun l -> l.Contains "elapsed: not measured") @>
+    test <@ lines |> List.exists (fun l -> l.Contains "started:") @>

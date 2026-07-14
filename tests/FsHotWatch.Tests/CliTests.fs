@@ -673,8 +673,16 @@ let private fakeIpc () : IpcOps =
       IsRunning = fun _ -> true
       LaunchDaemon = fun _ _ _ -> () }
 
-/// Run `executeCommand` with the common test defaults.
+/// Run `executeCommand` with the common test defaults. "/tmp" is made to look
+/// like a repo whose (stubbed always-running) daemon is THIS process's binary
+/// with the current config, so `ensureDaemon` takes the Reuse path — the
+/// identity handshake (AUTOMATION-147) would otherwise restart the fake daemon
+/// on every call (a 1s shutdown sleep per test, plus a real killStaleDaemon
+/// walk over /tmp/.fshw).
 let private exec (ipc: IpcOps) (command: Command) : int =
+    Directory.CreateDirectory("/tmp/.fshw") |> ignore
+    FsHotWatch.DaemonIdentity.recordCurrent "/tmp"
+    File.WriteAllText("/tmp/.fshw/config.hash", computeConfigHashWith defaultFileOps "/tmp")
     executeCommand (fun _ -> Unchecked.defaultof<_>) ipc "/tmp" "pipe" command defaultGlobalOptions fakeConfig 30.0
 
 [<Fact(Timeout = 15000)>]
@@ -956,27 +964,72 @@ let ``executeCommand returns 1 when IPC fails`` () =
 
     test <@ result = 1 @>
 
-// --- decideDaemonAction tests ---
+// --- decideRunningDaemonAction tests (AUTOMATION-147 identity handshake) ---
+
+let private ident (v: string) (h: string) : FsHotWatch.DaemonIdentity.BinaryIdentity = { Version = v; ContentHash = h }
 
 [<Fact(Timeout = 15000)>]
-let ``decideDaemonAction reuses running daemon with matching config`` () =
-    let action = decideDaemonAction true "abc123" "abc123"
+let ``decideRunningDaemonAction reuses running daemon with matching identity and config`` () =
+    let action =
+        decideRunningDaemonAction FsHotWatch.DaemonIdentity.IdentityVerdict.Match "abc123" "abc123"
+
     test <@ action = Reuse @>
 
 [<Fact(Timeout = 15000)>]
-let ``decideDaemonAction restarts daemon when config hash changes`` () =
-    let action = decideDaemonAction true "old-hash" "new-hash"
-    test <@ action = Restart @>
+let ``decideRunningDaemonAction restarts daemon when config hash changes`` () =
+    let action =
+        decideRunningDaemonAction FsHotWatch.DaemonIdentity.IdentityVerdict.Match "old-hash" "new-hash"
+
+    test <@ action = RestartConfigChanged @>
 
 [<Fact(Timeout = 15000)>]
-let ``decideDaemonAction starts fresh when daemon not running`` () =
-    let action = decideDaemonAction false "" "abc123"
-    test <@ action = StartFresh @>
+let ``decideRunningDaemonAction restarts a different-binary daemon even when config matches`` () =
+    // A stale binary must restart even with a matching config hash: every
+    // answer that daemon gives comes from the wrong code.
+    let recorded = ident "0.9.0" "cafebabe00000000"
+
+    let action =
+        decideRunningDaemonAction
+            (FsHotWatch.DaemonIdentity.IdentityVerdict.Stale(
+                FsHotWatch.DaemonIdentity.StaleReason.DifferentBinary recorded
+            ))
+            "abc123"
+            "abc123"
+
+    test <@ action = RestartStaleBinary(FsHotWatch.DaemonIdentity.StaleReason.DifferentBinary recorded) @>
 
 [<Fact(Timeout = 15000)>]
-let ``decideDaemonAction starts fresh when not running even with matching hash`` () =
-    let action = decideDaemonAction false "abc123" "abc123"
-    test <@ action = StartFresh @>
+let ``decideRunningDaemonAction restarts a daemon with no recorded identity`` () =
+    // THE release-critical case: an old daemon that predates the handshake
+    // never recorded an identity — it reads as unknown and is restarted,
+    // unilaterally, with no cooperation from the old build required.
+    let action =
+        decideRunningDaemonAction
+            (FsHotWatch.DaemonIdentity.IdentityVerdict.Stale FsHotWatch.DaemonIdentity.StaleReason.NotRecorded)
+            "abc123"
+            "abc123"
+
+    test <@ action = RestartStaleBinary FsHotWatch.DaemonIdentity.StaleReason.NotRecorded @>
+
+[<Fact(Timeout = 15000)>]
+let ``restartReasonLine names the reason for every restart and none for reuse`` () =
+    test <@ restartReasonLine Reuse = None @>
+
+    let noRecord =
+        restartReasonLine (RestartStaleBinary FsHotWatch.DaemonIdentity.StaleReason.NotRecorded)
+
+    test <@ noRecord.IsSome && noRecord.Value.Contains "no recorded binary identity" @>
+
+    let different =
+        restartReasonLine (
+            RestartStaleBinary(FsHotWatch.DaemonIdentity.StaleReason.DifferentBinary(ident "0.9.0" "cafebabe"))
+        )
+
+    test <@ different.IsSome && different.Value.Contains "different fshw binary" @>
+    test <@ different.Value.Contains "0.9.0" @>
+
+    let config = restartReasonLine RestartConfigChanged
+    test <@ config.IsSome && config.Value.Contains "config changed" @>
 
 // --- Daemon readiness gate (AUTOMATION-66) ---
 
@@ -1139,11 +1192,14 @@ let ``daemonProcessAliveWith reports a live pid as alive`` () =
 let ``executeCommand Check retries a startup connect race then succeeds`` () =
     withTempDir "cli-check-startup-race" (fun tmpDir ->
         // Force the Reuse path (daemon already listening) so the readiness gate,
-        // not a fresh launch, is what absorbs the race.
+        // not a fresh launch, is what absorbs the race. Reuse now requires the
+        // identity handshake to match too (AUTOMATION-147), so record THIS
+        // process's identity as the "daemon's".
         let stateDir = Path.Combine(tmpDir, ".fshw")
         Directory.CreateDirectory(stateDir) |> ignore
-        let hash = computeConfigHashWith defaultFileOps tmpDir Environment.ProcessPath
+        let hash = computeConfigHashWith defaultFileOps tmpDir
         File.WriteAllText(Path.Combine(stateDir, "config.hash"), hash)
+        FsHotWatch.DaemonIdentity.recordCurrent tmpDir
 
         // The daemon is mid cold-scan: the first two GetStatus probes time out
         // (ConnectAsync starved), the third answers. The readiness gate must WAIT
@@ -1476,3 +1532,363 @@ let ``computeLaunchCommand: dotnet with empty entry-assembly location falls back
     let (exe, prefix) = computeLaunchCommand "/usr/local/bin/dotnet" (Some "")
     test <@ exe = "/usr/local/bin/dotnet" @>
     test <@ prefix.Contains("fshw") @>
+
+// --- AUTOMATION-147: the daemon self-heal, end to end through executeCommand ---
+//
+// A simulated daemon that behaves like the real one in the two ways that matter:
+// it RECORDS ITS BINARY IDENTITY when launched (as `fshw start` does), and every
+// answer it gives is tagged with the generation that produced it. That tag is
+// what lets these tests assert the acceptance criterion literally — not just
+// "a restart happened", but "the reply came from the NEW daemon".
+
+[<NoComparison; NoEquality>]
+type private FakeDaemon =
+    {
+        mutable Running: bool
+        mutable Generation: int
+        mutable Shutdowns: int
+        mutable Launches: int
+        /// The generation that served each GetDiagnostics call, in order.
+        Served: ResizeArray<int>
+    }
+
+/// An IpcOps backed by `FakeDaemon`, rooted at `repoRoot`. Launching records
+/// THIS process's identity into `.fshw/daemon.identity` — exactly what the real
+/// daemon's `start` path does — so the CLI's next handshake sees a current
+/// daemon and reuses it.
+let private fakeDaemonIpc (repoRoot: string) (d: FakeDaemon) : IpcOps =
+    { fakeIpc () with
+        IsRunning = fun _ -> d.Running
+        Shutdown =
+            fun _ ->
+                async {
+                    d.Shutdowns <- d.Shutdowns + 1
+                    d.Running <- false
+                    return "shutting down"
+                }
+        LaunchDaemon =
+            fun _ _ _ ->
+                d.Launches <- d.Launches + 1
+                d.Generation <- d.Generation + 1
+                d.Running <- true
+                FsHotWatch.DaemonIdentity.recordCurrent repoRoot
+        GetStatus = fun _ -> async { return completedStatusJson }
+        GetDiagnostics =
+            fun _ _ ->
+                async {
+                    d.Served.Add d.Generation
+                    return """{"count": 0, "files": {}, "unchecked": 0}"""
+                } }
+
+/// A daemon already running from generation 1 (its identity is whatever the
+/// caller staged beforehand — that's the point of the test).
+let private runningDaemon () =
+    { Running = true
+      Generation = 1
+      Shutdowns = 0
+      Launches = 0
+      Served = ResizeArray() }
+
+/// Stage `.fshw/` with a config hash matching `tmpDir`, so the ONLY thing under
+/// test is the identity handshake — never the config-drift restart.
+let private stageStateDir (tmpDir: string) =
+    Directory.CreateDirectory(Path.Combine(tmpDir, ".fshw")) |> ignore
+
+    File.WriteAllText(Path.Combine(tmpDir, ".fshw", "config.hash"), computeConfigHashWith defaultFileOps tmpDir)
+
+[<Fact(Timeout = 15000)>]
+let ``check against a daemon with NO recorded identity replaces it and runs on the NEW daemon`` () =
+    // THE release-critical case, exactly as it will occur on the next repin: the
+    // daemon currently running is an OLD build that never wrote an identity. The
+    // NEW CLI must detect that UNILATERALLY — the old daemon reports nothing and
+    // is asked for nothing — stop it, start a fresh one, and answer from THAT.
+    withTempDir "cli-identity-notrecorded" (fun tmpDir ->
+        stageStateDir tmpDir
+        // No daemon.identity file at all — an old build's footprint.
+        test <@ not (File.Exists(FsHotWatch.DaemonIdentity.identityFilePath tmpDir)) @>
+
+        let d = runningDaemon ()
+        let ipc = fakeDaemonIpc tmpDir d
+
+        let result =
+            executeCommand
+                (fun _ -> Unchecked.defaultof<_>)
+                ipc
+                tmpDir
+                "fshw-test-pipe"
+                (Check [])
+                defaultGlobalOptions
+                fakeConfig
+                30.0
+
+        test <@ result = 0 @>
+        // The old daemon was stopped and a new one started...
+        test <@ d.Shutdowns = 1 @>
+        test <@ d.Launches = 1 @>
+        // ...the new daemon recorded THIS binary's identity, so the next command reuses it...
+        test <@ FsHotWatch.DaemonIdentity.verdictFor tmpDir = FsHotWatch.DaemonIdentity.IdentityVerdict.Match @>
+        // ...and — the acceptance criterion — every answer the check consumed came
+        // from generation 2 (the NEW code), never from the stale generation 1.
+        test <@ d.Served.Count > 0 @>
+        test <@ d.Served |> Seq.forall (fun g -> g = 2) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``check against a daemon built from a DIFFERENT binary replaces it and runs on the NEW daemon`` () =
+    // Same-version, different-content is the AUTOMATION-123 repack: the version
+    // label matches and the daemon is still the wrong code. The content hash is
+    // what catches it.
+    withTempDir "cli-identity-different" (fun tmpDir ->
+        stageStateDir tmpDir
+
+        let current = FsHotWatch.DaemonIdentity.currentIdentity ()
+
+        // A daemon whose recorded version is identical but whose content differs.
+        File.WriteAllText(
+            FsHotWatch.DaemonIdentity.identityFilePath tmpDir,
+            FsHotWatch.DaemonIdentity.BinaryIdentity.render
+                { current with
+                    ContentHash = "0000000000000000" }
+        )
+
+        let d = runningDaemon ()
+        let ipc = fakeDaemonIpc tmpDir d
+
+        let stderr, result =
+            captureStderr (fun () ->
+                executeCommand
+                    (fun _ -> Unchecked.defaultof<_>)
+                    ipc
+                    tmpDir
+                    "fshw-test-pipe"
+                    (Check [])
+                    defaultGlobalOptions
+                    fakeConfig
+                    30.0)
+
+        test <@ result = 0 @>
+        test <@ d.Shutdowns = 1 && d.Launches = 1 @>
+        test <@ d.Served |> Seq.forall (fun g -> g = 2) @>
+        // It SAYS what it found — no silent swap, no ritual for the human.
+        test <@ stderr.Contains "different fshw binary" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``check against a HEALTHY daemon never restarts it — the warm cache survives`` () =
+    // The guard against over-correction. Discarding a warm FCS cache costs a ~30s
+    // cold rebuild, so a matching identity + matching config must REUSE, always.
+    withTempDir "cli-identity-healthy" (fun tmpDir ->
+        stageStateDir tmpDir
+        FsHotWatch.DaemonIdentity.recordCurrent tmpDir
+
+        let d = runningDaemon ()
+        let ipc = fakeDaemonIpc tmpDir d
+
+        let result =
+            executeCommand
+                (fun _ -> Unchecked.defaultof<_>)
+                ipc
+                tmpDir
+                "fshw-test-pipe"
+                (Check [])
+                defaultGlobalOptions
+                fakeConfig
+                30.0
+
+        test <@ result = 0 @>
+        test <@ d.Shutdowns = 0 @>
+        test <@ d.Launches = 0 @>
+        // Served by the ORIGINAL warm daemon.
+        test <@ d.Served |> Seq.forall (fun g -> g = 1) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``status names a stale-binary daemon instead of presenting its output as current`` () =
+    // `status` is a read-only observer: it does not restart (a fresh daemon has
+    // nothing to report), so it must SAY that what it is showing came from a
+    // different build — never let the reader assume it is current.
+    withTempDir "cli-identity-status" (fun tmpDir ->
+        stageStateDir tmpDir
+        let d = runningDaemon ()
+        let ipc = fakeDaemonIpc tmpDir d
+
+        let stderr, _ =
+            captureStderr (fun () ->
+                executeCommand
+                    (fun _ -> Unchecked.defaultof<_>)
+                    ipc
+                    tmpDir
+                    "pipe"
+                    (Status None)
+                    defaultGlobalOptions
+                    fakeConfig
+                    30.0)
+
+        test <@ stderr.Contains "no recorded binary identity" @>
+        // Named, not restarted: `status` triggers no work, so a fresh daemon would
+        // have nothing to say — and the warm cache is not worth spending on a read.
+        test <@ d.Shutdowns = 0 && d.Launches = 0 @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a corrupted IPC reply restarts the daemon and retries the command automatically`` () =
+    // The OutOfMemoryException whose own comment conceded it "is misleading
+    // because the machine isn't actually out of memory" used to hand the operator
+    // a ritual (`fshw stop` then `fshw start`). The tool performs it now.
+    withTempDir "cli-heal-corrupt" (fun tmpDir ->
+        stageStateDir tmpDir
+        FsHotWatch.DaemonIdentity.recordCurrent tmpDir
+
+        let d = runningDaemon ()
+        let mutable calls = 0
+
+        let ipc =
+            { fakeDaemonIpc tmpDir d with
+                GetDiagnostics =
+                    fun _ _ ->
+                        async {
+                            calls <- calls + 1
+
+                            if calls = 1 then
+                                // A garbage Content-Length header: StreamJsonRpc tries to
+                                // allocate a nonsensical buffer and throws OOM.
+                                raise (OutOfMemoryException("Insufficient memory"))
+
+                            d.Served.Add d.Generation
+                            return """{"count": 0, "files": {}, "unchecked": 0}"""
+                        } }
+
+        let stderr, result =
+            captureStderr (fun () ->
+                executeCommand
+                    (fun _ -> Unchecked.defaultof<_>)
+                    ipc
+                    tmpDir
+                    "pipe"
+                    (Status None)
+                    defaultGlobalOptions
+                    fakeConfig
+                    30.0)
+
+        // The command SUCCEEDED — no ritual, no exit-1 handed to the human.
+        test <@ result = 0 @>
+        test <@ d.Shutdowns >= 1 && d.Launches = 1 @>
+        // ...and the retry was served by the fresh daemon.
+        test <@ d.Served |> Seq.forall (fun g -> g = 2) @>
+        test <@ stderr.Contains "corrupted" @>
+        test <@ stderr.Contains "restarting the daemon and retrying" @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a stale daemon-pid file is cleaned up on the next command`` () =
+    withTempDir "cli-stale-pid" (fun tmpDir ->
+        stageStateDir tmpDir
+        FsHotWatch.DaemonIdentity.recordCurrent tmpDir
+
+        let pidPath = Path.Combine(tmpDir, ".fshw", "daemon.pid")
+        // A pid that cannot name a live process — the leftover of a crash or a kill -9.
+        File.WriteAllText(pidPath, "2000000000")
+
+        let d = runningDaemon ()
+
+        executeCommand
+            (fun _ -> Unchecked.defaultof<_>)
+            (fakeDaemonIpc tmpDir d)
+            tmpDir
+            "pipe"
+            (Status None)
+            defaultGlobalOptions
+            fakeConfig
+            30.0
+        |> ignore
+
+        test <@ not (File.Exists pidPath) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``a LIVE daemon-pid file is never eaten by the hygiene pass`` () =
+    // Unknowns lean ALIVE. Deleting a live daemon's pidfile would strand the
+    // process beyond the reach of `fshw stop` — the exact mess this ticket exists
+    // to end, recreated by an over-eager cleaner.
+    withTempDir "cli-live-pid" (fun tmpDir ->
+        stageStateDir tmpDir
+        let pidPath = Path.Combine(tmpDir, ".fshw", "daemon.pid")
+        File.WriteAllText(pidPath, string (System.Diagnostics.Process.GetCurrentProcess().Id))
+
+        test <@ not (cleanStalePidfileWith defaultFileOps tmpDir) @>
+        test <@ File.Exists pidPath @>)
+
+[<Fact(Timeout = 15000)>]
+let ``an unparseable daemon-pid file is left alone rather than assumed dead`` () =
+    withTempDir "cli-garbage-pid" (fun tmpDir ->
+        stageStateDir tmpDir
+        let pidPath = Path.Combine(tmpDir, ".fshw", "daemon.pid")
+        File.WriteAllText(pidPath, "not-a-number")
+
+        test <@ not (cleanStalePidfileWith defaultFileOps tmpDir) @>
+        test <@ File.Exists pidPath @>)
+
+[<Fact(Timeout = 15000)>]
+let ``the next command reports that the daemon restarted ITSELF over a wedge`` () =
+    // The daemon has no terminal to print to. The breadcrumb is how "the tool says
+    // what it DID" survives the restart — printed once, then consumed.
+    withTempDir "cli-wedge-breadcrumb" (fun tmpDir ->
+        stageStateDir tmpDir
+        FsHotWatch.DaemonIdentity.recordCurrent tmpDir
+
+        FsHotWatch.PluginWedge.writeBreadcrumb
+            tmpDir
+            "daemon was wedged on 'analyzers' (WEDGED: started 11:38:39, no completion in 65m 0s) — restarted it"
+
+        let d = runningDaemon ()
+
+        let stderr, _ =
+            captureStderr (fun () ->
+                executeCommand
+                    (fun _ -> Unchecked.defaultof<_>)
+                    (fakeDaemonIpc tmpDir d)
+                    tmpDir
+                    "pipe"
+                    (Status None)
+                    defaultGlobalOptions
+                    fakeConfig
+                    30.0)
+
+        test <@ stderr.Contains "daemon was wedged on 'analyzers'" @>
+        test <@ stderr.Contains "restarted it" @>
+        test <@ stderr.Contains "⚠" @>
+        // Consumed: it reports once, it does not nag.
+        test <@ not (File.Exists(FsHotWatch.PluginWedge.breadcrumbPath tmpDir)) @>)
+
+[<Fact(Timeout = 15000)>]
+let ``runIpcWithSelfHeal retries ONLY the corrupted-pipe family, once`` () =
+    // Every other fault goes straight through: a self-heal on, say, a timeout
+    // would restart healthy daemons and torch their warm cache.
+    let mutable restarts = 0
+
+    let heal (throwCount: int) (ex: unit -> exn) =
+        restarts <- 0
+        let mutable calls = 0
+
+        let action () =
+            calls <- calls + 1
+            if calls <= throwCount then raise (ex ()) else 0
+
+        let result =
+            runIpcWithSelfHeal
+                (fun () ->
+                    restarts <- restarts + 1
+                    true)
+                (fun _ -> 99)
+                action
+
+        result, calls
+
+    // Corrupted pipe, healed on the retry.
+    test <@ heal 1 (fun () -> OutOfMemoryException("boom") :> exn) = (0, 2) @>
+    test <@ restarts = 1 @>
+
+    test <@ heal 1 (fun () -> OverflowException("boom") :> exn) = (0, 2) @>
+    test <@ restarts = 1 @>
+
+    // Corrupted pipe that RECURS: retried exactly once, then reported honestly.
+    test <@ heal 2 (fun () -> OutOfMemoryException("boom") :> exn) = (99, 2) @>
+    test <@ restarts = 1 @>
+
+    // Not the corrupted-pipe family: no restart, straight to the failure path.
+    test <@ heal 1 (fun () -> TimeoutException("busy") :> exn) = (99, 1) @>
+    test <@ restarts = 0 @>

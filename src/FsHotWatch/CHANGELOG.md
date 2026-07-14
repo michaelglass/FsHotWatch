@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+- feat!: **the daemon records its own binary identity, so a new CLI can never
+  silently talk to an old daemon.** (AUTOMATION-147) On startup the daemon writes
+  `.fshw/daemon.identity` — its assembly version **and a content hash of its binary** —
+  before the IPC pipe starts listening. A hash, not just a semver: a locally-repacked
+  build can share a version string and differ in content, which is AUTOMATION-123
+  reincarnated as a *process* rather than a package. `DaemonIdentity.compareIdentity`
+  is the whole contract, and it fails CLOSED: a daemon whose recorded identity differs
+  is stale, and a daemon with **no recorded identity at all** (any build predating this
+  handshake) is stale too. The check is therefore **unilateral** — an old daemon needs
+  to cooperate in nothing to be found stale, which is what protects the first repin
+  after this ships.
+  - **BREAKING:** the internal `Daemon` constructor takes its `ProcessRegistry.Registry`
+    as a parameter (see below).
+
+- feat: **a wedged plugin is detected, named, and recovered from** (AUTOMATION-147).
+  A plugin that reported `Running` and has posted no completion past a bound is *by
+  definition* wedged. `PluginWedge` now says so on a cadence — `[wedge] analyzers still
+  running after 5m (no completion posted; treated as wedged at 1h 5m)` — and past the
+  bound it names the wedge, leaves a breadcrumb the next `fshw` command prints, and
+  gracefully restarts the daemon down the same `cts.Cancel()` path as `fshw stop`.
+  A silent log during a wedge is indistinguishable from a healthy idle daemon; the
+  AUTOMATION-92 hang was silent for 8h36m.
+  - The bound sits **above** the verdict deadline plus grace, so a client blocked on
+    `WaitForComplete` still gets its own, more specific `TimeoutException` first, and a
+    long-but-live run is never restarted out from under its warm FCS cache.
+  - The detector is honest about its own limits: work in flight with *no* plugin
+    reporting `Running` past the bound reports that it **cannot tell which plugin** and
+    fails closed. It never concludes "healthy" by default.
+  - `FSHW_PLUGIN_WEDGE_SEC` overrides the bound. There is deliberately no way to
+    configure it off.
+
+- fix: **the daemon reaps the children its plugins spawned — it never did.**
+  (AUTOMATION-147) `ProcessRegistry` is scoped by an `AsyncLocal`, and an `AsyncLocal`
+  is only visible to `ExecutionContext`s captured *after* it is set. The daemon
+  installed its registry in the `Daemon` **constructor** — by which point the
+  `PluginHost` and the scan/change mailboxes already existed. So when the scan mailbox
+  dispatched to a plugin, that plugin's `runProcess` resolved **no registry**,
+  `ProcessRegistry.track` dropped the child on a silent `| None -> ()`, and `KillAll`
+  truthfully reported nothing to kill. Every plugin child — test runners, file-command
+  processes — outlived the daemon, reparented to init. Observed on a live daemon:
+  `track pid=69166 -> NO REGISTRY (dropped)` / `KillAll: 0 tracked`. The registry is now
+  constructed and installed by `createWith` **before anything captures a context**, and
+  is passed into the daemon, which makes the correct ordering the only constructible one.
+  This is what makes `fshw stop` *and* the wedge self-heal actually reap in-flight
+  children instead of orphaning them.
+
+- fix: **`ProcessRegistry.track` warns instead of silently dropping.** A child spawned
+  with no registry in scope can never be reaped, so the miss is now logged loudly. A leak
+  you cannot see is a leak you cannot fix — the silence above is precisely how this one
+  survived.
+
 - fix!: **a refused `RunExclusive` claim is a value you cannot drop.** (AUTOMATION-99)
   `PluginCtx.RunExclusive` returned `unit` and silently discarded the work when the
   slot was held. The caller could not tell — so a force-run whose claim was refused
