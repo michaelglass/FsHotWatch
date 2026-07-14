@@ -209,13 +209,13 @@ let indexProject
                                    | _ -> false
 
                             if cached then
-                                let r =
-                                    {| Symbols = store.GetSymbolsInFile(relPath)
-                                       Dependencies = store.GetDependenciesFromFile(relPath)
-                                       TestMethods = store.GetTestMethodsInFile(relPath)
-                                       Attributes = []
-                                       ParentLinks = store.GetParentLinksInFile(relPath)
-                                       Diagnostics = AnalysisDiagnostics.Zero |}
+                                let r: AnalysisResult =
+                                    { Symbols = store.GetSymbolsInFile(relPath)
+                                      Dependencies = store.GetDependenciesFromFile(relPath)
+                                      TestMethods = store.GetTestMethodsInFile(relPath)
+                                      Attributes = []
+                                      ParentLinks = store.GetParentLinksInFile(relPath)
+                                      Diagnostics = AnalysisDiagnostics.Zero }
 
                                 (idx + 1,
                                  analyzedFiles,
@@ -247,13 +247,13 @@ let indexProject
                                         eprintfn
                                             $"    %s{relPath}: %d{result.Diagnostics.DroppedEdges} dropped edges (findEnclosing returned None)"
 
-                                    let r =
-                                        {| Symbols = symbols
-                                           Dependencies = deps
-                                           TestMethods = testMethods
-                                           Attributes = result.Attributes
-                                           ParentLinks = result.ParentLinks
-                                           Diagnostics = result.Diagnostics |}
+                                    let r: AnalysisResult =
+                                        { Symbols = symbols
+                                          Dependencies = deps
+                                          TestMethods = testMethods
+                                          Attributes = result.Attributes
+                                          ParentLinks = result.ParentLinks
+                                          Diagnostics = result.Diagnostics }
 
                                     (idx + 1,
                                      analyzedFiles + 1,

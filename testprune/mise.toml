@@ -100,13 +100,34 @@ description = "Watch and serve documentation locally"
 run = "dotnet fsdocs watch"
 depends = ["build", "tool-restore"]
 
+[tasks.gate]
+description = "Run the fshw gate (build, TestPrune's own analyzers, format, impact-selected tests) in one pass"
+# `depends = ["build"]` is load-bearing, not tidiness: the gate loads TestPrune.Analyzers
+# from its BUILD OUTPUT (see .fshw.json analyzers.paths). On a cold tree that directory
+# does not exist yet. fshw fails loud in that case (config error, exit 2) rather than
+# analyzing zero rules and reporting a cheerful green — but the gate is only USEFUL if the
+# analyzer is there, so build it first. TestPrune dogfooding its own impact selection is
+# the point of the tool.
+run = "dotnet fshw check --run-once"
+depends = ["build", "tool-restore"]
+
 [tasks.check]
-description = "Run all checks with auto-fix (format, sync-docs, then verify)"
+description = "Run all checks with auto-fix (format, sync-docs, then the fshw gate)"
+# The gate runs as this task's own `run`, so it lands AFTER the auto-fix deps rather than
+# racing them — otherwise the gate's format check could read a file `format` has not
+# rewritten yet.
+run = "mise run gate"
 depends = ["format", "sync-docs", "lint", "lint-project", "coverage-check", "docs", "example-build"]
 
 [tasks.ci]
 description = "Run all CI checks (no auto-fix)"
-depends = ["format-check", "lint", "lint-project", "coverage-check", "sync-docs-check", "docs", "example-build"]
+# Same shape as `check`: the gate is this task's `run`, so it lands after the dependency
+# fan-out (which includes the full `coverage-check` test pass) instead of racing it for cores.
+# `format-check` is dropped from the deps: `.fshw.json` sets `"format": true`, so the gate
+# already checks formatting — running Fantomas twice would be duplicate authority.
+# `lint` (FSharpLint) stays: `.fshw.json` sets `"lint": false`, so the gate does NOT lint.
+run = "mise run gate"
+depends = ["lint", "lint-project", "coverage-check", "sync-docs-check", "docs", "example-build"]
 
 [tasks.pack]
 description = "Create NuGet packages"

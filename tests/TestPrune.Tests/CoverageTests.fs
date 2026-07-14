@@ -125,7 +125,7 @@ module ``Cobertura ingest`` =
             let xml = cobertura [ "Foo.fs", [ (12, 3); (15, 0) ] ]
             let summary = ingestCobertura db None xml
 
-            test <@ summary = {| Ingested = 2; Skipped = 0 |} @>
+            test <@ summary = { Ingested = 2; Skipped = 0 } @>
             test <@ db.GetFileCoverage "Foo.fs" = [ (12, 3); (15, 0) ] @>)
 
     // (c) a line BEFORE the file's first declaration has no preceding symbol — skipped, not crashed.
@@ -242,7 +242,7 @@ module ``Coverage summary`` =
             ingestCobertura db None xml |> ignore
 
             let summary = fileCoverageSummary db "Foo.fs"
-            test <@ summary = {| Covered = 3; Total = 5 |} @>)
+            test <@ summary = { Covered = 3; Total = 5 } @>)
 
 // Phase 4 — edit-aware lifecycle wired into RebuildProjects (the live re-index path).
 // Each test re-indexes through RebuildProjects (NOT a raw UPDATE), proving the real
@@ -357,7 +357,7 @@ module ``Edge cases`` =
             let summary =
                 ingestCobertura db (Some "/repo") (coberturaFor "/repo/Foo.fs" [ (15, 3) ])
 
-            test <@ summary = {| Ingested = 1; Skipped = 0 |} @>
+            test <@ summary = { Ingested = 1; Skipped = 0 } @>
             test <@ db.GetFileCoverage "Foo.fs" = [ (15, 3) ] @>)
 
     [<Fact>]
@@ -368,7 +368,7 @@ module ``Edge cases`` =
             // Relative filename + Some repoRoot: IsPathRooted is false, so it's used as-is.
             let summary = ingestCobertura db (Some "/repo") (coberturaFor "Foo.fs" [ (15, 3) ])
 
-            test <@ summary = {| Ingested = 1; Skipped = 0 |} @>
+            test <@ summary = { Ingested = 1; Skipped = 0 } @>
             test <@ db.GetFileCoverage "Foo.fs" = [ (15, 3) ] @>)
 
     // --- Database coverage members: the "no row" / None branches ---

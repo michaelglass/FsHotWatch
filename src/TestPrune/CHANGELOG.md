@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- fix: `Orchestration.indexProject` built its per-file accumulator as an anonymous record
+  that was a field-for-field shadow copy of the existing named `AnalysisResult` — so
+  TestPrune's own impact analysis could not see the orchestrator's coupling to that type, and
+  editing `AnalysisResult` would not select the tests that reach it through this path. Now
+  constructs `AnalysisResult` directly. Found by running TestPrune's `TP001` analyzer against
+  TestPrune; no behavior change.
+
 ## 6.0.0 - 2026-07-13
 
 - fix: project discovery no longer follows directory symlinks. `findProjectFiles`

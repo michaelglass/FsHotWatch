@@ -50,6 +50,13 @@
         "fsprojlint"
       ],
       "rollForward": false
+    },
+    "fshotwatch.cli": {
+      "version": "0.14.0-alpha.3",
+      "commands": [
+        "fshw"
+      ],
+      "rollForward": false
     }
   }
 }

@@ -1,5 +1,8 @@
 module TestPrune.Tests.AnonymousRecordAnalyzerTests
 
+open System
+open System.IO
+open System.Text.Json
 open Xunit
 open Swensen.Unquote
 open FSharp.Compiler.CodeAnalysis
@@ -312,3 +315,68 @@ let x = 1
 """
 
         test <@ List.isEmpty messages @>
+
+/// Gate wiring — the analyzer TestPrune SHIPS must be the analyzer TestPrune RUNS ON ITSELF.
+///
+/// The tests above prove the RULE fires; they say nothing about whether the gate ever
+/// LOADS it. That distinction is the whole point of this suite: an analyzer that reports
+/// nothing and an analyzer that was never loaded produce byte-identical output — a silent
+/// green. So these tests assert the LOAD, from the very path `.fshw.json` hands the
+/// analyzer host, using the same SDK entry point (`Client.LoadAnalyzers`) the host uses.
+///
+/// Read the path out of `.fshw.json` rather than hard-coding it: if the config drifts from
+/// where the build actually emits the DLL (renamed project, changed OutputPath, TFM bump),
+/// these go red instead of the gate quietly analyzing nothing.
+[<Collection("FCS-AnonymousRecord")>]
+module ``Gate wiring`` =
+
+    /// Walk up from the test binary to the repo root — the directory holding `.fshw.json`.
+    let private repoRoot () =
+        let rec up (dir: DirectoryInfo) =
+            if isNull (box dir) then
+                failwith "repo root not found: no .fshw.json in any ancestor of the test binary"
+            elif File.Exists(Path.Combine(dir.FullName, ".fshw.json")) then
+                dir.FullName
+            else
+                up dir.Parent
+
+        up (DirectoryInfo(AppContext.BaseDirectory))
+
+    /// The `analyzers.paths` the gate actually loads from, resolved against the repo root.
+    let private configuredAnalyzerPaths (root: string) =
+        use doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, ".fshw.json")))
+
+        doc.RootElement.GetProperty("analyzers").GetProperty("paths").EnumerateArray()
+        |> Seq.map (fun e -> Path.Combine(root, e.GetString()))
+        |> List.ofSeq
+
+    [<Fact>]
+    let ``.fshw.json configures at least one analyzers path`` () =
+        // A gate with no analyzers configured is the silent-zero failure by another name.
+        test <@ not (configuredAnalyzerPaths (repoRoot ()) |> List.isEmpty) @>
+
+    [<Fact>]
+    let ``every analyzers path in .fshw.json loads at least one analyzer`` () =
+        let paths = configuredAnalyzerPaths (repoRoot ())
+
+        for path in paths do
+            // The directory must exist AND yield a loadable [<CliAnalyzer>]. `LoadAnalyzers`
+            // is exactly what FsHotWatch's AnalyzersPlugin calls, so a pass here means the
+            // real host will load it too — and a zero here is the cheerful-zero we refuse.
+            test <@ Directory.Exists path @>
+
+            let client = Client<CliAnalyzerAttribute, CliContext>()
+            let stats = client.LoadAnalyzers path
+            test <@ stats.Analyzers > 0 @>
+
+    [<Fact>]
+    let ``TestPrune's own analyzer assembly is the one on the configured path`` () =
+        // Binds the identity, not just "some analyzer": the DLL the gate loads is the one
+        // this repo builds and publishes as the TestPrune.Analyzers package.
+        let paths = configuredAnalyzerPaths (repoRoot ())
+
+        let hasOwnAnalyzer =
+            paths
+            |> List.exists (fun p -> File.Exists(Path.Combine(p, "TestPrune.Analyzers.dll")))
+
+        test <@ hasOwnAnalyzer @>

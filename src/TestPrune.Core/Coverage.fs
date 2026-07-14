@@ -18,6 +18,21 @@ open System.IO
 open System.Xml.Linq
 open TestPrune.Database
 
+/// Outcome of one `ingestCobertura` pass. `Ingested` counts the coverage points that
+/// resolved to a containing symbol and were stored; `Skipped` counts those that had no
+/// preceding symbol to anchor to and were dropped.
+///
+/// Named (not anonymous) deliberately: an anonymous record has no stable, cross-build
+/// name, so TestPrune's own AST impact analysis cannot see a caller's coupling to this
+/// shape — the very blind spot `TestPrune.Analyzers` (TP001) exists to flag.
+type CoverageIngestSummary = { Ingested: int; Skipped: int }
+
+/// Per-file coverage tally. `Total` is every coverable point stored for the file
+/// (covered or not); `Covered` is the subset with `hits > 0`.
+///
+/// Named for the same reason as `CoverageIngestSummary` — see TP001.
+type FileCoverageSummary = { Covered: int; Total: int }
+
 let private xn (s: string) = XName.Get s
 
 let private attrValue (name: string) (el: XElement) =
@@ -80,15 +95,15 @@ let private normalizeFilename (repoRoot: string option) (filename: string) =
 ///
 /// `repoRoot` (optional): when the cobertura `filename`s are absolute paths from a
 /// real run, pass the repo root so they relativize to match `symbols.source_file`.
-let ingestCobertura (db: Database) (repoRoot: string option) (xml: string) : {| Ingested: int; Skipped: int |} =
+let ingestCobertura (db: Database) (repoRoot: string option) (xml: string) : CoverageIngestSummary =
     let rows =
         parseCobertura xml
         |> List.map (fun (file, line, hits) -> (normalizeFilename repoRoot file, line, hits))
 
     let ingested, skipped = db.RecordCoverageBatch rows
 
-    {| Ingested = ingested
-       Skipped = skipped |}
+    { Ingested = ingested
+      Skipped = skipped }
 
 /// Emit a minimal, well-formed Cobertura document from the CURRENT coverage state
 /// in `db`. One `<package>`/`<class>` per covered file; each `<line>`'s number is
@@ -131,8 +146,8 @@ let emitCobertura (db: Database) : string =
 /// Per-file coverage tally read from the current DB state. `Total` is the number of
 /// coverable points stored for the file (every ingested line, covered or not);
 /// `Covered` is the subset with `hits > 0`.
-let fileCoverageSummary (db: Database) (file: string) : {| Covered: int; Total: int |} =
+let fileCoverageSummary (db: Database) (file: string) : FileCoverageSummary =
     let rows = db.GetFileCoverage file
     let total = List.length rows
     let covered = rows |> List.filter (fun (_, hits) -> hits > 0) |> List.length
-    {| Covered = covered; Total = total |}
+    { Covered = covered; Total = total }
