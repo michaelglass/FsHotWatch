@@ -760,7 +760,14 @@ let private makeAnalyzerRecordingCtx () =
     let ledger = System.Collections.Generic.Dictionary<string, ErrorEntry list>()
 
     let ctx: FsHotWatch.PluginFramework.PluginCtx<AnalyzersMsg> =
-        { ReportStatus = fun _ -> ()
+        { ReportStatus =
+            // The run summary arrives as the Completed status's verdict now —
+            // capture it where the old CompleteWithSummary hook captured the
+            // side-channel value.
+            fun status ->
+                match status with
+                | Completed(_, verdict) -> summaries.Add verdict.Summary
+                | _ -> ()
           ReportErrors = fun file entries -> ledger.[file] <- entries
           ClearErrors = fun file -> ledger.Remove(file) |> ignore
           ClearAllErrors = fun () -> ledger.Clear()

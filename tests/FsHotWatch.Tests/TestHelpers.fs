@@ -625,3 +625,14 @@ let FileWatchCollectionName = "FileWatch"
 
 [<Xunit.CollectionDefinition(FileWatchCollectionName, DisableParallelization = true)>]
 type FileWatchCollection() = class end
+
+/// A minimal RunVerdict for tests that only exercise the status TRANSITION —
+/// the verdict content is irrelevant to them, but the type (correctly) will
+/// not let a Completed exist without one.
+let testVerdict: FsHotWatch.Events.RunVerdict =
+    { Summary = "test verdict"
+      Elapsed = System.TimeSpan.Zero }
+
+/// Completed status at `at`, carrying the canonical test verdict.
+let completedAt (at: System.DateTime) : FsHotWatch.Events.PluginStatus =
+    FsHotWatch.Events.Completed(at, testVerdict)

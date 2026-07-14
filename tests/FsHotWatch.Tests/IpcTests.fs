@@ -266,7 +266,7 @@ let ``GetStatus serializes multiple plugins with different statuses`` () =
     )
 
     host.RegisterHandler(
-        makeStatusHandler "completed-p" (fun ctx -> ctx.ReportStatus(Completed(System.DateTime(2025, 1, 2))))
+        makeStatusHandler "completed-p" (fun ctx -> ctx.ReportStatus(completedAt (System.DateTime(2025, 1, 2))))
     )
 
     host.RegisterHandler(

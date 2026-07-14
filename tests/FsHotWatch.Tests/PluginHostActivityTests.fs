@@ -11,7 +11,11 @@ open FsHotWatch.Tests.TestHelpers
 let private nullChecker =
     Unchecked.defaultof<FSharp.Compiler.CodeAnalysis.FSharpChecker>
 
-let private makeCtxAwareHandler (name: string) (action: PluginCtx<unit> -> Async<unit>) =
+let private makeCtxAwareHandlerWithVerdict
+    (name: string)
+    (verdict: RunVerdict)
+    (action: PluginCtx<unit> -> Async<unit>)
+    =
     { Name = PluginName.create name
       Init = ()
       Update =
@@ -21,7 +25,7 @@ let private makeCtxAwareHandler (name: string) (action: PluginCtx<unit> -> Async
                 | FileChanged _ ->
                     ctx.ReportStatus(Running System.DateTime.UtcNow)
                     do! action ctx
-                    ctx.ReportStatus(Completed System.DateTime.UtcNow)
+                    ctx.ReportStatus(Completed(System.DateTime.UtcNow, verdict))
                 | _ -> ()
 
                 return state
@@ -30,6 +34,9 @@ let private makeCtxAwareHandler (name: string) (action: PluginCtx<unit> -> Async
       Subscriptions = Set.ofList [ SubscribeFileChanged ]
       CacheKey = None
       Teardown = None }
+
+let private makeCtxAwareHandler (name: string) (action: PluginCtx<unit> -> Async<unit>) =
+    makeCtxAwareHandlerWithVerdict name testVerdict action
 
 [<Fact(Timeout = 15000)>]
 let ``ctx.Log appears in host activity tail`` () =
@@ -72,15 +79,21 @@ let ``ctx.StartSubtask and EndSubtask reflected in host`` () =
     test <@ List.isEmpty (host.GetSubtasks("subtasker")) @>
 
 [<Fact(Timeout = 15000)>]
-let ``CompleteWithSummary captured in history`` () =
+let ``Completed verdict summary is captured in history and wins over CompleteWithSummary`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
     let handler =
-        makeCtxAwareHandler "summarizer" (fun ctx ->
-            async {
-                ctx.Log "working"
-                ctx.CompleteWithSummary "did the thing"
-            })
+        makeCtxAwareHandlerWithVerdict
+            "summarizer"
+            { Summary = "did the thing"
+              Elapsed = TimeSpan.Zero }
+            (fun ctx ->
+                async {
+                    ctx.Log "working"
+                    // The legacy side-channel must not override the verdict the
+                    // Completed status carries — ONE source of truth.
+                    ctx.CompleteWithSummary "a stale side-channel summary"
+                })
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
@@ -89,16 +102,23 @@ let ``CompleteWithSummary captured in history`` () =
     test <@ r.Summary = Some "did the thing" @>
 
 [<Fact(Timeout = 15000)>]
-let ``Running to Completed records positive elapsed`` () =
+let ``Completed verdict elapsed is recorded in history`` () =
     let host = PluginHost.create nullChecker "/tmp/test"
 
-    let handler = makeCtxAwareHandler "timer" (fun _ctx -> async { do! Async.Sleep 10 })
+    let handler =
+        makeCtxAwareHandlerWithVerdict
+            "timer"
+            { Summary = "timed work"
+              Elapsed = TimeSpan.FromMilliseconds 25.0 }
+            (fun _ctx -> async { do! Async.Sleep 10 })
 
     host.RegisterHandler(handler)
     host.EmitFileChanged(SourceChanged [ "a.fs" ])
     waitUntil (fun () -> host.GetHistory("timer") |> List.isEmpty |> not) 12000
     let r = List.head (host.GetHistory("timer"))
-    test <@ r.Elapsed > TimeSpan.Zero @>
+    // The record carries the verdict's sworn duration — exactly, not a host
+    // wall-clock approximation.
+    test <@ r.Elapsed = TimeSpan.FromMilliseconds 25.0 @>
 
 [<Fact(Timeout = 15000)>]
 let ``Terminal transition auto-ends open subtasks`` () =

@@ -46,9 +46,11 @@ let private serializeStatus (status: PluginStatus) =
     | Running since ->
         obj["type"] <- "running"
         obj["at"] <- since.ToString("o")
-    | Completed at ->
+    | Completed(at, verdict) ->
         obj["type"] <- "completed"
         obj["at"] <- at.ToString("o")
+        obj["summary"] <- verdict.Summary
+        obj["elapsedMs"] <- verdict.Elapsed.TotalMilliseconds
     | Failed(msg, at) ->
         obj["type"] <- "failed"
         obj["message"] <- msg
@@ -60,7 +62,17 @@ let private deserializeStatus (obj: JsonObject) : PluginStatus =
     match obj["type"].GetValue<string>() with
     | "idle" -> Idle
     | "running" -> Running(since = DateTime.Parse(obj["at"].GetValue<string>()).ToUniversalTime())
-    | "completed" -> Completed(at = DateTime.Parse(obj["at"].GetValue<string>()).ToUniversalTime())
+    | "completed" ->
+        // Verdict fields are REQUIRED: an entry written before RunVerdict
+        // existed has no evidence to replay, so it must read as a cache MISS
+        // (the throw is caught by `tryGet` and counted as a parse failure),
+        // never as a verdict-free Completed.
+        Completed(
+            at = DateTime.Parse(obj["at"].GetValue<string>()).ToUniversalTime(),
+            verdict =
+                { Summary = obj["summary"].GetValue<string>()
+                  Elapsed = TimeSpan.FromMilliseconds(obj["elapsedMs"].GetValue<float>()) }
+        )
     | "failed" ->
         Failed(
             error = obj["message"].GetValue<string>(),

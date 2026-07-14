@@ -2891,6 +2891,7 @@ let create
             async {
                 match event with
                 | PluginEvent.FileChecked result ->
+                    let analysisStarted = DateTime.UtcNow
                     let fileStr = AbsFilePath.value result.File
                     let relPath = Path.GetRelativePath(repoRoot, fileStr).Replace('\\', '/')
 
@@ -3115,7 +3116,14 @@ let create
                             // Running at launch and TestsFinished will deliver the earned
                             // verdict; per-file analysis has nothing to say about it.
                             if not (ctx.IsRunning "tests") then
-                                ctx.ReportStatus(Completed(DateTime.UtcNow))
+                                ctx.ReportStatus(
+                                    Completed(
+                                        DateTime.UtcNow,
+                                        { Summary =
+                                            $"symbol analysis: %s{relPath}, %d{List.length changedNames} changed symbol(s); no run due"
+                                          Elapsed = DateTime.UtcNow - analysisStarted }
+                                    )
+                                )
 
                             return newState
                         | Error msg ->
@@ -3607,12 +3615,22 @@ let create
                                     )
                                 )
                             else
-                                ctx.CompleteWithSummary
+                                let runSummary =
                                     $"%d{passed} passed, %d{failed} failed%s{deferredSuffix} in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})"
 
                                 if failed = 0 && deferred = 0 && Set.isEmpty queueAfterCommit then
-                                    ctx.ReportStatus(Completed(DateTime.UtcNow))
+                                    // The green verdict CARRIES the run's evidence —
+                                    // summary + measured duration. No separate
+                                    // summary channel to disagree with the status.
+                                    ctx.ReportStatus(
+                                        Completed(
+                                            DateTime.UtcNow,
+                                            { Summary = runSummary
+                                              Elapsed = results.Elapsed }
+                                        )
+                                    )
                                 elif failed = 0 && deferred = 0 then
+                                    ctx.CompleteWithSummary runSummary
                                     // Everything that RAN passed, but the pending queue
                                     // still holds symbols this (e.g. filtered) run did not
                                     // cover green — NOT test-equivalent to a green run yet.
@@ -3625,6 +3643,7 @@ let create
                                         )
                                     )
                                 elif failed = 0 then
+                                    ctx.CompleteWithSummary runSummary
                                     // Issue 1: only deferred projects — nothing FAILED,
                                     // but nothing was verified either. Non-green, with an
                                     // honest "waiting on build" message (never "failed").
@@ -3637,6 +3656,7 @@ let create
                                         )
                                     )
                                 else
+                                    ctx.CompleteWithSummary runSummary
                                     let names = failedList |> List.map fst |> String.concat ", "
 
                                     let deferredNote =

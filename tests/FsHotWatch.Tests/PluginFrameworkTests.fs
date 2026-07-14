@@ -465,7 +465,7 @@ let ``pre-populated cache replays on the very first dispatch`` () =
             cacheKey
             { CacheKey = cacheKey
               Errors = []
-              Status = Completed System.DateTime.UtcNow
+              Status = completedAt System.DateTime.UtcNow
               EmittedEvents = [] }
 
         let updateCalls = ref 0
@@ -480,7 +480,7 @@ let ``pre-populated cache replays on the very first dispatch`` () =
                         match event with
                         | FileChanged _ ->
                             System.Threading.Interlocked.Increment(updateCalls) |> ignore
-                            ctx.ReportStatus(Completed System.DateTime.UtcNow)
+                            ctx.ReportStatus(completedAt System.DateTime.UtcNow)
                         | _ -> ()
 
                         return state
@@ -525,7 +525,7 @@ let ``cache key is computed exactly once per dispatched event on a cache miss`` 
                 fun ctx state event ->
                     async {
                         match event with
-                        | FileChanged _ -> ctx.ReportStatus(Completed System.DateTime.UtcNow)
+                        | FileChanged _ -> ctx.ReportStatus(completedAt System.DateTime.UtcNow)
                         | _ -> ()
 
                         return state
@@ -564,7 +564,7 @@ let ``cache key is computed exactly once per dispatched event on a cache hit`` (
             cacheKey
             { CacheKey = cacheKey
               Errors = []
-              Status = Completed System.DateTime.UtcNow
+              Status = completedAt System.DateTime.UtcNow
               EmittedEvents = [] }
 
         let keyCalls = ref 0
@@ -713,7 +713,7 @@ let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRu
                 [ ("*", [])
                   ("/tmp/clear-me.fs", [])
                   ("/tmp/has-errors.fs", [ ErrorEntry.error "x" ]) ]
-              Status = Completed System.DateTime.UtcNow
+              Status = completedAt System.DateTime.UtcNow
               EmittedEvents = emitted }
 
         let buildSeen = ref 0

@@ -109,7 +109,8 @@ let internal createFormatCheckWithSlowHook
 
                     let isIgnored = ignoreCache.Get(ctx.RepoRoot)
 
-                    ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                    let runStarted = DateTime.UtcNow
+                    ctx.ReportStatus(Running(since = runStarted))
                     ctx.StartSubtask PrimarySubtaskKey $"checking format of %d{files.Length} files"
 
                     let mutable newUnformatted = state.Unformatted
@@ -187,7 +188,7 @@ let internal createFormatCheckWithSlowHook
                             else
                                 $"%d{newUnformatted.Count} files need formatting"
 
-                        PluginCtxHelpers.completeWith ctx summary
+                        PluginCtxHelpers.completeWith ctx summary (DateTime.UtcNow - runStarted)
 
                     return { Unformatted = newUnformatted }
                 | _ -> return state

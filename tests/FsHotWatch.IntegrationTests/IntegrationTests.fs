@@ -2036,7 +2036,9 @@ let ``DaemonRpcTarget.GetStatus without IPC serializes all status variants`` () 
         makeStatusHandler "b" (fun ctx -> ctx.ReportStatus(Running(since = System.DateTime(2025, 6, 15))))
     )
 
-    host.RegisterHandler(makeStatusHandler "c" (fun ctx -> ctx.ReportStatus(Completed(System.DateTime(2025, 6, 16)))))
+    host.RegisterHandler(
+        makeStatusHandler "c" (fun ctx -> ctx.ReportStatus(completedAt (System.DateTime(2025, 6, 16))))
+    )
 
     host.RegisterHandler(
         makeStatusHandler "d" (fun ctx -> ctx.ReportStatus(PluginStatus.Failed("oops", System.DateTime(2025, 6, 17))))
@@ -2099,7 +2101,7 @@ let private makeControllablePlugin (name: string) =
                     | FileChanged _ ->
                         ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
                         do! release.Task |> Async.AwaitTask
-                        ctx.ReportStatus(PluginStatus.Completed(at = DateTime.UtcNow))
+                        ctx.ReportStatus(completedAt DateTime.UtcNow)
                     | _ -> ()
 
                     return state

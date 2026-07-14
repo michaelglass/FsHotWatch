@@ -80,8 +80,7 @@ let ``waitForPluginTerminalIfRunningWith returns when status reader yields no pl
 
 [<Fact(Timeout = 15000)>]
 let ``waitForPluginTerminalIfRunningWith returns when plugin already terminal`` () =
-    let getStatus _ =
-        Some(PluginStatus.Completed(at = DateTime.UtcNow))
+    let getStatus _ = Some(completedAt DateTime.UtcNow)
 
     waitForPluginTerminalIfRunningWith getStatus "build" (TimeSpan.FromSeconds(5.0))
     |> Async.RunSynchronously
@@ -99,7 +98,7 @@ let ``waitForPluginTerminalIfRunningWith waits while Running, returns when termi
         if calls.Value < 4 then
             Some(PluginStatus.Running(since = DateTime.UtcNow))
         else
-            Some(PluginStatus.Completed(at = DateTime.UtcNow))
+            Some(completedAt DateTime.UtcNow)
 
     waitForPluginTerminalIfRunningWith getStatus "build" (TimeSpan.FromSeconds(5.0))
     |> Async.RunSynchronously

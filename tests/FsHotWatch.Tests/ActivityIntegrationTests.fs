@@ -53,8 +53,14 @@ let private makeFakePlugin (duringRun: PluginCtx<unit> -> PluginHost -> unit) (h
                     ctx.EndSubtask "b"
                     do! Async.Sleep 20
                     ctx.EndSubtask "c"
-                    ctx.CompleteWithSummary "did 3 things"
-                    ctx.ReportStatus(Completed System.DateTime.UtcNow)
+
+                    ctx.ReportStatus(
+                        Completed(
+                            System.DateTime.UtcNow,
+                            { Summary = "did 3 things"
+                              Elapsed = System.TimeSpan.Zero }
+                        )
+                    )
                 | _ -> ()
 
                 return state
@@ -141,7 +147,7 @@ let ``renderer during running phase shows 3 subtasks in verbose mode`` () =
                         ctx.EndSubtask "a"
                         ctx.EndSubtask "b"
                         ctx.EndSubtask "c"
-                        ctx.ReportStatus(Completed System.DateTime.UtcNow)
+                        ctx.ReportStatus(completedAt System.DateTime.UtcNow)
                     | _ -> ()
 
                     return state

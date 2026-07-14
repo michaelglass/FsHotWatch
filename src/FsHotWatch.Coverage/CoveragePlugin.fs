@@ -24,7 +24,7 @@ type CoverageVerdict =
     /// 2026-06-02 Issue B.
     | NotGatedFiltered of belowFloorCount: int
 
-type CoverageMsg = CheckDone of CoverageVerdict
+type CoverageMsg = CheckDone of verdict: CoverageVerdict * elapsed: System.TimeSpan
 
 /// Decide the gated verdict from a raw ratchet `CheckResult` and whether this
 /// cycle ran the full suite. Pure, so the gating policy is unit-testable
@@ -112,6 +112,7 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                     ctx.RunExclusive
                         "coverage-check"
                         (async {
+                            let runStarted = System.DateTime.UtcNow
                             let! xmlPaths = pollForFiles searchDir 50 100
 
                             let result =
@@ -124,19 +125,27 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                             // each run ingests into it (max-merge across projects)
                             // and emits the single shared cobertura. There is no
                             // separate baseline to refresh here.
-                            return CheckDone(gateVerdict trc.RanFullSuite result)
+                            return CheckDone(gateVerdict trc.RanFullSuite result, System.DateTime.UtcNow - runStarted)
                         })
 
                     async { return state }
 
-            | Custom(CheckDone Passed) ->
+            | Custom(CheckDone(Passed, elapsed)) ->
                 async {
                     ctx.ClearAllErrors()
-                    ctx.ReportStatus(PluginStatus.Completed System.DateTime.Now)
+
+                    ctx.ReportStatus(
+                        PluginStatus.Completed(
+                            System.DateTime.UtcNow,
+                            { Summary = "coverage floors passed"
+                              Elapsed = elapsed }
+                        )
+                    )
+
                     return Some true
                 }
 
-            | Custom(CheckDone(NotGatedFiltered belowFloorCount)) ->
+            | Custom(CheckDone(NotGatedFiltered belowFloorCount, elapsed)) ->
                 async {
                     // Impact-filtered run: do NOT gate. The shortfalls are very likely
                     // un-run files reading a false 0.0% (no current coverage, stale/missing
@@ -150,11 +159,15 @@ let create (configPath: string) (searchDir: string) : PluginHandler<bool option,
                         $"%d{belowFloorCount} file(s) below floor not gated (impact-filtered run; run a full suite to gate coverage)"
 
                     ctx.Log $"coverage: %s{summary}"
-                    ctx.ReportStatus(PluginStatus.Completed System.DateTime.Now)
+
+                    ctx.ReportStatus(
+                        PluginStatus.Completed(System.DateTime.UtcNow, { Summary = summary; Elapsed = elapsed })
+                    )
+
                     return Some true
                 }
 
-            | Custom(CheckDone(Failed results)) ->
+            | Custom(CheckDone(Failed results, _elapsed)) ->
                 async {
                     for r in results do
                         let lineMsg =

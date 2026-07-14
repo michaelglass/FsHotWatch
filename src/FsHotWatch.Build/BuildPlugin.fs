@@ -49,7 +49,7 @@ type BuildState =
 /// BuildCompleted within the framework's per-event capture window — required
 /// for the §2a cache to record errors and downstream emissions on terminal
 /// status.
-type BuildMsg = BuildDone of BuildOutcome * ErrorEntry list
+type BuildMsg = BuildDone of outcome: BuildOutcome * entries: ErrorEntry list * elapsed: TimeSpan * summary: string
 
 /// Pure decision logic: given a subprocess's success flag and combined output,
 /// determine the BuildOutcome and the list of ErrorEntry diagnostics to surface.
@@ -267,32 +267,44 @@ let create
     /// are deferred to the synchronous Custom BuildDone handler so the framework's
     /// per-event capture window records them for the §2a cache. Returns the
     /// completion message; the framework posts it back via RunExclusive.
-    let applyBuildOutcome (ctx: PluginCtx<BuildMsg>) (outcome: BuildOutcome) (entries: ErrorEntry list) =
-        match outcome with
-        | BuildPassed out ->
-            let n = countBuiltProjects out
-            let summary = if n > 0 then $"built {n} projects" else "build succeeded"
-            ctx.Log summary
-            ctx.CompleteWithSummary summary
-        | BuildArtifactsStale(stale, _) ->
-            let summary = $"build failed: %d{stale.Length} stale artifacts"
-            // Log the per-project detail (which DLL, and how far its mtime trails
-            // its newest source), not just the count, so an intermittent stale-
-            // artifact failure names the project and the mtime delta in the live
-            // log/test output — otherwise it surfaces only as un-actionable
-            // "build failed: 1 stale artifacts" with no way to tell which project.
-            ctx.Log(staleDiagnostic stale)
-            error "build" (staleDiagnostic stale)
-            ctx.CompleteWithSummary summary
-        | BuildOutputFailed _ ->
-            let errCount =
-                entries
-                |> List.filter (fun e -> e.Severity = DiagnosticSeverity.Error)
-                |> List.length
+    let applyBuildOutcome
+        (ctx: PluginCtx<BuildMsg>)
+        (outcome: BuildOutcome)
+        (entries: ErrorEntry list)
+        (elapsed: TimeSpan)
+        =
+        let summary =
+            match outcome with
+            | BuildPassed out ->
+                let n = countBuiltProjects out
+                let summary = if n > 0 then $"built {n} projects" else "build succeeded"
+                // No CompleteWithSummary here: the Completed status the BuildDone
+                // handler reports CARRIES this summary (RunVerdict), and the host
+                // routes it into the run record — one channel, no disagreement.
+                ctx.Log summary
+                summary
+            | BuildArtifactsStale(stale, _) ->
+                let summary = $"build failed: %d{stale.Length} stale artifacts"
+                // Log the per-project detail (which DLL, and how far its mtime trails
+                // its newest source), not just the count, so an intermittent stale-
+                // artifact failure names the project and the mtime delta in the live
+                // log/test output — otherwise it surfaces only as un-actionable
+                // "build failed: 1 stale artifacts" with no way to tell which project.
+                ctx.Log(staleDiagnostic stale)
+                error "build" (staleDiagnostic stale)
+                ctx.CompleteWithSummary summary
+                summary
+            | BuildOutputFailed _ ->
+                let errCount =
+                    entries
+                    |> List.filter (fun e -> e.Severity = DiagnosticSeverity.Error)
+                    |> List.length
 
-            ctx.CompleteWithSummary $"build failed: %d{errCount} errors"
+                let summary = $"build failed: %d{errCount} errors"
+                ctx.CompleteWithSummary summary
+                summary
 
-        BuildDone(outcome, entries)
+        BuildDone(outcome, entries, elapsed, summary)
 
     /// Run verifyArtifactsFresh on a BuildPassed outcome and demote to
     /// BuildArtifactsStale if any project's DLL is stale. Other outcomes
@@ -308,7 +320,8 @@ let create
         | _ -> outcome
 
     let startBuild (ctx: PluginCtx<BuildMsg>) (idle: Lifecycle<Idle, BuildOutcome option>) =
-        ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
+        let buildStarted = DateTime.UtcNow
+        ctx.ReportStatus(PluginStatus.Running(since = buildStarted))
         ctx.Log $"Running: %s{buildCommand} %s{buildArgs}"
 
         // RunExclusive "build": the framework guarantees only one build runs
@@ -350,13 +363,19 @@ let create
                             error "build" "Build FAILED"
                         | _ -> ()
 
-                        return applyBuildOutcome ctx outcome entries
+                        return applyBuildOutcome ctx outcome entries (DateTime.UtcNow - buildStarted)
                     with ex ->
                         let crashEntry = ErrorEntry.error ex.Message
                         // ReportErrors / EmitBuildCompleted moved into the synchronous
                         // BuildDone handler (see applyBuildOutcome doc) so they're captured
                         // for cache replay.
-                        return BuildDone(BuildOutputFailed [ ex.Message ], [ crashEntry ])
+                        return
+                            BuildDone(
+                                BuildOutputFailed [ ex.Message ],
+                                [ crashEntry ],
+                                DateTime.UtcNow - buildStarted,
+                                $"build crashed: %s{ex.Message}"
+                            )
                 }))
 
         // State carries the prior idle lifecycle. The synchronous BuildDone
@@ -390,7 +409,8 @@ let create
                     let dependents = graph.GetDependents(proj)
                     dependents |> List.exists (fun d -> buildableSet.Contains(d)) |> not)
 
-            ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
+            let buildStarted = DateTime.UtcNow
+            ctx.ReportStatus(PluginStatus.Running(since = buildStarted))
 
             ctx.RunExclusive
                 "build"
@@ -449,10 +469,22 @@ let create
 
                                     BuildOutputFailed failedOutputs, entries
 
-                            return applyBuildOutcome ctx (verifyAndDemote rawOutcome) entries
+                            return
+                                applyBuildOutcome
+                                    ctx
+                                    (verifyAndDemote rawOutcome)
+                                    entries
+                                    (DateTime.UtcNow - buildStarted)
                         with ex ->
                             error "build" $"Unexpected error: %s{ex.Message}"
-                            return BuildDone(BuildOutputFailed [ ex.Message ], [ ErrorEntry.error ex.Message ])
+
+                            return
+                                BuildDone(
+                                    BuildOutputFailed [ ex.Message ],
+                                    [ ErrorEntry.error ex.Message ],
+                                    DateTime.UtcNow - buildStarted,
+                                    $"build crashed: %s{ex.Message}"
+                                )
                     }))
 
             { LastBuild = idle
@@ -551,7 +583,7 @@ let create
                 | FileChanged(SourceChanged files) ->
                     return handleSourceChanged ctx state state.LastBuild (files |> List.map AbsFilePath.create)
                 | FileChanged(ProjectChanged _) -> return handleProjectChanged ctx state state.LastBuild
-                | Custom(BuildDone(outcome, entries)) ->
+                | Custom(BuildDone(outcome, entries, elapsed, summary)) ->
                     // Build single-flight is owned by the framework (RunExclusive "build").
                     // The completion message arrives carrying the pre-build idle lifecycle;
                     // we advance the lifecycle through Running ▸ Completed for activity-log
@@ -576,7 +608,8 @@ let create
                             ctx.ReportErrors "<build>" entries
 
                         ctx.EmitBuildCompleted(BuildSucceeded)
-                        ctx.ReportStatus(Completed(DateTime.UtcNow))
+
+                        ctx.ReportStatus(Completed(DateTime.UtcNow, { Summary = summary; Elapsed = elapsed }))
                     | BuildArtifactsStale(stale, _) ->
                         let detail = staleDiagnostic stale
                         let entry = ErrorEntry.error detail

@@ -203,7 +203,8 @@ let create
         let triggerKey = subtaskKey nameStr reason
 
         async {
-            ctx.ReportStatus(Running(since = DateTime.UtcNow))
+            let runStarted = DateTime.UtcNow
+            ctx.ReportStatus(Running(since = runStarted))
 
             return!
                 PluginCtxHelpers.withSubtask
@@ -223,9 +224,15 @@ let create
 
                             match processResult with
                             | ProcessOutcome.Succeeded _ ->
-                                ctx.CompleteWithSummary $"%s{nameStr}: succeeded"
                                 ctx.ClearErrors $"<%s{nameStr}>"
-                                ctx.ReportStatus(Completed(DateTime.UtcNow))
+
+                                ctx.ReportStatus(
+                                    Completed(
+                                        DateTime.UtcNow,
+                                        { Summary = $"%s{nameStr}: succeeded"
+                                          Elapsed = DateTime.UtcNow - runStarted }
+                                    )
+                                )
                             | ProcessOutcome.TimedOut(after, _) ->
                                 ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error output ]
                                 ctx.CompleteWithTimeout $"timed out after %d{int after.TotalSeconds}s"

@@ -6,6 +6,7 @@ open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
 open FsHotWatch.Cli.IpcParsing
+open FsHotWatch.Tests.TestHelpers
 
 let private parseEl (json: string) =
     let doc = JsonDocument.Parse(json)
@@ -170,14 +171,18 @@ let ``parseDiagnosticsResponse handles tagged status field`` () =
 
 [<Fact(Timeout = 15000)>]
 let ``isAllTerminal false when any running`` () =
-    let m = Map.ofList [ "a", Completed DateTime.UtcNow; "b", Running DateTime.UtcNow ]
+    let m =
+        Map.ofList [ "a", completedAt DateTime.UtcNow; "b", Running DateTime.UtcNow ]
 
     test <@ not (isAllTerminal m) @>
 
 [<Fact(Timeout = 15000)>]
 let ``isAllTerminal true when mix of Idle, Completed, Failed`` () =
     let m =
-        Map.ofList [ "a", Completed DateTime.UtcNow; "b", Failed("x", DateTime.UtcNow); "c", Idle ]
+        Map.ofList
+            [ "a", completedAt DateTime.UtcNow
+              "b", Failed("x", DateTime.UtcNow)
+              "c", Idle ]
 
     test <@ isAllTerminal m @>
 
