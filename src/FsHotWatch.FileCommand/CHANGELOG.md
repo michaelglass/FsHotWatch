@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- fix!: adapt to verdict-carrying terminals (AUTOMATION-99). The timed-out, failed and
+  crashed arms now carry a `RunVerdict` (summary + measured elapsed) instead of setting a
+  summary through the deleted side-channel, so a failed command records an honest duration
+  rather than a fabricated zero-length run. The two clock reads per verdict are bound once.
+
 - fix!: adapt to core `RunVerdict` (AUTOMATION-99): the `Completed` status carries
   "<name>: succeeded" plus the measured command duration (previously a separate
   summary side-channel).

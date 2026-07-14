@@ -41,13 +41,7 @@ let private completedHandlerWith (name: string) (summary: string) (action: Plugi
                     ctx.ReportStatus(Running DateTime.UtcNow)
                     do! action ctx
 
-                    ctx.ReportStatus(
-                        Completed(
-                            DateTime.UtcNow,
-                            { Summary = summary
-                              Elapsed = TimeSpan.Zero }
-                        )
-                    )
+                    ctx.ReportStatus(Completed(DateTime.UtcNow, RunVerdict.create summary TimeSpan.Zero))
                 | _ -> ()
 
                 return state
@@ -67,7 +61,7 @@ let private failingHandler (name: string) (err: string) =
                 | FileChanged _ ->
                     ctx.ReportStatus(Running DateTime.UtcNow)
                     ctx.Log "starting work"
-                    ctx.ReportStatus(Failed(err, DateTime.UtcNow))
+                    ctx.ReportStatus(PluginStatus.failedNow err err TimeSpan.Zero)
                 | _ -> ()
 
                 return state
@@ -103,7 +97,7 @@ let ``GetStatus payload round-trips completed run with subtasks and activity`` (
     let w = parsed.["worker"]
 
     match w.Status with
-    | Completed _ -> ()
+    | StatusView.Completed _ -> ()
     | other -> failwithf "expected Completed, got %A" other
 
     test <@ w.LastRun.IsSome @>
@@ -128,7 +122,7 @@ let ``GetStatus payload preserves multi-line failure error`` () =
     let b = parsed.["breaker"]
 
     match b.Status with
-    | Failed(msg, _) -> test <@ msg = multiline @>
+    | StatusView.Failed(msg, _) -> test <@ msg = multiline @>
     | other -> failwithf "expected Failed, got %A" other
 
     test <@ b.LastRun.IsSome @>

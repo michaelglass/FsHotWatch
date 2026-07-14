@@ -277,6 +277,16 @@ type TestPruneState =
         /// self-clearing and costs nothing on a healthy tree. NOT persisted: every
         /// file is re-checked on a cold scan, which repopulates the set from scratch.
         UnanalyzableFiles: Set<string>
+        /// `run-tests` force-runs that arrived while another run held the
+        /// "tests" slot (AUTOMATION-99). A force-run is OWED work — `test-rerun`
+        /// is the explicit "prove it ran" verb, so a busy slot must QUEUE the
+        /// run, never refuse it (a refusal that exits 0 is a vacuous green).
+        /// Drained FIFO by the `TestsFinished` handler, one per completed run
+        /// (each queued run's own TestsFinished drains the next). Each entry
+        /// carries the reply TCS the IPC command is awaiting — the command
+        /// bounds that wait (`waitSec`), so an entry stranded by daemon
+        /// teardown cannot hang the client.
+        QueuedCommandRuns: (TestConfig list * string option * Tasks.TaskCompletionSource<string>) list
     }
 
 /// Custom message posted from the async test runner back to the synchronous
@@ -2361,7 +2371,8 @@ let create
           PriorProjectFingerprints = Map.empty
           PendingForceRunProjects = Set.empty
           ChangedSymbolsAllUncovered = false
-          UnanalyzableFiles = Set.empty }
+          UnanalyzableFiles = Set.empty
+          QueuedCommandRuns = [] }
 
     // Keep the cache-key snapshot consistent with the seeded queue from the
     // very first event (the cache intercept runs before any Update handler).
@@ -2603,9 +2614,65 @@ let create
                 return TestsFinished(started, completed, launch)
         }
 
+    /// The `run-tests` force-run work async, launched under the "tests" slot.
+    /// Shared by the immediate-claim path (`RunTestsRequested` with a free
+    /// slot) and the queued-drain path (`TestsFinished` popping
+    /// `QueuedCommandRuns`) so FORCE semantics stay in lockstep. Every exit —
+    /// success, fault, cancellation — resolves `reply` (the IPC command is
+    /// awaiting it, bounded) and returns a `TestsFinished` so the synchronous
+    /// handler delivers the earned terminal status.
+    ///
+    /// Empty launch set: `run-tests` is a manual FORCE run (optionally
+    /// filtered to a subset / only-failed). It is NOT the impact-analysis
+    /// queue-draining path, and a filtered force-run may not cover every
+    /// queued symbol — so it commits NOTHING from the pending-verification
+    /// queue (over-testing is the safe direction). The queue drains through
+    /// the normal BuildCompleted impact flow.
+    let commandForceRun
+        (configs: TestConfig list)
+        (filter: string option)
+        (reply: Tasks.TaskCompletionSource<string>)
+        : Async<TestPruneMsg> =
+        let commandLaunch: TestRunLaunch =
+            { Symbols = Set.empty
+              CoveringProjectsBySymbol = Map.empty }
+
+        async {
+            try
+                try
+                    let! results, started, completed =
+                        executeTests db None repoRoot beforeRun coveragePaths afterRun configs Map.empty filter
+
+                    reply.TrySetResult(formatTestResultsJson results) |> ignore
+
+                    // Returned (not Posted) so the framework's completion path
+                    // delivers it: the synchronous TestsFinished handler does
+                    // the error reporting and status updates a bare emit would
+                    // skip.
+                    return TestsFinished(started, completed, commandLaunch)
+                with ex ->
+                    // AUTOMATION-68: a `beforeRun` throw / `executeTests` fault
+                    // means the suite it guards NEVER RAN — that must surface
+                    // as a failure, never a stale prior green. The Aborted
+                    // lifecycle drives the TestsFinished handler to a Failed
+                    // status.
+                    Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
+                    let started, completed = abortedRunLifecycle ex.Message
+
+                    reply.TrySetResult(JsonSerializer.Serialize({| error = ex.Message |})) |> ignore
+
+                    return TestsFinished(started, completed, commandLaunch)
+            finally
+                // Cancellation (daemon teardown) skips `with` but runs
+                // `finally`: never leave the IPC client awaiting a reply that
+                // cannot come. No-op when a result was already set.
+                reply.TrySetResult(JsonSerializer.Serialize({| error = "daemon shut down before the run completed" |}))
+                |> ignore
+        }
+
     let commands =
         [ "affected-tests",
-          fun (_ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
+          fun (_ctx: CommandCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
               async {
                   // Compute on demand from state.ChangedSymbols against current DB
                   // state. ChangedSymbols accumulates across FileChecked events and
@@ -2629,11 +2696,11 @@ let create
               }
 
           "changed-files",
-          fun (_ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
+          fun (_ctx: CommandCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
               async { return JsonSerializer.Serialize(state.ChangedFiles) }
 
           "test-results",
-          fun (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
+          fun (ctx: CommandCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
               async {
                   if ctx.IsRunning "tests" then
                       return JsonSerializer.Serialize({| status = "running" |})
@@ -2644,7 +2711,7 @@ let create
               }
 
           "flaky-tests",
-          fun (_ctx: PluginCtx<TestPruneMsg>) (_state: TestPruneState) (_args: string array) ->
+          fun (_ctx: CommandCtx<TestPruneMsg>) (_state: TestPruneState) (_args: string array) ->
               async {
                   let history = Flakiness.loadHistory (flakinessHistoryPath repoRoot)
                   let top = Flakiness.topFlaky 10 history
@@ -2672,7 +2739,7 @@ let create
         | Some allConfigs when not allConfigs.IsEmpty ->
             commands
             @ [ "set-scope",
-                fun (_ctx: PluginCtx<TestPruneMsg>) (_state: TestPruneState) (args: string array) ->
+                fun (_ctx: CommandCtx<TestPruneMsg>) (_state: TestPruneState) (args: string array) ->
                     async {
                         // AUTOMATION-112. `fshw gate` calls this BEFORE triggering its
                         // scan, so the test run the scan provokes is already unfiltered.
@@ -2709,7 +2776,7 @@ let create
                     }
 
                 "test-scope",
-                fun (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
+                fun (ctx: CommandCtx<TestPruneMsg>) (state: TestPruneState) (_args: string array) ->
                     async {
                         // What the last completed run ACTUALLY covered — the evidence a
                         // merge verdict is computed from. Never a restatement of what was
@@ -2744,143 +2811,128 @@ let create
                     }
 
                 "run-tests",
-                fun (ctx: PluginCtx<TestPruneMsg>) (state: TestPruneState) (args: string array) ->
+                fun (ctx: CommandCtx<TestPruneMsg>) (state: TestPruneState) (args: string array) ->
                     async {
-                        // FORCE semantics: `test-rerun` is the explicit "run it now"
-                        // verb, so it must execute regardless of cache state or a
-                        // prior run. The cache is already bypassed (commands call
-                        // `executeTests` directly, never `runAndCache`). The only
-                        // thing that previously made it return an INSTANT non-result
-                        // ("tests already running" — no run, no log) was an in-flight
-                        // background run from a recent BuildCompleted holding the
-                        // `RunExclusive "tests"` slot. Rather than bail instantly,
-                        // WAIT (bounded) for that run to finish, then run — so the
-                        // command always executes. If the slot is still held after
-                        // the wait (a genuinely long run, or a stuck slot), report a
-                        // DISTINCT `busy` status — never a generic verdict that could
-                        // read as a pass/fail the command never produced. The
-                        // budget is configurable via the CLI's `--wait-sec`
-                        // (payload `waitSec`) so a long `beforeRun` chain held by
-                        // a prior run can't defeat the rerun; default well above
-                        // the old fixed 120 s.
-                        let waitForSlotMs =
+                        // FORCE semantics: `test-rerun` is the explicit "prove it
+                        // ran" verb. The run NEVER executes here (AUTOMATION-99):
+                        // executing on the IPC thread bypassed the `RunExclusive
+                        // "tests"` slot entirely, so for the whole duration of a
+                        // force-run the daemon model read "at rest" — no Running
+                        // status, `IsRunning "tests"` false (a concurrent
+                        // FileChecked stamped a terminal over the live run),
+                        // `AnyPluginBusy()` false — and a concurrent `fshw check`
+                        // exited 0 while the test process was literally alive.
+                        // `CommandCtx` has since made that unwritable: a command
+                        // can only `Post`. The mailbox handler claims the slot
+                        // (the framework reports Running at the claim) or QUEUES
+                        // the run behind the one in flight — a force-run is owed
+                        // work, never refused. The only thing bounded here is the
+                        // WAIT: `waitSec` (CLI `--wait-sec`) caps queue time plus
+                        // run time, and on expiry the command reports a DISTINCT
+                        // `busy` status — the CLI exits non-zero, never a verdict
+                        // the run didn't produce (AUTOMATION-98: bound every seam).
+                        try
                             let argStr = if args.Length > 0 then args.[0].Trim() else "{}"
-                            parseRunTestsWaitMs argStr DefaultRunTestsWaitMs
+                            let waitForResultMs = parseRunTestsWaitMs argStr DefaultRunTestsWaitMs
 
-                        let pollMs = 100
-                        let mutable waitedMs = 0
+                            let parseResult =
+                                try
+                                    Ok(JsonDocument.Parse(argStr))
+                                with ex ->
+                                    Error ex.Message
 
-                        while ctx.IsRunning "tests" && waitedMs < waitForSlotMs do
-                            do! Async.Sleep pollMs
-                            waitedMs <- waitedMs + pollMs
+                            match parseResult with
+                            | Error msg -> return JsonSerializer.Serialize({| error = $"invalid JSON: %s{msg}" |})
+                            | Ok doc ->
 
-                        if ctx.IsRunning "tests" then
-                            return
-                                JsonSerializer.Serialize(
-                                    {| status = "busy"
-                                       message =
-                                        $"a test run is still in progress after waiting %d{waitForSlotMs / 1000}s; retry once it finishes" |}
-                                )
-                        else
-                            try
-                                let argStr = if args.Length > 0 then args.[0].Trim() else "{}"
+                                use doc = doc
+                                let root = doc.RootElement
 
-                                let parseResult =
-                                    try
-                                        Ok(JsonDocument.Parse(argStr))
-                                    with ex ->
-                                        Error ex.Message
+                                let filter =
+                                    match root.TryGetProperty("filter") with
+                                    | true, v -> Some(v.GetString())
+                                    | false, _ -> None
 
-                                match parseResult with
-                                | Error msg -> return JsonSerializer.Serialize({| error = $"invalid JSON: %s{msg}" |})
-                                | Ok doc ->
+                                let onlyFailed =
+                                    match root.TryGetProperty("only-failed") with
+                                    | true, v -> v.GetBoolean()
+                                    | false, _ -> false
 
-                                    use doc = doc
-                                    let root = doc.RootElement
+                                let projectFilter =
+                                    match root.TryGetProperty("projects") with
+                                    | true, v ->
+                                        v.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Set.ofSeq |> Some
+                                    | false, _ -> None
 
-                                    let filter =
-                                        match root.TryGetProperty("filter") with
-                                        | true, v -> Some(v.GetString())
-                                        | false, _ -> None
+                                // Resolve configs or produce an error
+                                let lastResults = state.LastResults
 
-                                    let onlyFailed =
-                                        match root.TryGetProperty("only-failed") with
-                                        | true, v -> v.GetBoolean()
-                                        | false, _ -> false
+                                let configsResult =
+                                    if onlyFailed then
+                                        match lastResults with
+                                        | Some prev ->
+                                            let failedNames =
+                                                prev.Results
+                                                |> Map.toList
+                                                |> List.choose (fun (name, r) ->
+                                                    match r with
+                                                    | TestsFailed _
+                                                    | TestsTimedOut _
+                                                    // A deferred project never ran, and an errored one
+                                                    // aborted without a verdict — both are non-green, so
+                                                    // `--only-failed` (rerun non-green projects) must pick
+                                                    // them up.
+                                                    | TestsDeferred _
+                                                    | TestsErrored _ -> Some name
+                                                    | _ -> None)
+                                                |> Set.ofList
 
-                                    let projectFilter =
-                                        match root.TryGetProperty("projects") with
-                                        | true, v ->
-                                            v.EnumerateArray() |> Seq.map (fun e -> e.GetString()) |> Set.ofSeq |> Some
-                                        | false, _ -> None
+                                            Ok(allConfigs |> List.filter (fun c -> failedNames.Contains(c.Project)))
+                                        | None -> Error "no previous results — cannot determine failed projects"
+                                    else
+                                        match projectFilter with
+                                        | Some names ->
+                                            Ok(allConfigs |> List.filter (fun c -> names.Contains(c.Project)))
+                                        | None -> Ok allConfigs
 
-                                    // Resolve configs or produce an error
-                                    let lastResults = state.LastResults
+                                match configsResult with
+                                | Error msg -> return JsonSerializer.Serialize({| error = msg |})
+                                | Ok configs when configs.IsEmpty ->
+                                    return JsonSerializer.Serialize({| error = "no matching test projects" |})
+                                | Ok configs ->
+                                    let reply =
+                                        Tasks.TaskCompletionSource<string>(
+                                            Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+                                        )
 
-                                    let configsResult =
-                                        if onlyFailed then
-                                            match lastResults with
-                                            | Some prev ->
-                                                let failedNames =
-                                                    prev.Results
-                                                    |> Map.toList
-                                                    |> List.choose (fun (name, r) ->
-                                                        match r with
-                                                        | TestsFailed _
-                                                        | TestsTimedOut _
-                                                        // A deferred project never ran, and an errored one
-                                                        // aborted without a verdict — both are non-green, so
-                                                        // `--only-failed` (rerun non-green projects) must pick
-                                                        // them up.
-                                                        | TestsDeferred _
-                                                        | TestsErrored _ -> Some name
-                                                        | _ -> None)
-                                                    |> Set.ofList
+                                    ctx.Post(RunTestsRequested(configs, filter, reply))
 
-                                                Ok(allConfigs |> List.filter (fun c -> failedNames.Contains(c.Project)))
-                                            | None -> Error "no previous results — cannot determine failed projects"
-                                        else
-                                            match projectFilter with
-                                            | Some names ->
-                                                Ok(allConfigs |> List.filter (fun c -> names.Contains(c.Project)))
-                                            | None -> Ok allConfigs
+                                    // Bounded await (AUTOMATION-98): the reply resolves
+                                    // when the run finishes — behind the test-prune
+                                    // mailbox and possibly behind a run already in
+                                    // flight — so an unbounded wait here could pin the
+                                    // IPC caller for as long as the daemon is wedged.
+                                    let! winner =
+                                        Tasks.Task.WhenAny(reply.Task, Tasks.Task.Delay(waitForResultMs))
+                                        |> Async.AwaitTask
 
-                                    match configsResult with
-                                    | Error msg -> return JsonSerializer.Serialize({| error = msg |})
-                                    | Ok configs when configs.IsEmpty ->
-                                        return JsonSerializer.Serialize({| error = "no matching test projects" |})
-                                    | Ok configs ->
-                                        // AUTOMATION-99: the run is NOT executed here.
-                                        // Executing on the IPC thread bypassed the
-                                        // `RunExclusive "tests"` slot entirely, so for the
-                                        // whole duration of a force-run the daemon model
-                                        // read "at rest": `IsRunning "tests"` false (a
-                                        // concurrent FileChecked stamped a terminal status
-                                        // over the live run — the observed "✓ with
-                                        // started: but no elapsed:" signature), no Running
-                                        // status, `AnyPluginBusy()` false — and a
-                                        // concurrent `fshw check` exited 0 while the test
-                                        // process was alive. Post the launch request to
-                                        // the mailbox instead: the handler claims the slot
-                                        // and reports Running like every other launch
-                                        // site, and the reply carries the results JSON
-                                        // back here.
-                                        let reply =
-                                            Tasks.TaskCompletionSource<string>(
-                                                Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+                                    if winner = (reply.Task :> Tasks.Task) then
+                                        return reply.Task.Result
+                                    else
+                                        return
+                                            JsonSerializer.Serialize(
+                                                {| status = "busy"
+                                                   message =
+                                                    $"the test run did not produce a result within %d{waitForResultMs / 1000}s (still queued or running); retry, or raise --wait-sec" |}
                                             )
-
-                                        ctx.Post(RunTestsRequested(configs, filter, reply))
-                                        let! json = Async.AwaitTask reply.Task
-                                        return json
-                            with ex ->
-                                // Command-local faults only (the run itself executes in
-                                // the mailbox-launched work, which owns run faults per
-                                // AUTOMATION-68 and always resolves the reply + posts
-                                // the Aborted lifecycle). Nothing to post here: no run
-                                // was launched.
-                                Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
-                                return JsonSerializer.Serialize({| error = ex.Message |})
+                        with ex ->
+                            // Command-local faults only (the run itself executes in
+                            // the mailbox-launched work, which owns run faults per
+                            // AUTOMATION-68 and always resolves the reply + posts
+                            // the Aborted lifecycle). Nothing to post here: no run
+                            // was launched.
+                            Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
+                            return JsonSerializer.Serialize({| error = ex.Message |})
                     } ]
         | _ -> commands
 
@@ -2894,6 +2946,46 @@ let create
                     let analysisStarted = DateTime.UtcNow
                     let fileStr = AbsFilePath.value result.File
                     let relPath = Path.GetRelativePath(repoRoot, fileStr).Replace('\\', '/')
+
+                    // AUTOMATION-113: the ONE treatment for a file whose symbol
+                    // analysis failed (an `analyzeSource` Error and a handler
+                    // fault are the same condition arrived at differently). The
+                    // file is REMEMBERED as unanalysable — three consequences,
+                    // none silent:
+                    //   1. a WARNING lands in the error ledger, keyed to the
+                    //      file, so `fshw check` prints it and (under the
+                    //      default warn-fail policy) refuses a green verdict;
+                    //   2. `runTestsWithImpact` falls back to EVERY test project
+                    //      in full while the set is non-empty — safe
+                    //      over-selection instead of a selection made without
+                    //      the file;
+                    //   3. the non-empty force-run set also disables the
+                    //      zero-affected skip gate, so this can never terminate
+                    //      as "0 affected — green, 0 ran".
+                    // The file leaves the set the moment it analyses cleanly.
+                    // The Failed stamp needs no idle guard here: the framework's
+                    // ReportStatus funnel drops any terminal stamped while an
+                    // exclusive run is in flight (the run owns the status), so a
+                    // mid-run analysis failure can never manufacture a terminal
+                    // — the ledger entry and the force-full-suite consequence
+                    // persist either way.
+                    let markUnanalysable (reason: string) (detail: string) (logDetail: string) : TestPruneState =
+                        Logging.error
+                            "test-prune"
+                            $"%s{reason} for %s{relPath}: %s{logDetail} — this file is INVISIBLE to the impact graph (no symbols), so every test project will be run in full until it analyses cleanly"
+
+                        ctx.ReportErrors fileStr [ unanalyzableFileDiagnostic relPath detail ]
+
+                        ctx.ReportStatus(
+                            PluginStatus.Failed(
+                                $"%s{reason}: %s{detail}",
+                                DateTime.UtcNow,
+                                RunVerdict.create $"%s{reason}: %s{detail}" (DateTime.UtcNow - analysisStarted)
+                            )
+                        )
+
+                        { state with
+                            UnanalyzableFiles = Set.add relPath state.UnanalyzableFiles }
 
                     try
                         // Canonical project identity. For real .fsproj files, FCS
@@ -3107,95 +3199,38 @@ let create
 
                             updateFreshness updatedFreshness
 
-                            // AUTOMATION-99: idleness is read AT THE POINT OF USE, never
-                            // snapshotted at handler entry. This handler awaits
-                            // `analyzeSource` above; a test run launched concurrently (a
-                            // `run-tests` force-run claims the slot from its mailbox
-                            // message) must not be stomped by a stale "idle" decision. A
-                            // run in flight OWNS this plugin's status — it reported
-                            // Running at launch and TestsFinished will deliver the earned
-                            // verdict; per-file analysis has nothing to say about it.
-                            if not (ctx.IsRunning "tests") then
-                                ctx.ReportStatus(
-                                    Completed(
-                                        DateTime.UtcNow,
-                                        { Summary =
-                                            $"symbol analysis: %s{relPath}, %d{List.length changedNames} changed symbol(s); no run due"
-                                          Elapsed = DateTime.UtcNow - analysisStarted }
-                                    )
+                            // AUTOMATION-99: no per-plugin idle guard — the framework's
+                            // ReportStatus funnel drops any terminal stamped while an
+                            // exclusive run is in flight (the run OWNS the status;
+                            // TestsFinished delivers the earned verdict). Universal
+                            // property, not a convention this handler must remember.
+                            let analysisFinished = DateTime.UtcNow
+
+                            ctx.ReportStatus(
+                                Completed(
+                                    analysisFinished,
+                                    RunVerdict.create
+                                        $"symbol analysis: %s{relPath}, %d{List.length changedNames} changed symbol(s); no run due"
+                                        (analysisFinished - analysisStarted)
                                 )
+                            )
 
                             return newState
                         | Error msg ->
                             // AUTOMATION-113. This branch used to `return state` — the file
-                            // was DROPPED. It contributed no symbols, so the impact graph
-                            // never saw it, so a change to it diffed against nothing and
-                            // selected NO tests, and the gate reported green having run
-                            // nothing relevant. The `Failed` status below was the only trace,
-                            // and it is overwritten by the very next file's `Completed`, so
-                            // in practice the failure was invisible. Silent under-selection:
-                            // the one failure mode a test-impact tool must not have.
-                            //
-                            // Now the file is REMEMBERED as unanalysable. Three consequences,
-                            // none of them silent:
-                            //   1. a WARNING lands in the error ledger, keyed to the file, so
-                            //      `fshw check` prints it and (under the default warn-fail
-                            //      policy) refuses a green verdict;
-                            //   2. `runTestsWithImpact` falls back to EVERY test project in
-                            //      full while the set is non-empty — safe over-selection
-                            //      instead of a selection made without the file;
-                            //   3. the non-empty force-run set also disables the
-                            //      zero-affected skip gate, so this can never terminate as
-                            //      "0 affected — green, 0 ran".
-                            // The file leaves the set the moment it analyses cleanly.
-                            Logging.error
-                                "test-prune"
-                                $"Analysis failed for %s{relPath}: %s{msg} — this file is INVISIBLE to the impact graph (no symbols), so every test project will be run in full until it analyses cleanly"
-
-                            ctx.ReportErrors fileStr [ unanalyzableFileDiagnostic relPath msg ]
-
-                            // Point-of-use idleness read — same contract as the clean
-                            // branch above. The ledger entry above survives regardless,
-                            // so suppressing the status stamp mid-run loses nothing: the
-                            // run's own terminal report follows, and the verdict
-                            // consults the ledger.
-                            if not (ctx.IsRunning "tests") then
-                                ctx.ReportStatus(PluginStatus.Failed($"Analysis failed: %s{msg}", DateTime.UtcNow))
-
-                            return
-                                { state with
-                                    UnanalyzableFiles = Set.add relPath state.UnanalyzableFiles }
+                            // was DROPPED: it contributed no symbols, a change to it diffed
+                            // against nothing and selected NO tests, and the gate reported
+                            // green having run nothing relevant. Silent under-selection:
+                            // the one failure mode a test-impact tool must not have. See
+                            // `markUnanalysable` for the treatment.
+                            return markUnanalysable "Analysis failed" msg msg
 
                     with ex ->
                         // F10 ∩ AUTOMATION-99/113: a fault ANYWHERE in this handler
                         // (not just an `analyzeSource` Error) leaves the file
-                        // unanalysed — invisible to the impact graph, the silent
-                        // under-selection AUTOMATION-113 exists to kill. Route it
-                        // through the SAME machinery as an analysis failure: a
-                        // ledger diagnostic + membership in UnanalyzableFiles (which
-                        // forces full-suite runs until the file analyses cleanly).
-                        // The status stamp is point-of-use idle-guarded like every
-                        // other stamp in this handler: a live test run OWNS the
-                        // status (it reported Running and its completion delivers
-                        // the earned verdict), so a handler crash mid-run must not
-                        // manufacture a terminal status — that stomp was the
-                        // observed "terminal with started: but no elapsed:"
-                        // signature. Nothing is lost: the diagnostic and the
-                        // force-full-suite consequence both persist either way.
-                        Logging.error
-                            "test-prune"
-                            $"FileChecked handler failed for %s{relPath}: %s{ex.ToString()} — treating the file as unanalysable (every test project runs in full until it analyses cleanly)"
-
-                        ctx.ReportErrors fileStr [ unanalyzableFileDiagnostic relPath ex.Message ]
-
-                        if not (ctx.IsRunning "tests") then
-                            ctx.ReportStatus(
-                                PluginStatus.Failed($"FileChecked handler failed: %s{ex.Message}", DateTime.UtcNow)
-                            )
-
-                        return
-                            { state with
-                                UnanalyzableFiles = Set.add relPath state.UnanalyzableFiles }
+                        // unanalysed — the SAME condition as an analysis failure,
+                        // so it gets the SAME treatment (`markUnanalysable`).
+                        return markUnanalysable "FileChecked handler failed" ex.Message (ex.ToString())
 
                 | PluginEvent.BatchChecked _ ->
                     // Cohort-complete flush. Per-file accumulation already
@@ -3251,10 +3286,54 @@ let create
                         else
                             match testConfigs with
                             | Some configs when not configs.IsEmpty ->
-                                if ctx.IsRunning "tests" then
-                                    // A run is in flight but was launched against an
-                                    // older queue snapshot, so it cannot clear these
-                                    // symbols. Queue the rerun — TestsFinished drains it.
+                                // Drain UNCONDITIONALLY when the slot is free. An earlier
+                                // revision of this fix tried to be clever and defer to "the
+                                // BuildCompleted that is surely coming" whenever a build
+                                // looked to be in flight. That is unsound: several
+                                // `FileChanged` shapes never produce a BuildCompleted at all
+                                // (BuildPlugin ignores `SolutionChanged`, and DROPS a
+                                // FileChanged that arrives while a build is already
+                                // running), so the deferral could wait forever. Caught by CI
+                                // on this very branch: the gate deferred 3 symbols to a
+                                // BuildCompleted that never came, ran ZERO tests, and still
+                                // exited 0 — the exact false green this fix exists to kill.
+                                // Never predict a future event as a reason to skip work you
+                                // already owe.
+                                //
+                                // Draining here is safe even on a half-built tree: the
+                                // apphost-freshness gate in `executeTests` already refuses
+                                // to run `--no-build` against a compiled artifact older
+                                // than its sources. It defers that project as an honest
+                                // "waiting on build" WITHOUT spawning a test process, so
+                                // the stale case costs a status flip, not a run — and the
+                                // BuildCompleted that follows re-runs it for real.
+                                //
+                                // The claim is ATTEMPTED, not pre-checked: `RunExclusive`
+                                // returns the claim outcome, so there is no TOCTOU between
+                                // an `IsRunning` read and the launch.
+                                let hasCachedResults = flushedState.LastResults.IsSome
+                                let forceRunProjects = flushedState.PendingForceRunProjects
+
+                                let drainedState =
+                                    { flushedState with
+                                        PendingForceRunProjects = Set.empty }
+
+                                match
+                                    ctx.RunExclusive
+                                        "tests"
+                                        (runTestsWithImpact ctx configs drainedState hasCachedResults forceRunProjects)
+                                with
+                                | Claimed ->
+                                    Logging.info
+                                        "test-prune"
+                                        $"BatchChecked: %d{Set.count pendingQueueRef} symbol(s) awaiting verification — draining now"
+
+                                    return drainedState
+                                | SlotBusy ->
+                                    // A run is in flight but was launched against an older
+                                    // queue snapshot, so it cannot clear these symbols.
+                                    // Queue the rerun — TestsFinished drains it. The pending
+                                    // fanout is retained (the work was NOT consumed).
                                     Logging.info
                                         "test-prune"
                                         $"BatchChecked: %d{Set.count pendingQueueRef} symbol(s) still awaiting verification while a run is in flight — queueing re-run"
@@ -3262,45 +3341,6 @@ let create
                                     return
                                         { flushedState with
                                             PendingRerun = true }
-                                else
-                                    // Drain UNCONDITIONALLY. An earlier revision of this fix
-                                    // tried to be clever and defer to "the BuildCompleted
-                                    // that is surely coming" whenever a build looked to be in
-                                    // flight. That is unsound: several `FileChanged` shapes
-                                    // never produce a BuildCompleted at all (BuildPlugin
-                                    // ignores `SolutionChanged`, and DROPS a FileChanged that
-                                    // arrives while a build is already running), so the
-                                    // deferral could wait forever. Caught by CI on this very
-                                    // branch: the gate deferred 3 symbols to a BuildCompleted
-                                    // that never came, ran ZERO tests, and still exited 0 —
-                                    // the exact false green this fix exists to kill. Never
-                                    // predict a future event as a reason to skip work you
-                                    // already owe.
-                                    //
-                                    // Draining here is safe even on a half-built tree: the
-                                    // apphost-freshness gate in `executeTests` already refuses
-                                    // to run `--no-build` against a compiled artifact older
-                                    // than its sources. It defers that project as an honest
-                                    // "waiting on build" WITHOUT spawning a test process, so
-                                    // the stale case costs a status flip, not a run — and the
-                                    // BuildCompleted that follows re-runs it for real.
-                                    Logging.info
-                                        "test-prune"
-                                        $"BatchChecked: %d{Set.count pendingQueueRef} symbol(s) awaiting verification — draining now"
-
-                                    ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
-                                    let hasCachedResults = flushedState.LastResults.IsSome
-                                    let forceRunProjects = flushedState.PendingForceRunProjects
-
-                                    let flushedState =
-                                        { flushedState with
-                                            PendingForceRunProjects = Set.empty }
-
-                                    ctx.RunExclusive
-                                        "tests"
-                                        (runTestsWithImpact ctx configs flushedState hasCachedResults forceRunProjects)
-
-                                    return flushedState
                             | _ ->
                                 // Analysis-only (no test configs): nothing can verify
                                 // these symbols, so there is nothing to drain.
@@ -3397,12 +3437,15 @@ let create
                             | Error ex ->
                                 Logging.error "test-prune" $"flushAndQueryAffected failed: %s{ex.Message}"
                                 tryRepairSchemaDrift ex
-                                ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+
+                                ctx.ReportStatus(
+                                    PluginStatus.failedNow ex.Message $"flush failed: %s{ex.Message}" TimeSpan.Zero
+                                )
+
                                 return state
                             | Ok stateWithAffected ->
                                 match testConfigs with
                                 | Some configs when not configs.IsEmpty ->
-                                    ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
                                     let hasCachedResults = state.LastResults.IsSome
 
                                     // Union this build's fanout with any pending
@@ -3410,20 +3453,33 @@ let create
                                     // then clear the pending set (it's being run).
                                     let forceRunProjects = Set.union fanoutNow stateWithAffected.PendingForceRunProjects
 
-                                    let stateWithAffected =
+                                    let launchState =
                                         { stateWithAffected with
                                             PendingForceRunProjects = Set.empty }
 
-                                    ctx.RunExclusive
-                                        "tests"
-                                        (runTestsWithImpact
-                                            ctx
-                                            configs
-                                            stateWithAffected
-                                            hasCachedResults
-                                            forceRunProjects)
+                                    match
+                                        ctx.RunExclusive
+                                            "tests"
+                                            (runTestsWithImpact
+                                                ctx
+                                                configs
+                                                launchState
+                                                hasCachedResults
+                                                forceRunProjects)
+                                    with
+                                    | Claimed -> return launchState
+                                    | SlotBusy ->
+                                        // Raced by another launch between the IsRunning
+                                        // fast-path above and this claim. Same treatment:
+                                        // queue the rerun, retain the un-consumed fanout.
+                                        Logging.info
+                                            "test-prune"
+                                            "BuildSucceeded: tests slot already held — queueing re-run"
 
-                                    return stateWithAffected
+                                        return
+                                            { stateWithAffected with
+                                                PendingRerun = true
+                                                PendingForceRunProjects = forceRunProjects }
                                 | _ ->
                                     // No test configs — flush only; nothing to run.
                                     return stateWithAffected
@@ -3529,25 +3585,21 @@ let create
 
                         match abortMessage with
                         | Some reason ->
-                            ctx.CompleteWithSummary $"test run aborted: %s{reason}"
-
                             ctx.ReportStatus(
-                                PluginStatus.Failed(
-                                    $"test run aborted (tests did not run): %s{reason}",
-                                    DateTime.UtcNow
-                                )
+                                PluginStatus.failedNow
+                                    $"test run aborted (tests did not run): %s{reason}"
+                                    $"test run aborted: %s{reason}"
+                                    results.Elapsed
                             )
                         | None when total = 0 && not (Set.isEmpty queueAfterCommit) ->
                             // Zero projects executed but symbols still await
                             // verification — honest non-green, same wording/path as a
                             // deferred (never-ran) project.
-                            ctx.CompleteWithSummary "0 projects ran; symbols still awaiting verification"
-
                             ctx.ReportStatus(
-                                PluginStatus.Failed(
-                                    $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)",
-                                    DateTime.UtcNow
-                                )
+                                PluginStatus.failedNow
+                                    $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)"
+                                    "0 projects ran; symbols still awaiting verification"
+                                    results.Elapsed
                             )
                         | None ->
 
@@ -3606,57 +3658,53 @@ let create
 
                             if not timedOutProjects.IsEmpty then
                                 let names = timedOutProjects |> String.concat ", "
+                                // Flip the recorded outcome to TimedOut; the verdict on
+                                // the Failed below carries the summary (one channel).
                                 ctx.CompleteWithTimeout $"test project(s): {names}"
 
                                 ctx.ReportStatus(
-                                    PluginStatus.Failed(
-                                        $"%d{timedOutProjects.Length} timed out: %s{names}",
-                                        DateTime.UtcNow
-                                    )
+                                    PluginStatus.failedNow
+                                        $"%d{timedOutProjects.Length} timed out: %s{names}"
+                                        $"%d{timedOutProjects.Length} timed out: %s{names}"
+                                        results.Elapsed
                                 )
                             else
                                 let runSummary =
                                     $"%d{passed} passed, %d{failed} failed%s{deferredSuffix} in %d{total} projects (selected: %s{selectedSuffix}%s{slowestSuffix})"
 
+                                // EVERY terminal below CARRIES the run's evidence —
+                                // `runSummary` + measured duration — on the status
+                                // itself. There is no separate summary channel left to
+                                // forget or contradict (AUTOMATION-99).
                                 if failed = 0 && deferred = 0 && Set.isEmpty queueAfterCommit then
-                                    // The green verdict CARRIES the run's evidence —
-                                    // summary + measured duration. No separate
-                                    // summary channel to disagree with the status.
                                     ctx.ReportStatus(
-                                        Completed(
-                                            DateTime.UtcNow,
-                                            { Summary = runSummary
-                                              Elapsed = results.Elapsed }
-                                        )
+                                        Completed(DateTime.UtcNow, RunVerdict.create runSummary results.Elapsed)
                                     )
                                 elif failed = 0 && deferred = 0 then
-                                    ctx.CompleteWithSummary runSummary
                                     // Everything that RAN passed, but the pending queue
                                     // still holds symbols this (e.g. filtered) run did not
                                     // cover green — NOT test-equivalent to a green run yet.
                                     // Non-green with the honest "waiting on build" wording;
                                     // the next BuildCompleted re-selects and runs them.
                                     ctx.ReportStatus(
-                                        PluginStatus.Failed(
-                                            $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)",
-                                            DateTime.UtcNow
-                                        )
+                                        PluginStatus.failedNow
+                                            $"%d{Set.count queueAfterCommit} symbol(s) waiting on build (tests did not run)"
+                                            runSummary
+                                            results.Elapsed
                                     )
                                 elif failed = 0 then
-                                    ctx.CompleteWithSummary runSummary
                                     // Issue 1: only deferred projects — nothing FAILED,
                                     // but nothing was verified either. Non-green, with an
                                     // honest "waiting on build" message (never "failed").
                                     let names = deferredList |> List.map fst |> String.concat ", "
 
                                     ctx.ReportStatus(
-                                        PluginStatus.Failed(
-                                            $"%d{deferred} waiting on build (tests did not run): %s{names}",
-                                            DateTime.UtcNow
-                                        )
+                                        PluginStatus.failedNow
+                                            $"%d{deferred} waiting on build (tests did not run): %s{names}"
+                                            runSummary
+                                            results.Elapsed
                                     )
                                 else
-                                    ctx.CompleteWithSummary runSummary
                                     let names = failedList |> List.map fst |> String.concat ", "
 
                                     let deferredNote =
@@ -3667,13 +3715,47 @@ let create
                                             ""
 
                                     ctx.ReportStatus(
-                                        PluginStatus.Failed(
-                                            $"%d{failed} failed: %s{names}%s{deferredNote}",
-                                            DateTime.UtcNow
-                                        )
+                                        PluginStatus.failedNow
+                                            $"%d{failed} failed: %s{names}%s{deferredNote}"
+                                            runSummary
+                                            results.Elapsed
                                     )
 
-                    if state.PendingRerun then
+                    // Drain order after a completed run:
+                    //   1. a queued `run-tests` force-run — an IPC caller is WAITING
+                    //      on its reply (bounded, but waiting), so it goes first;
+                    //      FIFO, one per completed run (each queued run's own
+                    //      TestsFinished drains the next);
+                    //   2. the impact rerun (`PendingRerun`) — no waiter; it survives
+                    //      across queued command runs and drains when the queue is
+                    //      empty;
+                    //   3. idle.
+                    match state.QueuedCommandRuns with
+                    | (queuedConfigs, queuedFilter, queuedReply) :: laterRuns ->
+                        Volatile.Write(&changedSymbolsRef, remainingChangedSymbols)
+                        recordRunOutcome testResults
+
+                        let dequeuedState =
+                            { state with
+                                LastResults = Some testResults
+                                ChangedFiles = []
+                                ChangedSymbols = remainingChangedSymbols
+                                AffectedTests = Analyzed []
+                                QueuedCommandRuns = laterRuns }
+
+                        match ctx.RunExclusive "tests" (commandForceRun queuedConfigs queuedFilter queuedReply) with
+                        | Claimed ->
+                            Logging.info "test-prune" "Launching queued run-tests force-run"
+                            return dequeuedState
+                        | SlotBusy ->
+                            // Unreachable in practice — every "tests" claim happens on
+                            // this mailbox thread, and the slot was freed before this
+                            // TestsFinished was posted — but typed anyway: keep the
+                            // run QUEUED rather than dropping owed work.
+                            return
+                                { dequeuedState with
+                                    QueuedCommandRuns = state.QueuedCommandRuns }
+                    | [] when state.PendingRerun ->
                         Logging.info "test-prune" "Re-running tests (queued during previous run)"
 
                         // Flush any new pending analysis against CURRENT state — picking up any
@@ -3700,7 +3782,10 @@ let create
                         | Error ex ->
                             Logging.error "test-prune" $"flushAndQueryAffected (rerun) failed: %s{ex.Message}"
                             tryRepairSchemaDrift ex
-                            ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+
+                            ctx.ReportStatus(
+                                PluginStatus.failedNow ex.Message $"rerun flush failed: %s{ex.Message}" TimeSpan.Zero
+                            )
 
                             return
                                 { state with
@@ -3712,8 +3797,6 @@ let create
                         | Ok rerunState ->
                             recordRunOutcome testResults
                             Volatile.Write(&changedSymbolsRef, rerunState.ChangedSymbols)
-
-                            ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
 
                             // Consume the deferred dependency-fanout: a build that
                             // landed mid-run stashed its changed test projects here
@@ -3730,15 +3813,26 @@ let create
 
                             match testConfigs with
                             | Some configs when not configs.IsEmpty ->
-                                // A run just completed (LastResults set below), so the
+                                // A run just completed (LastResults set above), so the
                                 // baseline exists — hasCachedResults = true. The
                                 // deferred fanout force-runs any test project whose
                                 // dependency fingerprint changed during the prior run.
-                                ctx.RunExclusive "tests" (runTestsWithImpact ctx configs rerunState true deferredFanout)
-                            | _ -> ()
-
-                            return rerunState
-                    else
+                                match
+                                    ctx.RunExclusive
+                                        "tests"
+                                        (runTestsWithImpact ctx configs rerunState true deferredFanout)
+                                with
+                                | Claimed -> return rerunState
+                                | SlotBusy ->
+                                    // Another launch site won the slot; ITS
+                                    // TestsFinished will drain this rerun — keep it
+                                    // queued and the fanout un-consumed.
+                                    return
+                                        { rerunState with
+                                            PendingRerun = true
+                                            PendingForceRunProjects = deferredFanout }
+                            | _ -> return rerunState
+                    | [] ->
                         // Clear ONLY the committed symbols from the hot view; the
                         // durable queue (post-commit) is the source of truth and is
                         // mirrored into the cache-key snapshot so a non-empty queue
@@ -3756,87 +3850,23 @@ let create
                 | Custom(RunTestsRequested(configs, filter, reply)) ->
                     // AUTOMATION-99: the `run-tests` force-run, launched from the
                     // mailbox so it is serialised with every other launch site and
-                    // holds the `RunExclusive "tests"` slot for its whole duration
-                    // — visible to `IsRunning`, to `AnyPluginBusy()`, and (via the
-                    // Running report below) to `fshw status`. The IPC command
-                    // already waited (bounded) for a prior run; this re-check
-                    // closes the remaining race without blocking the mailbox.
-                    if ctx.IsRunning "tests" then
-                        reply.TrySetResult(
-                            JsonSerializer.Serialize(
-                                {| status = "busy"
-                                   message = "a test run is already in progress; retry once it finishes" |}
-                            )
-                        )
-                        |> ignore
+                    // holds the `RunExclusive "tests"` slot for its whole duration —
+                    // visible to `IsRunning`, to `AnyPluginBusy()`, and (via the
+                    // framework's Running report at the claim) to `fshw status`.
+                    match ctx.RunExclusive "tests" (commandForceRun configs filter reply) with
+                    | Claimed -> return state
+                    | SlotBusy ->
+                        // FORCE semantics: a busy slot QUEUES the run, never refuses
+                        // it — `test-rerun` is the explicit "prove it ran" verb, and
+                        // a refusal that reads as success is the vacuous green this
+                        // ticket exists to kill. TestsFinished drains the queue FIFO.
+                        // The IPC command bounds its wait on `reply`, so queueing can
+                        // never hang the caller.
+                        ctx.Log "  ↳ queued run-tests force-run (tests already running)"
 
-                        return state
-                    else
-                        ctx.ReportStatus(PluginStatus.Running(since = DateTime.UtcNow))
-
-                        // Empty launch set: `run-tests` is a manual FORCE run
-                        // (optionally filtered to a subset / only-failed). It is NOT
-                        // the impact-analysis queue-draining path, and a filtered
-                        // force-run may not cover every queued symbol — so it commits
-                        // NOTHING from the pending-verification queue (over-testing
-                        // is the safe direction). The queue drains through the normal
-                        // BuildCompleted impact flow.
-                        let commandLaunch: TestRunLaunch =
-                            { Symbols = Set.empty
-                              CoveringProjectsBySymbol = Map.empty }
-
-                        ctx.RunExclusive
-                            "tests"
-                            (async {
-                                try
-                                    try
-                                        let! results, started, completed =
-                                            executeTests
-                                                db
-                                                None
-                                                repoRoot
-                                                beforeRun
-                                                coveragePaths
-                                                afterRun
-                                                configs
-                                                Map.empty
-                                                filter
-
-                                        reply.TrySetResult(formatTestResultsJson results) |> ignore
-
-                                        // Returned (not Posted) so the framework's
-                                        // completion path delivers it: the synchronous
-                                        // TestsFinished handler does the error
-                                        // reporting and status updates a bare emit
-                                        // would skip.
-                                        return TestsFinished(started, completed, commandLaunch)
-                                    with ex ->
-                                        // AUTOMATION-68: a `beforeRun` throw /
-                                        // `executeTests` fault means the suite it
-                                        // guards NEVER RAN — that must surface as a
-                                        // failure, never a stale prior green. The
-                                        // Aborted lifecycle drives the TestsFinished
-                                        // handler to PluginStatus.Failed.
-                                        Logging.error "test-prune" $"run-tests failed: %s{ex.Message}"
-                                        let started, completed = abortedRunLifecycle ex.Message
-
-                                        reply.TrySetResult(JsonSerializer.Serialize({| error = ex.Message |})) |> ignore
-
-                                        return TestsFinished(started, completed, commandLaunch)
-                                finally
-                                    // Cancellation (daemon teardown) skips `with` but
-                                    // runs `finally`: never leave the IPC client
-                                    // awaiting a reply that cannot come. No-op when a
-                                    // result was already set.
-                                    reply.TrySetResult(
-                                        JsonSerializer.Serialize(
-                                            {| error = "daemon shut down before the run completed" |}
-                                        )
-                                    )
-                                    |> ignore
-                            })
-
-                        return state
+                        return
+                            { state with
+                                QueuedCommandRuns = state.QueuedCommandRuns @ [ (configs, filter, reply) ] }
 
                 | _ -> return state
             }

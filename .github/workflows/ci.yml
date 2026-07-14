@@ -25,4 +25,12 @@ jobs:
       # `check --run-once` is the single gate after the verb collapse — it runs
       # the AnalyzersPlugin (hosting FSharpLint on the warm FSharpChecker) along
       # with the rest of the plugins. The old per-plugin `analyze` verb is retired.
+      #
+      # This is ALSO how the repo's own convention rules run in CI
+      # (analyzers/FsHotWatch.Rules → FSHW-CLAIM-001, FSHW-CLOCK-001): the
+      # solution build above compiles them (they are a member of FsHotWatch.slnx),
+      # and `.fshw.json` points `analyzers.paths` at their Debug bin. If that bin
+      # is missing, the daemon does NOT silently skip them — `analyzerPathFailures`
+      # raises `config error: Analyzer path(s) loaded 0 analyzers` and this step
+      # exits 2. An unloaded analyzer and a clean one must never look alike.
       lint-cmd: 'dotnet run --project src/FsHotWatch.Cli --no-build -- check --run-once'

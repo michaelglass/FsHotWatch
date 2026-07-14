@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix!: **`test-rerun` can no longer exit 0 without running.** (AUTOMATION-99) A `busy`
+  reply — the force-run produced no result within its budget — now exits NON-ZERO. It
+  stays distinct from "Tests failed" (nothing is known to be broken), but `test-rerun` is
+  the "prove it ran" verb and an exit 0 with no run is a vacuous green.
+
+- fix: the CLI has its own verdict-free `StatusView`, and the wire no longer duplicates
+  the verdict on the status payload (AUTOMATION-99). The summary + elapsed travel only in
+  `lastRun` — the one channel every renderer already read — so the CLI never has to
+  fabricate a `RunVerdict` from untrusted input, and the two copies cannot disagree.
+  The status parse stays TOTAL: a plugin can never drop out of the status map.
+
 - fix: parse the `RunVerdict` (summary + elapsed) the daemon now sends on
   `completed` statuses (AUTOMATION-99); payloads from older daemons parse to an
   empty verdict rather than failing the status read.

@@ -4808,7 +4808,7 @@ let ``apphost-missing cold-start retries green; persistent defers non-green (nev
             // Status must be non-green (Failed) — but the message must say
             // "waiting on build", not "failed".
             match host.GetStatus("test-prune") with
-            | Some(Failed(msg, _)) -> test <@ msg.ToLowerInvariant().Contains("waiting on build") @>
+            | Some(Failed(msg, _, _)) -> test <@ msg.ToLowerInvariant().Contains("waiting on build") @>
             | other -> Assert.Fail($"expected non-green Failed status for deferred project, got %A{other}"))
 
 // =============================================================================
@@ -5054,7 +5054,7 @@ let ``a present-but-stale apphost defers as 'waiting on build' instead of passin
         test <@ waitingDiagnostic @>
 
         match host.GetStatus("test-prune") with
-        | Some(Failed(msg, _)) -> test <@ msg.ToLowerInvariant().Contains("waiting on build") @>
+        | Some(Failed(msg, _, _)) -> test <@ msg.ToLowerInvariant().Contains("waiting on build") @>
         | other -> Assert.Fail($"expected non-green Failed status for the stale-artifact defer, got %A{other}")
 
         // And it must never masquerade as a test failure.
@@ -5371,7 +5371,7 @@ let ``incident: a beforeRun throw in the run-tests command surfaces as Failed, n
         //     (IpcOutput.hasFailures) keys off exactly this, so a non-zero check
         //     verdict follows.
         match host.GetStatus("test-prune") with
-        | Some(Failed(msg, _)) -> test <@ msg.Contains("csrf-gate failed") @>
+        | Some(Failed(msg, _, _)) -> test <@ msg.Contains("csrf-gate failed") @>
         | other -> Assert.Fail($"expected Failed with the hook output surfaced, got %A{other}"))
 
 [<Fact(Timeout = 15000)>]
@@ -5424,7 +5424,7 @@ let ``incident: a test child that never becomes a live process drives the run to
             // The seam `fshw check` reads: Failed, naming the config and the launch
             // gap — NOT a stale green / a plugin stuck Running.
             match host.GetStatus("test-prune") with
-            | Some(Failed(msg, _)) ->
+            | Some(Failed(msg, _, _)) ->
                 test <@ msg.Contains("no live process") @>
                 test <@ msg.Contains("TestProject") @>
             | other -> Assert.Fail($"expected Failed for a launch-stalled run, got %A{other}")
@@ -5998,7 +5998,7 @@ let ``AUTOMATION-99: a symbol covered only by an unconfigured test project drops
 
         // And the gate is NOT stuck red on a symbol no configured test can ever prove.
         match host.GetStatus("test-prune") with
-        | Some(PluginStatus.Failed(msg, _)) ->
+        | Some(PluginStatus.Failed(msg, _, _)) ->
             Assert.Fail($"gate wedged red on a symbol no runnable test covers: %s{msg}")
         | _ -> ())
 
@@ -6378,25 +6378,23 @@ let ``FileChecked while a test run is in flight must not report a terminal statu
             let srcFile = Path.Combine(tmpDir, "Lib.fs")
             File.WriteAllText(srcFile, "module Lib\nlet x = 1\n")
 
+            // SUBSCRIBE to status transitions before the mid-run event: the
+            // bug this hunts is a TRANSIENT terminal stamped and immediately
+            // overwritten, which a polling sampler can miss entirely. The
+            // OnStatusChanged subscription cannot miss an edge.
+            let terminalDuringRun = beginAwaitNextTerminal host "test-prune"
+
             host.EmitFileChecked(
                 { fakeFileCheckResult srcFile with
                     Source = "module Lib\nlet x = 1\n" }
             )
 
-            // Sample the status while the run is provably still in flight
-            // (`done` not yet written). A terminal status here is the lie.
-            let deadline = DateTime.UtcNow.AddSeconds(8.0)
-            let mutable sawTerminalMidRun = false
-
-            while not (File.Exists doneFile) && DateTime.UtcNow < deadline do
-                match host.GetStatus("test-prune") with
-                | Some(PluginStatus.Completed _)
-                | Some(PluginStatus.Failed _) -> sawTerminalMidRun <- true
-                | _ -> ()
-
-                Thread.Sleep(25)
-
-            test <@ not sawTerminalMidRun @>
+            // The FileChecked handler gets ample time to run; the run is
+            // provably still gated (`done` not written), so ANY terminal
+            // transition observed here is the manufactured-status lie.
+            let stampedMidRun = terminalDuringRun.Wait(TimeSpan.FromSeconds 3.0)
+            test <@ not (File.Exists doneFile) @>
+            test <@ not stampedMidRun @>
         finally
             File.WriteAllText(release, "")
 
@@ -6421,3 +6419,147 @@ let ``a green run's Completed status carries its verdict`` () =
             let record = List.head (host.GetHistory("test-prune"))
             test <@ record.Summary = Some v.Summary @>
         | other -> Assert.Fail($"expected Completed carrying a verdict, got: %A{other}"))
+
+// ---------------------------------------------------------------------------
+// `test-rerun` is the repo's "prove it ran" verb: it must NEVER report success
+// without running. A slot held by another run QUEUES the force-run — it does
+// not decline it (AUTOMATION-99 review, finding 1).
+// ---------------------------------------------------------------------------
+
+/// Like `gatedRunConfig`, but the script also appends one line per invocation
+/// to a `runs` file, so a test can COUNT how many times the suite actually
+/// executed rather than trusting a status.
+let private countingGatedRunConfig (tmpDir: string) =
+    let started = Path.Combine(tmpDir, "started")
+    let release = Path.Combine(tmpDir, "release")
+    let runs = Path.Combine(tmpDir, "runs")
+    let scriptPath = Path.Combine(tmpDir, "counting-gated-run.sh")
+
+    File.WriteAllText(
+        scriptPath,
+        $"echo run >> {runs}\n"
+        + $"touch {started}\n"
+        + $"n=0\n"
+        + $"while [ ! -f {release} ] && [ \"$n\" -lt 100 ]; do sleep 0.1; n=$((n+1)); done\n"
+    )
+
+    let config =
+        { Project = "GatedProject"
+          Command = "sh"
+          Args = scriptPath
+          Group = "default"
+          Environment = []
+          FilterTemplate = None
+          ClassJoin = " "
+          TimeoutSec = Some 30
+          ReportVerificationFormat = AutoDetect }
+
+    config, started, release, runs
+
+let private runCount (runs: string) =
+    if File.Exists runs then
+        File.ReadAllLines(runs)
+        |> Array.filter (fun l -> l.Trim() <> "")
+        |> Array.length
+    else
+        0
+
+[<Fact(Timeout = 60000)>]
+let ``run-tests refused the slot is QUEUED and still runs — never a green it did not earn`` () =
+    withTempDir "tp-rerun-queued" (fun tmpDir ->
+        let config, started, release, runs = countingGatedRunConfig tmpDir
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
+        host.RegisterHandler(handler)
+
+        // Run #1 claims the slot and blocks on the gate.
+        let first = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
+        waitUntil (fun () -> File.Exists started) 20000
+        test <@ runCount runs = 1 @>
+
+        // Run #2 arrives while the slot is HELD. Pre-fix this replied `busy`
+        // (→ exit 0) having executed nothing. It must now be queued and RUN.
+        let second = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
+
+        // The queued run has NOT started yet (the slot is still held) …
+        Thread.Sleep 500
+        test <@ runCount runs = 1 @>
+        test <@ not second.IsCompleted @>
+
+        // … and it is still owed: nothing has been reported back to the caller.
+        File.WriteAllText(release, "")
+
+        first.Wait(TimeSpan.FromSeconds 30.0) |> ignore
+        second.Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+        test <@ first.IsCompleted @>
+        test <@ second.IsCompleted @>
+
+        // THE POINT: the suite executed TWICE. The second force-run was not
+        // dropped, and its reply is a real results payload — not a "busy"
+        // non-verdict that would have exited 0 without running.
+        waitUntil (fun () -> runCount runs = 2) 20000
+        test <@ runCount runs = 2 @>
+
+        test <@ second.Result.IsSome @>
+        let json = second.Result.Value
+        test <@ json.Contains("projects") @>
+        test <@ not (json.Contains("\"busy\"")) @>)
+
+[<Fact(Timeout = 60000)>]
+let ``a queued run-tests reply resolves — a refused claim can never strand the IPC caller`` () =
+    // The latent hang the RunClaim DU makes impossible: the reply TCS lives
+    // inside the work async, so a claim that was silently dropped resolved
+    // nothing and the command's `Async.AwaitTask reply.Task` waited forever.
+    withTempDir "tp-rerun-noStrand" (fun tmpDir ->
+        let config, started, release, _runs = countingGatedRunConfig tmpDir
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
+        host.RegisterHandler(handler)
+
+        let first = host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask
+        waitUntil (fun () -> File.Exists started) 20000
+
+        // Three force-runs pile up behind the in-flight one. Every one of them
+        // must get a reply — none may be stranded.
+        let queued =
+            [ for _ in 1..3 -> host.RunCommand("run-tests", [| "{}" |]) |> Async.StartAsTask ]
+
+        File.WriteAllText(release, "")
+
+        first.Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+        for t in queued do
+            t.Wait(TimeSpan.FromSeconds 30.0) |> ignore
+            test <@ t.IsCompleted @>
+            test <@ t.Result.IsSome @>)
+
+[<Fact(Timeout = 30000)>]
+let ``run-tests bounds its wait: a run that outlives the budget reports busy, never a verdict`` () =
+    // AUTOMATION-98's rule applied to the last unbounded seam: the reply wait.
+    // A 1-second budget against a gated (never-releasing) run must return the
+    // DISTINCT `busy` status — which the CLI maps to a NON-ZERO exit, so it can
+    // never be read as a pass the run did not produce.
+    withTempDir "tp-rerun-bounded" (fun tmpDir ->
+        let config, started, release, _runs = countingGatedRunConfig tmpDir
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) tmpDir
+        let handler = create ":memory:" tmpDir (Some [ config ]) None None None None []
+        host.RegisterHandler(handler)
+
+        try
+            let json =
+                host.RunCommand("run-tests", [| """{"waitSec":1}""" |])
+                |> Async.RunSynchronously
+
+            test <@ json.IsSome @>
+            test <@ json.Value.Contains("\"busy\"") @>
+            // Never a pass/fail verdict the command did not earn.
+            test <@ not (json.Value.Contains("\"projects\"")) @>
+            test <@ File.Exists started @>
+        finally
+            // Let the daemon-side run finish so the temp dir can be cleaned.
+            File.WriteAllText(release, "")
+            waitUntil (fun () -> not (host.AnyPluginBusy())) 30000)

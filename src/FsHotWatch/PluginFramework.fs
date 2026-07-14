@@ -16,6 +16,21 @@ module PluginName =
     let create (name: string) = PluginName name
     let value (PluginName n) = n
 
+/// The outcome of claiming an exclusive run slot (`PluginCtx.RunExclusive`).
+/// BOTH cases must be handled — silently dropping a refused claim is how
+/// AUTOMATION-99 hung an IPC caller forever and let `test-rerun` exit 0 having
+/// run nothing. `TreatWarningsAsErrors` + FS0020 make an unhandled result a
+/// compile error; discarding one deliberately requires a greppable `ignore`
+/// (which the FSHW-CLAIM-001 analyzer flags).
+type RunClaim =
+    /// The slot was claimed and the work is running; its completion message
+    /// will be posted back to the plugin's mailbox.
+    | Claimed
+    /// Another run holds the slot — the work was NOT started and no completion
+    /// message will ever arrive. The caller must decide: skip (when a live run
+    /// already covers the need) or queue (when the work is owed).
+    | SlotBusy
+
 /// Side-effect context provided to plugin handlers.
 [<NoComparison; NoEquality>]
 type PluginCtx<'Msg> =
@@ -56,23 +71,26 @@ type PluginCtx<'Msg> =
         EndSubtask: string -> unit
         /// Append an activity log line. Also routes to Logging.info.
         Log: string -> unit
-        /// Override the auto-derived summary captured on the next terminal transition.
-        CompleteWithSummary: string -> unit
-        /// Mark the next terminal transition as TimedOut with `reason`. Also sets
-        /// the summary. The plugin is still responsible for calling
-        /// `ReportStatus(Failed(..))` (or raising) so the state machine advances
-        /// to a terminal state — the override is consumed when that fires.
+        /// Mark the next terminal transition as TimedOut with `reason`. The
+        /// plugin is still responsible for reporting a terminal `Failed`
+        /// (whose verdict carries the summary) so the state machine advances —
+        /// the override is consumed when that fires.
         CompleteWithTimeout: string -> unit
-        /// Run `work` exclusively under `key`. While running, additional calls
-        /// with the same key are dropped (ignored). On completion, the
-        /// framework posts the returned `'Msg` back to the agent's mailbox as
-        /// a `Custom` event (mirroring the existing self-post pattern).
+        /// Try to run `work` exclusively under `key`, returning whether the
+        /// slot was `Claimed` or is held by a prior run (`SlotBusy`). On a
+        /// claim the framework itself reports `Running` — a run nobody can
+        /// see as Running is unrepresentable — and on completion posts the
+        /// returned `'Msg` back to the agent's mailbox as a `Custom` event.
         ///
-        /// If `work` throws, the exception is logged and no completion message
-        /// is posted (the slot is freed). Plugins that need failure to flow
-        /// back to Update should `try/with` inside `work` and return a
-        /// sentinel `'Msg`.
-        RunExclusive: string -> Async<'Msg> -> unit
+        /// If `work` throws, the exception is logged, no completion message is
+        /// posted (the slot is freed), and the framework forces a terminal
+        /// `Failed` so the plugin never strands in `Running`. Plugins that
+        /// need failure to flow back to Update should `try/with` inside `work`
+        /// and return a sentinel `'Msg`.
+        ///
+        /// The result must be handled: a dropped `SlotBusy` is dropped WORK
+        /// (AUTOMATION-99). Match it and either skip-with-reason or queue.
+        RunExclusive: string -> Async<'Msg> -> RunClaim
         /// Whether `key` is currently running under `RunExclusive`. Plugins
         /// use this for IPC-facing status without maintaining their own
         /// "is running" bit.
@@ -120,6 +138,31 @@ module ProjectGraphAccessor =
           GetProjectReferences = fun _ -> []
           GetCanonicalDllPath = fun _ -> None }
 
+/// The DELIBERATELY narrow context handed to IPC command handlers
+/// (`PluginHandler.Commands`). Commands run on the IPC thread, outside the
+/// plugin's mailbox and outside its inflight accounting — so a command that
+/// could do work there would be invisible to `IsRunning`/`AnyPluginBusy`/the
+/// status model. That capability is exactly how AUTOMATION-99 happened (the
+/// old `run-tests` executed tests on the IPC thread), so it is not offered:
+/// no `ReportStatus`, no `RunExclusive`, no `Emit*`. `Post` is the ONLY way a
+/// command can cause work — the work then runs on the mailbox, accounted like
+/// every other launch.
+[<NoComparison; NoEquality>]
+type CommandCtx<'Msg> =
+    {
+        /// The repository root directory.
+        RepoRoot: string
+        /// Append an activity log line. Also routes to Logging.info.
+        Log: string -> unit
+        /// Post a message to the plugin's agent — the only way a command may
+        /// cause work to happen.
+        Post: 'Msg -> unit
+        /// Whether `key` is currently running under `RunExclusive`.
+        IsRunning: string -> bool
+        /// Read-only project-graph accessor.
+        ProjectGraph: ProjectGraphAccessor
+    }
+
 /// Tags for events a plugin can subscribe to.
 type SubscribedEvent =
     | SubscribeFileChanged
@@ -149,10 +192,11 @@ type PluginHandler<'State, 'Msg> =
         Init: 'State
         /// Pure-ish update function: given context, current state, and event, produce next state.
         Update: PluginCtx<'Msg> -> 'State -> PluginEvent<'Msg> -> Async<'State>
-        /// Named commands that can be invoked via IPC. Each command receives the
-        /// plugin context (for `IsRunning`, `Log`, etc.), current state, and args.
-        /// `ctx` is typically `_ctx` for commands that don't need it.
-        Commands: (string * (PluginCtx<'Msg> -> 'State -> string array -> Async<string>)) list
+        /// Named commands that can be invoked via IPC. Each command receives a
+        /// deliberately narrow `CommandCtx` (see its doc — commands observe and
+        /// `Post`, they never launch work on the IPC thread), a state snapshot,
+        /// and args. `ctx` is typically `_ctx` for commands that don't need it.
+        Commands: (string * (CommandCtx<'Msg> -> 'State -> string array -> Async<string>)) list
         /// Which events the plugin subscribes to.
         Subscriptions: PluginSubscriptions
         /// Optional cache key function. `Some hash` → look up the cache and replay on hit.
@@ -214,7 +258,6 @@ type PluginHostServices =
         UpdateSubtask: PluginName -> string -> string -> unit
         EndSubtask: PluginName -> string -> unit
         Log: PluginName -> string -> unit
-        SetSummary: PluginName -> string -> unit
         /// Set the outcome recorded on the next terminal transition. Lets a plugin
         /// flip the run's stored outcome (e.g. to TimedOut) without introducing a
         /// new PluginStatus variant.
@@ -274,7 +317,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
             a.Post(Choice1Of2(Custom msg))
         | None -> ()
 
-    let runOne (key: string) (w: Async<'Msg>) =
+    let runOne (key: string) (startedAt: DateTime) (w: Async<'Msg>) =
         async {
             let mutable completion: 'Msg voption = ValueNone
 
@@ -299,17 +342,24 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                     // non-terminal status. The completion message that would drive
                     // the plugin to a terminal state through its own handler is NOT
                     // posted on this path (`completion` stays ValueNone below), and
-                    // plugins routinely report Running just before launching the
-                    // work (e.g. test-prune's `ReportStatus(Running)` immediately
-                    // before `RunExclusive "tests"`). Without a forced terminal here
-                    // the plugin sits Running forever while `IsBusy`/`AnyPluginBusy`
-                    // report false — precisely the fresh-workspace wedge: the check's
-                    // `WaitForComplete` blocks on a Running plugin that will never
-                    // complete, and idle-exit later fires mid-wait. Forcing Failed
-                    // surfaces the fault as a prompt, loud verdict instead.
+                    // `runExclusive` reported Running at the claim. Without a forced
+                    // terminal here the plugin sits Running forever while
+                    // `IsBusy`/`AnyPluginBusy` report false — precisely the
+                    // fresh-workspace wedge: the check's `WaitForComplete` blocks on
+                    // a Running plugin that will never complete, and idle-exit later
+                    // fires mid-wait. Forcing Failed surfaces the fault as a prompt,
+                    // loud verdict instead. The framework KNOWS when this run started
+                    // (it claimed the slot), so the verdict carries a measured
+                    // elapsed — never a fabricated zero-length run.
                     services.ReportStatus
                         handler.Name
-                        (PluginStatus.Failed($"RunExclusive '%s{key}' work failed: %s{ex.Message}", DateTime.UtcNow))
+                        (PluginStatus.Failed(
+                            $"RunExclusive '%s{key}' work failed: %s{ex.ToString()}",
+                            DateTime.UtcNow,
+                            RunVerdict.create
+                                $"RunExclusive '%s{key}' work failed: %s{ex.Message}"
+                                (DateTime.UtcNow - startedAt)
+                        ))
             finally
                 // Release order matters (AUTOMATION-99):
                 //   1. free the slot — the completion handler may itself launch
@@ -334,7 +384,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                     System.Threading.Interlocked.Decrement(&inflightCount.contents) |> ignore
         }
 
-    let runExclusive (key: string) (work: Async<'Msg>) =
+    let runExclusive (key: string) (work: Async<'Msg>) : RunClaim =
         let shouldStart =
             lock runSlotsLock (fun () ->
                 match runSlots.TryGetValue(key) with
@@ -344,20 +394,32 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                     true)
 
         if shouldStart then
+            // The framework — not the plugin — reports Running at the claim
+            // instant. A launched run nobody can see as Running is thereby
+            // unrepresentable: CoveragePlugin shipped exactly that gap (no
+            // Running before its claim), which (a) rendered ✓ while it ran and
+            // (b) starved `bumpGenerationIfStarting`, so the host's
+            // generation-based terminal wait could NEVER be satisfied while
+            // coverage was registered (AUTOMATION-99 review, finding 4).
+            let startedAt = DateTime.UtcNow
+            services.ReportStatus handler.Name (Running(since = startedAt))
+
             // Work token: counts this exclusive run in `inflightCount` from
             // claim until after its completion message is posted (released in
             // `runOne`'s finally). See the counter's doc comment.
             System.Threading.Interlocked.Increment(&inflightCount.contents) |> ignore
-            Async.Start(runOne key work)
+            Async.Start(runOne key startedAt work)
+            Claimed
         else
-            // AUTOMATION-15 (item 5): exclusion-slot contention. A new run was
-            // requested while `key` is still busy — the framework drops it
-            // rather than stacking. Surfacing it as a debug diagnostic makes the
-            // "why didn't my edit re-run this plugin?" / "is it wedged on a
-            // long run?" question answerable from the log instead of guessing.
+            // AUTOMATION-15 (item 5): exclusion-slot contention. The run is NOT
+            // started; the caller receives `SlotBusy` and MUST decide (skip or
+            // queue). The debug line keeps "why didn't my edit re-run this
+            // plugin?" answerable from the log.
             debug
                 (PluginName.value handler.Name)
-                $"exclusion-slot busy: '%s{key}' run skipped (a previous run is still in flight)"
+                $"exclusion-slot busy: '%s{key}' run not started (a previous run is still in flight)"
+
+            SlotBusy
 
     let isRunning (key: string) =
         lock runSlotsLock (fun () ->
@@ -368,17 +430,43 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
     /// True when this plugin holds ANY exclusive run slot — i.e. real work
     /// (a test run, a build) is executing in the background right now, even
     /// though the mailbox is idle and the handler that launched it has already
-    /// returned. Used to stop a cache replay from reporting a stale terminal
-    /// status over a live `Running` (AUTOMATION-95/99). Keyless because the
-    /// framework does not know a plugin's slot names — any busy slot means "not
-    /// at rest".
+    /// returned. Keyless because the framework does not know a plugin's slot
+    /// names — any busy slot means "not at rest".
     let anyRunSlotBusy () =
         lock runSlotsLock (fun () -> runSlots.Values |> Seq.exists id)
 
-    // Standard ctx — used both inside the agent loop (via Update) and from
-    // IPC command handlers (via the wrapper in `services.RegisterCommand`).
+    /// AUTOMATION-95/99 ownership rule, enforced at the ONE funnel every
+    /// plugin-originated status passes through: while an exclusive run is in
+    /// flight, the run OWNS this plugin's status. It was reported Running at
+    /// the claim and its completion path is guaranteed to deliver the earned
+    /// terminal (the completion handler on success, `runOne`'s forced Failed
+    /// on a faulted work async) — so any OTHER terminal stamped mid-run is a
+    /// verdict nobody earned (the observed "✓ with started: but no elapsed:"
+    /// signature). Sound because `runOne` frees the slot BEFORE posting the
+    /// completion message: every legitimate terminal (a completion handler's
+    /// report) fires with no slot held and passes untouched, while the
+    /// framework's own forced Failed goes via `services.ReportStatus`
+    /// directly, bypassing this plugin-facing guard by construction. Also
+    /// applied to cache replays and the `safeUpdate` crash net below — the
+    /// property is universal, not a per-plugin convention.
+    let liveRunOwnsStatus (s: PluginStatus) =
+        PluginStatus.isTerminal s && anyRunSlotBusy ()
+
+    /// The plugin-facing status reporter: drops a terminal stamped while a
+    /// live run owns the status (see `liveRunOwnsStatus`), forwards everything
+    /// else.
+    let reportStatusGuarded (s: PluginStatus) =
+        if liveRunOwnsStatus s then
+            debug
+                (PluginName.value handler.Name)
+                "suppressing terminal status — an exclusive run is in flight and owns the status"
+        else
+            services.ReportStatus handler.Name s
+
+    // Standard ctx — used inside the agent loop (via Update). IPC command
+    // handlers get the far narrower CommandCtx instead (see its doc).
     let ctx: PluginCtx<'Msg> =
-        { ReportStatus = fun s -> services.ReportStatus handler.Name s
+        { ReportStatus = reportStatusGuarded
           ReportErrors = fun file entries -> services.ReportErrors handler.Name file entries
           ClearErrors = fun file -> services.ClearErrors handler.Name file
           ClearAllErrors = fun () -> services.ClearPlugin handler.Name
@@ -394,14 +482,20 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
           UpdateSubtask = fun key label -> services.UpdateSubtask handler.Name key label
           EndSubtask = fun key -> services.EndSubtask handler.Name key
           Log = fun msg -> services.Log handler.Name msg
-          CompleteWithSummary = fun s -> services.SetSummary handler.Name s
-          CompleteWithTimeout =
-            fun reason ->
-                services.SetSummary handler.Name $"timed out after {reason}"
-                services.SetNextTerminalOutcome handler.Name (TimedOut reason)
+          CompleteWithTimeout = fun reason -> services.SetNextTerminalOutcome handler.Name (TimedOut reason)
           RunExclusive = runExclusive
           IsRunning = isRunning
           FcsSuppressedCodes = services.FcsSuppressedCodes
+          ProjectGraph = services.ProjectGraph }
+
+    // The narrow context handed to IPC command handlers. Commands run on the
+    // IPC thread, so nothing here can report status, claim a run slot, or emit
+    // events — `Post` is the only path to work (AUTOMATION-99).
+    let commandCtx: CommandCtx<'Msg> =
+        { RepoRoot = services.RepoRoot
+          Log = fun msg -> services.Log handler.Name msg
+          Post = post
+          IsRunning = isRunning
           ProjectGraph = services.ProjectGraph }
 
     let agent =
@@ -484,13 +578,12 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                     if v.Summary.EndsWith(cachedSuffix, System.StringComparison.Ordinal) then
                                         v
                                     else
-                                        { v with
-                                            Summary = v.Summary + cachedSuffix }
+                                        RunVerdict.create (v.Summary + cachedSuffix) v.Elapsed
 
                                 let replayStatus =
                                     match result.Status with
                                     | Completed(_, v) -> Completed(nowAt, markCached v)
-                                    | Failed(err, _) -> Failed(err, nowAt)
+                                    | Failed(err, _, v) -> Failed(err, nowAt, markCached v)
                                     | s -> s
 
                                 // AUTOMATION-95/99: a cached TERMINAL status must never
@@ -508,12 +601,14 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 // the "check ends before the queued re-run drains" step of
                                 // AUTOMATION-99.
                                 //
-                                // The live run owns this plugin's status: it set `Running` and
-                                // it will report the real terminal status when it finishes.
-                                // A replay of stale per-file work has nothing to say about it.
-                                // Errors and emitted events still replay — only the status
-                                // claim is suppressed.
-                                if anyRunSlotBusy () then
+                                // The live run owns this plugin's status: it was set `Running`
+                                // at the claim and it will report the real terminal status
+                                // when it finishes. A replay of stale per-file work has
+                                // nothing to say about it. Errors and emitted events still
+                                // replay — only the status claim is suppressed. Same
+                                // ownership rule as `reportStatusGuarded`, kept explicit
+                                // here for the replay-specific diagnostic.
+                                if liveRunOwnsStatus replayStatus then
                                     FsHotWatch.Logging.debug
                                         (PluginName.value handler.Name)
                                         "cache replay: suppressing cached terminal status — an exclusive run is in flight"
@@ -561,17 +656,28 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                     /// The crash is still logged loudly either way.
                     let safeUpdate pluginCtx state event =
                         async {
+                            let handlerStarted = DateTime.UtcNow
+
                             try
                                 return! handler.Update pluginCtx state event
                             with ex ->
                                 error (PluginName.value handler.Name) $"Plugin handler failed: %s{ex.ToString()}"
 
-                                if anyRunSlotBusy () then
+                                let forcedFailed =
+                                    Failed(
+                                        ex.ToString(),
+                                        DateTime.UtcNow,
+                                        RunVerdict.create
+                                            $"handler failed: %s{ex.Message}"
+                                            (DateTime.UtcNow - handlerStarted)
+                                    )
+
+                                if liveRunOwnsStatus forcedFailed then
                                     FsHotWatch.Logging.debug
                                         (PluginName.value handler.Name)
                                         "handler fault: suppressing forced Failed status — an exclusive run is in flight and owns the status"
                                 else
-                                    services.ReportStatus handler.Name (Failed(ex.ToString(), DateTime.UtcNow))
+                                    services.ReportStatus handler.Name forcedFailed
 
                                 return state
                         }
@@ -588,11 +694,27 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                 let capturedEvents = ResizeArray<TaskCache.CachedEvent>()
                                 let mutable capturedStatus: PluginStatus option = None
 
+                                // True once this capture window launched a NEW exclusive
+                                // run. A handler that reports a terminal and then launches
+                                // a run (TestPrune's queued-rerun drain) has NOT produced
+                                // a replayable result — the terminal it reported is about
+                                // to be superseded by the run it just started, and caching
+                                // it would replay a verdict the rerun exists to overturn.
+                                let mutable launchedRunInWindow = false
+
                                 let capturingCtx =
                                     { ReportStatus =
                                         fun s ->
-                                            capturedStatus <- Some s
-                                            services.ReportStatus handler.Name s
+                                            // Guard BEFORE capture: a terminal the live run
+                                            // suppressed was never observable, so it must
+                                            // not become a cached result either.
+                                            if liveRunOwnsStatus s then
+                                                FsHotWatch.Logging.debug
+                                                    (PluginName.value handler.Name)
+                                                    "suppressing terminal status — an exclusive run is in flight and owns the status"
+                                            else
+                                                capturedStatus <- Some s
+                                                services.ReportStatus handler.Name s
                                       ReportErrors =
                                         fun file entries ->
                                             capturedErrors.Add(file, entries)
@@ -632,22 +754,27 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
                                       UpdateSubtask = fun key label -> services.UpdateSubtask handler.Name key label
                                       EndSubtask = fun key -> services.EndSubtask handler.Name key
                                       Log = fun msg -> services.Log handler.Name msg
-                                      CompleteWithSummary = fun s -> services.SetSummary handler.Name s
                                       CompleteWithTimeout =
-                                        fun reason ->
-                                            services.SetSummary handler.Name $"timed out after {reason}"
-                                            services.SetNextTerminalOutcome handler.Name (TimedOut reason)
-                                      RunExclusive = runExclusive
+                                        fun reason -> services.SetNextTerminalOutcome handler.Name (TimedOut reason)
+                                      RunExclusive =
+                                        fun key work ->
+                                            match runExclusive key work with
+                                            | Claimed ->
+                                                launchedRunInWindow <- true
+                                                Claimed
+                                            | SlotBusy -> SlotBusy
                                       IsRunning = isRunning
                                       FcsSuppressedCodes = services.FcsSuppressedCodes
                                       ProjectGraph = services.ProjectGraph }
 
                                 let! nextState = safeUpdate capturingCtx state event
 
-                                // Only cache when status reached a terminal state
+                                // Only cache when the status reached a terminal state AND
+                                // the handler did not launch a new run in the same window
+                                // (see `launchedRunInWindow`).
                                 match capturedStatus with
                                 | Some(Completed _ as s)
-                                | Some(Failed _ as s) ->
+                                | Some(Failed _ as s) when not launchedRunInWindow ->
                                     let compKey = compositeKey event
 
                                     let result: TaskCache.TaskCacheResult =
@@ -716,7 +843,7 @@ let registerHandler (services: PluginHostServices) (handler: PluginHandler<'Stat
             fun args ->
                 async {
                     let! state = agent.PostAndAsyncReply(Choice2Of2)
-                    return! cmdHandler ctx state args
+                    return! cmdHandler commandCtx state args
                 }
         )
 
@@ -774,7 +901,13 @@ module PluginCtxHelpers =
     /// routes the verdict's summary into the run record — there is no separate
     /// summary channel to forget or contradict.
     let completeWith (ctx: PluginCtx<'Msg>) (summary: string) (elapsed: System.TimeSpan) : unit =
-        ctx.ReportStatus(Completed(System.DateTime.UtcNow, { Summary = summary; Elapsed = elapsed }))
+        ctx.ReportStatus(PluginStatus.completedNow summary elapsed)
+
+    /// Transition status to Failed at the current UTC time. `error` is the
+    /// full diagnosis; the verdict carries the one-line `summary` and the
+    /// measured duration — same single channel as `completeWith`.
+    let failedWith (ctx: PluginCtx<'Msg>) (error: string) (summary: string) (elapsed: System.TimeSpan) : unit =
+        ctx.ReportStatus(PluginStatus.failedNow error summary elapsed)
 
     /// Report or clear the per-file error scope based on whether any entries exist.
     /// Used by per-file analyzers (Lint, Analyzers, FormatCheck) so that a file

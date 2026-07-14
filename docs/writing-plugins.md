@@ -29,10 +29,22 @@ let myPlugin: PluginHandler<MyState, unit> =
             async {
                 match event with
                 | FileChecked result ->
+                    let started = DateTime.UtcNow
+
                     // result.ParseResults and result.CheckResults come from the
                     // warm FSharpChecker — no re-parsing needed.
                     printfn "Checked: %s" (AbsFilePath.value result.File)
-                    ctx.ReportStatus(Completed(DateTime.UtcNow))
+
+                    // A terminal status carries its verdict: what was done, and
+                    // how long it took — MEASURED, never guessed. "Done with
+                    // nothing to report" does not typecheck (`RunVerdict.create`
+                    // rejects an empty summary) — by design.
+                    ctx.ReportStatus(
+                        Completed(
+                            DateTime.UtcNow,
+                            RunVerdict.create $"checked %d{state.FilesChecked + 1} files" (DateTime.UtcNow - started)
+                        )
+                    )
 
                     return
                         { state with
@@ -88,10 +100,14 @@ via `ctx.Post`) is always delivered regardless of subscriptions.
 `ctx` carries everything a handler can do as a side effect:
 
 **Status & errors**
-- `ctx.ReportStatus(status)` — report `Running(since = ...)`, `Completed(...)`, or `Failed(...)`.
+- `ctx.ReportStatus(status)` — report `Running(since = ...)`, or a terminal `Completed(at, verdict)` / `Failed(error, at, verdict)`.
+  Every terminal CARRIES its `RunVerdict` (what the run did + how long it took), and `RunVerdict.create` rejects an empty summary — a content-free `✓` does not typecheck. `PluginCtxHelpers.completeWith` / `failedWith` are the ergonomic constructors.
 - `ctx.ReportErrors(file, entries)` / `ctx.ClearErrors(file)` / `ctx.ClearAllErrors()` — manage diagnostics in the shared error ledger.
-- `ctx.CompleteWithSummary(text)` — override the auto-derived summary captured in run history on the next terminal transition (e.g. `"built 4 projects"`).
-- `ctx.CompleteWithTimeout(reason)` — mark the next terminal transition as `TimedOut`.
+- `ctx.CompleteWithTimeout(reason)` — mark the next terminal transition as `TimedOut` (you still report the terminal itself; its verdict carries the summary).
+
+**Running work**
+- `ctx.RunExclusive(key, work)` — run `work` under a single-flight slot, returning a `RunClaim`. The framework reports `Running` at the claim and posts `work`'s result back as a `Custom` message.
+  The result must be handled: `SlotBusy` means the work was **not started**, so decide explicitly — skip it, or queue it. Dropping a refused claim is dropping work.
 
 **The warm compiler**
 - `ctx.Checker` — the shared, warm `FSharpChecker`. Reuse it for your own analysis instead of starting a new one.

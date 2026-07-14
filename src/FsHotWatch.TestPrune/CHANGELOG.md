@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- fix!: **a force-run refused the slot is QUEUED, never declined.** (AUTOMATION-99)
+  Routing `run-tests` through the mailbox left one hole: if a run was already in flight
+  the handler replied `busy` and ran nothing — and the CLI mapped that to exit 0. A
+  force-run is owed work, so it now joins `QueuedCommandRuns` and is drained (FIFO) when
+  the in-flight run finishes. The command's wait on the reply is BOUNDED by the existing
+  `--wait-sec` budget (AUTOMATION-98: bound every seam), and a run that outlives it
+  reports `busy` — which the CLI now exits non-zero on.
+
+- fix: the `FileChecked` handler's duplicated unanalysable-file treatment (an
+  `analyzeSource` error and a handler fault are the same condition) is one
+  `markUnanalysable` helper; the three hand-written `if not (ctx.IsRunning "tests")`
+  status guards are gone — the framework enforces that universally now.
+
 - fix!: **a force-run the daemon cannot see is a gate that cannot gate.**
   (AUTOMATION-99) The `run-tests` IPC command executed the suite directly on the
   IPC thread — outside the `RunExclusive "tests"` slot, with no `Running` status

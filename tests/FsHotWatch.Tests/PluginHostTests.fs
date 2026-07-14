@@ -557,7 +557,7 @@ let ``preprocessor exception sets Failed status`` () =
     test
         <@
             match status.Value with
-            | Failed(msg, _) -> msg.Contains("preprocessor kaboom")
+            | Failed(msg, _, _) -> msg.Contains("preprocessor kaboom")
             | _ -> false
         @>
 
@@ -585,7 +585,7 @@ let ``preprocessor exception sets Failed with ex.ToString() (type+stack), not ju
 
     let msg =
         match status.Value with
-        | Failed(m, _) -> m
+        | Failed(m, _, _) -> m
         | _ -> ""
 
     test <@ msg.Contains("pp-kaboom-distinctive") @>
@@ -1349,7 +1349,7 @@ let ``waitForAllTerminal completes when plugin fails mid-cycle`` () =
                     | FileChanged _ ->
                         ctx.ReportStatus(Running(since = DateTime.UtcNow))
                         do! Async.Sleep(20)
-                        ctx.ReportStatus(Failed("boom", DateTime.UtcNow))
+                        ctx.ReportStatus(PluginStatus.failedNow "boom" "boom" TimeSpan.Zero)
                     | _ -> ()
 
                     return state
@@ -1593,3 +1593,79 @@ let ``Teardown logs failing plugin Teardown with exception class (F14)`` () =
     finally
         System.Console.SetError(prevErr)
         FsHotWatch.Logging.setLogLevel original
+
+// ---------------------------------------------------------------------------
+// Task-cache clearing: BOTH arms of every `match taskCache with` — a host built
+// WITH a cache forwards the clear, and a host built WITHOUT one is a safe no-op
+// rather than a crash.
+// ---------------------------------------------------------------------------
+
+let private cacheEntry (summary: string) : FsHotWatch.TaskCache.TaskCacheResult =
+    { CacheKey = ContentHash.create "k"
+      Errors = []
+      Status = Completed(DateTime.UtcNow, RunVerdict.create summary TimeSpan.Zero)
+      EmittedEvents = [] }
+
+[<Fact(Timeout = 15000)>]
+let ``ClearTaskCache variants forward to the cache when the host has one`` () =
+    let cache = FsHotWatch.TaskCache.InMemoryTaskCache()
+    let c = cache :> FsHotWatch.TaskCache.ITaskCache
+    let key = ContentHash.create "k"
+
+    let ckOf plugin file : FsHotWatch.TaskCache.CompositeKey = { Plugin = plugin; File = file }
+
+    let host = PluginHost(Unchecked.defaultof<_>, "/tmp/test", taskCache = c)
+
+    // plugin+file entry → ClearTaskCachePluginFile
+    c.Set (ckOf "p" (Some "/a.fs")) key (cacheEntry "a")
+    test <@ (c.TryGet (ckOf "p" (Some "/a.fs")) key).IsSome @>
+    host.ClearTaskCachePluginFile("p", "/a.fs")
+    test <@ (c.TryGet (ckOf "p" (Some "/a.fs")) key).IsNone @>
+
+    // by file → ClearTaskCacheFile
+    c.Set (ckOf "p" (Some "/b.fs")) key (cacheEntry "b")
+    host.ClearTaskCacheFile("/b.fs")
+    test <@ (c.TryGet (ckOf "p" (Some "/b.fs")) key).IsNone @>
+
+    // by plugin → ClearTaskCachePlugin
+    c.Set (ckOf "p" (Some "/c.fs")) key (cacheEntry "c")
+    host.ClearTaskCachePlugin("p")
+    test <@ (c.TryGet (ckOf "p" (Some "/c.fs")) key).IsNone @>
+
+    // everything → ClearTaskCache
+    c.Set (ckOf "p" (Some "/d.fs")) key (cacheEntry "d")
+    c.Set (ckOf "q" None) key (cacheEntry "q")
+    host.ClearTaskCache()
+    test <@ (c.TryGet (ckOf "p" (Some "/d.fs")) key).IsNone @>
+    test <@ (c.TryGet (ckOf "q" None) key).IsNone @>
+
+[<Fact(Timeout = 15000)>]
+let ``ClearTaskCache variants are safe no-ops on a host with no cache`` () =
+    // The `None` arm: a cacheless host (the default) must absorb every clear
+    // without throwing — these are called from IPC verbs that don't know
+    // whether a cache was configured.
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp/test"
+
+    host.ClearTaskCache()
+    host.ClearTaskCachePlugin("p")
+    host.ClearTaskCacheFile("/a.fs")
+    host.ClearTaskCachePluginFile("p", "/a.fs")
+
+    // Still functioning afterwards.
+    test <@ host.GetAllStatuses() = Map.empty @>
+
+[<Fact(Timeout = 15000)>]
+let ``RerunFileCommandPlugin fails with a named reason when the plugin has no pattern`` () =
+    // The error arm: every non-FileCommand plugin (and any FileCommand plugin
+    // configured only with `afterTests`) has no registered pattern, so there is
+    // no synthetic file event to fire. That must be an explicit, named Error —
+    // never a silent Ok that reports success for a rerun that never happened.
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp/test"
+
+    match host.RerunFileCommandPlugin("no-such-plugin") with
+    | Ok() -> failwith "expected an Error for a plugin with no registered pattern"
+    | Result.Error msg ->
+        test <@ msg.Contains "no-such-plugin" @>
+        test <@ msg.Contains "no registered file pattern" @>
+
+    test <@ (host.GetFileCommandPattern "no-such-plugin").IsNone @>

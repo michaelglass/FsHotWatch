@@ -48,8 +48,11 @@ type BuildState =
 /// synchronous Custom handler can apply them to the error ledger and emit
 /// BuildCompleted within the framework's per-event capture window — required
 /// for the §2a cache to record errors and downstream emissions on terminal
-/// status.
-type BuildMsg = BuildDone of outcome: BuildOutcome * entries: ErrorEntry list * elapsed: TimeSpan * summary: string
+/// status. The summary is NOT carried: the handler derives it from the
+/// outcome via the same pure helper the worker logs with (`buildSummary`), so
+/// the two can never disagree and no arm ships a dead summary nothing
+/// consumes.
+type BuildMsg = BuildDone of outcome: BuildOutcome * entries: ErrorEntry list * elapsed: TimeSpan
 
 /// Pure decision logic: given a subprocess's success flag and combined output,
 /// determine the BuildOutcome and the list of ErrorEntry diagnostics to surface.
@@ -262,49 +265,49 @@ let create
         + "Re-run with `dotnet build --no-incremental` (or delete bin/ and obj/).\n\n"
         + (stale |> List.map formatStaleArtifact |> String.concat "\n")
 
-    /// Run from the async build worker. Logs+summary happens here (live UI),
-    /// but the *captured* operations (ReportErrors / ClearErrors / EmitBuildCompleted)
-    /// are deferred to the synchronous Custom BuildDone handler so the framework's
-    /// per-event capture window records them for the §2a cache. Returns the
-    /// completion message; the framework posts it back via RunExclusive.
+    /// The one-line human verdict for each outcome. Pure, shared by the async
+    /// worker's live log line and the synchronous BuildDone handler's terminal
+    /// verdict, so what the log said and what the status carries can never
+    /// disagree.
+    let buildSummary (outcome: BuildOutcome) (entries: ErrorEntry list) : string =
+        match outcome with
+        | BuildPassed out ->
+            let n = countBuiltProjects out
+            if n > 0 then $"built {n} projects" else "build succeeded"
+        | BuildArtifactsStale(stale, _) -> $"build failed: %d{stale.Length} stale artifacts"
+        | BuildOutputFailed _ ->
+            let errCount =
+                entries
+                |> List.filter (fun e -> e.Severity = DiagnosticSeverity.Error)
+                |> List.length
+
+            $"build failed: %d{errCount} errors"
+
+    /// Run from the async build worker. Logging happens here (live UI), but
+    /// the *captured* operations (ReportErrors / ClearErrors /
+    /// EmitBuildCompleted / the terminal status) are deferred to the
+    /// synchronous Custom BuildDone handler so the framework's per-event
+    /// capture window records them for the §2a cache. Returns the completion
+    /// message; the framework posts it back via RunExclusive.
     let applyBuildOutcome
         (ctx: PluginCtx<BuildMsg>)
         (outcome: BuildOutcome)
         (entries: ErrorEntry list)
         (elapsed: TimeSpan)
         =
-        let summary =
-            match outcome with
-            | BuildPassed out ->
-                let n = countBuiltProjects out
-                let summary = if n > 0 then $"built {n} projects" else "build succeeded"
-                // No CompleteWithSummary here: the Completed status the BuildDone
-                // handler reports CARRIES this summary (RunVerdict), and the host
-                // routes it into the run record — one channel, no disagreement.
-                ctx.Log summary
-                summary
-            | BuildArtifactsStale(stale, _) ->
-                let summary = $"build failed: %d{stale.Length} stale artifacts"
-                // Log the per-project detail (which DLL, and how far its mtime trails
-                // its newest source), not just the count, so an intermittent stale-
-                // artifact failure names the project and the mtime delta in the live
-                // log/test output — otherwise it surfaces only as un-actionable
-                // "build failed: 1 stale artifacts" with no way to tell which project.
-                ctx.Log(staleDiagnostic stale)
-                error "build" (staleDiagnostic stale)
-                ctx.CompleteWithSummary summary
-                summary
-            | BuildOutputFailed _ ->
-                let errCount =
-                    entries
-                    |> List.filter (fun e -> e.Severity = DiagnosticSeverity.Error)
-                    |> List.length
+        match outcome with
+        | BuildPassed _ -> ctx.Log(buildSummary outcome entries)
+        | BuildArtifactsStale(stale, _) ->
+            // Log the per-project detail (which DLL, and how far its mtime trails
+            // its newest source), not just the count, so an intermittent stale-
+            // artifact failure names the project and the mtime delta in the live
+            // log/test output — otherwise it surfaces only as un-actionable
+            // "build failed: 1 stale artifacts" with no way to tell which project.
+            ctx.Log(staleDiagnostic stale)
+            error "build" (staleDiagnostic stale)
+        | BuildOutputFailed _ -> ()
 
-                let summary = $"build failed: %d{errCount} errors"
-                ctx.CompleteWithSummary summary
-                summary
-
-        BuildDone(outcome, entries, elapsed, summary)
+        BuildDone(outcome, entries, elapsed)
 
     /// Run verifyArtifactsFresh on a BuildPassed outcome and demote to
     /// BuildArtifactsStale if any project's DLL is stale. Other outcomes
@@ -321,62 +324,71 @@ let create
 
     let startBuild (ctx: PluginCtx<BuildMsg>) (idle: Lifecycle<Idle, BuildOutcome option>) =
         let buildStarted = DateTime.UtcNow
-        ctx.ReportStatus(PluginStatus.Running(since = buildStarted))
         ctx.Log $"Running: %s{buildCommand} %s{buildArgs}"
 
         // RunExclusive "build": the framework guarantees only one build runs
-        // at a time. Concurrent FileChanged-while-building triggers are dropped by
-        // the framework, replacing the old per-plugin RunningPhase guard.
-        ctx.RunExclusive
-            "build"
-            (PluginCtxHelpers.withSubtask
-                ctx
+        // at a time (and reports Running at the claim). Concurrent
+        // FileChanged-while-building triggers land on SlotBusy and are safe to
+        // skip: the in-flight build's completion re-buffers nothing this
+        // trigger owed — the next FileChanged re-triggers.
+        let claim =
+            ctx.RunExclusive
                 "build"
-                "dotnet build"
-                (async {
-                    try
-                        let result = runProcess buildCommand buildArgs ctx.RepoRoot environment buildBounds
+                (PluginCtxHelpers.withSubtask
+                    ctx
+                    "build"
+                    "dotnet build"
+                    (async {
+                        try
+                            let result = runProcess buildCommand buildArgs ctx.RepoRoot environment buildBounds
 
-                        let (rawOutcome, entries) =
-                            decideBuildOutcome (isSucceeded result) (outputOf result)
+                            let (rawOutcome, entries) =
+                                decideBuildOutcome (isSucceeded result) (outputOf result)
 
-                        let outcome = verifyAndDemote rawOutcome
+                            let outcome = verifyAndDemote rawOutcome
 
-                        match outcome, result with
-                        | BuildOutputFailed _, TimedOut(after, _) ->
-                            let summary = $"timed out after %d{int after.TotalSeconds}s"
-                            ctx.Log "Build TIMED OUT"
-                            error "build" "Build TIMED OUT"
-                            ctx.CompleteWithTimeout summary
-                        | BuildOutputFailed _, Failed(exitCode, output) ->
-                            ctx.Log "Build FAILED"
-                            error "build" "Build FAILED"
+                            match outcome, result with
+                            | BuildOutputFailed _, TimedOut(after, _) ->
+                                let summary = $"timed out after %d{int after.TotalSeconds}s"
+                                ctx.Log "Build TIMED OUT"
+                                error "build" "Build TIMED OUT"
+                                ctx.CompleteWithTimeout summary
+                            | BuildOutputFailed _, Failed(exitCode, output) ->
+                                ctx.Log "Build FAILED"
+                                error "build" "Build FAILED"
 
-                            let parsedCount = BuildDiagnostics.parseMSBuildDiagnostics output |> List.length
+                                let parsedCount = BuildDiagnostics.parseMSBuildDiagnostics output |> List.length
 
-                            if parsedCount = 0 then
-                                let detail = formatSilentFailureDiagnostic exitCode output
-                                ctx.Log detail
-                                error "build" detail
-                        | BuildOutputFailed _, _ ->
-                            ctx.Log "Build FAILED"
-                            error "build" "Build FAILED"
-                        | _ -> ()
+                                if parsedCount = 0 then
+                                    let detail = formatSilentFailureDiagnostic exitCode output
+                                    ctx.Log detail
+                                    error "build" detail
+                            | BuildOutputFailed _, _ ->
+                                ctx.Log "Build FAILED"
+                                error "build" "Build FAILED"
+                            | _ -> ()
 
-                        return applyBuildOutcome ctx outcome entries (DateTime.UtcNow - buildStarted)
-                    with ex ->
-                        let crashEntry = ErrorEntry.error ex.Message
-                        // ReportErrors / EmitBuildCompleted moved into the synchronous
-                        // BuildDone handler (see applyBuildOutcome doc) so they're captured
-                        // for cache replay.
-                        return
-                            BuildDone(
-                                BuildOutputFailed [ ex.Message ],
-                                [ crashEntry ],
-                                DateTime.UtcNow - buildStarted,
-                                $"build crashed: %s{ex.Message}"
-                            )
-                }))
+                            return applyBuildOutcome ctx outcome entries (DateTime.UtcNow - buildStarted)
+                        with ex ->
+                            let crashEntry = ErrorEntry.error ex.Message
+                            // ReportErrors / EmitBuildCompleted moved into the synchronous
+                            // BuildDone handler (see applyBuildOutcome doc) so they're captured
+                            // for cache replay.
+                            return
+                                BuildDone(
+                                    BuildOutputFailed [ ex.Message ],
+                                    [ crashEntry ],
+                                    DateTime.UtcNow - buildStarted
+                                )
+                    }))
+
+        match claim with
+        | Claimed -> ()
+        | SlotBusy ->
+            // A build is already in flight; skipping is correct here (the
+            // FileChanged guard normally catches this earlier — this is the
+            // race-free backstop).
+            info "build" "Skipping: build already in progress"
 
         // State carries the prior idle lifecycle. The synchronous BuildDone
         // handler advances Lifecycle.start ▸ complete when the framework posts
@@ -410,82 +422,88 @@ let create
                     dependents |> List.exists (fun d -> buildableSet.Contains(d)) |> not)
 
             let buildStarted = DateTime.UtcNow
-            ctx.ReportStatus(PluginStatus.Running(since = buildStarted))
 
-            ctx.RunExclusive
-                "build"
-                (PluginCtxHelpers.withSubtask
-                    ctx
+            let claim =
+                ctx.RunExclusive
                     "build"
-                    $"dotnet build ({roots.Length} roots)"
-                    (async {
-                        try
-                            let mutable failures = []
-                            let mutable outputs = []
+                    (PluginCtxHelpers.withSubtask
+                        ctx
+                        "build"
+                        $"dotnet build ({roots.Length} roots)"
+                        (async {
+                            try
+                                let mutable failures = []
+                                let mutable outputs = []
 
-                            for root in roots do
-                                let rootStr = AbsProjectPath.value root
-                                let rendered = template.Replace("{project}", rootStr)
-                                let (cmd, cmdArgs) = splitCommand rendered
-                                ctx.Log $"Running template: %s{cmd} %s{cmdArgs}"
+                                for root in roots do
+                                    let rootStr = AbsProjectPath.value root
+                                    let rendered = template.Replace("{project}", rootStr)
+                                    let (cmd, cmdArgs) = splitCommand rendered
+                                    ctx.Log $"Running template: %s{cmd} %s{cmdArgs}"
 
-                                try
-                                    let result = runProcess cmd cmdArgs ctx.RepoRoot environment buildBounds
-                                    let output = outputOf result
-                                    outputs <- output :: outputs
+                                    try
+                                        let result = runProcess cmd cmdArgs ctx.RepoRoot environment buildBounds
+                                        let output = outputOf result
+                                        outputs <- output :: outputs
 
-                                    match result with
-                                    | Succeeded _ -> ()
-                                    | TimedOut(after, _) ->
-                                        let summary = $"timed out after %d{int after.TotalSeconds}s"
-                                        ctx.Log $"Template build TIMED OUT for %s{rootStr}"
-                                        error "build" $"Template build TIMED OUT for %s{rootStr}"
-                                        ctx.CompleteWithTimeout summary
-                                        failures <- output :: failures
-                                    | Failed _ ->
-                                        ctx.Log $"Template build FAILED for %s{rootStr}"
-                                        error "build" $"Template build FAILED for %s{rootStr}"
-                                        failures <- output :: failures
-                                with ex ->
-                                    ctx.Log $"Template build exception for %s{rootStr}: %s{ex.Message}"
-                                    error "build" $"Template build exception for %s{rootStr}: %s{ex.Message}"
-                                    failures <- ex.Message :: failures
+                                        match result with
+                                        | Succeeded _ -> ()
+                                        | TimedOut(after, _) ->
+                                            let summary = $"timed out after %d{int after.TotalSeconds}s"
+                                            ctx.Log $"Template build TIMED OUT for %s{rootStr}"
+                                            error "build" $"Template build TIMED OUT for %s{rootStr}"
+                                            ctx.CompleteWithTimeout summary
+                                            failures <- output :: failures
+                                        | Failed _ ->
+                                            ctx.Log $"Template build FAILED for %s{rootStr}"
+                                            error "build" $"Template build FAILED for %s{rootStr}"
+                                            failures <- output :: failures
+                                    with ex ->
+                                        ctx.Log $"Template build exception for %s{rootStr}: %s{ex.Message}"
+                                        error "build" $"Template build exception for %s{rootStr}: %s{ex.Message}"
+                                        failures <- ex.Message :: failures
 
-                            let failedOutputs = failures |> List.rev
+                                let failedOutputs = failures |> List.rev
 
-                            let (rawOutcome, entries) =
-                                if failures.IsEmpty then
-                                    let combinedOutput = outputs |> List.rev |> String.concat "\n"
-                                    decideBuildOutcome true combinedOutput
-                                else
-                                    let failedText = failedOutputs |> String.concat "\n"
-                                    let parsed = BuildDiagnostics.parseMSBuildDiagnostics failedText
+                                let (rawOutcome, entries) =
+                                    if failures.IsEmpty then
+                                        let combinedOutput = outputs |> List.rev |> String.concat "\n"
+                                        decideBuildOutcome true combinedOutput
+                                    else
+                                        let failedText = failedOutputs |> String.concat "\n"
+                                        let parsed = BuildDiagnostics.parseMSBuildDiagnostics failedText
 
-                                    let entries =
-                                        if parsed.IsEmpty then
-                                            failedOutputs |> List.map ErrorEntry.error
-                                        else
-                                            parsed
+                                        let entries =
+                                            if parsed.IsEmpty then
+                                                failedOutputs |> List.map ErrorEntry.error
+                                            else
+                                                parsed
 
-                                    BuildOutputFailed failedOutputs, entries
+                                        BuildOutputFailed failedOutputs, entries
 
-                            return
-                                applyBuildOutcome
-                                    ctx
-                                    (verifyAndDemote rawOutcome)
-                                    entries
-                                    (DateTime.UtcNow - buildStarted)
-                        with ex ->
-                            error "build" $"Unexpected error: %s{ex.Message}"
+                                return
+                                    applyBuildOutcome
+                                        ctx
+                                        (verifyAndDemote rawOutcome)
+                                        entries
+                                        (DateTime.UtcNow - buildStarted)
+                            with ex ->
+                                error "build" $"Unexpected error: %s{ex.Message}"
 
-                            return
-                                BuildDone(
-                                    BuildOutputFailed [ ex.Message ],
-                                    [ ErrorEntry.error ex.Message ],
-                                    DateTime.UtcNow - buildStarted,
-                                    $"build crashed: %s{ex.Message}"
-                                )
-                    }))
+                                return
+                                    BuildDone(
+                                        BuildOutputFailed [ ex.Message ],
+                                        [ ErrorEntry.error ex.Message ],
+                                        DateTime.UtcNow - buildStarted
+                                    )
+                        }))
+
+            match claim with
+            | Claimed -> ()
+            | SlotBusy ->
+                // A build is already in flight; the FileChanged guard normally
+                // catches this earlier — this is the race-free backstop.
+                info "build" "Skipping: build already in progress"
 
             { LastBuild = idle
               PendingFiles = []
@@ -534,7 +552,13 @@ let create
                 | CommandCompleted result when depNames.Contains(result.Name) ->
                     match result.Outcome with
                     | FsHotWatch.Events.CommandFailed _ ->
-                        ctx.ReportStatus(PluginStatus.Failed($"dependency failed: %s{result.Name}", DateTime.UtcNow))
+                        ctx.ReportStatus(
+                            PluginStatus.failedNow
+                                $"dependency failed: %s{result.Name}"
+                                $"dependency failed: %s{result.Name}"
+                                TimeSpan.Zero
+                        )
+
                         return state
                     | FsHotWatch.Events.CommandSucceeded _ ->
                         let newDeps = Set.add result.Name state.SatisfiedDeps
@@ -583,7 +607,7 @@ let create
                 | FileChanged(SourceChanged files) ->
                     return handleSourceChanged ctx state state.LastBuild (files |> List.map AbsFilePath.create)
                 | FileChanged(ProjectChanged _) -> return handleProjectChanged ctx state state.LastBuild
-                | Custom(BuildDone(outcome, entries, elapsed, summary)) ->
+                | Custom(BuildDone(outcome, entries, elapsed)) ->
                     // Build single-flight is owned by the framework (RunExclusive "build").
                     // The completion message arrives carrying the pre-build idle lifecycle;
                     // we advance the lifecycle through Running ▸ Completed for activity-log
@@ -600,6 +624,10 @@ let create
                     // with its sources. The async worker already demoted BuildPassed to
                     // BuildArtifactsStale when verifyArtifactsFresh found anything
                     // wrong, so this handler just dispatches the three terminal cases.
+                    // Every terminal below carries its verdict: the same
+                    // `buildSummary` line the worker logged, plus the measured
+                    // build duration — one channel, worker log and status can
+                    // never disagree (AUTOMATION-99).
                     match outcome with
                     | BuildPassed _ ->
                         if entries.IsEmpty then
@@ -609,18 +637,30 @@ let create
 
                         ctx.EmitBuildCompleted(BuildSucceeded)
 
-                        ctx.ReportStatus(Completed(DateTime.UtcNow, { Summary = summary; Elapsed = elapsed }))
+                        PluginCtxHelpers.completeWith ctx (buildSummary outcome entries) elapsed
                     | BuildArtifactsStale(stale, _) ->
                         let detail = staleDiagnostic stale
                         let entry = ErrorEntry.error detail
                         ctx.ReportErrors "<build>" (entry :: entries)
                         ctx.EmitBuildCompleted(BuildFailed [ detail ])
-                        ctx.ReportStatus(PluginStatus.Failed("Build artifact verification failed", DateTime.UtcNow))
+
+                        ctx.ReportStatus(
+                            PluginStatus.failedNow
+                                "Build artifact verification failed"
+                                (buildSummary outcome entries)
+                                elapsed
+                        )
                     | BuildOutputFailed outputs ->
                         ctx.ReportErrors "<build>" entries
                         ctx.EmitBuildCompleted(BuildFailed outputs)
-                        let summary = outputs |> String.concat "\n" |> truncateOutput 5
-                        ctx.ReportStatus(PluginStatus.Failed($"Build failed: %s{summary}", DateTime.UtcNow))
+                        let errorDetail = outputs |> String.concat "\n" |> truncateOutput 5
+
+                        ctx.ReportStatus(
+                            PluginStatus.failedNow
+                                $"Build failed: %s{errorDetail}"
+                                (buildSummary outcome entries)
+                                elapsed
+                        )
 
                     return
                         { state with

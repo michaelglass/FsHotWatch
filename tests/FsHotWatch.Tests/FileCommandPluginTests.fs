@@ -1194,9 +1194,8 @@ let ``Update is a no-op for FileChanged when trigger has no FilePattern`` () =
           UpdateSubtask = fun _ _ -> ()
           EndSubtask = fun _ -> ()
           Log = fun _ -> ()
-          CompleteWithSummary = fun _ -> ()
           CompleteWithTimeout = fun _ -> ()
-          RunExclusive = fun _ _ -> ()
+          RunExclusive = fun _ _ -> FsHotWatch.PluginFramework.Claimed
           IsRunning = fun _ -> false
           FcsSuppressedCodes = Set.empty
           ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
@@ -1228,3 +1227,50 @@ let ``argsStalerThan returns empty when files are older than reference`` () =
             System.IO.Directory.Delete(tmpDir, true)
         with _ ->
             ()
+
+// ---------------------------------------------------------------------------
+// The timed-out arm: a command that outlives its budget is a NON-GREEN terminal
+// carrying an honest verdict — never a ✓, and never a zero-length run.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 30000)>]
+let ``a command that exceeds its timeout reports Failed with a timed-out verdict`` () =
+    let host = PluginHost.create (Unchecked.defaultof<_>) "/tmp"
+
+    let handler =
+        create
+            (FsHotWatch.PluginFramework.PluginName.create "slow-cmd")
+            (fileTrigger (fun _ -> true))
+            "sh"
+            "-c \"sleep 30\""
+            "/tmp"
+            (Some 1)
+
+    host.RegisterHandler(handler)
+    host.EmitFileChanged(SourceChanged [ "anything.txt" ])
+
+    waitUntil
+        (fun () ->
+            match host.GetStatus("slow-cmd") with
+            | Some(Failed _) -> true
+            | _ -> false)
+        25000
+
+    match host.GetStatus("slow-cmd") with
+    | Some(Failed(err, _, v)) ->
+        test <@ err.Contains "timed out" @>
+        // The verdict says WHAT happened and HOW LONG it took — the run record
+        // therefore records a real elapsed, not a fabricated zero.
+        test <@ v.Summary.Contains "timed out" @>
+        test <@ v.Elapsed > TimeSpan.Zero @>
+    | other -> failwithf "expected Failed carrying a timed-out verdict, got %A" other
+
+    // The run history records the TimedOut outcome (set via CompleteWithTimeout),
+    // distinct from an ordinary failure.
+    let record = List.head (host.GetHistory("slow-cmd"))
+
+    match record.Outcome with
+    | TimedOut _ -> ()
+    | other -> failwithf "expected a TimedOut run outcome, got %A" other
+
+    test <@ record.Elapsed > TimeSpan.Zero @>

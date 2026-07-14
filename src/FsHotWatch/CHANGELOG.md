@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+- fix!: **a refused `RunExclusive` claim is a value you cannot drop.** (AUTOMATION-99)
+  `PluginCtx.RunExclusive` returned `unit` and silently discarded the work when the
+  slot was held. The caller could not tell — so a force-run whose claim was refused
+  reported success having executed nothing, and a reply resolved *inside* the dropped
+  work never resolved at all. It now returns `RunClaim = Claimed | SlotBusy`, which
+  (with `TreatWarningsAsErrors`) the caller must handle: skip with a stated reason, or
+  queue. The repo's own `FSHW-CLAIM-001` analyzer rejects `|> ignore`-ing it.
+  - **BREAKING:** every `ctx.RunExclusive` call site must handle the returned `RunClaim`.
+
+- fix!: **the framework reports `Running` at the claim** (AUTOMATION-99). A launched run
+  that nobody can see as `Running` is now unrepresentable: `runExclusive` reports it
+  itself. (`CoveragePlugin` shipped exactly that gap — it rendered `✓` while running,
+  and because the host's work-cycle generation only advances on a `Running` transition,
+  its generation never moved, so `WaitForComplete` could never take its fast path while
+  coverage was registered.) The hand-written `ReportStatus(Running)`-before-`RunExclusive`
+  pairs are gone.
+
+- fix!: **every terminal carries its verdict; `RunVerdict` refuses to be empty.**
+  (AUTOMATION-99) `Failed` is now `Failed of error * at * verdict: RunVerdict` — the
+  error is the *diagnosis*, the verdict is the one-line summary + the measured duration.
+  The old shape fell back to `startedAt = at` when no `Running` preceded a `Failed`,
+  recording an elapsed of ZERO — i.e. the "`started:` with no `elapsed:`" render that is
+  this bug's own diagnostic tell survived on the `Failed` path. `RunVerdict` is now a
+  private-field type whose only constructor (`RunVerdict.create`) rejects an
+  empty/whitespace summary, so no site — daemon, cache deserializer, CLI, test helper or
+  example — can build a content-free `✓`.
+  - **BREAKING:** `ReportStatus(Failed …)` takes a verdict; `CompleteWithSummary` and
+    `PluginHostServices.SetSummary` are DELETED (the status is the summary channel).
+    `PluginCtxHelpers.failedWith` is the counterpart to `completeWith`.
+
+- fix: **terminal-stamp ownership is enforced at the framework's one funnel**, not
+  re-implemented per plugin (AUTOMATION-99). While an exclusive run is in flight it OWNS
+  the plugin's status; any *other* terminal — from a per-file handler, a cache replay, or
+  the handler-crash net — is dropped. Previously three hand-written
+  `if not (ctx.IsRunning "tests")` guards in TestPrune enforced this for one plugin only,
+  keyed by a slot name the framework didn't know: the same duplication class that caused
+  the bug. A suppressed terminal is now also barred from the task cache, so it cannot be
+  replayed later as a verdict no run produced.
+
+- fix!: **IPC commands get a narrow `CommandCtx` — they can observe and `Post`, never
+  launch work.** (AUTOMATION-99) `PluginHandler.Commands` received the full `PluginCtx`
+  and ran on the IPC thread, outside the mailbox and outside the busy accounting — the
+  exact capability that caused this bug, and one that had a second live user
+  (`coverage-ratchet` rewriting its config file while a check might be reading it).
+  `CommandCtx` exposes `RepoRoot` / `Log` / `Post` / `IsRunning` / `ProjectGraph` and
+  nothing else, so `Post` is the only expressible way for a command to cause work.
+  - **BREAKING:** command handlers take `CommandCtx<'Msg>` instead of `PluginCtx<'Msg>`.
+
+- feat: repo-local convention analyzers (`analyzers/FsHotWatch.Rules`, loaded by the gate
+  via `.fshw.json`): `FSHW-CLAIM-001` (a `RunClaim` must never be discarded) and
+  `FSHW-CLOCK-001` (no `DateTime.Now` — every daemon timestamp is UTC). Both fire in CI
+  and are pinned by positive *and* negative controls.
+
 - fix!: **`Completed` carries its verdict — a guard that cannot say what it measured
   has not measured anything.** (AUTOMATION-99) `PluginStatus.Completed` is now
   `Completed of at * verdict: RunVerdict` where `RunVerdict = { Summary; Elapsed }`,

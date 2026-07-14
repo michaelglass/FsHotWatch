@@ -19,7 +19,8 @@ let private nullChecker =
 /// Project the live host state into a ParsedPluginStatus for one plugin so the
 /// renderer can consume it exactly like the IPC payload parser would.
 let private parsedFor (host: PluginHost) (name: string) : ParsedPluginStatus =
-    let status = host.GetStatus(name) |> Option.defaultValue Idle
+    let status =
+        host.GetStatus(name) |> Option.defaultValue Idle |> StatusView.ofPluginStatus
 
     let lastRun = host.GetHistory(name) |> List.tryHead
 
@@ -55,11 +56,7 @@ let private makeFakePlugin (duringRun: PluginCtx<unit> -> PluginHost -> unit) (h
                     ctx.EndSubtask "c"
 
                     ctx.ReportStatus(
-                        Completed(
-                            System.DateTime.UtcNow,
-                            { Summary = "did 3 things"
-                              Elapsed = System.TimeSpan.Zero }
-                        )
+                        Completed(System.DateTime.UtcNow, RunVerdict.create "did 3 things" System.TimeSpan.Zero)
                     )
                 | _ -> ()
 

@@ -85,26 +85,42 @@ type ProjectCheckResult =
         FileResults: Map<string, FileCheckResult>
     }
 
-/// The evidence a `Completed` status carries: WHAT the run did and how long it
-/// took. A guard that cannot say what it measured has not measured anything —
-/// so "done, with nothing to report" is unrepresentable by construction
-/// (AUTOMATION-99): every completion site must state its verdict, and a
+/// The evidence EVERY terminal status carries: WHAT the run did and how long
+/// it took. A guard that cannot say what it measured has not measured anything
+/// — so "done, with nothing to report" is unrepresentable by construction
+/// (AUTOMATION-99): every terminal site must state its verdict, and a
 /// content-free `✓` (the observed "started: with no elapsed:" manufactured
-/// terminal) cannot be built. `Failed` needs no counterpart — its `error` IS
-/// its evidence.
+/// terminal) cannot be built. The representation is PRIVATE — the only way to
+/// obtain a value is `RunVerdict.create`, which rejects an empty summary — so
+/// no site (daemon, cache deserializer, test helper, or example) can build a
+/// hollow verdict.
 [<NoComparison>]
 type RunVerdict =
-    {
-        /// Human-readable statement of what the run did — e.g.
-        /// "6 passed, 0 failed in 6 projects". Rendered by `fshw status`/`check`
-        /// and recorded as the run's history summary.
-        Summary: string
-        /// The plugin's own measurement of the completed work's duration.
-        /// Drives the run record's elapsed (the host derives startedAt from
-        /// `at - Elapsed`), so a completion that never went through `Running`
-        /// still renders honest timing.
-        Elapsed: System.TimeSpan
-    }
+    private
+        { summary: string
+          elapsed: System.TimeSpan }
+
+    /// Human-readable statement of what the run did — e.g.
+    /// "6 passed, 0 failed in 6 projects". Rendered by `fshw status`/`check`
+    /// and recorded as the run's history summary. Non-empty by construction.
+    member this.Summary = this.summary
+
+    /// The plugin's own measurement of the run's duration. Drives the run
+    /// record's elapsed (the host derives startedAt from `at - Elapsed`), so a
+    /// terminal that never went through `Running` still renders honest timing.
+    /// `TimeSpan.Zero` is the conventional "no measurable work ran" value.
+    member this.Elapsed = this.elapsed
+
+module RunVerdict =
+    /// The ONLY constructor. Throws on a null/empty/whitespace summary: a
+    /// verdict that says nothing is not a verdict (AUTOMATION-99).
+    let create (summary: string) (elapsed: System.TimeSpan) : RunVerdict =
+        if System.String.IsNullOrWhiteSpace summary then
+            invalidArg
+                (nameof summary)
+                "a RunVerdict summary must state what the run did — empty/whitespace is the content-free ✓ AUTOMATION-99 exists to kill"
+
+        { summary = summary; elapsed = elapsed }
 
 /// Current status of a plugin or preprocessor.
 [<NoComparison>]
@@ -115,10 +131,22 @@ type PluginStatus =
     | Running of since: System.DateTime
     /// Plugin finished processing successfully, carrying the verdict it earned.
     | Completed of at: System.DateTime * verdict: RunVerdict
-    /// Plugin encountered an error.
-    | Failed of error: string * at: System.DateTime
+    /// Plugin encountered an error. `error` is the diagnosis; the verdict still
+    /// carries the run's one-line summary and measured duration, so a failure
+    /// can never record a fabricated zero-length run ("started: with no
+    /// elapsed:" — the AUTOMATION-99 signature).
+    | Failed of error: string * at: System.DateTime * verdict: RunVerdict
 
 module PluginStatus =
+    /// Completed at the current UTC instant, carrying the verdict.
+    let completedNow (summary: string) (elapsed: System.TimeSpan) : PluginStatus =
+        Completed(System.DateTime.UtcNow, RunVerdict.create summary elapsed)
+
+    /// Failed at the current UTC instant. `error` is the full diagnosis;
+    /// `summary` is the one-line human verdict recorded in run history.
+    let failedNow (error: string) (summary: string) (elapsed: System.TimeSpan) : PluginStatus =
+        Failed(error, System.DateTime.UtcNow, RunVerdict.create summary elapsed)
+
     let inline isTerminal status =
         match status with
         | Idle

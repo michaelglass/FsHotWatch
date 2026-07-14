@@ -75,7 +75,7 @@ let ``ContentHash round-trips`` () =
 let ``isTerminal is true for Completed and Failed, false for Idle and Running`` () =
     let now = System.DateTime.UtcNow
     test <@ PluginStatus.isTerminal (completedAt now) @>
-    test <@ PluginStatus.isTerminal (Failed("err", now)) @>
+    test <@ PluginStatus.isTerminal (failedAt "err" now) @>
     test <@ not (PluginStatus.isTerminal Idle) @>
     test <@ not (PluginStatus.isTerminal (Running(since = now))) @>
 
@@ -84,7 +84,7 @@ let ``isQuiescent is true for Idle, Completed and Failed, false for Running`` ()
     let now = System.DateTime.UtcNow
     test <@ PluginStatus.isQuiescent Idle @>
     test <@ PluginStatus.isQuiescent (completedAt now) @>
-    test <@ PluginStatus.isQuiescent (Failed("err", now)) @>
+    test <@ PluginStatus.isQuiescent (failedAt "err" now) @>
     test <@ not (PluginStatus.isQuiescent (Running(since = now))) @>
 
 // --- TestResult helpers ---
@@ -159,3 +159,49 @@ let ``TestResult.ranFullSuite is false if any project was filtered`` () =
               "B", TestsPassed("ok", true, TimeSpan.Zero) ]
 
     test <@ not (TestResult.ranFullSuite results) @>
+
+// --- RunVerdict: a content-free ✓ is unconstructible (AUTOMATION-99) ---------
+//
+// The representation is private, so `RunVerdict.create` is the ONLY way to
+// obtain a value — daemon, cache deserializer, CLI, test helper, example. These
+// pin that it refuses a verdict that says nothing.
+
+[<Fact(Timeout = 15000)>]
+let ``RunVerdict.create rejects an empty summary`` () =
+    raises<System.ArgumentException> <@ RunVerdict.create "" (TimeSpan.FromSeconds 1.0) @>
+
+[<Fact(Timeout = 15000)>]
+let ``RunVerdict.create rejects a whitespace-only summary`` () =
+    raises<System.ArgumentException> <@ RunVerdict.create "   \t\n " TimeSpan.Zero @>
+
+[<Fact(Timeout = 15000)>]
+let ``RunVerdict.create keeps the summary and elapsed it was given`` () =
+    let v = RunVerdict.create "6 passed, 0 failed" (TimeSpan.FromSeconds 12.5)
+    test <@ v.Summary = "6 passed, 0 failed" @>
+    test <@ v.Elapsed = TimeSpan.FromSeconds 12.5 @>
+
+[<Fact(Timeout = 15000)>]
+let ``a zero elapsed is honest (nothing measurable ran), an empty summary is not`` () =
+    // Zero duration is a legitimate measurement (a cache replay, a no-op cycle);
+    // "I have nothing to say about what I did" never is.
+    let v = RunVerdict.create "0 files checked" TimeSpan.Zero
+    test <@ v.Elapsed = TimeSpan.Zero @>
+
+[<Fact(Timeout = 15000)>]
+let ``PluginStatus.completedNow and failedNow carry their verdict`` () =
+    match PluginStatus.completedNow "did a thing" (TimeSpan.FromSeconds 2.0) with
+    | Completed(_, v) ->
+        test <@ v.Summary = "did a thing" @>
+        test <@ v.Elapsed = TimeSpan.FromSeconds 2.0 @>
+    | other -> failwithf "expected Completed, got %A" other
+
+    // Failed carries BOTH: the error is the diagnosis, the verdict is the
+    // one-line human summary + the measured duration. That is what stops
+    // RecordTerminal guessing a start time and rendering the "started: with no
+    // elapsed:" signature this bug was diagnosed by.
+    match PluginStatus.failedNow "stack trace here" "2 failed: A, B" (TimeSpan.FromSeconds 3.0) with
+    | Failed(err, _, v) ->
+        test <@ err = "stack trace here" @>
+        test <@ v.Summary = "2 failed: A, B" @>
+        test <@ v.Elapsed = TimeSpan.FromSeconds 3.0 @>
+    | other -> failwithf "expected Failed, got %A" other

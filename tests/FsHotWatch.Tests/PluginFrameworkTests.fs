@@ -12,6 +12,29 @@ open FsHotWatch.Tests.TestHelpers
 /// Shared FSharpChecker for tests.
 let private checker = TestHelpers.sharedChecker.Value
 
+/// No-op PluginHostServices — tests override just the fields they observe.
+let private defaultServices: PluginHostServices =
+    { Checker = checker
+      RepoRoot = "/tmp/repo"
+      ReportStatus = fun _ _ -> ()
+      ReportErrors = fun _ _ _ -> ()
+      ClearErrors = fun _ _ -> ()
+      ClearPlugin = fun _ -> ()
+      EmitBuildCompleted = fun _ -> ()
+      EmitTestRunStarted = fun _ -> ()
+      EmitTestProgress = fun _ -> ()
+      EmitTestRunCompleted = fun _ -> ()
+      EmitCommandCompleted = fun _ -> ()
+      RegisterCommand = fun _ -> ()
+      TaskCache = None
+      StartSubtask = fun _ _ _ -> ()
+      UpdateSubtask = fun _ _ _ -> ()
+      EndSubtask = fun _ _ -> ()
+      Log = fun _ _ -> ()
+      SetNextTerminalOutcome = fun _ _ -> ()
+      FcsSuppressedCodes = Set.empty
+      ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+
 /// Helper: register a handler with no-op host functions by default.
 let private registerWith
     (handler: PluginHandler<'State, 'Msg>)
@@ -20,27 +43,8 @@ let private registerWith
     let registerCommand = defaultArg registerCommand (fun _ -> ())
 
     registerHandler
-        { Checker = checker
-          RepoRoot = "/tmp/repo"
-          ReportStatus = fun _ _ -> ()
-          ReportErrors = fun _ _ _ -> ()
-          ClearErrors = fun _ _ -> ()
-          ClearPlugin = fun _ -> ()
-          EmitBuildCompleted = fun _ -> ()
-          EmitTestRunStarted = fun _ -> ()
-          EmitTestProgress = fun _ -> ()
-          EmitTestRunCompleted = fun _ -> ()
-          EmitCommandCompleted = fun _ -> ()
-          RegisterCommand = registerCommand
-          TaskCache = None
-          StartSubtask = fun _ _ _ -> ()
-          UpdateSubtask = fun _ _ _ -> ()
-          EndSubtask = fun _ _ -> ()
-          Log = fun _ _ -> ()
-          SetSummary = fun _ _ -> ()
-          SetNextTerminalOutcome = fun _ _ -> ()
-          FcsSuppressedCodes = Set.empty
-          ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+        { defaultServices with
+            RegisterCommand = registerCommand }
         handler
 
 /// Register with all defaults.
@@ -298,27 +302,9 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
 
     let reg =
         registerHandler
-            { Checker = checker
-              RepoRoot = "/tmp/repo"
-              ReportStatus = fun _ status -> reportedStatuses.Enqueue(status)
-              ReportErrors = fun _ _ _ -> ()
-              ClearErrors = fun _ _ -> ()
-              ClearPlugin = fun _ -> ()
-              EmitBuildCompleted = fun _ -> ()
-              EmitTestRunStarted = fun _ -> ()
-              EmitTestProgress = fun _ -> ()
-              EmitTestRunCompleted = fun _ -> ()
-              EmitCommandCompleted = fun _ -> ()
-              RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd
-              TaskCache = None
-              StartSubtask = fun _ _ _ -> ()
-              UpdateSubtask = fun _ _ _ -> ()
-              EndSubtask = fun _ _ -> ()
-              Log = fun _ _ -> ()
-              SetSummary = fun _ _ -> ()
-              SetNextTerminalOutcome = fun _ _ -> ()
-              FcsSuppressedCodes = Set.empty
-              ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+            { defaultServices with
+                ReportStatus = fun _ status -> reportedStatuses.Enqueue(status)
+                RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd }
             handler
 
     reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
@@ -341,7 +327,7 @@ let ``handler that throws after ReportStatus(Running) still transitions status t
         <@
             statuses
             |> List.exists (function
-                | Failed(msg, _) -> msg.Contains("simulated DB schema drift")
+                | Failed(msg, _, _) -> msg.Contains("simulated DB schema drift")
                 | _ -> false)
         @>
 
@@ -382,27 +368,9 @@ let ``handler that throws records ex.ToString() (full type+stack) in Failed stat
 
     let reg =
         registerHandler
-            { Checker = checker
-              RepoRoot = "/tmp/repo"
-              ReportStatus = fun _ status -> reportedStatuses.Enqueue(status)
-              ReportErrors = fun _ _ _ -> ()
-              ClearErrors = fun _ _ -> ()
-              ClearPlugin = fun _ -> ()
-              EmitBuildCompleted = fun _ -> ()
-              EmitTestRunStarted = fun _ -> ()
-              EmitTestProgress = fun _ -> ()
-              EmitTestRunCompleted = fun _ -> ()
-              EmitCommandCompleted = fun _ -> ()
-              RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd
-              TaskCache = None
-              StartSubtask = fun _ _ _ -> ()
-              UpdateSubtask = fun _ _ _ -> ()
-              EndSubtask = fun _ _ -> ()
-              Log = fun _ _ -> ()
-              SetSummary = fun _ _ -> ()
-              SetNextTerminalOutcome = fun _ _ -> ()
-              FcsSuppressedCodes = Set.empty
-              ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+            { defaultServices with
+                ReportStatus = fun _ status -> reportedStatuses.Enqueue(status)
+                RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd }
             handler
 
     reg.Dispatch(DispatchFileChanged(SourceChanged [ "/tmp/Foo.fs" ]))
@@ -413,7 +381,7 @@ let ``handler that throws records ex.ToString() (full type+stack) in Failed stat
     let failedMsg =
         statuses
         |> List.tryPick (function
-            | Failed(m, _) -> Some m
+            | Failed(m, _, _) -> Some m
             | _ -> None)
 
     test <@ failedMsg.IsSome @>
@@ -427,27 +395,9 @@ let ``handler that throws records ex.ToString() (full type+stack) in Failed stat
 
 /// Build host services with a provided TaskCache for these tests.
 let private servicesWithCache (cache: TaskCache.ITaskCache) (registerCommand: string * CommandHandler -> unit) =
-    { Checker = checker
-      RepoRoot = "/tmp/repo"
-      ReportStatus = fun _ _ -> ()
-      ReportErrors = fun _ _ _ -> ()
-      ClearErrors = fun _ _ -> ()
-      ClearPlugin = fun _ -> ()
-      EmitBuildCompleted = fun _ -> ()
-      EmitTestRunStarted = fun _ -> ()
-      EmitTestProgress = fun _ -> ()
-      EmitTestRunCompleted = fun _ -> ()
-      EmitCommandCompleted = fun _ -> ()
-      RegisterCommand = registerCommand
-      TaskCache = Some cache
-      StartSubtask = fun _ _ _ -> ()
-      UpdateSubtask = fun _ _ _ -> ()
-      EndSubtask = fun _ _ -> ()
-      Log = fun _ _ -> ()
-      SetSummary = fun _ _ -> ()
-      SetNextTerminalOutcome = fun _ _ -> ()
-      FcsSuppressedCodes = Set.empty
-      ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+    { defaultServices with
+        RegisterCommand = registerCommand
+        TaskCache = Some cache }
 
 [<Fact(Timeout = 20000)>]
 let ``pre-populated cache replays on the very first dispatch`` () =
@@ -602,7 +552,7 @@ let ``cache key is computed exactly once per dispatched event on a cache hit`` (
 type private RxMsg = RxDone of int
 
 [<Fact(Timeout = 20000)>]
-let ``RunExclusive ignores second call while first is running`` () =
+let ``RunExclusive does not start a second run while the first holds the slot`` () =
     async {
         let started = ref 0
         let completed = ref 0
@@ -617,13 +567,21 @@ let ``RunExclusive ignores second call while first is running`` () =
                     async {
                         match event with
                         | FileChanged _ ->
-                            ctx.RunExclusive
-                                "k"
-                                (async {
-                                    System.Threading.Interlocked.Increment(started) |> ignore
-                                    gate.Wait()
-                                    return RxDone 1
-                                })
+                            // Both outcomes are this test's subject: the first
+                            // dispatch claims, the second lands on SlotBusy (the
+                            // single-flight semantics under test). The CALLER
+                            // decides what a refusal means — here, skip.
+                            match
+                                ctx.RunExclusive
+                                    "k"
+                                    (async {
+                                        System.Threading.Interlocked.Increment(started) |> ignore
+                                        gate.Wait()
+                                        return RxDone 1
+                                    })
+                            with
+                            | Claimed
+                            | SlotBusy -> ()
 
                             return state
                         | Custom(RxDone n) ->
@@ -727,27 +685,17 @@ let ``cache replay re-emits BuildCompleted, TestRunStarted, TestProgress, TestRu
         let mutable registeredCmd: CommandHandler option = None
 
         let services =
-            { Checker = checker
-              RepoRoot = "/tmp/repo"
-              ReportStatus = fun _ _ -> ()
-              ReportErrors = fun _ file _ -> lock reportedFiles (fun () -> reportedFiles.Add(file))
-              ClearErrors = fun _ file -> lock clearedFiles (fun () -> clearedFiles.Add(file))
-              ClearPlugin = fun _ -> System.Threading.Interlocked.Increment(clearedPlugin) |> ignore
-              EmitBuildCompleted = fun _ -> System.Threading.Interlocked.Increment(buildSeen) |> ignore
-              EmitTestRunStarted = fun _ -> System.Threading.Interlocked.Increment(trsSeen) |> ignore
-              EmitTestProgress = fun _ -> System.Threading.Interlocked.Increment(tpSeen) |> ignore
-              EmitTestRunCompleted = fun _ -> System.Threading.Interlocked.Increment(trcSeen) |> ignore
-              EmitCommandCompleted = fun _ -> System.Threading.Interlocked.Increment(ccSeen) |> ignore
-              RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd
-              TaskCache = Some cache
-              StartSubtask = fun _ _ _ -> ()
-              UpdateSubtask = fun _ _ _ -> ()
-              EndSubtask = fun _ _ -> ()
-              Log = fun _ _ -> ()
-              SetSummary = fun _ _ -> ()
-              SetNextTerminalOutcome = fun _ _ -> ()
-              FcsSuppressedCodes = Set.empty
-              ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+            { defaultServices with
+                ReportErrors = fun _ file _ -> lock reportedFiles (fun () -> reportedFiles.Add(file))
+                ClearErrors = fun _ file -> lock clearedFiles (fun () -> clearedFiles.Add(file))
+                ClearPlugin = fun _ -> System.Threading.Interlocked.Increment(clearedPlugin) |> ignore
+                EmitBuildCompleted = fun _ -> System.Threading.Interlocked.Increment(buildSeen) |> ignore
+                EmitTestRunStarted = fun _ -> System.Threading.Interlocked.Increment(trsSeen) |> ignore
+                EmitTestProgress = fun _ -> System.Threading.Interlocked.Increment(tpSeen) |> ignore
+                EmitTestRunCompleted = fun _ -> System.Threading.Interlocked.Increment(trcSeen) |> ignore
+                EmitCommandCompleted = fun _ -> System.Threading.Interlocked.Increment(ccSeen) |> ignore
+                RegisterCommand = fun (_, cmd) -> registeredCmd <- Some cmd
+                TaskCache = Some cache }
 
         let updateCalls = ref 0
 
@@ -811,22 +759,26 @@ let ``RunExclusive releases slot when work raises and logs without re-posting co
 
                         match event with
                         | FileChanged(SourceChanged [ "/throw" ]) ->
-                            ctx.RunExclusive
-                                "k"
-                                (async {
-                                    System.Threading.Interlocked.Increment(started) |> ignore
-                                    return failwith "boom"
-                                })
+                            let claim =
+                                ctx.RunExclusive
+                                    "k"
+                                    (async {
+                                        System.Threading.Interlocked.Increment(started) |> ignore
+                                        return failwith "boom"
+                                    })
 
+                            test <@ claim = Claimed @>
                             return state
                         | FileChanged _ ->
-                            ctx.RunExclusive
-                                "k"
-                                (async {
-                                    System.Threading.Interlocked.Increment(started) |> ignore
-                                    return RxDone 1
-                                })
+                            let claim =
+                                ctx.RunExclusive
+                                    "k"
+                                    (async {
+                                        System.Threading.Interlocked.Increment(started) |> ignore
+                                        return RxDone 1
+                                    })
 
+                            test <@ claim = Claimed @>
                             return state
                         | Custom(RxDone n) ->
                             System.Threading.Interlocked.Increment(completed) |> ignore
@@ -887,27 +839,8 @@ let ``RunExclusive forces a terminal Failed status when work raises (no strand)`
                     | _ -> false)
 
         let services: PluginHostServices =
-            { Checker = checker
-              RepoRoot = "/tmp/repo"
-              ReportStatus = fun name status -> statuses.Enqueue(name, status)
-              ReportErrors = fun _ _ _ -> ()
-              ClearErrors = fun _ _ -> ()
-              ClearPlugin = fun _ -> ()
-              EmitBuildCompleted = fun _ -> ()
-              EmitTestRunStarted = fun _ -> ()
-              EmitTestProgress = fun _ -> ()
-              EmitTestRunCompleted = fun _ -> ()
-              EmitCommandCompleted = fun _ -> ()
-              RegisterCommand = fun _ -> ()
-              TaskCache = None
-              StartSubtask = fun _ _ _ -> ()
-              UpdateSubtask = fun _ _ _ -> ()
-              EndSubtask = fun _ _ -> ()
-              Log = fun _ _ -> ()
-              SetSummary = fun _ _ -> ()
-              SetNextTerminalOutcome = fun _ _ -> ()
-              FcsSuppressedCodes = Set.empty
-              ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+            { defaultServices with
+                ReportStatus = fun name status -> statuses.Enqueue(name, status) }
 
         let handler: PluginHandler<int, RxMsg> =
             { Name = PluginName.create "rx-strand"
@@ -919,10 +852,10 @@ let ``RunExclusive forces a terminal Failed status when work raises (no strand)`
 
                         match event with
                         | FileChanged _ ->
-                            // Mirror test-prune: announce Running, THEN launch the
-                            // exclusive work that faults before posting completion.
-                            ctx.ReportStatus(PluginStatus.Running(since = System.DateTime.UtcNow))
-                            ctx.RunExclusive "k" (async { return failwith "boom" })
+                            // The framework reports Running at the claim; the
+                            // exclusive work faults before posting completion.
+                            let claim = ctx.RunExclusive "k" (async { return failwith "boom" })
+                            test <@ claim = Claimed @>
                             return state
                         | _ -> return state
                     }
@@ -963,13 +896,15 @@ let ``IsRunning reports true while work in flight, false after completion`` () =
 
                         match event with
                         | FileChanged _ ->
-                            ctx.RunExclusive
-                                "k"
-                                (async {
-                                    gate.Wait()
-                                    return RxDone 1
-                                })
+                            let claim =
+                                ctx.RunExclusive
+                                    "k"
+                                    (async {
+                                        gate.Wait()
+                                        return RxDone 1
+                                    })
 
+                            test <@ claim = Claimed @>
                             return state
                         | Custom(RxDone _) -> return state + 1
                         | _ -> return state
@@ -1112,25 +1047,21 @@ let ``a handler throw while an exclusive run is in flight does not stomp a termi
                 async {
                     match event with
                     | FileChanged(SourceChanged [ "/start" ]) ->
-                        ctx.ReportStatus(Running(since = System.DateTime.UtcNow))
+                        let claim =
+                            ctx.RunExclusive
+                                "work"
+                                (async {
+                                    do! runGate.WaitAsync() |> Async.AwaitTask
+                                    return "run-finished"
+                                })
 
-                        ctx.RunExclusive
-                            "work"
-                            (async {
-                                do! runGate.WaitAsync() |> Async.AwaitTask
-                                return "run-finished"
-                            })
-
+                        test <@ claim = Claimed @>
                         return state
                     | FileChanged _ -> return failwith "boom mid-run"
                     | Custom _ ->
                         // The run's earned verdict.
                         ctx.ReportStatus(
-                            Completed(
-                                System.DateTime.UtcNow,
-                                { Summary = "run finished"
-                                  Elapsed = System.TimeSpan.Zero }
-                            )
+                            Completed(System.DateTime.UtcNow, RunVerdict.create "run finished" System.TimeSpan.Zero)
                         )
 
                         return state
@@ -1143,27 +1074,8 @@ let ``a handler throw while an exclusive run is in flight does not stomp a termi
 
     let reg =
         registerHandler
-            { Checker = checker
-              RepoRoot = "/tmp/repo"
-              ReportStatus = fun _ s -> statuses.Enqueue s
-              ReportErrors = fun _ _ _ -> ()
-              ClearErrors = fun _ _ -> ()
-              ClearPlugin = fun _ -> ()
-              EmitBuildCompleted = fun _ -> ()
-              EmitTestRunStarted = fun _ -> ()
-              EmitTestProgress = fun _ -> ()
-              EmitTestRunCompleted = fun _ -> ()
-              EmitCommandCompleted = fun _ -> ()
-              RegisterCommand = fun _ -> ()
-              TaskCache = None
-              StartSubtask = fun _ _ _ -> ()
-              UpdateSubtask = fun _ _ _ -> ()
-              EndSubtask = fun _ _ -> ()
-              Log = fun _ _ -> ()
-              SetSummary = fun _ _ -> ()
-              SetNextTerminalOutcome = fun _ _ -> ()
-              FcsSuppressedCodes = Set.empty
-              ProjectGraph = FsHotWatch.PluginFramework.ProjectGraphAccessor.none }
+            { defaultServices with
+                ReportStatus = fun _ s -> statuses.Enqueue s }
             handler
 
     // Launch the gated run, then crash the handler while the run is in flight.
@@ -1211,3 +1123,573 @@ let ``a handler throw while an exclusive run is in flight does not stomp a termi
                 | Completed(_, v) -> v.Summary = "run finished"
                 | _ -> false)
         @>
+
+// ---------------------------------------------------------------------------
+// RunClaim: a refused claim is a VALUE the caller cannot drop (AUTOMATION-99)
+// ---------------------------------------------------------------------------
+
+type private ClaimMsg = ClaimDone
+
+/// A one-shot gate for holding a background run open.
+///
+/// Deliberately NOT a disposable primitive: a `use`d SemaphoreSlim is disposed
+/// when the test's scope ends, which can happen while the gated run is still
+/// resuming on it — the run then faults with ObjectDisposedException, the
+/// framework forces a terminal, and the thread-pool churn destabilises
+/// NEIGHBOURING tests (observed: a CheckPipeline test timed out). A
+/// TaskCompletionSource has no such lifetime.
+type private Gate() =
+    let tcs =
+        System.Threading.Tasks.TaskCompletionSource<unit>(
+            System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+        )
+
+    /// Await the gate from inside the run.
+    member _.Wait: Async<unit> = Async.AwaitTask tcs.Task
+
+    /// Let the run proceed. Idempotent.
+    member _.Open() = tcs.TrySetResult(()) |> ignore
+
+/// Open the gate and wait for the plugin to go fully quiet, so no background
+/// run outlives the test that started it.
+let private openAndDrain (gate: Gate) (reg: RegisteredPlugin) =
+    gate.Open()
+    waitUntil (fun () -> not (reg.IsBusy())) 15000
+
+[<Fact(Timeout = 20000)>]
+let ``RunExclusive reports Running at the claim — the framework owns the start`` () =
+    // A run nobody can see as Running is unrepresentable: the FRAMEWORK reports
+    // Running when it claims the slot, so a plugin cannot launch work and forget
+    // to announce it (CoveragePlugin shipped exactly that gap, which also
+    // starved the host's work-cycle generation counter).
+    let statuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
+    let gate = Gate()
+
+    let handler: PluginHandler<unit, ClaimMsg> =
+        { Name = PluginName.create "silent-launcher"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        // NOTE: no ReportStatus(Running) here — deliberately.
+                        let claim =
+                            ctx.RunExclusive
+                                "work"
+                                (async {
+                                    do! gate.Wait
+                                    return ClaimDone
+                                })
+
+                        test <@ claim = Claimed @>
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          CacheKey = None
+          Teardown = None }
+
+    let reg =
+        registerHandler
+            { defaultServices with
+                ReportStatus = fun _ s -> statuses.Enqueue s }
+            handler
+
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/a.fs" ]))
+
+    waitUntil
+        (fun () ->
+            statuses
+            |> Seq.exists (function
+                | Running _ -> true
+                | _ -> false))
+        10000
+
+    test
+        <@
+            statuses
+            |> Seq.exists (function
+                | Running _ -> true
+                | _ -> false)
+        @>
+
+    openAndDrain gate reg
+
+[<Fact(Timeout = 20000)>]
+let ``RunExclusive returns SlotBusy when the slot is held — the work is NOT started`` () =
+    // The bug this makes unwritable: `runExclusive` used to return unit and drop
+    // the refused work with a debug log. The caller could not tell — so a
+    // `run-tests` whose claim was refused replied "busy" and exited 0 having run
+    // nothing, and a reply TCS resolved inside the dropped work would never
+    // resolve at all.
+    let started = ref 0
+    let claims = System.Collections.Concurrent.ConcurrentQueue<RunClaim>()
+    let gate = Gate()
+
+    let handler: PluginHandler<unit, ClaimMsg> =
+        { Name = PluginName.create "claim-refused"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        let claim =
+                            ctx.RunExclusive
+                                "work"
+                                (async {
+                                    System.Threading.Interlocked.Increment(started) |> ignore
+                                    do! gate.Wait
+                                    return ClaimDone
+                                })
+
+                        claims.Enqueue claim
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          CacheKey = None
+          Teardown = None }
+
+    let reg = registerDefault handler
+
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/a.fs" ]))
+    waitUntil (fun () -> System.Threading.Volatile.Read(&started.contents) = 1) 10000
+
+    // Second trigger while the first run holds the slot.
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/b.fs" ]))
+    waitUntil (fun () -> claims.Count = 2) 10000
+
+    let observed = claims.ToArray() |> List.ofArray
+    test <@ observed = [ Claimed; SlotBusy ] @>
+    // The refused work NEVER ran — that is what makes dropping it a bug the
+    // caller has to answer for, not a silent no-op.
+    let startedCount = System.Threading.Volatile.Read(&started.contents)
+    test <@ startedCount = 1 @>
+
+    openAndDrain gate reg
+
+[<Fact(Timeout = 20000)>]
+let ``a terminal stamped by ANY plugin path while a run is in flight is suppressed at the funnel`` () =
+    // The ownership rule is enforced at the ONE choke point every plugin-originated
+    // status passes through — not re-implemented as `if not (ctx.IsRunning "tests")`
+    // in each handler (which is the duplication class that caused this bug). Here
+    // the plugin reports a Completed mid-run *directly*: the framework must drop it.
+    let statuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
+    let gate = Gate()
+
+    let handler: PluginHandler<unit, ClaimMsg> =
+        { Name = PluginName.create "stomper"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged(SourceChanged [ "/start" ]) ->
+                        let claim =
+                            ctx.RunExclusive
+                                "work"
+                                (async {
+                                    do! gate.Wait
+                                    return ClaimDone
+                                })
+
+                        test <@ claim = Claimed @>
+                    | FileChanged _ ->
+                        // A per-file handler stamping a terminal WHILE the run is
+                        // live — the manufactured-✓ that made `check` exit 0.
+                        ctx.ReportStatus(PluginStatus.completedNow "per-file work, no run due" System.TimeSpan.Zero)
+                    | Custom ClaimDone ->
+                        ctx.ReportStatus(
+                            PluginStatus.completedNow "the run's earned verdict" (System.TimeSpan.FromSeconds 1.0)
+                        )
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          CacheKey = None
+          Teardown = None }
+
+    let reg =
+        registerHandler
+            { defaultServices with
+                ReportStatus = fun _ s -> statuses.Enqueue s }
+            handler
+
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/start" ]))
+
+    waitUntil
+        (fun () ->
+            statuses
+            |> Seq.exists (function
+                | Running _ -> true
+                | _ -> false))
+        10000
+
+    // Stomp attempt, while the run is provably still gated.
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/stomp" ]))
+    System.Threading.Thread.Sleep 500
+
+    let midRun = statuses.ToArray() |> List.ofArray
+
+    test
+        <@
+            midRun
+            |> List.forall (function
+                | Completed _
+                | Failed _ -> false
+                | Idle
+                | Running _ -> true)
+        @>
+
+    // Releasing the run lets its OWN verdict through — suppression is scoped to
+    // the live run, it does not silence the plugin forever.
+    gate.Open()
+
+    waitUntil
+        (fun () ->
+            statuses
+            |> Seq.exists (function
+                | Completed(_, v) -> v.Summary = "the run's earned verdict"
+                | _ -> false))
+        10000
+
+    test
+        <@
+            statuses
+            |> Seq.exists (function
+                | Completed(_, v) -> v.Summary = "the run's earned verdict"
+                | _ -> false)
+        @>
+
+    waitUntil (fun () -> not (reg.IsBusy())) 15000
+
+// ---------------------------------------------------------------------------
+// The SAME guarantees on the CACHE-ENABLED path (the capturing ctx).
+//
+// `runAndCache` hands the handler a DIFFERENT PluginCtx — the one that records
+// side effects for the task cache. Every ownership rule must hold there too, or
+// the guarantee is only true for plugins that happen to have no cache. (A cache
+// key is exactly what TestPrune and Build have.)
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 20000)>]
+let ``cache path: a terminal stamped while a run is in flight is neither reported NOR cached`` () =
+    // Sharpest form of the bug: the suppressed terminal must not sneak into the
+    // task cache either. A cached manufactured-✓ would be REPLAYED on the next
+    // matching event — a false green that outlives the run that caused it.
+    let cache = TaskCache.InMemoryTaskCache()
+    let statuses = System.Collections.Concurrent.ConcurrentQueue<PluginStatus>()
+    let gate = Gate()
+
+    let handler: PluginHandler<unit, ClaimMsg> =
+        { Name = PluginName.create "cached-stomper"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged(SourceChanged [ "/start" ]) ->
+                        let claim =
+                            ctx.RunExclusive
+                                "work"
+                                (async {
+                                    do! gate.Wait
+                                    return ClaimDone
+                                })
+
+                        test <@ claim = Claimed @>
+                    | FileChanged _ ->
+                        ctx.ReportStatus(PluginStatus.completedNow "per-file work, no run due" System.TimeSpan.Zero)
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          CacheKey = Some(fun _ -> Some(ContentHash.create "k"))
+          Teardown = None }
+
+    let reg =
+        registerHandler
+            { defaultServices with
+                ReportStatus = fun _ s -> statuses.Enqueue s
+                TaskCache = Some(cache :> TaskCache.ITaskCache) }
+            handler
+
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/start" ]))
+
+    waitUntil
+        (fun () ->
+            statuses
+            |> Seq.exists (function
+                | Running _ -> true
+                | _ -> false))
+        10000
+
+    // Stomp attempt while the run is provably gated.
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/stomp" ]))
+    System.Threading.Thread.Sleep 500
+
+    // Not reported …
+    test
+        <@
+            statuses
+            |> Seq.forall (function
+                | Completed _
+                | Failed _ -> false
+                | Idle
+                | Running _ -> true)
+        @>
+
+    // … and not cached (nothing to replay as a false green later).
+    let cached =
+        (cache :> TaskCache.ITaskCache).TryGet
+            { Plugin = "cached-stomper"
+              File = None }
+            (ContentHash.create "k")
+
+    test <@ cached.IsNone @>
+
+    openAndDrain gate reg
+
+[<Fact(Timeout = 20000)>]
+let ``cache path: a handler that LAUNCHES a run does not cache the terminal it reported first`` () =
+    // TestPrune's queued-rerun shape: report the completed run's verdict, then
+    // immediately launch the next run. That terminal is about to be superseded
+    // by the run just started — caching it would replay a verdict the rerun
+    // exists to overturn.
+    let cache = TaskCache.InMemoryTaskCache()
+    let gate = Gate()
+
+    let handler: PluginHandler<unit, ClaimMsg> =
+        { Name = PluginName.create "relauncher"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        // A terminal FIRST (nothing is running yet, so it is
+                        // reported) …
+                        ctx.ReportStatus(PluginStatus.completedNow "prior cycle" System.TimeSpan.Zero)
+
+                        // … then a new run in the SAME capture window.
+                        let claim =
+                            ctx.RunExclusive
+                                "work"
+                                (async {
+                                    do! gate.Wait
+                                    return ClaimDone
+                                })
+
+                        test <@ claim = Claimed @>
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          CacheKey = Some(fun _ -> Some(ContentHash.create "k"))
+          Teardown = None }
+
+    let reg =
+        registerHandler
+            { defaultServices with
+                TaskCache = Some(cache :> TaskCache.ITaskCache) }
+            handler
+
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/a.fs" ]))
+    waitUntil (fun () -> reg.IsBusy()) 10000
+    System.Threading.Thread.Sleep 500
+
+    let cached =
+        (cache :> TaskCache.ITaskCache).TryGet { Plugin = "relauncher"; File = None } (ContentHash.create "k")
+
+    test <@ cached.IsNone @>
+
+    openAndDrain gate reg
+
+[<Fact(Timeout = 20000)>]
+let ``cache path: RunExclusive still refuses a second claim and says so`` () =
+    let cache = TaskCache.InMemoryTaskCache()
+    let claims = System.Collections.Concurrent.ConcurrentQueue<RunClaim>()
+    let gate = Gate()
+
+    let handler: PluginHandler<unit, ClaimMsg> =
+        { Name = PluginName.create "cached-claimer"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        let claim =
+                            ctx.RunExclusive
+                                "work"
+                                (async {
+                                    do! gate.Wait
+                                    return ClaimDone
+                                })
+
+                        claims.Enqueue claim
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          CacheKey = Some(fun _ -> Some(ContentHash.create "k"))
+          Teardown = None }
+
+    let reg =
+        registerHandler
+            { defaultServices with
+                TaskCache = Some(cache :> TaskCache.ITaskCache) }
+            handler
+
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/a.fs" ]))
+    waitUntil (fun () -> claims.Count = 1) 10000
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/b.fs" ]))
+    waitUntil (fun () -> claims.Count = 2) 10000
+
+    test <@ (claims.ToArray() |> List.ofArray) = [ Claimed; SlotBusy ] @>
+
+    openAndDrain gate reg
+
+[<Fact(Timeout = 20000)>]
+let ``cache path: a Failed terminal IS cached — with its verdict intact`` () =
+    // The Failed arm of the cache-write gate. A failure is a real, replayable
+    // result (that's how `check` stays red on an unchanged tree without
+    // re-running everything), and since the verdict now rides the terminal
+    // TRANSITION, the replayed failure carries its summary and elapsed too —
+    // there is no shape in which a cached Failed comes back content-free.
+    let cache = TaskCache.InMemoryTaskCache()
+
+    let handler: PluginHandler<unit, ClaimMsg> =
+        { Name = PluginName.create "cached-failer"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    | FileChanged _ ->
+                        ctx.ReportStatus(
+                            PluginStatus.failedNow
+                                "2 failed: Foo, Bar"
+                                "1 passed, 2 failed"
+                                (System.TimeSpan.FromSeconds 7.0)
+                        )
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          CacheKey = Some(fun _ -> Some(ContentHash.create "k"))
+          Teardown = None }
+
+    let reg =
+        registerHandler
+            { defaultServices with
+                TaskCache = Some(cache :> TaskCache.ITaskCache) }
+            handler
+
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/a.fs" ]))
+    waitUntil (fun () -> not (reg.IsBusy())) 10000
+
+    let cached =
+        (cache :> TaskCache.ITaskCache).TryGet
+            { Plugin = "cached-failer"
+              File = None }
+            (ContentHash.create "k")
+
+    test <@ cached.IsSome @>
+
+    match cached.Value.Status with
+    | Failed(err, _, v) ->
+        test <@ err = "2 failed: Foo, Bar" @>
+        test <@ v.Summary = "1 passed, 2 failed" @>
+        test <@ v.Elapsed = System.TimeSpan.FromSeconds 7.0 @>
+    | other -> failwithf "expected a cached Failed carrying its verdict, got %A" other
+
+[<Fact(Timeout = 25000)>]
+let ``cache path: only an EARNED terminal is written — every other shape is skipped`` () =
+    // The cache-write gate is what decides whether a result can be REPLAYED as a
+    // verdict later. It must admit exactly one thing: a terminal that this cycle
+    // actually earned. Every other shape — nothing reported, still Running, or a
+    // terminal immediately superseded by a run the same handler launched — must
+    // write NOTHING, or a future cache hit would hand `check` a verdict no run
+    // produced.
+    let cache = TaskCache.InMemoryTaskCache()
+    let c = cache :> TaskCache.ITaskCache
+    let gate = Gate()
+
+    let keyFor (event: PluginEvent<ClaimMsg>) =
+        match event with
+        | FileChanged(SourceChanged [ f ]) -> Some(ContentHash.create f)
+        | _ -> Some(ContentHash.create "other")
+
+    let handler: PluginHandler<unit, ClaimMsg> =
+        { Name = PluginName.create "gatekeeper"
+          Init = ()
+          Update =
+            fun ctx state event ->
+                async {
+                    match event with
+                    // (a) reports NOTHING — no status, so nothing was earned.
+                    | FileChanged(SourceChanged [ "/silent" ]) -> ()
+                    // (b) reports only Running — the work isn't done yet.
+                    | FileChanged(SourceChanged [ "/running" ]) ->
+                        ctx.ReportStatus(Running(since = System.DateTime.UtcNow))
+                    // (c) a Failed, then launches a run that will supersede it.
+                    | FileChanged(SourceChanged [ "/failed-then-run" ]) ->
+                        ctx.ReportStatus(PluginStatus.failedNow "prior red" "prior red" System.TimeSpan.Zero)
+
+                        let claim =
+                            ctx.RunExclusive
+                                "work"
+                                (async {
+                                    do! gate.Wait
+                                    return ClaimDone
+                                })
+
+                        test <@ claim = Claimed @>
+                    | _ -> ()
+
+                    return state
+                }
+          Commands = []
+          Subscriptions = Set.singleton SubscribeFileChanged
+          CacheKey = Some keyFor
+          Teardown = None }
+
+    let reg =
+        registerHandler
+            { defaultServices with
+                TaskCache = Some c }
+            handler
+
+    let cachedFor (f: string) =
+        c.TryGet { Plugin = "gatekeeper"; File = None } (ContentHash.create f)
+
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/silent" ]))
+    waitUntil (fun () -> not (reg.IsBusy())) 10000
+    test <@ (cachedFor "/silent").IsNone @>
+
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/running" ]))
+    waitUntil (fun () -> not (reg.IsBusy())) 10000
+    test <@ (cachedFor "/running").IsNone @>
+
+    reg.Dispatch(DispatchFileChanged(SourceChanged [ "/failed-then-run" ]))
+    System.Threading.Thread.Sleep 500
+    test <@ (cachedFor "/failed-then-run").IsNone @>
+
+    openAndDrain gate reg

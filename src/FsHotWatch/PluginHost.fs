@@ -14,12 +14,6 @@ type private StatusMsg =
     | GetStatus of string * AsyncReplyChannel<PluginStatus option>
     | GetAllStatuses of AsyncReplyChannel<Map<string, PluginStatus>>
 
-/// Internal state owned by the status agent's loop.
-[<NoComparison; NoEquality>]
-type private StatusAgentState =
-    { Statuses: Map<string, PluginStatus>
-      RunStartedAt: Map<string, System.DateTime> }
-
 /// Manages plugin lifecycle, event dispatch, command registration, and status tracking.
 type PluginHost
     (
@@ -122,72 +116,62 @@ type PluginHost
     // trigger callback.
     let statusAgent =
         MailboxProcessor<StatusMsg>.Start(fun inbox ->
-            let rec loop (state: StatusAgentState) =
+            let rec loop (statuses: Map<string, PluginStatus>) =
                 async {
                     let! msg = inbox.Receive()
 
                     match msg with
                     | SetStatus(name, status) ->
-                        let prev = Map.tryFind name state.Statuses
+                        let prev = Map.tryFind name statuses
                         bumpGenerationIfStarting name prev status
+
                         touchActivity ()
-                        let statuses' = Map.add name status state.Statuses
 
-                        let runStartedAt' =
-                            match prev, status with
-                            | _, Running since -> Map.add name since state.RunStartedAt
-                            | _, Completed(at, verdict) ->
-                                // The verdict is the run's own sworn statement of its
-                                // duration — record THAT, deriving startedAt from it.
-                                // The old shape fell back to `startedAt = at` when no
-                                // Running preceded the Completed, which recorded an
-                                // elapsed of ZERO and rendered as the manufactured
-                                // "started: with no elapsed:" signature
-                                // (AUTOMATION-99). With the verdict carrying Elapsed,
-                                // a completion that never went through Running still
-                                // records honest timing.
-                                activity.RecordTerminal(name, CompletedRun, at - verdict.Elapsed, at)
-                                Map.remove name state.RunStartedAt
-                            | _, Failed(err, at) ->
-                                let startedAt =
-                                    match Map.tryFind name state.RunStartedAt with
-                                    | Some s -> s
-                                    | None -> at
-
-                                activity.RecordTerminal(name, FailedRun err, startedAt, at)
-                                Map.remove name state.RunStartedAt
-                            | _ -> state.RunStartedAt
+                        // Every terminal status CARRIES its verdict — the run's own
+                        // sworn statement of what it did and how long it took — so
+                        // the run record derives startedAt from it and never guesses.
+                        // The old shape tracked a per-plugin RunStartedAt map and,
+                        // on a Failed with no preceding Running, fell back to
+                        // `startedAt = at`: an elapsed of ZERO, rendered as the
+                        // manufactured "started: with no elapsed:" signature — the
+                        // AUTOMATION-99 diagnostic tell, still reachable on the
+                        // Failed path until the verdict moved onto the terminal
+                        // TRANSITION itself.
+                        match status with
+                        | Completed(at, verdict) ->
+                            activity.RecordTerminal(name, CompletedRun, at - verdict.Elapsed, at)
+                        | Failed(err, at, verdict) ->
+                            activity.RecordTerminal(name, FailedRun err, at - verdict.Elapsed, at)
+                        | Idle
+                        | Running _ -> ()
 
                         // Mutation applied — hand the notification to the
                         // trigger agent (fires outside this loop, in order).
                         triggerAgent.Post(name, status)
 
-                        return!
-                            loop
-                                { Statuses = statuses'
-                                  RunStartedAt = runStartedAt' }
+                        return! loop (Map.add name status statuses)
                     | GetStatus(name, reply) ->
-                        reply.Reply(Map.tryFind name state.Statuses)
-                        return! loop state
+                        reply.Reply(Map.tryFind name statuses)
+                        return! loop statuses
                     | GetAllStatuses reply ->
-                        reply.Reply(state.Statuses)
-                        return! loop state
+                        reply.Reply(statuses)
+                        return! loop statuses
                 }
 
-            loop
-                { Statuses = Map.empty
-                  RunStartedAt = Map.empty })
+            loop Map.empty)
 
     let setStatus (name: string) status =
-        // A Completed status CARRIES its summary (RunVerdict) — route it into
-        // the activity log here, at the one choke point every status flows
-        // through, so the run record's summary and the reported verdict can
-        // never disagree. Set BEFORE the status post: RecordTerminal (fired by
-        // the status agent when it applies the mutation) consumes the pending
-        // summary.
+        // Every terminal status CARRIES its summary (RunVerdict) — route it
+        // into the activity log here, at the one choke point every status
+        // flows through, so the run record's summary and the reported verdict
+        // can never disagree. Set BEFORE the status post: RecordTerminal
+        // (fired by the status agent when it applies the mutation) consumes
+        // the pending summary.
         match status with
-        | Completed(_, verdict) -> activity.SetSummary(name, verdict.Summary)
-        | _ -> ()
+        | Completed(_, verdict)
+        | Failed(_, _, verdict) -> activity.SetSummary(name, verdict.Summary)
+        | Idle
+        | Running _ -> ()
 
         // Non-blocking by design: setStatus is called from plugin
         // MailboxProcessor agent threads (via ReportStatus inside handler
@@ -242,7 +226,7 @@ type PluginHost
                          | Idle -> "Idle"
                          | Running _ -> "Running"
                          | Completed _ -> "Completed"
-                         | Failed(e, _) -> $"Failed: %s{e.Substring(0, min 80 e.Length)}")
+                         | Failed(e, _, _) -> $"Failed: %s{e.Substring(0, min 80 e.Length)}")
               ReportErrors =
                 fun name file entries -> ledger.Report(PluginFramework.PluginName.value name, file, entries)
               ClearErrors = fun name file -> ledger.Clear(PluginFramework.PluginName.value name, file)
@@ -264,7 +248,6 @@ type PluginHost
                     let nameStr = PluginFramework.PluginName.value name
                     activity.Log(nameStr, msg)
                     Logging.info nameStr msg
-              SetSummary = fun name s -> activity.SetSummary(PluginFramework.PluginName.value name, s)
               SetNextTerminalOutcome =
                 fun name outcome -> activity.SetNextTerminalOutcome(PluginFramework.PluginName.value name, outcome)
               FcsSuppressedCodes = fcsSuppressedCodes
@@ -311,15 +294,17 @@ type PluginHost
                     | 0 -> $"%d{files.Length} file(s) checked, none rewritten"
                     | n -> $"%d{n} of %d{files.Length} file(s) rewritten"
 
+                setStatus preprocessor.Name (Completed(finishedAt, RunVerdict.create summary (finishedAt - startedAt)))
+            with ex ->
+                let finishedAt = System.DateTime.UtcNow
+
                 setStatus
                     preprocessor.Name
-                    (Completed(
+                    (Failed(
+                        ex.ToString(),
                         finishedAt,
-                        { Summary = summary
-                          Elapsed = finishedAt - startedAt }
+                        RunVerdict.create $"preprocessor failed: %s{ex.Message}" (finishedAt - startedAt)
                     ))
-            with ex ->
-                setStatus preprocessor.Name (Failed(ex.ToString(), System.DateTime.UtcNow))
 
         modifiedFiles |> List.distinct
 

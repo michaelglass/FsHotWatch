@@ -682,7 +682,7 @@ let ``FileTaskCache roundtrips all PluginStatus variants`` () =
             [ Idle
               Running(since = fixedTime)
               completedAt fixedTime
-              Failed("boom", at = fixedTime) ]
+              failedAt "boom" fixedTime ]
 
         for i, status in statuses |> List.indexed do
             let key = ck "plugin" $"%d{i}"
@@ -701,7 +701,7 @@ let ``FileTaskCache roundtrips all PluginStatus variants`` () =
         test <@ (c2.TryGet (ck "plugin" "0") (hash "k")).Value.Status = Idle @>
         test <@ (c2.TryGet (ck "plugin" "1") (hash "k")).Value.Status = Running(since = fixedTime) @>
         test <@ (c2.TryGet (ck "plugin" "2") (hash "k")).Value.Status = completedAt fixedTime @>
-        test <@ (c2.TryGet (ck "plugin" "3") (hash "k")).Value.Status = Failed("boom", at = fixedTime) @>)
+        test <@ (c2.TryGet (ck "plugin" "3") (hash "k")).Value.Status = failedAt "boom" fixedTime @>)
 
 [<Fact(Timeout = 15000)>]
 let ``FileTaskCache roundtrips cached events`` () =
@@ -1237,16 +1237,17 @@ let ``cache replay does not stomp a Running status while an exclusive run is in 
                 async {
                     match event with
                     | FileChecked _ ->
-                        // Launch a long "test run" and go Running, exactly as
-                        // TestPrune does before `RunExclusive "tests"`.
-                        ctx.ReportStatus(Running(since = DateTime.UtcNow))
+                        // Launch a long "test run", exactly as TestPrune does —
+                        // the framework reports Running at the claim.
+                        let claim =
+                            ctx.RunExclusive
+                                "tests"
+                                (async {
+                                    do! runGate.WaitAsync() |> Async.AwaitTask
+                                    return ()
+                                })
 
-                        ctx.RunExclusive
-                            "tests"
-                            (async {
-                                do! runGate.WaitAsync() |> Async.AwaitTask
-                                return ()
-                            })
+                        test <@ claim = Claimed @>
                     | Custom() ->
                         // The run finished and reported its own real verdict.
                         ctx.ReportStatus(completedAt DateTime.UtcNow)
@@ -1347,11 +1348,7 @@ let ``cache replay reports the original verdict marked as cached`` () =
         { CacheKey = hash "k-V"
           Errors = []
           Status =
-            Completed(
-                fixedTime,
-                { Summary = "6 passed, 0 failed in 6 projects"
-                  Elapsed = TimeSpan.FromSeconds 12.5 }
-            )
+            Completed(fixedTime, RunVerdict.create "6 passed, 0 failed in 6 projects" (TimeSpan.FromSeconds 12.5))
           EmittedEvents = [] }
     )
 
@@ -1396,12 +1393,7 @@ let ``cache replay does not stack the cached marker on an already-marked verdict
         hash "k-M",
         { CacheKey = hash "k-M"
           Errors = []
-          Status =
-            Completed(
-                fixedTime,
-                { Summary = "ok (cached)"
-                  Elapsed = TimeSpan.FromSeconds 1.0 }
-            )
+          Status = Completed(fixedTime, RunVerdict.create "ok (cached)" (TimeSpan.FromSeconds 1.0))
           EmittedEvents = [] }
     )
 

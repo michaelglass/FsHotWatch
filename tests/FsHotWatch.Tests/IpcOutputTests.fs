@@ -38,7 +38,7 @@ let ``parseDiagnosticsResponse extracts statuses`` () =
     test <@ result.Statuses.ContainsKey("build") @>
 
     match result.Statuses["build"].Status with
-    | Completed _ -> ()
+    | StatusView.Completed _ -> ()
     | other -> failwithf "expected Completed, got %A" other
 
 [<Fact(Timeout = 15000)>]
@@ -210,14 +210,17 @@ let ``renderIpcResult with noTestsMatched run returns 0 (distinct, not a failure
     test <@ result = 0 @>
 
 [<Fact(Timeout = 15000)>]
-let ``renderIpcResult with busy status returns 0 (distinct in-progress, not a verdict)`` () =
-    // FIX 2: the force-rerun waited and a run is still in progress — distinct
-    // non-failure signal, exit 0 so the caller retries rather than seeing red.
+let ``renderIpcResult with busy status NEVER returns 0 — no run, no green`` () =
+    // AUTOMATION-99. `test-rerun` is the repo's explicit "prove it ran" verb, so
+    // a reply that carries NO run result must never exit 0: a vacuous green is
+    // exactly the false verdict this ticket exists to kill. It is still DISTINCT
+    // from "Tests failed" (nothing is known to be broken) — the message says so —
+    // but the exit code is non-zero so no caller can read it as a pass.
     let json =
-        """{"status":"busy","message":"a test run is still in progress; retry once it finishes"}"""
+        """{"status":"busy","message":"the test run did not produce a result within 600s (still queued or running); retry, or raise --wait-sec"}"""
 
     let result = renderIpcResult ProgressRenderer.Verbose (fun _ -> []) false json
-    test <@ result = 0 @>
+    test <@ result = 1 @>
 
 [<Fact(Timeout = 15000)>]
 let ``formatDiagnosticsResponse hides info-severity entries`` () =

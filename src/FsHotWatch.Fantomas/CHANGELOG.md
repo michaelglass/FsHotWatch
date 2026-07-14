@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- fix: `FormatPreprocessor` gains the same `slowHook` test seam its twin
+  (`createFormatCheckWithSlowHook`) already had. Its timeout test could previously only
+  RACE the timer against Fantomas (`timeoutSec = 0`) — on a warm, idle box the format won,
+  the file was rewritten, and the "leaves the file alone on timeout" test failed while
+  asserting nothing about the timeout path. The seam makes the `WorkTimedOut` branch
+  deterministic.
+
+- fix!: adapt to verdict-carrying terminals (AUTOMATION-99): `Failed` statuses carry a
+  `RunVerdict` (summary + measured elapsed), and the deleted `CompleteWithSummary`
+  side-channel is replaced by the verdict the terminal itself carries.
+
 - fix!: adapt to core `RunVerdict` (AUTOMATION-99): format-check completions carry
   the format summary plus the measured check duration.
 

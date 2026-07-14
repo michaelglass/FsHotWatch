@@ -5,6 +5,7 @@ open System.Text.Json
 open Xunit
 open Swensen.Unquote
 open FsHotWatch.Events
+open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcParsing
 open FsHotWatch.Tests.TestHelpers
 
@@ -17,14 +18,14 @@ let private parseEl (json: string) =
 [<Fact(Timeout = 15000)>]
 let ``parseTaggedStatus parses idle`` () =
     let el = parseEl """{"tag":"idle"}"""
-    test <@ parseTaggedStatus el = Some Idle @>
+    test <@ parseTaggedStatus el = Some StatusView.Idle @>
 
 [<Fact(Timeout = 15000)>]
 let ``parseTaggedStatus parses running`` () =
     let el = parseEl """{"tag":"running","since":"2026-04-05T12:00:00.0000000Z"}"""
 
     match parseTaggedStatus el with
-    | Some(Running dt) ->
+    | Some(StatusView.Running dt) ->
         let isExpected = dt.Year = 2026 && dt.Month = 4
         test <@ isExpected @>
     | other -> failwithf "expected Running, got %A" other
@@ -34,7 +35,7 @@ let ``parseTaggedStatus parses completed`` () =
     let el = parseEl """{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"}"""
 
     match parseTaggedStatus el with
-    | Some(Completed _) -> ()
+    | Some(StatusView.Completed _) -> ()
     | other -> failwithf "expected Completed, got %A" other
 
 [<Fact(Timeout = 15000)>]
@@ -51,7 +52,7 @@ let ``parseTaggedStatus parses failed preserving multi-line error`` () =
     let el = parseEl json
 
     match parseTaggedStatus el with
-    | Some(Failed(msg, _)) -> test <@ msg = err @>
+    | Some(StatusView.Failed(msg, _)) -> test <@ msg = err @>
     | other -> failwithf "expected Failed, got %A" other
 
 [<Fact(Timeout = 15000)>]
@@ -71,13 +72,13 @@ let ``parseStatusField accepts tagged object`` () =
     let el = parseEl """{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"}"""
 
     match parseStatusField el with
-    | Completed _ -> ()
+    | StatusView.Completed _ -> ()
     | other -> failwithf "expected Completed, got %A" other
 
 [<Fact(Timeout = 15000)>]
 let ``parseStatusField falls back to Idle on malformed object`` () =
     let el = parseEl """{"tag":"unknown-future-tag"}"""
-    test <@ parseStatusField el = Idle @>
+    test <@ parseStatusField el = StatusView.Idle @>
 
 // --- parseTaggedOutcome ---
 
@@ -140,10 +141,10 @@ let ``parsePluginStatuses parses tagged status objects`` () =
     let parsed = parsePluginStatuses json
 
     match parsed.["build"].Status with
-    | Completed _ -> ()
+    | StatusView.Completed _ -> ()
     | other -> failwithf "expected Completed, got %A" other
 
-    test <@ parsed.["lint"].Status = Idle @>
+    test <@ parsed.["lint"].Status = StatusView.Idle @>
 
 [<Fact(Timeout = 15000)>]
 let ``parsePluginStatuses parses tagged lastRun outcome`` () =
@@ -165,14 +166,16 @@ let ``parseDiagnosticsResponse handles tagged status field`` () =
         """{"count":0,"files":{},"statuses":{"build":{"status":{"tag":"idle"},"subtasks":[],"activityTail":[],"lastRun":null}}}"""
 
     let resp = parseDiagnosticsResponse json
-    test <@ resp.Statuses.["build"].Status = Idle @>
+    test <@ resp.Statuses.["build"].Status = StatusView.Idle @>
 
 // --- isAllTerminal ---
 
 [<Fact(Timeout = 15000)>]
 let ``isAllTerminal false when any running`` () =
     let m =
-        Map.ofList [ "a", completedAt DateTime.UtcNow; "b", Running DateTime.UtcNow ]
+        Map.ofList
+            [ "a", StatusView.Completed DateTime.UtcNow
+              "b", StatusView.Running DateTime.UtcNow ]
 
     test <@ not (isAllTerminal m) @>
 
@@ -180,9 +183,9 @@ let ``isAllTerminal false when any running`` () =
 let ``isAllTerminal true when mix of Idle, Completed, Failed`` () =
     let m =
         Map.ofList
-            [ "a", completedAt DateTime.UtcNow
-              "b", Failed("x", DateTime.UtcNow)
-              "c", Idle ]
+            [ "a", StatusView.Completed DateTime.UtcNow
+              "b", StatusView.Failed("x", DateTime.UtcNow)
+              "c", StatusView.Idle ]
 
     test <@ isAllTerminal m @>
 
@@ -218,44 +221,37 @@ let ``parseDiagnosticsResponse garbage unchecked field -> Unknown`` () =
     let resp = parseDiagnosticsResponse json
     test <@ resp.Coverage = Unknown @>
 
-// --- parseTaggedStatus: RunVerdict on completed (AUTOMATION-99) -------------
+// --- parseTaggedStatus: the wire carries NO verdict (AUTOMATION-99) ---------
+//
+// The verdict (summary + elapsed) travels exclusively in `lastRun`; the tagged
+// status is state + timestamps only. The parse stays TOTAL over recognized
+// tags: a payload with extra fields (e.g. from a daemon that still sent
+// verdict fields) parses to the same Completed — a plugin can never drop out
+// of the status map (which would make `isAllTerminal` read true for a plugin
+// it can no longer see).
 
 [<Fact(Timeout = 15000)>]
-let ``parseTaggedStatus parses completed with its verdict`` () =
+let ``parseTaggedStatus parses completed carrying only its timestamp`` () =
+    let el = parseEl """{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"}"""
+
+    match parseTaggedStatus el with
+    | Some(StatusView.Completed at) ->
+        let year = at.Year
+        test <@ year = 2026 @>
+    | other -> failwithf "expected Completed, got %A" other
+
+[<Fact(Timeout = 15000)>]
+let ``parseTaggedStatus ignores legacy verdict fields on a completed payload`` () =
+    // A daemon that still sends summary/elapsedMs (pre-one-channel wire) must
+    // parse identically — the fields are simply not part of the status.
     let el =
         parseEl
             """{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z","summary":"6 passed, 0 failed","elapsedMs":12500.0}"""
 
     match parseTaggedStatus el with
-    | Some(Completed(at, v)) ->
+    | Some(StatusView.Completed at) ->
         let year = at.Year
         test <@ year = 2026 @>
-        test <@ v.Summary = "6 passed, 0 failed" @>
-        test <@ v.Elapsed = System.TimeSpan.FromSeconds 12.5 @>
-    | other -> failwithf "expected Completed with verdict, got %A" other
-
-[<Fact(Timeout = 15000)>]
-let ``parseTaggedStatus tolerates a completed payload from an older daemon (no verdict fields)`` () =
-    // Deserialization edge: the verdict fields are absent — the status parse
-    // must still succeed, degrading to an empty verdict, never failing the
-    // whole status read.
-    let el = parseEl """{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z"}"""
-
-    match parseTaggedStatus el with
-    | Some(Completed(_, v)) ->
-        test <@ v.Summary = "" @>
-        test <@ v.Elapsed = System.TimeSpan.Zero @>
-    | other -> failwithf "expected Completed with empty verdict, got %A" other
-
-[<Fact(Timeout = 15000)>]
-let ``parseTaggedStatus ignores a non-numeric elapsedMs`` () =
-    let el =
-        parseEl """{"tag":"completed","at":"2026-04-05T12:00:00.0000000Z","summary":"ok","elapsedMs":"soon"}"""
-
-    match parseTaggedStatus el with
-    | Some(Completed(_, v)) ->
-        test <@ v.Summary = "ok" @>
-        test <@ v.Elapsed = System.TimeSpan.Zero @>
     | other -> failwithf "expected Completed, got %A" other
 
 // --- TestScope.describe / parseTaggedOutcome: totality pins -----------------

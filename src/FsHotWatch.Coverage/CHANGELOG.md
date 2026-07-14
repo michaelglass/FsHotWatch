@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- fix!: **`coverage-ratchet` no longer races the check that reads the file it rewrites.**
+  (AUTOMATION-99) The command rewrote the thresholds config on the IPC thread while a
+  `RunExclusive "coverage-check"` run might be parsing it. It now posts to the mailbox and
+  claims the SAME exclusive slot as the check, so the two are serialised; if a check is in
+  flight the ratchet says so instead of writing underneath it.
+
+- fix: the coverage check reports `Running` while it runs (the framework now owns that).
+  Previously it claimed its slot with no `Running`, so it rendered `✓` while still
+  running AND never advanced the host's work-cycle generation — which meant
+  `WaitForComplete` could never take its fast terminal path while coverage was registered.
+
+- fix: `DateTime.Now` → `DateTime.UtcNow` on the below-threshold failure. The package's own
+  changelog already asserted "timestamps now use UTC"; this one site had not been, and a
+  local reading mixed into UTC arithmetic skews (or negates) the elapsed a human reads
+  when coverage gates them. The new `FSHW-CLOCK-001` analyzer now bans the class repo-wide.
+
 - fix!: adapt to core `RunVerdict` (AUTOMATION-99): `Completed` statuses carry a
   verdict ("coverage floors passed" / the not-gated notice) plus the measured
   check duration, threaded through `CheckDone`. Timestamps now use UTC.

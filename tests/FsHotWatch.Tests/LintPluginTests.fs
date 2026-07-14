@@ -140,7 +140,7 @@ let ``lint skips file with null ParseResults without crashing`` () =
 
     // Should be Running (set at start of handler), not Failed
     match status.Value with
-    | Failed(msg, _) -> Assert.Fail($"Should not fail -- got: %s{msg}")
+    | Failed(msg, _, _) -> Assert.Fail($"Should not fail -- got: %s{msg}")
     | _ -> ()
 
 [<Fact(Timeout = 20000)>]
@@ -183,7 +183,7 @@ let ``lint runner returning Failure reports errors and sets Failed status`` () =
     let status = host.GetStatus("lint")
 
     match status with
-    | Some(Failed(msg, _)) -> test <@ msg.Contains("bad config") @>
+    | Some(Failed(msg, _, _)) -> test <@ msg.Contains("bad config") @>
     | other -> Assert.Fail($"Expected Failed, got: %A{other}")
 
     let errors = host.GetErrorsByPlugin("lint")

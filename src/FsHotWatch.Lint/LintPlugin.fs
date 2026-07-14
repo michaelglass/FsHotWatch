@@ -143,10 +143,15 @@ let create
                                             let reason = $"timed out after %d{int after.TotalSeconds}s"
                                             Logging.error "lint" $"Lint TIMED OUT for %s{fileStr}: %s{reason}"
 
+                                            // Flip the recorded outcome to TimedOut; the
+                                            // verdict carries the summary (one channel).
                                             ctx.CompleteWithTimeout reason
 
                                             ctx.ReportStatus(
-                                                PluginStatus.Failed($"lint timed out: {reason}", DateTime.UtcNow)
+                                                PluginStatus.failedNow
+                                                    $"lint timed out: {reason}"
+                                                    $"lint timed out: {reason}"
+                                                    after
                                             )
 
                                             return state
@@ -186,10 +191,13 @@ let create
 
                                             ctx.ReportErrors fileStr [ ErrorEntry.error msg ]
 
-                                            ctx.CompleteWithSummary
-                                                $"lint failed on {System.IO.Path.GetFileName fileStr}"
+                                            ctx.ReportStatus(
+                                                PluginStatus.failedNow
+                                                    msg
+                                                    $"lint failed on {System.IO.Path.GetFileName fileStr}"
+                                                    (DateTime.UtcNow - runStarted)
+                                            )
 
-                                            ctx.ReportStatus(PluginStatus.Failed(msg, DateTime.UtcNow))
                                             return state
                                 })
                 | _ -> return state

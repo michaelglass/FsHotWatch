@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- fix!: adapt to verdict-carrying terminals (AUTOMATION-99): `Failed` statuses carry a
+  `RunVerdict` (summary + measured elapsed), and the deleted `CompleteWithSummary`
+  side-channel is replaced by the verdict the terminal itself carries.
+
 - fix!: adapt to core `RunVerdict` (AUTOMATION-99): completions carry the analyzer
   summary plus the measured per-file analysis duration.
 

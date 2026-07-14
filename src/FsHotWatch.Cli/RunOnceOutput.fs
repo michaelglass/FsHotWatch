@@ -6,8 +6,40 @@ open CommandTree
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
 
+/// CLI-side view of a plugin's status. The wire deliberately carries only the
+/// state tag, timestamps, and the failure diagnosis — the verdict (summary +
+/// elapsed) travels exclusively in the run record (`lastRun`), the ONE channel
+/// the renderer reads. Parsing into the daemon's `PluginStatus` would force
+/// the CLI to fabricate a `RunVerdict` from untrusted wire input — the
+/// content-free ✓ AUTOMATION-99 makes unrepresentable — so the CLI has its own
+/// verdict-free shape instead.
+[<RequireQualifiedAccess; NoComparison>]
+type StatusView =
+    | Idle
+    | Running of since: DateTime
+    | Completed of at: DateTime
+    | Failed of error: string * at: DateTime
+
+module StatusView =
+    /// Project the daemon's in-process status (run-once path) to the CLI view.
+    let ofPluginStatus (status: PluginStatus) : StatusView =
+        match status with
+        | Idle -> StatusView.Idle
+        | Running since -> StatusView.Running since
+        | Completed(at, _) -> StatusView.Completed at
+        | Failed(error, at, _) -> StatusView.Failed(error, at)
+
+    // Idle counts as quiescent for status-aggregation callers that query after
+    // WaitForScan: Idle there means "not triggered by this scan", not "pending".
+    let isQuiescent (status: StatusView) =
+        match status with
+        | StatusView.Running _ -> false
+        | StatusView.Idle
+        | StatusView.Completed _
+        | StatusView.Failed _ -> true
+
 type ParsedPluginStatus =
-    { Status: PluginStatus
+    { Status: StatusView
       Subtasks: Subtask list
       ActivityTail: string list
       LastRun: RunRecord option
@@ -164,7 +196,7 @@ let snapshotHost (host: FsHotWatch.PluginHost.PluginHost) (statuses: Map<string,
     |> Map.map (fun name status ->
         let snap = host.GetActivitySnapshot(name)
 
-        { Status = status
+        { Status = StatusView.ofPluginStatus status
           Subtasks = snap.Subtasks
           ActivityTail = snap.ActivityTail
           LastRun = snap.LastRun

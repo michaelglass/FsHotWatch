@@ -59,9 +59,11 @@ summary is empty.
   This label is what the compact renderer shows while the plugin is running.
 - As progress changes, call `ctx.UpdateSubtask "primary" "<new label>"` to
   update the label in place without churning state.
-- At the end of the run, call `ctx.EndSubtask "primary"` then
-  `ctx.CompleteWithSummary "<result totals>"` (alias for `SetSummary`) so the
-  recorded run has a terminal summary.
+- At the end of the run, call `ctx.EndSubtask "primary"` then report a terminal
+  status carrying its verdict — `PluginCtxHelpers.completeWith ctx "<result
+  totals>" elapsed` (or `failedWith`). The verdict rides the terminal
+  transition, so the run history's summary and the reported status cannot
+  disagree; there is no separate summary channel to set (or forget).
 - Per-file `ctx.Log` calls remain useful — they populate the verbose activity
   tail without being promoted to a summary.
 

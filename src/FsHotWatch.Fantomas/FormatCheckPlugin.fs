@@ -29,7 +29,15 @@ let FormatTimeoutDefaultSec = 60
 /// silently, forever — and it runs inside `performScan`, which `WaitForScan`
 /// blocks on as `check`'s very first step. Same timeout, same cancellation token,
 /// same `WorkTimedOut` handling as the twin: a stuck file is skipped, loudly.
-type FormatPreprocessor(?timeoutSec: int) =
+/// `slowHook` is a TEST SEAM, mirroring `createFormatCheckWithSlowHook`: it runs
+/// inside the timeout-guarded region, before formatting, so a test can force the
+/// `WorkTimedOut` branch DETERMINISTICALLY. Without it a test can only try to
+/// win a race — pass `timeoutSec = 0` and hope the timer beats Fantomas — which
+/// is not a guarantee but a coin toss: on a warm, idle box Fantomas formats a
+/// three-line file before a zero-length timer fires, and the "timed out" test
+/// then observes a successful format and fails. (Exactly that flake, exposed by
+/// serialising the gate's build DAG.)
+type FormatPreprocessor(?timeoutSec: int, ?slowHook: unit -> unit) =
     let ignoreCache = FsHotWatch.PathFilter.IgnoreFilterCache()
 
     let formatTimeout =
@@ -56,6 +64,10 @@ type FormatPreprocessor(?timeoutSec: int) =
                         // actually CANCELLED (thread released) rather than orphaned
                         // while still holding the batch.
                         let work (ct: System.Threading.CancellationToken) =
+                            match slowHook with
+                            | Some hook -> hook ()
+                            | None -> ()
+
                             Async.RunSynchronously(
                                 CodeFormatter.FormatDocumentAsync(isSignature, source),
                                 cancellationToken = ct
@@ -146,10 +158,15 @@ let internal createFormatCheckWithSlowHook
                                     let reason = $"timed out after %d{int after.TotalSeconds}s"
                                     Logging.error "format" $"Format check TIMED OUT for %s{file}: %s{reason}"
 
+                                    // Flip the recorded outcome to TimedOut; the verdict
+                                    // carries the summary (one channel).
                                     ctx.CompleteWithTimeout reason
 
                                     ctx.ReportStatus(
-                                        PluginStatus.Failed($"format check timed out: {reason}", DateTime.UtcNow)
+                                        PluginStatus.failedNow
+                                            $"format check timed out: {reason}"
+                                            $"format check timed out: {reason}"
+                                            after
                                     )
 
                                     timedOut <- true
@@ -176,7 +193,13 @@ let internal createFormatCheckWithSlowHook
 
                                     PluginCtxHelpers.reportOrClearFile ctx file entries
                             with ex ->
-                                ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+                                ctx.ReportStatus(
+                                    PluginStatus.failedNow
+                                        ex.Message
+                                        $"format check crashed: %s{ex.Message}"
+                                        (DateTime.UtcNow - runStarted)
+                                )
+
                                 failed <- true
 
                     ctx.EndSubtask PrimarySubtaskKey

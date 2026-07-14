@@ -493,7 +493,17 @@ let ``FormatPreprocessor leaves a file alone when formatting exceeds its timeout
         let original = "module Bad\nlet   x=1\nlet   y   =   2\n"
         File.WriteAllText(file, original)
 
-        let preprocessor = FormatPreprocessor(timeoutSec = 0) :> IFsHotWatchPreprocessor
+        // Force the timeout DETERMINISTICALLY via the same test seam the
+        // format-check plugin has: a slow hook inside the guarded region, and a
+        // real (1 s) budget. The previous `timeoutSec = 0` raced the timer
+        // against Fantomas — on a warm, idle box the format WON, the file was
+        // rewritten, and this test failed while asserting nothing about the
+        // timeout path.
+        let slowHook () = System.Threading.Thread.Sleep 3000
+
+        let preprocessor =
+            FormatPreprocessor(timeoutSec = 1, slowHook = slowHook) :> IFsHotWatchPreprocessor
+
         let modified = preprocessor.Process [ file ] tmpDir
 
         // No rewrite is reported...

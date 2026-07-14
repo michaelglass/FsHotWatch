@@ -222,25 +222,41 @@ let create
                                 | ProcessOutcome.Succeeded out -> Succeeded out
                                 | _ -> CommandFailed output
 
+                            let finishedAt = DateTime.UtcNow
+                            let elapsed = finishedAt - runStarted
+
                             match processResult with
                             | ProcessOutcome.Succeeded _ ->
                                 ctx.ClearErrors $"<%s{nameStr}>"
 
                                 ctx.ReportStatus(
-                                    Completed(
-                                        DateTime.UtcNow,
-                                        { Summary = $"%s{nameStr}: succeeded"
-                                          Elapsed = DateTime.UtcNow - runStarted }
-                                    )
+                                    Completed(finishedAt, RunVerdict.create $"%s{nameStr}: succeeded" elapsed)
                                 )
                             | ProcessOutcome.TimedOut(after, _) ->
                                 ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error output ]
-                                ctx.CompleteWithTimeout $"timed out after %d{int after.TotalSeconds}s"
-                                ctx.ReportStatus(PluginStatus.Failed($"%s{nameStr} timed out", DateTime.UtcNow))
+                                // Flip the recorded outcome to TimedOut; the verdict
+                                // below carries the summary (one channel).
+                                ctx.CompleteWithTimeout $"%d{int after.TotalSeconds}s"
+
+                                ctx.ReportStatus(
+                                    PluginStatus.Failed(
+                                        $"%s{nameStr} timed out",
+                                        finishedAt,
+                                        RunVerdict.create
+                                            $"%s{nameStr}: timed out after %d{int after.TotalSeconds}s"
+                                            elapsed
+                                    )
+                                )
                             | ProcessOutcome.Failed _ ->
                                 ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error output ]
-                                ctx.CompleteWithSummary $"%s{nameStr}: failed"
-                                ctx.ReportStatus(PluginStatus.Failed($"%s{nameStr} failed", DateTime.UtcNow))
+
+                                ctx.ReportStatus(
+                                    PluginStatus.Failed(
+                                        $"%s{nameStr} failed",
+                                        finishedAt,
+                                        RunVerdict.create $"%s{nameStr}: failed" elapsed
+                                    )
+                                )
 
                             ctx.EmitCommandCompleted(
                                 { Name = nameStr
@@ -253,8 +269,10 @@ let create
                             return cmdResult
                         with ex ->
                             ctx.ReportErrors $"<%s{nameStr}>" [ ErrorEntry.error ex.Message ]
-                            ctx.CompleteWithSummary $"%s{nameStr}: crashed"
-                            ctx.ReportStatus(PluginStatus.Failed(ex.Message, DateTime.UtcNow))
+
+                            ctx.ReportStatus(
+                                PluginStatus.failedNow ex.Message $"%s{nameStr}: crashed" (DateTime.UtcNow - runStarted)
+                            )
 
                             ctx.EmitCommandCompleted(
                                 { Name = nameStr

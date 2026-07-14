@@ -5,6 +5,7 @@ open System.Globalization
 open System.Text.Json
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
+open FsHotWatch.Cli.RunOnceOutput
 
 /// A single diagnostic entry parsed from IPC JSON.
 type DiagnosticEntry =
@@ -86,47 +87,43 @@ let private tryGetStringProp (el: JsonElement) (name: string) : string option =
     | true, v when v.ValueKind = JsonValueKind.String -> Some(v.GetString())
     | _ -> None
 
-/// Parse a tagged PluginStatus object, e.g. {"tag":"running","since":"..."}.
-/// Returns None if the element isn't a recognizable tagged status.
-let parseTaggedStatus (el: JsonElement) : PluginStatus option =
+/// Parse a tagged status object, e.g. {"tag":"running","since":"..."}, into
+/// the CLI-side `StatusView`. Returns None if the element isn't a
+/// recognizable tagged status. Total over recognized tags — a missing verdict
+/// can never drop a plugin from the map (which would make `isAllTerminal`
+/// read true for a plugin it can no longer see); the verdict simply isn't
+/// carried here at all (it travels in `lastRun`, the one channel).
+let parseTaggedStatus (el: JsonElement) : StatusView option =
     if el.ValueKind <> JsonValueKind.Object then
         None
     else
         match tryGetStringProp el "tag" with
-        | Some "idle" -> Some Idle
-        | Some "running" -> tryGetStringProp el "since" |> Option.bind tryParseUtcOpt |> Option.map Running
+        | Some "idle" -> Some StatusView.Idle
+        | Some "running" ->
+            tryGetStringProp el "since"
+            |> Option.bind tryParseUtcOpt
+            |> Option.map StatusView.Running
         | Some "completed" ->
-            // Deserialization edge: the daemon sends the verdict alongside the
-            // timestamp. A payload from an OLDER daemon (no verdict fields)
-            // parses to an empty verdict rather than failing the whole status
-            // read — the CLI renders from the run record either way.
-            let verdict: RunVerdict =
-                { Summary = tryGetStringProp el "summary" |> Option.defaultValue ""
-                  Elapsed =
-                    match el.TryGetProperty("elapsedMs") with
-                    | true, v when v.ValueKind = JsonValueKind.Number -> TimeSpan.FromMilliseconds(v.GetDouble())
-                    | _ -> TimeSpan.Zero }
-
             tryGetStringProp el "at"
             |> Option.bind tryParseUtcOpt
-            |> Option.map (fun at -> Completed(at, verdict))
+            |> Option.map StatusView.Completed
         | Some "failed" ->
             let err = tryGetStringProp el "error" |> Option.defaultValue ""
             let at = tryGetStringProp el "at" |> Option.bind tryParseUtcOpt
 
             match at with
-            | Some dt -> Some(Failed(err, dt))
-            | None -> Some(Failed(err, DateTime.UtcNow))
+            | Some dt -> Some(StatusView.Failed(err, dt))
+            | None -> Some(StatusView.Failed(err, DateTime.UtcNow))
         | _ -> None
 
 /// Parse the status field of a plugin-status payload.
-let parseStatusField (el: JsonElement) : PluginStatus =
+let parseStatusField (el: JsonElement) : StatusView =
     match el.ValueKind with
     | JsonValueKind.Object ->
         match parseTaggedStatus el with
         | Some s -> s
-        | None -> Idle
-    | _ -> Idle
+        | None -> StatusView.Idle
+    | _ -> StatusView.Idle
 
 /// Parse a tagged RunOutcome object, e.g. {"tag":"failed","error":"..."}.
 let parseTaggedOutcome (el: JsonElement) : RunOutcome option =
@@ -152,7 +149,7 @@ let parsePluginStatusElement (el: JsonElement) : ParsedPluginStatus =
     let status =
         match el.TryGetProperty("status") with
         | true, s -> parseStatusField s
-        | false, _ -> Idle
+        | false, _ -> StatusView.Idle
 
     let subtasks =
         match el.TryGetProperty("subtasks") with
@@ -229,8 +226,8 @@ let parsePluginStatuses (json: string) : Map<string, ParsedPluginStatus> =
         FsHotWatch.Logging.warn "ipc-parsing" $"Failed to parse plugin-status JSON (schema drift?): %s{ex.Message}"
         Map.empty
 
-/// Project a ParsedPluginStatus map to plain PluginStatus values.
-let statusOnly (parsed: Map<string, ParsedPluginStatus>) : Map<string, PluginStatus> =
+/// Project a ParsedPluginStatus map to plain StatusView values.
+let statusOnly (parsed: Map<string, ParsedPluginStatus>) : Map<string, StatusView> =
     parsed |> Map.map (fun _ p -> p.Status)
 
 /// Parse the JSON response from GetDiagnostics RPC.
@@ -317,6 +314,6 @@ let parseTestScope (json: string) : TestScope =
 
 /// Check if all statuses are quiescent (Completed, Failed, or Idle).
 /// Returns false for empty maps (no plugins registered yet).
-let isAllTerminal (statuses: Map<string, PluginStatus>) : bool =
+let isAllTerminal (statuses: Map<string, StatusView>) : bool =
     not statuses.IsEmpty
-    && statuses |> Map.forall (fun _ s -> PluginStatus.isQuiescent s)
+    && statuses |> Map.forall (fun _ s -> StatusView.isQuiescent s)

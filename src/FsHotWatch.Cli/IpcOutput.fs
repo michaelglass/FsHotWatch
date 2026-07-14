@@ -6,6 +6,7 @@ open System.Threading
 open CommandTree
 open FsHotWatch.Events
 open FsHotWatch.ErrorLedger
+open FsHotWatch.Cli.RunOnceOutput
 open FsHotWatch.Cli.IpcParsing
 
 /// Format one diagnostic entry as a plain agent-mode line:
@@ -81,7 +82,7 @@ let hasFailures (noWarnFail: bool) (resp: DiagnosticsResponse) : bool =
         resp.Statuses
         |> Map.exists (fun _ parsed ->
             match parsed.Status with
-            | Failed _ -> true
+            | StatusView.Failed _ -> true
             | _ -> false)
 
     let isFailure (e: DiagnosticEntry) =
@@ -149,17 +150,21 @@ let renderIpcResult
                     UI.success "Passed"
                     0
                 | true, v when v.ValueKind = JsonValueKind.String && v.GetString() = "busy" ->
-                    // A test run is still in progress (the force-rerun waited and
-                    // gave up). Distinct, non-failure signal — never "Tests failed".
+                    // The force-rerun did not produce a result within its
+                    // budget (a prior run holds the slot, or the queued run
+                    // didn't finish in time). Distinct from "Tests failed" —
+                    // nothing is known to be broken — but it must NEVER exit 0:
+                    // `test-rerun` is the explicit "prove it ran" verb, and an
+                    // exit 0 without a run is a vacuous green (AUTOMATION-99).
                     let msg =
                         match root.TryGetProperty("message") with
                         | true, m when m.ValueKind = JsonValueKind.String -> m.GetString()
-                        | _ -> "a test run is still in progress; retry once it finishes"
+                        | _ -> "the test run did not produce a result in time; retry (or raise --wait-sec)"
 
-                    UI.warn msg
-                    // exit 0: nothing failed; the caller should retry, not treat
-                    // this as a red verdict.
-                    0
+                    UI.fail msg
+                    // Non-zero: no run was proven. The caller retries; it must
+                    // not read this as a green verdict.
+                    1
                 | _ ->
 
                     match root.TryGetProperty("projects") with
@@ -201,7 +206,7 @@ let renderIpcResult
                             plain
                             |> Map.exists (fun _ s ->
                                 match s with
-                                | Failed _ -> true
+                                | StatusView.Failed _ -> true
                                 | _ -> false)
 
                         if hasFailed then 1 else 0

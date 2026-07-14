@@ -294,3 +294,232 @@ let ``plugin ignores aborted test runs`` () =
                 | Some(Failed _) -> false
                 | _ -> true
             @>)
+
+// ---------------------------------------------------------------------------
+// The coverage check is VISIBLE while it runs (AUTOMATION-99 review, finding 4)
+//
+// CoveragePlugin claimed `RunExclusive "coverage-check"` with NO preceding
+// `Running`. Two consequences, both live: its status rendered ✓ while it was
+// still running, and — because the host's work-cycle generation only advances
+// on a Running transition — coverage's generation NEVER moved, so
+// `allPluginsAdvancedToTerminal()` could never be satisfied while coverage was
+// registered and EVERY `WaitForComplete` fell back to the slower quiescence
+// path. The framework now reports Running at the claim, so the gap is
+// unrepresentable rather than merely fixed here.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 20000)>]
+let ``coverage advances its work-cycle generation — the fast terminal wait is not starved`` () =
+    withTempDir "coverage-gen" (fun dir ->
+        let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 1) ])
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        // Never run ⇒ generation 0 (absent from the map).
+        test <@ (host.WorkCycleGenerations() |> Map.tryFind "coverage") = None @>
+
+        emitRunCompleted host
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            15000
+
+        // The check ran, so the plugin passed THROUGH Running — which is the
+        // only thing that advances the generation counter.
+        let gen = host.WorkCycleGenerations() |> Map.tryFind "coverage"
+        test <@ gen = Some 1L @>)
+
+[<Fact(Timeout = 20000)>]
+let ``a coverage failure carries a verdict with an honest elapsed and a UTC timestamp`` () =
+    withTempDir "coverage-utc" (fun dir ->
+        let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        // 50% line coverage against the 100% default floor ⇒ gated failure.
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 0) ])
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let before = DateTime.UtcNow
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        emitRunCompleted host
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Failed _) -> true
+                | _ -> false)
+            15000
+
+        match host.GetStatus("coverage") with
+        | Some(Failed(_, at, v)) ->
+            // The failure states what it found …
+            test <@ v.Summary.Contains "below threshold" @>
+            // … and its timestamp is UTC. This site shipped `DateTime.Now` while
+            // its own CHANGELOG asserted UTC; mixed into UTC arithmetic that
+            // skews or NEGATES the elapsed a human reads when coverage gates
+            // them. A local reading in a non-UTC zone lands outside this window.
+            let after = DateTime.UtcNow
+            test <@ at >= before && at <= after @>
+        | other -> failwithf "expected Failed with a verdict, got %A" other)
+
+// ---------------------------------------------------------------------------
+// `coverage-ratchet` runs on the MAILBOX, under the same exclusive slot as the
+// check (AUTOMATION-99 review, finding 7).
+//
+// The command used to rewrite the thresholds config on the IPC thread while a
+// `RunExclusive "coverage-check"` run might be READING that very file — a
+// second instance of the capability that caused this bug (an IPC command doing
+// work outside the daemon's accounting). The command can now only `Post`; the
+// handler claims the slot, so the rewrite and the check are serialised.
+// ---------------------------------------------------------------------------
+
+[<Fact(Timeout = 20000)>]
+let ``coverage-ratchet rewrites the thresholds config through the mailbox`` () =
+    withTempDir "coverage-ratchet" (fun dir ->
+        let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 1) ])
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        let reply = host.RunCommand("coverage-ratchet", [| "" |]) |> Async.RunSynchronously
+
+        test <@ reply.IsSome @>
+        test <@ reply.Value.Contains "thresholds updated" @>
+
+        // The rewrite actually happened. (WHAT coverageratchet chooses to
+        // tighten is its policy, not this plugin's — the subject here is that
+        // the rewrite ran on the MAILBOX, under the slot, and reported back.)
+        let written = File.ReadAllText(configPath)
+        test <@ written <> defaultThresholdsJson @>
+
+        // … and it went through the MAILBOX, so it is a run the daemon can see:
+        // it reported Running at the claim (advancing the generation) and a
+        // terminal verdict when it finished.
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            10000
+
+        match host.GetStatus("coverage") with
+        | Some(Completed(_, v)) -> test <@ v.Summary.Contains "thresholds updated" @>
+        | other -> failwithf "expected Completed carrying the ratchet verdict, got %A" other
+
+        test <@ (host.WorkCycleGenerations() |> Map.tryFind "coverage") = Some 1L @>)
+
+[<Fact(Timeout = 20000)>]
+let ``coverage-ratchet with an explicit config path argument targets that file`` () =
+    withTempDir "coverage-ratchet-arg" (fun dir ->
+        let xmlPath = Path.Combine(dir, "coverage.cobertura.xml")
+        let defaultConfig = Path.Combine(dir, "coverage-ratchet.json")
+        let explicitConfig = Path.Combine(dir, "other-thresholds.json")
+        File.WriteAllText(xmlPath, coberturaXml "MyModule.fs" [ (1, 1); (2, 1) ])
+        File.WriteAllText(defaultConfig, defaultThresholdsJson)
+        File.WriteAllText(explicitConfig, defaultThresholdsJson)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create defaultConfig dir)
+
+        let reply =
+            host.RunCommand("coverage-ratchet", [| explicitConfig |])
+            |> Async.RunSynchronously
+
+        test <@ reply.Value.Contains explicitConfig @>
+        // The named file was rewritten; the default one was left alone.
+        test <@ File.ReadAllText(explicitConfig) <> defaultThresholdsJson @>
+        test <@ File.ReadAllText(defaultConfig) = defaultThresholdsJson @>)
+
+[<Fact(Timeout = 20000)>]
+let ``coverage-ratchet reports honestly when there is no coverage XML to ratchet from`` () =
+    withTempDir "coverage-ratchet-noxml" (fun dir ->
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        let reply = host.RunCommand("coverage-ratchet", [| "" |]) |> Async.RunSynchronously
+
+        test <@ reply.Value.Contains "no coverage.cobertura.xml found" @>
+        // Nothing was rewritten on the "nothing to learn from" path.
+        test <@ File.ReadAllText(configPath) = defaultThresholdsJson @>)
+
+[<Fact(Timeout = 30000)>]
+let ``coverage-ratchet REFUSES to race a check that is reading the file it rewrites`` () =
+    // With no XML on disk, the check holds the "coverage-check" slot for its
+    // full poll window — a deterministic way to have a run in flight. The
+    // ratchet's claim is then refused (SlotBusy) and it says so, rather than
+    // rewriting the config under a live reader.
+    withTempDir "coverage-ratchet-race" (fun dir ->
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        // Start a check: it polls for coverage files (none exist) and so holds
+        // the slot. The framework reports Running at the claim.
+        emitRunCompleted host
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Running _) -> true
+                | _ -> false)
+            10000
+
+        let reply = host.RunCommand("coverage-ratchet", [| "" |]) |> Async.RunSynchronously
+
+        test <@ reply.Value.Contains "a coverage check is in flight" @>
+        // The config was NOT rewritten under the live reader.
+        test <@ File.ReadAllText(configPath) = defaultThresholdsJson @>
+
+        // Let the check settle so the temp dir can be cleaned.
+        waitUntil (fun () -> not (host.AnyPluginBusy())) 20000)
+
+[<Fact(Timeout = 30000)>]
+let ``a second TestRunCompleted while a check is in flight is skipped, not stacked`` () =
+    // The `SlotBusy` arm of the check trigger: skipping is correct here (the
+    // next completed run re-checks against its own fresh cobertura), but it is
+    // now a decision the code STATES rather than a value the framework dropped.
+    withTempDir "coverage-double-trigger" (fun dir ->
+        let configPath = Path.Combine(dir, "coverage-ratchet.json")
+        File.WriteAllText(configPath, defaultThresholdsJson)
+
+        let host = PluginHost.create (Unchecked.defaultof<_>) dir
+        host.RegisterHandler(FsHotWatch.Coverage.CoveragePlugin.create configPath dir)
+
+        emitRunCompleted host
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Running _) -> true
+                | _ -> false)
+            10000
+
+        // Second trigger while the first check holds the slot.
+        emitRunCompleted host
+
+        waitUntil
+            (fun () ->
+                match host.GetStatus("coverage") with
+                | Some(Completed _) -> true
+                | _ -> false)
+            20000
+
+        // Exactly ONE check cycle ran (one Running→terminal transition).
+        test <@ (host.WorkCycleGenerations() |> Map.tryFind "coverage") = Some 1L @>
+        waitUntil (fun () -> not (host.AnyPluginBusy())) 20000)

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- fix!: adapt to the core `RunClaim` / verdict-carrying terminals (AUTOMATION-99): the
+  build's `RunExclusive` claim is handled explicitly, and `Running` is reported by the
+  framework at the claim.
+- refactor!: `BuildDone` drops its `summary` field. It was dead on two of its three arms
+  (both crash paths built a `$"build crashed: …"` summary nothing ever consumed) and
+  shadowed on the third. The handler now derives the summary from the outcome via the same
+  pure `buildSummary` helper the worker logs with, so the log line and the status verdict
+  cannot disagree.
+
 - fix!: adapt to core `RunVerdict` (AUTOMATION-99): the build's `Completed` status
   carries its verdict — "built N projects" + the measured build duration — via an
   extended `BuildDone` message; build crashes carry an explicit crash summary.
