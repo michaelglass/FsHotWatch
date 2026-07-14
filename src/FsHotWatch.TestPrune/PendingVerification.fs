@@ -25,6 +25,11 @@
 /// under-testing. A symbol leaves the queue ONLY when a test run that covered
 /// it completed green (or it provably has no covering test). A crash between a
 /// queue addition and the analysis flush must leave the symbol QUEUED.
+///
+/// That direction binds the READ as well as the write (AUTOMATION-150). A ledger
+/// that cannot be read is not an empty ledger: `load` answers `Unreadable`, never
+/// `empty`, so an unreadable sidecar WIDENS the next run to the full suite instead
+/// of silently absorbing the whole outstanding debt. See `LoadedQueue`.
 module FsHotWatch.TestPrune.PendingVerification
 
 open System
@@ -38,46 +43,103 @@ type Queue = Set<string>
 
 let empty: Queue = Set.empty
 
+/// The result of READING the sidecar — and the reason a failed read may not be
+/// spelled `empty`.
+///
+/// AUTOMATION-150. `load` used to answer EVERY failure with `empty` (`with _ ->
+/// empty`). A corrupt, truncated or unreadable file therefore absorbed the entire
+/// outstanding test debt in silence, because the value it handed back was
+/// indistinguishable from the one a genuinely-clean queue hands back. "I could not
+/// read the ledger" collapsed into "nothing is owed" — UNDER-testing, the one
+/// direction this module's header forbids. The code did not obey its own contract.
+///
+/// So the two facts are now different VALUES, and the compiler makes every caller
+/// decide which one it is holding. (The same move as `ProcessOutput.DrainTimedOut`:
+/// unrepresentable beats detected; detected beats silent.)
+///
+/// Note what is deliberately NOT an `Unreadable`: a MISSING file. "The file does
+/// not exist" (first run, fresh clone, nothing ever queued) and "the file exists
+/// and I could not read it" are DIFFERENT FACTS. The first is a provable, genuine
+/// empty; only the second is an unknown. Collapsing them would wedge every fresh
+/// clone into a permanent full-suite run — the fail-open traded for a stuck-closed.
+[<RequireQualifiedAccess>]
+type LoadedQueue =
+    /// The ledger was read IN FULL: this is exactly what is owed. The only value
+    /// that may be treated as an authoritative queue — including when it is empty,
+    /// which then provably means "nothing is owed".
+    | Loaded of Queue
+    /// The file EXISTS and could not be turned into a queue: a torn/truncated write,
+    /// corrupt JSON, an unreadable handle, a non-string entry. The debt it holds is
+    /// UNKNOWN — which is emphatically not `empty`. A caller must treat this as
+    /// "verify EVERYTHING": a full-suite run is the only scope that can discharge a
+    /// debt whose membership cannot be named.
+    | Unreadable of reason: string
+
 /// Absolute path to the sidecar JSON for this repo root. Lives under the
 /// per-plugin subdir of `.fshw/` so it's clearly fshw-owned (vs the
 /// TestPrune.Core-owned `test-impact.db`).
 let sidecarPath (repoRoot: string) : string =
     Path.Combine(FsHwPaths.root repoRoot, "test-prune", "pending-verification.json")
 
-/// Load the queue. Returns an empty set if the file is missing or
-/// unreadable/unparseable. Unlike the freshness sidecar, an unreadable queue is
-/// a genuine loss of safety information — but crashing the daemon on a corrupt
-/// file is the worse trade, and the queue self-heals: the next changed symbol
-/// re-enters it, and any symbol whose tests haven't run green is re-flagged the
-/// next time it's edited. Treating "can't read" as "empty" errs toward
-/// re-testing on the next edit rather than wedging the daemon.
-let load (repoRoot: string) : Queue =
+/// Read the queue off disk. NEVER throws — but a failure comes back as
+/// `Unreadable`, not as an empty queue, so no caller can mistake "I could not read
+/// what is owed" for "nothing is owed" (AUTOMATION-150).
+///
+/// A missing file is `Loaded empty`: nothing has ever been queued here, so nothing
+/// is owed. That is the fresh-clone/first-run case and it must stay a fast no-op.
+let load (repoRoot: string) : LoadedQueue =
     let path = sidecarPath repoRoot
 
     if not (File.Exists path) then
-        empty
+        LoadedQueue.Loaded empty
     else
         try
             let json = File.ReadAllText path
 
+            // `save` writes a JSON array through an atomic tmp+rename — `[]` for the
+            // empty queue — so it can never leave a zero-byte or whitespace-only file
+            // behind. One that exists is a torn write, not an empty queue.
             if String.IsNullOrWhiteSpace json then
-                empty
+                LoadedQueue.Unreadable "the file is empty — `save` always writes at least `[]`, so this is a torn write"
             else
                 match JsonNode.Parse(json) with
-                | null -> empty
+                | null -> LoadedQueue.Unreadable "the file holds a bare JSON `null`, not an array of symbol names"
                 | root ->
-                    root.AsArray()
-                    |> Seq.choose (fun n ->
-                        if n = null then
-                            None
+                    // `AsArray` throws when the root is not an array (an object, a
+                    // number, a bare string) — caught below, as an unreadable ledger.
+                    let entries = root.AsArray() |> List.ofSeq
+
+                    // An entry we cannot read is a SYMBOL WE CANNOT NAME. Skipping it
+                    // (as the old `Seq.choose` did) drops outstanding debt on the floor
+                    // one element at a time — the same bug, retail instead of wholesale.
+                    // One bad entry makes the whole ledger unreadable.
+                    let readEntry (node: JsonNode) : Result<string, string> =
+                        if isNull node then
+                            Error "a `null` entry where a symbol name was expected"
                         else
                             try
-                                Some(n.GetValue<string>())
+                                Ok(node.GetValue<string>())
                             with _ ->
-                                None)
-                    |> Set.ofSeq
-        with _ ->
-            empty
+                                Error $"a non-string entry (%s{node.ToJsonString()}) where a symbol name was expected"
+
+                    let read = entries |> List.map readEntry
+
+                    match
+                        read
+                        |> List.tryPick (function
+                            | Error reason -> Some reason
+                            | Ok _ -> None)
+                    with
+                    | Some reason -> LoadedQueue.Unreadable reason
+                    | None ->
+                        read
+                        |> List.choose (function
+                            | Ok name -> Some name
+                            | Error _ -> None)
+                        |> Set.ofList
+                        |> LoadedQueue.Loaded
+        with ex ->
+            LoadedQueue.Unreadable $"%s{ex.GetType().Name}: %s{ex.Message}"
 
 /// Persist the queue atomically (write to .tmp, rename over the real file).
 /// Sorted so the on-disk form is stable/diffable and a queue-hash is

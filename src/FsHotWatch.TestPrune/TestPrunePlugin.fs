@@ -2365,8 +2365,86 @@ let create
     // Held in a closure-local mutable cell + Volatile for the same reason
     // changedSymbolsRef/freshnessRef are — read/written from multiple threads
     // (mailbox + cache intercept).
+    let loadedQueue = PendingVerification.load repoRoot
+
+    /// AUTOMATION-150. `Some reason` when the sidecar EXISTS but could not be read
+    /// (a torn write, corrupt JSON, a non-string entry). What was owed is then
+    /// UNKNOWN — which is NOT the same fact as "nothing is owed", and must never
+    /// again be spelled with the same value. A MISSING file is not this: it is a
+    /// provable `Loaded empty` (fresh clone), and stays a fast no-op.
+    let ledgerUnreadableReason =
+        match loadedQueue with
+        | PendingVerification.LoadedQueue.Loaded _ -> None
+        | PendingVerification.LoadedQueue.Unreadable reason -> Some reason
+
     let mutable pendingQueueRef: PendingVerification.Queue =
-        PendingVerification.load repoRoot
+        match loadedQueue with
+        | PendingVerification.LoadedQueue.Loaded queue -> queue
+        | PendingVerification.LoadedQueue.Unreadable _ ->
+            // We cannot NAME the symbols that were owed, so we cannot seed them. The
+            // debt rides on `ledgerRecoveryOutstandingRef` instead, which widens every
+            // run to the full suite until one proves the whole tree green. Seeding
+            // `empty` here is safe ONLY because that flag exists — on its own it is
+            // exactly the bug.
+            PendingVerification.empty
+
+    /// AUTOMATION-150. True while an UNREADABLE ledger's unknown debt is still
+    /// outstanding — i.e. no full-suite green has yet re-verified the tree it
+    /// described. While it is set:
+    ///   * every run WIDENS to every configured project, in full (`runTestsWithImpact`);
+    ///   * no skip may conclude "nothing owed" (`nothingOwed`);
+    ///   * the plugin does not participate in the task cache at all (`cacheKeyFor`),
+    ///     or a cached green from a genuinely-clean tree would replay over the debt;
+    ///   * the corrupt file is NOT overwritten (`persistQueue`), so a crash mid-recovery
+    ///     leaves the next session the same honest "unknown", not a clean empty ledger.
+    /// Cleared only by a full-suite run that passed EVERY runnable project.
+    let mutable ledgerRecoveryOutstandingRef = ledgerUnreadableReason.IsSome
+
+    // Say it out loud. A silent recovery here is how this stayed invisible: the old
+    // code swallowed the corrupt file and reported a green.
+    match ledgerUnreadableReason with
+    | Some reason ->
+        Logging.warn
+            "test-prune"
+            $"the pending-verification ledger (%s{PendingVerification.sidecarPath repoRoot}) EXISTS but could not be read: %s{reason}. It records every symbol still awaiting a green test run, so what is owed is now UNKNOWN — which is NOT the same as nothing owed. Until a FULL-SUITE run passes, every test run is widened to every configured project in full and no cached verdict may be replayed."
+    | None -> ()
+
+    /// The one question every skip in this plugin is really asking: is the
+    /// needs-testing queue PROVABLY empty? An unreadable ledger is never `true` here
+    /// — an empty queue we could not read is not an empty queue (AUTOMATION-150).
+    let nothingOwed () =
+        Set.isEmpty pendingQueueRef
+        && not (Volatile.Read(&ledgerRecoveryOutstandingRef))
+
+    /// What a drain is FOR, in words. An unreadable ledger owes a debt whose size
+    /// cannot be printed, so it is named rather than counted.
+    let owedDescription () =
+        let queued = Set.count pendingQueueRef
+
+        if Volatile.Read(&ledgerRecoveryOutstandingRef) then
+            $"an UNREADABLE pending-verification ledger (what is owed is UNKNOWN, so only a full suite can prove it) + %d{queued} newly-queued symbol(s)"
+        else
+            $"%d{queued} symbol(s) awaiting verification"
+
+    /// Persist the durable queue — UNLESS an unreadable ledger's debt is still
+    /// outstanding (AUTOMATION-150).
+    ///
+    /// While it is, the corrupt file on disk IS the record, and it says the honest
+    /// thing: "what is owed here is unknown". Overwriting it with our necessarily
+    /// incomplete in-memory queue would launder that uncertainty into a clean, EMPTY
+    /// ledger — and a crash before the recovering full-suite run finished would then
+    /// hand the next session a ledger claiming nothing is owed. That is the very hole
+    /// this ticket closes, re-opened through the write path. So we leave the corrupt
+    /// bytes exactly where they are until a full-suite green has verified the tree,
+    /// and rewrite the ledger only then (see the discharge in `TestsFinished`).
+    let persistQueue (context: string) =
+        if not (Volatile.Read(&ledgerRecoveryOutstandingRef)) then
+            try
+                PendingVerification.save repoRoot pendingQueueRef
+            with ex ->
+                Logging.warn
+                    "test-prune"
+                    $"failed to persist pending-verification queue%s{context}: %s{ex.Message}; in-memory queue still updated"
 
     /// AUTOMATION-112. When set, every test run this plugin launches is UNFILTERED —
     /// every configured project, in full. Requested by `fshw gate` (the merge gate)
@@ -2404,13 +2482,7 @@ let create
         if not symbols.IsEmpty then
             let updated = Set.difference pendingQueueRef symbols
             Volatile.Write(&pendingQueueRef, updated)
-
-            try
-                PendingVerification.save repoRoot updated
-            with ex ->
-                Logging.warn
-                    "test-prune"
-                    $"failed to persist pending-verification queue after commit: %s{ex.Message}; in-memory queue still updated"
+            persistQueue " after commit"
 
     /// The reds no covering run has passed since (AUTOMATION-125), mirrored out of
     /// the mailbox state for the CACHE-KEY intercept — which runs BEFORE `Update`, on
@@ -2468,12 +2540,7 @@ let create
         // queue entries would no longer be re-detectable after a crash. One
         // write per flush (vs per FileChecked) — same crash-safety, batch-size
         // fewer disk writes.
-        try
-            PendingVerification.save repoRoot pendingQueueRef
-        with ex ->
-            Logging.warn
-                "test-prune"
-                $"failed to persist pending-verification queue: %s{ex.Message}; in-memory queue still updated"
+        persistQueue ""
 
         let flushedState = flushPendingAnalysis db state
 
@@ -2664,7 +2731,13 @@ let create
             //  * AUTOMATION-112 — merge-gate scope: run EVERY project, unfiltered.
             //  * AUTOMATION-113 — unanalysable files: run every project, because a
             //    selection made without them cannot be trusted.
+            //  * AUTOMATION-150 — an UNREADABLE pending-verification ledger: run every
+            //    project, because the ledger names what is still owed, and a selection
+            //    made without it cannot be trusted either. Same shape as 113: the
+            //    missing input is a SAFETY input, so its absence widens rather than
+            //    narrows.
             let gateScopeIsFullSuite = Volatile.Read(&fullSuiteScopeRef)
+            let ledgerUnreadable = Volatile.Read(&ledgerRecoveryOutstandingRef)
 
             // The coarse fallback only needs to know WHICH files are unanalysable; the
             // map's values exist so the ledger projection can re-report their
@@ -2674,7 +2747,7 @@ let create
             let forceRunProjects =
                 let widened = coarseFallbackProjects configs unanalyzablePaths fanoutProjects
 
-                if gateScopeIsFullSuite then
+                if gateScopeIsFullSuite || ledgerUnreadable then
                     Set.union widened (fullSuiteProjects configs)
                 else
                     widened
@@ -2683,6 +2756,11 @@ let create
                 Logging.info
                     "test-prune"
                     "Scope: FULL SUITE (merge gate) — impact filtering is disabled for this run; every configured test project runs in full"
+
+            if ledgerUnreadable then
+                Logging.warn
+                    "test-prune"
+                    "Scope: FULL SUITE (unreadable pending-verification ledger) — the record of what still needs testing could not be read, so this run cannot know what it owes. It runs EVERY configured test project in full rather than trust an impact selection made without the ledger. Impact filtering resumes once a full suite passes."
 
             if not (Set.isEmpty unanalyzablePaths) then
                 let names = unanalyzablePaths |> Set.toList |> String.concat ", "
@@ -2813,7 +2891,13 @@ let create
                 //      through to the full suite and hang, never resolving
                 //      WaitForComplete. A genuine cold start with NO pending
                 //      symbols leaves the flag false, so the baseline still runs.
-                let baselineEquivalent = Set.isEmpty pendingQueueRef && hasCachedResults
+                //      AUTOMATION-150: "empty queue" must mean PROVABLY empty, so this
+                //      reads `nothingOwed` rather than `Set.isEmpty` — an unreadable
+                //      ledger owes an unknown debt and can never be baseline-equivalent.
+                //      (The `nothingToVerify` route cannot fire under an unreadable
+                //      ledger either: it requires `Set.isEmpty forceRunProjects`, and
+                //      the widening above has just forced every configured project.)
+                let baselineEquivalent = nothingOwed () && hasCachedResults
 
                 let nothingToVerify = state.ChangedSymbolsAllUncovered
 
@@ -3605,7 +3689,13 @@ let create
                         // Now: if symbols remain unverified here, we RUN the tests that
                         // verify them. Convergence, not reporting. A verdict is only
                         // ever earned by a run.
-                        if Set.isEmpty pendingQueueRef then
+                        //
+                        // AUTOMATION-150: the skip asks whether anything is owed, so it
+                        // must ask `nothingOwed`, not `Set.isEmpty`. An UNREADABLE ledger
+                        // leaves the in-memory queue empty (we cannot name what it held)
+                        // — and reading that empty set as "nothing to drain" is exactly
+                        // how a corrupt sidecar used to run ZERO tests and still go green.
+                        if nothingOwed () then
                             return flushedState
                         else
                             match testConfigs with
@@ -3648,9 +3738,7 @@ let create
                                         (runTestsWithImpact ctx configs drainedState hasCachedResults forceRunProjects)
                                 with
                                 | Claimed ->
-                                    Logging.info
-                                        "test-prune"
-                                        $"BatchChecked: %d{Set.count pendingQueueRef} symbol(s) awaiting verification — draining now"
+                                    Logging.info "test-prune" $"BatchChecked: %s{owedDescription ()} — draining now"
 
                                     return drainedState
                                 | SlotBusy ->
@@ -3660,7 +3748,7 @@ let create
                                     // fanout is retained (the work was NOT consumed).
                                     Logging.info
                                         "test-prune"
-                                        $"BatchChecked: %d{Set.count pendingQueueRef} symbol(s) still awaiting verification while a run is in flight — queueing re-run"
+                                        $"BatchChecked: %s{owedDescription ()} still outstanding while a run is in flight — queueing re-run"
 
                                     return
                                         { flushedState with
@@ -3907,6 +3995,44 @@ let create
                             $"Committing %d{Set.count committedSymbols} verified symbol(s) — removing from pending-verification queue"
 
                         commitPending committedSymbols
+
+                    // AUTOMATION-150 — discharge an UNREADABLE ledger's debt.
+                    //
+                    // The debt is owed in FULL, because its membership is unknown: the only
+                    // run that can retire it is one that executed EVERY runnable project,
+                    // unfiltered, and passed. At that point every symbol the lost ledger
+                    // could possibly have held has been verified by an actual test run, so
+                    // there is nothing left for it to owe.
+                    //
+                    // Each conjunct is load-bearing:
+                    //  * `not aborted` — an aborted run has empty Results and verified nothing.
+                    //  * every RUNNABLE project passed — `projectPassed` demands the project
+                    //    be PRESENT in the results AND green, so a project that never ran
+                    //    cannot be counted. This also rules out the degenerate zero-ran
+                    //    lifecycle (empty Results ⇒ no project passes).
+                    //  * `RanFullSuite` — none of those projects was impact-FILTERED. It is
+                    //    vacuously true for an empty Results map, which is why it is an
+                    //    addition to the check above and never a substitute for it.
+                    //  * a non-empty `runnableProjects` — an analysis-only daemon runs no
+                    //    tests, so it can never prove anything and must not discharge.
+                    //
+                    // Only now may the ledger be rewritten: `persistQueue` has deliberately
+                    // left the corrupt file untouched until this moment, so that a crash
+                    // mid-recovery leaves the next session the same honest "unknown" rather
+                    // than a clean, empty, WRONG ledger.
+                    if
+                        Volatile.Read(&ledgerRecoveryOutstandingRef)
+                        && not aborted
+                        && not (Set.isEmpty runnableProjects)
+                        && completed.RanFullSuite
+                        && runnableProjects |> Set.forall projectPassed
+                    then
+                        Volatile.Write(&ledgerRecoveryOutstandingRef, false)
+                        persistQueue " after recovering an unreadable ledger"
+
+                        Logging.info
+                            "test-prune"
+                            "A full suite passed every configured project — the unreadable pending-verification ledger has been rewritten and its unknown debt discharged. Impact filtering resumes."
 
                     // The in-memory hot view must shed ONLY the committed symbols,
                     // never the whole list — symbols left in the queue (mid-run
@@ -4290,7 +4416,18 @@ let create
             // byte-stable) and, on BuildCompleted, is what makes the event cacheable
             // at all: a green that left symbols queued must re-run, never replay.
             let pendingQueueHash () =
-                if Set.isEmpty pendingQueueRef then
+                if Volatile.Read(&ledgerRecoveryOutstandingRef) then
+                    // AUTOMATION-150. An unreadable ledger is outstanding debt whose
+                    // membership is unknown. `None` here would assert "provably nothing
+                    // owed" and make BuildCompleted cacheable — so a cached green,
+                    // written by an earlier run over this very same content merkle, would
+                    // REPLAY: handler skipped, drain skipped, no test process, green. The
+                    // hole, re-opened through the cache door. A `Some` refuses cache
+                    // participation outright (no replay, no write), exactly as a non-empty
+                    // queue does. The value is a constant, not a hash: there is nothing to
+                    // hash — that is the whole point.
+                    Some "unreadable-ledger"
+                elif Set.isEmpty pendingQueueRef then
                     None
                 else
                     Some(PendingVerification.hash pendingQueueRef)

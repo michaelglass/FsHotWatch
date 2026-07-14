@@ -461,13 +461,13 @@
       {
         "line": 87,
         "branch": 75,
-        "reason": "honest floor for the durable pending-verification sidecar. The PendingVerification unit tests deterministically cover load (missing/whitespace/corrupt/well-formed), the save round-trip, and hash; the remaining uncovered branch is the per-element null-guard inside the array deserialize (an explicit JSON null array element), and the remaining uncovered lines are the rarely-hit per-element parse fallbacks (~67/72/76/77). These are deliberately left uncovered rather than hidden with ExcludeFromCodeCoverage. Achieved 87.9% line / 75% branch (3/4), stable now that the dedicated unit tests pin the load branches.",
+        "reason": "honest floor for the durable pending-verification sidecar. AUTOMATION-150 made `load` return `LoadedQueue = Loaded | Unreadable`, and the dedicated unit tests now pin EVERY arm deterministically: missing file (Loaded empty), save/load round-trip, saved-empty, torn/whitespace file, corrupt JSON, truncated array, non-array root, bare null, non-string entry, and null entry. The per-element null-guard and parse-fallback arms that this floor previously left uncovered by design are now covered — measured 97.9% line / 100% branch (10/10) on macOS, comfortably above this floor. Floor NOT raised to the measured value here: it is settled by `mise run coverage-ratchet` against BOTH platforms' CI, and a hand-written floor asserting an unmeasured Linux number is exactly the unverified claim the ratchet exists to prevent.",
         "platform": "macos"
       },
       {
         "line": 87,
         "branch": 75,
-        "reason": "deterministic pure JSON I/O - same on Linux as macOS; per-element null-guard branch + parse-fallback lines uncovered by design (see macos entry).",
+        "reason": "deterministic pure JSON I/O - same on Linux as macOS. Since AUTOMATION-150 the load arms (Loaded vs Unreadable, incl. the null/non-string entry guards) are all pinned by deterministic unit tests, so the previously-uncovered arms are covered (see macos entry). Floor left as-is rather than hand-raised to an unmeasured Linux number.",
         "platform": "linux"
       }
     ],
