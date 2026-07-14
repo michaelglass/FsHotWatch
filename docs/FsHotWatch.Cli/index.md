@@ -39,7 +39,9 @@ current state without triggering anything.
 
 | Command | Description |
 |---------|-------------|
-| `check [--run-once]` | **The gate.** Run every plugin (build + lint + analyze + test + format-check), wait for genuine completion, and report every error. Exits 0 (clean), 1 (failures), or 2 (completeness unconfirmed). `--run-once` uses an ephemeral daemon (for CI). |
+| `check [--run-once]` | **The inner loop.** Run every plugin (build + lint + analyze + test + format-check), wait for genuine completion, and report every error. Tests are impact-filtered — a latency optimization, and the output says so. Exits 0 (clean), 1 (failures), or 2 (completeness unconfirmed). `--run-once` uses an ephemeral daemon (for CI). |
+| `gate` | **The merge gate.** Same checks as `check`, but tests run UNFILTERED and a green is refused unless they actually did. Exits 0/1/2 as `check`, plus **3** (`unearned scope`: nothing failed, but the run did not produce the evidence a merge verdict is made of). |
+| `verdict` | **Read the last verdict** from `.fshw/verdict.json` and report whether it still applies to the tree on disk. Contacts no daemon, triggers no run — reading cannot perturb. Exits 0/1/2/3 as the verdict itself, plus **4** (STALE: the verdict describes a different tree) and **5** (no usable verdict). |
 | `status [plugin]` | **The observer.** Show the daemon's current plugin statuses and accumulated errors WITHOUT triggering a run. Optionally filter to one plugin. |
 | `start` | Start daemon in foreground (auto-scans on boot, Ctrl+C to stop). |
 | `stop` | Gracefully stop the running daemon. |
@@ -88,6 +90,131 @@ fshw diagnostics
 fshw coverage
 fshw warnings
 ```
+
+## Machine-readable state (for agents and CI)
+
+**Don't parse the CLI's output.** It is a progress display written for a human and
+it will change. Every check and gate publishes its result as a file instead.
+
+### `.fshw/verdict.json` — the verdict
+
+Written atomically (temp + rename, so a partial read is impossible) at the end of
+every `check` and `gate`, including the ones that fail, time out, or lose the
+daemon mid-run — those are exactly the moments the human output is least
+sufficient.
+
+```json
+{
+  "schema": "fshw-verdict-v1",
+  "producedAt": "2026-07-14T10:52:03.4471180Z",
+  "command": "gate",
+  "producer": { "binary": "FsHotWatch.Cli.dll", "hash": "sha256 of the fshw that made this claim" },
+  "runId": "24bf66063d004decb0447e3cc3ece719",
+  "treeHash": "sha256:24bf6606…",
+  "treeHashAlgorithm": "fshw-tree-sha256-v1",
+  "treeFileCount": 144,
+  "scope":   { "kind": "full", "ranProjects": 6, "totalProjects": 6 },
+  "outcome": { "kind": "green" },
+  "exitCode": 0,
+  "plugins": [
+    { "name": "test-prune", "outcome": "ok", "elapsedMs": 91449,
+      "summary": "6 passed, 0 failed in 6 projects" }
+  ],
+  "suites": [
+    { "project": "Intelligence.Tests.Unit",
+      "ctrf": ".fshw/test-runs/24bf6606…/Intelligence.Tests.Unit.ctrf.json",
+      "total": 5136, "passed": 5136, "failed": 0, "skipped": 0 }
+  ]
+}
+```
+
+**A missing number is never zero.** `elapsedMs` is `null` when a plugin produced no
+measurement (`0` means "instantaneous" — a different fact). A suite entry whose counts
+cannot be read makes the whole file **unreadable**, exactly as a missing `treeHash`
+does: `"total": 0, "failed": 0` invented from a truncated file would read as "this
+suite ran cleanly", and that is a vacuous green conjured out of nothing.
+
+Every variant field is **uniformly tagged** — `kind` is always present, so you
+never have to discriminate a JSON string from a JSON object before you can read a
+field.
+
+| Field | Values |
+|-------|--------|
+| `outcome.kind` | `green` · `red` · `incomplete` (with `reason`) |
+| `scope.kind` | `full` · `filtered` · `none` · `unknown` (with `ranProjects` / `totalProjects`) |
+| `plugins[].outcome` | `ok` · `warn` · `fail` · `timed-out` · `running` |
+| `command` | `check` (impact-scoped) · `gate` (unfiltered, evidence-required) |
+
+`incomplete` is the honest third answer: **nothing is known to be broken, and
+nothing is known to be sound either.** A `gate` whose tests ran impact-filtered
+lands here. It is never laundered into a green.
+
+### The one rule: a verdict applies only to the tree it verified, from the binary that verified it
+
+**A green from a different tree is still a green** — and so is a green from a different
+(older, buggier) fshw. Both are content-addressed:
+
+> Read `verdict.json`. If `treeHash` ≠ hash(current tree), **or** `producer.hash` ≠ the
+> fshw you would run now, **the verdict does not apply.** Wait, or trigger a run. Never
+> reuse it.
+
+Address the SUBJECT and the PRODUCER, or the provenance chain has a hole in the middle:
+a stale daemon writes a verdict for an unchanged tree, the `treeHash` matches, and the
+verdict reads as current.
+
+You do not have to implement the hash. `fshw verdict` does the comparison for
+you, reads no socket and starts nothing:
+
+```bash
+fshw verdict          # stdout: a JSON envelope; exit code: the answer
+# 0 green · 1 red · 2 incomplete · 3 unearned scope · 4 STALE · 5 no verdict
+```
+
+Its stdout is *only* the envelope, which always states `applies` — a stale green
+can never be mistaken for a current one:
+
+```json
+{ "schema": "fshw-verdict-report-v1", "applies": false,
+  "reason": "stale: the verdict describes a different tree",
+  "currentTreeHash": "sha256:692e536c…",
+  "verdict": { "…the file, verbatim…" } }
+```
+
+If you'd rather compute the hash yourself, the recipe (`fshw-tree-sha256-v1`) is:
+
+- take every file under `src/` and `tests/`, excluding `bin/`, `obj/`, tooling
+  dirs, and your `.fshw.json` `exclude` patterns — **sources _and_ content/fixture
+  files** — plus `.fshw.json` itself;
+- for each, in ordinal order of its repo-relative path, emit
+  `relPath + NUL + sha256hex(bytes) + LF`;
+- `treeHash = "sha256:" + sha256hex(utf8(that))`.
+
+Fixtures are in the hash on purpose. A changed JSON fixture that MSBuild declined
+to re-copy once let a suite run green against the *old* fixture and put a red
+commit on `main`. Content, never mtimes — see
+[ADR-008](../../docs/adr-008-mtime-is-not-a-content-oracle.md).
+
+### `.fshw/test-runs/<runId>/` — per-suite detail. **The directory IS the run.**
+
+Standard [CTRF](https://ctrf.io) from the test runner: per-test results with messages
+and stack traces, plus a `results.summary` block. Every report a run produced lives in
+that run's own directory, and nothing else does — so membership is **declared**, never
+inferred from timestamps.
+
+This makes the two pathological readings impossible:
+
+| On disk | Means |
+|---------|-------|
+| `.fshw/test-runs/<runId>/` with reports | those reports, and only those, are that run's evidence |
+| `.fshw/test-runs/<runId>/` **empty** | that run executed and ran **no tests** — a stated fact |
+| no directory for the run | **no run happened** |
+
+An empty listing used to be indistinguishable from "cleaned up" or "wrong glob". Two
+capable readers misread it within an hour of each other, and one of them wrote a bash
+harness because of it. Absence must never be something the reader has to decode.
+
+The newest 10 run directories are retained; history is evidence, so old runs are
+**rotated, never wiped on start**.
 
 ## Config validation
 

@@ -313,21 +313,97 @@ let rec isVerdictWaitTimeout (ex: exn) : bool =
          && ex.Message.Contains("WaitForComplete timed out", StringComparison.Ordinal))
         || (not (isNull ex.InnerException) && isVerdictWaitTimeout ex.InnerException)
 
+/// Publish the run's verdict as `.fshw/verdict.json` and — when a MACHINE is
+/// reading (stdout not a TTY) — print the steering block that names it.
+///
+/// The verdict written here and the exit code returned to the shell are two
+/// renderings of ONE `CheckOutcome`. There is no second computation, so there is
+/// no way for the file to say green while the process says red.
+///
+/// TREE HASH: taken TWICE — once after the daemon has settled (that is the tree
+/// it just finished verifying) and once again immediately before the write. If
+/// the two differ, the working tree moved underneath the verdict while it was
+/// being produced, and the honest answer is `incomplete`, not a green over a tree
+/// nobody checked. The failure direction is the safe one: it is a refusal, never
+/// a claim.
+///
+/// Best-effort by design: a repo whose `.fshw/` cannot be written must still get
+/// its exit code. The verdict is an additional surface, never a new way to fail.
+let private publishVerdict
+    (repoRoot: string)
+    (excludePatterns: string list)
+    (checkMode: CheckVerdict.CheckMode)
+    (noWarnFail: bool)
+    (runReport: TestRunReport)
+    (statuses: Map<string, ParsedPluginStatus>)
+    (outcome: CheckVerdict.CheckOutcome)
+    : unit =
+    try
+        let settled = FsHotWatch.TreeHash.compute repoRoot excludePatterns
+        let suites = Verdict.suiteVerdicts repoRoot runReport.RunId
+        let plugins = Verdict.pluginVerdicts (not noWarnFail) (DateTime.UtcNow) statuses
+        let atWrite = FsHotWatch.TreeHash.compute repoRoot excludePatterns
+
+        let verdictOutcome, exitCode =
+            if settled.Hash <> atWrite.Hash then
+                Verdict.Incomplete
+                    "the working tree changed while the verdict was being produced — nothing is claimed about it",
+                CheckVerdict.exitCode (CheckVerdict.CheckOutcome.Incomplete -1)
+            else
+                Verdict.outcomeOfCheck outcome, CheckVerdict.exitCode outcome
+
+        let v: Verdict.Verdict =
+            { ProducedAt = DateTime.UtcNow
+              Command = Verdict.Command.ofCheckMode checkMode
+              // WHO made this claim. `treeHash` says what it is about; without this a
+              // stale binary's green over an unchanged tree reads as current.
+              Producer = Verdict.Producer.current ()
+              RunId = runReport.RunId
+              TreeHash = atWrite.Hash
+              TreeHashAlgorithm = FsHotWatch.TreeHash.Algorithm
+              TreeFileCount = atWrite.FileCount
+              Scope = runReport.Scope
+              Outcome = verdictOutcome
+              ExitCode = exitCode
+              Plugins = plugins
+              Suites = suites }
+
+        Verdict.write repoRoot v
+
+        if not UI.isInteractive then
+            eprintfn ""
+
+            for line in ProgressRenderer.AgentHints.forVerdict v do
+                eprintfn "%s" line
+    with
+    | :? System.IO.IOException as ex ->
+        FsHotWatch.Logging.warn "verdict" $"could not publish %s{Verdict.RelativePath}: %s{ex.Message}"
+    | :? System.UnauthorizedAccessException as ex ->
+        FsHotWatch.Logging.warn "verdict" $"could not publish %s{Verdict.RelativePath}: %s{ex.Message}"
+
 /// Poll daemon status, render live progress, then decide a converge-then-verdict
 /// outcome and return its exit code (0 = complete & clean, 1 = failures found,
-/// 2 = completeness unachievable). `renderStatuses` is injected so callers choose
-/// the progress renderer (compact/verbose). `triggerScan` forces a fresh scan
-/// and is invoked only on the convergence path (incomplete coverage, no failures).
+/// 2 = completeness unachievable, 3 = merge gate with an unearned scope).
+/// `renderStatuses` is injected so callers choose the progress renderer
+/// (compact/verbose). `triggerScan` forces a fresh scan and is invoked only on
+/// the convergence path (incomplete coverage, no failures).
+///
+/// Every terminal path — clean, red, incomplete, wedged plugin, daemon teardown —
+/// publishes a verdict file. The moments a consumer is MOST tempted to start
+/// grepping are the failures, so those are exactly the moments the machine-readable
+/// answer must exist and be pointed at.
 let pollAndRender
     (mode: ProgressRenderer.RenderMode)
     (checkMode: CheckVerdict.CheckMode)
+    (repoRoot: string)
+    (excludePatterns: string list)
     (renderStatuses: Map<string, ParsedPluginStatus> -> string list)
     (noWarnFail: bool)
     (waitForScan: unit -> string)
     (waitForComplete: unit -> string)
     (getStatus: unit -> string)
     (getErrors: unit -> string)
-    (getTestScope: unit -> TestScope)
+    (getTestRun: unit -> TestRunReport)
     (triggerScan: unit -> string)
     : int =
     // Run `fn` under a spinner when interactive, else announce it with a plain
@@ -360,6 +436,14 @@ let pollAndRender
     // Translate it into a loud diagnostic + exit 2 ("completeness unachievable")
     // so the waiting client always gets an actionable verdict rather than an
     // opaque connection-drop stack trace. See `isDaemonShutdownDuringWait`.
+    // The LAST state the verdict was computed from. Captured at every read (the
+    // first one and each convergence re-read) so the file records what the final
+    // verdict was actually based on — never an earlier snapshot, and never a
+    // second query that could see a different daemon.
+    let finalStatuses = ref Map.empty
+
+    let finalRun = ref { Scope = ScopeUnknown; RunId = None }
+
     try
         withProgress "Scanning" "Scanning..." (fun () -> waitForScan () |> ignore)
 
@@ -369,6 +453,7 @@ let pollAndRender
         let firstResp = parseDiagnosticsResponse (getErrors ())
         let firstOutput = formatDiagnosticsResponse mode renderStatuses firstResp
         eprintfn "%s" firstOutput
+        finalStatuses.Value <- firstResp.Statuses
 
         // Force a fresh scan and re-settle (the convergence loop's "try to FIX,
         // not just report" step). Invoked only when the first read is
@@ -387,7 +472,13 @@ let pollAndRender
             let resp = parseDiagnosticsResponse (getErrors ())
             let output = formatDiagnosticsResponse mode renderStatuses resp
             eprintfn "%s" output
-            (hasFailures noWarnFail resp, resp.Coverage, getTestScope ())
+            let run = getTestRun ()
+            finalStatuses.Value <- resp.Statuses
+            finalRun.Value <- run
+            (hasFailures noWarnFail resp, resp.Coverage, run.Scope)
+
+        let firstRun = getTestRun ()
+        finalRun.Value <- firstRun
 
         let outcome =
             CheckVerdict.converge
@@ -395,7 +486,9 @@ let pollAndRender
                 MaxConvergeAttempts
                 rescan
                 reread
-                (hasFailures noWarnFail firstResp, firstResp.Coverage, getTestScope ())
+                (hasFailures noWarnFail firstResp, firstResp.Coverage, firstRun.Scope)
+
+        publishVerdict repoRoot excludePatterns checkMode noWarnFail finalRun.Value finalStatuses.Value outcome
 
         match outcome with
         | CheckVerdict.CheckOutcome.Incomplete n ->
@@ -426,11 +519,29 @@ let pollAndRender
         // its elapsed time (e.g. "still running: test-prune (1h 0m)"). Surface
         // it verbatim plus the recovery path — bounded and legible, never the
         // old heartbeat-forever silence.
+        publishVerdict
+            repoRoot
+            excludePatterns
+            checkMode
+            noWarnFail
+            finalRun.Value
+            finalStatuses.Value
+            (CheckVerdict.CheckOutcome.Incomplete -1)
+
         UI.fail
             $"Check aborted: %s{ex.Message}\nA plugin overran the verdict deadline and is likely wedged — inspect logs/daemon.log, then `fshw stop` to reclaim the daemon. If the suite legitimately needs longer, raise FSHW_VERDICT_DEADLINE_SEC."
 
         2
     | ex when isDaemonShutdownDuringWait ex ->
+        publishVerdict
+            repoRoot
+            excludePatterns
+            checkMode
+            noWarnFail
+            finalRun.Value
+            finalStatuses.Value
+            (CheckVerdict.CheckOutcome.Incomplete -1)
+
         UI.fail
             "Check aborted: the daemon shut down before producing a verdict — nothing was verified. Re-run `fshw check` (the next command auto-restarts the daemon)."
 

@@ -3,8 +3,18 @@ module FsHotWatch.FsHwPaths
 open System.IO
 
 /// Absolute path to the .fshw/ state directory inside the given repo root.
-/// All daemon on-disk artifacts (caches, errors, test-run logs, etc.) live here.
+/// All daemon on-disk artifacts (caches, errors, test-run reports, etc.) live here.
 let root (repoRoot: string) = Path.Combine(repoRoot, ".fshw")
+
+/// The name of fshw's per-repo configuration file.
+[<Literal>]
+let ConfigFileName = ".fshw.json"
+
+/// Absolute path to the repo's `.fshw.json`. Named in ONE place because the
+/// config is an INPUT to the tree hash the verdict is content-addressed by
+/// (`TreeHash`): a config change means the next verdict covers a different tree,
+/// and a second spelling of this path is a way for that to stop being true.
+let configFile (repoRoot: string) = Path.Combine(repoRoot, ConfigFileName)
 
 /// Write contents atomically (temp file + rename). Used wherever we need a
 /// torn-write-safe persistence step — caches, history files, etc. — so a
